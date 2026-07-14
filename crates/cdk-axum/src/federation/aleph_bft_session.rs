@@ -245,10 +245,10 @@ enum AlephBftSessionCompletion {
     Panicked,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum AlephBftEssentialTaskEvent {
     Root(AlephBftSessionCompletion),
-    FinalizedPayloadApplyFailed,
+    FinalizedPayloadApplyFailed(String),
     FinalizedPayloadApplyPanicked,
     FinalizedPayloadApplyStopped,
     NetworkPumpPanicked,
@@ -256,7 +256,7 @@ enum AlephBftEssentialTaskEvent {
 }
 
 impl AlephBftEssentialTaskEvent {
-    fn is_root_coupled_stop(self) -> bool {
+    fn is_root_coupled_stop(&self) -> bool {
         matches!(
             self,
             Self::FinalizedPayloadApplyStopped | Self::NetworkPumpStopped
@@ -893,8 +893,9 @@ where
                     "AlephBFT finalized-payload apply task stopped after a non-retryable error: {}",
                     err
                 );
-                let _ = apply_event_sender
-                    .send(AlephBftEssentialTaskEvent::FinalizedPayloadApplyFailed);
+                let _ = apply_event_sender.send(
+                    AlephBftEssentialTaskEvent::FinalizedPayloadApplyFailed(err.to_string()),
+                );
             }
             Err(_) => {
                 let _ = apply_event_sender
@@ -1301,12 +1302,15 @@ where
                 )
                 .await;
             }
-            AlephBftEssentialTaskEvent::FinalizedPayloadApplyFailed => {
+            AlephBftEssentialTaskEvent::FinalizedPayloadApplyFailed(error) => {
+                let reason = format!(
+                    "stopped after a non-retryable finalized-payload apply failure: {error}"
+                );
                 halt_federation_aleph_bft_generation(
                     &state,
                     completed_session,
                     FederationAlephBftHaltTarget::Generation(generation),
-                    "stopped after a non-retryable finalized-payload apply failure",
+                    &reason,
                     true,
                 )
                 .await;

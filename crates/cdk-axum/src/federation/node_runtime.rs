@@ -389,6 +389,23 @@ impl FederationNodeRuntime {
         }
         finalized_items.sort_by_key(|item| item.item_index_in_unit);
 
+        if finalized_items
+            .iter()
+            .any(|item| item.unit_body_hash != payload.body_hash)
+        {
+            // AlephBFT may order both branches emitted by an equivocating creator at the
+            // same round. Its common ordering makes every honest member select the same
+            // first branch, so the later branch is a live duplicate, not recovery
+            // corruption. Retained finalized-item recovery remains strict.
+            tracing::warn!(
+                member = %payload.submitting_member,
+                session = payload.session,
+                unit = payload.unit_index,
+                "Ignoring conflicting branch for an already finalized AlephBFT unit"
+            );
+            return Ok(Some(Vec::new()));
+        }
+
         if finalized_items.len() != payload.items.len() {
             return Err(finalized_unit_recovery_mismatch(
                 payload,
@@ -406,13 +423,6 @@ impl FederationNodeRuntime {
                     "replay changed item order",
                 ));
             }
-            if finalized_item.unit_body_hash != payload.body_hash {
-                return Err(finalized_unit_recovery_mismatch(
-                    payload,
-                    "replay changed body hash",
-                ));
-            }
-
             let Some(payload_item) = payload.items.get(expected_index) else {
                 return Err(finalized_unit_recovery_mismatch(
                     payload,

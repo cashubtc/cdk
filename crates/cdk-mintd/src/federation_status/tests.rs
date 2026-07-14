@@ -12,7 +12,7 @@ use cdk_common::federation::{
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut22::AuthToken;
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
-use cdk_http_client::HttpError;
+use cdk_http_client::{HttpError, RawResponse};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
@@ -53,6 +53,14 @@ impl Transport for MockStatusTransport {
         Err(HttpError::Other("unexpected GET".to_string()))
     }
 
+    async fn http_get_raw(
+        &self,
+        _url: Url,
+        _auth: Option<AuthToken>,
+    ) -> Result<RawResponse, HttpError> {
+        Err(HttpError::Other("unexpected raw GET".to_string()))
+    }
+
     async fn http_post<P, R>(
         &self,
         url: Url,
@@ -80,6 +88,18 @@ impl Transport for MockStatusTransport {
         let response_json =
             serde_json::to_value(response).map_err(|err| HttpError::Other(err.to_string()))?;
         serde_json::from_value(response_json).map_err(|err| HttpError::Other(err.to_string()))
+    }
+
+    async fn http_post_form_raw<P>(
+        &self,
+        _url: Url,
+        _auth_token: Option<AuthToken>,
+        _payload: &P,
+    ) -> Result<RawResponse, HttpError>
+    where
+        P: Serialize + Send + Sync,
+    {
+        Err(HttpError::Other("unexpected raw form POST".to_string()))
     }
 }
 

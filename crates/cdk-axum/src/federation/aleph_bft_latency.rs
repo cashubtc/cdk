@@ -77,14 +77,26 @@ pub(crate) struct CdkAlephBftLatencyRecorder {
     _install_guard: OwnedMutexGuard<()>,
 }
 
+/// Exclusive reservation for a latency probe that has not started recording yet.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct CdkAlephBftLatencyRecorderReservation {
+    install_guard: OwnedMutexGuard<()>,
+}
+
 #[cfg(test)]
 impl CdkAlephBftLatencyRecorder {
-    /// Install a recorder until this guard is dropped.
-    pub(crate) async fn install() -> Self {
+    /// Reserve exclusive access for a latency probe without recording setup traffic.
+    pub(crate) async fn reserve() -> CdkAlephBftLatencyRecorderReservation {
         let install_lock = INSTALL_LOCK
             .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
-        let install_guard = install_lock.lock_owned().await;
+        CdkAlephBftLatencyRecorderReservation {
+            install_guard: install_lock.lock_owned().await,
+        }
+    }
+
+    fn install_with_guard(install_guard: OwnedMutexGuard<()>) -> Self {
         let inner = Arc::new(Mutex::new(CdkAlephBftLatencyRecorderState {
             started_at: Instant::now(),
             events: Vec::new(),
@@ -142,6 +154,14 @@ impl CdkAlephBftLatencyRecorder {
             drop(state);
             changed.await;
         }
+    }
+}
+
+#[cfg(test)]
+impl CdkAlephBftLatencyRecorderReservation {
+    /// Start recording after the probe's live-session setup is complete.
+    pub(crate) fn install(self) -> CdkAlephBftLatencyRecorder {
+        CdkAlephBftLatencyRecorder::install_with_guard(self.install_guard)
     }
 }
 

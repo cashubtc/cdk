@@ -3344,25 +3344,57 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
-    async fn clone_primary_melt_quote_to_members(mints: &[Arc<Mint>], quote_id: &QuoteId) {
-        let quote = mints[0]
-            .localstore()
-            .get_melt_quote(quote_id)
-            .await
-            .expect("melt quote lookup")
-            .expect("primary melt quote");
-
-        for mint in mints.iter().skip(1) {
-            let mut tx = mint
-                .localstore()
-                .begin_transaction()
-                .await
-                .expect("begin tx");
-            tx.add_melt_quote(quote.clone())
-                .await
-                .expect("add melt quote");
-            tx.commit().await.expect("commit melt quote");
+    async fn add_observed_paid_bolt11_quote_to_members(
+        mints: &[Arc<Mint>],
+        quote_id: &QuoteId,
+        amount: u64,
+    ) {
+        for mint in mints {
+            add_paid_bolt11_quote_to_mint(mint, quote_id, amount).await;
         }
+
+        let payment_id =
+            cdk::cdk_payment::PaymentIdentifier::CustomId(format!("payment-{quote_id}"));
+        for observer in mints {
+            let envelope = observer
+                .federation_config()
+                .expect("federation config")
+                .mint_quote_payment_observation_with_metadata(
+                    quote_id,
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                    MintQuoteState::Paid,
+                    Amount::from(amount),
+                    Amount::ZERO,
+                    None,
+                    Some(payment_id.clone()),
+                );
+            let entry = appended_entry(&mut InMemoryFederationJournal::new(), envelope);
+            for mint in mints {
+                persist_and_apply_entry(mint, &entry).await;
+            }
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    async fn create_federated_melt_quote_for_members(
+        mints: &[Arc<Mint>],
+        request: cdk::MeltQuoteRequest,
+    ) -> QuoteId {
+        let primary = mints.first().expect("at least one federation member");
+        let quote_id = QuoteId::new();
+        let (response, metadata) = primary
+            .prepare_federation_melt_quote(quote_id.clone(), request.clone())
+            .await
+            .expect("prepare federated melt quote");
+        let config = primary.federation_config().expect("federation config");
+        let envelope = config.melt_quote_operation(quote_id.clone(), request, response, metadata);
+        let entry = appended_entry(&mut InMemoryFederationJournal::new(), envelope);
+
+        for mint in mints {
+            persist_and_apply_entry(mint, &entry).await;
+        }
+
+        quote_id
     }
 
     #[cfg(feature = "federation")]
@@ -3390,6 +3422,18 @@ mod tests {
         else {
             panic!("elected member did not record a terminal melt observation");
         };
+        let observer = mints
+            .iter()
+            .find(|mint| {
+                mint.federation_config()
+                    .is_some_and(|config| config.member_id() == observation.observer)
+            })
+            .expect("terminal melt observer belongs to the federation");
+        let envelope = observer
+            .federation_config()
+            .expect("observer federation config")
+            .operation_envelope(FederationOperation::MeltQuotePayment(observation.clone()));
+        let entry = appended_entry(&mut InMemoryFederationJournal::new(), envelope);
 
         for mint in mints {
             let records = mint
@@ -3409,12 +3453,7 @@ mod tests {
             }) {
                 continue;
             }
-
-            let state = threshold_member_state(Arc::clone(mint)).await;
-            let config = state.mint.federation_config().expect("federation config");
-            let envelope = config
-                .operation_envelope(FederationOperation::MeltQuotePayment(observation.clone()));
-            finalize_local_test_operation(&state, envelope).await;
+            persist_and_apply_entry(mint, &entry).await;
         }
     }
 
@@ -3524,12 +3563,15 @@ mod tests {
 
     #[cfg(feature = "federation")]
     async fn reserve_federated_melt_for_observer(state: &MintState, label: &str) -> QuoteId {
-        let quote_id = create_federated_melt_quote(state, 1_000).await;
-        let request = MeltRequest::new(
-            quote_id.clone(),
+        let request = create_locally_elected_federated_melt_request(
+            state,
+            1_000,
+            "".to_string(),
             vec![proof_for_amount(state, 2, label)],
             None,
-        );
+        )
+        .await;
+        let quote_id = request.quote().clone();
         let config = state
             .mint
             .effective_federation_config()
@@ -3549,21 +3591,86 @@ mod tests {
         amount_msat: u64,
         description: String,
     ) -> QuoteId {
-        let invoice = create_fake_invoice(amount_msat, description);
-        let response = state
-            .mint
-            .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
-                request: invoice,
-                unit: CurrencyUnit::Sat,
-                options: None,
-            }))
-            .await
-            .expect("melt quote");
+        let quote_id = QuoteId::new();
+        finalize_federated_melt_quote_with_description(
+            state,
+            quote_id.clone(),
+            amount_msat,
+            description,
+        )
+        .await;
+        quote_id
+    }
 
-        match response {
-            MeltQuoteCreateResponse::Bolt11(response) => response.quote,
+    #[cfg(feature = "federation")]
+    async fn create_locally_elected_federated_melt_request(
+        state: &MintState,
+        amount_msat: u64,
+        description: String,
+        inputs: Vec<Proof>,
+        outputs: Option<Vec<BlindedMessage>>,
+    ) -> cdk::nuts::MeltRequest<QuoteId> {
+        let config = state
+            .mint
+            .effective_federation_config()
+            .await
+            .expect("effective federation config")
+            .expect("federation config");
+        let local_member = config.member_id();
+        let (quote_id, request) = (0..100)
+            .find_map(|_| {
+                let quote_id = QuoteId::new();
+                let request =
+                    cdk::nuts::MeltRequest::new(quote_id.clone(), inputs.clone(), outputs.clone());
+                let operation_id = config
+                    .melt_operation(request.clone())
+                    .expect("melt operation")
+                    .operation_id()
+                    .expect("melt operation id");
+                (config
+                    .public_config()
+                    .elected_melt_payment_member(operation_id)
+                    == Some(local_member))
+                .then_some((quote_id, request))
+            })
+            .expect("find quote ID that elects the local payment member");
+
+        finalize_federated_melt_quote_with_description(state, quote_id, amount_msat, description)
+            .await;
+        request
+    }
+
+    #[cfg(feature = "federation")]
+    async fn finalize_federated_melt_quote_with_description(
+        state: &MintState,
+        quote_id: QuoteId,
+        amount_msat: u64,
+        description: String,
+    ) {
+        let invoice = create_fake_invoice(amount_msat, description);
+        let request = cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+            request: invoice,
+            unit: CurrencyUnit::Sat,
+            options: None,
+        });
+        let (response, metadata) =
+            create_melt_quote_for_route(state, request.clone(), Some(quote_id.clone()))
+                .await
+                .expect("prepare federated melt quote");
+        let config = state.mint.federation_config().expect("federation config");
+        let metadata = metadata.expect("federation melt quote metadata");
+        let envelope =
+            config.melt_quote_operation(quote_id.clone(), request, response.clone(), metadata);
+        finalize_local_test_operation(state, envelope).await;
+
+        let response_quote = match response {
+            MeltQuoteCreateResponse::Bolt11(response) => {
+                assert_eq!(response.quote, quote_id);
+                response.quote
+            }
             _ => panic!("expected bolt11 melt quote"),
-        }
+        };
+        assert_eq!(response_quote, quote_id);
     }
 
     #[cfg(feature = "federation")]
@@ -4486,6 +4593,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -4523,6 +4631,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -4558,6 +4667,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -4579,8 +4689,9 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "pending melt quote check should succeed");
-        assert!(
-            federation_operation_kinds(&state).await.is_empty(),
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MeltQuote],
             "pending melt quote checks should not submit payment observations"
         );
     }
@@ -4602,8 +4713,9 @@ mod tests {
             result.is_ok(),
             "fresh unpaid melt quote check should succeed"
         );
-        assert!(
-            federation_operation_kinds(&state).await.is_empty(),
+        assert_eq!(
+            federation_operation_kinds(&state).await,
+            vec![cdk::federation::FederationOperationKind::MeltQuote],
             "fresh unpaid melt quote checks must not submit terminal payment observations"
         );
         assert!(state
@@ -5943,17 +6055,19 @@ mod tests {
         );
         assert_eq!(state.federation_response_cache_entry_count(), 3);
 
-        let melt_quote_id = create_federated_melt_quote(&state, 1000).await;
         let mut change_output = outputs_for_amount_with_label(&state, 2, "concurrent-melt-change")
             .into_iter()
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let melt_request = cdk::nuts::MeltRequest::new(
-            melt_quote_id,
+        let melt_request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![proof_for_amount(&state, 4, "concurrent-melt-input")],
             Some(vec![change_output]),
-        );
+        )
+        .await;
         let melt_results = futures::future::join_all((0..request_count).map(|_| {
             let state = state.clone();
             let request = melt_request.clone();
@@ -5988,11 +6102,12 @@ mod tests {
                 cdk::federation::FederationOperationKind::MintQuotePayment,
                 cdk::federation::FederationOperationKind::Mint,
                 cdk::federation::FederationOperationKind::Swap,
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
         );
-        assert_eq!(state.federation_response_cache_entry_count(), 5);
+        assert_eq!(state.federation_response_cache_entry_count(), 6);
         assert_eq!(
             payment_calls.load(Ordering::SeqCst),
             1,
@@ -6947,12 +7062,14 @@ mod tests {
     #[tokio::test]
     async fn process_melt_request_records_federation_melt_operation() {
         let state = create_federated_test_state().await;
-        let quote_id = create_federated_melt_quote(&state, 1000).await;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id,
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![proof_for_amount(&state, 2, "no-change")],
             None,
-        );
+        )
+        .await;
 
         let response = process_melt_request(
             PreferHeader {
@@ -6970,6 +7087,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -6999,7 +7117,7 @@ mod tests {
         .expect_err("AlephBFT public melt should fail closed before real finality exists");
 
         assert_aleph_bft_error_not_ready(&error);
-        assert_no_aleph_bft_public_submit_work(&state, 0).await;
+        assert_no_aleph_bft_public_submit_work(&state, 1).await;
         let quote = state
             .mint
             .localstore()
@@ -7021,7 +7139,6 @@ mod tests {
             response_waiter_limit: 2,
             ..crate::FederationPeerSyncConfig::default()
         });
-        let quote_id = create_federated_melt_quote(&state, 1000).await;
         let input = proof_for_amount(&state, 4, "aleph-public-melt-pending-input");
         let input_y = input.y().expect("melt input y");
         let mut change_output =
@@ -7030,11 +7147,15 @@ mod tests {
                 .next()
                 .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id.clone(),
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1_000,
+            "".to_string(),
             vec![input],
             Some(vec![change_output.clone()]),
-        );
+        )
+        .await;
+        let quote_id = request.quote().clone();
         let config = state
             .mint
             .effective_federation_config()
@@ -7080,11 +7201,12 @@ mod tests {
                 .lock()
                 .await;
             assert_eq!(consensus.queued_len(), 1);
-            assert!(
-                consensus.journal().entries().is_empty(),
-                "pending AlephBFT melt must not be journaled before finality"
+            assert_eq!(
+                consensus.journal().entries().len(),
+                1,
+                "only the setup quote may be journaled before melt finality"
             );
-            assert_eq!(consensus.peer_status().operation_count, 0);
+            assert_eq!(consensus.peer_status().operation_count, 1);
         }
         let proof_states = state
             .mint
@@ -7212,6 +7334,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -7239,7 +7362,6 @@ mod tests {
             response_waiter_limit: 4,
             ..crate::FederationPeerSyncConfig::default()
         });
-        let quote_id = create_federated_melt_quote(&state, 1000).await;
         let input = proof_for_amount(&state, 4, "aleph-public-melt-pending-join-input");
         let input_y = input.y().expect("melt input y");
         let mut change_output =
@@ -7248,11 +7370,15 @@ mod tests {
                 .next()
                 .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id.clone(),
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1_000,
+            "".to_string(),
             vec![input],
             Some(vec![change_output.clone()]),
-        );
+        )
+        .await;
+        let quote_id = request.quote().clone();
         let config = state
             .mint
             .effective_federation_config()
@@ -7317,11 +7443,12 @@ mod tests {
                 .lock()
                 .await;
             assert_eq!(consensus.queued_len(), 1);
-            assert!(
-                consensus.journal().entries().is_empty(),
-                "pending duplicate melt must not append before finality"
+            assert_eq!(
+                consensus.journal().entries().len(),
+                1,
+                "pending duplicate melt must not append beyond the setup quote"
             );
-            assert_eq!(consensus.peer_status().operation_count, 0);
+            assert_eq!(consensus.peer_status().operation_count, 1);
         }
         let proof_states = state
             .mint
@@ -7449,11 +7576,12 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
         );
-        assert_eq!(state.federation_response_cache_entry_count(), 2);
+        assert_eq!(state.federation_response_cache_entry_count(), 3);
         assert_eq!(state.federation_pending_response_waiter_count(), 0);
         {
             let consensus = state
@@ -7464,7 +7592,7 @@ mod tests {
                 .lock()
                 .await;
             assert_eq!(consensus.queued_len(), 0);
-            assert_eq!(consensus.peer_status().operation_count, 2);
+            assert_eq!(consensus.peer_status().operation_count, 3);
         }
     }
 
@@ -7487,12 +7615,15 @@ mod tests {
             vec![proof_for_amount(&state, 2, "catching-up-swap-input")],
             outputs_for_amount_with_label(&state, 2, "catching-up-swap-output"),
         );
-        let melt_quote_id = create_federated_melt_quote(&state, 1000).await;
-        let melt_request = cdk::nuts::MeltRequest::new(
-            melt_quote_id.clone(),
+        let melt_request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![proof_for_amount(&state, 2, "catching-up-melt-input")],
             None,
-        );
+        )
+        .await;
+        let melt_quote_id = melt_request.quote().clone();
 
         state.mark_federation_catching_up(peer).await;
 
@@ -7526,7 +7657,7 @@ mod tests {
         .await
         .expect_err("melt should fail while catching up");
         assert_catching_up_error(&melt_error);
-        assert_no_federation_public_submit_work(&state, 1).await;
+        assert_no_federation_public_submit_work(&state, 2).await;
 
         let quote = state
             .mint
@@ -7576,6 +7707,7 @@ mod tests {
             federation_operation_kinds(&state).await,
             vec![
                 cdk::federation::FederationOperationKind::MintQuotePayment,
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Mint,
                 cdk::federation::FederationOperationKind::Swap,
                 cdk::federation::FederationOperationKind::Melt,
@@ -7588,7 +7720,6 @@ mod tests {
     #[tokio::test]
     async fn process_melt_request_returns_federated_change_shares() {
         let state = create_federated_test_state().await;
-        let quote_id = create_federated_melt_quote(&state, 1000).await;
         let mut change_output = outputs_for_amount(&state, 2)
             .into_iter()
             .next()
@@ -7598,11 +7729,14 @@ mod tests {
             .blinded_secret
             .as_bls_g1()
             .expect("change output should be BLS");
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id,
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![proof_for_amount(&state, 4, "with-change")],
             Some(vec![change_output.clone()]),
-        );
+        )
+        .await;
 
         let response = process_melt_request(
             PreferHeader {
@@ -7641,6 +7775,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -7651,7 +7786,6 @@ mod tests {
     #[tokio::test]
     async fn successful_federation_melt_quote_check_records_terminal_payment_observation() {
         let state = create_federated_test_state().await;
-        let quote_id = create_federated_melt_quote(&state, 1000).await;
         let input = proof_for_amount(&state, 4, "happy-melt-observation");
         let input_y = input.y().expect("input y");
         let mut change_output =
@@ -7660,11 +7794,15 @@ mod tests {
                 .next()
                 .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id.clone(),
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![input],
             Some(vec![change_output.clone()]),
-        );
+        )
+        .await;
+        let quote_id = request.quote().clone();
 
         let response = process_melt_request(
             PreferHeader {
@@ -7722,6 +7860,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -7757,17 +7896,19 @@ mod tests {
     #[tokio::test]
     async fn duplicate_federation_melt_returns_persisted_response() {
         let state = create_federated_test_state().await;
-        let quote_id = create_federated_melt_quote(&state, 1000).await;
         let mut change_output = outputs_for_amount(&state, 2)
             .into_iter()
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id,
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![proof_for_amount(&state, 4, "duplicate-melt-with-change")],
             Some(vec![change_output]),
-        );
+        )
+        .await;
 
         let first = process_melt_request(
             PreferHeader {
@@ -7791,11 +7932,32 @@ mod tests {
         .expect("duplicate federated fake-wallet melt should return persisted response");
 
         assert_eq!(duplicate, first);
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("federation journal entries");
+        assert!(
+            entries.iter().all(|entry| {
+                entry.status() == cdk::federation::FederationOperationStatus::Applied
+            }),
+            "all quote, melt, and observation operations should apply: {:?}",
+            entries
+                .iter()
+                .map(|entry| (
+                    entry.envelope.operation.kind(),
+                    entry.status(),
+                    entry.rejection().cloned(),
+                ))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(duplicate.state(), MeltQuoteState::Paid);
         assert!(duplicate.change().is_some());
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -7809,18 +7971,20 @@ mod tests {
     async fn duplicate_federation_melt_after_cache_eviction_returns_persisted_response() {
         let mut state = create_federated_test_state().await;
         limit_federation_response_cache_to_one(&mut state);
-        let first_quote_id = create_federated_melt_quote(&state, 1000).await;
         let mut first_change_output =
             outputs_for_amount_with_label(&state, 2, "melt-cache-eviction-first")
                 .into_iter()
                 .next()
                 .expect("first change output");
         first_change_output.amount = Amount::ZERO;
-        let first_request = cdk::nuts::MeltRequest::new(
-            first_quote_id,
+        let first_request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![proof_for_amount(&state, 4, "melt-cache-eviction-first")],
             Some(vec![first_change_output]),
-        );
+        )
+        .await;
 
         let first = process_melt_request(
             PreferHeader {
@@ -7834,18 +7998,20 @@ mod tests {
         .expect("first federated fake-wallet melt should settle");
         assert_eq!(state.federation_response_cache_entry_count(), 1);
 
-        let second_quote_id = create_federated_melt_quote(&state, 1000).await;
         let mut second_change_output =
             outputs_for_amount_with_label(&state, 2, "melt-cache-eviction-second")
                 .into_iter()
                 .next()
                 .expect("second change output");
         second_change_output.amount = Amount::ZERO;
-        let second_request = cdk::nuts::MeltRequest::new(
-            second_quote_id,
+        let second_request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![proof_for_amount(&state, 4, "melt-cache-eviction-second")],
             Some(vec![second_change_output]),
-        );
+        )
+        .await;
         let second = process_melt_request(
             PreferHeader {
                 respond_async: false,
@@ -7875,8 +8041,10 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -7908,17 +8076,19 @@ mod tests {
         );
         let state =
             create_federated_test_state_with_backend_db_and_seed(Arc::new(fake), db, &seed).await;
-        let quote_id = create_federated_melt_quote(&state, 1000).await;
         let mut change_output = outputs_for_amount_with_label(&state, 2, "melt-sqlite-restart")
             .into_iter()
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id,
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![proof_for_amount(&state, 4, "melt-sqlite-restart")],
             Some(vec![change_output]),
-        );
+        )
+        .await;
 
         let first = process_melt_request(
             PreferHeader {
@@ -7933,6 +8103,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -7943,6 +8114,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&restarted_state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -7967,6 +8139,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&restarted_state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -7980,21 +8153,30 @@ mod tests {
     async fn duplicate_federation_melt_after_catch_up_returns_persisted_response() {
         let state = create_federated_test_state().await;
         let config = state.mint.federation_config().expect("federation config");
-        let quote_id = create_federated_melt_quote(&state, 1000).await;
         let mut change_output = outputs_for_amount_with_label(&state, 2, "melt-catch-up")
             .into_iter()
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id,
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![proof_for_amount(&state, 4, "melt-catch-up")],
             Some(vec![change_output]),
-        );
+        )
+        .await;
         let melt_envelope = config
             .melt_operation(request.clone())
             .expect("melt operation envelope");
-        let mut peer_consensus = test_aleph_bft_peer(config.federation_id(), config.member_id());
+        let mut peer_consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("federation consensus")
+            .lock()
+            .await
+            .clone();
         finalize_test_operation(&mut peer_consensus, melt_envelope)
             .expect("peer accepted melt operation");
 
@@ -8028,6 +8210,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -8042,7 +8225,7 @@ mod tests {
         let member_urls = static_member_urls();
         let bundle = threshold_all_signers_bundle(&member_urls);
         let mint_quote_id = QuoteId::new();
-        let mut states = Vec::new();
+        let mut mints = Vec::new();
         for member_id in [1, 2, 3].map(threshold_member_id) {
             let private_config = bundle
                 .private_configs
@@ -8051,9 +8234,12 @@ mod tests {
                 .clone();
             let mint =
                 build_threshold_member_mint(bundle.public_config.clone(), private_config).await;
-            add_paid_bolt11_quote_to_mint(&mint, &mint_quote_id, 3).await;
-            states.push(threshold_member_state(mint).await);
+            mints.push(mint);
         }
+        add_observed_paid_bolt11_quote_to_members(&mints, &mint_quote_id, 3).await;
+        let states =
+            futures::future::join_all(mints.into_iter().map(|mint| threshold_member_state(mint)))
+                .await;
 
         let connector = FederatedMintConnector::new(
             bundle.public_config.clone(),
@@ -8103,7 +8289,12 @@ mod tests {
         for state in &states {
             assert_eq!(
                 federation_operation_kinds(state).await,
-                vec![cdk::federation::FederationOperationKind::Mint]
+                vec![
+                    cdk::federation::FederationOperationKind::MintQuotePayment,
+                    cdk::federation::FederationOperationKind::MintQuotePayment,
+                    cdk::federation::FederationOperationKind::MintQuotePayment,
+                    cdk::federation::FederationOperationKind::Mint,
+                ]
             );
             assert_eq!(state.federation_response_cache_entry_count(), 1);
         }
@@ -8203,19 +8394,15 @@ mod tests {
         }
 
         let melt_invoice = create_fake_invoice(1000, "concurrent direct melt".to_string());
-        let melt_quote_id = match mints[0]
-            .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+        let melt_quote_id = create_federated_melt_quote_for_members(
+            &mints,
+            cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
                 request: melt_invoice,
                 unit: CurrencyUnit::Sat,
                 options: None,
-            }))
-            .await
-            .expect("melt quote")
-        {
-            cdk::MeltQuoteCreateResponse::Bolt11(response) => response.quote,
-            _ => panic!("expected bolt11 melt quote"),
-        };
-        clone_primary_melt_quote_to_members(&mints, &melt_quote_id).await;
+            }),
+        )
+        .await;
 
         let mut states = Vec::new();
         for mint in mints {
@@ -8276,6 +8463,7 @@ mod tests {
             assert_eq!(
                 operation_kinds,
                 vec![
+                    cdk::federation::FederationOperationKind::MeltQuote,
                     cdk::federation::FederationOperationKind::Melt,
                     cdk::federation::FederationOperationKind::MeltQuotePayment,
                     cdk::federation::FederationOperationKind::MeltQuotePayment,
@@ -8310,24 +8498,18 @@ mod tests {
         }
 
         let mint_quote_id = QuoteId::new();
-        for mint in &mints {
-            add_paid_bolt11_quote_to_mint(mint, &mint_quote_id, 3).await;
-        }
+        add_observed_paid_bolt11_quote_to_members(&mints, &mint_quote_id, 3).await;
 
         let melt_invoice = create_fake_invoice(1000, "axum threshold http melt".to_string());
-        let melt_quote_id = match mints[0]
-            .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+        let melt_quote_id = create_federated_melt_quote_for_members(
+            &mints,
+            cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
                 request: melt_invoice,
                 unit: CurrencyUnit::Sat,
                 options: None,
-            }))
-            .await
-            .expect("melt quote")
-        {
-            cdk::MeltQuoteCreateResponse::Bolt11(response) => response.quote,
-            _ => panic!("expected bolt11 melt quote"),
-        };
-        clone_primary_melt_quote_to_members(&mints, &melt_quote_id).await;
+            }),
+        )
+        .await;
 
         let handles = spawn_member_routers(&mints, listeners).await;
 
@@ -8471,49 +8653,52 @@ mod tests {
                 .clone();
             let mint =
                 build_threshold_member_mint(bundle.public_config.clone(), private_config).await;
-            add_paid_bolt11_quote_to_mint(&mint, &new_mint_quote_id, 3).await;
-            add_paid_bolt11_quote_to_mint(&mint, &old_restore_quote_id, 2).await;
-
-            let config = mint.federation_config().expect("federation config").clone();
-            let mut journal = InMemoryFederationJournal::new();
-            let old_mint_entry = appended_entry(
-                &mut journal,
-                config
-                    .mint_operation(cdk::mint::MintInput::Single(MintRequest {
-                        quote: old_restore_quote_id.clone(),
-                        outputs: vec![old_restore_output.clone()],
-                        signature: None,
-                    }))
-                    .expect("old-keyset mint operation"),
-            );
-            persist_and_apply_entry(&mint, &old_mint_entry).await;
-            let rotation_entry = appended_entry(
-                &mut journal,
-                config.operation_envelope(FederationOperation::KeysetRotation(
-                    FederationKeysetRotationOperation {
-                        keyset: new_keyset.clone(),
-                    },
-                )),
-            );
-            persist_and_apply_entry(&mint, &rotation_entry).await;
-
             mints.push(mint);
+        }
+        add_observed_paid_bolt11_quote_to_members(&mints, &new_mint_quote_id, 3).await;
+        add_observed_paid_bolt11_quote_to_members(&mints, &old_restore_quote_id, 2).await;
+
+        let config = mints
+            .first()
+            .expect("at least one federation member")
+            .federation_config()
+            .expect("federation config");
+        let mut journal = InMemoryFederationJournal::new();
+        let old_mint_entry = appended_entry(
+            &mut journal,
+            config
+                .mint_operation(cdk::mint::MintInput::Single(MintRequest {
+                    quote: old_restore_quote_id.clone(),
+                    outputs: vec![old_restore_output.clone()],
+                    signature: None,
+                }))
+                .expect("old-keyset mint operation"),
+        );
+        for mint in &mints {
+            persist_and_apply_entry(&mint, &old_mint_entry).await;
+        }
+        let rotation_entry = appended_entry(
+            &mut journal,
+            config.operation_envelope(FederationOperation::KeysetRotation(
+                FederationKeysetRotationOperation {
+                    keyset: new_keyset.clone(),
+                },
+            )),
+        );
+        for mint in &mints {
+            persist_and_apply_entry(&mint, &rotation_entry).await;
         }
 
         let melt_invoice = create_fake_invoice(1000, "axum rotated http melt".to_string());
-        let melt_quote_id = match mints[0]
-            .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+        let melt_quote_id = create_federated_melt_quote_for_members(
+            &mints,
+            cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
                 request: melt_invoice,
                 unit: CurrencyUnit::Sat,
                 options: None,
-            }))
-            .await
-            .expect("melt quote")
-        {
-            cdk::MeltQuoteCreateResponse::Bolt11(response) => response.quote,
-            _ => panic!("expected bolt11 melt quote"),
-        };
-        clone_primary_melt_quote_to_members(&mints, &melt_quote_id).await;
+            }),
+        )
+        .await;
 
         let handles = spawn_member_routers(&mints, listeners).await;
         let connector = FederatedMintConnector::new(
@@ -8663,22 +8848,20 @@ mod tests {
             pay_err: false,
             check_err: false,
         };
-        let quote_id = create_federated_melt_quote_with_description(
-            &state,
-            1000,
-            serde_json::to_string(&fake_description).expect("fake invoice description"),
-        )
-        .await;
         let mut change_output = outputs_for_amount(&state, 2)
             .into_iter()
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id.clone(),
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
             vec![proof_for_amount(&state, 4, "pending-with-change")],
             Some(vec![change_output.clone()]),
-        );
+        )
+        .await;
+        let quote_id = request.quote().clone();
         let expected_operation_id = state
             .mint
             .federation_config()
@@ -8735,15 +8918,16 @@ mod tests {
             pay_err: false,
             check_err: false,
         };
-        let quote_id = create_federated_melt_quote_with_description(
+        let input = proof_for_amount(&state, 2, "duplicate-pending-melt");
+        let input_y = input.y().expect("input y");
+        let request = create_locally_elected_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
+            vec![input],
+            None,
         )
         .await;
-        let input = proof_for_amount(&state, 2, "duplicate-pending-melt");
-        let input_y = input.y().expect("input y");
-        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
 
         let first = process_melt_request(
             PreferHeader {
@@ -8760,7 +8944,10 @@ mod tests {
         assert_eq!(make_payment_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::Melt]
+            vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
+                cdk::federation::FederationOperationKind::Melt,
+            ]
         );
         assert_eq!(
             state
@@ -8791,7 +8978,10 @@ mod tests {
         );
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::Melt]
+            vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
+                cdk::federation::FederationOperationKind::Melt,
+            ]
         );
         let stats = state.federation_operation_notification_stats();
         assert_eq!(stats.duplicate_submissions, 1);
@@ -8825,15 +9015,17 @@ mod tests {
             pay_err: false,
             check_err: false,
         };
-        let quote_id = create_federated_melt_quote_with_description(
+        let input = proof_for_amount(&state, 2, "pending-melt-sqlite-restart");
+        let input_y = input.y().expect("input y");
+        let request = create_locally_elected_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
+            vec![input],
+            None,
         )
         .await;
-        let input = proof_for_amount(&state, 2, "pending-melt-sqlite-restart");
-        let input_y = input.y().expect("input y");
-        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
+        let quote_id = request.quote().clone();
 
         let first = process_melt_request(
             PreferHeader {
@@ -8856,7 +9048,10 @@ mod tests {
                 .await;
         assert_eq!(
             federation_operation_kinds(&restarted_state).await,
-            vec![cdk::federation::FederationOperationKind::Melt]
+            vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
+                cdk::federation::FederationOperationKind::Melt,
+            ]
         );
 
         let duplicate = process_melt_request(
@@ -8878,7 +9073,10 @@ mod tests {
         );
         assert_eq!(
             federation_operation_kinds(&restarted_state).await,
-            vec![cdk::federation::FederationOperationKind::Melt]
+            vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
+                cdk::federation::FederationOperationKind::Melt,
+            ]
         );
         assert_eq!(
             restarted_state
@@ -8905,7 +9103,6 @@ mod tests {
     async fn pending_federated_melt_quote_check_later_finalizes_with_change() {
         let backend = Arc::new(DelayedStatusFakeWallet::new(2, Some(MeltQuoteState::Paid)));
         let state = create_federated_test_state_with_backend(backend).await;
-        let quote_id = create_federated_melt_quote(&state, 1000).await;
         let input = proof_for_amount(&state, 4, "pending-quote-check-paid");
         let input_y = input.y().expect("input y");
         let mut change_output = outputs_for_amount(&state, 2)
@@ -8913,8 +9110,15 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request =
-            cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], Some(vec![change_output]));
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
+            vec![input],
+            Some(vec![change_output]),
+        )
+        .await;
+        let quote_id = request.quote().clone();
 
         let pending = process_melt_request(
             PreferHeader {
@@ -8958,7 +9162,6 @@ mod tests {
     async fn pending_federated_melt_public_quote_check_observes_only_terminal_settlement() {
         let backend = Arc::new(DelayedStatusFakeWallet::new(3, Some(MeltQuoteState::Paid)));
         let state = create_federated_test_state_with_backend(backend).await;
-        let quote_id = create_federated_melt_quote(&state, 1000).await;
         let input = proof_for_amount(&state, 4, "pending-public-route-paid");
         let input_y = input.y().expect("input y");
         let mut change_output =
@@ -8967,11 +9170,15 @@ mod tests {
                 .next()
                 .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id.clone(),
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            "".to_string(),
             vec![input],
             Some(vec![change_output.clone()]),
-        );
+        )
+        .await;
+        let quote_id = request.quote().clone();
 
         let pending = process_melt_request(
             PreferHeader {
@@ -9014,7 +9221,10 @@ mod tests {
         assert!(still_pending.change.is_none());
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::Melt]
+            vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
+                cdk::federation::FederationOperationKind::Melt,
+            ]
         );
         assert!(state
             .mint
@@ -9052,6 +9262,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -9109,12 +9320,6 @@ mod tests {
             pay_err: false,
             check_err: false,
         };
-        let quote_id = create_federated_melt_quote_with_description(
-            &state,
-            1000,
-            serde_json::to_string(&fake_description).expect("fake invoice description"),
-        )
-        .await;
         let input = proof_for_amount(&state, 4, "pending-later-paid");
         let input_y = input.y().expect("input y");
         let mut change_output = outputs_for_amount(&state, 2)
@@ -9122,11 +9327,15 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id.clone(),
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
             vec![input],
             Some(vec![change_output.clone()]),
-        );
+        )
+        .await;
+        let quote_id = request.quote().clone();
 
         let response = process_melt_request(
             PreferHeader {
@@ -9177,6 +9386,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -9193,12 +9403,6 @@ mod tests {
             pay_err: false,
             check_err: true,
         };
-        let quote_id = create_federated_melt_quote_with_description(
-            &state,
-            1000,
-            serde_json::to_string(&fake_description).expect("fake invoice description"),
-        )
-        .await;
         let input = proof_for_amount(&state, 2, "pending-check-error");
         let input_y = input.y().expect("input y");
         let mut change_output = outputs_for_amount(&state, 2)
@@ -9206,8 +9410,15 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request =
-            cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], Some(vec![change_output]));
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
+            vec![input],
+            Some(vec![change_output]),
+        )
+        .await;
+        let quote_id = request.quote().clone();
 
         let response = process_melt_request(
             PreferHeader {
@@ -9223,7 +9434,10 @@ mod tests {
         assert_eq!(response.state(), MeltQuoteState::Pending);
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::Melt]
+            vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
+                cdk::federation::FederationOperationKind::Melt,
+            ]
         );
 
         let quote = state
@@ -9271,15 +9485,17 @@ mod tests {
             pay_err: false,
             check_err: false,
         };
-        let quote_id = create_federated_melt_quote_with_description(
+        let input = proof_for_amount(&state, 2, "failed-melt");
+        let input_y = input.y().expect("input y");
+        let request = create_locally_elected_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
+            vec![input],
+            None,
         )
         .await;
-        let input = proof_for_amount(&state, 2, "failed-melt");
-        let input_y = input.y().expect("input y");
-        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
+        let quote_id = request.quote().clone();
 
         let error = process_melt_request(
             PreferHeader {
@@ -9297,6 +9513,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -9360,6 +9577,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -9400,12 +9618,6 @@ mod tests {
             pay_err: false,
             check_err: false,
         };
-        let quote_id = create_federated_melt_quote_with_description(
-            &state,
-            1000,
-            serde_json::to_string(&fake_description).expect("fake invoice description"),
-        )
-        .await;
         let input = proof_for_amount(&state, 2, "failed-melt-observation");
         let input_y = input.y().expect("input y");
         let mut change_output =
@@ -9414,11 +9626,15 @@ mod tests {
                 .next()
                 .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = cdk::nuts::MeltRequest::new(
-            quote_id.clone(),
+        let request = create_locally_elected_federated_melt_request(
+            &state,
+            1000,
+            serde_json::to_string(&fake_description).expect("fake invoice description"),
             vec![input],
             Some(vec![change_output.clone()]),
-        );
+        )
+        .await;
+        let quote_id = request.quote().clone();
 
         let error = process_melt_request(
             PreferHeader {
@@ -9436,6 +9652,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -9471,6 +9688,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -9521,15 +9739,17 @@ mod tests {
             pay_err: false,
             check_err: false,
         };
-        let quote_id = create_federated_melt_quote_with_description(
+        let input = proof_for_amount(&state, 2, "failed-melt-sqlite-restart");
+        let input_y = input.y().expect("input y");
+        let request = create_locally_elected_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
+            vec![input],
+            None,
         )
         .await;
-        let input = proof_for_amount(&state, 2, "failed-melt-sqlite-restart");
-        let input_y = input.y().expect("input y");
-        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
+        let quote_id = request.quote().clone();
 
         let error = process_melt_request(
             PreferHeader {
@@ -9553,6 +9773,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&restarted_state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -9578,6 +9799,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&restarted_state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
@@ -9619,19 +9841,28 @@ mod tests {
             pay_err: false,
             check_err: false,
         };
-        let quote_id = create_federated_melt_quote_with_description(
+        let input = proof_for_amount(&state, 2, "failed-melt-catch-up");
+        let input_y = input.y().expect("input y");
+        let request = create_locally_elected_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
+            vec![input],
+            None,
         )
         .await;
-        let input = proof_for_amount(&state, 2, "failed-melt-catch-up");
-        let input_y = input.y().expect("input y");
-        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
+        let quote_id = request.quote().clone();
         let melt_envelope = config
             .melt_operation(request.clone())
             .expect("melt operation envelope");
-        let mut peer_consensus = test_aleph_bft_peer(config.federation_id(), config.member_id());
+        let mut peer_consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("federation consensus")
+            .lock()
+            .await
+            .clone();
         finalize_test_operation(&mut peer_consensus, melt_envelope)
             .expect("peer accepted failed melt operation");
 
@@ -9677,6 +9908,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Melt,
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]

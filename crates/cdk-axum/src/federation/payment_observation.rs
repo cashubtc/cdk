@@ -27,6 +27,15 @@ impl FederationPaymentObserver {
     ) -> Result<usize, cdk::Error> {
         let mut submitted = 0usize;
         for quote_id in quote_ids {
+            let quote = state
+                .mint
+                .localstore()
+                .get_mint_quote(quote_id)
+                .await?
+                .ok_or(cdk::Error::UnknownQuote)?;
+            if quote.state() == MintQuoteState::Issued {
+                continue;
+            }
             let Some(observation) = state
                 .mint
                 .probe_federation_mint_quote_payment(quote_id)

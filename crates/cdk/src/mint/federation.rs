@@ -1736,6 +1736,23 @@ impl Mint {
 
             validate_federation_mint_quote_signatures(&input, &quotes)?;
 
+            let existing_signatures = tx.get_blind_signatures(&blinded_secrets).await?;
+            let signatures_present = existing_signatures
+                .iter()
+                .filter(|sig| sig.is_some())
+                .count();
+            if signatures_present != 0 && signatures_present != existing_signatures.len() {
+                return Err(Error::Custom(
+                    "federation mint replay found partially persisted signatures".to_string(),
+                ));
+            }
+            validate_federation_mint_quote_states_for_signing(
+                &quotes,
+                &expected_amounts,
+                signatures_present,
+                existing_signatures.len(),
+            )?;
+
             for (quote, amount_issued) in quotes.iter().zip(&expected_amounts) {
                 let required_amount = quote
                     .amount_issued()
@@ -1756,23 +1773,6 @@ impl Mint {
                     return Err(Error::UnpaidQuote);
                 }
             }
-
-            let existing_signatures = tx.get_blind_signatures(&blinded_secrets).await?;
-            let signatures_present = existing_signatures
-                .iter()
-                .filter(|sig| sig.is_some())
-                .count();
-            if signatures_present != 0 && signatures_present != existing_signatures.len() {
-                return Err(Error::Custom(
-                    "federation mint replay found partially persisted signatures".to_string(),
-                ));
-            }
-            validate_federation_mint_quote_states_for_signing(
-                &quotes,
-                &expected_amounts,
-                signatures_present,
-                existing_signatures.len(),
-            )?;
 
             let operation_record = if input.is_batch() {
                 Operation::new(

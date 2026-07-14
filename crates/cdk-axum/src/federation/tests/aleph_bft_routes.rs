@@ -155,6 +155,7 @@ async fn private_aleph_bft_activity_route_wakes_live_session_and_preserves_rejec
 
 #[tokio::test]
 async fn aleph_bft_activity_wake_finalizes_five_member_operation_after_idle() {
+    let latency_reservation = CdkAlephBftLatencyRecorder::reserve().await;
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id: 0,
         max_messages_per_tick: 256,
@@ -166,7 +167,7 @@ async fn aleph_bft_activity_wake_finalizes_five_member_operation_after_idle() {
     .await
     .expect("start five-member live session");
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let latency = CdkAlephBftLatencyRecorder::install().await;
+    let latency = latency_reservation.install();
 
     let operation_id = submit_latency_probe_mint_quote(&session.states[0]).await;
     for state in &session.states {

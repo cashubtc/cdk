@@ -3068,6 +3068,14 @@ fn invalid_mint_quote_transcript_envelope(
         response.quote = QuoteId::new().to_string();
     }
     envelope
+        .authorize(
+            state
+                .mint
+                .federation_config()
+                .expect("federation config")
+                .private_config(),
+        )
+        .expect("authorize invalid mint quote transcript")
 }
 
 fn non_v3_output_for_state(state: &MintState, label: &[u8]) -> BlindedMessage {
@@ -3304,20 +3312,19 @@ async fn melt_quote_with_description(
     amount_msat: u64,
     description: String,
 ) -> QuoteId {
-    let response = state
-        .mint
-        .get_melt_quote(cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
-            request: create_fake_invoice(amount_msat, description),
-            unit: CurrencyUnit::Sat,
-            options: None,
-        }))
+    let quote_id = QuoteId::new();
+    let request = cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+        request: create_fake_invoice(amount_msat, description),
+        unit: CurrencyUnit::Sat,
+        options: None,
+    });
+    let config = state.mint.federation_config().expect("federation config");
+    let envelope = test_melt_quote_operation(config, quote_id.clone(), request);
+    state
+        .submit_federation_envelope(envelope)
         .await
-        .expect("melt quote");
-
-    match response {
-        cdk::MeltQuoteCreateResponse::Bolt11(response) => response.quote,
-        _ => panic!("expected bolt11 melt quote"),
-    }
+        .expect("submit melt quote through federation consensus");
+    quote_id
 }
 
 fn melt_payment_observation_envelope(
@@ -4520,19 +4527,31 @@ async fn rest_peer_client_sync_requires_quorum_evidence_before_public_submit() {
         &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let peer_consensus =
-        finalized_aleph_bft_history(&public_config, peer_member.member_id, [peer_entry]);
+    let peer_state =
+        federation_route_state_for_private(public_config.clone(), peer_private.clone()).await;
+    peer_state
+        .submit_federation_envelope(peer_entry)
+        .await
+        .expect("peer accepted operation");
+    let peer_consensus = peer_state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("peer consensus")
+        .lock()
+        .await
+        .clone();
     let local_consensus = state.federation.consensus.as_ref().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
     let catch_up_response = aleph_bft_catch_up_response_with_materialized_digest(
-        &state,
+        &peer_state,
         &public_config,
         &peer_consensus,
         &catch_up_request,
     )
     .await;
     let peer_status = aleph_bft_peer_status_with_materialized_digest(
-        &state,
+        &peer_state,
         &public_config,
         peer_member.member_id,
         &peer_consensus,
@@ -4585,19 +4604,31 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
         &state,
         "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
     );
-    let peer_consensus =
-        finalized_aleph_bft_history(&public_config, peer_member.member_id, [peer_entry]);
+    let peer_state =
+        federation_route_state_for_private(public_config.clone(), peer_private.clone()).await;
+    peer_state
+        .submit_federation_envelope(peer_entry)
+        .await
+        .expect("peer accepted operation");
+    let peer_consensus = peer_state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("peer consensus")
+        .lock()
+        .await
+        .clone();
     let local_consensus = state.federation.consensus.as_ref().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
     let catch_up_response = aleph_bft_catch_up_response_with_materialized_digest(
-        &state,
+        &peer_state,
         &public_config,
         &peer_consensus,
         &catch_up_request,
     )
     .await;
     let peer_status = aleph_bft_peer_status_with_materialized_digest(
-        &state,
+        &peer_state,
         &public_config,
         peer_member.member_id,
         &peer_consensus,
@@ -5981,7 +6012,7 @@ async fn catch_up_applies_melt_operation_to_local_store() {
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let _peer_member = public_config.member(member_id(2)).expect("peer member");
     let quote_id = melt_quote(&state, 1000).await;
     let inputs = vec![
         proof_for_amount(&state, 1, "melt-catch-up-a"),
@@ -6007,12 +6038,11 @@ async fn catch_up_applies_melt_operation_to_local_store() {
     let payment_operation_id = payment_envelope
         .operation_id()
         .expect("payment operation id");
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let mut peer_consensus = local_consensus.lock().await.clone();
     finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted melt");
     finalize_test_operation(&mut peer_consensus, payment_envelope)
         .expect("peer accepted melt payment observation");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
     let catch_up_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -6064,7 +6094,7 @@ async fn catch_up_applies_melt_operation_to_local_store() {
         .get_federation_journal_entries()
         .await
         .expect("journal lookup");
-    assert_eq!(persisted.len(), 2);
+    assert_eq!(persisted.len(), 3);
     assert!(persisted
         .iter()
         .all(|entry| entry.status() == FederationOperationStatus::Applied));
@@ -6089,7 +6119,7 @@ async fn catch_up_applies_paid_melt_payment_observation_to_pending_melt() {
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let _peer_member = public_config.member(member_id(2)).expect("peer member");
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
         check_payment_state: MeltQuoteState::Pending,
@@ -6124,13 +6154,12 @@ async fn catch_up_applies_paid_melt_payment_observation_to_pending_melt() {
         Some("federation-paid-preimage".to_string()),
     );
     let paid_operation_id = paid_envelope.operation_id().expect("paid operation id");
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let mut peer_consensus = local_consensus.lock().await.clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
     finalize_test_operation(&mut peer_consensus, paid_envelope)
         .expect("peer accepted paid observation");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
     let catch_up_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -6186,7 +6215,7 @@ async fn catch_up_applies_paid_melt_payment_observation_to_pending_melt() {
         .get_federation_journal_entries()
         .await
         .expect("journal lookup");
-    assert_eq!(persisted.len(), 2);
+    assert_eq!(persisted.len(), 3);
     assert!(persisted
         .iter()
         .all(|entry| entry.status() == FederationOperationStatus::Applied));
@@ -6217,7 +6246,7 @@ async fn catch_up_resolves_pending_melt_after_later_paid_observation() {
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let _peer_member = public_config.member(member_id(2)).expect("peer member");
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
         check_payment_state: MeltQuoteState::Pending,
@@ -6250,12 +6279,11 @@ async fn catch_up_resolves_pending_melt_after_later_paid_observation() {
         MeltQuoteState::Paid,
         Some("late-paid-observation-preimage".to_string()),
     );
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let mut peer_consensus = local_consensus.lock().await.clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
     let pending_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -6344,7 +6372,7 @@ async fn catch_up_resolves_pending_melt_after_later_paid_observation() {
     );
     assert_eq!(
         local_consensus.lock().await.peer_status().operation_count,
-        2
+        3
     );
 }
 
@@ -6356,7 +6384,7 @@ async fn catch_up_rolls_back_pending_melt_after_later_failed_observation() {
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let _peer_member = public_config.member(member_id(2)).expect("peer member");
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
         check_payment_state: MeltQuoteState::Pending,
@@ -6385,8 +6413,14 @@ async fn catch_up_rolls_back_pending_melt_after_later_failed_observation() {
     let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
     let failed_envelope =
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    let mut peer_consensus = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
@@ -6469,7 +6503,7 @@ async fn catch_up_rolls_back_pending_melt_after_later_failed_observation() {
     );
     assert_eq!(
         local_consensus.lock().await.peer_status().operation_count,
-        2
+        3
     );
 }
 
@@ -6481,7 +6515,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let _peer_member = public_config.member(member_id(2)).expect("peer member");
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
         check_payment_state: MeltQuoteState::Pending,
@@ -6514,8 +6548,14 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
         MeltQuoteState::Paid,
         Some("restart-paid-observation-preimage".to_string()),
     );
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    let mut peer_consensus = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
@@ -6561,7 +6601,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
             .await
             .peer_status()
             .operation_count,
-        1
+        2
     );
     let replayed_pending_quote = state
         .mint
@@ -6633,7 +6673,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_paid_observation(
             .await
             .peer_status()
             .operation_count,
-        2
+        3
     );
 }
 
@@ -6645,7 +6685,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let _peer_member = public_config.member(member_id(2)).expect("peer member");
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
         check_payment_state: MeltQuoteState::Pending,
@@ -6674,8 +6714,14 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
     let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
     let failed_envelope =
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    let mut peer_consensus = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
@@ -6721,7 +6767,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
             .await
             .peer_status()
             .operation_count,
-        1
+        2
     );
     let replayed_pending_quote = state
         .mint
@@ -6790,7 +6836,7 @@ async fn restart_replay_preserves_pending_melt_then_catches_up_failed_observatio
             .await
             .peer_status()
             .operation_count,
-        2
+        3
     );
 }
 
@@ -6817,7 +6863,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let _peer_member = public_config.member(member_id(2)).expect("peer member");
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
         check_payment_state: MeltQuoteState::Pending,
@@ -6850,8 +6896,14 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
         MeltQuoteState::Paid,
         Some("sqlite-restart-paid-observation-preimage".to_string()),
     );
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    let mut peer_consensus = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
@@ -6913,7 +6965,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
             .await
             .peer_status()
             .operation_count,
-        1
+        2
     );
 
     let restarted_pending_quote = restarted_state
@@ -6996,7 +7048,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_paid_observation() 
             .await
             .peer_status()
             .operation_count,
-        2
+        3
     );
 }
 
@@ -7023,7 +7075,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let _peer_member = public_config.member(member_id(2)).expect("peer member");
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
         check_payment_state: MeltQuoteState::Pending,
@@ -7052,8 +7104,14 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
     let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
     let failed_envelope =
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Failed, None);
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    let mut peer_consensus = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
 
@@ -7115,7 +7173,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
             .await
             .peer_status()
             .operation_count,
-        1
+        2
     );
 
     let restarted_pending_quote = restarted_state
@@ -7194,7 +7252,7 @@ async fn sqlite_restart_replays_pending_melt_then_catches_up_failed_observation(
             .await
             .peer_status()
             .operation_count,
-        2
+        3
     );
 }
 
@@ -7206,7 +7264,7 @@ async fn catch_up_applies_unpaid_melt_payment_observation_to_pending_melt() {
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let _peer_member = public_config.member(member_id(2)).expect("peer member");
     let fake_description = FakeInvoiceDescription {
         pay_invoice_state: MeltQuoteState::Pending,
         check_payment_state: MeltQuoteState::Pending,
@@ -7231,13 +7289,12 @@ async fn catch_up_applies_unpaid_melt_payment_observation_to_pending_melt() {
     let melt_envelope = config.melt_operation(melt_request).expect("melt envelope");
     let unpaid_envelope =
         melt_payment_observation_envelope(&state, &quote_id, MeltQuoteState::Unpaid, None);
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let mut peer_consensus = local_consensus.lock().await.clone();
     finalize_test_operation(&mut peer_consensus, melt_envelope)
         .expect("peer accepted pending melt");
     finalize_test_operation(&mut peer_consensus, unpaid_envelope)
         .expect("peer accepted unpaid observation");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
     let catch_up_response = checked_test_catch_up_response(
         &peer_consensus,
         &local_consensus.lock().await.catch_up_request(),
@@ -7283,7 +7340,7 @@ async fn catch_up_applies_unpaid_melt_payment_observation_to_pending_melt() {
         .get_federation_journal_entries()
         .await
         .expect("journal lookup");
-    assert_eq!(persisted.len(), 2);
+    assert_eq!(persisted.len(), 3);
     assert!(persisted
         .iter()
         .all(|entry| entry.status() == FederationOperationStatus::Applied));
@@ -7826,6 +7883,15 @@ async fn federation_runtime_startup_skips_terminal_rejected_entries() {
         panic!("bolt11 mint quote response");
     };
     response.request.push_str("-conflict");
+    let conflict = conflict
+        .authorize(
+            state
+                .mint
+                .federation_config()
+                .expect("federation config")
+                .private_config(),
+        )
+        .expect("authorize conflicting operation");
     let adapter = finalized_aleph_bft_history(
         state
             .mint
@@ -11216,6 +11282,7 @@ async fn aleph_bft_live_session_uses_recovered_session_for_network_pump_messages
 
 #[tokio::test]
 async fn aleph_bft_live_session_latency_probe_records_end_to_end_stage_order() {
+    let latency_reservation = CdkAlephBftLatencyRecorder::reserve().await;
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id: 0,
         max_messages_per_tick: 128,
@@ -11228,7 +11295,7 @@ async fn aleph_bft_live_session_latency_probe_records_end_to_end_stage_order() {
     .await
     .expect("start live session");
 
-    let latency = CdkAlephBftLatencyRecorder::install().await;
+    let latency = latency_reservation.install();
     let operation_id = submit_latency_probe_mint_quote(&session.first_state).await;
     wait_for_latency_stage(
         &latency,
@@ -11249,6 +11316,7 @@ async fn aleph_bft_live_session_latency_probe_records_end_to_end_stage_order() {
 
 #[tokio::test]
 async fn aleph_bft_live_session_latency_probe_records_three_serial_operations() {
+    let latency_reservation = CdkAlephBftLatencyRecorder::reserve().await;
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id: 0,
         max_messages_per_tick: 128,
@@ -11260,8 +11328,7 @@ async fn aleph_bft_live_session_latency_probe_records_three_serial_operations() 
     ))
     .await
     .expect("start live session");
-    let latency = CdkAlephBftLatencyRecorder::install().await;
-
+    let latency = latency_reservation.install();
     let mut operation_ids = Vec::new();
     for _ in 0..3 {
         let operation_id = submit_latency_probe_mint_quote(&session.first_state).await;
@@ -11293,6 +11360,7 @@ async fn aleph_bft_live_session_latency_probe_records_three_serial_operations() 
 
 #[tokio::test]
 async fn aleph_bft_live_session_latency_probe_duplicate_fanout_joins_one_operation() {
+    let latency_reservation = CdkAlephBftLatencyRecorder::reserve().await;
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id: 0,
         max_messages_per_tick: 128,
@@ -11304,8 +11372,7 @@ async fn aleph_bft_live_session_latency_probe_duplicate_fanout_joins_one_operati
     ))
     .await
     .expect("start live session");
-    let latency = CdkAlephBftLatencyRecorder::install().await;
-
+    let latency = latency_reservation.install();
     let operation_id = submit_duplicate_latency_probe_mint_quote(&session.first_state).await;
     wait_for_applied_operation(&session.first_state, operation_id).await;
     wait_for_applied_operation(&session.second_state, operation_id).await;
@@ -11346,6 +11413,7 @@ async fn aleph_bft_live_session_latency_probe_duplicate_fanout_joins_one_operati
 
 #[tokio::test]
 async fn aleph_bft_live_session_latency_probe_records_five_member_bft_operation() {
+    let latency_reservation = CdkAlephBftLatencyRecorder::reserve().await;
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id: 0,
         max_messages_per_tick: 256,
@@ -11357,8 +11425,7 @@ async fn aleph_bft_live_session_latency_probe_records_five_member_bft_operation(
     ))
     .await
     .expect("start five-member live session");
-    let latency = CdkAlephBftLatencyRecorder::install().await;
-
+    let latency = latency_reservation.install();
     let operation_id = submit_latency_probe_mint_quote(
         session
             .states
@@ -11391,6 +11458,7 @@ async fn aleph_bft_live_session_latency_probe_records_five_member_bft_operation(
 
 #[tokio::test]
 async fn aleph_bft_live_session_latency_probe_records_seven_member_bft_operation() {
+    let latency_reservation = CdkAlephBftLatencyRecorder::reserve().await;
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id: 0,
         max_messages_per_tick: 512,
@@ -11403,8 +11471,7 @@ async fn aleph_bft_live_session_latency_probe_records_seven_member_bft_operation
     )
     .await
     .expect("start seven-member live session");
-    let latency = CdkAlephBftLatencyRecorder::install().await;
-
+    let latency = latency_reservation.install();
     let operation_id = submit_latency_probe_mint_quote(
         session
             .states
@@ -11437,6 +11504,7 @@ async fn aleph_bft_live_session_latency_probe_records_seven_member_bft_operation
 
 #[tokio::test]
 async fn aleph_bft_live_session_latency_probe_records_default_cadence_follow_up() {
+    let latency_reservation = CdkAlephBftLatencyRecorder::reserve().await;
     let pump_config = CdkAlephBftNetworkPumpConfig {
         session_id: 0,
         max_messages_per_tick: 128,
@@ -11448,7 +11516,7 @@ async fn aleph_bft_live_session_latency_probe_records_default_cadence_follow_up(
     .await
     .expect("start default-cadence live session");
     time::sleep(Duration::from_secs(3)).await;
-    let latency = CdkAlephBftLatencyRecorder::install().await;
+    let latency = latency_reservation.install();
 
     let cold_operation_id = submit_latency_probe_mint_quote(&session.first_state).await;
     wait_for_applied_operation(&session.first_state, cold_operation_id).await;
@@ -12062,6 +12130,18 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
     wait_for_aleph_bft_session(&first_state, 2).await;
     wait_for_aleph_bft_session(&second_state, 2).await;
     for state in [&first_state, &second_state] {
+        time::timeout(Duration::from_secs(10), async {
+            loop {
+                if state.federation_aleph_bft_live_session_active().await
+                    && state.federation_aleph_bft_network_inbound_active().await
+                {
+                    return;
+                }
+                time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("auto-rotated live session did not become active before timeout");
         assert!(state.federation_aleph_bft_live_session_active().await);
         assert!(state.federation_aleph_bft_network_inbound_active().await);
         assert_eq!(
@@ -12991,7 +13071,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
         max_messages_per_tick: 256,
         max_peer_deliveries_per_message: 256,
     };
-    let live_options = fast_aleph_bft_live_session_options(pump_config, 128);
+    let live_options = fast_aleph_bft_live_session_options(pump_config, 500);
     let mut session = start_five_member_aleph_bft_live_session(live_options.clone())
         .await
         .expect("five-member live session");
@@ -13230,9 +13310,35 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
         Duration::from_secs(20),
         session.states[1].submit_federation_envelope_to_consensus(follow_up_envelope),
     )
-    .await
-    .expect("honest follow-up must finish after fork")
-    .expect("honest follow-up response");
+    .await;
+    let follow_up = match follow_up {
+        Ok(response) => response.expect("honest follow-up response"),
+        Err(_) => {
+            let mut diagnostics = Vec::with_capacity(session.states.len());
+            for state in &session.states {
+                let config = state.mint.federation_config().expect("federation config");
+                let aleph_bft = state.federation_aleph_bft_status().await;
+                let sync = state.federation_sync_status().await;
+                let journal_operation_ids = state
+                    .mint
+                    .localstore()
+                    .get_federation_journal_entries()
+                    .await
+                    .expect("journal diagnostics")
+                    .into_iter()
+                    .map(|entry| entry.operation_id)
+                    .collect::<Vec<_>>();
+                diagnostics.push(format!(
+                    "member={} aleph_bft={aleph_bft:?} sync={sync:?} journal_operation_ids={journal_operation_ids:?}",
+                    config.member_id()
+                ));
+            }
+            panic!(
+                "honest follow-up must finish after fork: {}",
+                diagnostics.join("; ")
+            );
+        }
+    };
     assert_eq!(follow_up.operation_id, follow_up_operation_id);
     assert_eq!(
         follow_up.outcome.entry().status(),
@@ -20055,6 +20161,15 @@ async fn submit_payment_observation_rejects_invalid_admission_without_dkg_sequen
         panic!("expected mint quote payment observation");
     };
     observation.method = PaymentMethod::Custom("bad/method".to_string());
+    let envelope = envelope
+        .authorize(
+            state
+                .mint
+                .federation_config()
+                .expect("federation config")
+                .private_config(),
+        )
+        .expect("authorize invalid payment observation");
     let err = state
         .submit_federation_envelope_to_consensus(envelope)
         .await
@@ -21177,7 +21292,7 @@ async fn materialized_state_digest_tracks_melt_quote_spend_and_change_rows() {
         .federation_config()
         .expect("federation config")
         .clone();
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
+    let _peer_member = public_config.member(member_id(2)).expect("peer member");
     let quote_id = melt_quote(&state, 1000).await;
     let inputs = vec![
         proof_for_amount(&state, 1, "digest-melt-a"),
@@ -21199,12 +21314,11 @@ async fn materialized_state_digest_tracks_melt_quote_spend_and_change_rows() {
         MeltQuoteState::Paid,
         Some(String::new()),
     );
-    let mut peer_consensus =
-        test_aleph_bft_peer(public_config.federation_id, peer_member.member_id);
+    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
+    let mut peer_consensus = local_consensus.lock().await.clone();
     finalize_test_operation(&mut peer_consensus, envelope).expect("peer accepted melt");
     finalize_test_operation(&mut peer_consensus, payment_envelope)
         .expect("peer accepted melt payment observation");
-    let local_consensus = state.federation.consensus.as_ref().expect("consensus");
     let catch_up_request = local_consensus.lock().await.catch_up_request();
     let catch_up_response = checked_test_catch_up_response(&peer_consensus, &catch_up_request)
         .expect("catch-up response");
