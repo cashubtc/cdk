@@ -264,7 +264,7 @@ mint without a restart.
 ### 1. Fresh-database member does not catch up
 
 **Severity:** Critical  
-**Status:** Confirmed
+**Status:** Confirmed in two independent local process runs
 
 Member 5 was stopped at converged height 316 and its SQLite database, WAL, and
 shared-memory files were deleted. The other four members remained live. The
@@ -279,6 +279,14 @@ The member did not merely recover slowly. Its logs showed:
   remained in session 0;
 - repeated non-retryable session-mismatch responses in both directions;
 - the private AlephBFT network receiver closing.
+
+The focused confirmation reproduced the same failure from a converged
+35-operation history. The erased member initially recovered through index 10,
+then remained at 11 of 35 operations for more than 15 minutes. It entered
+session 1 while all four peers remained in session 0 and repeatedly received
+non-retryable `expected=0, found=1` responses; it also rejected peer traffic as
+`expected=1, found=0`. The smaller history proves that the defect does not
+require hundreds of operations or a long-running database.
 
 **Most likely cause:** startup ordering allows an empty member to install a live
 AlephBFT session and mark itself healthy before peer-height discovery and REST
@@ -301,10 +309,15 @@ startup/catch-up rather than healthy, must not start a conflicting session, and
 must reach the exact peer height, order digest, materialized-state digest,
 finalized cursor, and catch-up-certificate coverage.
 
+Add a small-history variant with approximately 35 operations so the critical
+failure runs cheaply in ordinary CI. The test must remain active beyond the
+first partial REST recovery and fail if progress stops before the peer tip or if
+the member starts any session not supported by quorum signed peer status.
+
 ### 2. A behind member can falsely report healthy and ready
 
 **Severity:** Critical  
-**Status:** Confirmed; exposed by Issue 1
+**Status:** Confirmed for height lag and live-session divergence
 
 At local height 1 versus peer height 316, the erased member reported:
 
@@ -316,6 +329,26 @@ Its catch-up certificate covered its one local operation, so
 `--require-ready --require-catch-up-certificate-quorum` was also insufficient to
 detect the 315-operation deficit. The benchmark had to impose the expected
 height explicitly.
+
+The focused confirmation reproduced the same claim at 11 local operations
+versus 35 peer operations:
+
+```text
+sync=healthy ready=true operations=11 session=1
+```
+
+The member's certificate covered only indices 0-10 while the peers' certificates
+covered indices 0-34. More importantly, the second federation demonstrated
+that equal height and digest are also insufficient. After member 3 restarted,
+all five members held the same 144 applied journal entries and matching order
+and materialized-state digests, but member 3 remained in AlephBFT session 0
+while the other four were in session 1. The strict command using
+`--require-ready`, `--require-converged`, catch-up-certificate quorum, and both
+alert checks exited successfully. All five members reported healthy and ready.
+
+This is a distinct missing invariant: the operator can prove historical state
+convergence while one member is unable to participate in the quorum's current
+live consensus session.
 
 **Most likely cause:** readiness proves internal consistency only against the
 member's local tip. A fresh runtime defaults to healthy before it has established
@@ -329,10 +362,18 @@ last successful peer comparison and its age. The operator status command should
 continue to compare members, but a single-member health check must also fail
 closed when startup peer validation has never completed.
 
+Readiness and strict convergence must additionally require a quorum-compatible
+AlephBFT session view. Status should expose the locally active session, the
+quorum-observed peer session, the age of that observation, and whether the
+member has exchanged valid traffic in that session. A session mismatch must
+make the member non-ready even when height, digests, application state, and
+certificate coverage match.
+
 ### 3. Wallet operations can commit while the client reports failure
 
 **Severity:** High  
-**Status:** Confirmed on Nocean; needs revalidation after wallet fanout changes
+**Status:** Confirmed on Nocean; exact failure not reproduced locally after
+fanout changes, but post-success client completion still failed
 
 In the Nocean concurrency-5 and concurrency-10 cases, every attempted swap
 advanced the converged journal even though 25 wallet processes exited without
@@ -341,6 +382,21 @@ enough shares. Database inspection later showed that all five mints applied all
 
 This creates an ambiguous client result: blind retry can encounter spent inputs
 even though the original command reported failure.
+
+The focused local revalidation used 43 isolated receiver wallets, full
+five-member fanout, zero additional member retries, and a deliberately adverse
+one-second per-member timeout. All 43 operations advanced the healthy majority
+from height 101 to 144. Every CLI printed `Received: 1`, and every wallet
+database persisted a one-sat balance, so the exact earlier shape of a normal
+failure after commit did not recur. However, none of the 43 CLI processes exited
+within the two-minute wall-clock bound. They were stopped only after their
+success output and wallet persistence had been verified.
+
+At the same checkpoint, four members had 144 applied entries while member 3
+held only 100 entries, comprising 99 applied and one accepted. Thus threshold
+success, wallet persistence, minority application, and client-process
+completion can still diverge. The local result must not be described as 43
+clean client successes merely because success text was printed.
 
 **Most likely cause:** the wallet previously cached only the first
 threshold-sized compatible member subset. One temporary catch-up/readiness error
@@ -356,6 +412,13 @@ request remains recoverable until threshold success, threshold definitive
 rejection, or an overall deadline; and a deadline returns a typed
 pending/ambiguous result rather than an ordinary failure.
 
+Success must also have a bounded completion contract. After threshold success
+and durable wallet persistence, surplus member work should be detached or
+drained under a separate bound that cannot prevent the API or CLI process from
+returning. Detachment must not cancel accepted server operations. Record
+separate timestamps for threshold decision, wallet commit, user-visible output,
+surplus-fanout completion, and process exit.
+
 ### 4. Threshold completion can cancel minority member application
 
 **Severity:** High  
@@ -364,6 +427,13 @@ pending/ambiguous result rather than an ordinary failure.
 A local full-fanout follow-up found four members with an applied operation while
 one member retained the same operation as accepted but unapplied. The client had
 already obtained a threshold result.
+
+The focused confirmation produced a larger variant. Four members reached 144
+applied entries while member 3 remained at 100 entries with one row still
+accepted and unapplied. The 43 affected clients had already printed success and
+persisted their received balances. Restarting member 3 replayed the journal to
+144 applied entries, proving that the durable history was recoverable but live
+application had stopped.
 
 **Most likely cause:** pending HTTP request futures are dropped once the wallet
 has enough shares. Cancellation can occur after a minority handler has accepted
@@ -378,7 +448,8 @@ work.
 ### 5. Wallet catch-up handling remains too brittle
 
 **Severity:** High  
-**Status:** Confirmed on Nocean; partially addressed, needs process revalidation
+**Status:** Confirmed on Nocean; direct intact-member case passed locally, but
+load-induced member divergence still blocked client completion
 
 Wallet errors named members that were lagging, catching up, or verifying
 catch-up certificates. These are retryable availability states, not definitive
@@ -391,10 +462,30 @@ overall deadline. The mint should use a typed federation catch-up error and may
 be able to return a strictly operation-bound persisted share for an exact replay
 before applying the general new-request readiness gate.
 
+The focused local process run produced two materially different results:
+
+- Member 5 was stopped with an intact database while the other four advanced.
+  After it restarted, 20 isolated receives overlapped its startup and all 20
+  completed successfully in 0.56-0.81 seconds. All five members then converged
+  at 57 operations. This is positive revalidation of the ordinary one-behind-
+  member case.
+- Under the later 43-wallet wave, member 3 stopped applying at height 100 while
+  four members reached 144. Peers timed out its signed private status, all 43
+  clients printed success but did not exit within two minutes, and the cluster
+  split across AlephBFT sessions. Restart restored member 3's journal but not
+  its live session. This is not the original typed `catching_up` error, but it
+  confirms that one non-completing member can still prevent bounded client
+  completion despite a healthy signature and consensus quorum.
+
+The current evidence therefore narrows Issue 5: ordinary intact restart with
+four healthy spares works, while load-induced accepted/unapplied, status-
+unresponsive, or session-incompatible members remain unsafe for wallet
+completion.
+
 ### 6. Repeated concurrent melts fail or stall
 
 **Severity:** High for federation melt availability  
-**Status:** Confirmed locally; root cause not yet isolated
+**Status:** Confirmed in two local process runs; root cause not yet isolated
 
 Ten concurrent standard-operation workers each completed one full mint, swap,
 melt, and restore batch. During the second batch:
@@ -406,6 +497,18 @@ melt, and restore batch. During the second batch:
 
 This is not evidence of insufficient consensus throughput: the receive-only
 test later committed 100 swaps successfully at parallelism 20.
+
+The focused confirmation incidentally reproduced the stall without ten
+concurrent workers. With member 5 offline but a valid four-member consensus
+quorum, the first standard mint/swap/melt/restore batch completed. The second
+batch progressed through mint, swap, check-state, melt-quote creation, and quote
+visibility, then remained at `standard.melt-confirm.start` until the explicit
+120-second scenario bound expired. Receive/swap-only work was used afterward so
+this independent melt failure would not contaminate the wallet catch-up test.
+
+This smaller reproduction suggests that high wallet concurrency is not required;
+consecutive melt state or payment-observation history may be sufficient. It
+also strengthens the need to test quorum operation with one member offline.
 
 **Most likely cause:** a race in concurrent melt payment ownership,
 payment-observation finalization, or quote/saga state transitions. The current
@@ -419,10 +522,15 @@ in parallel and require exactly-once payment, a threshold-consistent terminal
 state, no stalled confirmations, and identical quote/payment observations on all
 members.
 
+Add a minimal sequential process regression: one wallet, one member offline,
+and two consecutive standard batches. Bound each melt-confirmation phase and
+record the quote, elected payer, payment identifier, observer reports, saga
+state, and terminal response on every member.
+
 ### 7. Signed private status can become unresponsive under load
 
 **Severity:** High operationally  
-**Status:** Confirmed locally
+**Status:** Confirmed independently on two members in two local runs
 
 After the concurrent standard-operation workload, member 1 continued to answer
 the public information endpoint in approximately 30 ms but did not answer signed
@@ -430,6 +538,21 @@ private status within 20 seconds. Other members logged repeated 10-second status
 timeouts against member 1 and increased reconnect backoff to 60 seconds. A
 normal restart restored member 1 status immediately and it was healthy at the
 existing height in 0.172 seconds.
+
+The focused confirmation reproduced the same route-specific failure on member
+3. During token preparation, all five public `/v1/info` routes returned HTTP
+200, but peers repeatedly logged ten-second signed-status timeouts against
+member 3 with reconnect backoff increasing through one, two, four, and eight
+seconds. A direct signed status request produced no response within a 15-second
+bound. Database inspection showed member 3 stalled at 100 journal entries while
+the other four reached 144. Restart restored private status immediately and
+replayed all 144 entries as applied.
+
+The failure coincided with member 3 remaining in AlephBFT session 0 while the
+other four moved to session 1. The trace does not prove whether status
+unresponsiveness caused application/session lag, resulted from it, or shared a
+lock/permit cause. These events must be correlated in the next instrumented
+run.
 
 **Most likely cause:** a private-status handler, admission permit, or state lock
 was held or starved, rather than the HTTP runtime being generally unavailable.
@@ -443,6 +566,12 @@ sample captured the exact holder.
 running repeated parallel mint/swap/melt batches. Every member must retain a
 bounded status latency, and a timed-out client must not leak a private REST
 admission permit or retain a state lock.
+
+The regression must continue through AlephBFT session rotation and assert that
+status responsiveness, journal application, and live-session membership remain
+coupled. Capture handler admission wait, lock wait/hold time, serialization
+time, response size, event-loop delay, and the operation/session state at every
+timeout.
 
 ### 8. Small receive load can amplify empty consensus units and starve HTTPS
 
@@ -658,6 +787,28 @@ Operator endpoints should expose summaries by default and retrieve detailed
 rows or reports only on demand. Cache invalidation must remain tied to journal,
 application, certificate, and observation mutation rather than polling.
 
+### 13. Payment-report quote age can be nonsensical
+
+**Status:** Confirmed with the local fakewallet configuration; production
+payment backends need revalidation
+
+Signed status in both focused local federations reported newly created mint and
+melt quotes with `quote_age_secs` values around 1.784 billion seconds, close to
+the current Unix timestamp rather than the quotes' actual age of minutes. The
+same reports marked the quotes `stale=false`.
+
+The most likely explanation is a missing or zero creation timestamp in the
+fakewallet quote/report path, followed by age calculation against the Unix
+epoch. The trace did not establish whether real payment backends populate the
+field correctly. Even if test-only, the value makes local stale-payment
+diagnostics misleading and can hide age-calculation regressions.
+
+Status generation should represent an unavailable creation timestamp as
+unknown rather than computing an epoch-sized age. Add unit and process coverage
+for fresh, stale, terminal, and missing-timestamp quotes across fakewallet and at
+least one real payment-backend fixture, and assert consistency between
+`quote_age_secs` and `stale`.
+
 ## Resolved and verified performance defects
 
 ### Healthy live consensus was mistaken for recovery-worthy lag
@@ -715,6 +866,56 @@ amplification, queue backpressure, and HTTP starvation at moderate CPU rather
 than journal-length-dependent idle CPU. Fixing the earlier replay and cache
 costs therefore does not resolve or contradict the new observation.
 
+## Recommendations from the focused local confirmation
+
+### Make readiness a quorum-derived claim
+
+Treat `ready` as a lease derived from recent signed quorum evidence, not as a
+default local state. The lease must cover peer height, order and materialized
+digests, catch-up certificates, active AlephBFT session, finalized cursor, and
+successful traffic exchange in that session. Expiry, missing startup evidence,
+height lag, or session mismatch must fail closed. Preserve a separate local-
+consistency field so operators can distinguish internally valid storage from a
+member that is current and able to participate.
+
+### Separate recovery from live consensus activation
+
+Startup should first classify the local checkpoint. A missing or untrusted
+checkpoint must recover journal, finalized items, application state,
+certificates, session state, and AlephBFT backup before installing live network
+input. A trusted but behind checkpoint may use live AlephBFT only after proving
+session continuity with quorum peers. Session rotation must require quorum
+evidence and must not allow one member to unilaterally advertise a session that
+its peers reject.
+
+### Make server completion cancellation-safe and client completion bounded
+
+Once a server has durably accepted an operation, request cancellation must not
+control whether application and response persistence finish. On the client,
+threshold success and wallet persistence should permit a bounded return while
+surplus member work continues independently. A surplus request may be detached,
+but never cancelled in a way that strands an accepted journal entry. Add a hard
+post-success process-exit bound and expose separate metrics for threshold
+decision, wallet commit, response drain, and exit.
+
+### Treat session and application skew as first-class alerts
+
+The strict status command should fail when members disagree on active session,
+when any member has accepted/applying rows older than a short bound, or when a
+member's signed status is unavailable even if public information remains
+healthy. Summaries should show per-member session, journal height, applied
+height, accepted/applying counts, peer-view age, and status latency without
+requiring large payment-report serialization.
+
+### Keep correctness probes separate from capacity benchmarks
+
+Retain a small deterministic matrix for erased recovery, intact recovery,
+session rotation, accepted-but-unapplied replay, slow/unresponsive surplus
+members, consecutive melts, and post-success CLI exit. Run capacity curves only
+after those invariants pass. Every process benchmark should impose a hard wall
+clock and report partial client output, wallet persistence, journal state,
+application state, and session state when the bound expires.
+
 ## Positive performance findings
 
 - Initial empty-federation startup is fast at 1.303 seconds.
@@ -723,25 +924,34 @@ costs therefore does not resolve or contradict the new observation.
 - Parallel local receive throughput reached 25.09 client-completed committed
   swaps/s with no failures at parallelism 20.
 - All five members converged 1.710 seconds after those clients completed.
+- In the focused run, 20 receives overlapping an intact behind member's restart
+  all completed in 0.56-0.81 seconds and converged on all five members.
 - The CPU fixes eliminated journal-length-dependent idle spin in the reproduced
   state.
 
 These results establish that normal restart and local swap throughput are not
-the immediate blockers. Fresh recovery, melt concurrency, status liveness, and
-wallet ambiguity are.
+the immediate blockers. Fresh recovery, session-aware readiness, cancellation-
+safe minority application, bounded wallet completion, melt concurrency, and
+status liveness are.
 
 ## Priority order
 
-1. Fix fresh-member startup recovery and prevent false healthy readiness.
-2. Prove cancellation-safe server completion and robust all-member wallet
-   fanout with typed ambiguous outcomes.
-3. Reproduce and fix concurrent melt failure/stall behavior.
-4. Bound empty-unit amplification and preserve HTTP liveness under small remote
+1. Fix fresh-member startup recovery and make readiness depend on recent quorum
+   height, digest, certificate, and live-session evidence.
+2. Make strict operator status reject AlephBFT session divergence even when
+   journal height and digests match.
+3. Prove cancellation-safe server application and bounded client exit after
+   threshold success; eliminate accepted-but-unapplied minority stalls.
+4. Reproduce and fix consecutive melt failure/stall behavior, including the
+   one-wallet, one-offline-member case.
+5. Bound empty-unit amplification and preserve HTTP liveness under small remote
    workloads.
-5. Reproduce the private-status hang with lock, permit, and handler-latency
-   instrumentation.
-6. Revalidate federation discovery/import after wallet fanout changes.
-7. Repeat controlled local and remote capacity curves only after the correctness
+6. Reproduce the private-status hang with lock, permit, handler-latency, session,
+   and application-state instrumentation.
+7. Revalidate typed catch-up/ambiguous wallet outcomes with one and two slow,
+   catching-up, unresponsive, and session-incompatible members.
+8. Revalidate federation discovery/import after wallet fanout changes.
+9. Repeat controlled local and remote capacity curves only after the correctness
    and liveness fixes above.
 
 ## Required next benchmark and regression matrix
@@ -749,11 +959,28 @@ wallet ambiguity are.
 - Fresh member at histories of 1, 100, 1,000, and 10,000 operations; measure
   time through exact digest/certificate convergence and assert non-healthy
   startup state.
+- A cheap approximately 35-operation erased-member CI regression that waits
+  beyond partial recovery and rejects any unsupported session transition.
 - Intact one-member and full-cluster restart at the same heights.
+- Equal-height, equal-digest members with deliberately mismatched active
+  sessions; strict status and single-member readiness must fail.
+- Session rotation under load with continuous assertions that every member
+  remains in a quorum-compatible session and continues applying journal rows.
 - Repeated 3-of-5 fanout with one and two slow/catching-up members.
+- Repeated 3-of-5 fanout with one accepted-but-unapplied, status-unresponsive,
+  or session-incompatible member. Threshold success must return within a
+  bounded post-success interval without cancelling server application.
+- A 43-wallet-style adverse-deadline wave that separately asserts user-visible
+  result, wallet persistence, CLI exit, journal commitment, per-member
+  application, and session convergence.
 - Ten or more wallets performing at least two consecutive melts concurrently.
+- One wallet performing two consecutive standard batches while one member is
+  offline, with a hard melt-confirmation deadline and cross-member observation
+  comparison.
 - Continuous signed status polling during mint, swap, melt, restart, and catch-up
   load, with bounded latency and admission-permit accounting.
+- Fresh and stale payment reports with valid and missing quote timestamps;
+  reported age and stale classification must remain consistent.
 - Fixed-wave receive tests with at least five repetitions per concurrency,
   measuring client completion and signed convergence separately.
 - A fresh-state `N=10, parallelism=1` remote receive test with continuous public
