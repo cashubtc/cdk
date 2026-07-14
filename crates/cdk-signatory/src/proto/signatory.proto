@@ -12,6 +12,8 @@ service Signatory {
   rpc SubscribeKeysets(EmptyRequest) returns (stream KeysResponse);
   // rotates the keysets
   rpc RotateKeyset(RotationRequest) returns (KeyRotationResponse);
+  // reconstruct DLEQ proof
+  rpc ReconstructDleq(ReconstructDleqRequest) returns (ReconstructDleqResponse);
 }
 
 enum Constants {
@@ -125,6 +127,16 @@ message BlindSignature {
 message BlindSignatureDLEQ {
   bytes e = 1;
   bytes s = 2;
+}
+
+message ReconstructDleqRequest {
+    BlindSignature blind_signature = 1;
+    bytes blind_secret = 2;
+}
+
+message ReconstructDleqResponse {
+  Error error = 1;
+  BlindSignature blind_signature = 2;
 }
 
 enum ErrorCode {
