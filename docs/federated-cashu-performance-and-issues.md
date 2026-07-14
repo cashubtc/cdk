@@ -18,11 +18,32 @@ round mismatch followed by a new session that the other four members rejected
 as the wrong session. This is both a catch-up failure and an incorrect readiness
 claim. It is the highest-priority open issue in this report.
 
+A focused local confirmation run reproduced both defects again from a smaller
+35-operation history. The erased member recovered only through operation 10,
+remained at 11 of 35 operations for more than 15 minutes, entered session 1
+while the other four members remained in session 0, and continued to report
+`sync=healthy ready=true`. A second load run exposed the complementary case:
+four members rotated to session 1 while one stalled member remained in session
+0. After restart the stalled member recovered the exact 144-entry journal, but
+the strict ready/converged/certificate status command still returned success
+with the live-session split present. Readiness therefore fails to prove both
+federation currency and live-session compatibility.
+
 The same local run also found two load-sensitive failures: nine of ten repeated
 standard-operation workers returned `Payment failed` during their second melt,
 while the tenth stalled at the same step; and one heavily used member stopped
 answering signed private status requests even though its public information
 route remained fast. A restart cleared the status failure.
+
+The focused confirmation run reproduced the melt-confirmation stall and private
+status failure independently. It also sharpened the wallet result: 43 parallel
+one-second-deadline receives all committed and persisted one sat in their
+wallets, but none of the 43 CLI processes exited within the two-minute bound
+after printing `Received: 1`. Four members applied all 144 journal entries while
+the unresponsive fifth member remained at 100 entries, with one accepted and
+unapplied. This did not reproduce the earlier exact client-reported-failure
+shape, but it confirmed an adjacent post-success completion hang and another
+minority application divergence.
 
 A fresh Nocean deployment exposed a separate consensus liveness and
 backpressure failure. The first receive case, configured for only one concurrent
@@ -31,10 +52,10 @@ unresponsive. Only 10 accepted journal operations produced approximately 744
 AlephBFT DAG units. `UnitBroadcast` queues grew to roughly 80-160 messages per
 member while receive requests timed out, then the public endpoints recovered
 without a restart after the queues drained. Mint CPU remained far below host
-saturation. The strongest current hypothesis is that the 100 ms active unit
-cadence continues creating empty units while network-activity leases remain
-active, amplifying a small workload into enough consensus traffic to starve
-HTTP work.
+saturation. Code tracing confirmed that the fixed 100 ms active schedule
+overrides AlephBFT's normal 500 ms steady delay and that the data provider
+permits empty units while payload activity remains pending. This amplifies a
+small workload into enough consensus traffic to starve operation and HTTP work.
 
 Earlier Nocean testing found wallet fanout, retry, and ambiguous-result problems
 under member catch-up pressure. Those findings remain relevant even though the
@@ -49,6 +70,8 @@ This report consolidates:
 - the 2026-07-13 five-member Nocean receive stress test documented in
   [federated-cashu-nocean-stress-test.md](federated-cashu-nocean-stress-test.md);
 - the 2026-07-14 local five-member restart, recovery, and transaction benchmark;
+- the 2026-07-14 focused local confirmation of Issues 1, 2, 3, and 5, including
+  the incidental revalidation of Issues 6 and 7;
 - the local CPU regression investigation already recorded in that stress-test
   document.
 
@@ -76,6 +99,28 @@ The labels used below are:
 - Strict restart health required ready members, one converged height and digest,
   catch-up-certificate coverage, and no digest or invalid-operation alerts.
 - Temporary processes were stopped after the run.
+
+### Focused local issue-confirmation run
+
+- Two disposable five-member local federations using AlephBFT, SQLite, and
+  fakewallet payment processors.
+- BLS signature threshold 3 of 5 and consensus threshold 4 of 5.
+- Release-mode CDK 0.17.0 binaries. The `cdk-mintd` SHA-256 was
+  `ce7ecb1e78f28add3020f23d3d15652e40efdebe7986ce29f2a1a90d1fe8c779` and
+  the `cdk-cli` SHA-256 was
+  `ff1df5e97aaea6837168d188c6adcb90b3da852f943c24f6bf31883899fa6e29`.
+- The first federation created a converged 35-operation history, stopped member
+  5, deleted only that member's SQLite database, WAL, and shared-memory files,
+  and restarted it while the other four members remained live.
+- The second federation stopped member 5 with its database intact, advanced the
+  other four members, restarted member 5, and overlapped its startup with 20
+  isolated wallet receives. A later 43-wallet receive wave used a deliberately
+  adverse one-second per-member deadline and a two-minute wall-clock bound.
+- Signed status, journal row counts and states, AlephBFT active sessions, wallet
+  balances, public-route availability, client output, and process completion
+  were recorded. Bearer-token artifacts remained private.
+- All temporary mint processes were stopped and all test listeners were closed
+  after evidence collection.
 
 ### Nocean benchmark
 
@@ -127,6 +172,28 @@ includes CLI process startup, HTTP fanout, consensus, threshold-share
 collection, wallet verification, and wallet persistence. Wallet creation and
 federation import occurred before the timed interval.
 
+### Focused local issue-confirmation results
+
+| Measurement | Result | Qualification |
+| --- | ---: | --- |
+| Erased-member source height | 35 operations | Five-member signed convergence before erasure |
+| Erased-member recovered height | 11 operations | Stalled through index 10 for more than 15 minutes |
+| Erased-member status | `healthy`, `ready=true` | Local certificate covered only operations 0-10 |
+| Erased-member session | 1 versus peer session 0 | Repeated bidirectional session-mismatch rejection |
+| Intact-member overlap receives | 20/20 successful | 0.56-0.81 s per receive while member 5 restarted |
+| Post-overlap convergence | 57 operations on all five | Matching journal and materialized-state digests |
+| Adverse-deadline receive wave | 43/43 printed success | Every wallet persisted a one-sat balance |
+| Client process completion | 0/43 within two minutes | Every process hung after printing `Received: 1` |
+| Healthy-majority journal | 144 applied entries | Members 1, 2, 4, and 5 |
+| Stalled minority journal | 100 entries | 99 applied and one accepted on member 3 |
+| Intact member 3 restart | Journal recovered to 144 applied | Private status responsiveness also returned |
+| Post-restart sessions | Four in session 1, member 3 in session 0 | Strict ready/converged status still exited successfully |
+
+The one-second deadline case is an intentionally adverse correctness probe, not
+a production throughput result. Its important result is the separation between
+threshold success, wallet persistence, process completion, minority
+application, and live-session convergence.
+
 ### Earlier Nocean results
 
 | Workload | Observed result |
@@ -168,6 +235,29 @@ The interrupted case must not be presented as a completed TPS result. It does
 show that the federation can enter a severe latency and availability failure at
 parallelism 1, so this incident is not explained by excessive client
 concurrency.
+
+### Nocean cadence-amplification rerun
+
+A subsequent run started from a healthy federation and increased concurrency
+one bounded step at a time. The default matrix did not reproduce a complete
+HTTPS outage, but it reproduced the unit amplification, periodic CPU
+saturation, latency increase, and prolonged wallet preparation stalls:
+
+| Case | Result | Confirmed TPS | Successful receive latency |
+| --- | ---: | ---: | ---: |
+| `N=10, parallelism=1` | 10/10 | 0.151 | p50 6.562 s, max 6.704 s |
+| `N=20, parallelism=5` | 20/20 | 0.739 | p50 6.671 s, max 6.878 s |
+| `N=20, parallelism=10` | 20/20 | 1.388 | p50 6.901 s, max 7.474 s |
+| `N=20, parallelism=20` | 20/20 | 2.456 | p50 6.959 s, max 8.118 s |
+| `N=40, parallelism=40` | Stopped during preparation at 20/40 tokens | Not timed | Preparation repeatedly paused for minutes |
+
+During the final preparation run, aggregate mint CPU peaked at 369% on the
+four-logical-CPU host, the reconstructed DAG reached 6,489 units at only 144
+accepted operations, and `UnitBroadcast` reached approximately 81-83 per
+member. Public endpoint latency increased, but lightweight server-local
+`/v1/info` remained responsive. After stopping the benchmark, queues drained to
+the normal five repeatable broadcasts and CPU returned to approximately 1% per
+mint without a restart.
 
 ## Open correctness and liveness issues
 
@@ -357,8 +447,8 @@ admission permit or retain a state lock.
 ### 8. Small receive load can amplify empty consensus units and starve HTTPS
 
 **Severity:** Critical for remote availability  
-**Status:** Confirmed liveness failure; unit-creation feedback is the strongest
-current hypothesis
+**Status:** Confirmed liveness failure and confirmed cadence-amplification
+source; retry amplification remains a secondary hypothesis
 
 On a freshly reset federation, the first sequential receive case temporarily
 made all five public mint endpoints unavailable. Loopback and public HTTP
@@ -385,35 +475,72 @@ The following evidence was captured:
 - once the repeat queues drained, all five public `/v1/info` routes returned
   HTTP 200 again without restarting the federation.
 
-**Most likely cause:** production AlephBFT uses a 100 ms unit-creation delay
-while the shared activity hint is active, versus a 2 s idle delay. Inbound
-consensus activity is retained for a 10 s grace period. When there is no local
-payload but the activity hint remains active, the data provider returns no
-payload without imposing the idle wait, allowing AlephBFT to continue creating
-empty units at the active cadence. One real operation wakes all members;
-multiple inbound activity identifiers can keep their activity leases alive
-after the payload is drained. The resulting empty units create additional
-network traffic and appear capable of extending or reinforcing the active
-period, building `UnitBroadcast` backlogs and starving wallet HTTP requests.
+The controlled rerun added stronger evidence:
+
+- the default concurrency matrix completed successfully, proving that a full
+  outage is intermittent rather than a deterministic threshold at concurrency
+  20;
+- each successful receive still took approximately 6.6-8.1 seconds;
+- aggregate mint CPU repeatedly reached 300-369% on the four-logical-CPU host;
+- the above-default run became operationally stalled during token preparation,
+  before its timed parallel receive began;
+- the federation remained journal-converged while the wallet waited, showing
+  that consensus acceptance and client completion can separate; and
+- stopping load allowed CPU and broadcast queues to return to idle without a
+  process restart.
+
+**Confirmed source:** production overrides AlephBFT's normal unit-creation
+schedule with a fixed 100 ms delay whenever the shared activity hint is active.
+Upstream AlephBFT normally waits 5 seconds for round zero and 500 ms for
+subsequent rounds through the range relevant here. The active override therefore
+creates units five times faster than the normal steady schedule and fifty times
+faster for round zero.
+
+At the same time, the CDK data provider explicitly returns `None` when it has no
+transaction payload but the activity hint remains active. AlephBFT interprets
+that as permission to create an empty unit. While a real payload is awaiting
+finalization, all five members can therefore create roughly ten units per
+second, or approximately fifty federation units per second, most without Cashu
+payloads. Every unit creates dissemination, signature-verification, backup, and
+private-REST work. The measured 100 ms creator logs, DAG growth, CPU bursts, and
+`UnitBroadcast` queues match this mechanism.
+
+This behavior came from the change named `fix: bound active AlephBFT cadence`:
+the previous code retained AlephBFT's default schedule while active and used the
+two-second slowdown only for idle tail rounds. The change instead applies 100
+ms to every active round. The intent was to bound proposal latency, but the
+result is a fivefold increase in normal active unit creation.
 
 The principal code paths to instrument are:
 
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs`, especially
   `CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY`,
-  `CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY`, delay configuration, and the data
-  provider's no-payload behavior;
+  `CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY`, the activity-broadcast loop, and
+  delay configuration;
 - `crates/cdk-axum/src/federation/aleph_bft_runtime.rs`, especially
   `CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE` and
-  `CdkAlephBftActivityHint`; and
+  `CdkAlephBftActivityHint`, `CdkAlephBftDataProvider::get_data`, and
+  `mark_network_activity_finalized`; and
 - `crates/cdk-axum/src/federation/aleph_bft_network.rs`, where inbound
   consensus messages extract activity identifiers and call
   `mark_network_activity`.
 
-This causal loop is not yet proven. In particular, the current trace did not
-record the activity-ID map size or demonstrate that an empty unit directly
-renews the activity lease that caused it. The unit counts, 100 ms log cadence,
-queue growth, request timeouts, and recovery timing make it the leading
-hypothesis rather than a confirmed root cause.
+**Correction to the original hypothesis:** empty units do not directly renew
+the activity lease. The inbound activity marker extracts IDs only from included
+payload data, so a payload-free unit contributes no new activity ID.
+Finalization also shortens matching body-hash and operation-ID leases to one
+second. The defect is sustained fast empty-unit creation while legitimate
+payload activity is pending, not a self-renewing empty-unit loop.
+
+**Secondary likely amplifier:** the CDK network pump drains one outbound message
+per iteration. It submits that message to all remote peers, but after reaching
+the three-remote-member threshold it waits only 25 ms for unfinished peers.
+Unfinished deliveries are classified as retryable and queued again. Under load,
+a healthy but slightly slower fourth peer can therefore create duplicate
+private-REST delivery work. This follows from the code, but the Nocean trace did
+not expose the CDK retry-queue length, so it is not yet proven necessary for the
+failure. AlephBFT's reported `UnitBroadcast` task count must not be treated as
+the same queue.
 
 **Reproduction:** on the development deployment only, start from a fresh
 federation and then run the smallest benchmark case while monitoring every
@@ -432,6 +559,15 @@ ssh nocean 'cd ~/cdk-federation && \
 
 # Use a single sequential receive case before increasing concurrency.
 CASES='10:1' scripts/benchmark_nocean_federation.sh
+
+# If healthy, increase one bounded step at a time.
+CASES='20:5' scripts/benchmark_nocean_federation.sh
+CASES='20:10' scripts/benchmark_nocean_federation.sh
+CASES='20:20' scripts/benchmark_nocean_federation.sh
+
+# Optional above-default escalation. Stop on a bounded deadline; preparation
+# itself may reproduce the stall before the timed receive begins.
+CASES='40:40' scripts/benchmark_nocean_federation.sh
 ```
 
 Before the timed receive, require five healthy converged members, record an
@@ -443,21 +579,26 @@ size, and AlephBFT repeat counters. Stop the case after a bounded deadline if
 HTTPS becomes unavailable. Keep the benchmark directory private because it can
 contain bearer tokens.
 
-The failure is reproduced if sequential receives grow the DAG and
-`UnitBroadcast` queues far beyond the number of accepted operations while
-wallet requests and public routes time out. Continue observing after stopping
-load: recovery synchronized with queue drainage, without a mint restart, is an
-important discriminator from proxy failure, database corruption, or permanent
-deadlock.
+The amplification bug is reproduced even if every wallet command succeeds: CPU
+bursts, DAG growth, and `UnitBroadcast` depth must be compared with the number
+of accepted operations. The stronger liveness failure is reproduced when
+operation or public requests time out, or wallet preparation stops making
+progress while the journal is already converged. Continue observing after
+stopping load: recovery synchronized with queue drainage, without a mint
+restart, distinguishes this failure from proxy misconfiguration, database
+corruption, or permanent deadlock.
 
 **Required instrumentation and regression:** expose active versus idle unit
 counts, empty versus payload-bearing units, activity-ID cardinality and lease
-age, per-peer send-queue depth, event-loop delay, and HTTP handler latency. A
-five-member process test should submit a small bounded number of sequential
+age, CDK retry-queue depth, per-peer send-queue depth, event-loop delay, and HTTP
+handler latency. A five-member process test should submit a small bounded number
+of sequential
 swaps, require a bounded number of empty units per payload and bounded queue
 depth, and continuously require public and signed private routes to respond.
 The test must wait beyond the network-activity grace period and prove that all
-members return to idle cadence without a self-sustaining activity loop.
+members return to the normal idle cadence. A separate network-pump test should
+delay one healthy peer beyond the 25 ms completion grace and measure whether
+the retry policy creates avoidable duplicate delivery work.
 
 ### 9. Federation discovery/import can hang after a healthy config response
 
