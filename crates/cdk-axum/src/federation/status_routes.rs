@@ -7,7 +7,8 @@ use cdk::federation::{
     FederationConsensusRuntimeStatus, FederationInvalidOperationAlertSummary,
     FederationLocalStatusResponse, FederationMaterializedStateRowFingerprint,
     FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationSignedRequest, FEDERATION_REST_API_VERSION,
+    FederationRestMessageKind, FederationSignedRequest, FederationWalletRecoveryStatus,
+    FEDERATION_REST_API_VERSION,
 };
 use tracing::instrument;
 
@@ -81,6 +82,9 @@ pub(super) async fn post_local_status(
         state.federation_aleph_bft_network_inbound_active().await;
     let invalid_operation_alerts = state.federation_invalid_operation_alert_summaries().await;
     let onchain_wallets = state.federation_onchain_wallet_statuses().await;
+    let wallet_recovery = federation_wallet_recovery_status(&state)
+        .await
+        .map_err(cdk_error_response)?;
     let response = federation_local_status_response(
         peer_status,
         sync_status,
@@ -99,6 +103,7 @@ pub(super) async fn post_local_status(
         aleph_bft_network_inbound_active,
         invalid_operation_alerts,
         onchain_wallets,
+        wallet_recovery,
     );
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
@@ -123,6 +128,7 @@ fn federation_local_status_response(
     aleph_bft_network_inbound_active: bool,
     invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
     onchain_wallets: Vec<cdk::federation::FederationOnchainWalletStatus>,
+    wallet_recovery: Option<FederationWalletRecoveryStatus>,
 ) -> FederationLocalStatusResponse {
     let (
         catch_up_certificate_quorum_operation_count,
@@ -170,7 +176,27 @@ fn federation_local_status_response(
         materialized_state_rows,
         invalid_operation_alerts,
         onchain_wallets,
+        wallet_recovery,
     }
+}
+
+async fn federation_wallet_recovery_status(
+    state: &MintState,
+) -> Result<Option<FederationWalletRecoveryStatus>, cdk::Error> {
+    let Some(runtime) = state.mint.federation_config() else {
+        return Ok(None);
+    };
+    if runtime.public_config().frost_wallet.is_none() {
+        return Ok(None);
+    }
+    let addresses = state.mint.federation_address_allocation_state().await?;
+    let chain = state.mint.federation_chain_observation_state().await?;
+    let transactions = state.mint.federation_transaction_state().await?;
+    Ok(Some(FederationWalletRecoveryStatus::from_states(
+        &addresses,
+        &chain,
+        &transactions,
+    )?))
 }
 
 fn response_cache_hit_rate_bps(hits: u64, lookups: u64) -> u64 {

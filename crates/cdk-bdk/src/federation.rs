@@ -576,7 +576,10 @@ mod tests {
 
     use bdk_wallet::bitcoin::bip32::{Xpriv, Xpub};
     use bdk_wallet::bitcoin::secp256k1::Secp256k1;
-    use bdk_wallet::bitcoin::{absolute, transaction, Amount, Network, Transaction, TxOut};
+    use bdk_wallet::bitcoin::{
+        absolute, transaction, Amount, Network, OutPoint, Sequence, Transaction, TxIn, TxOut,
+        Witness,
+    };
     use bdk_wallet::rusqlite::Connection;
     use bdk_wallet::template::Bip84;
 
@@ -701,6 +704,130 @@ mod tests {
         assert_eq!(wallets[0].engine().list_unspent().await.len(), 1);
         assert_eq!(wallets[1].engine().list_unspent().await.len(), 1);
         drop(roots);
+    }
+
+    #[tokio::test]
+    async fn offline_member_replays_address_gaps_and_multiple_spends_idempotently() {
+        let roots = (0..5)
+            .map(|_| tempfile::tempdir().expect("tempdir"))
+            .collect::<Vec<_>>();
+        let wallets = roots
+            .iter()
+            .map(|root| {
+                FederatedBdkWallet::open(config(11), esplora_source(), root.path())
+                    .expect("member wallet")
+            })
+            .collect::<Vec<_>>();
+        let external = wallets[0].peek_script(KeychainKind::External, 7).await;
+        let internal = wallets[0].peek_script(KeychainKind::Internal, 5).await;
+        let final_script = wallets[0].peek_script(KeychainKind::External, 6).await;
+        let funding = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: Vec::new(),
+            output: vec![TxOut {
+                value: Amount::from_sat(60_000),
+                script_pubkey: external,
+            }],
+        };
+        let first_spend = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(funding.compute_txid(), 0),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(50_000),
+                script_pubkey: internal,
+            }],
+        };
+        let second_spend = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: absolute::LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(first_spend.compute_txid(), 0),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(40_000),
+                script_pubkey: final_script.clone(),
+            }],
+        };
+        let accepted = [funding, first_spend, second_spend];
+
+        for wallet in &wallets[..4] {
+            wallet
+                .reconcile_revealed_counters(8, 6)
+                .await
+                .expect("online counter reconciliation");
+            for (offset, transaction) in accepted.iter().enumerate() {
+                wallet
+                    .engine()
+                    .apply_accepted_transaction(
+                        transaction.clone(),
+                        u64::try_from(offset + 1).expect("accepted index"),
+                    )
+                    .await
+                    .expect("online accepted transaction");
+            }
+        }
+        assert!(wallets[4].engine().list_unspent().await.is_empty());
+
+        wallets[4]
+            .reconcile_revealed_counters(8, 6)
+            .await
+            .expect("offline counter catch-up");
+        for _ in 0..2 {
+            for (offset, transaction) in accepted.iter().enumerate() {
+                wallets[4]
+                    .engine()
+                    .apply_accepted_transaction(
+                        transaction.clone(),
+                        u64::try_from(offset + 1).expect("accepted index"),
+                    )
+                    .await
+                    .expect("idempotent transaction catch-up");
+            }
+        }
+        for wallet in &wallets {
+            let unspent = wallet.engine().list_unspent().await;
+            assert_eq!(unspent.len(), 1);
+            assert_eq!(
+                unspent[0].outpoint,
+                OutPoint::new(accepted[2].compute_txid(), 0)
+            );
+            assert_eq!(unspent[0].txout.value.to_sat(), 40_000);
+            assert_eq!(unspent[0].txout.script_pubkey, final_script);
+        }
+
+        drop(wallets);
+        let restarted = FederatedBdkWallet::open(config(11), bitcoin_rpc_source(), roots[4].path())
+            .expect("restarted caught-up member");
+        restarted
+            .reconcile_revealed_counters(8, 6)
+            .await
+            .expect("restart counter reconciliation");
+        for (offset, transaction) in accepted.iter().enumerate() {
+            restarted
+                .engine()
+                .apply_accepted_transaction(
+                    transaction.clone(),
+                    u64::try_from(offset + 1).expect("accepted index"),
+                )
+                .await
+                .expect("restart transaction reconciliation");
+        }
+        let unspent = restarted.engine().list_unspent().await;
+        assert_eq!(unspent.len(), 1);
+        assert_eq!(
+            unspent[0].outpoint,
+            OutPoint::new(accepted[2].compute_txid(), 0)
+        );
     }
 
     #[tokio::test]

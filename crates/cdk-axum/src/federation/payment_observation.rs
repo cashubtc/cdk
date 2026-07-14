@@ -221,6 +221,9 @@ impl FederationPaymentObserver {
         state: &MintState,
         event: Event,
     ) -> Result<usize, cdk::Error> {
+        state
+            .ensure_federation_ready_for_authoritative_read()
+            .await?;
         match event {
             Event::PaymentReceived(payment) => {
                 let Some(quote) = state
@@ -246,6 +249,9 @@ impl FederationPaymentObserver {
         if state.mint.federation_config().is_none() {
             return Ok(0);
         }
+        state
+            .ensure_federation_ready_for_authoritative_read()
+            .await?;
 
         let mut submitted = self.observe_onchain_wallets(state).await?;
         let has_frost_wallet = state

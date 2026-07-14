@@ -1605,6 +1605,12 @@ impl FederationTransactionState {
         self.utxo_reservations.get(&outpoint.to_string()).copied()
     }
 
+    /// Number of sticky wallet UTXO reservations retained across recovery.
+    #[must_use]
+    pub fn reservation_count(&self) -> usize {
+        self.utxo_reservations.len()
+    }
+
     /// Add one consensus-authorized pending melt intent idempotently.
     pub fn add_pending_intent(
         &mut self,
@@ -2371,7 +2377,27 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use super::*;
-    use crate::federation::FederationAddressKeychain;
+    use crate::federation::{
+        FederationAddressAllocationState, FederationAddressKeychain,
+        FederationChainObservationState, FederationRecoveryAction, FederationWalletRecoveryStatus,
+    };
+
+    fn recovery_action_count(
+        state: &FederationTransactionState,
+        action: FederationRecoveryAction,
+    ) -> u64 {
+        FederationWalletRecoveryStatus::from_states(
+            &FederationAddressAllocationState::new(),
+            &FederationChainObservationState::new(),
+            state,
+        )
+        .expect("recovery status")
+        .actions
+        .iter()
+        .filter(|entry| entry.action == action)
+        .map(|entry| entry.count)
+        .sum()
+    }
 
     fn member(value: u16) -> MemberId {
         MemberId::new(value).expect("member")
@@ -2759,6 +2785,15 @@ mod tests {
             .accepted_transaction(proposal_id)
             .expect("accepted transaction")
             .clone();
+        assert_eq!(
+            recovery_action_count(&state, FederationRecoveryAction::StartFreshSigningAttempt),
+            1
+        );
+        assert_eq!(state.reservation_count(), proposal.selected_inputs.len());
+        assert_eq!(
+            recovery_action_count(&state, FederationRecoveryAction::PreserveStickyReservation),
+            proposal.selected_inputs.len() as u64
+        );
         let mut transaction = proposal.unsigned_transaction.clone();
         let input_signatures = transaction
             .input
@@ -3144,6 +3179,17 @@ mod tests {
     #[test]
     fn broadcast_intent_and_member_results_are_exact_restart_safe_and_convergent() {
         let (mut state, proposal_id, txid) = signed_transaction_state();
+        assert_eq!(
+            recovery_action_count(&state, FederationRecoveryAction::PersistBroadcastIntent),
+            1
+        );
+        assert_eq!(
+            recovery_action_count(
+                &state,
+                FederationRecoveryAction::ReapplyPersistedTransaction
+            ),
+            1
+        );
         let intent = FederationTransactionBroadcastIntent {
             proposal_id,
             txid,
@@ -3169,6 +3215,13 @@ mod tests {
                 )
                 .expect("intent failover replay"),
             FederationTransactionStateOutcome::Existing
+        );
+        assert_eq!(
+            recovery_action_count(
+                &state,
+                FederationRecoveryAction::RebroadcastPersistedTransaction
+            ),
+            1
         );
         state = FederationTransactionState::from_bytes(
             &state.to_bytes().expect("broadcast-not-observed bytes"),
@@ -3277,6 +3330,13 @@ mod tests {
                 .state,
             FederationAcceptedTransactionState::Broadcast
         );
+        assert_eq!(
+            recovery_action_count(
+                &state,
+                FederationRecoveryAction::CollectConfirmationEvidence
+            ),
+            1
+        );
         state
             .record_transaction_broadcast_observation(
                 FederationTransactionBroadcastObservation {
@@ -3324,6 +3384,11 @@ mod tests {
             .completed_payment_for_quote("quote-a")
             .expect("completed payment receipt")
             .is_some());
+        assert_eq!(
+            recovery_action_count(&state, FederationRecoveryAction::NoOp),
+            3,
+            "one confirmed transaction and two completed intents are terminal no-ops"
+        );
 
         let restarted = FederationTransactionState::from_bytes(
             &state.to_bytes().expect("persist broadcast state"),

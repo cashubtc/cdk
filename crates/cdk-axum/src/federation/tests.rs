@@ -21827,6 +21827,32 @@ async fn private_local_status_route_reports_catching_up_sync_state() {
 }
 
 #[tokio::test]
+async fn catching_up_member_blocks_wallet_observer_and_broadcaster_work() {
+    let (state, _, peer_private) = federation_route_state().await;
+    state
+        .mark_federation_catching_up(peer_private.member_id)
+        .await;
+
+    assert!(super::payment_observation::FederationPaymentObserver
+        .run_round(&state)
+        .await
+        .is_err());
+    assert!(
+        super::broadcast::FederationTransactionBroadcaster::default()
+            .run_round(&state)
+            .await
+            .is_err()
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn private_local_status_route_reports_redacted_halted_sync_state() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state

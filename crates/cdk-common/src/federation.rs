@@ -16,6 +16,7 @@ mod frost_config;
 mod frost_dkg;
 mod journal;
 mod operation;
+mod recovery;
 mod signing;
 mod transaction_proposal;
 mod transport;
@@ -118,6 +119,10 @@ pub use self::operation::{
     FederationPaymentObservationReportAction, FederationPaymentObservationReportStatus,
     FederationPaymentObservationReportSummary, FederationSwapOperation,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
+};
+pub use self::recovery::{
+    FederationRecoveryAction, FederationRecoveryActionCount, FederationRecoveryPhase,
+    FederationWalletRecoveryStatus,
 };
 pub use self::signing::{
     FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,

@@ -22,8 +22,9 @@ use super::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservationReportSummary, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, Result, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+    FederationPaymentObservationReportSummary, FederationWalletRecoveryStatus,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, Result,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
 };
 use crate::nuts::nut01::BlsSecretKeyShare;
 use crate::Amount;
@@ -1883,6 +1884,9 @@ pub struct FederationLocalStatusResponse {
     /// Active local federated on-chain wallet health records.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub onchain_wallets: Vec<FederationOnchainWalletStatus>,
+    /// Redacted state-to-action recovery classification for the joint wallet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_recovery: Option<FederationWalletRecoveryStatus>,
 }
 
 /// Peer status response for federation health and catch-up checks.
@@ -3143,6 +3147,14 @@ mod tests {
                 last_success_unix: Some(1_700_000_000),
                 consecutive_failures: 0,
             }],
+            wallet_recovery: Some(
+                FederationWalletRecoveryStatus::from_states(
+                    &crate::federation::FederationAddressAllocationState::new(),
+                    &crate::federation::FederationChainObservationState::new(),
+                    &crate::federation::FederationTransactionState::new(),
+                )
+                .expect("wallet recovery fixture"),
+            ),
         };
 
         let value = serde_json::to_value(&status).expect("local status json");
@@ -3183,6 +3195,7 @@ mod tests {
                 "sync_ready",
                 "sync_state",
                 "version",
+                "wallet_recovery",
             ])
         );
         let decoded: FederationLocalStatusResponse =

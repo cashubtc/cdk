@@ -311,6 +311,18 @@ impl FederationAddressAllocationState {
         self.wallets.get(&scope)
     }
 
+    /// Iterate over materialized application wallets in canonical scope order.
+    pub fn wallets(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            FederationAddressAllocationScope,
+            &FederationAddressWalletState,
+        ),
+    > {
+        self.wallets.iter().map(|(scope, wallet)| (*scope, wallet))
+    }
+
     /// Build stable rows for federation state-digest comparison.
     pub fn materialized_rows(&self) -> Result<Vec<FederationMaterializedStateRow>> {
         self.validate()?;

@@ -35,6 +35,9 @@ impl FederationTransactionBroadcaster {
         let Some(runtime) = state.mint.federation_config() else {
             return Ok(0);
         };
+        state
+            .ensure_federation_ready_for_authoritative_read()
+            .await?;
         let observer = runtime.member_id();
         let transaction_state = state.mint.federation_transaction_state().await?;
         let mut submitted = 0usize;

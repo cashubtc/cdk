@@ -256,6 +256,73 @@ async fn lost_post_signer_response_burns_nonce_and_retry_attempt_succeeds() {
     run_live_signing_case(public, vec![first, second, third], 2, true).await;
 }
 
+#[tokio::test]
+async fn catching_up_member_refuses_frost_commitments_before_nonce_creation() {
+    let (public, first, second, _) = transport_config_three();
+    let registration = application_registration().expect("application registration");
+    let derivation = SigningDerivation::application_key();
+    let message = [52; 32];
+    let payload = b"typed-timeout-authorization".to_vec();
+    let root = frost_roots(public.federation_id.to_bytes(), 3, 2)
+        .into_iter()
+        .next()
+        .expect("first root");
+    let mut manager = ParticipantKeyManager::with_nonce_store(
+        root,
+        SecretEncryptionKey::new([121; 32]).expect("nonce encryption key"),
+        MemoryNonceStore::default(),
+    )
+    .expect("key manager");
+    manager
+        .register_application(TestAuthorizationAdapter {
+            registration,
+            payload: payload.clone(),
+            message,
+            derivation: derivation.clone(),
+        })
+        .expect("register application");
+    let (context, _, authorization, request) = transport_request_fixture(
+        public.federation_id,
+        vec![cdk_frost::MemberId::new(1).expect("first signer")],
+    );
+    let manager = Arc::new(tokio::sync::Mutex::new(manager));
+    let runtime = super::super::frost_signing::FederationFrostSigningRuntime::for_test(
+        BTreeMap::from([(1, Arc::clone(&manager))]),
+        [(context, authorization, derivation)],
+    );
+    let mut state = federation_route_state_for_private(public.clone(), first.clone()).await;
+    state.federation.frost_signing = Some(runtime);
+    state.mark_federation_catching_up(second.member_id).await;
+
+    let transport = RouterFederationTransportRegistry::default();
+    transport.insert(
+        public
+            .member(first.member_id)
+            .expect("first member")
+            .federation_api_url
+            .clone(),
+        Router::new()
+            .nest("/api/federation/v1", create_federation_router())
+            .with_state(state),
+    );
+    let client = FederationRestPeerClient::new(transport, &public, second).expect("peer client");
+    let error = client
+        .request_frost_commitment(
+            public.member(first.member_id).expect("first member"),
+            &request,
+        )
+        .await
+        .expect_err("catching-up signer must fail closed");
+    assert!(error.to_string().contains("503"));
+    assert!(manager
+        .lock()
+        .await
+        .nonce_store()
+        .nonterminal_records()
+        .expect("nonce records")
+        .is_empty());
+}
+
 fn transport_request_fixture(
     federation_id: cdk::federation::FederationId,
     signers: Vec<cdk_frost::MemberId>,

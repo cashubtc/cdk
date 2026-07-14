@@ -192,6 +192,9 @@ where
         attempt: u32,
         signer_set: Vec<cdk_frost::MemberId>,
     ) -> anyhow::Result<FederationSignedTransaction> {
+        state
+            .ensure_federation_ready_for_authoritative_read()
+            .await?;
         let transaction_state = state.mint.federation_transaction_state().await?;
         let existing = transaction_state
             .accepted_transaction(proposal_id)
@@ -745,6 +748,10 @@ pub(super) async fn post_frost_signing_commitment(
     let kind = FederationRestMessageKind::FrostSigningCommitment;
     let _permit = acquire_private_rest_admission(&state, kind)?;
     let verified = verify_federation_request(&state, &payload, kind).await?;
+    state
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .map_err(signing_error_response)?;
     let runtime_config = federation_runtime_config(&state)?;
     let (context, derivation, authorization) = payload
         .payload
@@ -778,6 +785,10 @@ pub(super) async fn post_frost_signing_package(
     let kind = FederationRestMessageKind::FrostSigningPackage;
     let _permit = acquire_private_rest_admission(&state, kind)?;
     let verified = verify_federation_request(&state, &payload, kind).await?;
+    state
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .map_err(signing_error_response)?;
     let runtime_config = federation_runtime_config(&state)?;
     let (context, nonce_id, authorization, commitments) = payload
         .payload

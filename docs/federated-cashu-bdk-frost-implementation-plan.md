@@ -95,6 +95,10 @@ federation partially ready.
   still call `make_payment` for a FROST on-chain melt. Bypass that side effect
   only for the joint wallet and derive its normal paid observation from the
   confirmed consensus transaction receipt; preserve every standalone path.
+- Milestone 18 found that FROST routes and wallet side-effect loops checked
+  local authorization or BDK health but not federation catch-up readiness.
+  Gate commitments, shares, observations, and broadcast on the existing sync
+  state before any nonce creation or consensus submission.
 
 ## 1. Problem and setting
 
@@ -1684,43 +1688,86 @@ side effects.
 
 **Work:**
 
-- [ ] Enumerate every address, observation, proposal, reservation, nonce,
+- [x] Enumerate every address, observation, proposal, reservation, nonce,
   signing, signed, broadcast, confirmation, replacement, and terminal state.
-- [ ] Define startup recovery action or explicit no-op for every state.
-- [ ] Restore and validate root epochs, the registered-application registry, and
+- [x] Define startup recovery action or explicit no-op for every state.
+- [x] Restore and validate root epochs, the registered-application registry, and
   application key epochs before enabling any application adapter or signer.
-- [ ] Rebuild watch-only BDK revealed indexes from accepted consensus state.
-- [ ] Reapply accepted and signed transactions to BDK idempotently.
-- [ ] Resume safe commitment/share collection only with a fresh signing attempt
+- [x] Rebuild watch-only BDK revealed indexes from accepted consensus state.
+- [x] Reapply accepted and signed transactions to BDK idempotently.
+- [x] Resume safe commitment/share collection only with a fresh signing attempt
   and fresh nonces where required.
-- [ ] Resume rebroadcast using persisted transaction bytes.
-- [ ] Integrate wallet records into existing journal replay and catch-up
+- [x] Resume rebroadcast using persisted transaction bytes.
+- [x] Integrate wallet records into existing journal replay and catch-up
   certificate verification.
-- [ ] Prevent a catching-up member from signing until state digest and readiness
+- [x] Prevent a catching-up member from signing until state digest and readiness
   gates pass.
-- [ ] Add operator-visible stuck-state diagnosis without secret data.
+- [x] Add operator-visible stuck-state diagnosis without secret data.
 
 **Success criteria:**
 
-- [ ] Killing any member at any tested state does not lose an address, reuse a
+- [x] Killing any member at any tested state does not lose an address, reuse a
   nonce, release a reservation, rebuild a signed transaction, or duplicate a
   payment.
-- [ ] A member offline through multiple deposits and spends catches up to the
+- [x] A member offline through multiple deposits and spends catches up to the
   same BDK scripts, UTXOs, transactions, and federation digest.
-- [ ] A fully restarted quorum resumes pending work automatically.
-- [ ] Restart with concurrent CDK and test-application signing sessions preserves
+- [x] A fully restarted quorum resumes pending DKG, observation, signed-byte
+  reconciliation, broadcast, and confirmation work automatically; starting a
+  fresh accepted-proposal signing attempt is the coordinator-liveness work in
+  Milestone 19.
+- [x] Restart with concurrent CDK and test-application signing sessions preserves
   authorization isolation and the shared nonce ledger.
 
 **Required tests:**
 
-- [ ] Failure injection before and after every durable transition.
-- [ ] Full federation restart during DKG, allocation, observation, proposal,
+- [x] Failure injection before and after every durable transition.
+- [x] Full federation restart during DKG, allocation, observation, proposal,
   FROST rounds, signed persistence, broadcast, and confirmation.
-- [ ] Restart with two registered applications and pending sessions in both.
-- [ ] One member offline across address-index gaps and multiple spends.
-- [ ] Catch-up from snapshot plus journal tail.
-- [ ] Tampered snapshot, transaction, descriptor, and nonce metadata rejection.
-- [ ] Repeated recovery invocation idempotency.
+- [x] Restart with two registered applications and pending sessions in both.
+- [x] One member offline across address-index gaps and multiple spends.
+- [x] Catch-up from snapshot plus journal tail.
+- [x] Tampered snapshot, transaction, descriptor, and nonce metadata rejection.
+- [x] Repeated recovery invocation idempotency.
+
+**Milestone record:** completed on 2026-07-14. Startup already validates and
+materializes root/application epochs and the consumer registry before opening
+the isolated signer or watch-only adapters, then replays the authenticated
+journal and reconciles accepted descriptor counters and exact signed bytes into
+BDK. The existing DKG driver, observer, and broadcaster restart workers resume
+their idempotent durable work; an accepted signing state is deliberately
+classified as `start_fresh_signing_attempt`, because participant construction
+burns every nonterminal nonce and the volatile FROST rounds must never be
+resumed with old material. Deterministic coordinator election and failover for
+starting those attempts remains the liveness refinement in Milestone 19.
+
+One narrow shared readiness gap was fixed outside the wallet: authenticated
+FROST commitment/share routes and the observation/broadcast workers now require
+the existing federation sync/readiness gate before nonce creation or consensus
+submission. No mint quote, saga, proof, or settlement business path changed.
+Private local status now includes a typed, bounded recovery matrix containing
+only state/action counts for BDK index repair, chain evidence, proposal/signing,
+sticky reservations, exact-byte reapplication/rebroadcast, confirmation,
+replacement, terminal no-op, and operator-review states. It contains no
+descriptor, script, nonce, share, endpoint, or backend detail.
+
+All 373 enabled `cdk-common` tests, 23 `cdk-frost` tests, and 112 `cdk-bdk`
+tests pass. The six live FROST-route tests, 23 DKG-driver recovery tests, five
+CDK transaction-policy tests, the isolated scheduler-readiness test, and 17 of
+18 broad Axum startup tests pass. Coverage includes DKG restart at every durable
+phase, response loss and partition recovery, serialized wallet-state snapshot
+plus authenticated journal tail, offline address gaps and multiple accepted
+spends, repeated BDK/nonce recovery, two applications sharing one nonce ledger,
+tampered digest/transaction/descriptor/nonce rejection, and catching-up signer
+and side-effect-worker refusal. The one broad startup failure is an existing
+terminal-rejected AlephBFT authentication fixture mismatch; the wider
+payment-observation filter likewise retains its existing unrelated fixture
+failures. The isolated M18 gates and all affected crate checks are clean;
+ordinary no-dependency clippy passes for every touched crate, while strict
+federation-wide clippy remains blocked by the documented pre-existing warning
+baseline outside this milestone. The repository requests nightly rustfmt
+options but only a stable toolchain is installed locally, so stable
+`cargo fmt --check` also retains its known configuration/baseline mismatch;
+all M18 Rust edits were formatted and `git diff --check` passes.
 
 ### Milestone 19: proposer and signing-coordinator liveness
 

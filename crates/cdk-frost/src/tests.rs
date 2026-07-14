@@ -1467,6 +1467,88 @@ fn restart_and_transaction_failures_never_resurrect_nonce_material() {
 }
 
 #[test]
+fn restart_burns_pending_sessions_for_two_applications_in_one_shared_nonce_ledger() {
+    let stores = (0..3)
+        .map(|_| MemoryNonceStore::default())
+        .collect::<Vec<_>>();
+    let stores_for_managers = stores.clone();
+    let mut managers = managers_with_store(3, 2, 110, move |member| {
+        stores_for_managers[usize::from(member.get() - 1)].clone()
+    });
+    let wallet_context = signing_context(
+        wallet_registration(),
+        &SigningDerivation::application_key(),
+        session(110),
+        [110; 32],
+        &[0, 1],
+    );
+    let compatibility_context = signing_context(
+        compatibility_registration(),
+        &SigningDerivation::application_key(),
+        session(111),
+        [111; 32],
+        &[0, 1],
+    );
+    let mut rng = ChaCha20Rng::from_seed([112; 32]);
+    let wallet = managers[0]
+        .commit_nonce(&wallet_context, &mut rng)
+        .expect("wallet commitment");
+    let compatibility = managers[0]
+        .commit_nonce(&compatibility_context, &mut rng)
+        .expect("compatibility commitment");
+    assert_ne!(wallet.nonce_id(), compatibility.nonce_id());
+    assert_eq!(
+        stores[0]
+            .nonterminal_records()
+            .expect("pending application sessions")
+            .len(),
+        2
+    );
+
+    managers[0]
+        .recover_after_restart()
+        .expect("shared-ledger restart recovery");
+    managers[0]
+        .recover_after_restart()
+        .expect("idempotent shared-ledger recovery");
+    for nonce_id in [wallet.nonce_id(), compatibility.nonce_id()] {
+        assert!(matches!(
+            stores[0]
+                .load_nonce(nonce_id)
+                .expect("recovered nonce")
+                .expect("durable recovered record")
+                .lifecycle(),
+            NonceLifecycle::Burned {
+                reason: NonceBurnReason::RestartRecovery
+            }
+        ));
+    }
+
+    let fresh_context = |prior: &SigningSessionContext| {
+        let scope = SigningAuthorizationScope::new(
+            prior.federation_id(),
+            prior.root_epoch(),
+            prior.registration(),
+            prior.derivation_binding(),
+            prior.authorization_reference(),
+            prior.message_commitment(),
+        )
+        .expect("retry authorization scope");
+        SigningSessionContext::new(scope, 1, prior.signer_set().iter().copied())
+            .expect("fresh signing attempt")
+    };
+    let wallet_retry = managers[0]
+        .commit_nonce(&fresh_context(&wallet_context), &mut rng)
+        .expect("fresh wallet commitment");
+    let compatibility_retry = managers[0]
+        .commit_nonce(&fresh_context(&compatibility_context), &mut rng)
+        .expect("fresh compatibility commitment");
+    assert_ne!(wallet_retry.nonce_id(), wallet.nonce_id());
+    assert_ne!(compatibility_retry.nonce_id(), compatibility.nonce_id());
+    assert_ne!(wallet_retry.nonce_id(), compatibility_retry.nonce_id());
+}
+
+#[test]
 fn abort_timeout_ambiguity_and_signer_substitution_burn_records() {
     let stores = (0..3)
         .map(|_| FailingNonceStore::default())

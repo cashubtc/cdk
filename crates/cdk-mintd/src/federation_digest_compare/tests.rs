@@ -48,6 +48,7 @@ fn local_status(
         materialized_state_rows: Vec::new(),
         invalid_operation_alerts: Vec::new(),
         onchain_wallets: Vec::new(),
+        wallet_recovery: None,
     }
     .with_materialized_state_digest(materialized_state_digest)
 }
