@@ -1413,19 +1413,84 @@ impl Mint {
         max_operation_index: u64,
     ) -> Result<(), Error> {
         let entries = self.localstore.get_federation_journal_entries().await?;
-        let has_prior_quote = entries.iter().any(|entry| {
-            entry.index < max_operation_index
-                && entry.status() == FederationOperationStatus::Applied
-                && matches!(
-                    &entry.envelope.operation,
-                    FederationOperation::MeltQuote(operation)
-                        if operation.quote == quote.to_string()
+        let quote = quote.to_string();
+        let has_prior_quote = Self::has_prior_applied_federation_operation(
+            &entries,
+            max_operation_index,
+            |operation| {
+                matches!(
+                    operation,
+                    FederationOperation::MeltQuote(operation) if operation.quote == quote
                 )
-        });
+            },
+        );
         if !has_prior_quote {
             return Err(Error::UnknownQuote);
         }
         Ok(())
+    }
+
+    async fn require_prior_applied_mint_quote(
+        &self,
+        quote: &QuoteId,
+        max_operation_index: u64,
+    ) -> Result<(), Error> {
+        let entries = self.localstore.get_federation_journal_entries().await?;
+        Self::require_prior_applied_mint_quote_in_entries(
+            &entries,
+            quote,
+            max_operation_index,
+        )
+    }
+
+    async fn require_prior_applied_mint_quotes(
+        &self,
+        quotes: &[QuoteId],
+        max_operation_index: u64,
+    ) -> Result<(), Error> {
+        let entries = self.localstore.get_federation_journal_entries().await?;
+        for quote in quotes {
+            Self::require_prior_applied_mint_quote_in_entries(
+                &entries,
+                quote,
+                max_operation_index,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn require_prior_applied_mint_quote_in_entries(
+        entries: &[FederationJournalEntry],
+        quote: &QuoteId,
+        max_operation_index: u64,
+    ) -> Result<(), Error> {
+        let quote = quote.to_string();
+        let has_prior_quote = Self::has_prior_applied_federation_operation(
+            entries,
+            max_operation_index,
+            |operation| {
+                matches!(
+                    operation,
+                    FederationOperation::MintQuote(operation) if operation.quote == quote
+                )
+            },
+        );
+        if !has_prior_quote {
+            return Err(Error::UnknownQuote);
+        }
+        Ok(())
+    }
+
+    fn has_prior_applied_federation_operation(
+        entries: &[FederationJournalEntry],
+        max_operation_index: u64,
+        mut matches_operation: impl FnMut(&FederationOperation) -> bool,
+    ) -> bool {
+        entries.iter().any(|entry| {
+            entry.index < max_operation_index
+                && entry.status() == FederationOperationStatus::Applied
+                && matches_operation(&entry.envelope.operation)
+        })
     }
 
     fn federation_payment_observation_can_finalize_at_or_before(
@@ -1594,6 +1659,8 @@ impl Mint {
         observation: &FederationMintQuotePaymentObservation,
     ) -> Result<(), Error> {
         let quote_id = quote_id_from_federation(&observation.quote)?;
+        self.require_prior_applied_mint_quote(&quote_id, entry.index)
+            .await?;
         let record = payment_observation_record_from_entry(entry)?;
         let mut tx = self.localstore.begin_transaction().await?;
         let outcome = async {
@@ -1696,10 +1763,12 @@ impl Mint {
             .iter()
             .map(|output| output.blinded_secret)
             .collect::<Vec<PublicKey>>();
+        let quote_ids = input.quote_ids();
+        self.require_prior_applied_mint_quotes(&quote_ids, entry.index)
+            .await?;
 
         let mut tx = self.localstore.begin_transaction().await?;
         let outcome = async {
-            let quote_ids = input.quote_ids();
             let mut quotes = Vec::with_capacity(quote_ids.len());
             for quote_id in &quote_ids {
                 quotes.push(
@@ -1753,6 +1822,7 @@ impl Mint {
                 existing_signatures.len(),
             )?;
 
+            let max_payment_observation_index = entry.index.saturating_sub(1);
             for (quote, amount_issued) in quotes.iter().zip(&expected_amounts) {
                 let required_amount = quote
                     .amount_issued()
@@ -1768,7 +1838,7 @@ impl Mint {
                     quote,
                     &required_amount,
                     &observations,
-                    entry.index,
+                    max_payment_observation_index,
                 )? {
                     return Err(Error::UnpaidQuote);
                 }

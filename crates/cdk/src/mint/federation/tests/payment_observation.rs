@@ -147,7 +147,7 @@ async fn real_policy_allows_quorum_despite_minority_disagreement() {
 }
 
 #[tokio::test]
-async fn mint_payment_observation_before_quote_materializes_after_quote_apply() {
+async fn mint_payment_observation_without_prior_quote_is_rejected_without_mutation() {
     let runtime_config = runtime_config_with_payment_policy(
         FederationPaymentObservationPolicy::development_single_observation_for_testing(),
     );
@@ -160,7 +160,13 @@ async fn mint_payment_observation_before_quote_materializes_after_quote_apply() 
         &mut journal,
         mint_payment_observation_envelope(&runtime_config, &quote, 1, 4, "settled-before-quote"),
     );
-    persist_and_apply_entry(&mint, &observation_entry).await;
+    persist_journal_entry(&localstore, &observation_entry).await;
+
+    let error = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&observation_entry))
+        .await
+        .expect_err("observation without an earlier applied quote must be rejected");
+    assert!(matches!(error, Error::UnknownQuote));
 
     assert!(localstore
         .get_mint_quote(&quote)
@@ -174,7 +180,7 @@ async fn mint_payment_observation_before_quote_materializes_after_quote_apply() 
         )
         .await
         .expect("stored observation before quote");
-    assert_eq!(observations_before_quote.len(), 1);
+    assert!(observations_before_quote.is_empty());
     let stored_observation_entry = localstore
         .get_federation_journal_entry_by_operation_id(observation_entry.operation_id)
         .await
@@ -182,8 +188,25 @@ async fn mint_payment_observation_before_quote_materializes_after_quote_apply() 
         .expect("observation journal entry");
     assert_eq!(
         stored_observation_entry.status(),
-        FederationOperationStatus::Applied
+        FederationOperationStatus::Accepted
     );
+}
+
+#[tokio::test]
+async fn mint_payment_observation_rejects_quote_applied_only_at_later_index() {
+    let runtime_config = runtime_config_with_payment_policy(
+        FederationPaymentObservationPolicy::development_single_observation_for_testing(),
+    );
+    let (mint, localstore) =
+        federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+
+    let observation_entry = appended_entry(
+        &mut journal,
+        mint_payment_observation_envelope(&runtime_config, &quote, 1, 4, "settled-before-quote"),
+    );
+    persist_journal_entry(&localstore, &observation_entry).await;
 
     let quote_entry = appended_entry(
         &mut journal,
@@ -195,24 +218,38 @@ async fn mint_payment_observation_before_quote_materializes_after_quote_apply() 
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
-    let quote_after_apply = localstore
+    let error = mint
+        .apply_federation_journal_entries(std::slice::from_ref(&observation_entry))
+        .await
+        .expect_err("a quote at a later index must not authorize an older observation");
+    assert!(matches!(error, Error::UnknownQuote));
+
+    let quote_after_rejection = localstore
         .get_mint_quote(&quote)
         .await
         .expect("quote lookup after quote entry")
-        .expect("quote after replay");
-    assert_eq!(quote_after_apply.state(), MintQuoteState::Paid);
+        .expect("quote after apply");
+    assert_eq!(quote_after_rejection.state(), MintQuoteState::Unpaid);
     assert_eq!(
-        quote_after_apply.amount_paid(),
-        Amount::new(4, CurrencyUnit::Sat)
+        quote_after_rejection.amount_paid(),
+        Amount::new(0, CurrencyUnit::Sat)
     );
-    let stored_quote_entry = localstore
-        .get_federation_journal_entry_by_operation_id(quote_entry.operation_id)
+    assert!(localstore
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MintQuote,
+            &quote.to_string(),
+        )
         .await
-        .expect("quote journal lookup")
-        .expect("quote journal entry");
+        .expect("payment observations")
+        .is_empty());
+    let stored_observation_entry = localstore
+        .get_federation_journal_entry_by_operation_id(observation_entry.operation_id)
+        .await
+        .expect("observation journal lookup")
+        .expect("observation journal entry");
     assert_eq!(
-        stored_quote_entry.status(),
-        FederationOperationStatus::Applied
+        stored_observation_entry.status(),
+        FederationOperationStatus::Accepted
     );
 }
 
