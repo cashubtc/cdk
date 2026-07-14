@@ -1533,6 +1533,10 @@ fed-regtest-frost-bdk-8-of-11 dir="target/cdk-fed-regtest-frost-bdk-8-of-11" por
 fed-regtest-frost-bdk-14-of-20 dir="target/cdk-fed-regtest-frost-bdk-14-of-20" port_start="30985":
   FROST_BDK_CARGO_PROFILE=release STATUS_RETRIES=1200 SMOKE_OPERATION_TIMEOUT_SECONDS=1200 FROST_BDK_WAIT_RETRIES=1800 FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS=600 just fed-regtest-frost-bdk "{{dir}}" 20 14 "{{port_start}}" happy
 
+# Leave a fresh 3-of-5 federation idle across two signing leases, then deposit and melt
+fed-regtest-frost-bdk-long-idle dir="target/cdk-fed-regtest-frost-bdk-long-idle" port_start="33985" idle_seconds="65":
+  FROST_BDK_LONG_IDLE_SECONDS="{{idle_seconds}}" just fed-regtest-frost-bdk "{{dir}}" 5 3 "{{port_start}}" happy
+
 # Bounded process-level fault profiles using fresh state for every run
 fed-regtest-frost-bdk-fault-matrix dir="target/cdk-fed-regtest-frost-bdk-faults" port_start="32985":
   #!/usr/bin/env bash

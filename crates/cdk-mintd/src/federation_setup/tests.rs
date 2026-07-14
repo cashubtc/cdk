@@ -418,6 +418,9 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(live_dkg_smoke_script.contains("capture_frost_bdk_checkpoint"));
     assert!(live_dkg_smoke_script.contains("FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS:-60"));
     assert!(live_dkg_smoke_script.contains("FROST_BDK_MEMBER_REQUEST_MAX_RETRIES:-200"));
+    assert!(live_dkg_smoke_script.contains("FROST_BDK_LONG_IDLE_SECONDS:-0"));
+    assert!(live_dkg_smoke_script.contains("FROST_BDK_LONG_IDLE_SECONDS < 60"));
+    assert!(live_dkg_smoke_script.contains("capture_frost_bdk_checkpoint 01-after-long-idle"));
     assert!(live_dkg_smoke_script
         .contains("--member-request-timeout-secs \"$FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS\""));
     assert!(live_dkg_smoke_script

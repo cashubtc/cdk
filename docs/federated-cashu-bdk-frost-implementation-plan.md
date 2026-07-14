@@ -1804,13 +1804,14 @@ weakening consensus authorization.
 - [x] Signer-set substitution between attempts.
 - [x] Delayed stale coordinator messages after failover.
 - [x] Network partition below and above consensus/signing thresholds.
-- [ ] Long idle period followed by deposit and melt.
+- [x] Long idle period followed by deposit and melt.
 - [ ] CPU/network benchmark for idle and active signing periods; the deterministic
   active scheduler microbenchmark and idle no-work invariant pass, but a
   multi-process network measurement remains for Milestone 26.
 
-**Milestone record:** completed on 2026-07-14 with the two environment-backed
-tests above deliberately deferred to the end-to-end milestone. The new
+**Milestone record:** core implementation completed on 2026-07-14; the live
+long-idle acceptance test completed on 2026-07-15, leaving only the
+Milestone 26 multi-process CPU/network measurement unchecked. The new
 application-neutral liveness schedule derives proposer, signing coordinator,
 and every threshold-sized signer subset from the accepted batch or proposal
 ID. Absolute bounded leases survive restart, rotate across the complete member
@@ -1848,9 +1849,12 @@ Axum run reached 392 passes; its existing quote/saga fixture failures and two
 sandbox-denied listener tests remain outside this isolated milestone. Ordinary
 no-dependency clippy reports only the existing repository baseline, stable
 rustfmt formatted every changed Rust file despite unavailable nightly options,
-and `git diff --check` passes. A real long-idle deposit/melt run and network
-traffic measurement remain unchecked for Milestone 26 rather than being
-claimed from component tests.
+and `git diff --check` passes. A fresh 3-of-5 dual-DKG run then kept the active
+federation idle for 65 seconds, crossing two signing leases, and recorded a
+converged post-idle checkpoint before completing two deposits and two distinct
+`PAID` melts. The final balance stayed positive and decreased by the payments;
+all five members converged. The multi-process CPU/network measurement remains
+unchecked for Milestone 26 rather than being claimed from this functional run.
 
 ### Milestone 20: fee management, batching, and replacements
 

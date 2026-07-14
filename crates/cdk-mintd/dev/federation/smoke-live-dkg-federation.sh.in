@@ -39,6 +39,7 @@ FROST_BDK_WAIT_RETRIES="${FROST_BDK_WAIT_RETRIES:-300}"
 FROST_BDK_WAIT_SLEEP_SECONDS="${FROST_BDK_WAIT_SLEEP_SECONDS:-1}"
 FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS="${FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS:-60}"
 FROST_BDK_MEMBER_REQUEST_MAX_RETRIES="${FROST_BDK_MEMBER_REQUEST_MAX_RETRIES:-200}"
+FROST_BDK_LONG_IDLE_SECONDS="${FROST_BDK_LONG_IDLE_SECONDS:-0}"
 PIDS=()
 METRICS_PID=""
 DKG_SETUP_STARTED_SECONDS=0
@@ -915,6 +916,12 @@ run_frost_bdk_regtest() {
     --member-request-timeout-secs "$FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS" \
     --member-request-max-retries "$FROST_BDK_MEMBER_REQUEST_MAX_RETRIES"
   capture_frost_bdk_checkpoint 00-activated
+  if (( FROST_BDK_LONG_IDLE_SECONDS > 0 )); then
+    printf 'leaving the activated federation idle for %s seconds\n' \
+      "$FROST_BDK_LONG_IDLE_SECONDS"
+    sleep "$FROST_BDK_LONG_IDLE_SECONDS"
+    capture_frost_bdk_checkpoint 01-after-long-idle
+  fi
   exercise_frost_bdk_fault_profile
 
   local sequence=0
@@ -1008,8 +1015,13 @@ validate_live_dkg_smoke() {
   fi
   if [[ "$FROST_BDK_REGTEST" == "1" ]]; then
     if ! [[ "$FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ \
-      && "$FROST_BDK_MEMBER_REQUEST_MAX_RETRIES" =~ ^[0-9]+$ ]]; then
-      printf 'FROST BDK member request timeout/retry values are invalid\n' >&2
+      && "$FROST_BDK_MEMBER_REQUEST_MAX_RETRIES" =~ ^[0-9]+$ \
+      && "$FROST_BDK_LONG_IDLE_SECONDS" =~ ^[0-9]+$ ]]; then
+      printf 'FROST BDK member request timeout/retry/idle values are invalid\n' >&2
+      return 1
+    fi
+    if (( FROST_BDK_LONG_IDLE_SECONDS > 0 && FROST_BDK_LONG_IDLE_SECONDS < 60 )); then
+      printf 'FROST_BDK_LONG_IDLE_SECONDS must be 0 or at least 60\n' >&2
       return 1
     fi
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for FROST BDK regtest\n' >&2; return 1; }
