@@ -56,11 +56,11 @@ pub struct CreateRequestSubCommand {
     #[arg(long, action = clap::ArgAction::Append)]
     nostr_relay: Option<Vec<String>>,
     /// Mint URLs the receiver trusts. Can be specified multiple times.
-    #[arg(long, action = clap::ArgAction::Append, conflicts_with = "preferred_mints")]
+    #[arg(long, action = clap::ArgAction::Append)]
     mints: Option<Vec<String>>,
-    /// Preferred Mint URLs. Can be specified multiple times.
-    #[arg(long, action = clap::ArgAction::Append, conflicts_with = "mints")]
-    preferred_mints: Option<Vec<String>>,
+    /// Treat the mint list as preferred rather than strict.
+    #[arg(long)]
+    mint_preferred: bool,
     /// Use bech32 encoding (CREQ-B)
     #[arg(short, long)]
     bech32: bool,
@@ -84,7 +84,7 @@ pub async fn create_request(
         http_url: sub_command_args.http_url.clone(),
         nostr_relays: sub_command_args.nostr_relay.clone(),
         mints: sub_command_args.mints.clone(),
-        preferred_mints: sub_command_args.preferred_mints.clone(),
+        mint_preferred: sub_command_args.mint_preferred.then_some(true),
     };
 
     let (req, nostr_wait) = wallet_repository.create_request(params).await?;

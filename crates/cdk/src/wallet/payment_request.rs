@@ -39,13 +39,39 @@ impl Wallet {
         payment_request: PaymentRequest,
         custom_amount: Option<Amount>,
     ) -> Result<(), Error> {
-        let amount = match payment_request.amount {
+        let mut amount = match payment_request.amount {
             Some(amount) => amount,
             None => match custom_amount {
                 Some(a) => a,
                 None => return Err(Error::AmountUndefined),
             },
         };
+
+        // A method fee is due only when the receiver may need to melt proofs from this mint.
+        if !payment_request.supported_methods.is_empty() {
+            let mint_info = self.load_mint_info().await?;
+            let method_fee = payment_request
+                .supported_methods
+                .iter()
+                .filter(|requested| {
+                    mint_info.nuts.nut05.methods.iter().any(|supported| {
+                        supported.unit == self.unit && supported.method.as_str() == requested.method
+                    })
+                })
+                .map(|method| method.fee.unwrap_or(Amount::ZERO))
+                .min()
+                .ok_or_else(|| {
+                    Error::Custom(
+                        "Mint does not support a melting method required by the payment request"
+                            .to_string(),
+                    )
+                })?;
+            if payment_request.mints.is_empty() || !payment_request.mints.contains(&self.mint_url) {
+                amount = amount
+                    .checked_add(method_fee)
+                    .ok_or(Error::AmountOverflow)?;
+            }
+        }
 
         // Extract optional NUT-10 spending conditions from the payment request.
         //
@@ -218,8 +244,8 @@ pub struct CreateRequestParams {
     pub nostr_relays: Option<Vec<String>>, // when transport == nostr
     /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
     pub mints: Option<Vec<String>>,
-    /// Optional list of preferred mint URLs.
-    pub preferred_mints: Option<Vec<String>>,
+    /// Whether `mints` is advisory rather than strict.
+    pub mint_preferred: Option<bool>,
 }
 
 impl Default for CreateRequestParams {
@@ -236,7 +262,7 @@ impl Default for CreateRequestParams {
             http_url: None,
             nostr_relays: None,
             mints: None,
-            preferred_mints: None,
+            mint_preferred: None,
         }
     }
 }
@@ -296,7 +322,7 @@ impl WalletRepository {
 
         // Get the list of mints accepted by the payment request (empty means any mint is accepted)
         let accepted_mints = &payment_request.mints;
-        let preferred_mints = &payment_request.preferred_mints;
+        let mint_preferred = payment_request.mint_preferred.unwrap_or(false);
 
         // Get the unit from the payment request, defaulting to Sat
         let unit = payment_request.unit.clone().unwrap_or(CurrencyUnit::Sat);
@@ -304,7 +330,10 @@ impl WalletRepository {
         // Select the wallet to use for payment
         let selected_wallet = if let Some(specified_mint) = &mint_url {
             // User specified a mint - verify it's accepted by the payment request
-            if !accepted_mints.is_empty() && !accepted_mints.contains(specified_mint) {
+            if !mint_preferred
+                && !accepted_mints.is_empty()
+                && !accepted_mints.contains(specified_mint)
+            {
                 return Err(Error::Custom(format!(
                     "Mint {} is not accepted by this payment request. Accepted mints: {:?}",
                     specified_mint, accepted_mints
@@ -330,8 +359,9 @@ impl WalletRepository {
                 }
 
                 // Check if this mint is accepted by the payment request
-                let is_accepted =
-                    accepted_mints.is_empty() || accepted_mints.contains(&wallet_key.mint_url);
+                let is_accepted = mint_preferred
+                    || accepted_mints.is_empty()
+                    || accepted_mints.contains(&wallet_key.mint_url);
 
                 if !is_accepted {
                     continue;
@@ -339,7 +369,8 @@ impl WalletRepository {
 
                 // Check balance meets requirements
                 if *balance >= amount {
-                    let is_preferred = preferred_mints.contains(&wallet_key.mint_url);
+                    let is_preferred =
+                        mint_preferred && accepted_mints.contains(&wallet_key.mint_url);
 
                     if is_preferred && *balance > best_preferred_balance {
                         if let Ok(wallet) = self.get_wallet(&wallet_key.mint_url, &unit).await {
@@ -509,14 +540,6 @@ impl WalletRepository {
             .filter_map(|url| MintUrl::from_str(&url).ok())
             .collect();
 
-        let preferred_mints: Vec<MintUrl> = params
-            .preferred_mints
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|url| MintUrl::from_str(&url).ok())
-            .collect();
-
         // Transports
         let transport_type = params.transport.to_lowercase();
         let (transports, nostr_info): (Vec<Transport>, Option<NostrWaitInfo>) =
@@ -586,7 +609,7 @@ impl WalletRepository {
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
             mints,
-            preferred_mints,
+            mint_preferred: params.mint_preferred,
             supported_methods: vec![],
             description: params.description,
             transports,
@@ -617,14 +640,6 @@ impl WalletRepository {
         // Filter by the requested unit and extract unique mint URLs
         let mints: Vec<MintUrl> = params
             .mints
-            .clone()
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|url| MintUrl::from_str(&url).ok())
-            .collect();
-
-        let preferred_mints: Vec<MintUrl> = params
-            .preferred_mints
             .clone()
             .unwrap_or_default()
             .into_iter()
@@ -665,7 +680,7 @@ impl WalletRepository {
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
             mints,
-            preferred_mints,
+            mint_preferred: params.mint_preferred,
             supported_methods: vec![],
             description: params.description,
             transports,
@@ -832,6 +847,6 @@ mod tests {
         assert_eq!(params.http_url, None);
         assert_eq!(params.nostr_relays, None);
         assert_eq!(params.mints, None);
-        assert_eq!(params.preferred_mints, None);
+        assert_eq!(params.mint_preferred, None);
     }
 }

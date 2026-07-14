@@ -102,6 +102,8 @@ mod tests {
             unit: None,
             single_use: None,
             mints: vec![],
+            mint_preferred: None,
+            supported_methods: vec![],
             description: None,
             transports: vec![],
             nut10: None,

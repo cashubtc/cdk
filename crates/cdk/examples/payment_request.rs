@@ -131,7 +131,7 @@ async fn main() -> anyhow::Result<()> {
             "wss://nos.lol".to_string(),
         ]),
         mints: None,
-        preferred_mints: None,
+        mint_preferred: None,
     };
 
     let (payment_request, nostr_wait_info) = wallet.create_request(nostr_params).await?;
@@ -188,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
         http_url: Some("https://example.com/cashu/callback".to_string()),
         nostr_relays: None,
         mints: None,
-        preferred_mints: None,
+        mint_preferred: None,
     };
 
     let (http_request, _) = wallet.create_request(http_params).await?;
@@ -233,7 +233,7 @@ async fn main() -> anyhow::Result<()> {
         http_url: None,
         nostr_relays: Some(vec!["wss://relay.damus.io".to_string()]),
         mints: None,
-        preferred_mints: None,
+        mint_preferred: None,
     };
 
     let (p2pk_request, _) = wallet.create_request(p2pk_params).await?;
