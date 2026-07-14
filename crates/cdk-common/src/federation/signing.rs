@@ -386,7 +386,11 @@ mod tests {
                 .get(&member_id)
                 .expect("private config");
             let share_set = private
-                .sign_blinded_messages(&bundle.public_config, operation_id, &[output.clone()])
+                .sign_blinded_messages(
+                    &bundle.public_config,
+                    operation_id,
+                    std::slice::from_ref(&output),
+                )
                 .expect("share set");
             shares.push(share_set.shares[0].share);
         }
@@ -419,7 +423,11 @@ mod tests {
             .get(&member_id(1))
             .expect("private config");
         let share_set = private
-            .sign_blinded_messages(&bundle.public_config, entry.operation_id, &[output.clone()])
+            .sign_blinded_messages(
+                &bundle.public_config,
+                entry.operation_id,
+                std::slice::from_ref(&output),
+            )
             .expect("signature share set");
 
         let records =

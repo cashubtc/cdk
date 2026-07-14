@@ -1266,10 +1266,7 @@ impl FederationPaymentObservationReport {
                 .map(|group| FederationPaymentObservationEvidenceGroupSummary {
                     state: group.representative.state_label(),
                     observers: group.observers.clone(),
-                    observer_count: match group.observers.len().try_into() {
-                        Ok(count) => count,
-                        Err(_) => u16::MAX,
-                    },
+                    observer_count: group.observers.len().try_into().unwrap_or(u16::MAX),
                     operation_ids: group.operation_ids.clone(),
                     operation_indices: group.operation_indices.clone(),
                     conflicting_observers: group.conflicting_observers.clone(),
@@ -1342,19 +1339,16 @@ impl FederationPaymentObservationQuorum {
     /// Number of distinct members with matching observations.
     #[must_use]
     pub fn matching_count(&self) -> u16 {
-        match self.matching_observers.len().try_into() {
-            Ok(count) => count,
-            Err(_) => u16::MAX,
-        }
+        self.matching_observers.len().try_into().unwrap_or(u16::MAX)
     }
 
     /// Number of distinct members with conflicting observations.
     #[must_use]
     pub fn conflicting_count(&self) -> u16 {
-        match self.conflicting_observers.len().try_into() {
-            Ok(count) => count,
-            Err(_) => u16::MAX,
-        }
+        self.conflicting_observers
+            .len()
+            .try_into()
+            .unwrap_or(u16::MAX)
     }
 
     /// Return true once the matching observer set reaches the configured quorum.
@@ -1499,6 +1493,7 @@ impl FederationOperationBalanceAudit {
 }
 
 /// Consensus operation payload.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -3416,7 +3411,7 @@ mod tests {
             FederationPaymentObservationContext::MintQuote,
             "mint-quote",
             2,
-            &[matching_second.clone()],
+            std::slice::from_ref(&matching_second),
         );
         assert_eq!(
             quorum.status,

@@ -2836,6 +2836,7 @@ impl FederationJournalCatchUpResponse {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn catch_up_certificate_transcript(
     federation_id: FederationId,
     signer: MemberId,

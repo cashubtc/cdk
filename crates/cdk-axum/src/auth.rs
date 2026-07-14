@@ -17,6 +17,7 @@ pub(crate) const CLEAR_AUTH_KEY: &str = "Clear-auth";
 pub(crate) const BLIND_AUTH_KEY: &str = "Blind-auth";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum AuthHeader {
     /// Clear Auth token
     Clear(String),

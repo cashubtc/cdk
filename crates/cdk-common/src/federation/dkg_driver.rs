@@ -600,6 +600,7 @@ impl FederationDkgDriverRecords {
         Ok(Some(plan))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn plan_for_phase(
         phase: FederationDkgDriverPhase,
         progress: FederationDkgDriverProgress,

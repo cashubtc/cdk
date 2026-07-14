@@ -1604,6 +1604,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_verify_token_dleq_rejects_wrong_mint_url() {
         use crate::wallet::test_utils::{
             create_test_db, create_test_wallet_with_mock, test_keyset_id, test_proof,

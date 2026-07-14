@@ -507,7 +507,7 @@ This checkpoint also fixes a notification-state shortcut exposed by the
 runtime migration. A pre-registered response observer is no longer mistaken
 for a queued operation; duplicate proposal detection remains owned by the
 Aleph data provider under the consensus lock, and duplicate callers join the
-same waiter without requeueing. All 352 federation-enabled `cdk-common` tests,
+same waiter without requeuing. All 352 federation-enabled `cdk-common` tests,
 all 99 mint federation tests, and the complete 456-test Axum federation suite
 pass, including duplicate/fanout, Aleph catch-up, startup-decision, live
 private-message finality, and mint/swap/melt/notification coverage.

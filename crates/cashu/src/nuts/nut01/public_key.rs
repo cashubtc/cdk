@@ -100,6 +100,10 @@ impl PublicKey {
     }
 
     /// Return uncompressed secp256k1 bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this is a BLS public key.
     #[inline]
     pub fn to_uncompressed_bytes(&self) -> [u8; 65] {
         match self {
@@ -109,6 +113,10 @@ impl PublicKey {
     }
 
     /// Return secp256k1 x-only public key.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this is a BLS public key.
     #[inline]
     pub fn x_only_public_key(&self) -> XOnlyPublicKey {
         match self {
@@ -118,6 +126,10 @@ impl PublicKey {
     }
 
     /// Return secp256k1 x-only public key and parity.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this is a BLS public key.
     #[inline]
     pub fn x_only_public_key_with_parity(&self) -> (XOnlyPublicKey, secp256k1::Parity) {
         match self {
@@ -167,6 +179,10 @@ impl PublicKey {
     }
 
     /// Negate a secp256k1 public key.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this is a BLS public key.
     pub fn negate<C>(&self, secp: &Secp256k1<C>) -> Self
     where
         C: secp256k1::Verification,

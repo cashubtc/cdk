@@ -801,7 +801,7 @@ async fn test_mint_enforce_fee() {
 
     assert!(res.is_ok());
 
-    let thousnad_proofs: Vec<_> = proofs.drain(..1001).collect();
+    let thousand_proofs: Vec<_> = proofs.drain(..1001).collect();
 
     let preswap = PreMintSecrets::random(
         keyset_id,
@@ -811,7 +811,7 @@ async fn test_mint_enforce_fee() {
     )
     .unwrap();
 
-    let swap_request = SwapRequest::new(thousnad_proofs.clone(), preswap.blinded_messages());
+    let swap_request = SwapRequest::new(thousand_proofs.clone(), preswap.blinded_messages());
 
     // Attempt to swap underpaying fee
     match mint_bob.process_swap_request(swap_request).await {
@@ -833,7 +833,7 @@ async fn test_mint_enforce_fee() {
     )
     .unwrap();
 
-    let swap_request = SwapRequest::new(thousnad_proofs.clone(), preswap.blinded_messages());
+    let swap_request = SwapRequest::new(thousand_proofs.clone(), preswap.blinded_messages());
 
     let _ = mint_bob.process_swap_request(swap_request).await.unwrap();
 }

@@ -118,9 +118,8 @@ where
 {
     fn drop(&mut self) {
         if let Some(mut conn) = self.inner.take() {
-            match DB::Transaction::rollback_on_drop(conn.deref_mut()) {
-                Ok(true) => return,
-                Ok(false) | Err(_) => {}
+            if let Ok(true) = DB::Transaction::rollback_on_drop(conn.deref_mut()) {
+                return;
             }
             tokio::spawn(async move {
                 let _ = DB::Transaction::rollback(conn.deref_mut()).await;

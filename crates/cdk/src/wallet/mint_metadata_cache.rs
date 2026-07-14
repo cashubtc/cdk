@@ -710,7 +710,7 @@ impl MintMetadataCache {
 
         let keysets_to_fetch = regular_keysets_to_fetch
             .into_iter()
-            .chain(auth_keysets_to_fetch.into_iter())
+            .chain(auth_keysets_to_fetch)
             .collect::<Vec<_>>();
 
         tracing::debug!(

@@ -207,6 +207,10 @@ impl MemberId {
     }
 
     /// Return this member ID as a threshold BLS signer ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the validated non-zero member ID invariant is violated.
     #[must_use]
     pub fn to_bls_signer_id(self) -> BlsSignerId {
         BlsSignerId::new(self.0).expect("member id is non-zero")
@@ -1234,13 +1238,13 @@ impl FederationConfig {
                 keyset_id: keyset.id,
             });
         }
-        if output.amount != Amount::ZERO || !allow_zero_amount_change_output {
-            if !keyset.aggregate_keys.contains_key(&output.amount) {
-                return Err(FederationError::UnknownFederatedKeysetAmount {
-                    keyset_id: keyset.id,
-                    amount: output.amount,
-                });
-            }
+        if (output.amount != Amount::ZERO || !allow_zero_amount_change_output)
+            && !keyset.aggregate_keys.contains_key(&output.amount)
+        {
+            return Err(FederationError::UnknownFederatedKeysetAmount {
+                keyset_id: keyset.id,
+                amount: output.amount,
+            });
         }
         if output.amount == Amount::ZERO
             && allow_zero_amount_change_output

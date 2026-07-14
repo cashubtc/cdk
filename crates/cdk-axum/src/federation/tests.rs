@@ -18649,7 +18649,7 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
 }
 
 #[tokio::test]
-async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_requeueing() {
+async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_requeuing() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -18896,7 +18896,7 @@ async fn aleph_bft_pending_persistence_failure_releases_waiter_and_allows_retry(
 }
 
 #[tokio::test]
-async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeueing() {
+async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeuing() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -19549,7 +19549,7 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
 }
 
 #[tokio::test]
-async fn aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeueing() {
+async fn aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeuing() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");

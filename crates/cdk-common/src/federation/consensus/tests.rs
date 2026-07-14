@@ -228,9 +228,7 @@ fn journal_fingerprint(
         .collect()
 }
 
-fn finalized_item_fingerprint(
-    adapter: &FederationConsensusRuntime,
-) -> Vec<(
+type FinalizedItemFingerprint = (
     u64,
     u64,
     u64,
@@ -239,7 +237,11 @@ fn finalized_item_fingerprint(
     u64,
     Option<String>,
     FederationAlephBftFinalizedItemStatus,
-)> {
+);
+
+fn finalized_item_fingerprint(
+    adapter: &FederationConsensusRuntime,
+) -> Vec<FinalizedItemFingerprint> {
     adapter
         .finalized_items()
         .iter()
@@ -1472,7 +1474,7 @@ fn consensus_runtime_finalizes_four_member_order_with_faulty_duplicates() {
     let conflict_id = conflicting_first
         .operation_id()
         .expect("conflict operation id");
-    let units = vec![
+    let units = [
         aleph_operation_unit(
             federation_id,
             members[0],

@@ -1116,7 +1116,7 @@ Mint-side restructuring checklist:
   waiters and status visibility. Active waiters keep a per-operation response
   copy so cache eviction cannot race a notified request. AlephBFT duplicate
   submits now also fall back to the durable accepted journal after cache
-  eviction, returning a duplicate response without requeueing work or adding a
+  eviction, returning a duplicate response without requeuing work or adding a
   waiter. Public mint, swap, and melt route coverage now bounds the cache to
   one accepted response, evicts the first operation with a second accepted
   operation, retries the first request, and verifies the wallet-facing response
@@ -1618,7 +1618,7 @@ AlephBFT and consensus unit tests:
   finalizes a later operation. SQLite-backed apply-without-response coverage
   now also proves a timed-out submit can be finalized and applied after its
   waiter is gone, survive restart with no response cache, and return the
-  durable duplicate response without requeueing. These three focused windows
+  durable duplicate response without requeuing. These three focused windows
   now compare consensus index, operation ID, previous/order digest, and terminal
   status across recovery, plus the complete materialized state digest; the
   recovered state is therefore proven identical rather than inferred from one

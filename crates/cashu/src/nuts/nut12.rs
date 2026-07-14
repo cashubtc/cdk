@@ -82,22 +82,22 @@ fn verify_dleq(
     let e: Scalar = e.as_scalar();
 
     // a = e*A
-    let a: PublicKey = mint_pubkey.mul_tweak(&SECP256K1, &e)?.into();
+    let a = mint_pubkey.mul_tweak(&SECP256K1, &e)?;
 
     // R1 = s*G - a
-    let a: PublicKey = a.negate(&SECP256K1).into();
-    let r1: PublicKey = s.public_key().combine(&a)?.into(); // s*G + (-a)
+    let a = a.negate(&SECP256K1);
+    let r1 = s.public_key().combine(&a)?; // s*G + (-a)
 
     // b = s*B'
     let s: Scalar = Scalar::from(*s.as_secp256k1()?);
-    let b: PublicKey = blinded_message.mul_tweak(&SECP256K1, &s)?.into();
+    let b = blinded_message.mul_tweak(&SECP256K1, &s)?;
 
     // c = e*C'
-    let c: PublicKey = blinded_signature.mul_tweak(&SECP256K1, &e)?.into();
+    let c = blinded_signature.mul_tweak(&SECP256K1, &e)?;
 
     // R2 = b - c
-    let c: PublicKey = c.negate(&SECP256K1).into();
-    let r2: PublicKey = b.combine(&c)?.into();
+    let c = c.negate(&SECP256K1);
+    let r2 = b.combine(&c)?;
 
     // hash(R1,R2,A,C')
     let hash_e: [u8; 32] = hash_e([r1, r2, mint_pubkey, blinded_signature]);
@@ -152,17 +152,17 @@ fn calculate_dleq(
 
     // R2 = r*B'
     let r_scal: Scalar = r.as_scalar();
-    let r2: PublicKey = blinded_message.mul_tweak(&SECP256K1, &r_scal)?.into();
+    let r2 = blinded_message.mul_tweak(&SECP256K1, &r_scal)?;
 
     // e = hash(R1,R2,A,C')
     let e: [u8; 32] = hash_e([r1, r2, mint_secret_key.public_key(), blinded_signature]);
     let e_sk: SecretKey = SecretKey::from_slice(&e)?;
 
     // s1 = e*a
-    let s1: SecretKey = e_sk.mul_tweak(&mint_secret_key.as_scalar())?.into();
+    let s1 = e_sk.mul_tweak(&mint_secret_key.as_scalar())?;
 
     // s = r + s1
-    let s: SecretKey = r.add_tweak(&s1.to_scalar())?.into();
+    let s = r.add_tweak(&s1.to_scalar())?;
 
     Ok(BlindSignatureDleq { e: e_sk, s })
 }
@@ -175,10 +175,10 @@ impl Proof {
                 let y = hash_to_curve(self.secret.as_bytes())?;
 
                 let r: Scalar = dleq.r.as_scalar();
-                let bs1: PublicKey = mint_pubkey.mul_tweak(&SECP256K1, &r)?.into();
+                let bs1 = mint_pubkey.mul_tweak(&SECP256K1, &r)?;
 
-                let blinded_signature: PublicKey = self.c.combine(&bs1)?.into();
-                let blinded_message: PublicKey = y.combine(&dleq.r.public_key())?.into();
+                let blinded_signature = self.c.combine(&bs1)?;
+                let blinded_message = y.combine(&dleq.r.public_key())?;
 
                 verify_dleq(
                     blinded_message,

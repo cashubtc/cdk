@@ -1001,6 +1001,11 @@ impl InMemoryFederationJournal {
     }
 
     /// Update local post-consensus application state.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the journal's validated operation index points outside
+    /// its entry collection.
     pub fn update_application_state(
         &mut self,
         operation_id: FederationOperationId,

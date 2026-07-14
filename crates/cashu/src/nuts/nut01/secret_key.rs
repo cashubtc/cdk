@@ -142,6 +142,10 @@ impl SecretKey {
     }
 
     /// Return secp256k1 x-only public key and parity.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this is a BLS secret key.
     pub fn x_only_public_key<C>(&self, secp: &Secp256k1<C>) -> (XOnlyPublicKey, secp256k1::Parity)
     where
         C: secp256k1::Signing,
@@ -153,6 +157,10 @@ impl SecretKey {
     }
 
     /// [`SecretKey`] to secp256k1 [`Scalar`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when this is a BLS secret key.
     #[inline]
     pub fn to_scalar(self) -> Scalar {
         match self {
@@ -162,6 +170,10 @@ impl SecretKey {
     }
 
     /// [`SecretKey`] as secp256k1 [`Scalar`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when this is a BLS secret key.
     #[inline]
     pub fn as_scalar(&self) -> Scalar {
         match self {
@@ -203,6 +215,10 @@ impl SecretKey {
     }
 
     /// Negate a secp256k1 secret key.
+    ///
+    /// # Panics
+    ///
+    /// Panics when this is a BLS secret key.
     pub fn negate(&self) -> Self {
         match self {
             Self::Secp256k1(inner) => inner.negate().into(),

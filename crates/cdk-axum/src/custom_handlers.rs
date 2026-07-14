@@ -9862,12 +9862,22 @@ mod tests {
             serde_json::to_string(&fake_description).expect("fake invoice description"),
         )
         .await;
-        let input = proof_for_amount(&state, 2, "failed-melt-catch-up");
-        let input_y = input.y().expect("input y");
-        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
-        let melt_envelope = config
-            .melt_operation(request.clone())
-            .expect("melt operation envelope");
+        let (request, input_y, melt_envelope) = (0..128)
+            .find_map(|index| {
+                let input = proof_for_amount(&state, 2, &format!("failed-melt-catch-up-{index}"));
+                let input_y = input.y().expect("input y");
+                let request = cdk::nuts::MeltRequest::new(quote_id.clone(), vec![input], None);
+                let envelope = config
+                    .melt_operation(request.clone())
+                    .expect("melt operation envelope");
+                let operation_id = envelope.operation_id().expect("melt operation id");
+                (config
+                    .public_config()
+                    .elected_melt_payment_member(operation_id)
+                    == Some(config.member_id()))
+                .then_some((request, input_y, envelope))
+            })
+            .expect("locally elected failed melt operation");
         let mut peer_consensus = test_peer_with_local_history(&state).await;
         finalize_test_operation(&mut peer_consensus, melt_envelope)
             .expect("peer accepted failed melt operation");

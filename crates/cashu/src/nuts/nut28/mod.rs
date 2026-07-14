@@ -142,7 +142,7 @@ pub fn ecdh_kdf(
 /// * If the point addition fails
 pub fn blind_public_key(pubkey: &PublicKey, r: &SecretKey) -> Result<PublicKey, Error> {
     let r_pubkey = r.public_key();
-    Ok(pubkey.combine(&r_pubkey)?.into())
+    Ok(pubkey.combine(&r_pubkey)?)
 }
 
 /// Derive BIP-340 compatible signing key from private key and blinding scalar
@@ -194,8 +194,8 @@ pub fn derive_signing_key_bip340(
     }
 
     match privkey_pubkey_parity == unblinded_parity_is_even {
-        true => Ok(privkey.add_tweak(&r.as_scalar())?.into()),
-        false => Ok(privkey.negate().add_tweak(&r.as_scalar())?.into()),
+        true => Ok(privkey.add_tweak(&r.as_scalar())?),
+        false => Ok(privkey.negate().add_tweak(&r.as_scalar())?),
     }
 }
 

@@ -89,6 +89,10 @@ federation partially ready.
   superseded nonce atomically, permit exact consumed commitment/share replay,
   and reject future or delayed attempts; preserve the reopen and coordinator-
   loss regressions.
+- Milestone 25 found a failed-melt catch-up test whose fixed operation elected
+  the other member, so the local observer correctly made no payment. Select a
+  locally elected operation deterministically in that fixture; no mint business
+  logic change was needed, and the focused catch-up regression now passes.
 
 ## 1. Problem and setting
 
@@ -2293,8 +2297,8 @@ mainnet use.
 - [ ] Continuous fuzz runs with retained regression corpus.
 - [x] Model/property tests across randomized operation order and failure points.
 - [ ] Static analysis, clippy, formatting, docs, and dependency audit.
-- [ ] Secret-scanning of logs, snapshots, fixtures, and generated artifacts.
-- [ ] Full standalone and federation regression suites.
+- [x] Secret-scanning of logs, snapshots, fixtures, and generated artifacts.
+- [x] Full standalone and federation regression suites.
 
 **Milestone 25 progress record:**
 [`federated-frost-protocol-and-security.md`](federated-frost-protocol-and-security.md)
@@ -2308,15 +2312,36 @@ FROST fuzz coverage now includes both DKG rounds, every public signing wire
 type, nonce records, config and DKG REST records, signing packages, catch-up,
 raw transactions, and PSBTs. A dedicated sanitizer campaign composes those
 targets with the existing operation and transaction-proposal fuzzers, retains
-corpora, and supports continuous or bounded execution. A bounded four-target
-smoke completed without crashes. Deterministic 512-case accounting/ownership
-and 512-step lifecycle properties preserve conservation, uniqueness, exact
-rollback on rejected transitions, sticky reservations, and terminal
-monotonicity.
+corpora, and supports continuous or bounded execution. A scheduled CI workflow
+now restores and retains the evolving corpus; its first hosted run remains
+required before the continuous-fuzz checkbox can close. A bounded four-target
+60-second-per-target campaign completed without crashes. Deterministic 512-case
+accounting/ownership and 512-step lifecycle properties preserve conservation,
+uniqueness, exact rollback on rejected transitions, sticky reservations, and
+terminal monotonicity.
+
+Strict workspace Clippy, all-target checking, stable formatting, spelling, and
+workflow syntax pass. Secret scans of the repository, generated test material,
+the goal commit range, and the current patch pass with exact allowlist
+fingerprints for reviewed deterministic fixtures. The dependency audit removed
+the vulnerable `crossbeam-epoch` and `protobuf` versions but still reports four
+unsuppressed upstream advisories in optional BIP353 and Tor dependency graphs;
+the security packet records their paths and disposition. The combined static
+and dependency gate therefore remains unchecked.
+
+The standalone and federation regression matrix passes. The workspace library
+suite, federation-enabled `cdk-common`, serial `cdk-bdk`, all remaining
+workspace crates, and all workspace doc tests are clean. The full
+federation-enabled Axum run passed 457 tests with one ignored test except for a
+single catch-up fixture that had selected a non-local payment actor; after the
+fixture was made to select the local actor deterministically, its focused
+regression passes without changing mint behavior. The federation-enabled mint
+daemon, strict workspace Clippy, and all-target workspace check also pass.
 
 The independent cryptographic and two-adapter interoperability reviews, their
-finding resolution, a sustained fuzz campaign, and final audit/regression gate
-remain deliberately unchecked. Mainnet release is still blocked on them.
+finding resolution, the first scheduled fuzz run, unresolved dependency
+advisories, and continuous hosted fuzz evidence remain deliberately unchecked.
+Mainnet release is still blocked on them.
 
 ### Milestone 26: performance, capacity, and release gate
 

@@ -2965,7 +2965,7 @@ mod tests {
             private_configs
                 .get(&local_member)
                 .expect("local private config"),
-            &[keyset_share.clone()],
+            std::slice::from_ref(&keyset_share),
             &transcript_signatures,
         )
         .expect("finalized member config");
@@ -3422,7 +3422,7 @@ mod tests {
         );
 
         assert!(matches!(
-            config.validate_blinded_outputs(&[placeholder.clone()]),
+            config.validate_blinded_outputs(std::slice::from_ref(&placeholder)),
             Err(FederationError::UnknownFederatedKeysetAmount { .. })
         ));
         config
