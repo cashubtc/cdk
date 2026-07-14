@@ -298,11 +298,13 @@ where
         query(
             r#"
             INSERT INTO federation_aleph_bft_backups
-            (session, backup_bytes)
-            VALUES
-            (:session, :backup_bytes)
-            ON CONFLICT (session)
-            DO UPDATE SET backup_bytes = federation_aleph_bft_backups.backup_bytes || EXCLUDED.backup_bytes
+            (session, chunk_index, backup_bytes)
+            SELECT
+                :session,
+                COALESCE(MAX(chunk_index), -1) + 1,
+                :backup_bytes
+            FROM federation_aleph_bft_backups
+            WHERE session = :session
             "#,
         )?
         .bind("session", session as i64)
@@ -547,7 +549,7 @@ where
             .map_err(|e| Error::Database(Box::new(e)))?;
         query(
             r#"
-            SELECT operation_index, order_digest
+            SELECT operation_index, order_digest, status
             FROM federation_journal_entries
             ORDER BY operation_index DESC
             LIMIT 1
@@ -718,26 +720,42 @@ where
         &self,
         session: u64,
     ) -> Result<Option<Vec<u8>>, Self::Err> {
+        let chunks = self.get_federation_aleph_bft_backup_chunks(session).await?;
+        if chunks.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(chunks.concat()))
+    }
+
+    async fn get_federation_aleph_bft_backup_chunks(
+        &self,
+        session: u64,
+    ) -> Result<Vec<Vec<u8>>, Self::Err> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
+        let rows = query(
             r#"
             SELECT backup_bytes
             FROM federation_aleph_bft_backups
             WHERE session = :session
+            ORDER BY chunk_index ASC
             "#,
         )?
         .bind("session", session as i64)
-        .fetch_one(&*conn)
-        .await?
-        .map(|mut row| {
+        .fetch_all(&*conn)
+        .await?;
+
+        let mut chunks = Vec::with_capacity(rows.len());
+        for mut row in rows {
             let bytes = row.remove(0);
-            Ok(column_as_binary!(&bytes))
-        })
-        .transpose()
+            chunks.push(column_as_binary!(&bytes).to_vec());
+        }
+
+        Ok(chunks)
     }
 
     async fn get_federation_aleph_bft_active_session(&self) -> Result<Option<u64>, Self::Err> {

@@ -30,12 +30,24 @@ pub(crate) async fn run_compare_digests_command(
         &public_config,
         &private_config,
         &args.members,
-        true,
+        false,
     )
     .await
     .context("failed to query signed federation digest status")?;
 
-    let report = DigestComparisonReport::from_statuses(&statuses);
+    let mut report = DigestComparisonReport::from_statuses(&statuses);
+    if report.needs_materialized_row_diagnostics() {
+        let statuses = query_local_statuses_with_materialized_rows(
+            Async::default(),
+            &public_config,
+            &private_config,
+            &args.members,
+            true,
+        )
+        .await
+        .context("failed to query federation materialized-state row diagnostics")?;
+        report = DigestComparisonReport::from_statuses(&statuses);
+    }
     print_digest_comparison(&public_config, &private_config, &report);
     if !args.allow_divergence {
         report.ensure_converged()?;
@@ -142,6 +154,12 @@ impl DigestComparisonReport {
 
     fn is_converged(&self) -> bool {
         self.groups.len() <= 1 && self.digest_alert_members.is_empty()
+    }
+
+    fn needs_materialized_row_diagnostics(&self) -> bool {
+        self.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == DigestComparisonDiagnosticKind::MaterializedStateMismatch
+        })
     }
 
     fn ensure_converged(&self) -> Result<()> {

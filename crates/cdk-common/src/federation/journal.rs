@@ -556,6 +556,8 @@ pub struct FederationJournalTip {
     pub index: u64,
     /// Accepted-order digest after the latest operation.
     pub order_digest: FederationJournalDigest,
+    /// Local application status of the latest accepted operation.
+    pub status: FederationOperationStatus,
 }
 
 impl FederationJournalEntry {

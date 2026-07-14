@@ -226,14 +226,16 @@ fn sql_row_to_federation_journal_entry(row: Vec<Column>) -> Result<FederationJou
 }
 
 fn sql_row_to_federation_journal_tip(row: Vec<Column>) -> Result<FederationJournalTip, Error> {
-    unpack_into!(let (operation_index, order_digest) = row);
+    unpack_into!(let (operation_index, order_digest, status) = row);
 
     let index: u64 = column_as_number!(operation_index);
     let order_digest = FederationJournalDigest::from_hex(column_as_string!(&order_digest))
         .map_err(|e| Error::Internal(format!("Invalid federation order digest: {e}")))?;
+    let status = status_from_str(&column_as_string!(&status))?;
     Ok(FederationJournalTip {
         index,
         order_digest,
+        status,
     })
 }
 

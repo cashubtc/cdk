@@ -412,6 +412,98 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_aleph_bft_backup_appends_use_independent_rows() {
+        use cdk_common::database::mint::{Database, FederationJournalDatabase};
+
+        let path = std::env::temp_dir().join(format!(
+            "cdk-test-aleph-backup-chunks-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = MintSqliteDatabase::new(path.clone())
+            .await
+            .expect("migrated SQLite federation database");
+
+        for bytes in [b"first".as_slice(), b"-second", b"-third"] {
+            let mut tx = Database::begin_transaction(&db)
+                .await
+                .expect("begin backup append");
+            tx.append_federation_aleph_bft_backup_bytes(7, bytes)
+                .await
+                .expect("append backup chunk");
+            tx.commit().await.expect("commit backup chunk");
+        }
+        assert_eq!(
+            db.get_federation_aleph_bft_backup_bytes(7)
+                .await
+                .expect("backup bytes"),
+            Some(b"first-second-third".to_vec())
+        );
+        drop(db);
+
+        let conn = rusqlite::Connection::open(&path).expect("SQLite verification connection");
+        let stored_rows = conn
+            .query_row(
+                "SELECT COUNT(*) FROM federation_aleph_bft_backups WHERE session = 7",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("backup chunk row count");
+        assert_eq!(
+            stored_rows, 3,
+            "each flush must insert a small row instead of rewriting the complete backup BLOB"
+        );
+
+        drop(conn);
+        let _ = remove_file(path);
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_aleph_bft_backup_chunk_migration_preserves_existing_bytes() {
+        let conn = rusqlite::Connection::open_in_memory().expect("SQLite migration connection");
+        conn.execute_batch(
+            r#"
+            CREATE TABLE federation_aleph_bft_backups (
+                session INTEGER PRIMARY KEY NOT NULL,
+                backup_bytes BLOB NOT NULL
+            );
+            INSERT INTO federation_aleph_bft_backups (session, backup_bytes)
+            VALUES (7, X'6669727374'), (8, X'7365636F6E64');
+            "#,
+        )
+        .expect("create legacy backup table");
+
+        conn.execute_batch(include_str!(
+            "../../../cdk-sql-common/src/mint/migrations/sqlite/20260714000000_chunk_federation_aleph_bft_backups.sql"
+        ))
+        .expect("migrate legacy backup table");
+
+        let rows = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT session, chunk_index, backup_bytes FROM federation_aleph_bft_backups ORDER BY session",
+                )
+                .expect("prepare migrated backup query");
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                })
+                .expect("query migrated backups")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("read migrated backups")
+        };
+        assert_eq!(
+            rows,
+            vec![(7, 0, b"first".to_vec()), (8, 0, b"second".to_vec())]
+        );
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_migrations_apply_to_empty_sqlite_and_keep_standalone_tables() {
         let path = std::env::temp_dir().to_path_buf().join(format!(
             "cdk-test-federation-empty-migration-{}.sqlite",
@@ -518,7 +610,10 @@ mod test {
         .collect::<Vec<_>>();
         assert_eq!(
             federation_migrations,
-            vec!["20260712000000_create_federation_schema.sql".to_owned()]
+            vec![
+                "20260712000000_create_federation_schema.sql".to_owned(),
+                "20260714000000_chunk_federation_aleph_bft_backups.sql".to_owned(),
+            ]
         );
 
         let journal_columns = query("PRAGMA table_info(federation_journal_entries)")

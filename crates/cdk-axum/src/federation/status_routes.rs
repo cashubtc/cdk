@@ -14,10 +14,10 @@ use tracing::instrument;
 use crate::MintState;
 
 use super::{
-    acquire_private_rest_admission, anyhow_response, catch_up_certificate_quorum_status,
-    cdk_error_response, local_peer_order_status, local_peer_status,
-    local_peer_status_with_materialized_rows, payment_observation_report_summaries,
-    verify_federation_request, CatchUpCertificateQuorumStatus,
+    acquire_private_rest_admission, anyhow_response, cdk_error_response, local_peer_order_status,
+    local_peer_status, local_peer_status_with_materialized_rows,
+    payment_observation_report_summaries, verify_federation_request,
+    CatchUpCertificateQuorumStatus,
 };
 
 #[instrument(skip_all)]
@@ -67,7 +67,9 @@ pub(super) async fn post_local_status(
         )
     };
     let sync_status = state.federation_sync_status().await.unwrap_or_default();
-    let catch_up_certificate_quorum = catch_up_certificate_quorum_status(&state.mint)
+    let catch_up_certificate_quorum = state
+        .federation
+        .catch_up_certificate_quorum_status(&state.mint)
         .await
         .map_err(cdk_error_response)?;
     let payment_observation_reports = payment_observation_report_summaries(&state)

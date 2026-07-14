@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
+#[cfg(all(test, feature = "federation"))]
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -138,7 +140,10 @@ pub struct Mint {
     federation_config: Option<FederationRuntimeConfig>,
     /// Cached federation config after applying accepted keyset rotations.
     #[cfg(feature = "federation")]
-    federation_effective_config_cache: Arc<Mutex<Option<EffectiveFederationConfigCache>>>,
+    federation_effective_config_cache: Arc<Mutex<Option<FederationRuntimeConfig>>>,
+    /// Number of journal replays used to rebuild the effective federation config in tests.
+    #[cfg(all(test, feature = "federation"))]
+    federation_effective_config_rebuild_count: Arc<AtomicUsize>,
     /// Backend payment events consumed by the consensus-aware observer.
     #[cfg(feature = "federation")]
     federation_payment_events: broadcast::Sender<cdk_common::payment::Event>,
@@ -272,13 +277,6 @@ impl SupervisedStream for PaymentWaiter {
         // inner and outer shutdown arms performed.
         self.processor.cancel_payment_event_stream();
     }
-}
-
-#[cfg(feature = "federation")]
-#[derive(Debug, Clone)]
-struct EffectiveFederationConfigCache {
-    applied_rotations: Vec<(u64, cdk_common::federation::FederationOperationId)>,
-    config: FederationRuntimeConfig,
 }
 
 impl Mint {
@@ -491,6 +489,8 @@ impl Mint {
             federation_config,
             #[cfg(feature = "federation")]
             federation_effective_config_cache: Arc::new(Mutex::new(None)),
+            #[cfg(all(test, feature = "federation"))]
+            federation_effective_config_rebuild_count: Arc::new(AtomicUsize::new(0)),
             #[cfg(feature = "federation")]
             federation_payment_events,
             #[cfg(feature = "federation")]

@@ -208,6 +208,29 @@ async fn effective_federation_config_replays_keyset_rotations() {
 }
 
 #[tokio::test]
+async fn effective_federation_config_reuses_cached_journal_replay() {
+    let (mint, _) = federated_test_mint(runtime_config()).await;
+    mint.federation_effective_config_rebuild_count
+        .store(0, std::sync::atomic::Ordering::SeqCst);
+
+    mint.effective_federation_config()
+        .await
+        .expect("first effective config")
+        .expect("federation config");
+    mint.effective_federation_config()
+        .await
+        .expect("cached effective config")
+        .expect("federation config");
+
+    assert_eq!(
+        mint.federation_effective_config_rebuild_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "an unchanged federation config must replay the journal only once"
+    );
+}
+
+#[tokio::test]
 async fn effective_federation_keyset_responses_use_rotated_config() {
     let runtime_config = runtime_config_with_inactive_rotation_keyset();
     let (mint, _) = federated_test_mint(runtime_config.clone()).await;

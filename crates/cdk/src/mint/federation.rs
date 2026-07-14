@@ -1142,25 +1142,15 @@ impl Mint {
             return Ok(None);
         };
 
-        let entries = self.localstore.get_federation_journal_entries().await?;
-        let applied_rotations = entries
-            .iter()
-            .filter(|entry| entry.status() == FederationOperationStatus::Applied)
-            .filter(|entry| {
-                matches!(
-                    &entry.envelope.operation,
-                    FederationOperation::KeysetRotation(_)
-                )
-            })
-            .map(|entry| (entry.index, entry.operation_id))
-            .collect::<Vec<_>>();
-
         let mut cache = self.federation_effective_config_cache.lock().await;
         if let Some(cached) = cache.as_ref() {
-            if cached.applied_rotations == applied_rotations {
-                return Ok(Some(cached.config.clone()));
-            }
+            return Ok(Some(cached.clone()));
         }
+
+        #[cfg(test)]
+        self.federation_effective_config_rebuild_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let entries = self.localstore.get_federation_journal_entries().await?;
 
         let mut effective = config.clone();
         for entry in entries {
@@ -1173,10 +1163,7 @@ impl Mint {
             }
         }
 
-        *cache = Some(super::EffectiveFederationConfigCache {
-            applied_rotations,
-            config: effective.clone(),
-        });
+        *cache = Some(effective.clone());
 
         Ok(Some(effective))
     }
@@ -1596,7 +1583,9 @@ impl Mint {
             .apply_keyset_rotation(operation)?;
 
         let transaction = self.localstore.begin_transaction().await?;
-        finish_federation_apply_transaction(transaction, entry, Ok(())).await
+        finish_federation_apply_transaction(transaction, entry, Ok(())).await?;
+        *self.federation_effective_config_cache.lock().await = None;
+        Ok(())
     }
 
     async fn apply_federation_mint_quote_payment(

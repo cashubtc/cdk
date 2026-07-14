@@ -2,7 +2,7 @@
 
 use std::sync::atomic::AtomicU64;
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use super::{FederationDkgAutoStartConfig, FederationPeerSyncConfig};
@@ -24,11 +24,20 @@ use cdk::federation::{
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationRestMessageKind,
-    FederationSubmitOperationResponse, MemberId, FEDERATION_REST_API_VERSION,
+    FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
+    FederationMaterializedStateDigest, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationRestMessageKind, FederationSubmitOperationResponse,
+    MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MaterializedStateDigestCache {
+    pub(super) operation_count: u64,
+    pub(super) latest_order_digest: FederationJournalDigest,
+    pub(super) latest_operation_status: Option<FederationOperationStatus>,
+    pub(super) materialized_state_digest: FederationMaterializedStateDigest,
+}
 
 /// Runtime-owned handles for one active federation member.
 #[derive(Clone)]
@@ -45,6 +54,16 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) dkg_member_admission: Option<FederationDkgMemberAdmissionHandle>,
     pub(crate) invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
     pub(crate) payment_observer: super::FederationPaymentObserver,
+    pub(crate) catch_up_certificate_quorum_cache:
+        Arc<tokio::sync::Mutex<Option<Option<super::CatchUpCertificateQuorumStatus>>>>,
+    pub(crate) materialized_state_digest_cache:
+        Arc<tokio::sync::Mutex<Option<MaterializedStateDigestCache>>>,
+    #[cfg(test)]
+    pub(crate) catch_up_certificate_quorum_validation_count: Arc<AtomicUsize>,
+    #[cfg(test)]
+    pub(crate) catch_up_certificate_journal_load_count: Arc<AtomicUsize>,
+    #[cfg(test)]
+    pub(crate) materialized_state_digest_computation_count: Arc<AtomicUsize>,
     #[cfg(test)]
     pub(crate) fail_next_pending_operation_persistence: Arc<AtomicBool>,
     #[cfg(test)]
@@ -130,6 +149,11 @@ impl FederationNodeRuntime {
             dkg_member_admission: None,
             invalid_operation_alerts: None,
             payment_observer: super::FederationPaymentObserver::default(),
+            catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            catch_up_certificate_quorum_validation_count: Arc::new(AtomicUsize::new(0)),
+            catch_up_certificate_journal_load_count: Arc::new(AtomicUsize::new(0)),
+            materialized_state_digest_computation_count: Arc::new(AtomicUsize::new(0)),
             fail_next_pending_operation_persistence: Arc::new(AtomicBool::new(false)),
             suppress_next_terminal_response_publication: Arc::new(AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
@@ -160,6 +184,30 @@ impl FederationNodeRuntime {
         self.mint
             .as_ref()
             .ok_or_else(|| runtime_unavailable("mint"))
+    }
+
+    pub(super) async fn catch_up_certificate_quorum_status(
+        &self,
+        mint: &Mint,
+    ) -> Result<Option<super::CatchUpCertificateQuorumStatus>, cdk::Error> {
+        let mut cache = self.catch_up_certificate_quorum_cache.lock().await;
+        if let Some(status) = cache.as_ref() {
+            return Ok(status.clone());
+        }
+        #[cfg(test)]
+        self.catch_up_certificate_quorum_validation_count
+            .fetch_add(1, Ordering::SeqCst);
+        let status = super::catch_up_certificate_quorum_status(mint).await?;
+        *cache = Some(status.clone());
+        Ok(status)
+    }
+
+    async fn invalidate_catch_up_certificate_quorum_status(&self) {
+        *self.catch_up_certificate_quorum_cache.lock().await = None;
+    }
+
+    async fn invalidate_materialized_state_digest(&self) {
+        *self.materialized_state_digest_cache.lock().await = None;
     }
 
     #[cfg(feature = "prometheus")]
@@ -481,7 +529,7 @@ impl FederationNodeRuntime {
             return;
         }
 
-        let quorum = match super::catch_up_certificate_quorum_status(mint).await {
+        let quorum = match self.catch_up_certificate_quorum_status(mint).await {
             Ok(quorum) => quorum,
             Err(err) => {
                 self.finish_startup_revalidation(
@@ -1449,6 +1497,12 @@ impl FederationNodeRuntime {
                 .await?;
         }
         tx.commit().await?;
+        if !entries.is_empty() || !catch_up_certificates.is_empty() {
+            self.invalidate_catch_up_certificate_quorum_status().await;
+        }
+        if !entries.is_empty() {
+            self.invalidate_materialized_state_digest().await;
+        }
         Ok(())
     }
 
@@ -1490,6 +1544,10 @@ impl FederationNodeRuntime {
             tx.add_federation_journal_entry(entry).await?;
         }
         tx.commit().await?;
+        if !entries.is_empty() {
+            self.invalidate_catch_up_certificate_quorum_status().await;
+            self.invalidate_materialized_state_digest().await;
+        }
         Ok(())
     }
 
@@ -1518,6 +1576,12 @@ impl FederationNodeRuntime {
                 .await?;
         }
         tx.commit().await?;
+        if !entries.is_empty() || !catch_up_certificates.is_empty() {
+            self.invalidate_catch_up_certificate_quorum_status().await;
+        }
+        if !entries.is_empty() {
+            self.invalidate_materialized_state_digest().await;
+        }
         Ok(())
     }
 
@@ -1581,6 +1645,9 @@ impl FederationNodeRuntime {
         &self,
         entries: &[FederationJournalEntry],
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
+        if !entries.is_empty() {
+            self.invalidate_materialized_state_digest().await;
+        }
         let db = self.active_mint()?.localstore();
         let mut applied = Vec::new();
         let mut terminal_applications = Vec::with_capacity(entries.len());
@@ -1623,6 +1690,9 @@ impl FederationNodeRuntime {
         }
         self.mark_operation_applications(&terminal_applications)
             .await?;
+        if !entries.is_empty() {
+            self.invalidate_materialized_state_digest().await;
+        }
         Ok(applied)
     }
 
@@ -1749,6 +1819,7 @@ impl FederationNodeRuntime {
                 return Err(error.into());
             }
         }
+        self.invalidate_materialized_state_digest().await;
 
         if let Some(consensus) = &self.consensus {
             consensus

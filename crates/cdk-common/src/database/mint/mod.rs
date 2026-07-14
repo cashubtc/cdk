@@ -994,6 +994,21 @@ pub trait FederationJournalDatabase {
         session: u64,
     ) -> Result<Option<Vec<u8>>, Self::Err>;
 
+    /// Get individually persisted AlephBFT backup chunks for one local session.
+    ///
+    /// Backends that stored legacy backups as one blob may return that blob as
+    /// a single chunk. The default preserves compatibility for those backends.
+    async fn get_federation_aleph_bft_backup_chunks(
+        &self,
+        session: u64,
+    ) -> Result<Vec<Vec<u8>>, Self::Err> {
+        Ok(self
+            .get_federation_aleph_bft_backup_bytes(session)
+            .await?
+            .into_iter()
+            .collect())
+    }
+
     /// Get the latest active AlephBFT session marker.
     async fn get_federation_aleph_bft_active_session(&self) -> Result<Option<u64>, Self::Err>;
 

@@ -2272,6 +2272,20 @@ async fn create_mint_router_with_custom_cache_inner(
                 ))
             }),
             payment_observer: federation::FederationPaymentObserver::default(),
+            catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            #[cfg(test)]
+            catch_up_certificate_quorum_validation_count: Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
+            #[cfg(test)]
+            catch_up_certificate_journal_load_count: Arc::new(std::sync::atomic::AtomicUsize::new(
+                0,
+            )),
+            #[cfg(test)]
+            materialized_state_digest_computation_count: Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ),
             #[cfg(test)]
             fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,

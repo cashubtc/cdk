@@ -2227,6 +2227,11 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
                 crate::FederationInvalidOperationAlertTracker::default(),
             ))),
             payment_observer: crate::federation::FederationPaymentObserver::default(),
+            catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            catch_up_certificate_quorum_validation_count: Arc::new(AtomicUsize::new(0)),
+            catch_up_certificate_journal_load_count: Arc::new(AtomicUsize::new(0)),
+            materialized_state_digest_computation_count: Arc::new(AtomicUsize::new(0)),
             fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
@@ -4920,6 +4925,66 @@ async fn peer_sync_round_stops_evidence_after_first_peer_failure() {
 }
 
 #[tokio::test]
+async fn local_peer_status_caches_materialized_digest_until_an_operation_is_applied() {
+    let (state, public_config, _, _) = federation_route_state_with_local_private().await;
+    let first = test_operation_envelope_for_config(
+        &public_config,
+        "local status materialized digest cache first operation",
+    );
+    state
+        .submit_federation_envelope(first)
+        .await
+        .expect("first operation");
+    state
+        .federation
+        .materialized_state_digest_computation_count
+        .store(0, Ordering::SeqCst);
+
+    let first_status = local_peer_status(&state).await.expect("first local status");
+    let cached_status = local_peer_status(&state)
+        .await
+        .expect("cached local status");
+
+    assert_eq!(
+        first_status.materialized_state_digest,
+        cached_status.materialized_state_digest
+    );
+    assert_eq!(
+        state
+            .federation
+            .materialized_state_digest_computation_count
+            .load(Ordering::SeqCst),
+        1,
+        "an unchanged journal must reuse its materialized-state digest"
+    );
+
+    let second = test_operation_envelope_for_config(
+        &public_config,
+        "local status materialized digest cache second operation",
+    );
+    state
+        .submit_federation_envelope(second)
+        .await
+        .expect("second operation");
+    let updated_status = local_peer_status(&state)
+        .await
+        .expect("updated local status");
+
+    assert_ne!(
+        cached_status.materialized_state_digest,
+        updated_status.materialized_state_digest
+    );
+    assert_eq!(
+        state
+            .federation
+            .materialized_state_digest_computation_count
+            .load(Ordering::SeqCst),
+        2,
+        "applying an operation must invalidate the materialized-state digest cache"
+    );
+}
+
+#[tokio::test]
 async fn peer_sync_round_collects_catch_up_certificate_from_equal_peer() {
     let (state, public_config, local_private, peer_private) =
         federation_route_state_with_local_private().await;
@@ -4968,6 +5033,79 @@ async fn peer_sync_round_collects_catch_up_certificate_from_equal_peer() {
     assert_eq!(quorum.signers.len(), 2);
     assert!(quorum.signers.contains(&local_private.member_id));
     assert!(quorum.signers.contains(&peer_private.member_id));
+
+    state
+        .federation
+        .catch_up_certificate_journal_load_count
+        .store(0, Ordering::SeqCst);
+    let synced =
+        run_federation_peer_sync_round(&state, &client, std::slice::from_ref(peer_member)).await;
+    assert_eq!(synced, 1);
+    assert_eq!(transport.catch_up_requests().len(), 1);
+    assert_eq!(
+        state
+            .federation
+            .catch_up_certificate_journal_load_count
+            .load(Ordering::SeqCst),
+        0,
+        "a complete cached quorum must avoid loading the full federation journal"
+    );
+
+    state
+        .federation
+        .catch_up_certificate_quorum_validation_count
+        .store(0, Ordering::SeqCst);
+    *state
+        .federation
+        .catch_up_certificate_quorum_cache
+        .lock()
+        .await = None;
+    let first = state
+        .federation
+        .catch_up_certificate_quorum_status(&state.mint)
+        .await
+        .expect("first cached quorum status");
+    let second = state
+        .federation
+        .catch_up_certificate_quorum_status(&state.mint)
+        .await
+        .expect("second cached quorum status");
+    assert_eq!(first, second);
+    assert_eq!(
+        state
+            .federation
+            .catch_up_certificate_quorum_validation_count
+            .load(Ordering::SeqCst),
+        1,
+        "unchanged catch-up evidence must not be fully revalidated"
+    );
+
+    let certificates = state
+        .mint
+        .localstore()
+        .get_federation_catch_up_certificates()
+        .await
+        .expect("persisted catch-up certificates");
+    let certificate = certificates.first().expect("catch-up certificate");
+    state
+        .federation
+        .persist_journal_entries(&[], &[certificate])
+        .await
+        .expect("persist catch-up certificate");
+    let after_persistence = state
+        .federation
+        .catch_up_certificate_quorum_status(&state.mint)
+        .await
+        .expect("quorum status after persistence");
+    assert_eq!(after_persistence, first);
+    assert_eq!(
+        state
+            .federation
+            .catch_up_certificate_quorum_validation_count
+            .load(Ordering::SeqCst),
+        2,
+        "persisting catch-up evidence must invalidate the cached status"
+    );
 }
 
 #[tokio::test]

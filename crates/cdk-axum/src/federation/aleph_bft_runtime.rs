@@ -881,11 +881,39 @@ impl CdkAlephBftDbBackup {
 
     /// Create an append-only writer that durably persists on flush or close.
     pub(crate) fn writer(&self) -> CdkAlephBftDbBackupWriter {
+        self.writer_with_replayed_bytes(Vec::new())
+    }
+
+    fn writer_with_replayed_bytes(&self, replayed_bytes: Vec<u8>) -> CdkAlephBftDbBackupWriter {
+        let replay_match_active = !replayed_bytes.is_empty();
         CdkAlephBftDbBackupWriter {
             db: Arc::clone(&self.db),
             session_id: self.session_id,
-            state: Arc::new(Mutex::new(CdkAlephBftDbBackupWriterState::default())),
+            state: Arc::new(Mutex::new(CdkAlephBftDbBackupWriterState {
+                replayed_bytes,
+                replay_match_active,
+                ..CdkAlephBftDbBackupWriterState::default()
+            })),
         }
+    }
+
+    async fn try_replay_io(
+        &self,
+    ) -> Result<(CdkAlephBftBackupReader, CdkAlephBftDbBackupWriter), cdk::Error> {
+        let chunks = self
+            .db
+            .get_federation_aleph_bft_backup_chunks(self.session_id)
+            .await
+            .map_err(cdk::Error::Database)?;
+        let bytes = chunks.concat();
+
+        Ok((
+            CdkAlephBftBackupReader {
+                bytes: bytes.clone(),
+                position: 0,
+            },
+            self.writer_with_replayed_bytes(bytes),
+        ))
     }
 }
 
@@ -893,6 +921,9 @@ impl CdkAlephBftDbBackup {
 struct CdkAlephBftDbBackupWriterState {
     pending: Vec<u8>,
     flush: Option<BoxFuture<'static, io::Result<()>>>,
+    replayed_bytes: Vec<u8>,
+    replayed_position: usize,
+    replay_match_active: bool,
 }
 
 /// Append-only AlephBFT backup writer that commits flushed bytes to mint DB.
@@ -980,7 +1011,29 @@ fn poll_aleph_bft_db_backup_flush(
         } else if state.pending.is_empty() {
             return Poll::Ready(Ok(()));
         } else {
-            let bytes = std::mem::take(&mut state.pending);
+            let mut bytes = std::mem::take(&mut state.pending);
+            if state.replay_match_active {
+                let replayed = &state.replayed_bytes[state.replayed_position..];
+                let matching_prefix = bytes
+                    .iter()
+                    .zip(replayed)
+                    .take_while(|(actual, expected)| actual == expected)
+                    .count();
+                if matching_prefix == bytes.len() {
+                    state.replayed_position =
+                        state.replayed_position.saturating_add(matching_prefix);
+                    if state.replayed_position == state.replayed_bytes.len() {
+                        state.replay_match_active = false;
+                    }
+                    continue;
+                }
+                if matching_prefix == replayed.len() {
+                    bytes = bytes.split_off(matching_prefix);
+                    state.replayed_position = state.replayed_bytes.len();
+                }
+                state.replay_match_active = false;
+            }
+
             let db = Arc::clone(db);
             state.flush = Some(Box::pin(async move {
                 persist_aleph_bft_backup_bytes(db, session_id, bytes).await
@@ -1082,8 +1135,7 @@ impl CdkAlephBftSessionIo {
         keychain: CdkAlephBftKeychain,
     ) -> Result<Self, cdk::Error> {
         let backup = CdkAlephBftDbBackup::new(db, session_id);
-        let unit_loader = backup.try_reader().await?;
-        let unit_saver = backup.writer();
+        let (unit_loader, unit_saver) = backup.try_replay_io().await?;
         let data_provider =
             CdkAlephBftDataProvider::with_activity_hint(consensus, activity_hint.clone());
         let (sender, finalized_units) = mpsc::unbounded_channel();
@@ -1943,6 +1995,101 @@ mod tests {
                 .unit_index,
             5
         );
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_session_io_does_not_resave_replayed_backup_bytes() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let mut tx = db.begin_transaction().await.expect("begin");
+        tx.append_federation_aleph_bft_backup_bytes(104, b"persisted-unit")
+            .await
+            .expect("append persisted backup");
+        tx.commit().await.expect("commit persisted backup");
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1), 0);
+        let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
+        let (public_config, private_members) = keychain_fixture();
+        let keychain = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
+            .expect("keychain");
+        let session_io = CdkAlephBftSessionIo::from_db(
+            consensus,
+            Arc::clone(&db),
+            104,
+            CdkAlephBftActivityHint::default(),
+            keychain,
+        )
+        .await
+        .expect("session io");
+        let (local_io, _) = session_io.into_parts();
+        let (_, _, mut unit_saver, mut unit_loader) = local_io.into_components();
+        let mut replayed = Vec::new();
+
+        unit_loader
+            .read_to_end(&mut replayed)
+            .await
+            .expect("read replayed backup");
+        let split = replayed.len() / 2;
+        unit_saver
+            .write_all(&replayed[..split])
+            .await
+            .expect("save first replayed backup part");
+        unit_saver
+            .flush()
+            .await
+            .expect("flush first replayed backup part");
+        unit_saver
+            .write_all(&replayed[split..])
+            .await
+            .expect("save second replayed backup part");
+        unit_saver
+            .flush()
+            .await
+            .expect("flush second replayed backup part");
+
+        assert_eq!(
+            db.get_federation_aleph_bft_backup_bytes(104)
+                .await
+                .expect("read backup after replay"),
+            Some(b"persisted-unit".to_vec()),
+            "restarting a session must not append its recovered backup again"
+        );
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_session_io_preserves_identical_backup_chunks() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        for _ in 0..2 {
+            let mut tx = db.begin_transaction().await.expect("begin");
+            tx.append_federation_aleph_bft_backup_bytes(105, b"same-unit")
+                .await
+                .expect("append backup chunk");
+            tx.commit().await.expect("commit backup chunk");
+        }
+        let runtime = FederationConsensusRuntime::new(federation_id(8), member_id(1), 0);
+        let consensus = Arc::new(tokio::sync::Mutex::new(runtime));
+        let (public_config, private_members) = keychain_fixture();
+        let keychain = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
+            .expect("keychain");
+        let session_io = CdkAlephBftSessionIo::from_db(
+            consensus,
+            db,
+            105,
+            CdkAlephBftActivityHint::default(),
+            keychain,
+        )
+        .await
+        .expect("session io");
+        let (local_io, _) = session_io.into_parts();
+        let (_, _, _, mut unit_loader) = local_io.into_components();
+        let mut replayed = Vec::new();
+
+        unit_loader
+            .read_to_end(&mut replayed)
+            .await
+            .expect("read replayed backup");
+
+        assert_eq!(replayed, b"same-unitsame-unit");
     }
 
     #[tokio::test]

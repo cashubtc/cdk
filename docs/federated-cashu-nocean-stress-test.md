@@ -436,6 +436,24 @@ separately from insufficient response count.
 - Confirm through a replay test that the persisted shares from any three members
   reconstruct the failed wallet's expected outputs.
 
+**Local follow-up after full-fanout work (2026-07-14):** scheduling every
+member is not sufficient if the collector drops still-pending member futures as
+soon as three successes are available. In the local five-member run, four
+members applied operation 196 while member 4 persisted the same operation as
+`accepted` but did not apply it. The first wallet batch eventually completed
+through the threshold after 62.822 seconds, but the next batch failed because
+only four members observed its paid quote.
+
+The code path is consistent with request cancellation: the wallet starts the
+full fanout, returns after a threshold result, performs only a nonblocking drain
+of already-ready calls, and drops the rest. If an HTTP handler is cancelled
+after journal acceptance but before application, the minority member can be
+left accepted-but-unapplied until recovery. This is the strongest current
+hypothesis, not yet a proven cancellation trace. It belongs to Error 1 rather
+than creating a fourth issue: every member must receive a durable opportunity
+to finish the identical request even when the wallet can already return a
+threshold result.
+
 ### Error 2: The wallet does not robustly wait through member catch-up
 
 The request-time catch-up response needs a precise classification. A mint that
@@ -563,6 +581,66 @@ mismatch remain worthwhile diagnostics, but this reproduction did not establish
 either as the initiating cause. They were not changed. Likewise, ignoring
 finalized-cursor-only differences would have been hypothetical and could weaken
 exact recovery, so that proposed change was rejected.
+
+#### Milestone 3 CPU regression: local reproduction and fix
+
+The follow-up CPU investigation was performed entirely on a local five-member
+federation using native release binaries, fakewallet, SQLite, the production
+AlephBFT runtime, and the same member databases before and after the fix. The
+comparison started at the previously problematic journal height: members 1-4
+had 189 applied operations and member 5 was three operations behind.
+
+The pre-fix run reproduced two independent sources of avoidable work:
+
+1. `Mint::effective_federation_config` loaded and JSON-deserialized the complete
+   journal before consulting its cache. A process sample captured this path from
+   quote creation and federation-envelope admission. Deserializing every old
+   BLS public key repeatedly reached compressed-point validation and subgroup
+   checks, so retries made CPU cost grow with journal length. A focused unit
+   regression confirmed the defect: two unchanged config reads performed two
+   complete journal replays instead of one.
+2. Every AlephBFT backup flush appended to one growing SQL BLOB. At 130 journal
+   operations the logical backup was 1,319,299 bytes, but summing the rewritten
+   BLOB prefixes showed 3,344,940,113 bytes of cumulative SQL expression output
+   per member, or approximately 16.7 GB across five local members. This is
+   quadratic write amplification. Restart replay could also append recovered
+   backup bytes again.
+
+Repeated local-status work amplified both costs. Materialized-state digests and
+catch-up-certificate quorum validation reloaded unchanged journal state, and
+`compare-digests` requested every materialized row even when member digests
+already matched. These paths explain why the milestone reduced catch-up
+transitions without materially improving throughput: it removed one trigger
+but left increasingly expensive recovery/status work behind it.
+
+The minimal fixes are:
+
+- check and return the effective-config cache before any database access, and
+  invalidate it only after an applied keyset rotation commits;
+- cache the materialized-state digest and validated catch-up-certificate quorum
+  until journal/evidence mutation;
+- fetch detailed materialized rows only after a digest mismatch;
+- store AlephBFT backup flushes as ordered independent rows rather than
+  rewriting one BLOB, with migrations that preserve the legacy bytes;
+- suppress only an exact ordered prefix written back during restart replay.
+  Identical chunks remain valid data and are not content-deduplicated.
+
+The focused effective-config regression failed pre-fix with two replays and
+passes post-fix with one. Keyset-rotation invalidation, digest caching,
+certificate-quorum caching, backup replay, identical backup chunks, independent
+SQLite backup rows, and legacy migration tests also pass.
+
+With the final candidate, all five local members restarted and converged at 189
+operations immediately. Idle CPU was approximately 0.1% per mint, compared
+with the reproduced 8-17% per mint during the earlier stalled/retry state. When
+the separate accepted-but-unapplied liveness condition recurred, instantaneous
+CPU remained 0.0-0.1% and a five-second process sample showed sleeping runtime
+workers rather than repeated journal/BLS deserialization. This proves the CPU
+runaway is fixed. Twenty consecutive signed `compare-digests` requests across
+all five members likewise left each mint at 0.0-0.1% instantaneous CPU. These
+measurements do not claim a throughput improvement. The residual fanout-
+cancellation liveness issue above still limits the operation benchmark and must
+be addressed separately.
 
 ### Relationship and priority
 

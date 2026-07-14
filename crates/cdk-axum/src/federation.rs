@@ -14,9 +14,9 @@ use cdk::federation::{
     FederationCatchUpCertificateQuorum, FederationCatchUpOperation, FederationError,
     FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
-    FederationMaterializedStateSnapshot, FederationOperationId, FederationPeerStatus,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationSignedRequest,
-    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationMaterializedStateSnapshot, FederationOperationId, FederationOperationStatus,
+    FederationPeerStatus, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
     FederationVerifiedOperationAdmission, InMemoryFederationJournal,
     FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
 };
@@ -377,7 +377,7 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CatchUpCertificateQuorumStatus {
+pub(crate) struct CatchUpCertificateQuorumStatus {
     signers: BTreeSet<cdk::federation::MemberId>,
     from_index: u64,
     latest_index: u64,
@@ -643,12 +643,50 @@ fn anyhow_response(err: anyhow::Error) -> Response {
 }
 
 async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerStatus> {
+    let (order_status, latest_operation_status) =
+        local_peer_order_status_with_latest_operation_status(state).await?;
+    let mut cache = state
+        .federation
+        .materialized_state_digest_cache
+        .lock()
+        .await;
+    if let Some(cached) = cache.as_ref() {
+        if cached.operation_count == order_status.operation_count
+            && cached.latest_order_digest == order_status.latest_order_digest
+            && cached.latest_operation_status == latest_operation_status
+        {
+            let mut status = order_status;
+            status.materialized_state_digest = Some(cached.materialized_state_digest);
+            return Ok(status);
+        }
+    }
+
+    #[cfg(test)]
+    state
+        .federation
+        .materialized_state_digest_computation_count
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let (mut status, entries) = local_peer_status_and_entries(state).await?;
-    status.materialized_state_digest = Some(materialized_state_digest(state, &entries).await?);
+    let materialized_state_digest = materialized_state_digest(state, &entries).await?;
+    *cache = Some(node_runtime::MaterializedStateDigestCache {
+        operation_count: status.operation_count,
+        latest_order_digest: status.latest_order_digest,
+        latest_operation_status,
+        materialized_state_digest,
+    });
+    status.materialized_state_digest = Some(materialized_state_digest);
     Ok(status)
 }
 
 async fn local_peer_order_status(state: &MintState) -> anyhow::Result<FederationPeerStatus> {
+    Ok(local_peer_order_status_with_latest_operation_status(state)
+        .await?
+        .0)
+}
+
+async fn local_peer_order_status_with_latest_operation_status(
+    state: &MintState,
+) -> anyhow::Result<(FederationPeerStatus, Option<FederationOperationStatus>)> {
     let runtime_config =
         state
             .mint
@@ -657,31 +695,37 @@ async fn local_peer_order_status(state: &MintState) -> anyhow::Result<Federation
                 component: "mint configuration",
             })?;
     let tip = state.mint.localstore().get_federation_journal_tip().await?;
-    let mut status = match tip {
+    let (mut status, latest_operation_status) = match tip {
         Some(tip) => {
             let operation_count = tip
                 .index
                 .checked_add(1)
                 .ok_or_else(|| anyhow::anyhow!("federation journal index overflow"))?;
+            (
+                FederationPeerStatus::new(
+                    runtime_config.federation_id(),
+                    runtime_config.member_id(),
+                    operation_count,
+                    Some(tip.index),
+                    tip.order_digest,
+                ),
+                Some(tip.status),
+            )
+        }
+        None => (
             FederationPeerStatus::new(
                 runtime_config.federation_id(),
                 runtime_config.member_id(),
-                operation_count,
-                Some(tip.index),
-                tip.order_digest,
-            )
-        }
-        None => FederationPeerStatus::new(
-            runtime_config.federation_id(),
-            runtime_config.member_id(),
-            0,
+                0,
+                None,
+                cdk::federation::FederationJournalDigest::genesis(),
+            ),
             None,
-            cdk::federation::FederationJournalDigest::genesis(),
         ),
     };
     let next_item_index = local_finalized_item_cursor(state).await?;
     status = status.with_aleph_bft_next_item_index(next_item_index);
-    Ok(status)
+    Ok((status, latest_operation_status))
 }
 
 async fn local_peer_status_with_materialized_rows(

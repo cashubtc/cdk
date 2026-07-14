@@ -18,8 +18,8 @@ use super::sync_config::{
 #[cfg(feature = "prometheus")]
 use super::u64_to_i64_saturating;
 use super::{
-    catch_up_certificate_quorum_status, local_peer_order_status, local_peer_status,
-    verify_catch_up_certificate_entries, CatchUpCertificateQuorumStatus,
+    local_peer_order_status, local_peer_status, verify_catch_up_certificate_entries,
+    CatchUpCertificateQuorumStatus,
 };
 
 pub(crate) fn spawn_federation_peer_sync_loop_with_config(
@@ -240,6 +240,52 @@ async fn collect_catch_up_certificate_round<T>(
 where
     T: Transport,
 {
+    let Some(runtime_config) = state.mint.federation_config() else {
+        return 0;
+    };
+    let operation_count = match state.mint.localstore().get_federation_journal_tip().await {
+        Ok(Some(tip)) => match tip.index.checked_add(1) {
+            Some(operation_count) => operation_count,
+            None => {
+                tracing::warn!("Could not inspect federation journal tip: index overflow");
+                return 0;
+            }
+        },
+        Ok(None) => return 0,
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect federation journal tip for evidence: {}",
+                err
+            );
+            return 0;
+        }
+    };
+    let mut quorum_status = match state
+        .federation
+        .catch_up_certificate_quorum_status(&state.mint)
+        .await
+    {
+        Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
+            state
+                .mark_federation_healthy_if_catch_up_certificate_verified(quorum.operation_count)
+                .await;
+            return 0;
+        }
+        Ok(quorum) => quorum,
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect federation catch-up certificate quorum: {}",
+                err
+            );
+            None
+        }
+    };
+
+    #[cfg(test)]
+    state
+        .federation
+        .catch_up_certificate_journal_load_count
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let entries = match state
         .mint
         .localstore()
@@ -259,26 +305,7 @@ where
         return 0;
     }
 
-    let Some(runtime_config) = state.mint.federation_config() else {
-        return 0;
-    };
     let operation_count = entries.len() as u64;
-    let mut quorum_status = match catch_up_certificate_quorum_status(&state.mint).await {
-        Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
-            state
-                .mark_federation_healthy_if_catch_up_certificate_verified(quorum.operation_count)
-                .await;
-            return 0;
-        }
-        Ok(quorum) => quorum,
-        Err(err) => {
-            tracing::warn!(
-                "Could not inspect federation catch-up certificate quorum: {}",
-                err
-            );
-            None
-        }
-    };
     let entries_to_collect =
         unverified_catch_up_certificate_entries(&entries, quorum_status.as_ref());
     if entries_to_collect.is_empty() {
@@ -314,7 +341,11 @@ where
         }
     };
 
-    quorum_status = match catch_up_certificate_quorum_status(&state.mint).await {
+    quorum_status = match state
+        .federation
+        .catch_up_certificate_quorum_status(&state.mint)
+        .await
+    {
         Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
             state
                 .mark_federation_healthy_if_catch_up_certificate_verified(quorum.operation_count)
@@ -361,7 +392,11 @@ where
                 backoff.record_failure(peer.member_id, client.sync_config, Instant::now());
             }
         }
-        quorum_status = match catch_up_certificate_quorum_status(&state.mint).await {
+        quorum_status = match state
+            .federation
+            .catch_up_certificate_quorum_status(&state.mint)
+            .await
+        {
             Ok(Some(quorum)) if quorum.from_index == 0 => Some(quorum),
             Ok(_) => None,
             Err(err) => {
@@ -620,7 +655,11 @@ where
 }
 
 async fn mark_healthy_after_catch_up_certificate_quorum(state: &MintState, operation_count: u64) {
-    match catch_up_certificate_quorum_status(&state.mint).await {
+    match state
+        .federation
+        .catch_up_certificate_quorum_status(&state.mint)
+        .await
+    {
         Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
             state
                 .mark_federation_healthy_if_catch_up_certificate_verified(quorum.operation_count)

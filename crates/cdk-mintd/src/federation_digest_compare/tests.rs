@@ -134,6 +134,10 @@ fn digest_comparison_groups_matching_members() {
     report
         .ensure_converged()
         .expect("matching digests converge");
+    assert!(
+        !report.needs_materialized_row_diagnostics(),
+        "matching digests must not request every materialized-state row"
+    );
 }
 
 #[test]
@@ -262,6 +266,7 @@ fn digest_comparison_diagnoses_materialized_state_mismatch() {
     assert!(
         digest_diagnostic_line(&report.diagnostics[0]).contains("kind=materialized_state_mismatch")
     );
+    assert!(report.needs_materialized_row_diagnostics());
 }
 
 #[test]

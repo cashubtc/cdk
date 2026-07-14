@@ -464,6 +464,7 @@ where
         .expect("persisted journal tip");
     assert_eq!(tip.index, second.index);
     assert_eq!(tip.order_digest, second.order_digest);
+    assert_eq!(tip.status, FederationOperationStatus::Rejected);
 
     let first_by_operation_id = db
         .get_federation_journal_entry_by_operation_id(first.operation_id)
