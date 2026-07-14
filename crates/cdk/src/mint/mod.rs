@@ -15,7 +15,9 @@ pub use cdk_common::quote_id::QuoteId;
 use cdk_common::stream::{BackoffPolicy, SupervisedStream};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
-use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
+use cdk_signatory::signatory::{
+    ReconstructDleqArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 use futures::{Stream, StreamExt};
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
