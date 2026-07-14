@@ -512,6 +512,32 @@ mod tests {
         assert!(!command_needs_wallet_recovery(&cli.command));
     }
 
+    #[test]
+    fn parses_non_interactive_onchain_melt_quote_index() {
+        let cli = Cli::parse_from([
+            "cdk-cli",
+            "--non-interactive",
+            "melt",
+            "--method",
+            "onchain",
+            "--mint-url",
+            "https://mint.example.com",
+            "--address",
+            "bcrt1ptest",
+            "--amount",
+            "1000",
+            "--network",
+            "regtest",
+            "--onchain-quote-index",
+            "0",
+        ]);
+
+        let Commands::Melt(melt) = cli.command else {
+            panic!("expected melt command");
+        };
+        assert_eq!(melt.onchain_quote_index, Some(0));
+    }
+
     #[cfg(feature = "federation")]
     #[test]
     fn parses_federation_add_public_config_command() {

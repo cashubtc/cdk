@@ -2573,6 +2573,7 @@ async fn create_mint_router_with_custom_cache_inner(
             wallet_liveness: federation::FederationWalletLivenessWorker::default(),
             onchain_wallets: federation_onchain_wallets,
             frost_signing: federation_frost_signing,
+            operation_application: Arc::new(tokio::sync::Mutex::new(())),
             #[cfg(test)]
             fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
@@ -2599,7 +2600,7 @@ async fn create_mint_router_with_custom_cache_inner(
             .map(|_| Arc::new(tokio::sync::Mutex::new(FederationSyncState::default())));
     }
     #[cfg(feature = "federation")]
-    let federation_dkg_config = match federation_dkg_config {
+    let (federation_dkg_config, spawn_federation_dkg_driver) = match federation_dkg_config {
         Some(config) => {
             let runtime_config = state.mint.federation_config().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -2625,12 +2626,12 @@ async fn create_mint_router_with_custom_cache_inner(
                     root_key_epoch = config.root_key_epoch,
                     "Federation dual DKG auto-start skipped because this exact ceremony is complete"
                 );
-                None
+                (Some(config), false)
             } else {
-                Some(config)
+                (Some(config), true)
             }
         }
-        None => None,
+        None => (None, false),
     };
     #[cfg(feature = "federation")]
     {
@@ -2647,16 +2648,22 @@ async fn create_mint_router_with_custom_cache_inner(
         };
     }
     #[cfg(feature = "federation")]
-    let start_federation_live_session = state.federation.consensus.is_some() && {
-        #[cfg(test)]
-        {
-            !state.federation.local_finality_test
-        }
-        #[cfg(not(test))]
-        {
-            true
-        }
-    };
+    let federation_application_ready = state
+        .mint
+        .federation_config()
+        .is_some_and(|config| !config.public_config().keysets.is_empty());
+    #[cfg(feature = "federation")]
+    let start_federation_live_session =
+        federation_application_ready && state.federation.consensus.is_some() && {
+            #[cfg(test)]
+            {
+                !state.federation.local_finality_test
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        };
     #[cfg(feature = "federation")]
     if start_federation_live_session {
         federation::start_federation_aleph_bft_live_session(
@@ -2666,11 +2673,16 @@ async fn create_mint_router_with_custom_cache_inner(
         .await?;
     }
     #[cfg(feature = "federation")]
-    if spawn_federation_peer_sync {
+    if federation_application_ready && spawn_federation_peer_sync {
         state.restore_federation_startup_readiness().await;
     }
     #[cfg(feature = "federation")]
-    if let Some(config) = federation_dkg_config {
+    let expose_federation_routes =
+        state.federation.consensus.is_some() || federation_dkg_config.is_some();
+    #[cfg(feature = "federation")]
+    if spawn_federation_dkg_driver {
+        let config = federation_dkg_config
+            .expect("enabled federation DKG driver must retain its validated configuration");
         federation::spawn_federation_dkg_driver(state.clone(), federation_peer_sync_config, config);
     }
 
@@ -2687,7 +2699,7 @@ async fn create_mint_router_with_custom_cache_inner(
     let mut mint_router = Router::new().nest("/v1", v1_router);
 
     #[cfg(feature = "federation")]
-    if state.federation.consensus.is_some() {
+    if federation_application_ready && state.federation.consensus.is_some() {
         state
             .federation
             .payment_observer
@@ -2709,6 +2721,9 @@ async fn create_mint_router_with_custom_cache_inner(
                 federation_peer_sync_config,
             );
         }
+    }
+    #[cfg(feature = "federation")]
+    if expose_federation_routes {
         mint_router = mint_router.nest("/federation/v1", federation::create_federation_router());
     }
 
@@ -2777,7 +2792,6 @@ async fn create_federation_runtime_state_with_wallet(
         }
         return Ok((None, None, Vec::new(), None));
     };
-
     let db = mint.localstore();
     validate_and_materialize_frost_wallet_config(mint).await?;
     let frost_signing = match local_wallet_config.as_ref() {

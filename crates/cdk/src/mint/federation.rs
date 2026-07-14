@@ -1321,15 +1321,19 @@ impl Mint {
         let mut payment_id = None;
 
         for payment in payments {
+            let candidate_payment_id =
+                federation_payment_identifier_from_label(&payment.payment_id);
+            let durable_payment_label = federation_payment_identifier_label(&candidate_payment_id);
             if payment.payment_amount.value() == 0
                 || observed_quote.payment_ids().contains(&&payment.payment_id)
+                || observed_quote
+                    .payment_ids()
+                    .contains(&&durable_payment_label)
             {
                 continue;
             }
             let amount = payment.payment_amount.convert_to(&observed_quote.unit)?;
-            payment_id = Some(federation_payment_identifier_from_label(
-                &payment.payment_id,
-            ));
+            payment_id = Some(candidate_payment_id);
             observed_quote.add_payment(amount, payment.payment_id, None)?;
         }
 

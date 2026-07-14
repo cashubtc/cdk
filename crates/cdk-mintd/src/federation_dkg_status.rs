@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -11,7 +11,10 @@ use cdk_common::federation::{
     FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
-    FederationDkgTranscriptSignatureRequest, MemberConfigPrivate, MemberId,
+    FederationDkgTranscriptSignatureRequest, FederationFrostActiveEpochs,
+    FederationFrostApplicationConfig, FederationFrostConsumerRegistration,
+    FederationFrostEpochState, FederationFrostRootPublicConfig, FederationFrostWalletConfig,
+    FederationOnchainConfirmationPolicy, MemberConfigPrivate, MemberId,
 };
 
 use crate::cli::{CLIArgs, FederationDkgStatusArgs};
@@ -53,6 +56,7 @@ pub(crate) async fn run_dkg_status_command(
             return Ok(());
         }
         let current_records = database_records.records_for_current_ceremony()?;
+        let frost_roots = current_records.frost_roots.clone();
         merge_dkg_records(
             &mut keyset_shares,
             &mut transcript_signatures,
@@ -76,6 +80,7 @@ pub(crate) async fn run_dkg_status_command(
             &keyset_shares,
             &transcript_signatures,
             &activations,
+            &frost_roots,
         )?;
         print!("{}", report.text);
         print_written_config_status(written_configs.as_ref());
@@ -101,6 +106,7 @@ pub(crate) async fn run_dkg_status_command(
         &keyset_shares,
         &transcript_signatures,
         &activations,
+        &[],
     )?;
     print!("{}", report.text);
     print_written_config_status(written_configs.as_ref());
@@ -119,18 +125,123 @@ fn maybe_write_finalized_configs(
     keyset_shares: &[FederationDkgMemberKeysetShare],
     transcript_signatures: &[FederationDkgTranscriptSignatureRequest],
     activations: &[FederationDkgActivationRequest],
+    frost_roots: &[FederationFrostRootPublicConfig],
 ) -> Result<Option<(PathBuf, PathBuf)>> {
     let Some(output_dir) = args.final_config_dir.as_deref() else {
         return Ok(None);
     };
-    let finalized = finalized_member_config(
+    let mut finalized = finalized_member_config(
         public_config,
         private_config,
         keyset_shares,
         transcript_signatures,
         activations,
     )?;
+    if let Some(bootstrap) = FrostCdkBootstrap::from_args(args)? {
+        attach_initial_frost_cdk_wallet(&mut finalized, frost_roots, bootstrap)?;
+    }
     write_finalized_member_config(output_dir, &finalized, args.force).map(Some)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FrostCdkBootstrap {
+    network: bitcoin::Network,
+    minimum_confirmations: u32,
+    fee_policy_version: u16,
+    application_key_epoch: u64,
+}
+
+impl FrostCdkBootstrap {
+    fn from_args(args: &FederationDkgStatusArgs) -> Result<Option<Self>> {
+        let values = (
+            args.frost_cdk_network.as_deref(),
+            args.frost_cdk_minimum_confirmations,
+            args.frost_cdk_fee_policy_version,
+            args.frost_cdk_application_key_epoch,
+        );
+        let (network, minimum_confirmations, fee_policy_version, application_key_epoch) =
+            match values {
+                (None, None, None, None) => return Ok(None),
+                (Some(network), Some(confirmations), Some(fee_policy), Some(epoch)) => {
+                    (network, confirmations, fee_policy, epoch)
+                }
+                _ => bail!(
+                    "FROST CDK bootstrap requires --frost-cdk-network, \
+                     --frost-cdk-minimum-confirmations, --frost-cdk-fee-policy-version, and \
+                     --frost-cdk-application-key-epoch together"
+                ),
+            };
+        let network = match network {
+            "bitcoin" | "mainnet" => bitcoin::Network::Bitcoin,
+            "testnet" => bitcoin::Network::Testnet,
+            "signet" => bitcoin::Network::Signet,
+            "regtest" => bitcoin::Network::Regtest,
+            other => bail!("unknown FROST CDK Bitcoin network {other}"),
+        };
+        FederationOnchainConfirmationPolicy::new(minimum_confirmations)?;
+        if fee_policy_version == 0 || application_key_epoch == 0 {
+            bail!("FROST CDK fee-policy and application epochs must be non-zero");
+        }
+        Ok(Some(Self {
+            network,
+            minimum_confirmations,
+            fee_policy_version,
+            application_key_epoch,
+        }))
+    }
+}
+
+fn attach_initial_frost_cdk_wallet(
+    finalized: &mut FederationDkgFinalizedMemberConfig,
+    frost_roots: &[FederationFrostRootPublicConfig],
+    bootstrap: FrostCdkBootstrap,
+) -> Result<()> {
+    if finalized.public_config.frost_wallet.is_some() {
+        bail!("initial FROST CDK bootstrap requires a config without an existing wallet");
+    }
+    let active_roots = frost_roots
+        .iter()
+        .filter(|root| root.state == FederationFrostEpochState::Active)
+        .collect::<Vec<_>>();
+    let [root] = active_roots.as_slice() else {
+        bail!(
+            "initial FROST CDK bootstrap requires exactly one active root from the completed dual DKG"
+        );
+    };
+    root.validate(&finalized.public_config)?;
+    let application = FederationFrostApplicationConfig::new_cdk_onchain(
+        &finalized.public_config,
+        root,
+        bootstrap.application_key_epoch,
+        FederationFrostEpochState::Active,
+        bootstrap.network,
+        FederationOnchainConfirmationPolicy::new(bootstrap.minimum_confirmations)?,
+        bootstrap.fee_policy_version,
+    )?;
+    let consumer = FederationFrostConsumerRegistration::new(
+        root.root_key_epoch,
+        application.application_id,
+        application.application_key_epoch,
+    )?;
+    let active_epochs = FederationFrostActiveEpochs {
+        root_key_epoch: root.root_key_epoch,
+        application_key_epochs: BTreeMap::from([(
+            application.application_id,
+            application.application_key_epoch,
+        )]),
+    };
+    finalized.public_config.frost_wallet = Some(FederationFrostWalletConfig::new(
+        &finalized.public_config,
+        vec![(*root).clone()],
+        vec![application],
+        vec![consumer],
+        active_epochs,
+    )?);
+    finalized.public_config.validate()?;
+    finalized
+        .private_config
+        .validate_against_public(&finalized.public_config)?;
+    Ok(())
 }
 
 fn finalized_member_config(
@@ -292,6 +403,10 @@ async fn read_database_records(cli_args: &CLIArgs) -> Result<DkgCompletionRecord
             .get_federation_dkg_ceremonies()
             .await
             .context("failed to read persisted DKG ceremony lifecycle records")?,
+        frost_roots: db
+            .get_federation_frost_root_public_configs()
+            .await
+            .context("failed to read persisted FROST root public configs")?,
     })
 }
 
@@ -340,6 +455,7 @@ struct DkgCompletionRecords {
     transcript_signatures: Vec<FederationDkgTranscriptSignatureRequest>,
     activations: Vec<FederationDkgActivationRequest>,
     ceremonies: Vec<FederationDkgCeremonyRecord>,
+    frost_roots: Vec<FederationFrostRootPublicConfig>,
 }
 
 impl DkgCompletionRecords {
@@ -385,6 +501,9 @@ impl DkgCompletionRecords {
         selected
             .activations
             .retain(|activation| activation.ceremony_id == ceremony_id);
+        selected
+            .frost_roots
+            .retain(|root| root.ceremony_id == ceremony_id);
         Ok(selected)
     }
 }
@@ -421,6 +540,7 @@ struct DkgSetupRecordSummary {
     keyset_shares: usize,
     transcript_signatures: usize,
     activations: usize,
+    frost_root_public_configs: usize,
     participant_state_members: BTreeSet<MemberId>,
     participant_state_ceremonies: BTreeSet<String>,
     commitment_members: BTreeSet<MemberId>,
@@ -456,6 +576,7 @@ impl DkgSetupRecordSummary {
             keyset_shares: records.keyset_shares.len(),
             transcript_signatures: records.transcript_signatures.len(),
             activations: records.activations.len(),
+            frost_root_public_configs: records.frost_roots.len(),
             participant_state_members: records
                 .participant_states
                 .iter()
@@ -779,7 +900,7 @@ fn append_setup_record_summary(
         ));
     }
     text.push_str(&format!(
-        "setup_records participant_states={} commitments={} reveals={} secret_share_contributions={} keyset_shares={} transcript_signatures={} activations={} participant_state_members={} participant_state_ceremonies={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={} driver_phase={phase}\n",
+        "setup_records participant_states={} commitments={} reveals={} secret_share_contributions={} keyset_shares={} transcript_signatures={} activations={} frost_root_public_configs={} participant_state_members={} participant_state_ceremonies={} commitment_members={} reveal_members={} secret_share_senders={} secret_share_receivers={} driver_phase={phase}\n",
         setup_records.participant_states,
         setup_records.commitments,
         setup_records.reveals,
@@ -787,6 +908,7 @@ fn append_setup_record_summary(
         setup_records.keyset_shares,
         setup_records.transcript_signatures,
         setup_records.activations,
+        setup_records.frost_root_public_configs,
         display_member_set(&setup_records.participant_state_members),
         display_string_set(&setup_records.participant_state_ceremonies),
         display_member_set(&setup_records.commitment_members),

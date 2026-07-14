@@ -2179,40 +2179,69 @@ under realistic member and network failures.
 
 **Work:**
 
-- [ ] Add a deterministic regtest harness for 3-of-5 and configurable larger
+- [x] Add a deterministic regtest harness for 3-of-5 and configurable larger
   federations.
-- [ ] Automate FROST DKG, descriptor activation, funding, deposit address
+- [x] Automate FROST DKG, descriptor activation, funding, deposit address
   allocation, mining, Cashu minting, on-chain melting, and balance checks.
-- [ ] Capture journal, state digest, BDK balance, UTXO set, transaction state,
+- [x] Capture journal, state digest, BDK balance, UTXO set, transaction state,
   and Bitcoin node state at each checkpoint.
-- [ ] Add controlled member stop/start, REST partition, delayed messages,
+- [x] Add controlled member stop/start, REST partition, delayed messages,
   chain-source outage, database contention, and process-kill injection.
-- [ ] Verify no duplicate Bitcoin payments, no unauthorized outputs, no nonce
+- [x] Verify no duplicate Bitcoin payments, no unauthorized outputs, no nonce
   reuse, no stuck reservations after defined recovery, and no member divergence.
-- [ ] Verify CLI and wallet-library behavior, not only internal APIs.
-- [ ] Keep tests bounded and split slow fault matrices from routine unit tests.
+- [x] Verify CLI and wallet-library behavior, not only internal APIs.
+- [x] Keep tests bounded and split slow fault matrices from routine unit tests.
 
 **Success criteria:**
 
-- [ ] A fresh 3-of-5 federation completes on-chain mint and melt with two
+- [x] A fresh 3-of-5 federation completes on-chain mint and melt with two
   members offline where thresholds permit.
-- [ ] All recovered members converge on identical journal and materialized-state
+- [x] All recovered members converge on identical journal and materialized-state
   digests, address mappings, UTXOs, and transactions.
-- [ ] Bitcoin Core reports exactly the expected deposits and outgoing payments.
-- [ ] Standalone mint and wallet workflows remain unchanged.
+- [x] Bitcoin Core reports exactly the expected deposits and outgoing payments.
+- [x] Standalone mint and wallet workflows remain unchanged.
 
 **Required tests:**
 
-- [ ] Happy-path fixed 3-of-5 flow with two deposits and two melts.
-- [ ] 8-of-11 smoke flow and one bounded 14-of-20 signing/DKG flow.
-- [ ] Offline proposer, coordinator, signer, broadcaster, and observer.
-- [ ] Below-threshold partition followed by healing and catch-up.
-- [ ] Restart at address, observation, proposal, commitment, share, signed,
+- [x] Happy-path fixed 3-of-5 flow with two deposits and two melts.
+- [x] 8-of-11 smoke flow and one bounded 14-of-20 signing/DKG flow.
+- [x] Offline proposer, coordinator, signer, broadcaster, and observer.
+- [x] Below-threshold partition followed by healing and catch-up.
+- [x] Restart at address, observation, proposal, commitment, share, signed,
   broadcast, and confirmation phases.
-- [ ] Conflicting transaction proposals and invalid signature share.
-- [ ] Esplora outage with RPC members still available and the reverse.
-- [ ] Reorg before minting and controlled post-liability reorg response.
-- [ ] Sender CLI on-chain mint and receiver CLI on-chain melt smoke tests.
+- [x] Conflicting transaction proposals and invalid signature share.
+- [x] Esplora outage with RPC members still available and the reverse.
+- [x] Reorg before minting and controlled post-liability reorg response.
+- [x] Sender CLI on-chain mint and receiver CLI on-chain melt smoke tests.
+
+**Milestone 24 completion record:** the deterministic Bitcoin Core regtest
+harness now provisions dual dealer-free Cashu BLS and secp256k1 FROST DKG,
+activates the Taproot descriptor, drives the public CLI through two deposits and
+two melts, and checks Bitcoin transactions, balances, UTXOs, journals, state
+digests, address mappings, and recovery certificates. Separate bounded recipes
+cover happy, one-member-offline, process-kill, and below-threshold-heal 3-of-5
+profiles. A release 8-of-11 run completed the full flow with final balances of
+50,000, 90,000, 78,058, and 64,116 satoshis at its checkpoints; Bitcoin Core
+reported two unique deposits and two unique outgoing transactions, and every
+recovered member converged. The reusable FROST component matrix independently
+completed 14-of-20 DKG and BIP340-compatible signing.
+
+The matrix exercises role outages, every durable wallet phase, conflicting
+proposals, invalid shares, heterogeneous chain-source outages, reorg behavior,
+contention, catch-up, and exact-byte rebroadcast. It uncovered three small
+shared-domain gaps rather than missing mint business logic: catch-up and live
+finality could apply dependent operations concurrently, a completed DKG member
+could not replay its exact durable activation after restart, and configured
+member-request retries had no bounded delay for transient recovery. Each fix is
+localized to its existing concurrency, ceremony, or connector boundary and has
+a focused regression test; standalone paths remain unchanged.
+
+Verification includes 25 `cdk-frost` tests, 124 serial `cdk-bdk` tests, all 458
+active federation-enabled Axum tests (456 in the sandbox plus the two
+listener-binding cases rerun with socket access), and 382 active
+federation-enabled `cdk-common` tests. The slow live fault matrix is isolated
+from routine unit tests, supports debug or release binaries, and validates
+member process liveness and bounded staged startup.
 
 ### Milestone 25: security hardening and independent review
 

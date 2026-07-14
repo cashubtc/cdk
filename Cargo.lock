@@ -1784,6 +1784,7 @@ dependencies = [
  "cdk-cln",
  "cdk-common",
  "cdk-fake-wallet",
+ "cdk-frost",
  "cdk-http-client",
  "cdk-ldk-node",
  "cdk-lnd",

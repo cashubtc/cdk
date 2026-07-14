@@ -3,12 +3,14 @@ use std::str::FromStr;
 
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederationDkgCeremonyId, FederationDkgCommitmentRound,
-    FederationDkgKeysetSpec, FederationDkgTranscript, FederationDkgTranscriptSignature, MemberId,
-    ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationDkgKeysetSpec, FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationFrostDkgContext, FederationFrostRootRecord, MemberId, ThresholdParams,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::{evaluate_secret_key_coefficients, BlsSecretKey};
 use cdk_common::{Amount, CurrencyUnit, SecretKey};
+use cdk_frost::{advance_dkg, finish_dkg, start_dkg, SecretEncryptionKey};
 
 use super::*;
 
@@ -279,6 +281,67 @@ fn dkg_completion_fixture(local_member: MemberId) -> DkgCompletionFixture {
     }
 }
 
+fn completed_frost_root(config: &FederationConfig) -> FederationFrostRootPublicConfig {
+    let context =
+        FederationFrostDkgContext::new(config, dkg_ceremony_id(), 1).expect("FROST DKG context");
+    let frost_context = context.to_frost_context().expect("crypto DKG context");
+    let mut round1 = Vec::new();
+    for id in 1..=3 {
+        round1.push(
+            start_dkg(
+                frost_context.clone(),
+                cdk_frost::MemberId::new(id).expect("FROST member"),
+                cdk_frost::rand_core::OsRng,
+            )
+            .expect("start FROST DKG"),
+        );
+    }
+    let public_round1 = round1
+        .iter()
+        .map(|(_, package)| package.clone())
+        .collect::<Vec<_>>();
+    let mut round2 = round1
+        .into_iter()
+        .map(|(secret, own)| {
+            let received = public_round1
+                .iter()
+                .filter(|package| package.sender() != own.sender())
+                .cloned();
+            advance_dkg(secret, received).expect("advance FROST DKG")
+        })
+        .collect::<Vec<_>>();
+    let local = cdk_frost::MemberId::new(1).expect("local FROST member");
+    let incoming = round2
+        .iter()
+        .skip(1)
+        .map(|(_, outgoing)| outgoing.get(&local).expect("round-two package").clone())
+        .collect::<Vec<_>>();
+    let root = finish_dkg(
+        round2.remove(0).0,
+        public_round1
+            .iter()
+            .filter(|package| package.sender() != local)
+            .cloned(),
+        incoming,
+    )
+    .expect("finish FROST DKG");
+    let storage_key = SecretEncryptionKey::new([91; 32]).expect("storage key");
+    let mut rng = cdk_frost::rand_core::OsRng;
+    let encrypted = root.seal(&storage_key, &mut rng).expect("seal root share");
+    let record = FederationFrostRootRecord {
+        context,
+        member_id: member_id(1),
+        public_package: root.public().encode(),
+        encrypted_root_share: encrypted.to_bytes(),
+    };
+    FederationFrostRootPublicConfig::from_dkg_record(
+        config,
+        &record,
+        FederationFrostEpochState::Active,
+    )
+    .expect("public FROST root")
+}
+
 #[cfg(feature = "sqlcipher")]
 fn test_db_password() -> Option<String> {
     Some("federation-dkg-status-test-password".to_string())
@@ -387,6 +450,7 @@ fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
         keyset_shares: 1,
         transcript_signatures: 3,
         activations: 3,
+        frost_root_public_configs: 1,
         participant_state_members: BTreeSet::from([member_id(2)]),
         participant_state_ceremonies: BTreeSet::from([dkg_ceremony_id().to_string()]),
         commitment_members: BTreeSet::from([member_id(1), member_id(2), member_id(3)]),
@@ -413,6 +477,7 @@ fn dkg_status_report_summarizes_persisted_setup_records_without_secrets() {
     assert!(report
         .text
         .contains("secret_share_contributions=4 keyset_shares=1 transcript_signatures=3"));
+    assert!(report.text.contains("frost_root_public_configs=1"));
     assert!(report.text.contains("participant_state_members=2"));
     assert!(report.text.contains(&format!(
         "participant_state_ceremonies={}",
@@ -580,6 +645,93 @@ fn finalized_dkg_configs_are_exported_with_overwrite_protection() {
 }
 
 #[test]
+fn completed_dual_dkg_bootstraps_one_active_cdk_onchain_application() {
+    let fixture = dkg_completion_fixture(member_id(2));
+    let mut finalized = FederationDkgFinalizedMemberConfig::from_records(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        std::slice::from_ref(&fixture.keyset_share),
+        &fixture.transcript_signatures,
+    )
+    .expect("finalized member config");
+    let root = completed_frost_root(&finalized.public_config);
+    let root_package_before = root.canonical_public_package.clone();
+
+    attach_initial_frost_cdk_wallet(
+        &mut finalized,
+        std::slice::from_ref(&root),
+        FrostCdkBootstrap {
+            network: bitcoin::Network::Regtest,
+            minimum_confirmations: 1,
+            fee_policy_version: 1,
+            application_key_epoch: 1,
+        },
+    )
+    .expect("bootstrap initial FROST CDK application");
+
+    let wallet = finalized
+        .public_config
+        .frost_wallet
+        .as_ref()
+        .expect("FROST wallet");
+    assert_eq!(wallet.roots.len(), 1);
+    assert_eq!(wallet.cdk_onchain_applications.len(), 1);
+    assert_eq!(wallet.registered_consumers.len(), 1);
+    assert_eq!(wallet.active_epochs.root_key_epoch, 1);
+    let application = &wallet.cdk_onchain_applications[0];
+    assert_eq!(application.network, bitcoin::Network::Regtest);
+    assert_eq!(application.confirmation_policy.minimum_confirmations, 1);
+    assert_eq!(application.fee_policy_version, 1);
+    assert_eq!(application.threshold, 2);
+    assert_eq!(
+        wallet.roots[0].canonical_public_package,
+        root_package_before
+    );
+    finalized
+        .private_config
+        .validate_against_public(&finalized.public_config)
+        .expect("bootstrapped public config matches private BLS config");
+
+    let err = attach_initial_frost_cdk_wallet(
+        &mut finalized,
+        std::slice::from_ref(&root),
+        FrostCdkBootstrap {
+            network: bitcoin::Network::Regtest,
+            minimum_confirmations: 1,
+            fee_policy_version: 1,
+            application_key_epoch: 1,
+        },
+    )
+    .expect_err("bootstrap cannot overwrite an active wallet");
+    assert!(err.to_string().contains("existing wallet"));
+}
+
+#[test]
+fn frost_cdk_bootstrap_fails_closed_without_exactly_one_active_dual_dkg_root() {
+    let fixture = dkg_completion_fixture(member_id(2));
+    let mut finalized = FederationDkgFinalizedMemberConfig::from_records(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        std::slice::from_ref(&fixture.keyset_share),
+        &fixture.transcript_signatures,
+    )
+    .expect("finalized member config");
+    let err = attach_initial_frost_cdk_wallet(
+        &mut finalized,
+        &[],
+        FrostCdkBootstrap {
+            network: bitcoin::Network::Regtest,
+            minimum_confirmations: 1,
+            fee_policy_version: 1,
+            application_key_epoch: 1,
+        },
+    )
+    .expect_err("missing FROST root fails closed");
+    assert!(err.to_string().contains("exactly one active root"));
+    assert!(finalized.public_config.frost_wallet.is_none());
+}
+
+#[test]
 fn finalized_dkg_config_export_requires_complete_records() {
     let fixture = dkg_completion_fixture(member_id(2));
     let err = finalized_member_config(
@@ -606,6 +758,7 @@ fn dkg_status_report_shows_partial_database_setup_progress_without_marking_ready
         keyset_shares: 0,
         transcript_signatures: 0,
         activations: 0,
+        frost_root_public_configs: 0,
         participant_state_members: BTreeSet::from([member_id(2)]),
         participant_state_ceremonies: BTreeSet::from([dkg_ceremony_id().to_string()]),
         commitment_members: BTreeSet::from([member_id(1), member_id(2)]),

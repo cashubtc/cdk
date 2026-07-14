@@ -52,6 +52,8 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) wallet_liveness: super::FederationWalletLivenessWorker,
     pub(crate) onchain_wallets: Vec<cdk_bdk::FederatedBdkWallet>,
     pub(crate) frost_signing: Option<super::frost_signing::FederationFrostSigningRuntime>,
+    /// Serializes journal persistence and application across live finality and catch-up.
+    pub(crate) operation_application: Arc<tokio::sync::Mutex<()>>,
     #[cfg(test)]
     pub(crate) fail_next_pending_operation_persistence: Arc<AtomicBool>,
     #[cfg(test)]
@@ -141,6 +143,7 @@ impl FederationNodeRuntime {
             wallet_liveness: super::FederationWalletLivenessWorker::default(),
             onchain_wallets: Vec::new(),
             frost_signing: None,
+            operation_application: Arc::new(tokio::sync::Mutex::new(())),
             fail_next_pending_operation_persistence: Arc::new(AtomicBool::new(false)),
             suppress_next_terminal_response_publication: Arc::new(AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
@@ -980,6 +983,7 @@ impl FederationNodeRuntime {
         response: &FederationJournalCatchUpResponse,
         catch_up_certificates: &[&FederationCatchUpCertificate],
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
+        let _application = self.operation_application.lock().await;
         let runtime_config = self
             .active_mint()?
             .federation_config()
@@ -1652,6 +1656,7 @@ impl FederationNodeRuntime {
         &self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
+        let _application = self.operation_application.lock().await;
         let consensus = self
             .consensus
             .as_ref()

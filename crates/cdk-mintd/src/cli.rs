@@ -488,6 +488,18 @@ pub struct FederationDkgStatusArgs {
     /// Overwrite existing files in --final-config-dir.
     #[arg(long, action = clap::ArgAction::SetTrue, requires = "final_config_dir")]
     pub force: bool,
+    /// Explicit Bitcoin network for bootstrapping the first CDK FROST application.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_cdk_network: Option<String>,
+    /// Consensus confirmation depth for the bootstrapped CDK FROST application.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_cdk_minimum_confirmations: Option<u32>,
+    /// Consensus transaction-policy version for the bootstrapped CDK FROST application.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_cdk_fee_policy_version: Option<u16>,
+    /// Initial application key epoch derived from the application-neutral FROST root.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_cdk_application_key_epoch: Option<u64>,
 }
 
 #[cfg(feature = "federation")]
@@ -977,6 +989,14 @@ mod tests {
             "--require-ready",
             "--final-config-dir",
             "member-1/finalized",
+            "--frost-cdk-network",
+            "regtest",
+            "--frost-cdk-minimum-confirmations",
+            "1",
+            "--frost-cdk-fee-policy-version",
+            "1",
+            "--frost-cdk-application-key-epoch",
+            "1",
             "--force",
         ])
         .expect("dkg status command parses");
@@ -1011,6 +1031,10 @@ mod tests {
             Some(PathBuf::from("member-1/finalized"))
         );
         assert!(status.force);
+        assert_eq!(status.frost_cdk_network.as_deref(), Some("regtest"));
+        assert_eq!(status.frost_cdk_minimum_confirmations, Some(1));
+        assert_eq!(status.frost_cdk_fee_policy_version, Some(1));
+        assert_eq!(status.frost_cdk_application_key_epoch, Some(1));
     }
 
     #[test]

@@ -489,17 +489,27 @@ pub(super) async fn post_dkg_activation(
         ));
     }
     let runtime_config = federation_runtime_config(&state)?;
-    let finalized = state
-        .ready_federation_dkg_finalized_member_config()
-        .ok_or_else(dkg_finalized_config_not_ready_response)?;
-    payload
-        .payload
-        .validate_sender_against_validated_configs(
-            runtime_config.public_config(),
-            &finalized.public_config,
-            verified.sender,
-        )
-        .map_err(federation_error_response)?;
+    let exact_durable_replay = state
+        .mint
+        .localstore()
+        .get_federation_dkg_activations()
+        .await
+        .map_err(|error| dkg_error_response(error.into()))?
+        .into_iter()
+        .any(|activation| activation == payload.payload && activation.signer == verified.sender);
+    if !exact_durable_replay {
+        let finalized = state
+            .ready_federation_dkg_finalized_member_config()
+            .ok_or_else(dkg_finalized_config_not_ready_response)?;
+        payload
+            .payload
+            .validate_sender_against_validated_configs(
+                runtime_config.public_config(),
+                &finalized.public_config,
+                verified.sender,
+            )
+            .map_err(federation_error_response)?;
+    }
     let federation_id = runtime_config.federation_id();
     let local_member = runtime_config.member_id();
     state

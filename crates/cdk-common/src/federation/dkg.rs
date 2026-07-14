@@ -2432,6 +2432,11 @@ impl FederationDkgFinalizedMemberConfig {
             .map(FederationDkgKeysetTranscript::federated_keyset)
             .collect();
         activation_public_config.setup_transcript = Some(transcript.clone());
+        // BLS activation confirms the exact config produced by the BLS DKG.
+        // A separately validated FROST root/application may be attached after
+        // both ceremonies complete, but it must not retroactively change the
+        // digest covered by the already-durable BLS activation signatures.
+        activation_public_config.frost_wallet = None;
         activation_public_config.validate()?;
         transcript.validate_against_config(&activation_public_config)?;
         let ceremony_ids = transcript

@@ -674,6 +674,78 @@ async fn a_second_successful_dual_dkg_is_persisted_as_proposed_before_activation
 }
 
 #[tokio::test]
+async fn completed_member_accepts_exact_activation_replay_without_volatile_finalized_config() {
+    let federation = DkgDriverTestFederation::new().await;
+    let _ = federation.drive_until_complete(12).await;
+    let receiver = &federation.members[0];
+    let sender = &federation.members[1];
+    let activations = receiver
+        .db
+        .get_federation_dkg_activations()
+        .await
+        .expect("activations before replay");
+    let activation = *activations
+        .iter()
+        .find(|activation| activation.signer == sender.private_config.member_id)
+        .expect("sender activation");
+    let sequences = receiver
+        .db
+        .get_federation_dkg_member_sequences()
+        .await
+        .expect("sequences before replay");
+    let sequence = sequences
+        .get(&sender.private_config.member_id)
+        .copied()
+        .unwrap_or_default()
+        .saturating_add(1);
+    let mut restarted_state = receiver.state.clone();
+    let dkg_config = restarted_state
+        .federation
+        .dkg_auto_start_config
+        .as_ref()
+        .expect("DKG config")
+        .clone();
+    restarted_state.federation.dkg_member_admission = Some(crate::federation_dkg_member_admission(
+        &federation.public_config,
+        dkg_config.driver.member_request_burst,
+        dkg_config.driver.member_request_refill_interval,
+    ));
+    assert!(restarted_state
+        .ready_federation_dkg_finalized_member_config()
+        .is_none());
+    let request = FederationSignedRequest::new_signed(
+        federation.public_config.federation_id,
+        receiver.private_config.member_id,
+        sequence,
+        FederationRestMessageKind::DkgActivation,
+        activation,
+        &sender.private_config,
+    )
+    .expect("signed activation replay");
+
+    let _ = post_dkg_activation(State(restarted_state), Json(request))
+        .await
+        .expect("exact durable activation replay");
+    assert_eq!(
+        receiver
+            .db
+            .get_federation_dkg_activations()
+            .await
+            .expect("activations after replay"),
+        activations
+    );
+    assert_eq!(
+        receiver
+            .db
+            .get_federation_dkg_member_sequences()
+            .await
+            .expect("sequences after replay")
+            .get(&sender.private_config.member_id),
+        Some(&sequence)
+    );
+}
+
+#[tokio::test]
 async fn dkg_activation_mismatch_fails_before_sequence_or_record_mutation() {
     let federation = DkgDriverTestFederation::new().await;
     let _ = federation.drive_until_complete(12).await;

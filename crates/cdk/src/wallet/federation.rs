@@ -42,6 +42,8 @@ use self::validation::{
     validate_member_advertised_keyset,
 };
 
+const FEDERATION_MEMBER_RETRY_DELAY: Duration = Duration::from_millis(50);
+
 /// Wallet mint connector that fans out signing requests to federation members.
 ///
 /// The connector preserves the existing wallet-to-mint protocol surface: member
@@ -573,6 +575,7 @@ impl FederatedMintConnector {
                 Err(err) => {
                     if !err.is_definitive_failure() && attempt < max_member_retries {
                         if let Some(connector) = member_connectors.get(&member_id).cloned() {
+                            tokio::time::sleep(FEDERATION_MEMBER_RETRY_DELAY).await;
                             pending.push(start_call(
                                 member_id,
                                 attempt.saturating_add(1),

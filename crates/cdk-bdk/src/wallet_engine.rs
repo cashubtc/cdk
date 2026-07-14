@@ -14,7 +14,8 @@ use bdk_wallet::bitcoin::psbt::{Psbt, PsbtSighashType};
 use bdk_wallet::bitcoin::secp256k1::{schnorr, Message, Secp256k1};
 use bdk_wallet::bitcoin::sighash::{Prevouts, SighashCache};
 use bdk_wallet::bitcoin::{
-    Amount, FeeRate, Network, OutPoint, ScriptBuf, Sequence, TapSighashType, Transaction, TxOut,
+    absolute, Amount, FeeRate, Network, OutPoint, ScriptBuf, Sequence, TapSighashType, Transaction,
+    TxOut,
 };
 use bdk_wallet::descriptor::{ExtendedDescriptor, IntoWalletDescriptor};
 use bdk_wallet::rusqlite::{params, Connection, OptionalExtension};
@@ -329,6 +330,7 @@ impl BdkWalletEngine {
             .drain_to(change_script)
             .fee_rate(fee_rate)
             .version(2)
+            .nlocktime(absolute::LockTime::ZERO)
             .set_exact_sequence(Sequence::ENABLE_RBF_NO_LOCKTIME);
         let psbt = builder
             .finish()
@@ -364,6 +366,7 @@ impl BdkWalletEngine {
             .drain_to(destination_script)
             .fee_rate(fee_rate)
             .version(2)
+            .nlocktime(absolute::LockTime::ZERO)
             .set_exact_sequence(Sequence::ENABLE_RBF_NO_LOCKTIME);
         let psbt = builder
             .finish()
@@ -970,6 +973,7 @@ mod tests {
             .expect("federated PSBT");
 
         assert_eq!(psbt.unsigned_tx.version, transaction::Version::TWO);
+        assert_eq!(psbt.unsigned_tx.lock_time, absolute::LockTime::ZERO);
         assert_eq!(psbt.unsigned_tx.input.len(), 1);
         assert_eq!(psbt.unsigned_tx.input[0].previous_output, allowed);
         assert_eq!(
@@ -1059,6 +1063,8 @@ mod tests {
             .await
             .expect("epoch sweep PSBT");
 
+        assert_eq!(psbt.unsigned_tx.version, transaction::Version::TWO);
+        assert_eq!(psbt.unsigned_tx.lock_time, absolute::LockTime::ZERO);
         assert_eq!(psbt.unsigned_tx.input.len(), 1);
         assert_eq!(psbt.unsigned_tx.input[0].previous_output, selected);
         assert_eq!(

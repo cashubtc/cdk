@@ -391,6 +391,17 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(live_dkg_smoke_script.contains("INTERRUPT_CHECKPOINT_RETRIES:-2400"));
     assert!(live_dkg_smoke_script.contains("INTERRUPT_CHECKPOINT_SLEEP_SECONDS=0.05"));
     assert!(live_dkg_smoke_script.contains("DKG_EXPORT_JOBS:-4"));
+    assert!(live_dkg_smoke_script.contains("DKG_START_JOBS:-2"));
+    assert!(live_dkg_smoke_script.contains("RUNTIME_START_JOBS:-2"));
+    assert!(live_dkg_smoke_script.contains("start_dkg_members_bounded"));
+    assert!(live_dkg_smoke_script.contains("wait_for_dkg_listener"));
+    assert!(live_dkg_smoke_script.contains("if (( ${#batch[@]} > 0 )); then"));
+    assert!(
+        live_dkg_smoke_script.contains("exited before persisting a complete live DKG record set")
+    );
+    assert!(live_dkg_smoke_script.contains("start_runtime_members_bounded"));
+    assert!(live_dkg_smoke_script.contains("recovered_members=\" $* \""));
+    assert!(live_dkg_smoke_script.contains("wait_for_converged \"$INTERRUPTED_MEMBER\""));
     assert!(live_dkg_smoke_script.contains("export_final_configs"));
     assert!(live_dkg_smoke_script.contains("member %s failed to export its final DKG config"));
     assert!(live_dkg_smoke_script.contains("keyset_shares || true)\" == \"0"));
@@ -398,6 +409,25 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         .contains("live DKG completed while a required participant was offline"));
     assert!(live_dkg_smoke_script.contains("participant_state_ceremonies"));
     assert!(live_dkg_smoke_script.contains("--final-config-dir"));
+    assert!(live_dkg_smoke_script.contains("--frost-cdk-network regtest"));
+    assert!(live_dkg_smoke_script.contains("--frost-cdk-minimum-confirmations 1"));
+    assert!(live_dkg_smoke_script.contains("member_frost_bdk_config"));
+    assert!(live_dkg_smoke_script.contains("run_frost_bdk_regtest"));
+    assert!(live_dkg_smoke_script.contains("run_onchain_mint"));
+    assert!(live_dkg_smoke_script.contains("run_onchain_melt"));
+    assert!(live_dkg_smoke_script.contains("capture_frost_bdk_checkpoint"));
+    assert!(live_dkg_smoke_script.contains("FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS:-60"));
+    assert!(live_dkg_smoke_script.contains("FROST_BDK_MEMBER_REQUEST_MAX_RETRIES:-200"));
+    assert!(live_dkg_smoke_script
+        .contains("--member-request-timeout-secs \"$FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS\""));
+    assert!(live_dkg_smoke_script
+        .contains("--member-request-max-retries \"$FROST_BDK_MEMBER_REQUEST_MAX_RETRIES\""));
+    assert!(live_dkg_smoke_script.contains("FROST_BDK_FAULT_PROFILE"));
+    assert!(live_dkg_smoke_script.contains("below-threshold-heal"));
+    assert!(live_dkg_smoke_script.contains("process-kill"));
+    assert!(live_dkg_smoke_script.contains("--onchain-quote-index 0"));
+    assert!(live_dkg_smoke_script
+        .contains("expected exactly two unique deposit and two unique melt transactions"));
     assert!(live_dkg_smoke_script.contains("compare_final_public_configs"));
     assert!(live_dkg_smoke_script.contains("DKG_SETUP_PHASE=0"));
     assert!(!live_dkg_smoke_script.contains("FEDERATION_CONSENSUS_BACKEND"));
@@ -563,6 +593,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
                 &member.config_path,
                 &member.dkg_setup_config_path,
                 &member.live_dkg_config_path,
+                &member.frost_bdk_config_path,
             ] {
                 let mode = std::fs::metadata(private_path)
                     .expect("private generated file metadata")
@@ -641,6 +672,9 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
                 .expect("setup-only member config text");
         let live_dkg_config_text = std::fs::read_to_string(&member_artifacts.live_dkg_config_path)
             .expect("live DKG member config text");
+        let frost_bdk_config_text =
+            std::fs::read_to_string(&member_artifacts.frost_bdk_config_path)
+                .expect("FROST BDK member config text");
         let expected_prometheus_port = 8085 + 3 + member_id.get() - 1;
         assert!(config_text.contains("[prometheus]"));
         assert!(config_text.contains("enabled = true"));
@@ -666,6 +700,26 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
                 .to_string_lossy()
                 .to_string()
         ));
+        assert!(frost_bdk_config_text.contains("onchain_backend = \"federated-bdk\""));
+        assert!(frost_bdk_config_text.contains("network = \"regtest\""));
+        assert!(frost_bdk_config_text.contains("minimum_confirmations = 1"));
+        assert!(frost_bdk_config_text.contains("fee_policy_version = 1"));
+        assert!(frost_bdk_config_text.contains("chain_source_scope = \"shared\""));
+        assert!(frost_bdk_config_text.contains("chain_source_id = \"regtest-shared-core\""));
+        assert!(frost_bdk_config_text.contains(
+            &member_artifacts
+                .live_dkg_final_config_dir
+                .join("federation-public.json")
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(frost_bdk_config_text.contains(
+            &member_artifacts
+                .live_dkg_final_config_dir
+                .join("federation-private.json")
+                .to_string_lossy()
+                .to_string()
+        ));
         assert!(live_dkg_config_text.contains(
             &member_artifacts
                 .dkg_setup_private_config_path
@@ -681,6 +735,9 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         let live_dkg_settings =
             config::Settings::try_new(Some(&member_artifacts.live_dkg_config_path))
                 .expect("live DKG member config toml");
+        let frost_bdk_settings =
+            config::Settings::try_new(Some(&member_artifacts.frost_bdk_config_path))
+                .expect("FROST BDK member config toml");
         assert_eq!(settings.database.engine, config::DatabaseEngine::Sqlite);
         assert_eq!(
             dkg_setup_settings.database.engine,
@@ -690,6 +747,21 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
             live_dkg_settings.database.engine,
             config::DatabaseEngine::Sqlite
         );
+        assert_eq!(
+            frost_bdk_settings.database.engine,
+            config::DatabaseEngine::Sqlite
+        );
+        assert_eq!(
+            frost_bdk_settings
+                .onchain
+                .as_ref()
+                .expect("on-chain settings")
+                .onchain_backend,
+            config::OnchainBackend::FederatedBdk
+        );
+        frost_bdk_settings
+            .validate_backend_pairing()
+            .expect("on-chain-only FROST BDK pairing");
         assert!(
             settings
                 .federation
@@ -786,6 +858,12 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         assert!(live_dkg_smoke_script.contains(
             &member_artifacts
                 .live_dkg_config_path
+                .to_string_lossy()
+                .to_string()
+        ));
+        assert!(live_dkg_smoke_script.contains(
+            &member_artifacts
+                .frost_bdk_config_path
                 .to_string_lossy()
                 .to_string()
         ));

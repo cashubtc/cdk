@@ -558,7 +558,7 @@ mod tests {
                 port: address.port(),
                 user: "rpc-user".to_string(),
                 password: "rpc-password".to_string(),
-                request_timeout_secs: 2,
+                request_timeout_secs: 5,
             },
             requests,
             server,

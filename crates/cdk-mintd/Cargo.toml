@@ -78,4 +78,5 @@ workspace = true
 [build-dependencies]
 
 [dev-dependencies]
+cdk-frost.workspace = true
 tempfile = "3"

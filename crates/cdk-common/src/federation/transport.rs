@@ -1652,9 +1652,11 @@ impl FederationDkgActivationRequest {
         let mut expected_setup = final_public_config.clone();
         expected_setup.keysets.clear();
         expected_setup.setup_transcript = None;
+        expected_setup.frost_wallet = None;
         let mut actual_setup = setup_public_config.clone();
         actual_setup.keysets.clear();
         actual_setup.setup_transcript = None;
+        actual_setup.frost_wallet = None;
         if expected_setup != actual_setup {
             return Err(FederationError::DkgTranscriptMismatch {
                 reason: "DKG activation candidate changes immutable base config metadata"
