@@ -15,7 +15,9 @@ pub use cdk_common::quote_id::QuoteId;
 use cdk_common::stream::{BackoffPolicy, SupervisedStream};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
-use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
+use cdk_signatory::signatory::{
+    ReconstructDleqArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 use futures::{Stream, StreamExt};
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
@@ -1354,7 +1356,16 @@ impl Mint {
         let metrics = MintMetricGuard::new("restore");
 
         let result = async {
-            let output_len = request.outputs.len();
+            let blinded_messages: Vec<BlindedMessage> = request
+                .outputs
+                .into_iter()
+                .filter(|bm| {
+                    self.get_keyset_info(&bm.keyset_id)
+                        .is_some_and(|keyset_info| !keyset_info.is_expired())
+                })
+                .collect();
+
+            let output_len = blinded_messages.len();
 
             // Check max outputs limit
             if output_len > self.max_outputs {
@@ -1373,19 +1384,18 @@ impl Mint {
             let mut signatures = Vec::with_capacity(output_len);
 
             // Build a position map to track original request order for verification
-            let position_map: HashMap<PublicKey, usize> = request
-                .outputs
+            let position_map: HashMap<PublicKey, usize> = blinded_messages
                 .iter()
                 .enumerate()
                 .map(|(idx, output)| (output.blinded_secret, idx))
                 .collect();
 
-            let blinded_message: Vec<PublicKey> =
-                request.outputs.iter().map(|b| b.blinded_secret).collect();
+            let blinded_secrets: Vec<PublicKey> =
+                blinded_messages.iter().map(|b| b.blinded_secret).collect();
 
             let blinded_signatures = self
                 .localstore
-                .get_blind_signatures(&blinded_message)
+                .get_blind_signatures(&blinded_secrets)
                 .await?;
 
             if blinded_signatures.len() != output_len {
@@ -1393,7 +1403,7 @@ impl Mint {
             }
 
             for (blinded_message, blinded_signature) in
-                request.outputs.into_iter().zip(blinded_signatures)
+                blinded_messages.into_iter().zip(blinded_signatures)
             {
                 if let Some(mut blinded_signature) = blinded_signature {
                     blinded_signature = self
@@ -1404,15 +1414,6 @@ impl Mint {
                         })
                         .await?;
 
-                    if let Some(keyset_info) = self.get_keyset_info(&blinded_signature.keyset_id) {
-                        if keyset_info.is_expired() {
-                            tracing::debug!(
-                                "Skipping restore for expired keyset {}",
-                                blinded_signature.keyset_id
-                            );
-                            continue;
-                        }
-                    }
                     outputs.push(blinded_message);
                     signatures.push(blinded_signature);
                 }
