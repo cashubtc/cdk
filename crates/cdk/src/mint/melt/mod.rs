@@ -827,6 +827,20 @@ impl Mint {
                 .get_blind_signatures_for_quote(quote_id)
                 .await?;
 
+            let mut blind_signatures: Vec<BlindSignature> =
+                Vec::with_capacity(signatures_and_secrets.len());
+
+            for (blind_signature, blind_secret) in signatures_and_secrets.iter() {
+                let dleq = self
+                    .signatory
+                    .reconstruct_dleq(ReconstructDleqArguments {
+                        blind_signature: blind_signature.clone(),
+                        blind_secret: *blind_secret,
+                    })
+                    .await?;
+                blind_signatures.push(dleq);
+            }
+
             let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
 
             let response = match quote.payment_method {

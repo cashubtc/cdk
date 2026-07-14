@@ -10,7 +10,9 @@ use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
 
 use crate::proto;
 use crate::proto::signatory_client::SignatoryClient;
-use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
+use crate::signatory::{
+    ReconstructDleqArguments, RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets,
+};
 
 /// Largest delay between keyset subscription reconnect attempts.
 const KEYSET_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -282,6 +284,20 @@ impl Signatory for SignatoryRpcClient {
             .rotate_keyset(tonic::Request::new(req))
             .await
             .map(|response| handle_error!(response, keyset).try_into())
+            .map_err(|e| Error::Custom(e.to_string()))?
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn reconstruct_dleq(
+        &self,
+        args: ReconstructDleqArguments,
+    ) -> Result<BlindSignature, Error> {
+        let req: super::ReconstructDleqRequest = args.into();
+        self.client
+            .clone()
+            .reconstruct_dleq(tonic::Request::new(req))
+            .await
+            .map(|response| handle_error!(response, blind_signature).try_into())
             .map_err(|e| Error::Custom(e.to_string()))?
     }
 }

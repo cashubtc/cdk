@@ -1297,7 +1297,15 @@ impl Mint {
             for (blinded_message, blinded_signature) in
                 request.outputs.into_iter().zip(blinded_signatures)
             {
-                if let Some(blinded_signature) = blinded_signature {
+                if let Some(mut blinded_signature) = blinded_signature {
+                    blinded_signature = self
+                        .signatory
+                        .reconstruct_dleq(ReconstructDleqArguments {
+                            blind_signature: blinded_signature.clone(),
+                            blind_secret: blinded_message.blinded_secret,
+                        })
+                        .await?;
+
                     if let Some(keyset_info) = self.get_keyset_info(&blinded_signature.keyset_id) {
                         if keyset_info.is_expired() {
                             tracing::debug!(
@@ -1478,6 +1486,13 @@ mod tests {
         }
 
         async fn rotate_keyset(&self, _args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
+            Err(Error::Custom("unsupported in mock".to_string()))
+        }
+
+        async fn reconstruct_dleq(
+            &self,
+            _args: ReconstructDleqArguments,
+        ) -> Result<BlindSignature, Error> {
             Err(Error::Custom("unsupported in mock".to_string()))
         }
     }
@@ -1841,6 +1856,13 @@ mod tests {
 
         async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
             self.inner.rotate_keyset(args).await
+        }
+
+        async fn reconstruct_dleq(
+            &self,
+            args: ReconstructDleqArguments,
+        ) -> Result<BlindSignature, Error> {
+            self.inner.reconstruct_dleq(args).await
         }
     }
 
