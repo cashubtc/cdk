@@ -310,20 +310,23 @@ Tool output and generated runtime directories are not release artifacts.
 The 2026-07-14 lockfile audit removed vulnerable `crossbeam-epoch` and
 `protobuf` versions by updating `crossbeam-epoch` and moving Prometheus to its
 non-Protobuf 0.14 implementation. The fuzz-workspace lockfile has no reported
-vulnerabilities. The root lockfile still reports four unresolved advisories, so
+vulnerabilities. The root lockfile still reports three unresolved advisories, so
 the dependency release gate remains failed rather than ignored:
 
 | Advisory | Dependency path | Disposition |
 |---|---|---|
 | `RUSTSEC-2026-0119` | optional BIP353 resolver -> `hickory-proto` 0.25.2 | fixed upstream in 0.26.1, but no update compatible with the workspace MSRV was identified |
 | `RUSTSEC-2026-0118` | optional BIP353 resolver -> `hickory-proto` 0.25.2 | no fixed upstream release is available |
-| `RUSTSEC-2025-0009` | optional Tor transport -> Arti -> `ring` 0.16.20 | the compatible Arti upgrade range retains the dependency; do not suppress |
 | `RUSTSEC-2023-0071` | optional Tor transport -> Arti -> `rsa` 0.9.10 | medium severity and no fixed upstream release is available; do not suppress |
 
-The Tor dependencies are not part of the default workspace feature graph, but
-they remain supported code and therefore remain in the release audit. A trial
-upgrade was rejected because it did not remove these advisories and replacing
-the upstream Hyper connector locally would add unreviewed network security
+The supported Arti runtime now uses native TLS, matching the existing
+`arti-hyper` connector, and therefore no longer pulls `x509-signature` and
+`ring` 0.16.20 into the all-features graph. This removes
+`RUSTSEC-2025-0009` without changing the connector or request path. The
+remaining Tor dependencies are not part of the default workspace feature graph,
+but they remain supported code and therefore remain in the release audit. A
+larger Arti update is not a drop-in dependency change because `arti-hyper` ends
+at 0.19; replacing that connector locally would add unreviewed network security
 surface.
 
 Repository and goal-commit secret scans pass with exact fingerprints for known

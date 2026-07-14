@@ -2324,9 +2324,13 @@ Strict workspace Clippy, all-target checking, stable formatting, spelling, and
 workflow syntax pass. Secret scans of the repository, generated test material,
 the goal commit range, and the current patch pass with exact allowlist
 fingerprints for reviewed deterministic fixtures. The dependency audit removed
-the vulnerable `crossbeam-epoch` and `protobuf` versions but still reports four
-unsuppressed upstream advisories in optional BIP353 and Tor dependency graphs;
-the security packet records their paths and disposition. The combined static
+the vulnerable `crossbeam-epoch` and `protobuf` versions. Aligning the supported
+Arti runtime with its existing native-TLS Hyper connector also removed the
+legacy `x509-signature` -> `ring` 0.16.20 path without changing the transport
+API. Three unsuppressed upstream advisories remain in optional BIP353 and Tor
+dependency graphs; the security packet records their paths and disposition. A
+larger Arti update would require replacing the discontinued `arti-hyper`
+connector and is outside this narrowly coupled remediation. The combined static
 and dependency gate therefore remains unchecked.
 
 The standalone and federation regression matrix passes. The workspace library
