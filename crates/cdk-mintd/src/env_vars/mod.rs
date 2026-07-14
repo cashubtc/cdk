@@ -197,7 +197,10 @@ impl Settings {
         #[cfg(feature = "ldk-node")]
         {
             let ldk_node = self.ldk_node.clone().unwrap_or_default().from_env();
-            if ldk_node.bitcoin_network.is_none() && ldk_node.esplora_url.is_none() {
+            if ldk_node.bitcoin_network.is_none()
+                && ldk_node.esplora_url.is_none()
+                && ldk_node.electrum_url.is_none()
+            {
                 self.ldk_node = None;
             } else {
                 self.ldk_node = Some(ldk_node);

@@ -242,7 +242,7 @@ onchain_backend = "fakewallet"
 # fee_percent = 0.02         # Optional, defaults to 2%
 # reserve_fee_min = 2        # Optional, defaults to 2 sats
 # bitcoin_network = "signet"  # REQUIRED: mainnet, testnet, signet, regtest (no default)
-# chain_source_type = "esplora"  # esplora, bitcoinrpc  
+# chain_source_type = "esplora"  # esplora, electrum, bitcoinrpc
 # 
 # # IMPORTANT: LDK Node Seed Configuration
 # # For NEW nodes: ldk_node_mnemonic MUST be set. This is the BIP39 mnemonic used to derive
@@ -276,6 +276,9 @@ onchain_backend = "fakewallet"
 # bitcoind_rpc_port = 18443
 # bitcoind_rpc_user = "testuser" 
 # bitcoind_rpc_password = "testpass"
+#
+# # Electrum configuration (when chain_source_type = "electrum")
+# electrum_url = "tcp://127.0.0.1:50001"
 # 
 # # Node configuration
 # ldk_node_host = "127.0.0.1"

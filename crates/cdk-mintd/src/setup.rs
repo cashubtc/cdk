@@ -346,6 +346,129 @@ impl LnBackendSetup for config::GrpcProcessor {
 }
 
 #[cfg(feature = "ldk-node")]
+impl config::LdkNode {
+    fn chain_source(&self) -> anyhow::Result<cdk_ldk_node::ChainSource> {
+        use anyhow::bail;
+
+        let chain_source_type = self
+            .chain_source_type
+            .as_ref()
+            .map(|source| source.to_lowercase())
+            .unwrap_or_else(|| "esplora".to_string());
+
+        match chain_source_type.as_str() {
+            "esplora" => {
+                let esplora_url = self.esplora_url.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "LDK Node esplora_url must be set when chain_source_type is esplora"
+                    )
+                })?;
+                Ok(cdk_ldk_node::ChainSource::Esplora(esplora_url))
+            }
+            "electrum" => {
+                let electrum_url = self.electrum_url.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "LDK Node electrum_url must be set when chain_source_type is electrum"
+                    )
+                })?;
+                Ok(cdk_ldk_node::ChainSource::Electrum(electrum_url))
+            }
+            "bitcoinrpc" => {
+                let host = self
+                    .bitcoind_rpc_host
+                    .clone()
+                    .unwrap_or_else(|| "127.0.0.1".to_string());
+                let port = self.bitcoind_rpc_port.unwrap_or(18443);
+                let user = self
+                    .bitcoind_rpc_user
+                    .clone()
+                    .unwrap_or_else(|| "testuser".to_string());
+                let password = self
+                    .bitcoind_rpc_password
+                    .clone()
+                    .unwrap_or_else(|| "testpass".to_string());
+
+                Ok(cdk_ldk_node::ChainSource::BitcoinRpc(
+                    cdk_ldk_node::BitcoinRpcConfig {
+                        host,
+                        port,
+                        user,
+                        password,
+                    },
+                ))
+            }
+            _ => bail!("Unknown LDK Node chain_source_type: {chain_source_type}"),
+        }
+    }
+}
+
+#[cfg(all(test, feature = "ldk-node"))]
+mod ldk_node_tests {
+    use super::*;
+
+    #[test]
+    fn parses_electrum_chain_source() {
+        let config = config::LdkNode {
+            chain_source_type: Some("ElEcTrUm".to_string()),
+            electrum_url: Some("ssl://electrum.example.com:50002".to_string()),
+            ..Default::default()
+        };
+
+        match config.chain_source().expect("electrum config should parse") {
+            cdk_ldk_node::ChainSource::Electrum(url) => {
+                assert_eq!(url, "ssl://electrum.example.com:50002");
+            }
+            _ => panic!("expected an Electrum chain source"),
+        }
+    }
+
+    #[test]
+    fn esplora_chain_source_requires_url() {
+        let config = config::LdkNode {
+            chain_source_type: Some("esplora".to_string()),
+            ..Default::default()
+        };
+
+        let error = config
+            .chain_source()
+            .expect_err("esplora config without a URL should fail");
+
+        assert!(error.to_string().contains("esplora_url must be set"));
+    }
+
+    #[test]
+    fn electrum_chain_source_requires_url() {
+        let config = config::LdkNode {
+            chain_source_type: Some("electrum".to_string()),
+            ..Default::default()
+        };
+
+        let error = config
+            .chain_source()
+            .expect_err("electrum config without a URL should fail");
+
+        assert!(error.to_string().contains("electrum_url must be set"));
+    }
+
+    #[test]
+    fn rejects_unknown_chain_source() {
+        let config = config::LdkNode {
+            chain_source_type: Some("unknown".to_string()),
+            ..Default::default()
+        };
+
+        let error = config
+            .chain_source()
+            .expect_err("unknown chain source should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "Unknown LDK Node chain_source_type: unknown"
+        );
+    }
+}
+
+#[cfg(feature = "ldk-node")]
 #[async_trait]
 impl LnBackendSetup for config::LdkNode {
     async fn setup(
@@ -382,43 +505,7 @@ impl LnBackendSetup for config::LdkNode {
         };
 
         // Parse chain source from config
-        let chain_source = match self
-            .chain_source_type
-            .as_ref()
-            .map(|s| s.to_lowercase())
-            .as_deref()
-            .unwrap_or("esplora")
-        {
-            "bitcoinrpc" => {
-                let host = self
-                    .bitcoind_rpc_host
-                    .clone()
-                    .unwrap_or_else(|| "127.0.0.1".to_string());
-                let port = self.bitcoind_rpc_port.unwrap_or(18443);
-                let user = self
-                    .bitcoind_rpc_user
-                    .clone()
-                    .unwrap_or_else(|| "testuser".to_string());
-                let password = self
-                    .bitcoind_rpc_password
-                    .clone()
-                    .unwrap_or_else(|| "testpass".to_string());
-
-                cdk_ldk_node::ChainSource::BitcoinRpc(cdk_ldk_node::BitcoinRpcConfig {
-                    host,
-                    port,
-                    user,
-                    password,
-                })
-            }
-            _ => {
-                let esplora_url = self
-                    .esplora_url
-                    .clone()
-                    .unwrap_or_else(|| "https://mutinynet.com/api".to_string());
-                cdk_ldk_node::ChainSource::Esplora(esplora_url)
-            }
-        };
+        let chain_source = self.chain_source()?;
 
         // Parse gossip source from config
         let gossip_source = match self.rgs_url.clone() {

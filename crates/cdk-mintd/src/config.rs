@@ -640,10 +640,12 @@ pub struct LdkNode {
     pub reserve_fee_min: Amount,
     /// Bitcoin network (mainnet, testnet, signet, regtest)
     pub bitcoin_network: Option<String>,
-    /// Chain source type (esplora or bitcoinrpc)
+    /// Chain source type (esplora, electrum, or bitcoinrpc)
     pub chain_source_type: Option<String>,
     /// Esplora URL (when chain_source_type = "esplora")
     pub esplora_url: Option<String>,
+    /// Electrum URL (when chain_source_type = "electrum")
+    pub electrum_url: Option<String>,
     /// Bitcoin RPC configuration (when chain_source_type = "bitcoinrpc")
     pub bitcoind_rpc_host: Option<String>,
     pub bitcoind_rpc_port: Option<u16>,
@@ -683,6 +685,7 @@ impl Default for LdkNode {
             bitcoin_network: None,
             chain_source_type: None,
             esplora_url: None,
+            electrum_url: None,
             bitcoind_rpc_host: None,
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,
@@ -710,6 +713,7 @@ impl std::fmt::Debug for LdkNode {
             .field("bitcoin_network", &self.bitcoin_network)
             .field("chain_source_type", &self.chain_source_type)
             .field("esplora_url", &self.esplora_url)
+            .field("electrum_url", &self.electrum_url)
             .field("bitcoind_rpc_host", &self.bitcoind_rpc_host)
             .field("bitcoind_rpc_port", &self.bitcoind_rpc_port)
             .field("bitcoind_rpc_user", &self.bitcoind_rpc_user)
@@ -2307,6 +2311,10 @@ max_melt = 500000
             "http://localhost:3000",
         );
         env::set_var(
+            crate::env_vars::LDK_NODE_ELECTRUM_URL_ENV_VAR,
+            "tcp://localhost:50001",
+        );
+        env::set_var(
             crate::env_vars::LDK_NODE_STORAGE_DIR_PATH_ENV_VAR,
             "/tmp/ldk",
         );
@@ -2327,6 +2335,10 @@ max_melt = 500000
             ldk_config.esplora_url,
             Some("http://localhost:3000".to_string())
         );
+        assert_eq!(
+            ldk_config.electrum_url,
+            Some("tcp://localhost:50001".to_string())
+        );
         assert_eq!(ldk_config.storage_dir_path, Some("/tmp/ldk".to_string()));
 
         // Cleanup env vars
@@ -2336,6 +2348,7 @@ max_melt = 500000
         env::remove_var(crate::env_vars::LDK_NODE_BITCOIN_NETWORK_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_CHAIN_SOURCE_TYPE_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_ESPLORA_URL_ENV_VAR);
+        env::remove_var(crate::env_vars::LDK_NODE_ELECTRUM_URL_ENV_VAR);
         env::remove_var(crate::env_vars::LDK_NODE_STORAGE_DIR_PATH_ENV_VAR);
 
         // Cleanup test file

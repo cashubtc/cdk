@@ -243,6 +243,7 @@ async fn start_ldk_mint(
         bitcoind_rpc_user: Some("testuser".to_string()),
         bitcoind_rpc_password: Some("testpass".to_string()),
         esplora_url: None,
+        electrum_url: None,
         log_dir_path: None,
         ldk_node_announce_addresses: None,
         storage_dir_path: Some(ldk_work_dir.to_string_lossy().to_string()),

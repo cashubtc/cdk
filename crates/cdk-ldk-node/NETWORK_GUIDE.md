@@ -7,6 +7,7 @@ This guide provides configuration examples for running CDK LDK Node on different
 - [Mutinynet (Recommended for Testing)](#mutinynet-recommended-for-testing)
 - [Bitcoin Testnet](#bitcoin-testnet)
 - [Bitcoin Mainnet](#bitcoin-mainnet)
+- [Electrum Chain Source](#electrum-chain-source)
 - [Regtest (Development)](#regtest-development)
 - [Docker Deployment](#docker-deployment)
 - [Troubleshooting](#troubleshooting)
@@ -101,6 +102,25 @@ webserver_port = 8091
    - Only use `127.0.0.1` (localhost) 
    - Use VPN, SSH tunneling, or reverse proxy with authentication for remote access
    - CSRF protection and non-permissive browser CORS reduce browser-based attack paths, but they do not authenticate users or replace access control
+
+## Electrum Chain Source
+
+Electrum can be used instead of Esplora or Bitcoin Core RPC on any supported Bitcoin network. The Electrum server must serve the network selected by `bitcoin_network`.
+
+```toml
+[ldk_node]
+bitcoin_network = "regtest"
+chain_source_type = "electrum"
+electrum_url = "tcp://127.0.0.1:50001"
+gossip_source_type = "p2p"
+```
+
+The equivalent environment variables are:
+
+```bash
+export CDK_MINTD_LDK_NODE_CHAIN_SOURCE_TYPE="electrum"
+export CDK_MINTD_LDK_NODE_ELECTRUM_URL="tcp://127.0.0.1:50001"
+```
 
 ## Regtest (Development)
 

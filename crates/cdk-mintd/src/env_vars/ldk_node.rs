@@ -10,6 +10,7 @@ pub const LDK_NODE_RESERVE_FEE_MIN_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_RESERVE_F
 pub const LDK_NODE_BITCOIN_NETWORK_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_BITCOIN_NETWORK";
 pub const LDK_NODE_CHAIN_SOURCE_TYPE_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_CHAIN_SOURCE_TYPE";
 pub const LDK_NODE_ESPLORA_URL_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_ESPLORA_URL";
+pub const LDK_NODE_ELECTRUM_URL_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_ELECTRUM_URL";
 pub const LDK_NODE_BITCOIND_RPC_HOST_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_BITCOIND_RPC_HOST";
 pub const LDK_NODE_BITCOIND_RPC_PORT_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_BITCOIND_RPC_PORT";
 pub const LDK_NODE_BITCOIND_RPC_USER_ENV_VAR: &str = "CDK_MINTD_LDK_NODE_BITCOIND_RPC_USER";
@@ -48,6 +49,10 @@ impl LdkNode {
 
         if let Ok(esplora_url) = env::var(LDK_NODE_ESPLORA_URL_ENV_VAR) {
             self.esplora_url = Some(esplora_url);
+        }
+
+        if let Ok(electrum_url) = env::var(LDK_NODE_ELECTRUM_URL_ENV_VAR) {
+            self.electrum_url = Some(electrum_url);
         }
 
         if let Ok(bitcoind_rpc_host) = env::var(LDK_NODE_BITCOIND_RPC_HOST_ENV_VAR) {
