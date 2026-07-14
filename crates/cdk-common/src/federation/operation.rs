@@ -1624,6 +1624,9 @@ impl FederationOperation {
                 }]
             }
             Self::TransactionProposal(proposal) => {
+                if proposal.replacement_of.is_some() {
+                    return Vec::new();
+                }
                 let mut keys = Vec::with_capacity(
                     proposal.intent_ids.len() + proposal.selected_inputs.len() + 2,
                 );

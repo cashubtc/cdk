@@ -33,7 +33,6 @@ const SIGNING_ATTEMPT_LEASE: Duration =
 const SIGNING_AGGREGATOR_GRACE: Duration = Duration::from_secs(10);
 const RETRY_DELAY: Duration = Duration::from_secs(2);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(15);
-const FIRST_RELEASE_FEE_RATE_SAT_PER_VB: u64 = 1;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FederationWalletLivenessConfig {
@@ -80,6 +79,7 @@ impl FederationWalletLivenessConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum LivenessWorkId {
     Proposal(FederationOnchainBatchId),
+    Replacement(FederationTransactionProposalId),
     Signing(FederationTransactionProposalId),
 }
 
@@ -168,7 +168,6 @@ impl FederationWalletLivenessWorker {
                 record.state == FederationOnchainPaymentIntentState::Pending
                     && record.intent.scope == scope
             })
-            .take(FEDERATION_MAX_ONCHAIN_BATCH_INTENTS)
             .map(|record| record.intent.clone())
             .collect::<Vec<_>>();
         let awaiting = transaction_state
@@ -194,7 +193,11 @@ impl FederationWalletLivenessWorker {
                 .map(|intent| intent.creation_time)
                 .max()
                 .ok_or_else(|| cdk::Error::Custom("pending batch has no cutoff".to_string()))?;
-            let batch = FederationOnchainPaymentBatch::new(pending, cutoff)?;
+            let batch = FederationOnchainPaymentBatch::select(
+                pending,
+                cutoff,
+                FEDERATION_MAX_ONCHAIN_BATCH_INTENTS,
+            )?;
             active_work.insert(LivenessWorkId::Proposal(batch.batch_id));
             let attempt = lease_attempt(now_epoch_millis, self.inner.config.proposer_lease);
             let schedule = FederationWalletLivenessSchedule::new(
@@ -228,6 +231,59 @@ impl FederationWalletLivenessWorker {
                             cdk::federation::redact_federation_operator_message(&error.to_string())
                         );
                     }
+                }
+            }
+        }
+
+        for accepted in transaction_state.accepted_transactions().values() {
+            let original_id = accepted.proposal.proposal_id()?;
+            if transaction_state.lineage_head(accepted.proposal.batch_id) != Some(original_id)
+                || !replacement_is_due(accepted)?
+            {
+                continue;
+            }
+            let work = LivenessWorkId::Replacement(original_id);
+            active_work.insert(work);
+            let policy = cdk::mint::FederationOnchainTransactionPolicy::for_version(
+                accepted.proposal.scope.policy_version,
+            )?;
+            let attempt = lease_attempt(now_epoch_millis, self.inner.config.proposer_lease);
+            let schedule = FederationWalletLivenessSchedule::new(
+                original_id.to_bytes(),
+                runtime.public_config().members.keys().copied(),
+                application.threshold,
+            )?;
+            if schedule.proposer(attempt)? != runtime.member_id() || !self.retry_is_due(work).await
+            {
+                continue;
+            }
+            self.set_activity(FederationWalletLivenessActivity::Proposing)
+                .await;
+            self.increment_proposal_attempts().await;
+            match self
+                .propose_replacement(
+                    state,
+                    runtime,
+                    &chain_state,
+                    &transaction_state,
+                    accepted,
+                    policy,
+                )
+                .await
+            {
+                Ok(()) => {
+                    self.clear_retry(work).await;
+                    advanced = advanced.saturating_add(1);
+                }
+                Err(error) => {
+                    self.defer(work).await;
+                    self.set_activity(FederationWalletLivenessActivity::Backoff)
+                        .await;
+                    tracing::warn!(
+                        proposal_id = %original_id,
+                        "Federation wallet replacement deferred safely: {}",
+                        cdk::federation::redact_federation_operator_message(&error.to_string())
+                    );
                 }
             }
         }
@@ -366,7 +422,19 @@ impl FederationWalletLivenessWorker {
             .iter()
             .map(|utxo| utxo.outpoint)
             .collect::<Vec<_>>();
-        let fee_rate = FeeRate::from_sat_per_vb(FIRST_RELEASE_FEE_RATE_SAT_PER_VB)
+        let policy =
+            cdk::mint::FederationOnchainTransactionPolicy::for_version(batch.scope.policy_version)?;
+        let target_blocks = batch
+            .intents
+            .iter()
+            .map(|intent| intent.fee_target_blocks)
+            .min()
+            .ok_or_else(|| cdk::Error::Custom("transaction batch has no fee target".to_string()))?;
+        let target_blocks = u16::try_from(target_blocks)
+            .map_err(|_| cdk::Error::Custom("fee target exceeds u16".to_string()))?;
+        let fee_rate_sat_per_vb =
+            bounded_fee_rate(policy, wallet.fetch_fee_rate_sat_per_vb(target_blocks)).await;
+        let fee_rate = FeeRate::from_sat_per_vb(fee_rate_sat_per_vb)
             .ok_or_else(|| cdk::Error::Custom("invalid first-release fee rate".to_string()))?;
         let psbt = wallet
             .engine()
@@ -539,6 +607,128 @@ impl FederationWalletLivenessWorker {
         Ok(())
     }
 
+    async fn propose_replacement(
+        &self,
+        state: &MintState,
+        runtime: &cdk::mint::FederationRuntimeConfig,
+        chain_state: &cdk::federation::FederationChainObservationState,
+        transaction_state: &cdk::federation::FederationTransactionState,
+        original: &FederationAcceptedTransaction,
+        policy: cdk::mint::FederationOnchainTransactionPolicy,
+    ) -> Result<(), cdk::Error> {
+        let original_id = original.proposal.proposal_id()?;
+        let wallet = wallet_for_scope(state, original.proposal.scope).ok_or_else(|| {
+            cdk::Error::Custom("replacement scope has no local watch-only wallet".to_string())
+        })?;
+        wallet.ensure_ready(0).await.map_err(|error| {
+            cdk::Error::Custom(format!("federated BDK wallet is not ready: {error}"))
+        })?;
+        let intents = original
+            .proposal
+            .intent_ids
+            .iter()
+            .map(|intent_id| {
+                transaction_state
+                    .intents()
+                    .get(intent_id)
+                    .map(|record| record.intent.clone())
+                    .ok_or_else(|| {
+                        cdk::Error::Custom(
+                            "replacement lineage references a missing intent".to_string(),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, cdk::Error>>()?;
+        let batch =
+            FederationOnchainPaymentBatch::new(intents, original.proposal.eligibility_cutoff)?;
+        if batch.batch_id != original.proposal.batch_id {
+            return Err(cdk::Error::Custom(
+                "replacement batch differs from its accepted lineage".to_string(),
+            ));
+        }
+        let target_blocks = batch
+            .intents
+            .iter()
+            .map(|intent| intent.fee_target_blocks)
+            .min()
+            .ok_or_else(|| cdk::Error::Custom("replacement has no fee target".to_string()))?;
+        let target_blocks = u16::try_from(target_blocks)
+            .map_err(|_| cdk::Error::Custom("fee target exceeds u16".to_string()))?;
+        let estimated_sat_per_vb =
+            bounded_fee_rate(policy, wallet.fetch_fee_rate_sat_per_vb(target_blocks)).await;
+        let maximum_fee = batch.intents.iter().try_fold(0_u64, |sum, intent| {
+            sum.checked_add(intent.maximum_fee_sat)
+                .ok_or_else(|| cdk::Error::Custom("replacement fee cap overflow".to_string()))
+        })?;
+        let fee_sat = replacement_fee_sat(
+            policy,
+            estimated_sat_per_vb,
+            original.proposal.fee_sat,
+            original.proposal.estimated_signed_weight(),
+            maximum_fee,
+        )?;
+        let extra_fee = fee_sat
+            .checked_sub(original.proposal.fee_sat)
+            .ok_or_else(|| cdk::Error::Custom("replacement fee did not increase".to_string()))?;
+        let original_change = original.proposal.change_output.as_ref().ok_or_else(|| {
+            cdk::Error::Custom(
+                "first-release RBF requires an accepted change output; CPFP is deferred"
+                    .to_string(),
+            )
+        })?;
+        let mut unsigned_transaction = original.proposal.unsigned_transaction.clone();
+        let change_index = usize::try_from(original_change.output_index)
+            .map_err(|_| cdk::Error::Custom("replacement change index overflow".to_string()))?;
+        let change = unsigned_transaction
+            .output
+            .get_mut(change_index)
+            .ok_or_else(|| {
+                cdk::Error::Custom("replacement change output is missing".to_string())
+            })?;
+        change.value = change
+            .value
+            .checked_sub(Amount::from_sat(extra_fee))
+            .ok_or_else(|| {
+                cdk::Error::Custom("replacement would consume all change".to_string())
+            })?;
+        if change.value
+            < cdk_common::bitcoin::TxOut::minimal_non_dust(change.script_pubkey.clone()).value
+        {
+            return Err(cdk::Error::Custom(
+                "accepted fee reserves leave no non-dust replacement change".to_string(),
+            ));
+        }
+        let contributions = fee_contributions(&batch, fee_sat)?;
+        let mut recipient_outputs = original.proposal.recipient_outputs.clone();
+        for (recipient, contribution) in recipient_outputs.iter_mut().zip(contributions) {
+            recipient.fee_contribution_sat = contribution;
+        }
+        let mut change_output = original_change.clone();
+        change_output.output = change.clone();
+        let replacement = FederationTransactionProposal::new(
+            &batch,
+            runtime.member_id(),
+            unsigned_transaction,
+            original.proposal.selected_inputs.clone(),
+            recipient_outputs,
+            Some(change_output),
+            fee_sat,
+            Some(original_id),
+        )?;
+        runtime.validate_onchain_transaction_replacement(
+            chain_state,
+            transaction_state.intents(),
+            original,
+            &replacement,
+        )?;
+        let envelope = runtime.transaction_proposal_operation(replacement)?;
+        state
+            .submit_federation_envelope(envelope)
+            .await?
+            .ensure_accepted()?;
+        Ok(())
+    }
+
     async fn retry_is_due(&self, work: LivenessWorkId) -> bool {
         self.inner
             .retries
@@ -671,6 +861,82 @@ fn fee_contributions(
     Ok(contributions)
 }
 
+fn replacement_is_due(accepted: &FederationAcceptedTransaction) -> Result<bool, cdk::Error> {
+    if !matches!(
+        accepted.state,
+        FederationAcceptedTransactionState::BroadcastPending
+            | FederationAcceptedTransactionState::Broadcast
+    ) || accepted.signed.is_none()
+    {
+        return Ok(false);
+    }
+    let policy = cdk::mint::FederationOnchainTransactionPolicy::for_version(
+        accepted.proposal.scope.policy_version,
+    )?;
+    let Some(broadcast) = accepted.broadcast.as_ref() else {
+        return Ok(false);
+    };
+    Ok(broadcast.observations.iter().any(|record| {
+        record.observation.result == cdk::federation::FederationTransactionBroadcastResult::Rejected
+            || record.observation.attempt >= policy.replacement_after_broadcast_attempts
+    }))
+}
+
+fn replacement_fee_sat(
+    policy: cdk::mint::FederationOnchainTransactionPolicy,
+    estimated_sat_per_vb: u64,
+    original_fee_sat: u64,
+    weight: u64,
+    maximum_intent_fee_sat: u64,
+) -> Result<u64, cdk::Error> {
+    let estimated_fee = estimated_sat_per_vb
+        .checked_mul(weight)
+        .and_then(|scaled| scaled.checked_add(3))
+        .map(|scaled| scaled / 4)
+        .ok_or_else(|| cdk::Error::Custom("replacement fee estimate overflow".to_string()))?;
+    let minimum_fee = original_fee_sat
+        .checked_add(policy.minimum_replacement_fee_delta(weight)?)
+        .ok_or_else(|| cdk::Error::Custom("replacement fee overflow".to_string()))?;
+    let replacement_fee = estimated_fee.max(minimum_fee);
+    if replacement_fee > maximum_intent_fee_sat || replacement_fee > policy.maximum_absolute_fee_sat
+    {
+        return Err(cdk::Error::Custom(
+            "accepted fee reserves cannot fund a valid replacement".to_string(),
+        ));
+    }
+    Ok(replacement_fee)
+}
+
+async fn bounded_fee_rate<E, F>(
+    policy: cdk::mint::FederationOnchainTransactionPolicy,
+    estimate: F,
+) -> u64
+where
+    F: std::future::Future<Output = Result<f64, E>>,
+{
+    let estimate = tokio::time::timeout(
+        Duration::from_millis(policy.fee_estimation_timeout_millis),
+        estimate,
+    )
+    .await
+    .ok()
+    .and_then(Result::ok);
+    bounded_fee_rate_value(policy, estimate)
+}
+
+fn bounded_fee_rate_value(
+    policy: cdk::mint::FederationOnchainTransactionPolicy,
+    estimate_sat_per_vb: Option<f64>,
+) -> u64 {
+    let minimum = policy.minimum_fee_rate_sat_per_kwu.saturating_add(249) / 250;
+    let maximum = policy.maximum_fee_rate_sat_per_kwu / 250;
+    let estimated = estimate_sat_per_vb
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|value| value.ceil() as u64)
+        .unwrap_or(policy.fallback_fee_rate_sat_per_vb);
+    estimated.clamp(minimum.max(1), maximum.max(minimum).max(1))
+}
+
 fn change_allocation_key(batch_id: FederationOnchainBatchId) -> String {
     format!("wallet-change-{batch_id}")
 }
@@ -762,6 +1028,7 @@ mod tests {
                 1_000,
                 maximum_fee_sat,
                 0,
+                1,
                 creation_time,
                 scope,
             )
@@ -779,6 +1046,14 @@ mod tests {
             change_allocation_key(rebuilt.batch_id),
             change_allocation_key(batch.batch_id)
         );
+
+        let policy = cdk::mint::FederationOnchainTransactionPolicy::for_version(1)
+            .expect("replacement policy");
+        assert_eq!(
+            replacement_fee_sat(policy, 2, 500, 500, 1_000).expect("funded replacement"),
+            625
+        );
+        assert!(replacement_fee_sat(policy, 2, 500, 500, 624).is_err());
     }
 
     #[test]
@@ -799,6 +1074,7 @@ mod tests {
             1_000,
             10,
             0,
+            1,
             7,
             scope,
         )
@@ -841,5 +1117,22 @@ mod tests {
             observed_activity(false, 1),
             FederationWalletLivenessActivity::WaitingForLease
         );
+    }
+
+    #[tokio::test]
+    async fn fee_source_success_timeout_disagreement_fallback_and_extremes_are_bounded() {
+        let policy =
+            cdk::mint::FederationOnchainTransactionPolicy::for_version(1).expect("fee policy");
+        assert_eq!(bounded_fee_rate_value(policy, Some(5.1)), 6);
+        assert_eq!(bounded_fee_rate_value(policy, None), 2);
+        assert_eq!(bounded_fee_rate_value(policy, Some(f64::NAN)), 2);
+        assert_eq!(bounded_fee_rate_value(policy, Some(1_000_000.0)), 400);
+        assert_eq!(bounded_fee_rate_value(policy, Some(7.0)), 7);
+        assert_eq!(bounded_fee_rate_value(policy, Some(9.0)), 9);
+
+        let mut timeout_policy = policy;
+        timeout_policy.fee_estimation_timeout_millis = 1;
+        let timed_out = bounded_fee_rate::<(), _>(timeout_policy, std::future::pending()).await;
+        assert_eq!(timed_out, timeout_policy.fallback_fee_rate_sat_per_vb);
     }
 }

@@ -1851,40 +1851,82 @@ to bypass payment authorization.
 
 **Work:**
 
-- [ ] Version consensus fee policy, allowed fee sources, fallback values, and
+- [x] Version consensus fee policy, allowed fee sources, fallback values, and
   maximum feerate/absolute fee.
-- [ ] Preserve immediate, standard, and economy batching semantics where they
+- [x] Preserve immediate, standard, and economy batching semantics where they
   remain appropriate.
-- [ ] Make batch-intent selection deterministic while allowing proposer-local
+- [x] Make batch-intent selection deterministic while allowing proposer-local
   coin selection.
-- [ ] Allocate actual transaction fees to intents deterministically within each
+- [x] Allocate actual transaction fees to intents deterministically within each
   quoted maximum.
-- [ ] Define RBF eligibility, replacement lineage, minimum fee delta, recipient
+- [x] Define RBF eligibility, replacement lineage, minimum fee delta, recipient
   invariance, and input/output mutation rules.
-- [ ] Require replacement transactions to pass full consensus and use fresh
+- [x] Require replacement transactions to pass full consensus and use fresh
   FROST nonces/signatures.
-- [ ] Define CPFP support or explicitly defer it with operator guidance.
-- [ ] Prevent simultaneous original/replacement states from double-completing
+- [x] Define CPFP support or explicitly defer it with operator guidance.
+- [x] Prevent simultaneous original/replacement states from double-completing
   payment intents.
-- [ ] Reconcile BDK mempool eviction and replacement observations.
+- [x] Reconcile BDK mempool eviction and replacement observations.
 
 **Success criteria:**
 
-- [ ] Fee estimation outages cannot authorize unbounded fees.
-- [ ] Replacements preserve authorized recipients and amounts.
-- [ ] Original and replacement transaction lineage has one terminal payment
+- [x] Fee estimation outages cannot authorize unbounded fees.
+- [x] Replacements preserve authorized recipients and amounts.
+- [x] Original and replacement transaction lineage has one terminal payment
   result.
-- [ ] Batches never charge an intent above its accepted fee reserve.
+- [x] Batches never charge an intent above its accepted fee reserve.
 
 **Required tests:**
 
-- [ ] Fee source success, timeout, disagreement, fallback, and extreme values.
-- [ ] Mixed-tier batching and deterministic eligibility/order.
-- [ ] Fee allocation caps and rounding.
-- [ ] Valid RBF and invalid recipient/amount/input mutations.
-- [ ] Original confirms after replacement proposal.
-- [ ] Replacement confirms while original remains in another member's mempool.
-- [ ] Insufficient fee reserve and no-valid-replacement behavior.
+- [x] Fee source success, timeout, disagreement, fallback, and extreme values.
+- [x] Mixed-tier batching and deterministic eligibility/order.
+- [x] Fee allocation caps and rounding.
+- [x] Valid RBF and invalid recipient/amount/input mutations.
+- [x] Original confirms after replacement proposal.
+- [x] Replacement confirms while original remains in another member's mempool.
+- [x] Insufficient fee reserve and no-valid-replacement behavior.
+
+**Milestone record:** completed on 2026-07-14. Transaction-policy version 1
+now permits only a proposer member's local chain source, bounds that lookup to
+three seconds, falls back to 2 sat/vB, clamps the result to the consensus
+minimum and 400 sat/vB maximum, and retains the 1,000,000-satoshi absolute
+ceiling. Accepted intents carry their selected 1, 6, or 144-block quote target.
+Those targets preserve immediate/standard/economy priority in canonical batch
+selection; wall-clock delay rules are deliberately not inferred from the MVP
+journal's logical operation index. Proposers still choose coins locally, while
+all members derive the same bounded intent prefix and independently validate
+the resulting transaction.
+
+Proposal schema version 2 computes fee rate, weight limits, and incremental RBF
+fees from the exact projected key-path-signed weight, including witness bytes.
+Fees are allocated in canonical intent order without crossing any accepted
+reserve. A first-release replacement must extend the current signed lineage
+head, retain the exact inputs and recipient positions, scripts, and amounts,
+reduce only the existing allocated change output, increase both absolute fee
+and feerate by the versioned relay delta, and pass the ordinary consensus
+proposal and signing path under a new proposal ID. This necessarily creates a
+fresh FROST session and nonce attempt. CPFP is explicitly deferred; operators
+must provision sufficient quote reserves and non-dust change for bounded RBF.
+
+Input reservations remain owned by the lineage root. Rejected or repeatedly
+unconfirmed broadcasts trigger deterministic proposer failover for a bounded
+replacement, while every signed lineage transaction remains in the local BDK
+graph and can still contribute a confirmation observation after replacement.
+Either the original or replacement may win, but the first quorum-settled result
+is terminal: all competing versions become abandoned, one receipt is emitted,
+and later conflicting confirmation evidence cannot flip the winner.
+
+All 380 `cdk-common` tests pass (379 active, one benchmark ignored), including
+the two replacement race directions and terminal-winner regression. All 126
+CDK federation-filtered tests pass, including full accepted-operation apply and
+fresh replacement-signing authorization plus valid and mutated RBF policy
+cases. All 113 `cdk-bdk` tests and six Axum liveness tests pass; the latter cover
+fee success, timeout, fallback, disagreement, extreme clamping, deterministic
+mixed-cap allocation, and insufficient replacement reserve. The complete
+workspace all-targets check passes. Strict clippy remains blocked only by the
+documented pre-existing repository warning baseline; no new warning appeared
+in the changed milestone code, stable rustfmt formatted the changes despite
+unavailable nightly options, and `git diff --check` passes.
 
 ### Milestone 21: lightweight and heterogeneous chain backends
 

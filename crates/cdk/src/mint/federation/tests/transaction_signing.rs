@@ -44,6 +44,7 @@ fn signed_fixture() -> (FederationTransactionState, FederationSignedTransaction)
         1_000,
         0,
         1,
+        1,
         scope,
     )
     .expect("intent");
@@ -139,7 +140,7 @@ pub(super) fn signed_fixture_for_intent(
         txid: proposal.unsigned_transaction.compute_txid(),
         fee_sat: proposal.fee_sat,
         fee_rate_sat_per_kwu: proposal.fee_rate_sat_per_kwu,
-        weight: proposal.unsigned_transaction.weight().to_wu(),
+        weight: proposal.estimated_signed_weight(),
         fee_contributions: BTreeMap::from([(intent.intent_id().expect("intent id"), fee_sat)]),
         taproot_sighashes: vec![sighash],
     };

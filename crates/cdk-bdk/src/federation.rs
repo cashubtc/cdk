@@ -389,6 +389,11 @@ impl FederatedBdkWallet {
         &self.engine
     }
 
+    /// Fetch one local fee estimate without making it consensus authority.
+    pub async fn fetch_fee_rate_sat_per_vb(&self, target_blocks: u16) -> Result<f64, Error> {
+        self.engine.fetch_fee_rate_sat_per_vb(target_blocks).await
+    }
+
     /// Immutable consensus scope selecting this wallet.
     #[must_use]
     pub fn scope(&self) -> FederatedWalletScope {

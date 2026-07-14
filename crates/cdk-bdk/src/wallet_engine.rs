@@ -113,6 +113,13 @@ pub struct BdkWalletEngine {
 }
 
 impl BdkWalletEngine {
+    /// Fetch a proposer-local fee estimate from the configured chain source.
+    ///
+    /// Callers must apply their own timeout, fallback, and consensus ceilings.
+    pub async fn fetch_fee_rate_sat_per_vb(&self, target_blocks: u16) -> Result<f64, Error> {
+        self.chain_source.fetch_fee_rate(target_blocks).await
+    }
+
     pub(crate) fn open_local_signing<D>(
         external: D,
         internal: D,

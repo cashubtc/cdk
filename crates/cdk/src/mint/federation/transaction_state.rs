@@ -68,26 +68,46 @@ impl Mint {
                     ensure_existing_reservations(&state, &chain_state, existing)?;
                     FederationTransactionStateOutcome::Existing
                 }
-                None => {
-                    let policy_audit = runtime.validate_onchain_transaction_proposal(
-                        &chain_state,
-                        state.intents(),
-                        proposal,
-                    )?;
-                    let outcome = state.accept_transaction(
-                        proposal.clone(),
-                        policy_audit,
-                        entry.operation_id,
-                        entry.index,
-                    )?;
-                    let outpoints = proposal
-                        .selected_inputs
-                        .iter()
-                        .map(|input| input.outpoint)
-                        .collect::<Vec<_>>();
-                    chain_state.reserve_utxos(&outpoints)?;
-                    outcome
-                }
+                None => match proposal.replacement_of {
+                    Some(original_id) => {
+                        let original = state
+                            .accepted_transaction(original_id)
+                            .cloned()
+                            .ok_or_else(|| invalid("replacement predecessor is not accepted"))?;
+                        let policy_audit = runtime.validate_onchain_transaction_replacement(
+                            &chain_state,
+                            state.intents(),
+                            &original,
+                            proposal,
+                        )?;
+                        state.accept_replacement(
+                            proposal.clone(),
+                            policy_audit,
+                            entry.operation_id,
+                            entry.index,
+                        )?
+                    }
+                    None => {
+                        let policy_audit = runtime.validate_onchain_transaction_proposal(
+                            &chain_state,
+                            state.intents(),
+                            proposal,
+                        )?;
+                        let outcome = state.accept_transaction(
+                            proposal.clone(),
+                            policy_audit,
+                            entry.operation_id,
+                            entry.index,
+                        )?;
+                        let outpoints = proposal
+                            .selected_inputs
+                            .iter()
+                            .map(|input| input.outpoint)
+                            .collect::<Vec<_>>();
+                        chain_state.reserve_utxos(&outpoints)?;
+                        outcome
+                    }
+                },
             };
 
             transaction
@@ -166,6 +186,10 @@ impl Mint {
             &chain_state,
             state.intents(),
             &accepted.proposal,
+            accepted
+                .proposal
+                .replacement_of
+                .and_then(|original_id| state.accepted_transaction(original_id)),
         )?;
         if recomputed != accepted.policy_audit {
             return Err(invalid(
@@ -440,6 +464,9 @@ pub(super) async fn persist_pending_onchain_intent(
     let fee_tier = quote
         .selected_fee_index
         .ok_or_else(|| invalid("on-chain melt has no selected fee tier"))?;
+    let fee_target_blocks = quote
+        .estimated_blocks
+        .ok_or_else(|| invalid("on-chain melt has no selected confirmation target"))?;
     let intent = FederationOnchainPaymentIntent::new(
         quote.id.to_string(),
         melt_operation_id,
@@ -447,6 +474,7 @@ pub(super) async fn persist_pending_onchain_intent(
         quote.amount().to_sat()?,
         quote.fee_reserve().to_sat()?,
         fee_tier,
+        fee_target_blocks,
         accepted_time,
         FederationTransactionScope {
             root_key_epoch: application.root_key_epoch,
@@ -506,12 +534,12 @@ fn ensure_existing_reservations(
     chain_state: &FederationChainObservationState,
     accepted: &FederationAcceptedTransaction,
 ) -> Result<(), Error> {
-    let proposal_id = accepted.policy_audit.proposal_id;
+    let reservation_owner = state.lineage_reservation_owner(accepted.policy_audit.proposal_id)?;
     for input in &accepted.proposal.selected_inputs {
         let utxo = chain_state
             .utxo(input.outpoint)
             .ok_or_else(|| invalid("accepted transaction reservation has no wallet UTXO"))?;
-        if state.reservation(input.outpoint) != Some(proposal_id)
+        if state.reservation(input.outpoint) != Some(reservation_owner)
             || utxo.state != cdk_common::federation::FederationWalletUtxoState::Reserved
         {
             return Err(invalid(

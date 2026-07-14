@@ -62,7 +62,9 @@ use self::chain_observation::{
 };
 use self::transaction_state::persist_pending_onchain_intent;
 
-pub use self::transaction_policy::FederationOnchainTransactionPolicy;
+pub use self::transaction_policy::{
+    FederationCpfpPolicy, FederationFeeRateSource, FederationOnchainTransactionPolicy,
+};
 pub use cdk_common::federation::FederationTransactionPolicyAudit;
 
 struct FederationActiveMeltPayment {

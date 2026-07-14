@@ -8,15 +8,18 @@ use bitcoin::{
     TxOut, Txid, Witness,
 };
 use cdk_common::federation::{
-    FederationAddressAllocation, FederationAddressKeychain, FederationAllocatedAddressRef,
-    FederationChainObservationState, FederationChainSourceDescriptor, FederationChainSourceScope,
-    FederationDepositConfirmation, FederationDepositObservation, FederationOnchainPaymentBatch,
-    FederationOnchainPaymentIntent, FederationOnchainPaymentIntentId,
-    FederationOnchainPaymentIntentRecord, FederationOnchainPaymentIntentState,
-    FederationOperationId, FederationTaprootSighashType, FederationTransactionChangeOutput,
-    FederationTransactionInput, FederationTransactionProposal,
-    FederationTransactionRecipientOutput, FederationTransactionScope, FederationTransactionState,
-    FederationWalletUtxoState,
+    FederationAcceptedTransaction, FederationAcceptedTransactionState, FederationAddressAllocation,
+    FederationAddressKeychain, FederationAllocatedAddressRef, FederationChainObservationState,
+    FederationChainSourceDescriptor, FederationChainSourceScope, FederationDepositConfirmation,
+    FederationDepositObservation, FederationFrostInputSignatureAudit,
+    FederationOnchainPaymentBatch, FederationOnchainPaymentIntent,
+    FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord,
+    FederationOnchainPaymentIntentState, FederationOperationId, FederationSignedTransaction,
+    FederationTaprootSighashType, FederationTransactionBroadcastIntent,
+    FederationTransactionChangeOutput, FederationTransactionInput,
+    FederationTransactionPolicyAudit, FederationTransactionProposal,
+    FederationTransactionRecipientOutput, FederationTransactionScope,
+    FederationTransactionSettlementPolicy, FederationTransactionState, FederationWalletUtxoState,
 };
 
 use super::address_allocation::runtime_with_address_application;
@@ -191,6 +194,7 @@ fn intents(
                 15_000,
                 1_000,
                 1,
+                6,
                 20,
                 scope,
             )
@@ -202,6 +206,7 @@ fn intents(
                 10_000,
                 1_000,
                 0,
+                1,
                 10,
                 scope,
             )
@@ -330,6 +335,80 @@ fn state_with_lifecycle(
     let mut value = serde_json::to_value(state).expect("state JSON");
     value["utxos"][outpoint.to_string()]["state"] = serde_json::json!(lifecycle);
     serde_json::from_value(value).expect("mutated state")
+}
+
+fn replacement_proposal(
+    runtime: &FederationRuntimeConfig,
+    batch: &FederationOnchainPaymentBatch,
+    original: &FederationTransactionProposal,
+    additional_fee_sat: u64,
+) -> FederationTransactionProposal {
+    let mut transaction = original.unsigned_transaction.clone();
+    let original_change = original.change_output.as_ref().expect("original change");
+    let change_index = original_change.output_index as usize;
+    transaction.output[change_index].value = transaction.output[change_index]
+        .value
+        .checked_sub(BitcoinAmount::from_sat(additional_fee_sat))
+        .expect("replacement change");
+    let fee_sat = original.fee_sat + additional_fee_sat;
+    let mut recipients = original.recipient_outputs.clone();
+    let base_fee = fee_sat / recipients.len() as u64;
+    let remainder = fee_sat % recipients.len() as u64;
+    for (index, recipient) in recipients.iter_mut().enumerate() {
+        recipient.fee_contribution_sat = base_fee + u64::from(index == 0) * remainder;
+    }
+    let mut change = original_change.clone();
+    change.output = transaction.output[change_index].clone();
+    FederationTransactionProposal::new(
+        batch,
+        runtime.member_id(),
+        transaction,
+        original.selected_inputs.clone(),
+        recipients,
+        Some(change),
+        fee_sat,
+        Some(original.proposal_id().expect("original id")),
+    )
+    .expect("replacement proposal")
+}
+
+fn structurally_signed(
+    proposal: FederationTransactionProposal,
+    policy_audit: FederationTransactionPolicyAudit,
+) -> FederationAcceptedTransaction {
+    let mut accepted = FederationAcceptedTransaction {
+        proposal,
+        policy_audit,
+        accepted_operation_id: FederationOperationId::from_bytes([70; 32]),
+        accepted_operation_index: 70,
+        state: FederationAcceptedTransactionState::Accepted,
+        signed: None,
+        broadcast: None,
+    };
+    let mut transaction = accepted.proposal.unsigned_transaction.clone();
+    let input_signatures = transaction
+        .input
+        .iter_mut()
+        .enumerate()
+        .map(|(input_index, input)| {
+            let signature = vec![u8::try_from(input_index + 31).expect("signature byte"); 64];
+            input.witness.push(&signature);
+            FederationFrostInputSignatureAudit {
+                input_index: input_index as u32,
+                session_id: [u8::try_from(input_index + 41).expect("session byte"); 32],
+                attempt: 1,
+                signer_set: vec![1, 2],
+                package_hash: [u8::try_from(input_index + 51).expect("package byte"); 32],
+                signature,
+            }
+        })
+        .collect();
+    accepted.signed = Some(
+        FederationSignedTransaction::new(&accepted, &transaction, input_signatures)
+            .expect("structurally signed original"),
+    );
+    accepted.state = FederationAcceptedTransactionState::Broadcast;
+    accepted
 }
 
 #[test]
@@ -582,6 +661,7 @@ fn destination_change_fee_and_transaction_policy_are_independently_enforced() {
             1_000,
             0,
             1,
+            1,
             scope,
         )
         .expect("dust intent")],
@@ -606,6 +686,142 @@ fn destination_change_fee_and_transaction_policy_are_independently_enforced() {
     );
     assert!(runtime
         .validate_onchain_transaction_proposal(&state, &dust_records, &dust)
+        .is_err());
+}
+
+#[test]
+fn rbf_replacements_preserve_recipients_inputs_lineage_and_fee_caps() {
+    let (runtime, _) = runtime_with_address_application();
+    let mut chain_state = FederationChainObservationState::new();
+    let input = spendable_input(&runtime, &mut chain_state, 17, 40_000);
+    let (batch, pending_records) = intents(&runtime);
+    let original = build_proposal(
+        &runtime,
+        &batch,
+        vec![input.clone()],
+        ProposalOptions::default(),
+    );
+    let original_audit = runtime
+        .validate_onchain_transaction_proposal(&chain_state, &pending_records, &original)
+        .expect("initial transaction policy");
+    let accepted = structurally_signed(original.clone(), original_audit);
+    let original_id = original.proposal_id().expect("original id");
+    let mut accepted_records = pending_records;
+    for record in accepted_records.values_mut() {
+        record.state = FederationOnchainPaymentIntentState::Accepted {
+            proposal_id: original_id,
+        };
+    }
+    let reserved_chain = state_with_lifecycle(&chain_state, input.outpoint, "reserved");
+
+    let valid = replacement_proposal(&runtime, &batch, &original, 500);
+    let valid_audit = runtime
+        .validate_onchain_transaction_replacement(
+            &reserved_chain,
+            &accepted_records,
+            &accepted,
+            &valid,
+        )
+        .expect("valid bounded RBF replacement");
+    assert_eq!(valid_audit.fee_sat, 1_000);
+    assert_eq!(valid_audit.fee_contributions.values().sum::<u64>(), 1_000);
+    assert!(valid
+        .recipient_outputs
+        .iter()
+        .zip(&original.recipient_outputs)
+        .all(|(replacement, original)| replacement.output == original.output));
+
+    let insufficient_delta = replacement_proposal(&runtime, &batch, &original, 1);
+    assert!(runtime
+        .validate_onchain_transaction_replacement(
+            &reserved_chain,
+            &accepted_records,
+            &accepted,
+            &insufficient_delta,
+        )
+        .is_err());
+
+    let mut recipient_transaction = valid.unsigned_transaction.clone();
+    recipient_transaction.output[0].value = recipient_transaction.output[0]
+        .value
+        .checked_sub(BitcoinAmount::from_sat(1))
+        .expect("mutated recipient");
+    let mut recipient_outputs = valid.recipient_outputs.clone();
+    recipient_outputs[0].output = recipient_transaction.output[0].clone();
+    recipient_outputs[0].fee_contribution_sat += 1;
+    let recipient_mutation = FederationTransactionProposal::new(
+        &batch,
+        runtime.member_id(),
+        recipient_transaction,
+        valid.selected_inputs.clone(),
+        recipient_outputs,
+        valid.change_output.clone(),
+        valid.fee_sat + 1,
+        Some(original_id),
+    )
+    .expect("structural recipient mutation");
+    assert!(runtime
+        .validate_onchain_transaction_replacement(
+            &reserved_chain,
+            &accepted_records,
+            &accepted,
+            &recipient_mutation,
+        )
+        .is_err());
+
+    let mut changed_input = valid.selected_inputs[0].clone();
+    changed_input.outpoint = OutPoint::new(Txid::from_byte_array([99; 32]), 0);
+    let mut input_transaction = valid.unsigned_transaction.clone();
+    input_transaction.input[0].previous_output = changed_input.outpoint;
+    let input_mutation = FederationTransactionProposal::new(
+        &batch,
+        runtime.member_id(),
+        input_transaction,
+        vec![changed_input],
+        valid.recipient_outputs.clone(),
+        valid.change_output.clone(),
+        valid.fee_sat,
+        Some(original_id),
+    )
+    .expect("structural input mutation");
+    assert!(runtime
+        .validate_onchain_transaction_replacement(
+            &reserved_chain,
+            &accepted_records,
+            &accepted,
+            &input_mutation,
+        )
+        .is_err());
+
+    let changed_change = build_proposal(
+        &runtime,
+        &batch,
+        vec![input],
+        ProposalOptions {
+            fee_sat: 1_000,
+            change_script_index: 9,
+            declared_change_index: 9,
+            ..ProposalOptions::default()
+        },
+    );
+    let change_mutation = FederationTransactionProposal::new(
+        &batch,
+        runtime.member_id(),
+        changed_change.unsigned_transaction,
+        changed_change.selected_inputs,
+        changed_change.recipient_outputs,
+        changed_change.change_output,
+        changed_change.fee_sat,
+        Some(original_id),
+    )
+    .expect("structural change mutation");
+    assert!(runtime
+        .validate_onchain_transaction_replacement(
+            &reserved_chain,
+            &accepted_records,
+            &accepted,
+            &change_mutation,
+        )
         .is_err());
 }
 
@@ -880,6 +1096,141 @@ async fn accepted_proposal_atomically_reserves_replays_restarts_and_gates_signin
     assert!(restarted.federation_transaction_state().await.is_err());
 }
 
+#[tokio::test]
+async fn accepted_replacement_uses_the_existing_operation_and_fresh_signing_path() {
+    use super::super::chain_observation::{
+        CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+        CHAIN_OBSERVATION_STATE_KEY,
+    };
+    use super::super::transaction_state::{
+        TRANSACTION_STATE_KEY, TRANSACTION_STATE_PRIMARY_NAMESPACE,
+        TRANSACTION_STATE_SECONDARY_NAMESPACE,
+    };
+
+    let (runtime, _) = runtime_with_address_application();
+    let (mint, localstore) = federated_test_mint(runtime.clone()).await;
+    let mut chain_state = FederationChainObservationState::new();
+    let input = spendable_input(&runtime, &mut chain_state, 18, 40_000);
+    let (batch, records) = intents(&runtime);
+    let original = build_proposal(
+        &runtime,
+        &batch,
+        vec![input.clone()],
+        ProposalOptions::default(),
+    );
+    let original_id = original.proposal_id().expect("original id");
+    let original_audit = runtime
+        .validate_onchain_transaction_proposal(&chain_state, &records, &original)
+        .expect("original policy audit");
+    let original_accepted = structurally_signed(original.clone(), original_audit.clone());
+    let original_signed = original_accepted.signed.expect("signed original");
+    let original_txid = original_signed.txid;
+    let mut transaction_state = FederationTransactionState::new();
+    for record in records.values().cloned() {
+        transaction_state
+            .add_pending_intent(record)
+            .expect("persist pending intent");
+    }
+    transaction_state
+        .accept_transaction(
+            original.clone(),
+            original_audit,
+            FederationOperationId::from_bytes([70; 32]),
+            70,
+        )
+        .expect("accept original");
+    transaction_state
+        .mark_transaction_signed(original_id, original_signed)
+        .expect("persist signed original");
+    transaction_state
+        .authorize_transaction_broadcast(
+            FederationTransactionBroadcastIntent {
+                proposal_id: original_id,
+                txid: original_txid,
+                settlement_policy: FederationTransactionSettlementPolicy::new(1, 1)
+                    .expect("settlement policy"),
+            },
+            FederationOperationId::from_bytes([71; 32]),
+            71,
+        )
+        .expect("authorize original broadcast");
+    chain_state
+        .reserve_utxos(&[input.outpoint])
+        .expect("reserve original input");
+
+    let mut setup = localstore
+        .begin_transaction()
+        .await
+        .expect("begin replacement setup");
+    setup
+        .kv_write(
+            CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+            CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+            CHAIN_OBSERVATION_STATE_KEY,
+            &chain_state.to_bytes().expect("chain state bytes"),
+        )
+        .await
+        .expect("write reserved chain state");
+    setup
+        .kv_write(
+            TRANSACTION_STATE_PRIMARY_NAMESPACE,
+            TRANSACTION_STATE_SECONDARY_NAMESPACE,
+            TRANSACTION_STATE_KEY,
+            &transaction_state
+                .to_bytes()
+                .expect("transaction state bytes"),
+        )
+        .await
+        .expect("write original transaction state");
+    setup.commit().await.expect("commit replacement setup");
+
+    let replacement = replacement_proposal(&runtime, &batch, &original, 500);
+    let replacement_id = replacement.proposal_id().expect("replacement id");
+    let entry = accepted_entry_without_journal(
+        72,
+        runtime
+            .transaction_proposal_operation(replacement.clone())
+            .expect("replacement operation"),
+    );
+    persist_journal_entry(&localstore, &entry).await;
+    assert!(mint
+        .apply_accepted_federation_operation(&entry)
+        .await
+        .expect("apply replacement"));
+
+    let durable = mint
+        .federation_transaction_state()
+        .await
+        .expect("durable replacement state");
+    assert_eq!(durable.lineage_head(batch.batch_id), Some(replacement_id));
+    assert_eq!(
+        durable
+            .accepted_transaction(original_id)
+            .expect("replaced original")
+            .state,
+        FederationAcceptedTransactionState::Replaced { by: replacement_id }
+    );
+    assert_eq!(
+        durable
+            .accepted_transaction(replacement_id)
+            .expect("accepted replacement")
+            .state,
+        FederationAcceptedTransactionState::Accepted
+    );
+    assert_eq!(durable.reservation(input.outpoint), Some(original_id));
+    assert!(mint
+        .federation_transaction_signing_authorization(original_id)
+        .await
+        .is_err());
+    let signing = mint
+        .federation_transaction_signing_authorization(replacement_id)
+        .await
+        .expect("replacement signing authorization");
+    assert_eq!(signing.proposal, replacement);
+    assert_ne!(signing.policy_audit.proposal_id, original_id);
+    assert_ne!(signing.policy_audit.txid, original_txid);
+}
+
 #[test]
 fn aleph_bft_journal_rejects_same_batch_and_shared_utxo_competitors() {
     let (runtime, _) = runtime_with_address_application();
@@ -907,6 +1258,7 @@ fn aleph_bft_journal_rejects_same_batch_and_shared_utxo_competitors() {
                 original.amount_sat,
                 original.maximum_fee_sat,
                 original.fee_tier,
+                original.fee_target_blocks,
                 original.creation_time + index as u64,
                 original.scope,
             )

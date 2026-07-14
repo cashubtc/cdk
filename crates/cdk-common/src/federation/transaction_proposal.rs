@@ -23,14 +23,14 @@ use super::{
     MemberId, Result, FEDERATION_MAX_DERIVATION_INDEX,
 };
 
-const PAYMENT_INTENT_VERSION: u16 = 2;
+const PAYMENT_INTENT_VERSION: u16 = 3;
 const PAYMENT_BATCH_VERSION: u16 = 1;
-const TRANSACTION_PROPOSAL_VERSION: u16 = 1;
-const TRANSACTION_STATE_VERSION: u16 = 2;
+const TRANSACTION_PROPOSAL_VERSION: u16 = 2;
+const TRANSACTION_STATE_VERSION: u16 = 3;
 const SIGNED_TRANSACTION_VERSION: u16 = 1;
-const PAYMENT_INTENT_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-intent-v2";
+const PAYMENT_INTENT_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-intent-v3";
 const PAYMENT_BATCH_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-batch-v1";
-const TRANSACTION_PROPOSAL_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-transaction-proposal-v1";
+const TRANSACTION_PROPOSAL_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-transaction-proposal-v2";
 const PSBT_CONSENSUS_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-psbt-consensus-v1";
 const FROST_SIGNING_AUTHORIZATION_HASH_DOMAIN: &[u8] =
     b"cdk-federation-frost-signing-authorization-v1";
@@ -39,6 +39,7 @@ const CDK_ONCHAIN_FROST_AUTHORIZATION_MAX_BYTES: usize = 16 * 1024;
 const MAX_QUOTE_ID_BYTES: usize = 256;
 const MAX_DESTINATION_SCRIPT_BYTES: usize = 10_000;
 const MAX_FEE_TIER: u32 = 255;
+const MAX_FEE_TARGET_BLOCKS: u32 = 1_008;
 const MAX_BROADCAST_DETAIL_BYTES: usize = 512;
 const TRANSACTION_SETTLEMENT_POLICY_VERSION: u16 = 1;
 
@@ -179,6 +180,8 @@ pub struct FederationOnchainPaymentIntent {
     pub maximum_fee_sat: u64,
     /// Selected quote fee-option index.
     pub fee_tier: u32,
+    /// Confirmation target carried by the selected quote fee option.
+    pub fee_target_blocks: u32,
     /// Consensus creation time used for deterministic eligibility and ordering.
     pub creation_time: u64,
     /// Wallet and transaction policy scope.
@@ -195,6 +198,7 @@ impl FederationOnchainPaymentIntent {
         amount_sat: u64,
         maximum_fee_sat: u64,
         fee_tier: u32,
+        fee_target_blocks: u32,
         creation_time: u64,
         scope: FederationTransactionScope,
     ) -> Result<Self> {
@@ -206,6 +210,7 @@ impl FederationOnchainPaymentIntent {
             amount_sat,
             maximum_fee_sat,
             fee_tier,
+            fee_target_blocks,
             creation_time,
             scope,
         };
@@ -237,6 +242,11 @@ impl FederationOnchainPaymentIntent {
         if self.fee_tier > MAX_FEE_TIER {
             return Err(invalid("payment intent fee tier is out of range"));
         }
+        if self.fee_target_blocks == 0 || self.fee_target_blocks > MAX_FEE_TARGET_BLOCKS {
+            return Err(invalid(
+                "payment intent fee confirmation target is out of range",
+            ));
+        }
         self.amount_sat
             .checked_add(self.maximum_fee_sat)
             .ok_or_else(|| invalid("payment intent amount and maximum fee overflow"))?;
@@ -266,8 +276,9 @@ impl FederationOnchainPaymentIntent {
     }
 
     fn canonical_order(&self, other: &Self) -> Ordering {
-        self.fee_tier
-            .cmp(&other.fee_tier)
+        self.fee_target_blocks
+            .cmp(&other.fee_target_blocks)
+            .then_with(|| self.fee_tier.cmp(&other.fee_tier))
             .then_with(|| self.creation_time.cmp(&other.creation_time))
             .then_with(|| self.quote.cmp(&other.quote))
     }
@@ -317,7 +328,7 @@ pub struct FederationTransactionPolicyAudit {
     pub fee_sat: u64,
     /// Checked fee rate in satoshis per 1,000 weight units.
     pub fee_rate_sat_per_kwu: u64,
-    /// Exact unsigned transaction weight.
+    /// Exact projected key-path-signed transaction weight.
     pub weight: u64,
     /// Per-intent fee allocation in canonical intent order.
     pub fee_contributions: BTreeMap<FederationOnchainPaymentIntentId, u64>,
@@ -413,6 +424,21 @@ pub struct FederationOnchainPaymentBatch {
 }
 
 impl FederationOnchainPaymentBatch {
+    /// Select a bounded canonical prefix from an unordered intent set.
+    pub fn select(
+        mut intents: Vec<FederationOnchainPaymentIntent>,
+        eligibility_cutoff: u64,
+        maximum_intents: usize,
+    ) -> Result<Self> {
+        if maximum_intents == 0 || maximum_intents > FEDERATION_MAX_ONCHAIN_BATCH_INTENTS {
+            return Err(invalid("on-chain batch selection limit is out of bounds"));
+        }
+        intents.retain(|intent| intent.is_eligible_at(eligibility_cutoff));
+        intents.sort_by(Self::canonical_intent_order);
+        intents.truncate(maximum_intents);
+        Self::new(intents, eligibility_cutoff)
+    }
+
     /// Create a deterministic batch from an unordered set of eligible intents.
     pub fn new(
         mut intents: Vec<FederationOnchainPaymentIntent>,
@@ -786,7 +812,7 @@ impl FederationTransactionProposal {
             ));
         }
 
-        let weight = self.unsigned_transaction.weight().to_wu();
+        let weight = self.estimated_signed_weight();
         if weight == 0 || weight > FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT {
             return Err(invalid("transaction proposal weight is out of bounds"));
         }
@@ -847,9 +873,36 @@ impl FederationTransactionProposal {
             .collect()
     }
 
+    /// Return the exact projected weight after one key-path signature per input.
+    ///
+    /// Proposal inputs are deliberately witness-free. The current policy uses
+    /// one 64-byte BIP340 signature for `SIGHASH_DEFAULT`, or 65 bytes when an
+    /// explicit sighash byte is present.
+    #[must_use]
+    pub fn estimated_signed_weight(&self) -> u64 {
+        let signature_len = match self.sighash_type {
+            FederationTaprootSighashType::Default => 64,
+            FederationTaprootSighashType::All
+            | FederationTaprootSighashType::None
+            | FederationTaprootSighashType::Single
+            | FederationTaprootSighashType::AllAnyoneCanPay
+            | FederationTaprootSighashType::NoneAnyoneCanPay
+            | FederationTaprootSighashType::SingleAnyoneCanPay => 65,
+        };
+        let signature = vec![0_u8; signature_len];
+        let mut transaction = self.unsigned_transaction.clone();
+        for input in &mut transaction.input {
+            input.witness.push(&signature);
+        }
+        transaction.weight().to_wu()
+    }
+
     /// Return all conflict scopes required when this proposal enters consensus.
     pub fn conflict_keys(&self) -> Result<Vec<FederationOperationConflictKey>> {
         self.validate()?;
+        if self.replacement_of.is_some() {
+            return Ok(Vec::new());
+        }
         let mut keys = Vec::with_capacity(self.intent_ids.len() + self.selected_inputs.len() + 2);
         keys.push(FederationOperationConflictKey::OnchainBatch {
             batch_id: self.batch_id,
@@ -891,7 +944,7 @@ impl FederationTransactionProposal {
     }
 
     fn expected_fee_rate_sat_per_kwu(&self) -> Result<u64> {
-        let weight = self.unsigned_transaction.weight().to_wu();
+        let weight = self.estimated_signed_weight();
         if weight == 0 {
             return Err(invalid("transaction proposal weight is zero"));
         }
@@ -1553,6 +1606,15 @@ impl FederationTransactionState {
         &self.accepted_transactions
     }
 
+    /// Return the current active or confirmed head of one replacement lineage.
+    #[must_use]
+    pub fn lineage_head(
+        &self,
+        batch_id: FederationOnchainBatchId,
+    ) -> Option<FederationTransactionProposalId> {
+        self.batch_owners.get(&batch_id).copied()
+    }
+
     /// Derive one terminal on-chain melt receipt from accepted transaction state.
     pub fn completed_payment_for_quote(
         &self,
@@ -1564,15 +1626,14 @@ impl FederationTransactionState {
         let FederationOnchainPaymentIntentState::Completed { txid } = intent.state else {
             return Ok(None);
         };
-        let mut owners = self
-            .accepted_transactions
-            .iter()
-            .filter(|(_, accepted)| accepted.proposal.intent_ids.contains(&intent.intent_id));
+        let mut owners = self.accepted_transactions.iter().filter(|(_, accepted)| {
+            accepted.proposal.intent_ids.contains(&intent.intent_id)
+                && accepted.state == FederationAcceptedTransactionState::Confirmed
+        });
         let (_proposal_id, accepted) = owners
             .next()
             .ok_or_else(|| invalid("completed payment intent has no accepted transaction"))?;
         if owners.next().is_some()
-            || accepted.state != FederationAcceptedTransactionState::Confirmed
             || accepted.signed.as_ref().map(|signed| signed.txid) != Some(txid)
         {
             return Err(invalid(
@@ -1613,6 +1674,14 @@ impl FederationTransactionState {
     #[must_use]
     pub fn reservation_count(&self) -> usize {
         self.utxo_reservations.len()
+    }
+
+    /// Return the sticky reservation owner for an accepted lineage transaction.
+    pub fn lineage_reservation_owner(
+        &self,
+        proposal_id: FederationTransactionProposalId,
+    ) -> Result<FederationTransactionProposalId> {
+        self.lineage_root(proposal_id)
     }
 
     /// Add one consensus-authorized pending melt intent idempotently.
@@ -1712,6 +1781,104 @@ impl FederationTransactionState {
         for input in &proposal.selected_inputs {
             self.utxo_reservations
                 .insert(input.outpoint.to_string(), proposal_id);
+        }
+        self.batch_owners.insert(proposal.batch_id, proposal_id);
+        self.accepted_transactions.insert(
+            proposal_id,
+            FederationAcceptedTransaction {
+                proposal,
+                policy_audit,
+                accepted_operation_id,
+                accepted_operation_index,
+                state: FederationAcceptedTransactionState::Accepted,
+                signed: None,
+                broadcast: None,
+            },
+        );
+        self.validate()?;
+        Ok(FederationTransactionStateOutcome::Updated)
+    }
+
+    /// Accept a fully validated replacement without releasing lineage reservations.
+    pub fn accept_replacement(
+        &mut self,
+        proposal: FederationTransactionProposal,
+        policy_audit: FederationTransactionPolicyAudit,
+        accepted_operation_id: FederationOperationId,
+        accepted_operation_index: u64,
+    ) -> Result<FederationTransactionStateOutcome> {
+        proposal.validate()?;
+        if accepted_operation_index == 0 {
+            return Err(invalid("accepted replacement operation index is zero"));
+        }
+        let proposal_id = proposal.proposal_id()?;
+        validate_policy_audit(&proposal, &policy_audit)?;
+        if let Some(existing) = self.accepted_transactions.get(&proposal_id) {
+            if existing.proposal == proposal && existing.policy_audit == policy_audit {
+                return Ok(FederationTransactionStateOutcome::Existing);
+            }
+            return Err(invalid(
+                "replacement identity maps to different durable transaction data",
+            ));
+        }
+        let original_id = proposal
+            .replacement_of
+            .ok_or_else(|| invalid("replacement proposal has no active predecessor"))?;
+        if self.batch_owners.get(&proposal.batch_id) != Some(&original_id) {
+            return Err(invalid(
+                "replacement does not extend the current transaction lineage head",
+            ));
+        }
+        let original = self
+            .accepted_transactions
+            .get(&original_id)
+            .ok_or_else(|| invalid("replacement predecessor is unknown"))?;
+        if !matches!(
+            original.state,
+            FederationAcceptedTransactionState::BroadcastPending
+                | FederationAcceptedTransactionState::Broadcast
+        ) || original.signed.is_none()
+            || original.proposal.batch_id != proposal.batch_id
+            || original.proposal.intent_ids != proposal.intent_ids
+            || original.proposal.selected_inputs != proposal.selected_inputs
+        {
+            return Err(invalid(
+                "replacement predecessor is not an active signed lineage head",
+            ));
+        }
+        let reservation_owner = self.lineage_root(original_id)?;
+        for intent_id in &proposal.intent_ids {
+            let record = self
+                .intents
+                .get(intent_id)
+                .ok_or_else(|| invalid("replacement references an unknown intent"))?;
+            if record.state
+                != (FederationOnchainPaymentIntentState::Accepted {
+                    proposal_id: original_id,
+                })
+            {
+                return Err(invalid(
+                    "replacement intent is not owned by its active predecessor",
+                ));
+            }
+        }
+        for input in &proposal.selected_inputs {
+            if self.utxo_reservations.get(&input.outpoint.to_string()) != Some(&reservation_owner) {
+                return Err(invalid(
+                    "replacement input is not reserved by its lineage root",
+                ));
+            }
+        }
+
+        self.accepted_transactions
+            .get_mut(&original_id)
+            .ok_or_else(|| invalid("replacement predecessor disappeared"))?
+            .state = FederationAcceptedTransactionState::Replaced { by: proposal_id };
+        for intent_id in &proposal.intent_ids {
+            self.intents
+                .get_mut(intent_id)
+                .ok_or_else(|| invalid("replacement intent disappeared"))?
+                .state = FederationOnchainPaymentIntentState::Accepted { proposal_id };
         }
         self.batch_owners.insert(proposal.batch_id, proposal_id);
         self.accepted_transactions.insert(
@@ -1833,8 +2000,28 @@ impl FederationTransactionState {
         operation_index: u64,
     ) -> Result<FederationTransactionStateOutcome> {
         observation.validate()?;
+        let observed_proposal_id = observation.proposal_id;
         if operation_index == 0 {
             return Err(invalid("broadcast observation operation index is zero"));
+        }
+        let observed_batch_id = self
+            .accepted_transactions
+            .get(&observed_proposal_id)
+            .ok_or_else(|| invalid("broadcast observation references an unknown transaction"))?
+            .proposal
+            .batch_id;
+        if self
+            .accepted_transactions
+            .iter()
+            .any(|(proposal_id, accepted)| {
+                *proposal_id != observed_proposal_id
+                    && accepted.proposal.batch_id == observed_batch_id
+                    && accepted.state == FederationAcceptedTransactionState::Confirmed
+            })
+        {
+            return Err(invalid(
+                "transaction lineage already has a different terminal winner",
+            ));
         }
         let mut completed = None;
         {
@@ -1904,11 +2091,22 @@ impl FederationTransactionState {
                 );
                 if broadcast.settlement.is_some() {
                     accepted.state = FederationAcceptedTransactionState::Confirmed;
-                    completed = Some((accepted.proposal.intent_ids.clone(), signed.txid));
+                    completed = Some((
+                        observed_proposal_id,
+                        accepted.proposal.batch_id,
+                        accepted.proposal.intent_ids.clone(),
+                        signed.txid,
+                    ));
                 }
             }
         }
-        if let Some((intent_ids, txid)) = completed {
+        if let Some((winner, batch_id, intent_ids, txid)) = completed {
+            for (proposal_id, accepted) in &mut self.accepted_transactions {
+                if accepted.proposal.batch_id == batch_id && *proposal_id != winner {
+                    accepted.state = FederationAcceptedTransactionState::Abandoned;
+                }
+            }
+            self.batch_owners.insert(batch_id, winner);
             for intent_id in intent_ids {
                 let intent = self
                     .intents
@@ -1921,6 +2119,26 @@ impl FederationTransactionState {
         Ok(FederationTransactionStateOutcome::Updated)
     }
 
+    fn lineage_root(
+        &self,
+        mut proposal_id: FederationTransactionProposalId,
+    ) -> Result<FederationTransactionProposalId> {
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert(proposal_id) {
+                return Err(invalid("replacement lineage contains a cycle"));
+            }
+            let accepted = self
+                .accepted_transactions
+                .get(&proposal_id)
+                .ok_or_else(|| invalid("replacement lineage references an unknown transaction"))?;
+            match accepted.proposal.replacement_of {
+                Some(previous) => proposal_id = previous,
+                None => return Ok(proposal_id),
+            }
+        }
+    }
+
     /// Mark a transaction abandoned without releasing any input reservation.
     pub fn abandon_transaction(
         &mut self,
@@ -1931,23 +2149,6 @@ impl FederationTransactionState {
             .get_mut(&proposal_id)
             .ok_or_else(|| invalid("cannot abandon an unknown accepted transaction"))?;
         accepted.state = FederationAcceptedTransactionState::Abandoned;
-        self.validate()
-    }
-
-    /// Record a replacement relationship without releasing original inputs.
-    pub fn mark_transaction_replaced(
-        &mut self,
-        proposal_id: FederationTransactionProposalId,
-        replacement_id: FederationTransactionProposalId,
-    ) -> Result<()> {
-        if proposal_id == replacement_id {
-            return Err(invalid("transaction replacement identity is invalid"));
-        }
-        let original = self
-            .accepted_transactions
-            .get_mut(&proposal_id)
-            .ok_or_else(|| invalid("cannot replace an unknown accepted transaction"))?;
-        original.state = FederationAcceptedTransactionState::Replaced { by: replacement_id };
         self.validate()
     }
 
@@ -2018,7 +2219,10 @@ impl FederationTransactionState {
                     let owners = self
                         .accepted_transactions
                         .values()
-                        .filter(|accepted| accepted.proposal.intent_ids.contains(intent_id))
+                        .filter(|accepted| {
+                            accepted.proposal.intent_ids.contains(intent_id)
+                                && accepted.state == FederationAcceptedTransactionState::Confirmed
+                        })
                         .collect::<Vec<_>>();
                     if owners.len() != 1
                         || owners[0].state != FederationAcceptedTransactionState::Confirmed
@@ -2033,16 +2237,35 @@ impl FederationTransactionState {
                 | FederationOnchainPaymentIntentState::Failed => {}
             }
         }
-        if self.accepted_transactions.len() != self.batch_owners.len() {
+        let accepted_batches = self
+            .accepted_transactions
+            .values()
+            .map(|accepted| accepted.proposal.batch_id)
+            .collect::<BTreeSet<_>>();
+        if accepted_batches.len() != self.batch_owners.len() {
             return Err(invalid(
                 "accepted transaction batch index has the wrong size",
             ));
+        }
+        for (batch_id, owner) in &self.batch_owners {
+            let accepted = self
+                .accepted_transactions
+                .get(owner)
+                .ok_or_else(|| invalid("transaction lineage head is unknown"))?;
+            if accepted.proposal.batch_id != *batch_id
+                || matches!(
+                    accepted.state,
+                    FederationAcceptedTransactionState::Replaced { .. }
+                )
+            {
+                return Err(invalid("transaction lineage head is inconsistent"));
+            }
         }
         for (proposal_id, accepted) in &self.accepted_transactions {
             accepted.proposal.validate()?;
             if accepted.accepted_operation_index == 0
                 || accepted.proposal.proposal_id()? != *proposal_id
-                || self.batch_owners.get(&accepted.proposal.batch_id) != Some(proposal_id)
+                || !self.batch_owners.contains_key(&accepted.proposal.batch_id)
             {
                 return Err(invalid("accepted transaction durable identity mismatch"));
             }
@@ -2178,31 +2401,86 @@ impl FederationTransactionState {
                     _ => {}
                 }
             }
-            for intent_id in &accepted.proposal.intent_ids {
-                let record = self
-                    .intents
-                    .get(intent_id)
-                    .ok_or_else(|| invalid("accepted transaction references a missing intent"))?;
-                let expected_state =
-                    if accepted.state == FederationAcceptedTransactionState::Confirmed {
-                        FederationOnchainPaymentIntentState::Completed {
-                            txid: accepted
-                                .signed
-                                .as_ref()
-                                .ok_or_else(|| invalid("confirmed transaction has no signed txid"))?
-                                .txid,
-                        }
-                    } else {
-                        FederationOnchainPaymentIntentState::Accepted {
+            let head = self
+                .batch_owners
+                .get(&accepted.proposal.batch_id)
+                .copied()
+                .ok_or_else(|| invalid("accepted transaction has no lineage head"))?;
+            let confirmed = self
+                .accepted_transactions
+                .iter()
+                .filter(|(_, candidate)| {
+                    candidate.proposal.batch_id == accepted.proposal.batch_id
+                        && candidate.state == FederationAcceptedTransactionState::Confirmed
+                })
+                .collect::<Vec<_>>();
+            if confirmed.len() > 1 {
+                return Err(invalid(
+                    "replacement lineage has multiple confirmed transactions",
+                ));
+            }
+            if head == *proposal_id {
+                for intent_id in &accepted.proposal.intent_ids {
+                    let record = self.intents.get(intent_id).ok_or_else(|| {
+                        invalid("accepted transaction references a missing intent")
+                    })?;
+                    let expected_state = match confirmed.as_slice() {
+                        [] => FederationOnchainPaymentIntentState::Accepted {
                             proposal_id: *proposal_id,
+                        },
+                        [(confirmed_id, winner)] if **confirmed_id == *proposal_id => {
+                            FederationOnchainPaymentIntentState::Completed {
+                                txid: winner
+                                    .signed
+                                    .as_ref()
+                                    .ok_or_else(|| {
+                                        invalid("confirmed transaction has no signed txid")
+                                    })?
+                                    .txid,
+                            }
+                        }
+                        _ => {
+                            return Err(invalid(
+                                "transaction lineage head differs from confirmed winner",
+                            ));
                         }
                     };
-                if record.state != expected_state {
-                    return Err(invalid("accepted transaction does not own its intent"));
+                    if record.state != expected_state {
+                        return Err(invalid("lineage head does not own its intent"));
+                    }
+                }
+            } else if !matches!(
+                accepted.state,
+                FederationAcceptedTransactionState::Replaced { .. }
+                    | FederationAcceptedTransactionState::Abandoned
+            ) {
+                return Err(invalid("non-head lineage transaction is still active"));
+            }
+            if let Some(original_id) = accepted.proposal.replacement_of {
+                let original = self
+                    .accepted_transactions
+                    .get(&original_id)
+                    .ok_or_else(|| invalid("replacement predecessor is unknown"))?;
+                let predecessor_is_linked = matches!(
+                    original.state,
+                    FederationAcceptedTransactionState::Replaced { by }
+                        if by == *proposal_id
+                ) || matches!(
+                    original.state,
+                    FederationAcceptedTransactionState::Abandoned
+                        | FederationAcceptedTransactionState::Confirmed
+                );
+                if original.proposal.batch_id != accepted.proposal.batch_id
+                    || !predecessor_is_linked
+                {
+                    return Err(invalid("replacement predecessor linkage is inconsistent"));
                 }
             }
+            let reservation_owner = self.lineage_root(*proposal_id)?;
             for input in &accepted.proposal.selected_inputs {
-                if self.utxo_reservations.get(&input.outpoint.to_string()) != Some(proposal_id) {
+                if self.utxo_reservations.get(&input.outpoint.to_string())
+                    != Some(&reservation_owner)
+                {
                     return Err(invalid(
                         "accepted transaction does not own its wallet reservation",
                     ));
@@ -2249,7 +2527,7 @@ fn validate_policy_audit(
         || audit.txid != proposal.unsigned_transaction.compute_txid()
         || audit.fee_sat != proposal.fee_sat
         || audit.fee_rate_sat_per_kwu != proposal.fee_rate_sat_per_kwu
-        || audit.weight != proposal.unsigned_transaction.weight().to_wu()
+        || audit.weight != proposal.estimated_signed_weight()
         || audit.taproot_sighashes.len() != proposal.selected_inputs.len()
     {
         return Err(invalid(
@@ -2431,6 +2709,11 @@ mod tests {
             10_000 + u64::from(marker),
             1_000,
             fee_tier,
+            match fee_tier {
+                0 => 1,
+                1 => 6,
+                _ => 144,
+            },
             creation_time,
             scope(),
         )
@@ -2534,6 +2817,68 @@ mod tests {
         .expect("proposal")
     }
 
+    fn replacement_proposal(
+        original: &FederationTransactionProposal,
+        additional_fee_sat: u64,
+    ) -> FederationTransactionProposal {
+        let batch = FederationOnchainPaymentBatch::new(
+            vec![intent("quote-a", 0, 30, 1), intent("quote-b", 1, 20, 2)],
+            original.eligibility_cutoff,
+        )
+        .expect("replacement batch");
+        assert_eq!(batch.batch_id, original.batch_id);
+        let mut transaction = original.unsigned_transaction.clone();
+        let original_change = original.change_output.as_ref().expect("original change");
+        let change_index = original_change.output_index as usize;
+        transaction.output[change_index].value = transaction.output[change_index]
+            .value
+            .checked_sub(Amount::from_sat(additional_fee_sat))
+            .expect("replacement change");
+        let fee_sat = original.fee_sat + additional_fee_sat;
+        let mut recipients = original.recipient_outputs.clone();
+        let base = fee_sat / recipients.len() as u64;
+        let remainder = fee_sat % recipients.len() as u64;
+        for (index, recipient) in recipients.iter_mut().enumerate() {
+            recipient.fee_contribution_sat = base + u64::from(index == 0) * remainder;
+        }
+        let mut change = original_change.clone();
+        change.output = transaction.output[change_index].clone();
+        FederationTransactionProposal::new(
+            &batch,
+            member(2),
+            transaction,
+            original.selected_inputs.clone(),
+            recipients,
+            Some(change),
+            fee_sat,
+            Some(original.proposal_id().expect("original id")),
+        )
+        .expect("replacement proposal")
+    }
+
+    fn structurally_sign(accepted: &FederationAcceptedTransaction) -> FederationSignedTransaction {
+        let mut transaction = accepted.proposal.unsigned_transaction.clone();
+        let audits = transaction
+            .input
+            .iter_mut()
+            .enumerate()
+            .map(|(input_index, input)| {
+                let signature = vec![u8::try_from(input_index + 31).expect("signature"); 64];
+                input.witness.push(&signature);
+                FederationFrostInputSignatureAudit {
+                    input_index: input_index as u32,
+                    session_id: [u8::try_from(input_index + 41).expect("session"); 32],
+                    attempt: 2,
+                    signer_set: vec![1, 2],
+                    package_hash: [u8::try_from(input_index + 51).expect("package"); 32],
+                    signature,
+                }
+            })
+            .collect();
+        FederationSignedTransaction::new(accepted, &transaction, audits)
+            .expect("structural signed transaction")
+    }
+
     #[test]
     fn batch_order_is_independent_of_input_iteration() {
         let intents = vec![
@@ -2555,6 +2900,39 @@ mod tests {
             FederationOperationConflictKey::OnchainPaymentIntent { quote }
                 if quote == first.intents[0].quote
         ));
+    }
+
+    #[test]
+    fn mixed_fee_tiers_select_the_same_bounded_batch() {
+        let unordered = vec![
+            intent("economy", 2, 1, 3),
+            intent("standard", 1, 3, 2),
+            intent("immediate-late", 0, 4, 4),
+            intent("immediate-early", 0, 2, 1),
+        ];
+        let mut reversed = unordered.clone();
+        reversed.reverse();
+        let first = FederationOnchainPaymentBatch::select(unordered, 10, 3)
+            .expect("selected fee-tier batch");
+        let second = FederationOnchainPaymentBatch::select(reversed, 10, 3)
+            .expect("reversed fee-tier batch");
+        assert_eq!(first, second);
+        assert_eq!(
+            first
+                .intents
+                .iter()
+                .map(|intent| intent.quote.as_str())
+                .collect::<Vec<_>>(),
+            vec!["immediate-early", "immediate-late", "standard"]
+        );
+        assert_eq!(
+            first
+                .intents
+                .iter()
+                .map(|intent| intent.fee_target_blocks)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 6]
+        );
     }
 
     #[test]
@@ -2647,6 +3025,10 @@ mod tests {
         );
         assert!(keys.iter().any(|key| matches!(key, FederationOperationConflictKey::OnchainBatch { batch_id } if *batch_id == proposal.batch_id)));
         assert!(keys.iter().any(|key| matches!(key, FederationOperationConflictKey::OnchainReplacementLineage { lineage } if *lineage == proposal.batch_id)));
+        assert!(replacement_proposal(&proposal, 500)
+            .conflict_keys()
+            .expect("replacement conflict keys")
+            .is_empty());
     }
 
     #[test]
@@ -2668,7 +3050,7 @@ mod tests {
         }
         assert_eq!(
             proposal.proposal_id().expect("proposal id").to_hex(),
-            "5845c1a53d69849cc62ba0a4f07f4ab5876c8af2d9bd0193bf1697f807f22d19"
+            "0a1ea7aeccbb4d99a8cdcb970ef4c8ca0f533be34c78e7ac9c855bed923f9b88"
         );
     }
 
@@ -2752,7 +3134,7 @@ mod tests {
             txid: proposal.unsigned_transaction.compute_txid(),
             fee_sat: proposal.fee_sat,
             fee_rate_sat_per_kwu: proposal.fee_rate_sat_per_kwu,
-            weight: proposal.unsigned_transaction.weight().to_wu(),
+            weight: proposal.estimated_signed_weight(),
             fee_contributions: proposal
                 .recipient_outputs
                 .iter()
@@ -2930,15 +3312,6 @@ mod tests {
         state
             .abandon_transaction(proposal_id)
             .expect("abandon transaction");
-        for input in &proposal.selected_inputs {
-            assert_eq!(state.reservation(input.outpoint), Some(proposal_id));
-        }
-        state
-            .mark_transaction_replaced(
-                proposal_id,
-                FederationTransactionProposalId::from_bytes([7; 32]),
-            )
-            .expect("mark replacement");
         for input in &proposal.selected_inputs {
             assert_eq!(state.reservation(input.outpoint), Some(proposal_id));
         }
@@ -3165,6 +3538,8 @@ mod tests {
             .collect();
         let signed = FederationSignedTransaction::new(&accepted, &transaction, input_signatures)
             .expect("signed record");
+        assert_eq!(transaction.weight().to_wu(), proposal.estimated_signed_weight());
+        assert_eq!(signed.policy_audit.weight, transaction.weight().to_wu());
         signed
             .verify_signatures(&proposal)
             .expect("every exact signature verifies");
@@ -3409,6 +3784,210 @@ mod tests {
                 .txid,
             txid
         );
+    }
+
+    #[test]
+    fn either_original_or_replacement_confirmation_yields_one_terminal_lineage() {
+        let (mut state, original_id, original_txid) = signed_transaction_state();
+        let settlement_policy =
+            FederationTransactionSettlementPolicy::new(1, 1).expect("settlement policy");
+        state
+            .authorize_transaction_broadcast(
+                FederationTransactionBroadcastIntent {
+                    proposal_id: original_id,
+                    txid: original_txid,
+                    settlement_policy,
+                },
+                FederationOperationId::from_bytes([60; 32]),
+                60,
+            )
+            .expect("authorize original broadcast");
+
+        let original = state
+            .accepted_transaction(original_id)
+            .expect("original transaction")
+            .proposal
+            .clone();
+        let replacement = replacement_proposal(&original, 500);
+        let replacement_id = replacement.proposal_id().expect("replacement id");
+        state
+            .accept_replacement(
+                replacement.clone(),
+                policy_audit(&replacement),
+                FederationOperationId::from_bytes([61; 32]),
+                61,
+            )
+            .expect("accept replacement");
+        assert_eq!(state.lineage_head(original.batch_id), Some(replacement_id));
+        assert_eq!(
+            state
+                .lineage_reservation_owner(replacement_id)
+                .expect("replacement reservation owner"),
+            original_id
+        );
+        assert_eq!(
+            state
+                .accepted_transaction(original_id)
+                .expect("replaced original")
+                .state,
+            FederationAcceptedTransactionState::Replaced { by: replacement_id }
+        );
+        assert!(replacement
+            .selected_inputs
+            .iter()
+            .all(|input| state.reservation(input.outpoint) == Some(original_id)));
+
+        let mut original_wins = state.clone();
+        original_wins
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id: original_id,
+                    txid: original_txid,
+                    observer: member(1),
+                    attempt: 1,
+                    result: FederationTransactionBroadcastResult::Confirmed {
+                        block_hash: BlockHash::from_byte_array([11; 32]),
+                        block_height: 101,
+                        confirmation_depth: 1,
+                    },
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([62; 32]),
+                62,
+            )
+            .expect("confirm original after replacement acceptance");
+        assert_eq!(
+            original_wins.lineage_head(original.batch_id),
+            Some(original_id)
+        );
+        assert_eq!(
+            original_wins
+                .accepted_transaction(original_id)
+                .expect("confirmed original")
+                .state,
+            FederationAcceptedTransactionState::Confirmed
+        );
+        assert_eq!(
+            original_wins
+                .accepted_transaction(replacement_id)
+                .expect("abandoned replacement")
+                .state,
+            FederationAcceptedTransactionState::Abandoned
+        );
+        assert_eq!(
+            original_wins
+                .completed_payment_for_quote("quote-a")
+                .expect("original receipt")
+                .expect("completed original payment")
+                .txid,
+            original_txid
+        );
+
+        let accepted_replacement = state
+            .accepted_transaction(replacement_id)
+            .expect("accepted replacement")
+            .clone();
+        let signed_replacement = structurally_sign(&accepted_replacement);
+        let replacement_txid = signed_replacement.txid;
+        state
+            .mark_transaction_signed(replacement_id, signed_replacement)
+            .expect("persist replacement signature");
+        state
+            .authorize_transaction_broadcast(
+                FederationTransactionBroadcastIntent {
+                    proposal_id: replacement_id,
+                    txid: replacement_txid,
+                    settlement_policy,
+                },
+                FederationOperationId::from_bytes([63; 32]),
+                63,
+            )
+            .expect("authorize replacement broadcast");
+        state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id: original_id,
+                    txid: original_txid,
+                    observer: member(1),
+                    attempt: 2,
+                    result: FederationTransactionBroadcastResult::Accepted,
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([64; 32]),
+                64,
+            )
+            .expect("observe original still in mempool");
+        state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id: replacement_id,
+                    txid: replacement_txid,
+                    observer: member(2),
+                    attempt: 1,
+                    result: FederationTransactionBroadcastResult::Confirmed {
+                        block_hash: BlockHash::from_byte_array([12; 32]),
+                        block_height: 102,
+                        confirmation_depth: 1,
+                    },
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([65; 32]),
+                65,
+            )
+            .expect("confirm replacement while original was observed");
+        assert_eq!(state.lineage_head(original.batch_id), Some(replacement_id));
+        assert_eq!(
+            state
+                .accepted_transaction(replacement_id)
+                .expect("confirmed replacement")
+                .state,
+            FederationAcceptedTransactionState::Confirmed
+        );
+        assert_eq!(
+            state
+                .accepted_transaction(original_id)
+                .expect("abandoned original")
+                .state,
+            FederationAcceptedTransactionState::Abandoned
+        );
+        assert_eq!(
+            state
+                .completed_payment_for_quote("quote-a")
+                .expect("replacement receipt")
+                .expect("completed replacement payment")
+                .txid,
+            replacement_txid
+        );
+        assert_eq!(
+            state
+                .accepted_transactions()
+                .values()
+                .filter(|accepted| {
+                    accepted.state == FederationAcceptedTransactionState::Confirmed
+                })
+                .count(),
+            1
+        );
+        let terminal = state.clone();
+        assert!(state
+            .record_transaction_broadcast_observation(
+                FederationTransactionBroadcastObservation {
+                    proposal_id: original_id,
+                    txid: original_txid,
+                    observer: member(1),
+                    attempt: 3,
+                    result: FederationTransactionBroadcastResult::Confirmed {
+                        block_hash: BlockHash::from_byte_array([13; 32]),
+                        block_height: 103,
+                        confirmation_depth: 1,
+                    },
+                    detail: None,
+                },
+                FederationOperationId::from_bytes([66; 32]),
+                66,
+            )
+            .is_err());
+        assert_eq!(state, terminal, "a terminal lineage winner cannot flip");
     }
 
     #[test]
