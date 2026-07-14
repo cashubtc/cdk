@@ -1,11 +1,28 @@
-use cdk::federation::FederationFrostCommitmentRequest;
+use cdk::federation::{
+    FederationAddressKeychain, FederationAllocatedAddressRef,
+    FederationCdkOnchainFrostAuthorization, FederationFrostApplicationId,
+    FederationFrostCommitmentRequest, FederationOperationId, FederationTransactionChangeOutput,
+    FederationTransactionInput, FederationTransactionPolicyAudit, FederationTransactionProposal,
+    FederationTransactionScope, FederationTransactionState,
+};
+use cdk_common::bitcoin::absolute::LockTime;
+use cdk_common::bitcoin::hashes::Hash;
+use cdk_common::bitcoin::sighash::{Prevouts, SighashCache, TapSighashType};
+use cdk_common::bitcoin::transaction::Version;
+use cdk_common::bitcoin::{
+    Amount as BitcoinAmount, Network as BitcoinNetwork, OutPoint, ScriptBuf, Sequence, Transaction,
+    TxIn, TxOut, Txid, Witness,
+};
 use cdk_frost::{
     advance_dkg, derive_application_public, finish_dkg, start_dkg, ApplicationAuthorization,
     ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, DkgContext,
     DkgRound1Package, DkgRound2Package, MemoryNonceStore, ParticipantKeyManager, RootKeyEpoch,
     SecretEncryptionKey, SigningAuthorizationScope, SigningDerivation, SigningSessionContext,
 };
-use cdk_frost_bip32::application_registration;
+use cdk_frost_bip32::{
+    application_registration, application_registration_for_epoch, FrostBip32, WalletBranch,
+    WalletIndex,
+};
 
 use super::*;
 
@@ -105,11 +122,9 @@ async fn run_live_signing_case(
     private_configs: Vec<MemberConfigPrivate>,
     threshold: u16,
     failure: SigningFailure,
+    payload_kind: SigningPayloadKind,
 ) {
     let registration = application_registration().expect("application registration");
-    let derivation = SigningDerivation::application_key();
-    let message = [91; 32];
-    let payload = b"typed-test-authorization-v1".to_vec();
     let roots = frost_roots(
         public_config.federation_id.to_bytes(),
         u16::try_from(private_configs.len()).expect("member count"),
@@ -117,6 +132,15 @@ async fn run_live_signing_case(
     );
     let public = derive_application_public(roots[0].public(), registration)
         .expect("application public package");
+    let (derivation, message, payload, authorization_reference) = match payload_kind {
+        SigningPayloadKind::Generic => (
+            SigningDerivation::application_key(),
+            [91; 32],
+            b"typed-test-authorization-v1".to_vec(),
+            [73; 32],
+        ),
+        SigningPayloadKind::EpochSweep => epoch_sweep_signing_fixture(roots[0].public(), &public),
+    };
     let signer_set = (1..=threshold)
         .map(|member| cdk_frost::MemberId::new(member).expect("signer"))
         .collect::<Vec<_>>();
@@ -125,7 +149,7 @@ async fn run_live_signing_case(
         RootKeyEpoch::new(1).expect("root epoch"),
         registration,
         derivation.binding(),
-        [73; 32],
+        authorization_reference,
         message,
     )
     .expect("authorization scope");
@@ -144,7 +168,7 @@ async fn run_live_signing_case(
             RootKeyEpoch::new(1).expect("root epoch"),
             registration,
             derivation.binding(),
-            [73; 32],
+            authorization_reference,
             message,
         )
         .expect("retry scope"),
@@ -266,6 +290,143 @@ async fn run_live_signing_case(
     }
 }
 
+fn epoch_sweep_signing_fixture(
+    root: &cdk_frost::RootPublicPackage,
+    source_public: &cdk_frost::DerivedPublicPackage,
+) -> (SigningDerivation, [u8; 32], Vec<u8>, [u8; 32]) {
+    let source_registration = source_public.registration();
+    let source_key = FrostBip32::new(source_public.clone(), BitcoinNetwork::Regtest)
+        .expect("source BIP32 adapter")
+        .derive(
+            WalletBranch::External,
+            WalletIndex::new(0).expect("source index"),
+        )
+        .expect("source wallet key");
+    let destination_registration =
+        application_registration_for_epoch(2).expect("destination registration");
+    let destination_public = derive_application_public(root, destination_registration)
+        .expect("destination public package");
+    let destination_key = FrostBip32::new(destination_public, BitcoinNetwork::Regtest)
+        .expect("destination BIP32 adapter")
+        .derive(
+            WalletBranch::Internal,
+            WalletIndex::new(0).expect("destination index"),
+        )
+        .expect("destination wallet key");
+    let source_scope = FederationTransactionScope {
+        root_key_epoch: 1,
+        application_id: FederationFrostApplicationId::from_bytes(
+            source_registration.id().to_bytes(),
+        )
+        .expect("source application id"),
+        application_key_epoch: source_registration.key_epoch().get(),
+        network: BitcoinNetwork::Regtest,
+        policy_version: 1,
+    };
+    let destination_scope = FederationTransactionScope {
+        application_key_epoch: destination_registration.key_epoch().get(),
+        ..source_scope
+    };
+    let input = FederationTransactionInput {
+        outpoint: OutPoint::new(Txid::from_byte_array([61; 32]), 0),
+        previous_output: TxOut {
+            value: BitcoinAmount::from_sat(50_000),
+            script_pubkey: source_key
+                .address(BitcoinNetwork::Regtest)
+                .expect("source address")
+                .script_pubkey(),
+        },
+        allocation: FederationAllocatedAddressRef {
+            application_id: source_scope.application_id,
+            application_key_epoch: source_scope.application_key_epoch,
+            quote: "retiring-epoch-deposit".to_string(),
+            keychain: FederationAddressKeychain::External,
+            derivation_index: 0,
+        },
+    };
+    let destination_allocation = FederationAllocatedAddressRef {
+        application_id: destination_scope.application_id,
+        application_key_epoch: destination_scope.application_key_epoch,
+        quote: "active-epoch-sweep".to_string(),
+        keychain: FederationAddressKeychain::Internal,
+        derivation_index: 0,
+    };
+    let output = TxOut {
+        value: BitcoinAmount::from_sat(49_500),
+        script_pubkey: destination_key
+            .address(BitcoinNetwork::Regtest)
+            .expect("destination address")
+            .script_pubkey(),
+    };
+    let transaction = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: input.outpoint,
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+            witness: Witness::new(),
+        }],
+        output: vec![output.clone()],
+    };
+    let proposal = FederationTransactionProposal::new_epoch_sweep(
+        source_scope,
+        destination_scope,
+        destination_allocation,
+        41,
+        MemberId::new(1).expect("proposer"),
+        transaction,
+        vec![input.clone()],
+        FederationTransactionChangeOutput {
+            derivation_index: 0,
+            output_index: 0,
+            output,
+        },
+        500,
+    )
+    .expect("epoch sweep proposal");
+    let proposal_id = proposal.proposal_id().expect("proposal id");
+    let sighash = SighashCache::new(&proposal.unsigned_transaction)
+        .taproot_key_spend_signature_hash(
+            0,
+            &Prevouts::All(std::slice::from_ref(&input.previous_output)),
+            TapSighashType::Default,
+        )
+        .expect("sweep sighash")
+        .to_byte_array();
+    let audit = FederationTransactionPolicyAudit {
+        proposal_id,
+        txid: proposal.unsigned_transaction.compute_txid(),
+        fee_sat: proposal.fee_sat,
+        fee_rate_sat_per_kwu: proposal.fee_rate_sat_per_kwu,
+        weight: proposal.estimated_signed_weight(),
+        fee_contributions: BTreeMap::new(),
+        taproot_sighashes: vec![sighash],
+    };
+    let mut state = FederationTransactionState::new();
+    state
+        .accept_transaction(
+            proposal,
+            audit,
+            FederationOperationId::from_bytes([62; 32]),
+            42,
+        )
+        .expect("accepted sweep");
+    let accepted = state
+        .accepted_transaction(proposal_id)
+        .expect("accepted sweep transaction");
+    let typed =
+        FederationCdkOnchainFrostAuthorization::new(accepted, 0, source_key.signing_derivation())
+            .expect("typed sweep authorization");
+    assert_eq!(typed.message, sighash);
+    (
+        source_key.signing_derivation().clone(),
+        typed.message,
+        typed.to_bytes().expect("typed authorization bytes"),
+        typed.authorization_reference,
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SigningFailure {
     None,
@@ -274,17 +435,50 @@ enum SigningFailure {
     AggregateResult,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SigningPayloadKind {
+    Generic,
+    EpochSweep,
+}
+
 #[tokio::test]
 async fn live_private_rest_frost_signing_succeeds_two_of_three() {
     let (public, first, second, third) = transport_config_three();
-    run_live_signing_case(public, vec![first, second, third], 2, SigningFailure::None).await;
+    run_live_signing_case(
+        public,
+        vec![first, second, third],
+        2,
+        SigningFailure::None,
+        SigningPayloadKind::Generic,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn retiring_epoch_sweep_signs_two_of_three_with_one_member_offline() {
+    let (public, first, second, third) = transport_config_three();
+    run_live_signing_case(
+        public,
+        vec![first, second, third],
+        2,
+        SigningFailure::None,
+        SigningPayloadKind::EpochSweep,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn live_private_rest_frost_signing_succeeds_three_of_five() {
     let (public, private) =
         transport_config_five_with_threshold(ThresholdParams::new(5, 3, 3).expect("threshold"));
-    run_live_signing_case(public, private, 3, SigningFailure::None).await;
+    run_live_signing_case(
+        public,
+        private,
+        3,
+        SigningFailure::None,
+        SigningPayloadKind::Generic,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -295,6 +489,7 @@ async fn lost_post_signer_response_burns_nonce_and_retry_attempt_succeeds() {
         vec![first, second, third],
         2,
         SigningFailure::Commitment,
+        SigningPayloadKind::Generic,
     )
     .await;
 }
@@ -302,7 +497,14 @@ async fn lost_post_signer_response_burns_nonce_and_retry_attempt_succeeds() {
 #[tokio::test]
 async fn lost_share_response_burns_attempt_and_fresh_attempt_succeeds() {
     let (public, first, second, third) = transport_config_three();
-    run_live_signing_case(public, vec![first, second, third], 2, SigningFailure::Share).await;
+    run_live_signing_case(
+        public,
+        vec![first, second, third],
+        2,
+        SigningFailure::Share,
+        SigningPayloadKind::Generic,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -313,6 +515,7 @@ async fn another_member_aggregates_cached_shares_after_coordinator_loss() {
         vec![first, second, third],
         2,
         SigningFailure::AggregateResult,
+        SigningPayloadKind::Generic,
     )
     .await;
 }

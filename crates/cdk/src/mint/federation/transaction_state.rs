@@ -8,16 +8,21 @@ use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
     FederationAcceptedTransaction, FederationAcceptedTransactionState,
-    FederationChainObservationState, FederationError, FederationJournalEntry,
-    FederationOnchainPaymentIntent, FederationOnchainPaymentIntentRecord, FederationOperation,
-    FederationOperationId, FederationOperationStatus, FederationSignedTransaction,
-    FederationTransactionBroadcastIntent, FederationTransactionBroadcastObservation,
-    FederationTransactionProposal, FederationTransactionProposalId, FederationTransactionScope,
+    FederationAddressAllocationState, FederationChainObservationState, FederationError,
+    FederationJournalEntry, FederationOnchainPaymentIntent, FederationOnchainPaymentIntentRecord,
+    FederationOperation, FederationOperationId, FederationOperationStatus,
+    FederationSignedTransaction, FederationTransactionBroadcastIntent,
+    FederationTransactionBroadcastObservation, FederationTransactionProposal,
+    FederationTransactionProposalId, FederationTransactionPurpose, FederationTransactionScope,
     FederationTransactionState, FederationTransactionStateOutcome, MemberId,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 
 use super::super::Mint;
+use super::address_allocation::{
+    ADDRESS_ALLOCATION_PRIMARY_NAMESPACE, ADDRESS_ALLOCATION_SECONDARY_NAMESPACE,
+    ADDRESS_ALLOCATION_STATE_KEY,
+};
 use super::chain_observation::{
     CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
     CHAIN_OBSERVATION_STATE_KEY,
@@ -51,12 +56,19 @@ impl Mint {
         proposal: &FederationTransactionProposal,
     ) -> Result<FederationTransactionStateOutcome, Error> {
         proposal.validate()?;
-        let runtime = self.federation_config().ok_or(Error::Internal)?;
+        let runtime = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
         let proposal_id = proposal.proposal_id()?;
         let mut transaction = self.localstore().begin_transaction().await?;
         let outcome = async {
             let mut state = load_transaction_state(&mut transaction).await?;
             let mut chain_state = load_chain_state(&mut transaction).await?;
+            validate_sweep_destination_allocation(
+                &load_address_allocation_state(&mut transaction).await?,
+                proposal,
+            )?;
 
             let outcome = match state.accepted_transaction(proposal_id) {
                 Some(existing) => {
@@ -148,16 +160,30 @@ impl Mint {
             .effective_federation_config()
             .await?
             .ok_or_else(|| invalid("transaction signing has no active federation config"))?;
-        let application = runtime.active_cdk_onchain_application()?;
-        accepted
-            .proposal
-            .validate_scope(FederationTransactionScope {
-                root_key_epoch: application.root_key_epoch,
-                application_id: application.application_id,
-                application_key_epoch: application.application_key_epoch,
-                network: application.network,
-                policy_version: application.fee_policy_version,
-            })?;
+        let wallet = runtime
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .ok_or_else(|| invalid("transaction signing has no FROST wallet config"))?;
+        let application = wallet
+            .cdk_onchain_applications
+            .iter()
+            .find(|application| {
+                application.root_key_epoch == accepted.proposal.scope.root_key_epoch
+                    && application.application_id == accepted.proposal.scope.application_id
+                    && application.application_key_epoch
+                        == accepted.proposal.scope.application_key_epoch
+                    && application.network == accepted.proposal.scope.network
+                    && application.fee_policy_version == accepted.proposal.scope.policy_version
+            })
+            .ok_or_else(|| invalid("transaction signing application epoch is unknown"))?;
+        if !matches!(
+            application.state,
+            cdk_common::federation::FederationFrostEpochState::Active
+                | cdk_common::federation::FederationFrostEpochState::Retiring
+        ) {
+            return Err(invalid("transaction signing application epoch is retired"));
+        }
         let entry = self
             .localstore()
             .get_federation_journal_entry_by_operation_id(accepted.accepted_operation_id)
@@ -181,6 +207,10 @@ impl Mint {
             ));
         }
         let chain_state = self.federation_chain_observation_state().await?;
+        validate_sweep_destination_allocation(
+            &self.federation_address_allocation_state().await?,
+            &accepted.proposal,
+        )?;
         ensure_existing_reservations(&state, &chain_state, accepted)?;
         let recomputed = runtime.revalidate_accepted_onchain_transaction_proposal(
             &chain_state,
@@ -422,12 +452,33 @@ impl Mint {
                 entry.operation_id,
                 entry.index,
             )?;
+            let accepted = state
+                .accepted_transaction(observation.proposal_id)
+                .ok_or_else(|| invalid("broadcast transaction disappeared after apply"))?;
+            let mut chain_state = load_chain_state(&mut transaction).await?;
+            if accepted.state == FederationAcceptedTransactionState::Confirmed {
+                let outpoints = accepted
+                    .proposal
+                    .selected_inputs
+                    .iter()
+                    .map(|input| input.outpoint)
+                    .collect::<Vec<_>>();
+                chain_state.mark_utxos_spent(&outpoints)?;
+            }
             transaction
                 .kv_write(
                     TRANSACTION_STATE_PRIMARY_NAMESPACE,
                     TRANSACTION_STATE_SECONDARY_NAMESPACE,
                     TRANSACTION_STATE_KEY,
                     &state.to_bytes()?,
+                )
+                .await?;
+            transaction
+                .kv_write(
+                    CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+                    CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+                    CHAIN_OBSERVATION_STATE_KEY,
+                    &chain_state.to_bytes()?,
                 )
                 .await?;
             Ok(outcome)
@@ -527,6 +578,43 @@ async fn load_chain_state(
         Some(bytes) => Ok(FederationChainObservationState::from_bytes(&bytes)?),
         None => Ok(FederationChainObservationState::new()),
     }
+}
+
+async fn load_address_allocation_state(
+    transaction: &mut database::mint::DynMintTransaction,
+) -> Result<FederationAddressAllocationState, Error> {
+    match transaction
+        .kv_read(
+            ADDRESS_ALLOCATION_PRIMARY_NAMESPACE,
+            ADDRESS_ALLOCATION_SECONDARY_NAMESPACE,
+            ADDRESS_ALLOCATION_STATE_KEY,
+        )
+        .await?
+    {
+        Some(bytes) => Ok(FederationAddressAllocationState::from_bytes(&bytes)?),
+        None => Ok(FederationAddressAllocationState::new()),
+    }
+}
+
+fn validate_sweep_destination_allocation(
+    allocations: &FederationAddressAllocationState,
+    proposal: &FederationTransactionProposal,
+) -> Result<(), Error> {
+    let FederationTransactionPurpose::EpochSweep {
+        destination_allocation,
+        ..
+    } = &proposal.purpose
+    else {
+        return Ok(());
+    };
+    let allocation = allocations
+        .allocation(
+            destination_allocation.scope(),
+            &destination_allocation.quote,
+        )
+        .ok_or_else(|| invalid("epoch sweep destination allocation is not accepted"))?;
+    destination_allocation.validate_allocation(allocation)?;
+    Ok(())
 }
 
 fn ensure_existing_reservations(

@@ -1602,10 +1602,13 @@ impl FederationDkgActivationRequest {
         let mut expected_setup = final_public_config.clone();
         expected_setup.keysets.clear();
         expected_setup.setup_transcript = None;
-        expected_setup.frost_wallet = None;
-        if &expected_setup != setup_public_config {
+        let mut actual_setup = setup_public_config.clone();
+        actual_setup.keysets.clear();
+        actual_setup.setup_transcript = None;
+        if expected_setup != actual_setup {
             return Err(FederationError::DkgTranscriptMismatch {
-                reason: "DKG activation final config does not extend the setup config".to_string(),
+                reason: "DKG activation candidate changes immutable base config metadata"
+                    .to_string(),
             });
         }
         let transcript = final_public_config
@@ -1896,6 +1899,9 @@ pub struct FederationLocalStatusResponse {
     /// Redacted proposer and signing-coordinator liveness state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_liveness: Option<super::FederationWalletLivenessStatus>,
+    /// Public reusable-root and application epoch lifecycle metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frost_rotation: Option<super::FederationFrostRotationStatus>,
 }
 
 /// Peer status response for federation health and catch-up checks.
@@ -3168,6 +3174,7 @@ mod tests {
                 .expect("wallet recovery fixture"),
             ),
             wallet_liveness: Some(crate::federation::FederationWalletLivenessStatus::default()),
+            frost_rotation: None,
         };
 
         let value = serde_json::to_value(&status).expect("local status json");

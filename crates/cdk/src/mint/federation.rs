@@ -6,6 +6,7 @@
 
 mod address_allocation;
 mod chain_observation;
+mod frost_rotation;
 mod projection;
 mod transaction_policy;
 mod transaction_state;
@@ -21,7 +22,8 @@ use cdk_common::federation::{
     FederationAddressAllocationOperation, FederationAddressAllocationScope,
     FederationAddressKeychain, FederationApplicationState, FederationBlindSignatureShareSet,
     FederationChainObservation, FederationConfig, FederationConfigDigest, FederationError,
-    FederationFrostApplicationId, FederationId, FederationJournalEntry,
+    FederationFrostApplicationId, FederationFrostRotationGuard, FederationFrostRotationOperation,
+    FederationFrostRotationTransition, FederationId, FederationJournalEntry,
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
     FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
@@ -292,13 +294,28 @@ impl FederationRuntimeConfig {
             .into());
         }
         if let FederationChainObservation::Deposit(observation) = observation {
-            let allocation_operation = FederationAddressAllocationOperation::new(
-                observation.allocation.quote.clone(),
-                observation.allocation.application_id,
-                observation.allocation.application_key_epoch,
-                observation.allocation.keychain,
-            )?;
-            self.validate_federated_address_allocation_submission(&allocation_operation)?;
+            let wallet = self.public_config.frost_wallet.as_ref().ok_or_else(|| {
+                FederationError::AddressAllocationInvalid {
+                    reason: "deposit requires an accepted FROST wallet configuration".to_string(),
+                }
+            })?;
+            let known = wallet.cdk_onchain_applications.iter().any(|application| {
+                application.application_id == observation.allocation.application_id
+                    && application.application_key_epoch
+                        == observation.allocation.application_key_epoch
+                    && matches!(
+                        application.state,
+                        cdk_common::federation::FederationFrostEpochState::Active
+                            | cdk_common::federation::FederationFrostEpochState::Retiring
+                    )
+            });
+            if !known {
+                return Err(FederationError::AddressAllocationInvalid {
+                    reason: "deposit references an unknown or retired application epoch"
+                        .to_string(),
+                }
+                .into());
+            }
         }
         Ok(())
     }
@@ -346,6 +363,20 @@ impl FederationRuntimeConfig {
                 secret_shares,
             )?;
         self.with_public_config(self.public_config.apply_keyset_rotation(operation)?)
+    }
+
+    /// Return a validated runtime view after one accepted FROST lifecycle transition.
+    pub fn apply_frost_rotation(
+        &self,
+        operation: &FederationFrostRotationOperation,
+        guard: &FederationFrostRotationGuard,
+    ) -> Result<Self, Error> {
+        let mut public = self.public_config.clone();
+        let wallet = public.frost_wallet.clone().ok_or_else(|| {
+            Error::Custom("FROST rotation requires an accepted wallet configuration".to_string())
+        })?;
+        public.frost_wallet = Some(wallet.apply_rotation(&public, operation, guard)?);
+        self.with_public_config(public)
     }
 
     /// Local member private federation config.
@@ -728,6 +759,10 @@ impl FederationRuntimeConfig {
             FederationOperation::KeysetRotation(operation) => {
                 self.validate_federated_keyset_rotation_submission(operation)
             }
+            FederationOperation::FrostRotation(operation) => {
+                operation.validate()?;
+                Ok(())
+            }
             FederationOperation::TransactionProposal(proposal) => {
                 proposal.validate()?;
                 self.validate_federation_observer(proposal.proposer)
@@ -962,6 +997,15 @@ impl FederationRuntimeConfig {
             .into());
         }
         Ok(self.operation_envelope(FederationOperation::TransactionProposal(proposal)))
+    }
+
+    /// Build an authenticated reusable-root/application lifecycle operation.
+    pub fn frost_rotation_operation(
+        &self,
+        operation: FederationFrostRotationOperation,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        operation.validate()?;
+        Ok(self.operation_envelope(FederationOperation::FrostRotation(operation)))
     }
 
     /// Build an authorized consensus operation for one exact signed transaction.
@@ -1498,38 +1542,47 @@ impl Mint {
         };
 
         let entries = self.localstore.get_federation_journal_entries().await?;
-        let applied_rotations = entries
+        let applied_config_transitions = entries
             .iter()
             .filter(|entry| entry.status() == FederationOperationStatus::Applied)
             .filter(|entry| {
                 matches!(
                     &entry.envelope.operation,
-                    FederationOperation::KeysetRotation(_)
+                    FederationOperation::KeysetRotation(_) | FederationOperation::FrostRotation(_)
                 )
             })
             .map(|entry| (entry.index, entry.operation_id))
             .collect::<Vec<_>>();
 
-        let mut cache = self.federation_effective_config_cache.lock().await;
+        let cache = self.federation_effective_config_cache.lock().await;
         if let Some(cached) = cache.as_ref() {
-            if cached.applied_rotations == applied_rotations {
+            if cached.applied_config_transitions == applied_config_transitions {
                 return Ok(Some(cached.config.clone()));
             }
         }
+        drop(cache);
 
+        let guard = self.federation_frost_rotation_guard().await?;
         let mut effective = config.clone();
         for entry in entries {
             if entry.status() != FederationOperationStatus::Applied {
                 continue;
             }
 
-            if let FederationOperation::KeysetRotation(operation) = &entry.envelope.operation {
-                effective = effective.apply_keyset_rotation(operation)?;
+            match &entry.envelope.operation {
+                FederationOperation::KeysetRotation(operation) => {
+                    effective = effective.apply_keyset_rotation(operation)?;
+                }
+                FederationOperation::FrostRotation(operation) => {
+                    effective = effective.apply_frost_rotation(operation, &guard)?;
+                }
+                _ => {}
             }
         }
 
+        let mut cache = self.federation_effective_config_cache.lock().await;
         *cache = Some(super::EffectiveFederationConfigCache {
-            applied_rotations,
+            applied_config_transitions,
             config: effective.clone(),
         });
 
@@ -1787,6 +1840,11 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
+            FederationOperation::FrostRotation(operation) => {
+                self.apply_federation_frost_rotation(entry, operation)
+                    .await?;
+                Ok(true)
+            }
             FederationOperation::TransactionProposal(proposal) => {
                 self.apply_federation_transaction_proposal(entry, proposal)
                     .await?;
@@ -1972,7 +2030,7 @@ impl Mint {
         &self,
         operation: &FederationMintQuoteOperation,
     ) -> Result<(), Error> {
-        let Some(runtime) = self.federation_config() else {
+        let Some(runtime) = self.effective_federation_config().await? else {
             return Ok(());
         };
         if runtime.public_config().frost_wallet.is_none()
@@ -2089,6 +2147,45 @@ impl Mint {
             .ok_or(Error::Internal)?
             .apply_keyset_rotation(operation)?;
 
+        let transaction = self.localstore.begin_transaction().await?;
+        finish_federation_apply_transaction(transaction, entry, Ok(())).await
+    }
+
+    async fn apply_federation_frost_rotation(
+        &self,
+        entry: &FederationJournalEntry,
+        operation: &FederationFrostRotationOperation,
+    ) -> Result<(), Error> {
+        let effective = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        if let FederationFrostRotationTransition::ProposeRoot { root } = &operation.transition {
+            let stored_public = self
+                .localstore()
+                .get_federation_frost_root_public_configs()
+                .await?;
+            let stored_private = self
+                .localstore()
+                .get_federation_frost_root_private_configs()
+                .await?;
+            if !stored_public.iter().any(|candidate| candidate == root) {
+                return Err(Error::Custom(
+                    "FROST root proposal has no completed local dual-DKG result".to_string(),
+                ));
+            }
+            let private = stored_private
+                .iter()
+                .find(|candidate| candidate.root_key_epoch == root.root_key_epoch)
+                .ok_or_else(|| {
+                    Error::Custom(
+                        "FROST root proposal has no participant-local root share".to_string(),
+                    )
+                })?;
+            private.validate_metadata(root, effective.member_id())?;
+        }
+        let guard = self.federation_frost_rotation_guard().await?;
+        effective.apply_frost_rotation(operation, &guard)?;
         let transaction = self.localstore.begin_transaction().await?;
         finish_federation_apply_transaction(transaction, entry, Ok(())).await
     }

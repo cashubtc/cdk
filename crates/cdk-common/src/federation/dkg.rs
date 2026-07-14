@@ -30,6 +30,31 @@ use crate::nuts::nut01::{
 };
 use crate::{Amount, CurrencyUnit, Id, PublicKey};
 
+/// Validate a public configuration as the immutable base of one DKG ceremony.
+///
+/// An empty keyset/transcript pair denotes bootstrap. A configuration with
+/// validated keysets denotes an explicit rotation ceremony: its roster,
+/// threshold, identities, payment policy, and wallet metadata remain bound to
+/// every DKG record, while the newly derived BLS keyset is only a candidate
+/// result until a separate activation path accepts it.
+pub fn validate_federation_dkg_base_config(public_config: &FederationConfig) -> Result<()> {
+    public_config.validate()?;
+    if public_config.keysets.is_empty() {
+        if public_config.setup_transcript.is_some() {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "DKG bootstrap config has a transcript without keysets".to_string(),
+            });
+        }
+        return Ok(());
+    }
+    if !public_config.keysets.iter().any(|keyset| keyset.active) {
+        return Err(FederationError::DkgTranscriptMismatch {
+            reason: "DKG rotation requires an active validated base keyset".to_string(),
+        });
+    }
+    Ok(())
+}
+
 /// Public DKG-derived keyset plus one member's local secret BLS shares.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,14 +84,7 @@ impl FederationDkgMemberKeysetShare {
         setup_public_config: &FederationConfig,
         keyset_shares: &[Self],
     ) -> Result<FederationDkgTranscriptHash> {
-        setup_public_config.validate()?;
-        if !setup_public_config.keysets.is_empty() || setup_public_config.setup_transcript.is_some()
-        {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "locally derived DKG records require a setup-only public config"
-                    .to_string(),
-            });
-        }
+        validate_federation_dkg_base_config(setup_public_config)?;
         let local_member = keyset_shares
             .first()
             .ok_or_else(|| FederationError::DkgTranscriptMismatch {

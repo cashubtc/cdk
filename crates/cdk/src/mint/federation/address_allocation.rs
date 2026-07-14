@@ -50,7 +50,8 @@ impl Mint {
         entry: &FederationJournalEntry,
         operation: &FederationAddressAllocationOperation,
     ) -> Result<FederationAddressAllocationOutcome, Error> {
-        self.federation_config()
+        self.effective_federation_config()
+            .await?
             .ok_or(Error::Internal)?
             .validate_federated_address_allocation_submission(operation)?;
         let mut transaction = self.localstore().begin_transaction().await?;

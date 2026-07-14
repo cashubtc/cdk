@@ -248,7 +248,7 @@ impl FederationDkgDriverRecords {
         private_config: &MemberConfigPrivate,
         participant_state: &ValidatedFederationDkgParticipantState,
     ) -> Result<FederationDkgDriverPlan> {
-        public_config.validate()?;
+        super::validate_federation_dkg_base_config(public_config)?;
         private_config.validate_against_public(public_config)?;
         participant_state.validate_binding(public_config)?;
         let participant_state = participant_state.participant_state();
@@ -259,13 +259,6 @@ impl FederationDkgDriverRecords {
                 found: participant_state.member_id(),
             });
         }
-        if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
-            return Err(FederationError::DkgTranscriptMismatch {
-                reason: "live DKG setup requires a public config without finalized keysets or transcript"
-                    .to_string(),
-            });
-        }
-
         let mut setup_state = FederationDkgSetupState::new(public_config);
         for commitment in &self.commitments {
             setup_state.insert_commitment(public_config, *commitment)?;

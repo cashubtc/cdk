@@ -2009,49 +2009,86 @@ changes.
 
 **Work:**
 
-- [ ] Add consensus proposal and activation operations for a new root key epoch
+- [x] Add consensus proposal and activation operations for a new root key epoch
   after successful DKG and for a new CDK application key epoch derived from an
   active root.
-- [ ] Maintain an explicit usage registry so a root epoch cannot retire while
+- [x] Maintain an explicit usage registry so a root epoch cannot retire while
   any registered payment backend or FROST application still references it.
-- [ ] Allow an application to rotate its derived key or derivation version
+- [x] Allow an application to rotate its derived key or derivation version
   without silently rotating or mutating the reusable root package.
-- [ ] Keep old descriptors recognized for deposits and UTXO ownership during a
+- [x] Keep old descriptors recognized for deposits and UTXO ownership during a
   bounded migration window.
-- [ ] Direct all new addresses and change to the active epoch after activation.
-- [ ] Build and threshold-sign sweep transactions from retiring epochs to the
+- [x] Direct all new addresses and change to the active epoch after activation.
+- [x] Build and threshold-sign sweep transactions from retiring epochs to the
   active epoch.
-- [ ] Prevent CDK application retirement while spendable/reserved UTXOs or
+- [x] Prevent CDK application retirement while spendable/reserved UTXOs or
   unresolved transactions remain, and prevent root retirement until every
   application-specific retirement condition is satisfied.
-- [ ] Expose public active/retiring root and application epoch metadata without
+- [x] Expose public active/retiring root and application epoch metadata without
   exposing private shares.
-- [ ] Bind signing sessions to root and application epochs and bind address
+- [x] Bind signing sessions to root and application epochs and bind address
   mappings permanently to their CDK application epoch.
-- [ ] Document that adding members requires fresh DKG or a separately reviewed
+- [x] Document that adding members requires fresh DKG or a separately reviewed
   resharing protocol; basic FROST refresh is not silently treated as complete
   federation reconfiguration.
 
 **Success criteria:**
 
-- [ ] New deposits use only the new epoch after activation.
-- [ ] Old UTXOs remain spendable by the old threshold until swept.
-- [ ] No transaction signs with shares or derivation data from mixed epochs.
-- [ ] Root retirement is blocked while a test consumer remains registered and
+- [x] New deposits use only the new epoch after activation.
+- [x] Old UTXOs remain spendable by the old threshold until swept.
+- [x] No transaction signs with shares or derivation data from mixed epochs.
+- [x] Root retirement is blocked while a test consumer remains registered and
   succeeds after every consumer completes its retirement contract.
-- [ ] Rotation and sweep survive member restart and catch-up.
+- [x] Rotation and sweep survive member restart and catch-up.
 
 **Required tests:**
 
-- [ ] DKG, proposed activation, rejected activation, and successful activation.
-- [ ] Deposit arriving at old address before and after cutoff.
-- [ ] Old-to-new sweep with one member offline.
-- [ ] Mixed-epoch input policy and rejection.
-- [ ] Restart during sweep and final retirement.
-- [ ] Attempt to delete old shares while unresolved UTXOs remain.
-- [ ] Attempt to retire or delete a root share while another application still
+- [x] DKG, proposed activation, rejected activation, and successful activation.
+- [x] Deposit arriving at old address before and after cutoff.
+- [x] Old-to-new sweep with one member offline.
+- [x] Mixed-epoch input policy and rejection.
+- [x] Restart during sweep and final retirement.
+- [x] Attempt to delete old shares while unresolved UTXOs remain.
+- [x] Attempt to retire or delete a root share while another application still
   references it.
-- [ ] Independent CDK application-key rotation without root-share mutation.
+- [x] Independent CDK application-key rotation without root-share mutation.
+
+**Milestone record:** completed on 2026-07-14. Consensus now owns explicit
+proposed, active, retiring, and retired root/application epoch transitions,
+including a registered-consumer usage contract that blocks premature
+retirement and local share deletion. Application registrations are keyed by
+their complete root/application/version tuple, so a CDK application can rotate
+without mutating its reusable root package. Public status exposes only redacted
+lifecycle metadata and commitments.
+
+Address allocation uses only the active application epoch, while chain
+observation retains bounded knowledge of active and retiring descriptors.
+Epoch-sweep proposals have a distinct canonical purpose, accept inputs from
+exactly one retiring epoch, pay one consensus-allocated active internal script,
+and are revalidated before signing. Confirmation atomically and idempotently
+marks their source UTXOs spent. The normal proposal, signing, broadcast, and
+recovery state machines are reused through thin federation adapters; existing
+mint quote, saga, and payment behavior was not reimplemented.
+
+Rotation revealed one genuine pre-existing gap outside the wallet boundary:
+the DKG startup path rejected every ceremony once a finalized BLS federation
+configuration existed. The focused fix validates a finalized configuration as
+an immutable rotation base, permits a new dual-result ceremony, reconstructs
+and verifies the complete new BLS candidate, and persists the new FROST root as
+`Proposed`. Bootstrap still activates both independent results together, while
+rotation requires explicit consensus activation. Both ceremonies remain bound
+to the same roster and threshold and fail closed on any mismatch.
+
+The [key-rotation runbook](federated-frost-key-rotation.md) covers dual DKG,
+restart/catch-up, application activation, old-descriptor migration, threshold
+sweeps, guarded retirement, and the requirement for a fresh dual DKG or a
+separately reviewed resharing protocol when membership changes. All 25
+`cdk-frost` tests, 381 active `cdk-common` federation library tests, 5 external
+FROST-DKG tests, 128 CDK mint-federation tests, 124 `cdk-bdk` tests, 9 Axum
+FROST-signing tests, and 16 Axum DKG-driver tests pass. Workspace all-targets
+checking and stable rustfmt pass. Strict no-dependency Clippy passes for the
+new FROST and BDK boundaries; broader common/CDK strict Clippy remains blocked
+only by its documented pre-existing warning baseline.
 
 ### Milestone 23: operator configuration, status, metrics, and tooling
 

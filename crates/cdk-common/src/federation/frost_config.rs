@@ -112,6 +112,8 @@ impl<'de> Deserialize<'de> for FederationFrostApplicationId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FederationFrostEpochState {
+    /// Validated public material awaiting an explicit consensus activation.
+    Proposed,
     /// Selected for new addresses or signing sessions.
     Active,
     /// Existing uses remain valid but new allocation is disabled.
@@ -843,9 +845,10 @@ impl FederationFrostWalletConfig {
                 application.application_id,
                 application.application_key_epoch,
             )?;
-            if !consumers.contains(&registered) {
+            let registered = consumers.contains(&registered);
+            if (application.state == FederationFrostEpochState::Retired) == registered {
                 return Err(invalid_config(
-                    "CDK application is not registered as a root consumer",
+                    "CDK application consumer registration differs from lifecycle state",
                 ));
             }
         }
@@ -900,14 +903,7 @@ impl FederationFrostWalletConfig {
         keychain: FederationAddressKeychain,
         index: u32,
     ) -> Result<bitcoin::ScriptBuf> {
-        let application = self
-            .cdk_onchain_applications
-            .iter()
-            .find(|application| {
-                application.application_id == application_id
-                    && application.application_key_epoch == application_key_epoch
-            })
-            .ok_or_else(|| invalid_config("CDK application epoch is missing"))?;
+        let application = self.application(application_id, application_key_epoch)?;
         if self
             .active_epochs
             .application_key_epochs
@@ -923,33 +919,78 @@ impl FederationFrostWalletConfig {
         {
             return Err(invalid_config("CDK application epoch is not active"));
         }
-        let branch = match keychain {
-            FederationAddressKeychain::External => 0,
-            FederationAddressKeychain::Internal => 1,
-        };
-        let root_xpub = Xpub {
-            network: application.network.into(),
-            depth: 0,
-            parent_fingerprint: Fingerprint::default(),
-            child_number: ChildNumber::Normal { index: 0 },
-            public_key: PublicKey::from_slice(&application.derived_group_key)
-                .map_err(|error| invalid_config(error.to_string()))?,
-            chain_code: ChainCode::from(application.chain_code),
-        };
-        let secp = Secp256k1::verification_only();
-        let child = root_xpub
-            .derive_pub(
-                &secp,
-                &[
-                    ChildNumber::Normal { index: branch },
-                    ChildNumber::from_normal_idx(index)
-                        .map_err(|error| invalid_config(error.to_string()))?,
-                ],
-            )
-            .map_err(|error| invalid_config(error.to_string()))?;
-        let (internal_key, _) = child.public_key.x_only_public_key();
-        Ok(Address::p2tr(&secp, internal_key, None, application.network).script_pubkey())
+        derive_application_script(application, keychain, index)
     }
+
+    /// Derive a script for an active or retiring epoch already known to consensus.
+    ///
+    /// This preserves ownership and signing validation for old descriptors while
+    /// preventing proposed or fully retired epochs from accepting new activity.
+    pub fn derive_cdk_onchain_script_for_known_epoch(
+        &self,
+        application_id: FederationFrostApplicationId,
+        application_key_epoch: u64,
+        keychain: FederationAddressKeychain,
+        index: u32,
+    ) -> Result<bitcoin::ScriptBuf> {
+        let application = self.application(application_id, application_key_epoch)?;
+        if !matches!(
+            application.state,
+            FederationFrostEpochState::Active | FederationFrostEpochState::Retiring
+        ) {
+            return Err(invalid_config(
+                "CDK application epoch is not active or retiring",
+            ));
+        }
+        derive_application_script(application, keychain, index)
+    }
+
+    fn application(
+        &self,
+        application_id: FederationFrostApplicationId,
+        application_key_epoch: u64,
+    ) -> Result<&FederationFrostApplicationConfig> {
+        self.cdk_onchain_applications
+            .iter()
+            .find(|application| {
+                application.application_id == application_id
+                    && application.application_key_epoch == application_key_epoch
+            })
+            .ok_or_else(|| invalid_config("CDK application epoch is missing"))
+    }
+}
+
+fn derive_application_script(
+    application: &FederationFrostApplicationConfig,
+    keychain: FederationAddressKeychain,
+    index: u32,
+) -> Result<bitcoin::ScriptBuf> {
+    let branch = match keychain {
+        FederationAddressKeychain::External => 0,
+        FederationAddressKeychain::Internal => 1,
+    };
+    let root_xpub = Xpub {
+        network: application.network.into(),
+        depth: 0,
+        parent_fingerprint: Fingerprint::default(),
+        child_number: ChildNumber::Normal { index: 0 },
+        public_key: PublicKey::from_slice(&application.derived_group_key)
+            .map_err(|error| invalid_config(error.to_string()))?,
+        chain_code: ChainCode::from(application.chain_code),
+    };
+    let secp = Secp256k1::verification_only();
+    let child = root_xpub
+        .derive_pub(
+            &secp,
+            &[
+                ChildNumber::Normal { index: branch },
+                ChildNumber::from_normal_idx(index)
+                    .map_err(|error| invalid_config(error.to_string()))?,
+            ],
+        )
+        .map_err(|error| invalid_config(error.to_string()))?;
+    let (internal_key, _) = child.public_key.x_only_public_key();
+    Ok(Address::p2tr(&secp, internal_key, None, application.network).script_pubkey())
 }
 
 fn descriptor_commitment(

@@ -43,7 +43,10 @@ impl Mint {
         observation: &FederationChainObservation,
     ) -> Result<FederationChainObservationOutcome, Error> {
         observation.validate()?;
-        let runtime = self.federation_config().ok_or(Error::Internal)?;
+        let runtime = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
         let public = runtime.public_config();
         let required_observers = public
             .payment_observation_policy
@@ -108,8 +111,7 @@ impl Mint {
                                     .to_string(),
                             }
                         })?;
-                    let expected_script = wallet.derive_cdk_onchain_script(
-                        public,
+                    let expected_script = wallet.derive_cdk_onchain_script_for_known_epoch(
                         observation.allocation.application_id,
                         observation.allocation.application_key_epoch,
                         observation.allocation.keychain,

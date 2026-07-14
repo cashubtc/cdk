@@ -18,7 +18,7 @@ use cdk_common::federation::{
     FederationOnchainPaymentIntentId, FederationOnchainPaymentIntentRecord,
     FederationOnchainPaymentIntentState, FederationTaprootSighashType,
     FederationTransactionPolicyAudit, FederationTransactionProposal,
-    FederationTransactionProposalId, FederationTransactionScope, FederationWalletUtxoState,
+    FederationTransactionProposalId, FederationTransactionPurpose, FederationWalletUtxoState,
     FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS,
     FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
 };
@@ -216,23 +216,82 @@ impl FederationRuntimeConfig {
     ) -> Result<FederationTransactionPolicyAudit, Error> {
         proposal.validate()?;
         chain_state.to_bytes()?;
-        let application = self.active_cdk_onchain_application()?;
-        let expected_scope = FederationTransactionScope {
-            root_key_epoch: application.root_key_epoch,
-            application_id: application.application_id,
-            application_key_epoch: application.application_key_epoch,
-            network: application.network,
-            policy_version: application.fee_policy_version,
-        };
-        proposal.validate_scope(expected_scope)?;
-        let policy =
-            FederationOnchainTransactionPolicy::for_version(application.fee_policy_version)?;
-        validate_transaction_shape(proposal, policy)?;
-
         let wallet =
             self.public_config().frost_wallet.as_ref().ok_or_else(|| {
                 invalid("federated transaction policy has no FROST wallet config")
             })?;
+        let application = wallet
+            .cdk_onchain_applications
+            .iter()
+            .find(|application| {
+                application.root_key_epoch == proposal.scope.root_key_epoch
+                    && application.application_id == proposal.scope.application_id
+                    && application.application_key_epoch == proposal.scope.application_key_epoch
+                    && application.network == proposal.scope.network
+                    && application.fee_policy_version == proposal.scope.policy_version
+            })
+            .ok_or_else(|| invalid("transaction source application epoch is unknown"))?;
+        match &proposal.purpose {
+            FederationTransactionPurpose::PaymentBatch => match lifecycle {
+                ProposalLifecycle::New
+                    if application.state
+                        != cdk_common::federation::FederationFrostEpochState::Active
+                        || wallet
+                            .active_epochs
+                            .application_key_epochs
+                            .get(&application.application_id)
+                            != Some(&application.application_key_epoch) =>
+                {
+                    return Err(invalid(
+                        "new payment transaction must use the active application epoch",
+                    ));
+                }
+                ProposalLifecycle::Replacement { .. } | ProposalLifecycle::Accepted { .. }
+                    if !matches!(
+                        application.state,
+                        cdk_common::federation::FederationFrostEpochState::Active
+                            | cdk_common::federation::FederationFrostEpochState::Retiring
+                    ) =>
+                {
+                    return Err(invalid(
+                        "accepted payment transaction source epoch is no longer signable",
+                    ));
+                }
+                _ => {}
+            },
+            FederationTransactionPurpose::EpochSweep {
+                destination_scope, ..
+            } => {
+                if application.state != cdk_common::federation::FederationFrostEpochState::Retiring
+                {
+                    return Err(invalid("epoch sweep source must be retiring"));
+                }
+                let destination = wallet
+                    .cdk_onchain_applications
+                    .iter()
+                    .find(|candidate| {
+                        candidate.root_key_epoch == destination_scope.root_key_epoch
+                            && candidate.application_id == destination_scope.application_id
+                            && candidate.application_key_epoch
+                                == destination_scope.application_key_epoch
+                            && candidate.network == destination_scope.network
+                            && candidate.fee_policy_version == destination_scope.policy_version
+                    })
+                    .ok_or_else(|| invalid("epoch sweep destination is unknown"))?;
+                if destination.state != cdk_common::federation::FederationFrostEpochState::Active
+                    || wallet
+                        .active_epochs
+                        .application_key_epochs
+                        .get(&destination.application_id)
+                        != Some(&destination.application_key_epoch)
+                {
+                    return Err(invalid("epoch sweep destination must be active"));
+                }
+            }
+        }
+        let policy =
+            FederationOnchainTransactionPolicy::for_version(application.fee_policy_version)?;
+        validate_transaction_shape(proposal, policy)?;
         let expected_utxo_state = match lifecycle {
             ProposalLifecycle::New => FederationWalletUtxoState::Spendable,
             ProposalLifecycle::Replacement { .. } | ProposalLifecycle::Accepted { .. } => {
@@ -253,8 +312,7 @@ impl FederationRuntimeConfig {
                     "transaction input is not an exact accepted UTXO in the required lifecycle state",
                 ));
             }
-            let expected_script = wallet.derive_cdk_onchain_script(
-                self.public_config(),
+            let expected_script = wallet.derive_cdk_onchain_script_for_known_epoch(
                 proposal.scope.application_id,
                 proposal.scope.application_key_epoch,
                 selected.allocation.keychain,
@@ -269,55 +327,86 @@ impl FederationRuntimeConfig {
             }
         }
 
-        let batch = validate_intents(intent_records, proposal, lifecycle)?;
-        if batch.batch_id != proposal.batch_id || batch.intent_ids != proposal.intent_ids {
-            return Err(invalid(
-                "transaction proposal batch does not match accepted pending intents",
-            ));
-        }
-
         let mut fee_contributions = BTreeMap::new();
-        let mut maximum_fee_sum = 0_u64;
-        for recipient in &proposal.recipient_outputs {
-            let record = intent_records
-                .get(&recipient.intent_id)
-                .ok_or_else(|| invalid("transaction recipient has no accepted intent"))?;
-            let intent = &record.intent;
-            if recipient.output.script_pubkey != intent.destination_script
-                || recipient.output.value.to_sat() != intent.amount_sat
-                || recipient.output.script_pubkey.is_op_return()
-                || is_dust(&recipient.output)
-                || !policy.permits_fee_target(intent.fee_target_blocks)
-                || recipient.fee_contribution_sat > intent.maximum_fee_sat
-            {
-                return Err(invalid(
-                    "transaction recipient differs from its authorized payment intent",
-                ));
+        match &proposal.purpose {
+            FederationTransactionPurpose::PaymentBatch => {
+                let batch = validate_intents(intent_records, proposal, lifecycle)?;
+                if batch.batch_id != proposal.batch_id || batch.intent_ids != proposal.intent_ids {
+                    return Err(invalid(
+                        "transaction proposal batch does not match accepted pending intents",
+                    ));
+                }
+                let mut maximum_fee_sum = 0_u64;
+                for recipient in &proposal.recipient_outputs {
+                    let record = intent_records
+                        .get(&recipient.intent_id)
+                        .ok_or_else(|| invalid("transaction recipient has no accepted intent"))?;
+                    let intent = &record.intent;
+                    if recipient.output.script_pubkey != intent.destination_script
+                        || recipient.output.value.to_sat() != intent.amount_sat
+                        || recipient.output.script_pubkey.is_op_return()
+                        || is_dust(&recipient.output)
+                        || !policy.permits_fee_target(intent.fee_target_blocks)
+                        || recipient.fee_contribution_sat > intent.maximum_fee_sat
+                    {
+                        return Err(invalid(
+                            "transaction recipient differs from its authorized payment intent",
+                        ));
+                    }
+                    maximum_fee_sum = maximum_fee_sum
+                        .checked_add(intent.maximum_fee_sat)
+                        .ok_or_else(|| invalid("transaction intent maximum-fee sum overflow"))?;
+                    if fee_contributions
+                        .insert(recipient.intent_id, recipient.fee_contribution_sat)
+                        .is_some()
+                    {
+                        return Err(invalid("transaction contains a duplicate fee allocation"));
+                    }
+                }
+                if proposal.fee_sat > maximum_fee_sum {
+                    return Err(invalid("transaction fee exceeds an intent maximum"));
+                }
             }
-            maximum_fee_sum = maximum_fee_sum
-                .checked_add(intent.maximum_fee_sat)
-                .ok_or_else(|| invalid("transaction intent maximum-fee sum overflow"))?;
-            if fee_contributions
-                .insert(recipient.intent_id, recipient.fee_contribution_sat)
-                .is_some()
-            {
-                return Err(invalid("transaction contains a duplicate fee allocation"));
+            FederationTransactionPurpose::EpochSweep {
+                destination_scope,
+                destination_allocation,
+            } => {
+                let change = proposal
+                    .change_output
+                    .as_ref()
+                    .ok_or_else(|| invalid("epoch sweep has no destination output"))?;
+                let expected_script = wallet.derive_cdk_onchain_script_for_known_epoch(
+                    destination_scope.application_id,
+                    destination_scope.application_key_epoch,
+                    cdk_common::federation::FederationAddressKeychain::Internal,
+                    destination_allocation.derivation_index,
+                )?;
+                if change.output.script_pubkey != expected_script || is_dust(&change.output) {
+                    return Err(invalid(
+                        "epoch sweep output does not match its active internal allocation",
+                    ));
+                }
             }
         }
-        if proposal.fee_sat > maximum_fee_sum || proposal.fee_sat > policy.maximum_absolute_fee_sat
-        {
-            return Err(invalid(
-                "transaction fee exceeds an intent or policy maximum",
-            ));
+        if proposal.fee_sat > policy.maximum_absolute_fee_sat {
+            return Err(invalid("transaction fee exceeds the policy maximum"));
         }
 
         if let Some(change) = &proposal.change_output {
-            let expected_script = wallet.derive_cdk_onchain_script(
-                self.public_config(),
-                proposal.scope.application_id,
-                proposal.scope.application_key_epoch,
+            let (change_scope, derivation_index) = match &proposal.purpose {
+                FederationTransactionPurpose::PaymentBatch => {
+                    (proposal.scope, change.derivation_index)
+                }
+                FederationTransactionPurpose::EpochSweep {
+                    destination_scope,
+                    destination_allocation,
+                } => (*destination_scope, destination_allocation.derivation_index),
+            };
+            let expected_script = wallet.derive_cdk_onchain_script_for_known_epoch(
+                change_scope.application_id,
+                change_scope.application_key_epoch,
                 cdk_common::federation::FederationAddressKeychain::Internal,
-                change.derivation_index,
+                derivation_index,
             )?;
             if !expected_script.is_p2tr()
                 || change.output.script_pubkey != expected_script

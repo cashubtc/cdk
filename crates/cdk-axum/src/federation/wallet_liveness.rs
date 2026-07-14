@@ -10,14 +10,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cdk::federation::{
     FederationAcceptedTransaction, FederationAcceptedTransactionState,
-    FederationAddressAllocationScope, FederationAddressKeychain, FederationOnchainBatchId,
-    FederationOnchainPaymentBatch, FederationOnchainPaymentIntentState,
-    FederationTransactionChangeOutput, FederationTransactionInput, FederationTransactionProposal,
-    FederationTransactionProposalId, FederationTransactionRecipientOutput,
-    FederationTransactionScope, FederationWalletLivenessActivity, FederationWalletLivenessSchedule,
+    FederationAddressAllocationScope, FederationAddressKeychain, FederationAllocatedAddressRef,
+    FederationFrostEpochState, FederationOnchainBatchId, FederationOnchainPaymentBatch,
+    FederationOnchainPaymentIntentState, FederationTransactionChangeOutput,
+    FederationTransactionInput, FederationTransactionProposal, FederationTransactionProposalId,
+    FederationTransactionRecipientOutput, FederationTransactionScope,
+    FederationWalletLivenessActivity, FederationWalletLivenessSchedule,
     FederationWalletLivenessStatus, FederationWalletUtxoState,
     FEDERATION_MAX_ONCHAIN_BATCH_INTENTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS,
 };
+use cdk_common::bitcoin::hashes::{sha256, Hash, HashEngine};
 use cdk_common::bitcoin::{Amount, FeeRate};
 use cdk_http_client::{Async, Transport};
 
@@ -138,7 +140,7 @@ impl FederationWalletLivenessWorker {
         let Ok(_round) = self.inner.round.try_lock() else {
             return Ok(0);
         };
-        let Some(runtime) = state.mint.federation_config() else {
+        let Some(runtime) = state.mint.effective_federation_config().await? else {
             return Ok(0);
         };
         let Some(wallet_config) = runtime.public_config().frost_wallet.as_ref() else {
@@ -214,7 +216,7 @@ impl FederationWalletLivenessWorker {
                     .await;
                 self.increment_proposal_attempts().await;
                 match self
-                    .propose_transaction(state, runtime, &chain_state, &transaction_state, &batch)
+                    .propose_transaction(state, &runtime, &chain_state, &transaction_state, &batch)
                     .await
                 {
                     Ok(()) => {
@@ -231,6 +233,90 @@ impl FederationWalletLivenessWorker {
                             cdk::federation::redact_federation_operator_message(&error.to_string())
                         );
                     }
+                }
+            }
+        }
+
+        for source_application in wallet_config
+            .cdk_onchain_applications
+            .iter()
+            .filter(|application| application.state == FederationFrostEpochState::Retiring)
+        {
+            let Some(destination_application) =
+                wallet_config
+                    .cdk_onchain_applications
+                    .iter()
+                    .find(|application| {
+                        application.application_id == source_application.application_id
+                            && application.state == FederationFrostEpochState::Active
+                            && wallet_config
+                                .active_epochs
+                                .application_key_epochs
+                                .get(&application.application_id)
+                                == Some(&application.application_key_epoch)
+                    })
+            else {
+                continue;
+            };
+            let mut outpoints = chain_state
+                .utxos()
+                .filter(|utxo| {
+                    utxo.state == FederationWalletUtxoState::Spendable
+                        && !utxo.liability_alarm
+                        && utxo.allocation.application_id == source_application.application_id
+                        && utxo.allocation.application_key_epoch
+                            == source_application.application_key_epoch
+                })
+                .map(|utxo| utxo.outpoint)
+                .collect::<Vec<_>>();
+            outpoints.sort();
+            outpoints.truncate(FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS);
+            if outpoints.is_empty() {
+                continue;
+            }
+            let source_scope = application_scope(source_application);
+            let destination_scope = application_scope(destination_application);
+            let batch_id = epoch_sweep_work_id(source_scope, destination_scope, &outpoints);
+            let work = LivenessWorkId::Proposal(batch_id);
+            active_work.insert(work);
+            let attempt = lease_attempt(now_epoch_millis, self.inner.config.proposer_lease);
+            let schedule = FederationWalletLivenessSchedule::new(
+                batch_id.to_bytes(),
+                runtime.public_config().members.keys().copied(),
+                source_application.threshold,
+            )?;
+            if schedule.proposer(attempt)? != runtime.member_id() || !self.retry_is_due(work).await
+            {
+                continue;
+            }
+            self.set_activity(FederationWalletLivenessActivity::Proposing)
+                .await;
+            self.increment_proposal_attempts().await;
+            match self
+                .propose_epoch_sweep(
+                    state,
+                    &runtime,
+                    &chain_state,
+                    &transaction_state,
+                    source_scope,
+                    destination_scope,
+                    batch_id,
+                    &outpoints,
+                )
+                .await
+            {
+                Ok(()) => {
+                    self.clear_retry(work).await;
+                    advanced = advanced.saturating_add(1);
+                }
+                Err(error) => {
+                    self.defer(work).await;
+                    self.set_activity(FederationWalletLivenessActivity::Backoff)
+                        .await;
+                    tracing::warn!(
+                        "Federation epoch sweep proposer deferred safely: {}",
+                        cdk::federation::redact_federation_operator_message(&error.to_string())
+                    );
                 }
             }
         }
@@ -263,7 +349,7 @@ impl FederationWalletLivenessWorker {
             match self
                 .propose_replacement(
                     state,
-                    runtime,
+                    &runtime,
                     &chain_state,
                     &transaction_state,
                     accepted,
@@ -555,6 +641,161 @@ impl FederationWalletLivenessWorker {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    async fn propose_epoch_sweep(
+        &self,
+        state: &MintState,
+        runtime: &cdk::mint::FederationRuntimeConfig,
+        chain_state: &cdk::federation::FederationChainObservationState,
+        transaction_state: &cdk::federation::FederationTransactionState,
+        source_scope: FederationTransactionScope,
+        destination_scope: FederationTransactionScope,
+        batch_id: FederationOnchainBatchId,
+        outpoints: &[cdk_common::bitcoin::OutPoint],
+    ) -> Result<(), cdk::Error> {
+        let source_wallet = wallet_for_scope(state, source_scope).ok_or_else(|| {
+            cdk::Error::Custom("sweep source has no local watch-only wallet".to_string())
+        })?;
+        let destination_wallet = wallet_for_scope(state, destination_scope).ok_or_else(|| {
+            cdk::Error::Custom("sweep destination has no local watch-only wallet".to_string())
+        })?;
+        source_wallet.ensure_ready(0).await.map_err(|error| {
+            cdk::Error::Custom(format!("federated sweep wallet is not ready: {error}"))
+        })?;
+        let allocation_key = format!("frost-epoch-sweep-{batch_id}");
+        state
+            .allocate_federation_onchain_address(
+                &allocation_key,
+                destination_scope.application_id,
+                destination_scope.application_key_epoch,
+                FederationAddressKeychain::Internal,
+            )
+            .await?;
+        let allocation = state
+            .mint
+            .federation_address_allocation(
+                FederationAddressAllocationScope {
+                    application_id: destination_scope.application_id,
+                    application_key_epoch: destination_scope.application_key_epoch,
+                },
+                &allocation_key,
+            )
+            .await?
+            .ok_or_else(|| {
+                cdk::Error::Custom("accepted sweep destination is unavailable".to_string())
+            })?;
+        let destination_script = destination_wallet
+            .peek_federated_script(
+                cdk_bdk::FederatedWalletKeychain::Internal,
+                allocation.derivation_index,
+            )
+            .await;
+        let policy = cdk::mint::FederationOnchainTransactionPolicy::for_version(
+            source_scope.policy_version,
+        )?;
+        let fee_rate_sat_per_vb =
+            bounded_fee_rate(policy, source_wallet.fetch_fee_rate_sat_per_vb(6)).await;
+        let fee_rate = FeeRate::from_sat_per_vb(fee_rate_sat_per_vb)
+            .ok_or_else(|| cdk::Error::Custom("invalid sweep fee rate".to_string()))?;
+        let psbt = source_wallet
+            .engine()
+            .build_federated_sweep_psbt(destination_script.clone(), fee_rate, outpoints)
+            .await
+            .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+        let by_outpoint = chain_state
+            .utxos()
+            .filter(|utxo| outpoints.contains(&utxo.outpoint))
+            .map(|utxo| (utxo.outpoint, utxo))
+            .collect::<BTreeMap<_, _>>();
+        let selected_inputs = psbt
+            .unsigned_tx
+            .input
+            .iter()
+            .map(|input| {
+                let utxo = by_outpoint.get(&input.previous_output).ok_or_else(|| {
+                    cdk::Error::Custom(
+                        "BDK sweep selected an input outside accepted consensus state".to_string(),
+                    )
+                })?;
+                Ok(FederationTransactionInput {
+                    outpoint: utxo.outpoint,
+                    previous_output: utxo.txout.clone(),
+                    allocation: utxo.allocation.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, cdk::Error>>()?;
+        let input_sum = selected_inputs.iter().try_fold(0_u64, |sum, input| {
+            sum.checked_add(input.previous_output.value.to_sat())
+                .ok_or_else(|| cdk::Error::Custom("sweep input sum overflow".to_string()))
+        })?;
+        if psbt.unsigned_tx.output.len() != 1 {
+            return Err(cdk::Error::Custom(
+                "epoch sweep must have exactly one destination output".to_string(),
+            ));
+        }
+        let output_index = 0_usize;
+        let output = psbt
+            .unsigned_tx
+            .output
+            .first()
+            .ok_or_else(|| cdk::Error::Custom("epoch sweep output is missing".to_string()))?;
+        if output.script_pubkey != destination_script {
+            return Err(cdk::Error::Custom(
+                "epoch sweep output differs from its accepted destination".to_string(),
+            ));
+        }
+        let fee_sat = input_sum
+            .checked_sub(output.value.to_sat())
+            .ok_or_else(|| {
+                cdk::Error::Custom("sweep output exceeds selected inputs".to_string())
+            })?;
+        let sweep_output = output.clone();
+        let activation_index = state
+            .mint
+            .federation_frost_application_activation_index(
+                destination_scope.application_id,
+                destination_scope.application_key_epoch,
+            )
+            .await?
+            .ok_or_else(|| {
+                cdk::Error::Custom("active sweep epoch has no activation operation".to_string())
+            })?;
+        let destination_allocation = FederationAllocatedAddressRef {
+            application_id: destination_scope.application_id,
+            application_key_epoch: destination_scope.application_key_epoch,
+            quote: allocation_key,
+            keychain: FederationAddressKeychain::Internal,
+            derivation_index: allocation.derivation_index,
+        };
+        let proposal = FederationTransactionProposal::new_epoch_sweep(
+            source_scope,
+            destination_scope,
+            destination_allocation,
+            activation_index,
+            runtime.member_id(),
+            psbt.unsigned_tx,
+            selected_inputs,
+            FederationTransactionChangeOutput {
+                derivation_index: allocation.derivation_index,
+                output_index: u32::try_from(output_index).map_err(|_| {
+                    cdk::Error::Custom("sweep output index exceeds u32".to_string())
+                })?,
+                output: sweep_output,
+            },
+            fee_sat,
+        )?;
+        runtime.validate_onchain_transaction_proposal(
+            chain_state,
+            transaction_state.intents(),
+            &proposal,
+        )?;
+        state
+            .submit_federation_envelope(runtime.transaction_proposal_operation(proposal)?)
+            .await?
+            .ensure_accepted()?;
+        Ok(())
+    }
+
     async fn sign_transaction<T>(
         &self,
         state: &MintState,
@@ -568,7 +809,8 @@ impl FederationWalletLivenessWorker {
     {
         let runtime = state
             .mint
-            .federation_config()
+            .effective_federation_config()
+            .await?
             .ok_or_else(|| anyhow::anyhow!("federation configuration is unavailable"))?;
         let wallet_config = runtime
             .public_config()
@@ -837,6 +1079,37 @@ fn wallet_for_scope(
             && wallet_scope.application_id() == scope.application_id.to_bytes()
             && wallet_scope.application_key_epoch() == scope.application_key_epoch
     })
+}
+
+fn application_scope(
+    application: &cdk::federation::FederationFrostApplicationConfig,
+) -> FederationTransactionScope {
+    FederationTransactionScope {
+        root_key_epoch: application.root_key_epoch,
+        application_id: application.application_id,
+        application_key_epoch: application.application_key_epoch,
+        network: application.network,
+        policy_version: application.fee_policy_version,
+    }
+}
+
+fn epoch_sweep_work_id(
+    source: FederationTransactionScope,
+    destination: FederationTransactionScope,
+    outpoints: &[cdk_common::bitcoin::OutPoint],
+) -> FederationOnchainBatchId {
+    let mut engine = sha256::Hash::engine();
+    engine.input(b"cdk/federation/epoch-sweep-work/v1");
+    engine.input(&source.root_key_epoch.to_be_bytes());
+    engine.input(&source.application_id.to_bytes());
+    engine.input(&source.application_key_epoch.to_be_bytes());
+    engine.input(&destination.root_key_epoch.to_be_bytes());
+    engine.input(&destination.application_key_epoch.to_be_bytes());
+    for outpoint in outpoints {
+        engine.input(&outpoint.txid.to_byte_array());
+        engine.input(&outpoint.vout.to_be_bytes());
+    }
+    FederationOnchainBatchId::from_bytes(sha256::Hash::from_engine(engine).to_byte_array())
 }
 
 fn fee_contributions(

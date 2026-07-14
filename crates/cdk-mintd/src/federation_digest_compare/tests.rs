@@ -50,6 +50,7 @@ fn local_status(
         onchain_wallets: Vec::new(),
         wallet_recovery: None,
         wallet_liveness: None,
+        frost_rotation: None,
     }
     .with_materialized_state_digest(materialized_state_digest)
 }

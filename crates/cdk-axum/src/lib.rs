@@ -1588,7 +1588,8 @@ impl MintState {
         }
         let envelope = self
             .mint
-            .federation_config()
+            .effective_federation_config()
+            .await?
             .ok_or(cdk::Error::Internal)?
             .chain_observation_operation(observation)?;
         self.submit_federation_envelope(envelope).await
@@ -1617,7 +1618,8 @@ impl MintState {
         }
         let envelope = self
             .mint
-            .federation_config()
+            .effective_federation_config()
+            .await?
             .ok_or(cdk::Error::Internal)?
             .address_allocation_operation(quote, application_id, application_key_epoch, keychain)?;
         let response = self.submit_federation_envelope(envelope).await?;
@@ -2592,15 +2594,26 @@ async fn create_mint_router_with_custom_cache_inner(
                 )
             })?;
             let public_config = runtime_config.public_config();
-            if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
+            config.validate_for_public_config(public_config)?;
+            let already_completed = state
+                .mint
+                .localstore()
+                .get_federation_frost_root_public_configs()
+                .await?
+                .into_iter()
+                .any(|root| {
+                    root.ceremony_id == config.ceremony_id
+                        && root.root_key_epoch == config.root_key_epoch
+                });
+            if already_completed {
                 tracing::info!(
                     member_id = %runtime_config.member_id(),
                     ceremony_id = %config.ceremony_id,
-                    "Federation DKG auto-start skipped because finalized key material is already active"
+                    root_key_epoch = config.root_key_epoch,
+                    "Federation dual DKG auto-start skipped because this exact ceremony is complete"
                 );
                 None
             } else {
-                config.validate_for_public_config(public_config)?;
                 Some(config)
             }
         }
@@ -2764,7 +2777,11 @@ async fn create_federation_runtime_state_with_wallet(
         }
         None => None,
     };
-    let onchain_wallets = initialize_federation_onchain_wallets(config, local_wallet_config)?;
+    let effective = mint
+        .effective_federation_config()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("effective federation configuration is unavailable"))?;
+    let onchain_wallets = initialize_federation_onchain_wallets(&effective, local_wallet_config)?;
     let snapshot = FederationConfigSnapshot::new(config.public_config().clone())?;
     let mut tx = db.begin_transaction().await?;
     tx.set_federation_config(&snapshot).await?;
@@ -2939,18 +2956,14 @@ fn initialize_accepted_federation_onchain_wallets(
     wallet_config: &cdk::federation::FederationFrostWalletConfig,
     local_config: Option<FederatedBdkLocalConfig>,
 ) -> Result<Vec<FederatedBdkWallet>> {
-    let active_applications = wallet_config
+    let known_applications = wallet_config
         .cdk_onchain_applications
         .iter()
         .filter(|application| {
-            wallet_config
-                .active_epochs
-                .application_key_epochs
-                .get(&application.application_id)
-                == Some(&application.application_key_epoch)
+            application.state != cdk::federation::FederationFrostEpochState::Retired
         })
         .collect::<Vec<_>>();
-    if active_applications.is_empty() {
+    if known_applications.is_empty() {
         return Ok(Vec::new());
     }
     let local_config = local_config.ok_or_else(|| {
@@ -2959,7 +2972,7 @@ fn initialize_accepted_federation_onchain_wallets(
         )
     })?;
 
-    active_applications
+    known_applications
         .into_iter()
         .map(|application| {
             let scope = FederatedWalletScope::new(
@@ -3097,7 +3110,13 @@ async fn validate_and_materialize_frost_wallet_config(mint: &Arc<Mint>) -> Resul
         .collect::<BTreeMap<_, _>>();
     let expected_consumers = wallet.registered_consumers.iter().collect::<BTreeSet<_>>();
     let actual_consumers = stored_consumers.iter().collect::<BTreeSet<_>>();
-    if expected_roots != actual_roots
+    if expected_roots
+        .iter()
+        .any(|(epoch, expected)| actual_roots.get(epoch) != Some(expected))
+        || actual_roots.iter().any(|(epoch, root)| {
+            !expected_roots.contains_key(epoch)
+                && root.state != cdk::federation::FederationFrostEpochState::Proposed
+        })
         || expected_applications != actual_applications
         || expected_consumers != actual_consumers
         || stored_active.as_ref() != Some(&wallet.active_epochs)
@@ -3109,13 +3128,14 @@ async fn validate_and_materialize_frost_wallet_config(mint: &Arc<Mint>) -> Resul
     }
 
     let private_roots = db.get_federation_frost_root_private_configs().await?;
-    if private_roots.len() != wallet.roots.len() {
+    if private_roots.len() != stored_roots.len() {
         return Err(cdk::Error::Custom(
             "missing or unknown participant-local FROST root configuration".to_string(),
         )
         .into());
     }
-    for root in &wallet.roots {
+    for root in &stored_roots {
+        root.validate(public)?;
         let local = private_roots
             .iter()
             .find(|candidate| candidate.root_key_epoch == root.root_key_epoch)

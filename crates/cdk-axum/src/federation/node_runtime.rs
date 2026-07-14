@@ -1488,10 +1488,18 @@ impl FederationNodeRuntime {
             .federation_config()
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let local_member = runtime_config.member_id();
+        let ceremony_id = self
+            .dkg_auto_start_config
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("active DKG ceremony"))?
+            .ceremony_id;
         let keyset_shares = mint
             .localstore()
             .get_federation_dkg_member_keyset_shares()
-            .await?;
+            .await?
+            .into_iter()
+            .filter(|share| share.public_ceremony.ceremony_id() == ceremony_id)
+            .collect::<Vec<_>>();
         for share in &keyset_shares {
             if share.member_id != local_member {
                 return Err(cdk::Error::Federation(FederationError::MemberIdMismatch {
