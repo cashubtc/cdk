@@ -78,6 +78,26 @@ impl LocalFederatedMemberConnector {
             })
     }
 
+    async fn observe_melt_payment(
+        &self,
+        mint: Arc<Mint>,
+        quote_id: QuoteId,
+    ) -> Result<(), crate::Error> {
+        let Some(observation) = mint.probe_federation_melt_quote_payment(&quote_id).await? else {
+            return Ok(());
+        };
+        let config = mint.effective_federation_config().await?.ok_or_else(|| {
+            crate::Error::InvalidMintResponse(
+                "local test mint is not configured for federation".to_string(),
+            )
+        })?;
+        let envelope =
+            config.operation_envelope(FederationOperation::MeltQuotePayment(observation));
+        self.append_and_apply_to_federation(envelope).await?;
+
+        Ok(())
+    }
+
     fn quote_id(quote: &str) -> Result<QuoteId, crate::Error> {
         QuoteId::from_str(quote).map_err(crate::Error::from)
     }
@@ -485,17 +505,30 @@ impl MintConnector for LocalFederatedMemberConnector {
             .await?;
         let config = self.effective_federation_config().await?;
         let envelope = config.melt_operation(request.clone())?;
-        self.append_and_apply_to_federation(envelope).await?;
-        if let Some(observation) = self
-            .mint
-            .probe_federation_melt_quote_payment(request.quote_id())
-            .await?
-        {
-            let envelope = FederationOperationEnvelope::new(
-                config.federation_id(),
-                FederationOperation::MeltQuotePayment(observation),
-            );
-            self.append_and_apply_to_federation(envelope).await?;
+        let entry = self.append_and_apply_to_federation(envelope).await?;
+        match (entry, &self.federation_mints) {
+            (Some(entry), Some(federation_mints)) => {
+                let author = entry
+                    .envelope
+                    .verify_authorization(config.public_config())?;
+                let payment_mint = federation_mints
+                    .iter()
+                    .find(|mint| {
+                        mint.federation_config()
+                            .is_some_and(|config| config.member_id() == author)
+                    })
+                    .cloned()
+                    .ok_or(FederationError::UnknownMember { member_id: author })?;
+                let observer = self.clone();
+                let quote_id = request.quote_id().clone();
+                let _payment_observer = tokio::spawn(async move {
+                    let _ = observer.observe_melt_payment(payment_mint, quote_id).await;
+                });
+            }
+            _ => {
+                self.observe_melt_payment(Arc::clone(&self.mint), request.quote_id().clone())
+                    .await?;
+            }
         }
 
         Ok(self.mint.check_melt_quote(request.quote_id()).await?.into())

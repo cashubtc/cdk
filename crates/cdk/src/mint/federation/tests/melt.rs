@@ -170,6 +170,82 @@ async fn standalone_melt_quote_creation_still_persists_quote() {
 }
 
 #[tokio::test]
+async fn accepted_melt_author_is_the_only_payment_actor() {
+    let mut configs = runtime_configs();
+    let author_config = configs.remove(0);
+    let follower_config = configs.remove(0);
+    let (author, author_store, author_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(author_config.clone()).await;
+    let (follower, follower_store, follower_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(follower_config).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        melt_quote_op(
+            &author_config,
+            quote.clone(),
+            pending_melt_quote_request(1_000),
+        ),
+    );
+    persist_and_apply_entry(&author, &quote_entry).await;
+    persist_and_apply_entry(&follower, &quote_entry).await;
+
+    let melt_entry = (0..64)
+        .find_map(|attempt| {
+            let proofs = vec![
+                proof_for_runtime(
+                    &author_config,
+                    &format!("author-payment-input-{attempt}-one"),
+                ),
+                proof_for_runtime(
+                    &author_config,
+                    &format!("author-payment-input-{attempt}-two"),
+                ),
+            ];
+            let envelope = author_config
+                .melt_operation(MeltRequest::new(quote.clone(), proofs, None))
+                .expect("melt operation");
+            let operation_id = envelope.operation_id().expect("melt operation id");
+            let selector = u64::from_be_bytes(
+                operation_id.to_bytes()[..8]
+                    .try_into()
+                    .expect("operation selector bytes"),
+            );
+            (selector % 2 == 1).then(|| appended_entry(&mut journal, envelope))
+        })
+        .expect("operation whose old roster selector points at the follower");
+    assert_eq!(
+        melt_entry
+            .envelope
+            .verify_authorization(author_config.public_config())
+            .expect("melt operation authorization"),
+        author_config.member_id()
+    );
+    persist_and_apply_entry(&author, &melt_entry).await;
+    persist_and_apply_entry(&follower, &melt_entry).await;
+
+    let _ = follower.probe_federation_melt_quote_payment(&quote).await;
+    assert_eq!(follower_payment_calls.load(Ordering::Relaxed), 0);
+    assert!(author
+        .probe_federation_melt_quote_payment(&quote)
+        .await
+        .expect("author payment probe")
+        .is_none());
+    assert_eq!(author_payment_calls.load(Ordering::Relaxed), 1);
+    assert!(author_store
+        .get_federation_journal_entry_by_operation_id(melt_entry.operation_id)
+        .await
+        .expect("author journal lookup")
+        .is_some());
+    assert!(follower_store
+        .get_federation_journal_entry_by_operation_id(melt_entry.operation_id)
+        .await
+        .expect("follower journal lookup")
+        .is_some());
+}
+
+#[tokio::test]
 async fn concurrent_same_quote_payment_probe_has_one_durable_winner() {
     let runtime_config = runtime_config();
     let (mint, localstore, make_payment_calls, first_started, release_first) =
@@ -1200,7 +1276,7 @@ async fn apply_federation_melt_retries_failed_quote_state_with_payment_attempt()
     persist_and_apply_entry(&mint, &quote_entry).await;
     set_melt_quote_state(&localstore, &quote, MeltQuoteState::Failed).await;
 
-    let (melt_envelope, input_ys) = locally_elected_melt_operation(&runtime_config, |attempt| {
+    let (melt_envelope, input_ys) = locally_authored_melt_operation(&runtime_config, |attempt| {
         let inputs = vec![
             proof_for_runtime(
                 &runtime_config,
@@ -1294,7 +1370,7 @@ async fn apply_federation_melt_keeps_quote_pending_when_backend_status_is_unknow
     persist_and_apply_entry(&mint, &quote_entry).await;
 
     let (melt_envelope, (input_ys, change_output)) =
-        locally_elected_melt_operation(&runtime_config, |attempt| {
+        locally_authored_melt_operation(&runtime_config, |attempt| {
             let inputs = vec![
                 proof_for_runtime(
                     &runtime_config,
@@ -1504,7 +1580,7 @@ async fn accepted_federation_melt_persists_reserve_before_payment_attempt() {
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
-    let (melt_envelope, input_ys) = locally_elected_melt_operation(&runtime_config, |attempt| {
+    let (melt_envelope, input_ys) = locally_authored_melt_operation(&runtime_config, |attempt| {
         let proofs = vec![
             proof_for_runtime(
                 &runtime_config,
@@ -1610,7 +1686,7 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
     persist_and_apply_entry(&mint, &quote_entry).await;
 
     let (melt_envelope, (input_ys, change_output)) =
-        locally_elected_melt_operation(&runtime_config, |attempt| {
+        locally_authored_melt_operation(&runtime_config, |attempt| {
             let proofs = vec![
                 proof_for_runtime(
                     &runtime_config,
@@ -1960,22 +2036,9 @@ async fn failed_federation_melt_rolls_back_atomically_and_replays() {
 }
 
 #[tokio::test]
-async fn real_policy_non_elected_melt_member_reserves_without_payment_attempt() {
+async fn real_policy_melt_reservation_does_not_attempt_payment() {
     let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
-    let operation_id = operation_id_with_selector(1);
-    assert_eq!(
-        runtime_config
-            .public_config()
-            .elected_melt_payment_member(operation_id),
-        Some(MemberId::new(2).expect("member two"))
-    );
-    assert_ne!(
-        runtime_config
-            .public_config()
-            .elected_melt_payment_member(operation_id),
-        Some(runtime_config.member_id())
-    );
 
     let make_payment_calls = Arc::new(AtomicUsize::new(0));
     let payment_processor = Arc::new(CountingBackendAgnosticPaymentProcessor {
@@ -1999,17 +2062,22 @@ async fn real_policy_non_elected_melt_member_reserves_without_payment_attempt() 
     let input_ys;
     let request = {
         let proofs = vec![
-            proof_for_runtime(&runtime_config, "non-elected-melt-input-one"),
-            proof_for_runtime(&runtime_config, "non-elected-melt-input-two"),
+            proof_for_runtime(&runtime_config, "reserved-melt-input-one"),
+            proof_for_runtime(&runtime_config, "reserved-melt-input-two"),
         ];
         input_ys = proofs.ys().expect("input ys");
         MeltRequest::new(quote.clone(), proofs, None)
     };
+    let operation_id = runtime_config
+        .melt_operation(request.clone())
+        .expect("melt operation")
+        .operation_id()
+        .expect("melt operation id");
 
     let response = mint
         .melt_federation(&request, operation_id)
         .await
-        .expect("non-elected federation melt reserve");
+        .expect("federation melt reserve");
 
     assert_eq!(response.state(), MeltQuoteState::Pending);
     assert_eq!(make_payment_calls.load(Ordering::Relaxed), 0);
@@ -2019,7 +2087,7 @@ async fn real_policy_non_elected_melt_member_reserves_without_payment_attempt() 
             .await
             .expect("melt saga lookup")
             .is_some(),
-        "non-elected member should keep pending saga for later payment observation"
+        "reserved melt should keep pending saga for later payment observation"
     );
     assert_eq!(
         localstore
@@ -2027,27 +2095,6 @@ async fn real_policy_non_elected_melt_member_reserves_without_payment_attempt() 
             .await
             .expect("proof states"),
         vec![Some(State::Pending), Some(State::Pending)]
-    );
-}
-
-#[test]
-fn melt_payment_actor_selection_is_deterministic() {
-    let policy = FederationPaymentObservationPolicy::member_quorum(2);
-    let real_policy_config = runtime_config_with_payment_policy(policy);
-    let member_one_operation = operation_id_with_selector(0);
-    let member_two_operation = operation_id_with_selector(1);
-
-    assert_eq!(
-        real_policy_config
-            .public_config()
-            .elected_melt_payment_member(member_one_operation),
-        Some(MemberId::new(1).expect("member one"))
-    );
-    assert_eq!(
-        real_policy_config
-            .public_config()
-            .elected_melt_payment_member(member_two_operation),
-        Some(MemberId::new(2).expect("member two"))
     );
 }
 
@@ -2336,58 +2383,27 @@ async fn catch_up_melt_payment_observations_finalize_without_duplicate_payment()
     );
     persist_and_apply_entry(&mint, &quote_entry).await;
 
-    let (request, input_ys, change_output, melt_entry) = (0..128)
-        .find_map(|index| {
-            let proofs = vec![
-                proof_for_runtime(&runtime_config, &format!("catch-up-paid-input-{index}-one")),
-                proof_for_runtime(&runtime_config, &format!("catch-up-paid-input-{index}-two")),
-                proof_for_runtime(
-                    &runtime_config,
-                    &format!("catch-up-paid-input-{index}-three"),
-                ),
-            ];
-            let input_ys = proofs.ys().expect("catch-up paid input ys");
-            let mut change_output = output_for_runtime(
-                &runtime_config,
-                format!("catch-up-paid-change-{index}").as_bytes(),
-            );
-            change_output.amount = Amount::ZERO;
-            let request =
-                MeltRequest::new(quote.clone(), proofs, Some(vec![change_output.clone()]));
-            let envelope = runtime_config
-                .melt_operation(request.clone())
-                .expect("melt operation envelope");
-            let operation_id = envelope.operation_id().expect("melt operation id");
-            if runtime_config
-                .public_config()
-                .elected_melt_payment_member(operation_id)
-                == Some(runtime_config.member_id())
-            {
-                return None;
-            }
-
-            Some((
-                request,
-                input_ys,
-                change_output,
-                appended_entry(&mut journal, envelope),
-            ))
-        })
-        .expect("non-local elected melt operation");
-
-    assert!(
+    let proofs = vec![
+        proof_for_runtime(&runtime_config, "catch-up-paid-input-one"),
+        proof_for_runtime(&runtime_config, "catch-up-paid-input-two"),
+        proof_for_runtime(&runtime_config, "catch-up-paid-input-three"),
+    ];
+    let input_ys = proofs.ys().expect("catch-up paid input ys");
+    let mut change_output = output_for_runtime(&runtime_config, b"catch-up-paid-change");
+    change_output.amount = Amount::ZERO;
+    let request = MeltRequest::new(quote.clone(), proofs, Some(vec![change_output.clone()]));
+    let melt_entry = appended_entry(
+        &mut journal,
         runtime_config
-            .public_config()
-            .elected_melt_payment_member(melt_entry.operation_id)
-            != Some(runtime_config.member_id()),
-        "catch-up replay member must not be elected for the outgoing payment"
+            .melt_operation(request.clone())
+            .expect("melt operation envelope"),
     );
     persist_and_apply_entry(&mint, &melt_entry).await;
 
     assert_eq!(
         make_payment_calls.load(Ordering::Relaxed),
         0,
-        "non-elected catch-up member must reserve without paying"
+        "catch-up reservation must not pay during deterministic application"
     );
     assert_eq!(
         localstore

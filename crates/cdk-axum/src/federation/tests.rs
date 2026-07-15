@@ -3376,18 +3376,6 @@ async fn proof_from_accepted_output(
     )
 }
 
-fn elected_melt_payment_member(
-    public_config: &FederationConfig,
-    operation_id: FederationOperationId,
-) -> MemberId {
-    let members = public_config.members.keys().copied().collect::<Vec<_>>();
-    let operation_bytes = operation_id.to_bytes();
-    let mut selector_bytes = [0_u8; 8];
-    selector_bytes.copy_from_slice(&operation_bytes[..8]);
-    let selector = u64::from_be_bytes(selector_bytes);
-    members[(selector % members.len() as u64) as usize]
-}
-
 fn swap_output(state: &MintState, label: &str) -> BlindedMessage {
     let config = state.mint.federation_config().expect("federation config");
     BlindedMessage::new(
@@ -14952,33 +14940,25 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
         .iter()
         .map(|proof| proof.y().expect("below-finality melt input y"))
         .collect::<Vec<_>>();
-    let (melt_envelope, melt_change, elected_member) = (0..128)
-        .find_map(|attempt| {
-            let mut change = swap_output(
-                &session.states[0],
-                &format!("below-finality-melt-change-{attempt}"),
-            );
-            change.amount = Amount::ZERO;
-            let envelope = runtime_config
-                .melt_operation(cdk::nuts::MeltRequest::new(
-                    melt_quote_id.clone(),
-                    melt_inputs.clone(),
-                    Some(vec![change.clone()]),
-                ))
-                .expect("below-finality melt envelope");
-            let operation_id = envelope
-                .operation_id()
-                .expect("below-finality melt operation id");
-            let elected_member = elected_melt_payment_member(&session.public_config, operation_id);
-            let elected_index = session
-                .public_config
-                .members
-                .keys()
-                .position(|member_id| *member_id == elected_member)
-                .expect("below-finality elected member index");
-            (elected_index < 3).then_some((envelope, change, elected_member))
-        })
-        .expect("always-live member elected for below-finality melt");
+    let mut melt_change = swap_output(&session.states[0], "below-finality-melt-change");
+    melt_change.amount = Amount::ZERO;
+    let melt_envelope = runtime_config
+        .melt_operation(cdk::nuts::MeltRequest::new(
+            melt_quote_id.clone(),
+            melt_inputs,
+            Some(vec![melt_change.clone()]),
+        ))
+        .expect("below-finality melt envelope");
+    let payment_actor = melt_envelope
+        .verify_authorization(&session.public_config)
+        .expect("below-finality melt author");
+    let payment_actor_index = session
+        .public_config
+        .members
+        .keys()
+        .position(|member_id| *member_id == payment_actor)
+        .expect("below-finality payment actor index");
+    assert!(payment_actor_index < 3);
     let melt_operation_id = melt_envelope
         .operation_id()
         .expect("below-finality melt operation id");
@@ -15212,31 +15192,25 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             .is_empty());
     }
 
-    let elected_index = session
-        .public_config
-        .members
-        .keys()
-        .position(|member_id| *member_id == elected_member)
-        .expect("below-finality elected payment member index");
     let mut observation_operation_ids = Vec::new();
-    let elected_observation = submit_melt_payment_observation_from_backend(
-        &session.states[elected_index],
+    let actor_observation = submit_melt_payment_observation_from_backend(
+        &session.states[payment_actor_index],
         &melt_quote_id,
     )
     .await;
-    observation_operation_ids.push(elected_observation.operation_id);
+    observation_operation_ids.push(actor_observation.operation_id);
     for state in &session.states[..4] {
         wait_for_applied_operation_with_context(
             state,
-            elected_observation.operation_id,
-            "below-finality elected melt payment observation",
+            actor_observation.operation_id,
+            "below-finality author melt payment observation",
         )
         .await;
     }
-    for observer_index in (0..4).filter(|observer_index| *observer_index != elected_index) {
+    for observer_index in (0..4).filter(|observer_index| *observer_index != payment_actor_index) {
         let observation = matching_melt_payment_observation_envelope(
             &session.states[observer_index],
-            &elected_observation.observation,
+            &actor_observation.observation,
         );
         let operation_id = submit_live_operation_allowing_pending_timeout(
             &session.states[observer_index],
@@ -15253,14 +15227,17 @@ async fn aleph_bft_live_below_finality_conflicts_and_melt_recover_without_leakin
             .await;
         }
     }
-    assert_eq!(make_payment_calls[elected_index].load(Ordering::SeqCst), 1);
+    assert_eq!(
+        make_payment_calls[payment_actor_index].load(Ordering::SeqCst),
+        1
+    );
     assert_eq!(
         make_payment_calls
             .iter()
             .map(|calls| calls.load(Ordering::SeqCst))
             .sum::<usize>(),
         1,
-        "recovered melt must elect exactly one payment actor"
+        "recovered melt must retain exactly one payment actor"
     );
 
     session.states[4]
@@ -15721,25 +15698,25 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         .iter()
         .map(|proof| proof.y().expect("live melt input y"))
         .collect::<Vec<_>>();
-    let (melt_envelope, melt_change, elected_member) = (0..128)
-        .find_map(|attempt| {
-            let mut change = swap_output(
-                &session.states[0],
-                &format!("one-offline-melt-change-{attempt}"),
-            );
-            change.amount = Amount::ZERO;
-            let envelope = runtime_config
-                .melt_operation(cdk::nuts::MeltRequest::new(
-                    melt_quote_id.clone(),
-                    proofs.clone(),
-                    Some(vec![change.clone()]),
-                ))
-                .expect("live melt operation");
-            let operation_id = envelope.operation_id().expect("live melt operation id");
-            let elected_member = elected_melt_payment_member(&session.public_config, operation_id);
-            (elected_member != offline_member).then_some((envelope, change, elected_member))
-        })
-        .expect("connected member elected for live melt payment");
+    let mut melt_change = swap_output(&session.states[0], "one-offline-melt-change");
+    melt_change.amount = Amount::ZERO;
+    let melt_envelope = runtime_config
+        .melt_operation(cdk::nuts::MeltRequest::new(
+            melt_quote_id.clone(),
+            proofs.clone(),
+            Some(vec![melt_change.clone()]),
+        ))
+        .expect("live melt operation");
+    let payment_actor = melt_envelope
+        .verify_authorization(&session.public_config)
+        .expect("one-offline melt author");
+    let payment_actor_index = session
+        .public_config
+        .members
+        .keys()
+        .position(|member_id| *member_id == payment_actor)
+        .expect("melt payment actor index");
+    assert_ne!(payment_actor, offline_member);
     let melt_operation_id =
         submit_live_operation_allowing_pending_timeout(&session.states[0], melt_envelope).await;
     expected_operation_ids.push(melt_operation_id);
@@ -15747,34 +15724,28 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         wait_for_applied_operation_with_context(state, melt_operation_id, "one-offline melt").await;
     }
 
-    let elected_index = session
-        .public_config
-        .members
-        .keys()
-        .position(|member_id| *member_id == elected_member)
-        .expect("elected melt member index");
     let mut melt_payment_operation_ids = Vec::new();
-    let elected_observation = submit_melt_payment_observation_from_backend(
-        &session.states[elected_index],
+    let actor_observation = submit_melt_payment_observation_from_backend(
+        &session.states[payment_actor_index],
         &melt_quote_id,
     )
     .await;
-    expected_operation_ids.push(elected_observation.operation_id);
-    melt_payment_operation_ids.push(elected_observation.operation_id);
+    expected_operation_ids.push(actor_observation.operation_id);
+    melt_payment_operation_ids.push(actor_observation.operation_id);
     for state in &session.states[..offline_index] {
         wait_for_applied_operation_with_context(
             state,
-            elected_observation.operation_id,
-            "one-offline elected melt payment observation",
+            actor_observation.operation_id,
+            "one-offline author melt payment observation",
         )
         .await;
     }
     for observer_index in
-        (0..connected_member_count).filter(|observer_index| *observer_index != elected_index)
+        (0..connected_member_count).filter(|observer_index| *observer_index != payment_actor_index)
     {
         let observation = matching_melt_payment_observation_envelope(
             &session.states[observer_index],
-            &elected_observation.observation,
+            &actor_observation.observation,
         );
         let operation_id = submit_live_operation_allowing_pending_timeout(
             &session.states[observer_index],
@@ -15792,14 +15763,17 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
         expected_operation_ids.push(operation_id);
         melt_payment_operation_ids.push(operation_id);
     }
-    assert_eq!(make_payment_calls[elected_index].load(Ordering::SeqCst), 1);
+    assert_eq!(
+        make_payment_calls[payment_actor_index].load(Ordering::SeqCst),
+        1
+    );
     assert_eq!(
         make_payment_calls
             .iter()
             .map(|calls| calls.load(Ordering::SeqCst))
             .sum::<usize>(),
         1,
-        "accepted melt must elect exactly one outgoing payment actor"
+        "accepted melt must retain exactly one outgoing payment actor"
     );
     assert_eq!(make_payment_calls[offline_index].load(Ordering::SeqCst), 0);
 
@@ -15929,12 +15903,12 @@ async fn run_aleph_bft_live_one_member_offline_value_window(member_count: u16) {
             .map(|calls| calls.load(Ordering::SeqCst))
             .sum::<usize>(),
         1,
-        "catch-up replay must not duplicate the elected outgoing payment"
+        "catch-up replay must not duplicate the outgoing payment"
     );
     assert_eq!(
         make_payment_calls[offline_index].load(Ordering::SeqCst),
         0,
-        "non-elected lagging member must not pay while replaying melt history"
+        "non-author lagging member must not pay while replaying melt history"
     );
 
     let caught_up = &session.states[offline_index];

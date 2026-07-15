@@ -1,6 +1,6 @@
 # Federated Cashu Performance and Issue Report
 
-Date: 2026-07-14
+Date: 2026-07-15
 
 ## Relationship to the federation implementation plan
 
@@ -121,7 +121,7 @@ result must prove; they are not additional independent tasks.
 | ---: | --- | --- | --- |
 | 1 | Fresh-member recovery, readiness, and live-session convergence | Complete | 1, 2 |
 | 2 | Cancellation-safe server application and bounded wallet completion | Complete | 3, 4, 5 |
-| 3 | Exactly-once melt completion under repetition and member faults | Confirmed; investigation pending | 6 |
+| 3 | Exactly-once melt completion under repetition and member faults | Complete | 6 |
 | 4 | AlephBFT cadence, network backpressure, and HTTP liveness | Confirmed; investigation pending | 8 |
 | 5 | Signed private-status liveness and bounded operator reporting | Confirmed; investigation pending | 7, 12 |
 | 6 | Federation discovery and import completion | Confirmed historically; revalidation pending | 9 |
@@ -136,6 +136,7 @@ result must prove; they are not additional independent tasks.
 | U6 | Validate large-history catch-up page-cost scaling | Unconfirmed | Found during Milestone U5 scale verification |
 | U7 | Validate BLS transaction-identifier persistence | Resolved and verified | Found during Milestone 2 cancellation recovery |
 | U8 | Validate finalized-item catch-up response-count mismatch | Unconfirmed | Found during Milestone 2 parallel receive verification |
+| U9 | Validate intermittent 60-second melt-quote creation latency | Unconfirmed | Found during Milestone 3 process verification |
 
 ## Executive summary
 
@@ -161,6 +162,20 @@ A related shared-SQL assumption that every transaction identifier was a
 33-byte secp256k1 key was independently reproduced for 48-byte federation BLS
 identifiers and replaced by self-describing serialization with legacy 33- and
 48-byte read compatibility.
+
+Milestone 3 proved that repeated melt completion failed because payment actor
+selection hashed the operation ID across the full configured roster, including
+offline members. In the minimal failure, the first melt selected active member
+4 and completed; the second selected stopped member 5, so its accepted reserve
+remained pending with no backend attempt or payment observation. Melt payment
+ownership now comes from the authenticated author of the consensus-accepted
+journal envelope. The accepted author is a deterministic, quorum-ordered value
+already covered by operation authentication, while payment observations remain
+the only quorum evidence of the outcome. The obsolete roster election and
+wallet melt-only preflight were removed. The same two-batch process workload
+now completed both melts with member 5 offline, converged on 14 operations and
+four payment reports, and retained that exact state across a four-member
+restart without duplicate payment.
 
 Before the fix, a member whose database was erased did not recover. After
 approximately 155 seconds it held only 1 of 316 accepted operations while
@@ -536,7 +551,7 @@ only when the root cause can affect them.
 
 ### Milestone 3: Exactly-once melt completion under repetition and member faults
 
-**Status:** Confirmed; investigation pending
+**Status:** Complete
 
 **Covers:** Issue 6
 
@@ -555,18 +570,112 @@ exactly-once terminal result without hangs when members are slow or offline.
 - The repeated second-operation shape was reproduced independently of the
   larger mixed workload.
 
+#### Root cause
+
+A fresh five-member, 3-of-5 run stopped member 5 and executed two sequential
+standard batches. The first batch completed. The second reached
+`standard.melt-confirm.start` and exceeded the 90-second scenario bound while
+members 1-4 remained healthy, ready, and converged with empty pending queues.
+Their journals contained the accepted second melt reserve and their databases
+held its quote and saga in `Pending`, but there was no corresponding payment
+observation.
+
+The first melt operation ID selected member 4 under
+`elected_melt_payment_member` and completed. The second selected stopped member
+5. That function reduced the first eight operation-ID bytes modulo all five
+configured roster members without considering whether the selected member was
+live. `probe_federation_melt_quote_payment` allowed only that member to call the
+backend, so none of the four active members could advance the accepted second
+melt. The wallet repeated the same static selection to wait for or validate the
+chosen connector. This establishes the mint payment-actor rule as the cause;
+the backend was never called, so fakewallet state handling was not causal.
+
+The accepted second operation had the same authenticated author, member 2, in
+the durable journal on every active member. Operation authorization is verified
+before consensus admission, the accepted envelope is quorum ordered, and the
+author is therefore a deterministic value already committed before external
+effects. It is also a member that was live when it submitted the accepted
+operation, unlike a hash over the static roster.
+
+#### Fix
+
+The payment probe now loads the authoritative journal entry for the saga's
+operation ID, verifies its durable authorization, and permits only that accepted
+author to initiate the external payment. The existing per-quote active-payment
+claim, persisted saga, backend lookup identity, and payment-observation quorum
+continue to provide local at-most-once execution, restart recovery, and
+threshold-authoritative terminal state. Deterministic application still never
+calls a payment backend.
+
+The obsolete roster election API and its test-only brute-force request
+selection were removed. The centralized wallet connector now uses the normal
+validated threshold fanout and returns any aggregatable matching threshold
+view, including `Pending`, without waiting for a statically selected surplus
+member. Production's request-independent payment observer remains responsible
+for advancing accepted pending work. The local connector fixture was updated
+to model that existing lifecycle explicitly rather than tying payment progress
+to a cancellable mock request.
+
+This is smaller than the previous implementation: it removes the special
+melt-connector validation path and static election code, adds no clock, lease,
+failure detector, retry queue, schema, wire field, or alternate orchestration
+system, and uses the existing authenticated journal envelope.
+
+#### Verification and measurements
+
+- Before the fix, the minimal two-batch run timed out after 90 seconds during
+  the second melt. Its second operation was accepted and applied on members
+  1-4, but the selected payment member was offline and no payment observation
+  existed.
+- After the fix, the same fresh run with member 5 stopped exited successfully.
+  The first and second melt-confirmation phases completed in 5.151 seconds and
+  1.024 seconds. Both batches reported `melted=1`; members 1-4 converged on 14
+  journal operations, identical order and materialized-state digests, four
+  payment reports, zero payment conflicts or unresolved reports, and empty
+  pending queues.
+- Restarting all four active members against the same persisted state retained
+  the exact 14-operation journal, digests, four payment reports, and zero
+  pending work. No replay payment was added.
+- `cargo test -p cdk --features federation
+  mint::federation::tests::melt:: -- --nocapture` passed all 33 focused melt
+  tests, including accepted-author exclusivity, concurrent duplicate probes,
+  backend `Unknown`, failed rollback, paid finalization replay, catch-up
+  observations, and standalone quote persistence.
+- `cargo test -p cdk --features federation
+  wallet::federation::tests::federated_mint_connector_ -- --nocapture` passed
+  all 77 connector tests, including the new threshold-pending/slow-surplus
+  regression and the request-independent local observer fixture.
+- `cargo test -p cdk --features federation pending_melt_ -- --nocapture`
+  passed all 14 standalone and wallet pending-melt lifecycle tests.
+- The five-member one-offline AlephBFT value-window test passed in 123.46
+  seconds and asserted one outgoing payment total before and after catch-up.
+  The below-finality/restart test passed in 20.60 seconds and asserted no
+  pre-consensus payment or signatures plus one payment after recovery.
+- Federation-enabled `cdk-axum` tests compiled, and standalone
+  `cargo check -p cdk` plus `cargo check -p cdk-axum` passed. A focused clippy
+  invocation was attempted but stopped in unchanged `cashu` code on existing
+  Rust 1.95 `useless_conversion`, `missing_panics_doc`, and
+  `large_enum_variant` findings before reaching the changed crates.
+- A real Lightning process check was not run: this workspace has neither the
+  documented Nix regtest shell nor Bitcoin/CLN/LND binaries. The causal path is
+  backend-independent and occurs before backend dispatch, but real-backend
+  validation remains part of Milestone 9 release work.
+- No protocol instrumentation was added. The ignored process harness and its
+  outputs were used only for the bounded reproduction and were removed before
+  commit.
+
 #### Work checklist
 
-- [ ] Reproduce the smallest two-melt failure, add only enough instrumentation
+- [x] Reproduce the smallest two-melt failure, add only enough instrumentation
   to locate it, and record the proven cause and owning layer. Separate
   fake-wallet behavior from a general payment defect before fixing anything.
-- [ ] Implement the smallest change using the existing payment observation,
+- [x] Implement the smallest change using the existing payment observation,
   payer election, saga, journal, and quote-state patterns; preserve quorum
   authorization, deterministic replay, and at-most-once external payment.
-- [ ] Add the narrow regression and verify repeated completion, member/payer
+- [x] Add the narrow regression and verify repeated completion, member/payer
   faults, backend ambiguity, cancellation, and restart without duplicate
   payment or loss of the terminal result.
-- [ ] Remove temporary instrumentation, record sanitized commands/results and
+- [x] Remove temporary instrumentation, record sanitized commands/results and
   tests not run, update the milestone, and commit with a conventional commit.
 
 #### Acceptance
@@ -1242,6 +1351,58 @@ items never create a false count mismatch.
 item composition, a focused response-boundary unit test, one five-member
 offline/rejoin process test, and relevant malformed/digest/certificate tests.
 
+### Milestone U9: Validate intermittent 60-second melt-quote creation latency
+
+**Status:** Unconfirmed
+
+**Found during:** Milestone 3 post-fix process verification
+
+**Observation:** In the successful fresh two-batch run with member 5 offline,
+the first melt-quote creation completed in 442 ms. The second took 60.461
+seconds, from 3.971 seconds to 64.432 seconds in its batch timeline. Quote
+visibility then completed in 8 ms and melt confirmation in 1.024 seconds. The
+workload still exited within its bound, and members 1-4 ended healthy and
+converged with empty pending queues. The earlier pre-fix minimal run created its
+second melt quote in well under one second, so the long delay is not yet a
+stable part of the original Issue 6 reproduction.
+
+One occurrence cannot distinguish quote-coordinator fallback behavior, an
+offline-member timeout, a delayed consensus submission or response, temporary
+HTTP/AlephBFT scheduling pressure, fakewallet quote preparation, or a harness
+artifact. It must be independently reproduced before any timeout, retry,
+coordinator, handler, or consensus change is considered. In particular, the
+near-60-second duration is not evidence by itself that a configured timeout is
+wrong.
+
+#### Work checklist
+
+- [ ] Run fresh bounded quote-only and standard-batch samples with all members
+  healthy and with each member offline in turn. Record coordinator choice,
+  member request/fallback phases, consensus submission/finality, public handler
+  latency, and quote visibility without changing protocol behavior.
+- [ ] If the delay reproduces, isolate one owning phase and compare its latency
+  with the configured fallback, member-request, submission, and observer
+  bounds. Reject correlated queue or status symptoms as causes without a shared
+  timeline.
+- [ ] If confirmed, implement the smallest correction in the existing quote
+  coordinator, connector, handler, or consensus boundary. Do not increase a
+  timeout, add retries, or special-case an offline roster position to mask it.
+- [ ] Verify a latency distribution across repeated all-healthy and
+  one-offline runs, cancellation cleanup, quote idempotency, restart, and
+  standalone quote creation; update this milestone and commit separately.
+
+#### Acceptance
+
+**Success criteria:** Either repeated controlled evidence invalidates the
+observation, or the confirmed owning phase completes within a documented bound
+without duplicate quote creation, partial persistence, reduced quorum
+validation, or standalone regression.
+
+**Minimum verification:** At least ten fresh quote creations per topology, one
+controlled slow/unreachable coordinator case, focused coverage of the proven
+boundary, interruption plus idempotent retry, and unchanged standalone quote
+behavior.
+
 ## Scope and evidence labels
 
 This report consolidates:
@@ -1253,6 +1414,8 @@ This report consolidates:
   the incidental revalidation of Issues 6 and 7;
 - the Milestone 2 current-revision cancellation, recovery retry, offline-member,
   and ten-wallet parallel receive regressions;
+- the Milestone 3 accepted-author payment regression, one-offline sequential
+  two-melt run, and restart/replay verification;
 - the local CPU regression investigation already recorded in that stress-test
   document.
 
@@ -1704,7 +1867,7 @@ timeouts.
 ### 6. Repeated concurrent melts fail or stall
 
 **Severity:** High for federation melt availability  
-**Status:** Confirmed in two local process runs; root cause not yet isolated
+**Status:** Resolved and verified in Milestone 3
 
 Ten concurrent standard-operation workers each completed one full mint, swap,
 melt, and restore batch. During the second batch:
@@ -1729,22 +1892,26 @@ This smaller reproduction suggests that high wallet concurrency is not required;
 consecutive melt state or payment-observation history may be sufficient. It
 also strengthens the need to test quorum operation with one member offline.
 
-**Most likely cause:** a race in concurrent melt payment ownership,
-payment-observation finalization, or quote/saga state transitions. The current
-evidence does not distinguish wallet polling from mint-side observer election or
-fakewallet payment-state handling. It should not be dismissed as fakewallet-only
-until the operation IDs, elected payer, payment identifiers, quote transitions,
-and observations from one failed melt are traced across all members.
+The minimal current-revision run established the cause. Static operation-ID
+hashing selected payment actors from all configured members, including stopped
+members. Its first melt selected active member 4 and completed; its second
+selected stopped member 5. The active quorum had accepted and applied the
+second reserve, but no member was permitted to call the backend and no payment
+observation followed. The accepted journal envelope instead consistently named
+active author member 2 on all four members.
 
-**Required regression:** run at least ten wallets through two consecutive melts
-in parallel and require exactly-once payment, a threshold-consistent terminal
-state, no stalled confirmations, and identical quote/payment observations on all
-members.
+Payment ownership now uses that authenticated, consensus-accepted author. The
+wallet no longer computes a private copy of static actor election or waits for
+that surplus connector. The post-fix sequential regression completed both
+melts, produced one payment observation per melt, converged with the stopped
+member excluded, and retained the exact result across restart. Focused
+concurrent, failed, unknown, replay, catch-up, wallet threshold, and standalone
+tests passed as recorded in Milestone 3.
 
-Add a minimal sequential process regression: one wallet, one member offline,
-and two consecutive standard batches. Bound each melt-confirmation phase and
-record the quote, elected payer, payment identifier, observer reports, saga
-state, and terminal response on every member.
+The larger ten-wallet/two-melt workload remains useful capacity coverage, but
+it is no longer needed to prove this causal fix. Any future failure in that
+larger shape must be diagnosed independently rather than attributed to the
+removed selector.
 
 ### 7. Signed private status can become unresponsive under load
 
@@ -2148,10 +2315,10 @@ application state, and session state when the bound expires.
 - The CPU fixes eliminated journal-length-dependent idle spin in the reproduced
   state.
 
-These results establish that normal restart and local swap throughput are not
-the immediate blockers. Fresh recovery, session-aware readiness, cancellation-
-safe minority application, bounded wallet completion, melt concurrency, and
-status liveness are.
+These results establish that normal restart, local swap throughput, and the
+confirmed static melt-actor failure are not the remaining immediate blockers.
+Consensus/HTTP backpressure, signed-status liveness, discovery/import, and the
+unconfirmed scaling findings remain.
 
 ## Cross-milestone dependency summary
 
@@ -2165,8 +2332,9 @@ order, the dependencies are:
    journal height and digests match.
 3. Prove, then implement, cancellation-safe server application and bounded client exit after
    threshold success; eliminate accepted-but-unapplied minority stalls.
-4. Reproduce and explain consecutive melt failure/stall behavior before fixing the
-   one-wallet, one-offline-member case.
+4. Keep the resolved accepted-author melt regression: one wallet, one offline
+   member, two consecutive melts, and exact restart/replay without duplicate
+   payment.
 5. Complete the cadence/backpressure causal chain, then bound empty-unit
    amplification and preserve HTTP liveness under small remote
    workloads.

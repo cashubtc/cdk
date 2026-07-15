@@ -61,7 +61,7 @@ use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 
 use super::FederationRuntimeConfig;
 
-fn runtime_config() -> FederationRuntimeConfig {
+fn runtime_configs() -> Vec<FederationRuntimeConfig> {
     let members = (1..=2)
         .map(|id| {
             TrustedDealerMember::new(
@@ -90,14 +90,19 @@ fn runtime_config() -> FederationRuntimeConfig {
         vec![keyset],
     )
     .expect("trusted dealer bundle");
-    let private_config = bundle
+    bundle
         .private_configs
-        .get(&cdk_common::federation::MemberId::new(1).expect("member id"))
-        .expect("private config")
-        .clone();
+        .values()
+        .cloned()
+        .map(|private_config| {
+            FederationRuntimeConfig::new(bundle.public_config.clone(), private_config)
+                .expect("runtime config")
+        })
+        .collect()
+}
 
-    FederationRuntimeConfig::new(bundle.public_config.clone(), private_config)
-        .expect("runtime config")
+fn runtime_config() -> FederationRuntimeConfig {
+    runtime_configs().remove(0)
 }
 
 fn runtime_config_with_inactive_rotation_keyset() -> FederationRuntimeConfig {
@@ -846,12 +851,6 @@ fn melt_payment_observation_envelope(
     ))
 }
 
-fn operation_id_with_selector(selector: u64) -> FederationOperationId {
-    let mut bytes = [0; 32];
-    bytes[..8].copy_from_slice(&selector.to_be_bytes());
-    FederationOperationId::from_bytes(bytes)
-}
-
 fn fake_melt_quote_request(amount_msat: u64, payment_state: MeltQuoteState) -> MeltQuoteRequest {
     let description = cdk_fake_wallet::FakeInvoiceDescription {
         pay_invoice_state: payment_state,
@@ -934,26 +933,15 @@ fn melt_quote_op(
     )
 }
 
-fn locally_elected_melt_operation<T>(
+fn locally_authored_melt_operation<T>(
     runtime_config: &FederationRuntimeConfig,
-    mut candidate: impl FnMut(u16) -> (MeltRequest<QuoteId>, T),
+    candidate: impl FnOnce(u16) -> (MeltRequest<QuoteId>, T),
 ) -> (FederationOperationEnvelope, T) {
-    for attempt in 0..64_u16 {
-        let (request, fixture) = candidate(attempt);
-        let envelope = runtime_config
-            .melt_operation(request)
-            .expect("melt operation");
-        let operation_id = envelope.operation_id().expect("melt operation ID");
-        if runtime_config
-            .public_config()
-            .elected_melt_payment_member(operation_id)
-            == Some(runtime_config.member_id())
-        {
-            return (envelope, fixture);
-        }
-    }
-
-    panic!("failed to construct a locally elected melt operation");
+    let (request, fixture) = candidate(0);
+    let envelope = runtime_config
+        .melt_operation(request)
+        .expect("melt operation");
+    (envelope, fixture)
 }
 
 async fn setup_pending_federated_melt(
@@ -983,14 +971,14 @@ async fn setup_pending_federated_melt_with_label(
     );
     persist_and_apply_entry(mint, &quote_entry).await;
 
-    let (melt_envelope, input_ys) = locally_elected_melt_operation(runtime_config, |attempt| {
-        let proofs = vec![
-            proof_for_runtime(runtime_config, &format!("{label}-{attempt}-input-one")),
-            proof_for_runtime(runtime_config, &format!("{label}-{attempt}-input-two")),
-        ];
-        let input_ys = proofs.ys().expect("melt input ys");
-        (MeltRequest::new(quote.clone(), proofs, None), input_ys)
-    });
+    let proofs = vec![
+        proof_for_runtime(runtime_config, &format!("{label}-input-one")),
+        proof_for_runtime(runtime_config, &format!("{label}-input-two")),
+    ];
+    let input_ys = proofs.ys().expect("melt input ys");
+    let melt_envelope = runtime_config
+        .melt_operation(MeltRequest::new(quote.clone(), proofs, None))
+        .expect("melt operation");
     let melt_entry = appended_entry(journal, melt_envelope);
     persist_and_apply_entry(mint, &melt_entry).await;
 

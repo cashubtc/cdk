@@ -10,8 +10,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use cdk_common::error::ErrorResponse;
 use cdk_common::federation::{
-    FederationConfig, FederationConfigDigest, FederationError, FederationInvite,
-    FederationMeltOperation, FederationOperation, FederationOperationEnvelope, MemberId,
+    FederationConfig, FederationConfigDigest, FederationError, FederationInvite, MemberId,
 };
 use cdk_common::{
     MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
@@ -687,89 +686,6 @@ impl FederatedMintConnector {
             .0)
     }
 
-    async fn validate_member_connector(
-        &self,
-        member_id: MemberId,
-    ) -> Result<Arc<dyn MintConnector + Send + Sync>, Error> {
-        if let Some(connector) = self
-            .valid_member_connectors_cache
-            .read()
-            .await
-            .as_ref()
-            .and_then(|connectors| connectors.get(&member_id))
-            .cloned()
-        {
-            return Ok(connector);
-        }
-
-        let connector = self
-            .member_connectors
-            .get(&member_id)
-            .cloned()
-            .ok_or(FederationError::UnknownMember { member_id })?;
-        let (mint_info, advertised) =
-            tokio::try_join!(connector.get_mint_info(), connector.get_mint_keys(),)?;
-        FederationWalletConnector::validate_member_mint_info_with_config_digest(
-            &self.public_config,
-            member_id,
-            &mint_info,
-            self.config_digest,
-        )?;
-        validate_member_active_keysets(&self.public_config, member_id, &advertised)?;
-
-        self.valid_member_connectors_cache
-            .write()
-            .await
-            .get_or_insert_with(BTreeMap::new)
-            .insert(member_id, connector.clone());
-        Ok(connector)
-    }
-
-    async fn validate_melt_member_connectors(
-        &self,
-        elected_member: MemberId,
-    ) -> Result<BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>, Error> {
-        let mut connectors = self.validate_member_active_keysets().await?;
-        let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
-        let target = threshold
-            .saturating_add(1)
-            .min(self.public_config.members.len());
-        let candidates = std::iter::once(elected_member)
-            .chain(self.public_config.members.keys().copied())
-            .collect::<Vec<_>>();
-
-        for member_id in candidates {
-            if connectors.len() >= target {
-                break;
-            }
-            if connectors.contains_key(&member_id) {
-                continue;
-            }
-
-            match tokio::time::timeout(
-                self.config.member_request_timeout,
-                self.validate_member_connector(member_id),
-            )
-            .await
-            {
-                Ok(Ok(connector)) => {
-                    connectors.insert(member_id, connector);
-                }
-                Ok(Err(err)) => tracing::debug!(
-                    member_id = %member_id,
-                    "Additional federation melt member is unavailable: {}",
-                    err
-                ),
-                Err(_) => tracing::debug!(
-                    member_id = %member_id,
-                    "Additional federation melt member validation timed out"
-                ),
-            }
-        }
-
-        Ok(self.member_connectors.clone())
-    }
-
     async fn validate_member_active_keysets_with_mint_info(
         &self,
     ) -> Result<
@@ -955,7 +871,6 @@ impl FederatedMintConnector {
         &self,
         member_connectors: &BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
         outputs: Option<&[BlindedMessage]>,
-        elected_member: MemberId,
         mut call_member: F,
     ) -> Result<Vec<(MemberId, MeltQuoteResponse<String>)>, Error>
     where
@@ -975,18 +890,7 @@ impl FederatedMintConnector {
                     else {
                         return threshold_rejection(failures, threshold).is_some();
                     };
-                    let terminal = group.first().is_some_and(|(_, response)| {
-                        !matches!(
-                            response.state(),
-                            MeltQuoteState::Pending | MeltQuoteState::Unknown
-                        )
-                    });
-                    let elected_responded = responses
-                        .iter()
-                        .any(|(member_id, _)| *member_id == elected_member);
-
-                    ((terminal || elected_responded)
-                        && self.aggregate_melt_response(outputs, &group).is_ok())
+                    (self.aggregate_melt_response(outputs, &group).is_ok())
                         || threshold_rejection(failures, threshold).is_some()
                 },
             )
@@ -2353,34 +2257,14 @@ impl MintConnector for FederatedMintConnector {
                 .validate_blinded_change_outputs(outputs)
                 .map_err(map_federation_validation_error)?;
         }
-        let operation_id = FederationOperationEnvelope::new(
-            self.public_config.federation_id,
-            FederationOperation::Melt(FederationMeltOperation {
-                request: request.clone(),
-            }),
-        )
-        .operation_id()?;
-        let elected_member = self
-            .public_config
-            .elected_melt_payment_member(operation_id)
-            .ok_or_else(|| {
-                Error::InvalidMintResponse(
-                    "federation config has no member available for melt payment".to_string(),
-                )
-            })?;
-        let member_connectors = self.validate_melt_member_connectors(elected_member).await?;
+        self.validate_member_active_keysets().await?;
 
         let member_responses = self
-            .collect_melt_responses(
-                &member_connectors,
-                outputs.as_deref(),
-                elected_member,
-                |connector| {
-                    let method = method.clone();
-                    let request = request.clone();
-                    async move { connector.post_melt(&method, request).await }
-                },
-            )
+            .collect_melt_responses(&self.member_connectors, outputs.as_deref(), |connector| {
+                let method = method.clone();
+                let request = request.clone();
+                async move { connector.post_melt(&method, request).await }
+            })
             .await?;
         let result = self.aggregate_melt_response(outputs.as_deref(), &member_responses);
         #[cfg(feature = "prometheus")]

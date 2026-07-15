@@ -1317,13 +1317,25 @@ async fn settled_federation_melt_response(
         return initial;
     }
     assert_eq!(initial.state(), MeltQuoteState::Pending);
-    connector
-        .get_melt_quote_status(
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            &quote_id.to_string(),
-        )
-        .await
-        .expect("settled federation melt status")
+    for _ in 0..100 {
+        if let Ok(response) = connector
+            .get_melt_quote_status(
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                &quote_id.to_string(),
+            )
+            .await
+        {
+            if !matches!(
+                response.state(),
+                MeltQuoteState::Pending | MeltQuoteState::Unknown
+            ) {
+                return response;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    panic!("federated melt did not reach a threshold terminal state")
 }
 
 fn assert_aggregate_response_valid(
@@ -2746,6 +2758,68 @@ async fn federated_mint_connector_fans_out_melt_without_change() {
 
     assert_eq!(response.state(), MeltQuoteState::Paid);
     assert!(response.change().is_none());
+}
+
+#[tokio::test]
+async fn federated_mint_connector_returns_threshold_pending_without_slow_surplus_member() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    let slow_member = MockMintConnector::new();
+    set_member_advertisement_with_keyset(&slow_member, &bundle, member_id(1), advertised.clone());
+    slow_member.set_post_melt_delay(Duration::from_secs(30));
+    slow_member.set_post_melt_response(Ok(MeltQuoteResponse::Bolt11(
+        melt_response_without_change_with_state(MeltQuoteState::Pending),
+    )));
+    connectors.insert(
+        member_id(1),
+        Arc::new(slow_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    for member_id in [member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        connector.set_post_melt_response(Ok(MeltQuoteResponse::Bolt11(
+            melt_response_without_change_with_state(MeltQuoteState::Pending),
+        )));
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let request = (0..128)
+        .find_map(|attempt| {
+            let request = MeltRequest::new(format!("melt-quote-{attempt}"), Vec::new(), None);
+            let envelope = cdk_common::federation::FederationOperationEnvelope::new(
+                bundle.public_config.federation_id,
+                cdk_common::federation::FederationOperation::Melt(
+                    cdk_common::federation::FederationMeltOperation {
+                        request: request.clone(),
+                    },
+                ),
+            );
+            let operation_id = envelope.operation_id().expect("melt operation id");
+            let selector = u64::from_be_bytes(
+                operation_id.to_bytes()[..8]
+                    .try_into()
+                    .expect("operation selector bytes"),
+            );
+            (selector % 3 == 0).then_some(request)
+        })
+        .expect("request whose old roster selector points at the slow member");
+    let connector = FederatedMintConnector::new(bundle.public_config, connectors)
+        .expect("federated mint connector");
+    let response = tokio::time::timeout(
+        Duration::from_secs(1),
+        connector.post_melt(&PaymentMethod::Known(KnownMethod::Bolt11), request),
+    )
+    .await
+    .expect("threshold pending response must not wait for the slow surplus member")
+    .expect("melt response");
+
+    assert_eq!(response.state(), MeltQuoteState::Pending);
 }
 
 #[tokio::test]

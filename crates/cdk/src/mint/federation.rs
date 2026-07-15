@@ -1006,12 +1006,16 @@ impl Mint {
             .as_deref()
             .ok_or(Error::Internal)?
             .parse::<FederationOperationId>()?;
-        let is_elected = config
-            .public_config()
-            .elected_melt_payment_member(operation_id)
-            .ok_or(Error::Internal)?
+        let entry = self
+            .localstore
+            .get_federation_journal_entry_by_operation_id(operation_id)
+            .await?
+            .ok_or(Error::Internal)?;
+        let is_payment_actor = entry
+            .envelope
+            .verify_authorization(config.public_config())?
             == config.member_id();
-        let _active_payment = if is_elected {
+        let _active_payment = if is_payment_actor {
             let Some(active_payment) = self.claim_active_federation_melt_payment(quote_id) else {
                 return Ok(None);
             };
@@ -1021,7 +1025,7 @@ impl Mint {
         };
 
         let payment = match saga.state {
-            SagaStateEnum::Melt(MeltSagaState::SetupComplete) if is_elected => {
+            SagaStateEnum::Melt(MeltSagaState::SetupComplete) if is_payment_actor => {
                 let Some(payment) = self
                     .attempt_federation_external_melt_payment(quote.clone(), saga)
                     .await?
@@ -1041,7 +1045,7 @@ impl Mint {
         match payment.status {
             cdk_common::MeltQuoteState::Paid => {}
             cdk_common::MeltQuoteState::Failed | cdk_common::MeltQuoteState::Unpaid
-                if is_elected => {}
+                if is_payment_actor => {}
             cdk_common::MeltQuoteState::Failed
             | cdk_common::MeltQuoteState::Unpaid
             | cdk_common::MeltQuoteState::Pending

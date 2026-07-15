@@ -3420,7 +3420,7 @@ mod tests {
         let Some(cdk::federation::FederationPaymentObservation::MeltQuote(observation)) =
             observation
         else {
-            panic!("elected member did not record a terminal melt observation");
+            panic!("operation author did not record a terminal melt observation");
         };
         let observer = mints
             .iter()
@@ -3563,7 +3563,7 @@ mod tests {
 
     #[cfg(feature = "federation")]
     async fn reserve_federated_melt_for_observer(state: &MintState, label: &str) -> QuoteId {
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             state,
             1_000,
             "".to_string(),
@@ -3603,37 +3603,15 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
-    async fn create_locally_elected_federated_melt_request(
+    async fn create_federated_melt_request(
         state: &MintState,
         amount_msat: u64,
         description: String,
         inputs: Vec<Proof>,
         outputs: Option<Vec<BlindedMessage>>,
     ) -> cdk::nuts::MeltRequest<QuoteId> {
-        let config = state
-            .mint
-            .effective_federation_config()
-            .await
-            .expect("effective federation config")
-            .expect("federation config");
-        let local_member = config.member_id();
-        let (quote_id, request) = (0..100)
-            .find_map(|_| {
-                let quote_id = QuoteId::new();
-                let request =
-                    cdk::nuts::MeltRequest::new(quote_id.clone(), inputs.clone(), outputs.clone());
-                let operation_id = config
-                    .melt_operation(request.clone())
-                    .expect("melt operation")
-                    .operation_id()
-                    .expect("melt operation id");
-                (config
-                    .public_config()
-                    .elected_melt_payment_member(operation_id)
-                    == Some(local_member))
-                .then_some((quote_id, request))
-            })
-            .expect("find quote ID that elects the local payment member");
+        let quote_id = QuoteId::new();
+        let request = cdk::nuts::MeltRequest::new(quote_id.clone(), inputs, outputs);
 
         finalize_federated_melt_quote_with_description(state, quote_id, amount_msat, description)
             .await;
@@ -6062,7 +6040,7 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let melt_request = create_locally_elected_federated_melt_request(
+        let melt_request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -7064,7 +7042,7 @@ mod tests {
     #[tokio::test]
     async fn process_melt_request_records_federation_melt_operation() {
         let state = create_federated_test_state().await;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -7149,7 +7127,7 @@ mod tests {
                 .next()
                 .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1_000,
             "".to_string(),
@@ -7372,7 +7350,7 @@ mod tests {
                 .next()
                 .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1_000,
             "".to_string(),
@@ -7617,7 +7595,7 @@ mod tests {
             vec![proof_for_amount(&state, 2, "catching-up-swap-input")],
             outputs_for_amount_with_label(&state, 2, "catching-up-swap-output"),
         );
-        let melt_request = create_locally_elected_federated_melt_request(
+        let melt_request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -7731,7 +7709,7 @@ mod tests {
             .blinded_secret
             .as_bls_g1()
             .expect("change output should be BLS");
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -7796,7 +7774,7 @@ mod tests {
                 .next()
                 .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -7903,7 +7881,7 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -7979,7 +7957,7 @@ mod tests {
                 .next()
                 .expect("first change output");
         first_change_output.amount = Amount::ZERO;
-        let first_request = create_locally_elected_federated_melt_request(
+        let first_request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -8006,7 +7984,7 @@ mod tests {
                 .next()
                 .expect("second change output");
         second_change_output.amount = Amount::ZERO;
-        let second_request = create_locally_elected_federated_melt_request(
+        let second_request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -8083,7 +8061,7 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -8160,7 +8138,7 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -8457,7 +8435,7 @@ mod tests {
         assert_eq!(
             make_payment_calls.load(Ordering::SeqCst),
             1,
-            "only the elected member should attempt the outgoing fake-wallet payment"
+            "only the operation author should attempt the outgoing fake-wallet payment"
         );
 
         for state in &states {
@@ -8855,7 +8833,7 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
@@ -8922,7 +8900,7 @@ mod tests {
         };
         let input = proof_for_amount(&state, 2, "duplicate-pending-melt");
         let input_y = input.y().expect("input y");
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
@@ -9019,7 +8997,7 @@ mod tests {
         };
         let input = proof_for_amount(&state, 2, "pending-melt-sqlite-restart");
         let input_y = input.y().expect("input y");
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
@@ -9112,7 +9090,7 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -9172,7 +9150,7 @@ mod tests {
                 .next()
                 .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             "".to_string(),
@@ -9329,7 +9307,7 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
@@ -9412,7 +9390,7 @@ mod tests {
             .next()
             .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
@@ -9489,7 +9467,7 @@ mod tests {
         };
         let input = proof_for_amount(&state, 2, "failed-melt");
         let input_y = input.y().expect("input y");
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
@@ -9628,7 +9606,7 @@ mod tests {
                 .next()
                 .expect("change output");
         change_output.amount = Amount::ZERO;
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
@@ -9743,7 +9721,7 @@ mod tests {
         };
         let input = proof_for_amount(&state, 2, "failed-melt-sqlite-restart");
         let input_y = input.y().expect("input y");
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
@@ -9845,7 +9823,7 @@ mod tests {
         };
         let input = proof_for_amount(&state, 2, "failed-melt-catch-up");
         let input_y = input.y().expect("input y");
-        let request = create_locally_elected_federated_melt_request(
+        let request = create_federated_melt_request(
             &state,
             1000,
             serde_json::to_string(&fake_description).expect("fake invoice description"),
