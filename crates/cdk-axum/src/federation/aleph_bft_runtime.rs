@@ -41,6 +41,11 @@ use crate::{
 /// bounded and purely in-memory.
 pub(crate) const CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE: Duration = Duration::from_secs(10);
 const CDK_ALEPH_BFT_FINALIZATION_ACTIVITY_GRACE: Duration = Duration::from_secs(1);
+/// Hard byte limit for one active AlephBFT session backup.
+pub(crate) const MAX_ALEPH_BFT_SESSION_BACKUP_BYTES: usize = 256 * 1024 * 1024;
+/// Hard chunk limit for one active AlephBFT session backup.
+pub(crate) const MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS: usize = 262_144;
+const ALEPH_BFT_BACKUP_LOAD_PAGE_CHUNKS: usize = 1_024;
 
 /// SHA-256 hasher used by CDK's AlephBFT session units.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -869,29 +874,32 @@ impl CdkAlephBftDbBackup {
 
     /// Create a reader over the currently persisted backup bytes.
     pub(crate) async fn try_reader(&self) -> Result<CdkAlephBftBackupReader, cdk::Error> {
-        let bytes = self
-            .db
-            .get_federation_aleph_bft_backup_bytes(self.session_id)
-            .await
-            .map_err(cdk::Error::Database)?
-            .unwrap_or_default();
+        let (chunks, _) = load_bounded_aleph_bft_backup_chunks(&self.db, self.session_id).await?;
+        let bytes = chunks.concat();
 
         Ok(CdkAlephBftBackupReader { bytes, position: 0 })
     }
 
     /// Create an append-only writer that durably persists on flush or close.
     pub(crate) fn writer(&self) -> CdkAlephBftDbBackupWriter {
-        self.writer_with_replayed_bytes(Vec::new())
+        self.writer_with_replayed_bytes(Vec::new(), 0)
     }
 
-    fn writer_with_replayed_bytes(&self, replayed_bytes: Vec<u8>) -> CdkAlephBftDbBackupWriter {
+    fn writer_with_replayed_bytes(
+        &self,
+        replayed_bytes: Vec<u8>,
+        persisted_chunks: usize,
+    ) -> CdkAlephBftDbBackupWriter {
         let replay_match_active = !replayed_bytes.is_empty();
+        let persisted_bytes = replayed_bytes.len();
         CdkAlephBftDbBackupWriter {
             db: Arc::clone(&self.db),
             session_id: self.session_id,
             state: Arc::new(Mutex::new(CdkAlephBftDbBackupWriterState {
                 replayed_bytes,
                 replay_match_active,
+                persisted_bytes,
+                persisted_chunks,
                 ..CdkAlephBftDbBackupWriterState::default()
             })),
         }
@@ -900,11 +908,8 @@ impl CdkAlephBftDbBackup {
     async fn try_replay_io(
         &self,
     ) -> Result<(CdkAlephBftBackupReader, CdkAlephBftDbBackupWriter), cdk::Error> {
-        let chunks = self
-            .db
-            .get_federation_aleph_bft_backup_chunks(self.session_id)
-            .await
-            .map_err(cdk::Error::Database)?;
+        let (chunks, _) = load_bounded_aleph_bft_backup_chunks(&self.db, self.session_id).await?;
+        let persisted_chunks = chunks.len();
         let bytes = chunks.concat();
 
         Ok((
@@ -912,9 +917,85 @@ impl CdkAlephBftDbBackup {
                 bytes: bytes.clone(),
                 position: 0,
             },
-            self.writer_with_replayed_bytes(bytes),
+            self.writer_with_replayed_bytes(bytes, persisted_chunks),
         ))
     }
+}
+
+async fn load_bounded_aleph_bft_backup_chunks(
+    db: &DynMintDatabase,
+    session_id: u64,
+) -> Result<(Vec<Vec<u8>>, usize), cdk::Error> {
+    let metadata = db
+        .get_federation_aleph_bft_backup_metadata(session_id)
+        .await
+        .map_err(cdk::Error::Database)?;
+    if metadata.chunk_count > MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS as u64 {
+        return Err(cdk::Error::Custom(format!(
+            "AlephBFT session {session_id} backup exceeds the {MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS} chunk limit"
+        )));
+    }
+    if metadata.total_bytes > MAX_ALEPH_BFT_SESSION_BACKUP_BYTES as u64 {
+        return Err(cdk::Error::Custom(format!(
+            "AlephBFT session {session_id} backup exceeds the {MAX_ALEPH_BFT_SESSION_BACKUP_BYTES} byte limit"
+        )));
+    }
+    let expected_chunks = usize::try_from(metadata.chunk_count).map_err(|_| {
+        cdk::Error::Custom(format!(
+            "AlephBFT session {session_id} backup chunk count does not fit in usize"
+        ))
+    })?;
+    let mut chunks = Vec::with_capacity(expected_chunks);
+    let mut total_bytes = 0usize;
+    loop {
+        let remaining_chunks = MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS.saturating_sub(chunks.len());
+        let limit = ALEPH_BFT_BACKUP_LOAD_PAGE_CHUNKS.min(remaining_chunks.saturating_add(1));
+        let from_chunk = u64::try_from(chunks.len()).map_err(|_| {
+            cdk::Error::Custom(format!(
+                "AlephBFT session {session_id} backup chunk count does not fit in u64"
+            ))
+        })?;
+        let page = db
+            .get_federation_aleph_bft_backup_chunks_from(session_id, from_chunk, limit)
+            .await
+            .map_err(cdk::Error::Database)?;
+        if page.len() > remaining_chunks {
+            return Err(cdk::Error::Custom(format!(
+                "AlephBFT session {session_id} backup exceeds the {MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS} chunk limit"
+            )));
+        }
+        if page.is_empty() {
+            break;
+        }
+        let page_len = page.len();
+        for chunk in page {
+            if chunk.is_empty() {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT session {session_id} backup contains an empty chunk"
+                )));
+            }
+            total_bytes = total_bytes.checked_add(chunk.len()).ok_or_else(|| {
+                cdk::Error::Custom(format!(
+                    "AlephBFT session {session_id} backup byte count overflowed"
+                ))
+            })?;
+            if total_bytes > MAX_ALEPH_BFT_SESSION_BACKUP_BYTES {
+                return Err(cdk::Error::Custom(format!(
+                    "AlephBFT session {session_id} backup exceeds the {MAX_ALEPH_BFT_SESSION_BACKUP_BYTES} byte limit"
+                )));
+            }
+            chunks.push(chunk);
+        }
+        if page_len < limit {
+            break;
+        }
+    }
+    if chunks.len() != expected_chunks || total_bytes as u64 != metadata.total_bytes {
+        return Err(cdk::Error::Custom(format!(
+            "AlephBFT session {session_id} backup changed while it was loaded"
+        )));
+    }
+    Ok((chunks, total_bytes))
 }
 
 #[derive(Default)]
@@ -924,6 +1005,9 @@ struct CdkAlephBftDbBackupWriterState {
     replayed_bytes: Vec<u8>,
     replayed_position: usize,
     replay_match_active: bool,
+    persisted_bytes: usize,
+    persisted_chunks: usize,
+    flush_bytes: usize,
 }
 
 /// Append-only AlephBFT backup writer that commits flushed bytes to mint DB.
@@ -1001,9 +1085,13 @@ fn poll_aleph_bft_db_backup_flush(
             match flush.as_mut().poll(cx) {
                 Poll::Ready(Ok(())) => {
                     state.flush = None;
+                    state.persisted_bytes = state.persisted_bytes.saturating_add(state.flush_bytes);
+                    state.persisted_chunks = state.persisted_chunks.saturating_add(1);
+                    state.flush_bytes = 0;
                 }
                 Poll::Ready(Err(err)) => {
                     state.flush = None;
+                    state.flush_bytes = 0;
                     return Poll::Ready(Err(err));
                 }
                 Poll::Pending => return Poll::Pending,
@@ -1034,7 +1122,24 @@ fn poll_aleph_bft_db_backup_flush(
                 state.replay_match_active = false;
             }
 
+            let persisted_bytes = match state.persisted_bytes.checked_add(bytes.len()) {
+                Some(persisted_bytes) if persisted_bytes <= MAX_ALEPH_BFT_SESSION_BACKUP_BYTES => {
+                    persisted_bytes
+                }
+                _ => {
+                    return Poll::Ready(Err(io::Error::other(format!(
+                        "AlephBFT session {session_id} backup exceeds the {MAX_ALEPH_BFT_SESSION_BACKUP_BYTES} byte limit"
+                    ))));
+                }
+            };
+            if state.persisted_chunks >= MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS {
+                return Poll::Ready(Err(io::Error::other(format!(
+                    "AlephBFT session {session_id} backup exceeds the {MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS} chunk limit"
+                ))));
+            }
+
             let db = Arc::clone(db);
+            state.flush_bytes = persisted_bytes.saturating_sub(state.persisted_bytes);
             state.flush = Some(Box::pin(async move {
                 persist_aleph_bft_backup_bytes(db, session_id, bytes).await
             }));
@@ -2105,6 +2210,39 @@ mod tests {
         let backup = CdkAlephBftDbBackup::new(db, 100);
 
         assert_writer(backup.writer());
+    }
+
+    #[tokio::test]
+    async fn cdk_aleph_bft_db_backup_writer_enforces_session_bounds() {
+        let db: DynMintDatabase =
+            Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let mut byte_limited = CdkAlephBftDbBackupWriter {
+            db: Arc::clone(&db),
+            session_id: 106,
+            state: Arc::new(Mutex::new(CdkAlephBftDbBackupWriterState {
+                persisted_bytes: MAX_ALEPH_BFT_SESSION_BACKUP_BYTES,
+                ..CdkAlephBftDbBackupWriterState::default()
+            })),
+        };
+        byte_limited
+            .write_all(b"x")
+            .await
+            .expect("buffer byte beyond limit");
+        assert!(byte_limited.flush().await.is_err());
+
+        let mut chunk_limited = CdkAlephBftDbBackupWriter {
+            db,
+            session_id: 107,
+            state: Arc::new(Mutex::new(CdkAlephBftDbBackupWriterState {
+                persisted_chunks: MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS,
+                ..CdkAlephBftDbBackupWriterState::default()
+            })),
+        };
+        chunk_limited
+            .write_all(b"x")
+            .await
+            .expect("buffer chunk beyond limit");
+        assert!(chunk_limited.flush().await.is_err());
     }
 
     #[test]

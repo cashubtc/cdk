@@ -50,9 +50,10 @@ mod journal;
 
 use async_trait::async_trait;
 use cdk_common::database::mint::{
-    FederationApplicationDatabase, FederationApplicationTransaction, FederationDkgDatabase,
-    FederationDkgTransaction, FederationFrostWalletDatabase, FederationFrostWalletTransaction,
-    FederationJournalDatabase, FederationJournalTransaction, FederationMintQuoteState,
+    FederationAlephBftBackupMetadata, FederationApplicationDatabase,
+    FederationApplicationTransaction, FederationDkgDatabase, FederationDkgTransaction,
+    FederationFrostWalletDatabase, FederationFrostWalletTransaction, FederationJournalDatabase,
+    FederationJournalTransaction, FederationMintQuoteState,
 };
 use cdk_common::database::Error;
 use cdk_common::federation::{

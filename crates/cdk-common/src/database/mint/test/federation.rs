@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use crate::database::mint::{Database, FederationJournalDatabase};
+use crate::database::mint::{
+    Database, FederationAlephBftBackupMetadata, FederationJournalDatabase,
+};
 use crate::error::{Error, ErrorResponse};
 use crate::federation::{
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
@@ -1111,6 +1113,12 @@ where
             .expect("missing backup session"),
         None
     );
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_metadata(7)
+            .await
+            .expect("empty backup metadata"),
+        FederationAlephBftBackupMetadata::default()
+    );
 
     let mut tx = Database::begin_transaction(&db).await.expect("begin empty");
     tx.append_federation_aleph_bft_backup_bytes(7, &[])
@@ -1154,6 +1162,15 @@ where
             .await
             .expect("session 7 backup bytes"),
         Some(b"first-second".to_vec())
+    );
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_metadata(7)
+            .await
+            .expect("session 7 backup metadata"),
+        FederationAlephBftBackupMetadata {
+            chunk_count: 2,
+            total_bytes: 12,
+        }
     );
     assert_eq!(
         db.get_federation_aleph_bft_backup_bytes(8)
@@ -1205,6 +1222,36 @@ where
         db.get_federation_aleph_bft_backup_bytes(8)
             .await
             .expect("other session after replacement"),
+        Some(b"other-session".to_vec())
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin rolled-back prune");
+    tx.prune_federation_aleph_bft_backups_before(8)
+        .await
+        .expect("prune before rollback");
+    tx.rollback().await.expect("rollback backup prune");
+    assert!(db
+        .get_federation_aleph_bft_backup_bytes(7)
+        .await
+        .expect("session 7 after rolled-back prune")
+        .is_some());
+
+    let mut tx = Database::begin_transaction(&db).await.expect("begin prune");
+    tx.prune_federation_aleph_bft_backups_before(8)
+        .await
+        .expect("prune old backup");
+    tx.commit().await.expect("commit backup prune");
+    assert!(db
+        .get_federation_aleph_bft_backup_bytes(7)
+        .await
+        .expect("pruned session 7")
+        .is_none());
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_bytes(8)
+            .await
+            .expect("retained session 8"),
         Some(b"other-session".to_vec())
     );
 }

@@ -1,7 +1,7 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (milestones 1-2 complete; milestone 3 production/exchange,
-milestone 4 catch-up, and milestone 5 checkpoint startup in progress)
+Status: in progress (milestones 1-2 and 5 complete; milestone 3
+production/exchange and milestone 4 catch-up in progress)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -1157,17 +1157,17 @@ only the independently bounded current AlephBFT live-session backup.
       row-corruption detection to the explicit operator audit.
 - [x] Start from a checkpoint at any complete finalized-unit boundary; do not
       require or force an AlephBFT session boundary.
-- [ ] Load only the backup for the active AlephBFT session. If the local backup
+- [x] Load only the backup for the active AlephBFT session. If the local backup
       is missing or stale, reuse authenticated private-REST backup recovery from
       a peer whose session and durable target frontier match, with size bounds,
       backoff, and source failover.
-- [ ] Ensure invalid or mismatched backup bytes cannot advance authoritative
+- [x] Ensure invalid or mismatched backup bytes cannot advance authoritative
       journal/application state. Validate newly finalized payloads against the
       checkpoint base and suffix through the normal CDK finalization path.
-- [ ] Keep current-session backup work bounded by hard round/chunk/byte limits
+- [x] Keep current-session backup work bounded by hard round/chunk/byte limits
       and session rotation; never load or transfer every historical session
       backup during startup.
-- [ ] Define crash-safe pruning for obsolete session backups after a newer
+- [x] Define crash-safe pruning for obsolete session backups after a newer
       session is durably active and retained checkpoint/finalized evidence covers
       the older session.
 - [x] Fall back fail-closed to genesis/full recovery only for an empty federation
@@ -1189,7 +1189,16 @@ Live finalization uses the same operation-ID lookup plus a normalized durable
 conflict-key index. It hydrates only historical entries referenced by the next
 bounded finalized unit into the existing journal/finalizer decision logic, so
 old duplicates and semantic conflicts remain deterministic without rebuilding
-an unbounded prefix set.
+an unbounded prefix set. Live-session recovery probes and loads only the active
+session. Scalar backup metadata is checked before blobs are read, chunks are
+loaded in bounded pages, peer recovery and local replay/writes share hard byte
+and chunk limits, and the existing AlephBFT round/session rotation remains the
+time bound. Backup bytes remain opaque non-authoritative input: every emitted
+payload still passes through the checkpoint-based finalizer and ordinary atomic
+journal/application path. After checkpoint and suffix validation succeeds,
+advancing the active-session marker and pruning strictly older backups occur in
+one transaction; no-checkpoint startup retains the legacy backups needed for
+full recovery.
 
 Verified with:
 
@@ -1202,6 +1211,12 @@ Verified with:
 - `cargo test -p cdk-axum --features federation
   federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows --lib`
   (exact frontier and one-row post-checkpoint suffix);
+- `cargo test -p cdk-sqlite --features federation
+  federation_aleph_bft_backup_persistence --lib`;
+- `cargo test -p cdk-axum --features federation
+  cdk_aleph_bft_db_backup_writer_enforces_session_bounds --lib`;
+- `cargo test -p cdk-axum --features federation
+  cdk_aleph_bft_session_io_preserves_identical_backup_chunks --lib`;
 - `cargo test -p cdk-common --features federation --lib`;
 - `cargo check -p cdk-axum --features federation`;
 - `cargo clippy -p cdk-common --lib --features federation -- -D warnings`.

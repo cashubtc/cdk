@@ -653,17 +653,15 @@ where
             "AlephBFT active session transaction commit failed: {err}"
         ))
     })?;
-    let existing_session_backup_bytes = db
-        .get_federation_aleph_bft_backup_bytes(session_id)
+    let existing_session_backup_chunks = db
+        .get_federation_aleph_bft_backup_chunks_from(session_id, 0, 1)
         .await
         .map_err(|err| {
             cdk::Error::Custom(format!(
                 "AlephBFT network retry backup lookup failed: {err}"
             ))
         })?;
-    let has_existing_session_backup = existing_session_backup_bytes
-        .as_ref()
-        .is_some_and(|bytes| !bytes.is_empty());
+    let has_existing_session_backup = !existing_session_backup_chunks.is_empty();
     let options = if restore_recovered_startup_round_cap {
         aleph_bft_live_session_options_for_startup(options, session_id, has_existing_session_backup)
     } else {

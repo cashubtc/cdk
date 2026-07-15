@@ -66,6 +66,16 @@ pub struct FederationMintQuoteState {
 }
 
 #[cfg(feature = "federation")]
+/// Scalar size metadata for one local AlephBFT session backup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FederationAlephBftBackupMetadata {
+    /// Number of persisted backup chunks.
+    pub chunk_count: u64,
+    /// Total persisted backup bytes.
+    pub total_bytes: u64,
+}
+
+#[cfg(feature = "federation")]
 impl From<MintMintQuote> for FederationMintQuoteState {
     fn from(quote: MintMintQuote) -> Self {
         let amount_paid = quote.amount_paid();
@@ -854,6 +864,12 @@ pub trait FederationJournalTransaction {
         chunks: &[Vec<u8>],
     ) -> Result<(), Self::Err>;
 
+    /// Delete local AlephBFT backup chunks for sessions older than `session`.
+    async fn prune_federation_aleph_bft_backups_before(
+        &mut self,
+        session: u64,
+    ) -> Result<(), Self::Err>;
+
     /// Persist the latest active AlephBFT session marker and atomically rebind
     /// validated pending operations from older sessions to the effective
     /// monotonic active session.
@@ -1183,6 +1199,12 @@ pub trait FederationJournalDatabase {
         from_chunk: u64,
         limit: usize,
     ) -> Result<Vec<Vec<u8>>, Self::Err>;
+
+    /// Get scalar chunk and byte totals for one local AlephBFT session backup.
+    async fn get_federation_aleph_bft_backup_metadata(
+        &self,
+        session: u64,
+    ) -> Result<FederationAlephBftBackupMetadata, Self::Err>;
 
     /// Get the latest active AlephBFT session marker.
     async fn get_federation_aleph_bft_active_session(&self) -> Result<Option<u64>, Self::Err>;

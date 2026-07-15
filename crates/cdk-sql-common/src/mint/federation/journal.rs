@@ -1194,6 +1194,22 @@ where
         Ok(())
     }
 
+    async fn prune_federation_aleph_bft_backups_before(
+        &mut self,
+        session: u64,
+    ) -> Result<(), Self::Err> {
+        query(
+            r#"
+            DELETE FROM federation_aleph_bft_backups
+            WHERE session < :session
+            "#,
+        )?
+        .bind("session", session as i64)
+        .execute(&self.inner)
+        .await?;
+        Ok(())
+    }
+
     async fn set_federation_aleph_bft_active_session(
         &mut self,
         session: u64,
@@ -1948,6 +1964,39 @@ where
         }
 
         Ok(chunks)
+    }
+
+    async fn get_federation_aleph_bft_backup_metadata(
+        &self,
+        session: u64,
+    ) -> Result<FederationAlephBftBackupMetadata, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let mut row = query(
+            r#"
+            SELECT COUNT(*), COALESCE(SUM(LENGTH(backup_bytes)), 0)
+            FROM federation_aleph_bft_backups
+            WHERE session = :session
+            "#,
+        )?
+        .bind("session", session as i64)
+        .fetch_one(&*conn)
+        .await?
+        .ok_or_else(|| Error::Internal("AlephBFT backup metadata row is missing".to_string()))?;
+        if row.len() != 2 {
+            return Err(Error::Internal(
+                "AlephBFT backup metadata row has an unexpected shape".to_string(),
+            ));
+        }
+        let total_bytes = row.pop().expect("backup metadata length checked");
+        let chunk_count = row.pop().expect("backup metadata length checked");
+        Ok(FederationAlephBftBackupMetadata {
+            chunk_count: column_as_number!(chunk_count),
+            total_bytes: column_as_number!(total_bytes),
+        })
     }
 
     async fn get_federation_aleph_bft_active_session(&self) -> Result<Option<u64>, Self::Err> {

@@ -12,6 +12,9 @@ use tokio::time::{self, Instant};
 
 use crate::MintState;
 
+use super::aleph_bft_runtime::{
+    MAX_ALEPH_BFT_SESSION_BACKUP_BYTES, MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS,
+};
 use super::peer_client::FederationRestPeerClient;
 use super::sync_config::{
     federation_peer_sync_disabled_by_env, federation_peer_sync_initial_delay,
@@ -23,8 +26,6 @@ use super::{
     local_peer_order_status, local_peer_status, verify_catch_up_certificate_entries,
     CatchUpCertificateQuorumStatus,
 };
-
-const MAX_RECOVERED_ALEPH_BFT_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 
 pub(crate) fn spawn_federation_peer_sync_loop_with_config(
     state: MintState,
@@ -1456,14 +1457,21 @@ where
                 total_bytes = total_bytes
                     .checked_add(chunk.len())
                     .ok_or_else(|| anyhow::anyhow!("AlephBFT backup byte count overflowed"))?;
-                if total_bytes > MAX_RECOVERED_ALEPH_BFT_BACKUP_BYTES {
+                if total_bytes > MAX_ALEPH_BFT_SESSION_BACKUP_BYTES {
                     anyhow::bail!(
                         "AlephBFT session {} backup exceeds the {} byte recovery bound",
                         session,
-                        MAX_RECOVERED_ALEPH_BFT_BACKUP_BYTES
+                        MAX_ALEPH_BFT_SESSION_BACKUP_BYTES
                     );
                 }
                 chunks.push(chunk);
+                if chunks.len() > MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS {
+                    anyhow::bail!(
+                        "AlephBFT session {} backup exceeds the {} chunk recovery bound",
+                        session,
+                        MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS
+                    );
+                }
                 next_chunk = next_chunk
                     .checked_add(1)
                     .ok_or_else(|| anyhow::anyhow!("AlephBFT backup chunk count overflowed"))?;

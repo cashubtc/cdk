@@ -3101,6 +3101,10 @@ async fn create_federation_runtime_state_with_wallet(
     let mut tx = db.begin_transaction().await?;
     tx.set_federation_aleph_bft_active_session(session_id)
         .await?;
+    if used_checkpoint {
+        tx.prune_federation_aleph_bft_backups_before(session_id)
+            .await?;
+    }
     tx.commit().await?;
     for pending in db
         .get_federation_aleph_bft_pending_operations(session_id)
