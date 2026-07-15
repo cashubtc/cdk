@@ -48,7 +48,6 @@ use crate::{
 // checkpoint windows remain separate coverage.
 const CDK_ALEPH_BFT_MAX_ROUND: u16 = 3000;
 const CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND: usize = 64;
-const CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY: Duration = Duration::from_millis(100);
 const CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY: Duration = Duration::from_secs(2);
 const CDK_ALEPH_BFT_ESSENTIAL_TASK_ROOT_EXIT_GRACE: Duration = Duration::from_secs(1);
 static NEXT_ALEPH_BFT_SESSION_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -1201,7 +1200,9 @@ fn cdk_aleph_bft_delay_config_with_activity(activity_hint: CdkAlephBftActivityHi
     let default_unit_creation_delay = Arc::clone(&delay_config.unit_creation_delay);
     delay_config.unit_creation_delay = Arc::new(move |round| {
         if activity_hint.is_active() {
-            CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY
+            // Keep AlephBFT's round-aware cadence so empty helper units cannot
+            // outrun dissemination while real work awaits finalization.
+            default_unit_creation_delay(round)
         } else if round > CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND {
             CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY
         } else {
@@ -1955,6 +1956,7 @@ mod tests {
     fn aleph_bft_live_session_activity_hint_keeps_tail_rounds_on_active_cadence() {
         let activity_hint = CdkAlephBftActivityHint::default();
         let delay_config = cdk_aleph_bft_delay_config_with_activity(activity_hint.clone());
+        let default_delay_config = default_delay_config();
         let early_round = CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND;
         let idle_early_delay = (delay_config.unit_creation_delay)(early_round);
         let tail_round = CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND + 1;
@@ -1967,13 +1969,19 @@ mod tests {
         activity_hint.mark_local_pending();
         assert_eq!(
             (delay_config.unit_creation_delay)(early_round),
-            CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY
+            (default_delay_config.unit_creation_delay)(early_round)
         );
         assert_eq!(
             (delay_config.unit_creation_delay)(tail_round),
-            CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY
+            (default_delay_config.unit_creation_delay)(tail_round)
         );
-        assert!(CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY < idle_early_delay);
+        assert_eq!(
+            (delay_config.unit_creation_delay)(early_round),
+            idle_early_delay
+        );
+        assert!(
+            (delay_config.unit_creation_delay)(tail_round) < CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY
+        );
 
         activity_hint.set_local_pending(false);
         assert_eq!(
@@ -1984,7 +1992,7 @@ mod tests {
         activity_hint.mark_network_activity([[1u8; 32]]);
         assert_eq!(
             (delay_config.unit_creation_delay)(tail_round),
-            CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY
+            (default_delay_config.unit_creation_delay)(tail_round)
         );
     }
 }

@@ -122,7 +122,7 @@ result must prove; they are not additional independent tasks.
 | 1 | Fresh-member recovery, readiness, and live-session convergence | Complete | 1, 2 |
 | 2 | Cancellation-safe server application and bounded wallet completion | Complete | 3, 4, 5 |
 | 3 | Exactly-once melt completion under repetition and member faults | Complete | 6 |
-| 4 | AlephBFT cadence, network backpressure, and HTTP liveness | Confirmed; investigation pending | 8 |
+| 4 | AlephBFT cadence, network backpressure, and HTTP liveness | Complete | 8 |
 | 5 | Signed private-status liveness and bounded operator reporting | Confirmed; investigation pending | 7, 12 |
 | 6 | Federation discovery and import completion | Confirmed historically; revalidation pending | 9 |
 | 7 | Wallet token-preparation and fragmentation scaling | Unconfirmed | 10 |
@@ -694,7 +694,7 @@ workload only as the final process confirmation, not as a debugging loop.
 
 ### Milestone 4: AlephBFT cadence, network backpressure, and HTTP liveness
 
-**Status:** Confirmed; investigation pending
+**Status:** Complete
 
 **Covers:** Issue 8
 
@@ -718,20 +718,124 @@ retaining prompt consensus for real work.
 - A separate possible network-pump retry amplifier remains unconfirmed and
   is tracked independently as Milestone U2.
 
+#### Current-revision root-cause evidence
+
+A fresh five-member local process run submitted five sequential mint-quote
+requests, producing exactly ten accepted and finalized journal operations: one
+quote and one payment observation per request. Before the fix, the member-1
+AlephBFT report moved from zero to 314 reconstructed DAG units in one reporting
+interval. Its `UnitBroadcast` count reached 314, then fell through 207 to the
+five-member idle floor of 5. All five journals converged at ten applied entries
+with zero pending operations. All 750 concurrent public `/v1/info` probes still
+returned HTTP 200 locally, with 46 ms maximum latency, so this machine
+reproduced the cadence amplification and queue pressure but not the stronger
+remote HTTP starvation.
+
+The production schedule supplied a fixed 100 ms delay for every active round,
+while AlephBFT's existing schedule uses 5 seconds for round zero and 500 ms for
+the later rounds reached by this workload. While any real operation remained
+active, members with no payload returned empty data to AlephBFT so they could
+help finalize peer work. The fixed override therefore let the five members
+create roughly 50 units per second, five times the supported steady cadence,
+and outrun dissemination. Empty units do not renew activity, and the local
+retry queue was not shown to be necessary for the failure; U2 remains separate.
+
+#### Chosen fix
+
+Active sessions now use AlephBFT's existing round-aware unit-creation schedule.
+The existing activity hint still wakes an idle session, inactive tail rounds
+still use the two-second slowdown, and a fully idle data provider still waits
+without creating periodic empty units. This removes the fixed 100 ms constant
+and adds no queue, timeout, retry, protocol message, or alternate scheduling
+system.
+
+#### Local verification results
+
+- With the old schedule, ten operations produced 314 reconstructed units and a
+  peak `UnitBroadcast` count of 314. With the upstream active schedule, the
+  identical all-member case produced 258 units and peaked at 179, reductions of
+  approximately 18% and 43%. The final two reports had the same unit count,
+  proving unit creation returned to the event-driven idle state.
+- The all-member post-fix case completed 750 of 750 public probes with 105 ms
+  maximum and 10.8 ms mean latency. Forty of forty signed-status probes passed;
+  their maximum was 716 ms and mean was 698 ms including command startup and
+  local federation-config validation.
+- The explicit latency tradeoff is material: the five sequential quote
+  requests completed in 25.272 seconds after the fix. Before the fix, their
+  persisted quote timestamps spanned five seconds. The safer schedule is
+  intentionally favored over a custom intermediate magic delay. Further
+  capacity and latency optimization, after liveness is protected, belongs in
+  Milestone 8.
+- With member 5 offline, the active quorum applied all ten operations in 28.791
+  seconds. The DAG stopped at 235 units, `UnitBroadcast` peaked at 135 and
+  drained to the four-member idle floor of 4, 600 of 600 public probes returned
+  HTTP 200 with 21 ms maximum latency, and all 40 signed-status probes passed
+  with 701 ms maximum. Restarted member 5 caught up to the same ten-entry
+  journal; all members had ten finalized items and zero pending operations.
+- Focused tests passed for the upstream active delay, idle data-provider wake
+  and drain behavior, the slow-peer quorum fast path, and five-member finality
+  under reordering, duplicate delivery, and delay. All 28 standalone
+  `cdk-axum` tests and the standalone build check passed. Formatting and diff
+  checks passed.
+- Focused Clippy with `-D warnings` was attempted, but Rust 1.95 reports 22
+  pre-existing `cdk-axum` findings, including large enums, derivable impls,
+  result size, argument count, and newer style lints. None points to the changed
+  delay closure or regression assertion.
+- No temporary production instrumentation or experimental switch was added.
+  The git-ignored process harness and generated data were removed after the
+  aggregate results above were recorded.
+- The `typos` executable was unavailable in the current shell; formatting and
+  whitespace validation did run successfully.
+
+#### Nocean final validation
+
+The state-preserving deployment installed the current binaries on all five
+members, retained rollback binaries, and passed process, public-route, config,
+signed-status, readiness, and journal-convergence checks at operation 152. The
+benchmark preparation advanced the journal to 158 before the timed workload.
+The exact ten-operation receive case then completed 10 of 10 operations with no
+client failures and advanced every member to operation 168:
+
+- elapsed time was 91.649 seconds and committed throughput was 0.109
+  operations per second;
+- successful receive latency was 9.221 seconds at p50, 9.340 seconds at p95 and
+  p99, and 9.409 seconds maximum;
+- the comparable successful pre-fix Nocean run was 6.562 seconds at p50 and
+  6.704 seconds maximum, so the safer cadence increased both figures by about
+  40%; this is the explicit stability-for-latency tradeoff accepted here;
+- member 1's reconstructed DAG grew from 7,327 to 7,744 units during the timed
+  receive window, an increase of 417, while its reported `UnitBroadcast` count
+  peaked at 90 and returned to the five-member idle floor of 5; three late
+  units then propagated and all members agreed at 7,747 without sustained
+  growth;
+- no public endpoint outage or timeout occurred, the post-run signed comparison
+  reported all five members healthy, ready, and converged at operation 168;
+  and a separate post-run sample returned HTTP 200 for 25 of 25 fresh-connection
+  `/v1/info` probes, with 1.023 seconds mean and 1.093 seconds maximum latency.
+
+The current schedule therefore does not eliminate consensus traffic or make
+remote latency cheap, but it removed the unsupported fivefold active cadence,
+kept HTTP reachable, bounded the observed broadcast burst, and returned to the
+idle queue floor. Capacity optimization now belongs to Milestone 8. The
+separate network-pump retry hypothesis remains unconfirmed in U2 because this
+trace still did not expose evidence that retry duplication was necessary for
+the former outage.
+
 #### Work checklist
 
-- [ ] Reproduce the smallest starvation case on one timeline, measure only the
-  suspected cadence/queue/scheduling boundaries, and record the complete causal
-  chain. Keep the separate U2 retry hypothesis out unless independently proven.
-- [ ] Implement the smallest supported AlephBFT configuration, activity-hint,
+- [x] Reproduce the smallest starvation case on one Nocean timeline, measure
+  only the suspected cadence/queue/scheduling boundaries, and record the
+  complete causal chain. Keep the separate U2 retry hypothesis out unless
+  independently proven.
+- [x] Implement the smallest supported AlephBFT configuration, activity-hint,
   or bounded-backpressure fix for that cause. Do not use larger timeouts, fork
   upstream logic unnecessarily, or drop correctness-critical traffic.
-- [ ] Add the narrow regression and verify bounded idle/burst traffic, HTTP
+- [x] Add the narrow regression and verify bounded idle/burst traffic, HTTP
   liveness, return to idle cadence, slow-peer behavior, and the measured
   payload-latency/throughput tradeoff.
-- [ ] Remove experimental switches/high-volume tracing, record sanitized
-  before/after results and tests not run, update the milestone, and commit with
-  a conventional commit.
+- [x] Remove experimental switches/high-volume tracing, record sanitized
+  before/after results and tests not run, complete the authorized Nocean final
+  validation, update the milestone, and commit with a conventional commit.
 
 #### Acceptance
 
@@ -1962,8 +2066,8 @@ timeout.
 ### 8. Small receive load can amplify empty consensus units and starve HTTPS
 
 **Severity:** Critical for remote availability  
-**Status:** Confirmed liveness failure and confirmed cadence-amplification
-source; retry amplification remains a secondary hypothesis
+**Status:** Resolved and verified in Milestone 4; retry amplification remains a
+separate unconfirmed U2 hypothesis
 
 On a freshly reset federation, the first sequential receive case temporarily
 made all five public mint endpoints unavailable. Loopback and public HTTP
@@ -2004,12 +2108,22 @@ The controlled rerun added stronger evidence:
 - stopping load allowed CPU and broadcast queues to return to idle without a
   process restart.
 
-**Confirmed source:** production overrides AlephBFT's normal unit-creation
-schedule with a fixed 100 ms delay whenever the shared activity hint is active.
-Upstream AlephBFT normally waits 5 seconds for round zero and 500 ms for
-subsequent rounds through the range relevant here. The active override therefore
-creates units five times faster than the normal steady schedule and fifty times
-faster for round zero.
+After restoring AlephBFT's upstream active schedule, the final state-preserving
+Nocean validation completed the same ten-operation case without a public-route
+outage or client failure. All members advanced from operation 158 to 168 and
+converged healthy and ready. The timed window added 417 reconstructed units on
+member 1, its reported `UnitBroadcast` count peaked at 90 and drained to the
+idle floor of 5, and successful receive latency was 9.221 seconds at p50 and
+9.409 seconds maximum. This is slower than the comparable pre-fix successful
+run, whose p50 was 6.562 seconds, but it is bounded and explicitly accepted in
+exchange for removing the unsupported cadence and protecting liveness.
+
+**Confirmed source:** before the Milestone 4 fix, production overrode
+AlephBFT's normal unit-creation schedule with a fixed 100 ms delay whenever the
+shared activity hint was active. Upstream AlephBFT normally waits 5 seconds for
+round zero and 500 ms for subsequent rounds through the range relevant here.
+The active override therefore created units five times faster than the normal
+steady schedule and fifty times faster for round zero.
 
 At the same time, the CDK data provider explicitly returns `None` when it has no
 transaction payload but the activity hint remains active. AlephBFT interprets
@@ -2026,12 +2140,11 @@ two-second slowdown only for idle tail rounds. The change instead applies 100
 ms to every active round. The intent was to bound proposal latency, but the
 result is a fivefold increase in normal active unit creation.
 
-The principal code paths to instrument are:
+The principal code paths investigated were:
 
-- `crates/cdk-axum/src/federation/aleph_bft_session.rs`, especially
-  `CDK_ALEPH_BFT_ACTIVE_UNIT_CREATION_DELAY`,
-  `CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY`, the activity-broadcast loop, and
-  delay configuration;
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs`, especially the active
+  use of the upstream delay schedule, `CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY`,
+  the activity-broadcast loop, and delay configuration;
 - `crates/cdk-axum/src/federation/aleph_bft_runtime.rs`, especially
   `CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE` and
   `CdkAlephBftActivityHint`, `CdkAlephBftDataProvider::get_data`, and
