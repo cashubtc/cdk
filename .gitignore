@@ -15,6 +15,7 @@ config.toml
 result
 result-*
 static-bin/
+/scripts/fed-cdk-tui/dist/
 .aider*
 **/postgres_data/
 .pg_data/
