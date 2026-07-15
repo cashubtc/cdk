@@ -137,7 +137,10 @@ fn main() -> Result<()> {
                     Ok(())
                 }
             },
-            Some(Commands::MigrateNutshell { nutshell_db }) => {
+            Some(Commands::MigrateNutshell {
+                nutshell_db,
+                verify_only,
+            }) => {
                 let work_dir = work_dir
                     .as_deref()
                     .expect("nutshell migration has a work directory");
@@ -149,8 +152,14 @@ fn main() -> Result<()> {
                 } else {
                     None
                 };
-                cdk_mintd::migrate::run_migration(work_dir, &settings, &nutshell_db, password)
-                    .await?;
+                cdk_mintd::migrate::run_migration(
+                    work_dir,
+                    &settings,
+                    &nutshell_db,
+                    password,
+                    verify_only,
+                )
+                .await?;
                 Ok(())
             }
             None => {
