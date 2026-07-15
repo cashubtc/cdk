@@ -1,6 +1,6 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (milestone 1 protocol primitive implemented)
+Status: in progress (milestone 1 rolling commitments and milestone 2 persistence core implemented)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -612,17 +612,17 @@ bounded quorum proof.
 - [x] Bind the checkpoint to the federation config digest/identity-key epoch.
 - [x] Add `FederationFinalizedItemDigest` and define canonical hashing for every
       finalized item, including status and consensus/unit provenance.
-- [ ] Persist or derive the rolling finalized-item digest during finalization;
+- [x] Persist or derive the rolling finalized-item digest during finalization;
       never recompute it from genesis for normal checkpoint creation.
 - [x] Add a domain-separated cumulative application digest over canonical
       terminal application results, including deterministic rejection details.
-- [ ] Require business-state changes, terminal journal application state, the
+- [x] Require business-state changes, terminal journal application state, the
       applied cursor, and the cumulative application digest to commit in one
       database transaction.
 - [ ] Define the authoritative materialized-state audit projection. It must
       enumerate database state directly, exclude member-local/transient rows,
       and require no historical journal scan.
-- [ ] Document the startup integrity model: normal startup trusts atomic
+- [x] Document the startup integrity model: normal startup trusts atomic
       database frontiers and verifies only the suffix; arbitrary row corruption
       is checked by checkpoint creation or an explicit operator audit, not by a
       startup full-state scan.
@@ -649,14 +649,21 @@ The first milestone-1 implementation unit is complete in
 `crates/cdk-common/src/federation/checkpoint.rs`. It centralizes the canonical
 payload, rolling application/finalized-item digests, checkpoint ID and Schnorr
 signature transcripts, bounded quorum verification, and scheduled/recovery
-promotion rules. Database-backed rolling frontiers, atomic application writes,
-the direct authoritative-state projection, and deterministic boundary capture
-remain unchecked and are the next implementation unit.
+promotion rules. The second unit adds durable contiguous journal,
+finalized-item, and terminal-application frontiers in the shared SQL layer.
+Every finalized item and terminal application result now receives its rolling
+digest exactly once in the transaction that persists it; rollback tests prove
+the scalar frontier does not escape the transaction. The direct
+authoritative-state projection and deterministic boundary capture remain the
+open milestone-1 work.
 
 Verified with:
 
 - `cargo test -p cdk-common --features federation checkpoint --lib` (8 passed);
+- `cargo test -p cdk-sqlite --features federation federation_checkpoint_persistence`
+  (1 passed);
 - `cargo clippy -p cdk-common --lib --features federation -- -D warnings`;
+- `cargo clippy -p cdk-sql-common --lib --features federation -- -D warnings`;
 - `cargo fmt --all`.
 
 The broader `cdk-common --all-targets` clippy gate currently stops on the
@@ -720,21 +727,21 @@ checkpoint to move ahead of durable consensus or application state.
 - [ ] Replace the fresh federation schema's
       `federation_catch_up_certificates` table with checkpoint payload,
       individual-signature, assembled-quorum, and trusted-frontier tables.
-- [ ] Persist checkpoint kind, scheduled sequence, and scheduled anchor without
+- [x] Persist checkpoint kind, scheduled sequence, and scheduled anchor without
       duplicating the verification schema for recovery checkpoints.
-- [ ] Use a unique key on `(checkpoint_id, signer_member_id)` and indexed lookup
+- [x] Use a unique key on `(checkpoint_id, signer_member_id)` and indexed lookup
       by checkpoint sequence/finalized cursor.
-- [ ] Add database APIs to insert an idempotent local/remote signature, load
+- [x] Add database APIs to insert an idempotent local/remote signature, load
       checkpoints after a cursor, store/fetch an assembled quorum, load the
       newest scheduled and recovery quorums, and atomically promote a verified
       quorum.
-- [ ] Add scalar metadata queries for journal next index/order digest,
+- [x] Add scalar metadata queries for journal next index/order digest,
       finalized next index/finalized digest, terminal applied cursor/application
       digest, and latest audited materialized-state digest so startup does not
       load bodies or project full state.
-- [ ] Persist rolling finalized-item digests with finalized items or in an
+- [x] Persist rolling finalized-item digests with finalized items or in an
       atomically updated frontier record.
-- [ ] Persist the rolling application digest and applied cursor in the same
+- [x] Persist the rolling application digest and applied cursor in the same
       transaction as every successful or deterministically rejected federation
       operation's business-state writes and terminal journal application state.
 - [ ] Persist a locally derived checkpoint candidate and its full
@@ -744,7 +751,7 @@ checkpoint to move ahead of durable consensus or application state.
 - [ ] Ensure catch-up promotion persists the journal/finalized batch, business
       application changes, terminal application frontier/digest, and trusted
       checkpoint in one transaction, or leaves the checkpoint behind the data.
-- [ ] Persist a durable materialized-state-audit mismatch latch that ordinary
+- [x] Persist a durable materialized-state-audit mismatch latch that ordinary
       startup, peer agreement, and retry cannot clear.
 - [ ] Define crash-safe retention: keep all scheduled quorum checkpoints; prune
       superseded non-quorum proposals and prune recovery quorums only after a
@@ -752,6 +759,38 @@ checkpoint to move ahead of durable consensus or application state.
 - [ ] Preserve the cut-through policy: edit the existing fresh federation
       schema migrations in place; do not add an upgrade migration from the
       certificate schema, compatibility tables, or dual reads/writes.
+
+### Progress and verification
+
+The shared mint database traits and SQL implementation now persist checkpoint
+payloads, immutable per-signer rows, normalized transferable quorum proofs, and
+one trusted checkpoint ID. A single scalar row holds the three contiguous
+rolling frontiers, the latest local checkpoint-time audit, and a one-way audit
+mismatch latch. Promotion checks the checkpoint's historical boundary digests
+against the locally persisted rows, rejects any frontier ahead of local state,
+and updates the trusted ID in the caller's transaction.
+
+The existing certificate table remains temporarily present because production
+transport and readiness still use it. No checkpoint runtime path reads or
+writes certificate evidence, and the checkpoint schema was added directly to
+the existing fresh-schema migration rather than through an upgrade migration.
+Milestone 7 will remove the certificate table and its remaining runtime code in
+one cut-through change before the implementation is production-ready.
+
+Verified with:
+
+- shared SQLite checkpoint persistence, rollback, idempotency, scheduled and
+  recovery lookup/promotion, conflicting-signature, and audit-latch tests;
+- existing SQLite journal persistence, concurrent writes/metadata updates,
+  finalized-item persistence, application-state persistence, hot-index, and
+  fresh-migration tests;
+- PostgreSQL checkpoint and migration test targets compiled with
+  `cargo test -p cdk-postgres --features federation
+  federation_checkpoint_persistence --no-run`;
+- `cargo clippy -p cdk-sql-common --lib --features federation -- -D warnings`;
+- `cargo clippy -p cdk-sqlite --tests --features federation -- -D warnings`;
+- `cargo check -p cdk-axum --features federation`;
+- `cargo fmt --all -- --check`.
 
 ### Files and references
 

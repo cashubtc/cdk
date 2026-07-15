@@ -59,9 +59,9 @@ pub use self::chain_observation::{
     FederationOnchainQuotePayment, FederationWalletUtxo, FederationWalletUtxoState,
 };
 pub use self::checkpoint::{
-    FederationApplicationDigest, FederationCheckpoint, FederationCheckpointId,
-    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
-    FederationFinalizedItemDigest, FEDERATION_CHECKPOINT_VERSION,
+    FederationApplicationDigest, FederationCheckpoint, FederationCheckpointFrontier,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationFinalizedItemDigest, FEDERATION_CHECKPOINT_VERSION,
 };
 pub use self::config::{
     FederatedKeyset, FederationConfig, FederationConfigDigest, FederationConfigSnapshot,

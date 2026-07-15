@@ -9,6 +9,7 @@ CREATE TABLE federation_journal_entries (
     order_digest TEXT NOT NULL,
     consensus_evidence_json TEXT,
     rejection_json TEXT,
+    application_digest TEXT,
     status TEXT NOT NULL CHECK (
         status IN ('accepted', 'applying', 'applied', 'rejected', 'failed')
     ),
@@ -32,6 +33,60 @@ CREATE TABLE federation_catch_up_certificates (
 
 CREATE INDEX idx_federation_catch_up_certificates_from_index
 ON federation_catch_up_certificates (from_index);
+
+CREATE TABLE federation_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY NOT NULL,
+    checkpoint_kind TEXT NOT NULL CHECK (
+        checkpoint_kind IN ('scheduled', 'recovery')
+    ),
+    scheduled_checkpoint_sequence BIGINT NOT NULL,
+    scheduled_anchor_id TEXT,
+    journal_next_index BIGINT NOT NULL,
+    finalized_next_item_index BIGINT NOT NULL,
+    checkpoint_json TEXT NOT NULL
+);
+
+CREATE INDEX idx_federation_checkpoints_kind_sequence
+ON federation_checkpoints (
+    checkpoint_kind,
+    scheduled_checkpoint_sequence,
+    finalized_next_item_index,
+    journal_next_index
+);
+
+CREATE INDEX idx_federation_checkpoints_finalized_cursor
+ON federation_checkpoints (finalized_next_item_index);
+
+CREATE TABLE federation_checkpoint_signatures (
+    checkpoint_id TEXT NOT NULL,
+    signer_member_id INTEGER NOT NULL,
+    signature_json TEXT NOT NULL,
+    PRIMARY KEY (checkpoint_id, signer_member_id)
+);
+
+CREATE INDEX idx_federation_checkpoint_signatures_checkpoint
+ON federation_checkpoint_signatures (checkpoint_id);
+
+CREATE TABLE federation_checkpoint_quorums (
+    checkpoint_id TEXT PRIMARY KEY NOT NULL,
+    quorum_json TEXT NOT NULL
+);
+
+CREATE TABLE federation_checkpoint_state (
+    state_key TEXT PRIMARY KEY NOT NULL CHECK (state_key = 'active'),
+    journal_next_index BIGINT NOT NULL,
+    journal_order_digest TEXT NOT NULL,
+    finalized_next_item_index BIGINT NOT NULL,
+    finalized_item_digest TEXT NOT NULL,
+    application_next_index BIGINT NOT NULL,
+    application_digest TEXT NOT NULL,
+    trusted_checkpoint_id TEXT,
+    latest_audited_checkpoint_id TEXT,
+    latest_materialized_state_digest TEXT,
+    materialized_state_audit_mismatch INTEGER NOT NULL DEFAULT 0 CHECK (
+        materialized_state_audit_mismatch IN (0, 1)
+    )
+);
 
 CREATE TABLE federation_payment_observations (
     operation_id TEXT PRIMARY KEY NOT NULL,
@@ -83,6 +138,7 @@ CREATE TABLE federation_aleph_bft_finalized_items (
     operation_id TEXT,
     status TEXT NOT NULL,
     unit_body_hash TEXT NOT NULL,
+    finalized_item_digest TEXT,
     item_json TEXT NOT NULL
 );
 

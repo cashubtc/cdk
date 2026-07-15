@@ -8,14 +8,17 @@ use crate::database::mint::{Database, FederationJournalDatabase};
 use crate::error::{Error, ErrorResponse};
 use crate::federation::{
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
-    FederationApplicationState, FederationConfig, FederationConfigDigest, FederationConfigSnapshot,
-    FederationConsensusItem, FederationConsensusRuntime, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
-    FederationDkgCommitmentRound, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgPublicCeremony, FederationDkgSecretShareRequest,
-    FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
-    FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest,
+    FederationApplicationDigest, FederationApplicationState, FederationCheckpoint,
+    FederationCheckpointFrontier, FederationCheckpointKind, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationConfig,
+    FederationConfigDigest, FederationConfigSnapshot, FederationConsensusItem,
+    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
+    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgPublicCeremony, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
+    FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
+    FederationDkgTranscriptSignatureRequest, FederationFinalizedItemDigest,
     FederationFrostApplicationConfig, FederationFrostApplicationId,
     FederationFrostDkgConfirmationRequest, FederationFrostDkgContext, FederationFrostDkgLocalPhase,
     FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
@@ -29,7 +32,7 @@ use crate::federation::{
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
     FederationSignatureShareRecord, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, ThresholdParams,
+    MemberConfigPublic, MemberId, ThresholdParams, FEDERATION_CHECKPOINT_VERSION,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote, Operation, OperationKind};
 use crate::mint_url::MintUrl;
@@ -736,6 +739,328 @@ where
     tx.rollback()
         .await
         .expect("rollback conflicting finalized item");
+}
+
+/// Assert rolling checkpoint frontiers, sparse proofs, promotion, and the audit latch persist.
+pub async fn federation_checkpoint_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    assert_eq!(
+        db.get_federation_checkpoint_frontier()
+            .await
+            .expect("empty checkpoint frontier"),
+        FederationCheckpointFrontier::genesis()
+    );
+
+    let config = dkg_public_config();
+    let members = config.members.keys().copied().collect::<Vec<_>>();
+    let mut first_envelope = mint_quote_envelope("checkpoint-quote-1", 21);
+    first_envelope.federation_id = config.federation_id;
+    let mut second_envelope = mint_quote_envelope("checkpoint-quote-2", 34);
+    second_envelope.federation_id = config.federation_id;
+    let unit = FederationAlephBftUnitPayload::new(
+        config.federation_id,
+        member_id(2),
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(first_envelope),
+            FederationConsensusItem::operation(second_envelope),
+        ],
+    )
+    .expect("checkpoint test unit");
+    let mut runtime = FederationConsensusRuntime::for_members(
+        config.federation_id,
+        member_id(1),
+        0,
+        members.iter().copied(),
+    )
+    .expect("checkpoint test runtime");
+    runtime
+        .finalize_unit(unit)
+        .expect("finalize checkpoint unit");
+    let finalized_items = runtime.finalized_items().to_vec();
+    let entries = runtime.journal().entries().to_vec();
+    assert_eq!(finalized_items.len(), 2);
+    assert_eq!(entries.len(), 2);
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin checkpoint frontier seed");
+    tx.add_federation_aleph_bft_finalized_items(&finalized_items)
+        .await
+        .expect("persist checkpoint finalized items");
+    for entry in &entries {
+        tx.add_federation_journal_entry(entry)
+            .await
+            .expect("persist checkpoint journal entry");
+    }
+    tx.commit().await.expect("commit checkpoint frontier seed");
+
+    let expected_finalized_digest = finalized_items
+        .iter()
+        .try_fold(FederationFinalizedItemDigest::genesis(), |digest, item| {
+            digest.append(item)
+        })
+        .expect("checkpoint finalized digest");
+    let frontier = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("seeded checkpoint frontier");
+    assert_eq!(frontier.journal_next_index, 2);
+    assert_eq!(frontier.journal_order_digest, entries[1].order_digest);
+    assert_eq!(frontier.finalized_next_item_index, 2);
+    assert_eq!(frontier.finalized_item_digest, expected_finalized_digest);
+    assert_eq!(frontier.application_next_index, 0);
+    assert_eq!(
+        frontier.application_digest,
+        FederationApplicationDigest::genesis()
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin rolled-back application frontier");
+    tx.set_federation_operation_application_state(
+        entries[0].operation_id,
+        &FederationApplicationState::Applied {},
+    )
+    .await
+    .expect("advance rolled-back application frontier");
+    tx.rollback()
+        .await
+        .expect("rollback application frontier advance");
+    assert_eq!(
+        db.get_federation_checkpoint_frontier()
+            .await
+            .expect("frontier after application rollback")
+            .application_next_index,
+        0
+    );
+
+    let rejection = ErrorResponse::from(Error::TokenAlreadySpent);
+    let terminal_states = [
+        FederationApplicationState::Applied {},
+        FederationApplicationState::Rejected {
+            response: rejection,
+        },
+    ];
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin terminal application frontier");
+    for (entry, application) in entries.iter().zip(&terminal_states) {
+        tx.set_federation_operation_application_state(entry.operation_id, application)
+            .await
+            .expect("persist terminal application state");
+    }
+    tx.commit()
+        .await
+        .expect("commit terminal application frontier");
+
+    let expected_application_digest = entries
+        .iter()
+        .zip(&terminal_states)
+        .try_fold(
+            FederationApplicationDigest::genesis(),
+            |digest, (entry, application)| {
+                digest.append_terminal(entry.index, entry.operation_id, application)
+            },
+        )
+        .expect("checkpoint application digest");
+    let frontier = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("terminal checkpoint frontier");
+    assert_eq!(frontier.application_next_index, 2);
+    assert_eq!(frontier.application_digest, expected_application_digest);
+
+    let checkpoint = FederationCheckpoint {
+        version: FEDERATION_CHECKPOINT_VERSION,
+        federation_id: config.federation_id,
+        federation_config_digest: config
+            .config_digest_for_validated_config()
+            .expect("checkpoint config digest"),
+        kind: FederationCheckpointKind::Scheduled,
+        scheduled_checkpoint_sequence: 1,
+        scheduled_anchor_id: None,
+        journal_next_index: frontier.journal_next_index,
+        journal_order_digest: frontier.journal_order_digest,
+        finalized_next_item_index: frontier.finalized_next_item_index,
+        finalized_item_digest: frontier.finalized_item_digest,
+        application_digest: frontier.application_digest,
+        aleph_bft_session: 0,
+        next_unit_finalization_index: 1,
+        next_unit_index_by_member: BTreeMap::from([(member_id(1), 0), (member_id(2), 1)]),
+        materialized_state_digest: FederationMaterializedStateDigest::from_bytes([91; 32]),
+    };
+    checkpoint
+        .validate_against_config(&config)
+        .expect("checkpoint validates against config");
+    let checkpoint_id = checkpoint.id().expect("checkpoint id");
+    let first_signature =
+        FederationCheckpointSignature::new_signed_no_aux_rand(&checkpoint, &private_member(1))
+            .expect("first checkpoint signature");
+    let second_signature =
+        FederationCheckpointSignature::new_signed_no_aux_rand(&checkpoint, &private_member(2))
+            .expect("second checkpoint signature");
+    let quorum = FederationCheckpointQuorum::new(
+        checkpoint.clone(),
+        vec![first_signature, second_signature],
+    );
+    quorum.verify(&config).expect("checkpoint quorum");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin checkpoint candidate");
+    tx.add_federation_checkpoint_candidate(&checkpoint)
+        .await
+        .expect("persist checkpoint candidate");
+    tx.add_federation_checkpoint_signature(&first_signature)
+        .await
+        .expect("persist checkpoint signature");
+    tx.add_federation_checkpoint_quorum(&quorum)
+        .await
+        .expect("persist checkpoint quorum");
+    tx.add_federation_checkpoint_quorum(&quorum)
+        .await
+        .expect("idempotent checkpoint quorum");
+    tx.promote_verified_federation_checkpoint(&quorum)
+        .await
+        .expect("promote checkpoint quorum");
+    tx.commit().await.expect("commit checkpoint candidate");
+
+    assert_eq!(
+        db.get_federation_checkpoint(checkpoint_id)
+            .await
+            .expect("stored checkpoint"),
+        Some(checkpoint.clone())
+    );
+    assert_eq!(
+        db.get_federation_checkpoint_signatures(checkpoint_id)
+            .await
+            .expect("stored checkpoint signatures"),
+        quorum.signatures
+    );
+    assert_eq!(
+        db.get_federation_checkpoint_quorum(checkpoint_id)
+            .await
+            .expect("stored checkpoint quorum"),
+        Some(quorum.clone())
+    );
+    assert_eq!(
+        db.get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+            .await
+            .expect("latest scheduled quorum"),
+        Some(quorum.clone())
+    );
+    assert_eq!(
+        db.get_trusted_federation_checkpoint_quorum()
+            .await
+            .expect("trusted checkpoint quorum"),
+        Some(quorum.clone())
+    );
+    let frontier = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("promoted checkpoint frontier");
+    assert_eq!(frontier.trusted_checkpoint_id, Some(checkpoint_id));
+    assert_eq!(frontier.latest_audited_checkpoint_id, Some(checkpoint_id));
+    assert_eq!(
+        frontier.latest_materialized_state_digest,
+        Some(checkpoint.materialized_state_digest)
+    );
+
+    let mut conflicting_bytes = first_signature.to_bytes();
+    conflicting_bytes[0] ^= 1;
+    let conflicting_signature = FederationCheckpointSignature::from_slice(
+        checkpoint_id,
+        first_signature.signer,
+        &conflicting_bytes,
+    )
+    .expect("conflicting checkpoint signature fixture");
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting checkpoint signature");
+    assert!(tx
+        .add_federation_checkpoint_signature(&conflicting_signature)
+        .await
+        .is_err());
+    tx.rollback()
+        .await
+        .expect("rollback conflicting checkpoint signature");
+
+    let recovery = FederationCheckpoint {
+        kind: FederationCheckpointKind::Recovery,
+        scheduled_anchor_id: Some(checkpoint_id),
+        ..checkpoint.clone()
+    };
+    let recovery_signatures = vec![
+        FederationCheckpointSignature::new_signed_no_aux_rand(&recovery, &private_member(1))
+            .expect("first recovery signature"),
+        FederationCheckpointSignature::new_signed_no_aux_rand(&recovery, &private_member(2))
+            .expect("second recovery signature"),
+    ];
+    let recovery_quorum = FederationCheckpointQuorum::new(recovery.clone(), recovery_signatures);
+    recovery_quorum
+        .verify(&config)
+        .expect("recovery checkpoint quorum");
+    let recovery_id = recovery.id().expect("recovery checkpoint id");
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin recovery checkpoint");
+    tx.add_federation_checkpoint_candidate(&recovery)
+        .await
+        .expect("persist recovery checkpoint candidate");
+    tx.promote_verified_federation_checkpoint(&recovery_quorum)
+        .await
+        .expect("promote recovery checkpoint");
+    tx.commit().await.expect("commit recovery checkpoint");
+    assert_eq!(
+        db.get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
+            .await
+            .expect("latest recovery quorum"),
+        Some(recovery_quorum.clone())
+    );
+    assert_eq!(
+        db.get_federation_checkpoints_after(1)
+            .await
+            .expect("ordered checkpoints after cursor"),
+        vec![checkpoint, recovery]
+    );
+    assert_eq!(
+        db.get_federation_checkpoint_frontier()
+            .await
+            .expect("recovery checkpoint frontier")
+            .trusted_checkpoint_id,
+        Some(recovery_id)
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin materialized-state mismatch latch");
+    tx.latch_federation_materialized_state_audit_mismatch()
+        .await
+        .expect("latch materialized-state mismatch");
+    tx.commit()
+        .await
+        .expect("commit materialized-state mismatch latch");
+    assert!(
+        db.get_federation_checkpoint_frontier()
+            .await
+            .expect("latched checkpoint frontier")
+            .materialized_state_audit_mismatch
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin promotion after audit mismatch");
+    assert!(tx
+        .promote_verified_federation_checkpoint(&recovery_quorum)
+        .await
+        .is_err());
+    tx.rollback()
+        .await
+        .expect("rollback promotion after audit mismatch");
 }
 
 /// Assert AlephBFT backup bytes append durably per session.

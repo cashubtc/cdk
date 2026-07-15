@@ -592,6 +592,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_checkpoint_persistence() {
+        cdk_common::database::mint::test::federation_checkpoint_persistence(
+            provide_mint_db(unique_federation_test_id(
+                "federation_checkpoint_persistence",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_aleph_bft_backup_persistence() {
         cdk_common::database::mint::test::federation_aleph_bft_backup_persistence(
             provide_mint_db(unique_federation_test_id(
@@ -853,6 +865,10 @@ mod test {
             "federation_journal_entries",
             "federation_dkg_member_sequences",
             "federation_catch_up_certificates",
+            "federation_checkpoints",
+            "federation_checkpoint_signatures",
+            "federation_checkpoint_quorums",
+            "federation_checkpoint_state",
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",
             "federation_aleph_bft_pending_operations",
@@ -899,6 +915,9 @@ mod test {
         for index in [
             "idx_federation_journal_operation_id",
             "idx_federation_catch_up_certificates_from_index",
+            "idx_federation_checkpoints_kind_sequence",
+            "idx_federation_checkpoints_finalized_cursor",
+            "idx_federation_checkpoint_signatures_checkpoint",
             "idx_federation_aleph_bft_finalized_items_session_unit",
             "idx_federation_aleph_bft_finalized_items_operation_id",
             "idx_federation_aleph_bft_pending_operations_session",
@@ -945,7 +964,11 @@ mod test {
         assert_eq!(journal_columns.get("conflict_keys_json"), Some(&true));
         assert!(!journal_columns.contains_key("operation_outcome_hash"));
         assert!(!journal_columns.contains_key("materialized_state_digest"));
-        for column in ["consensus_evidence_json", "rejection_json"] {
+        for column in [
+            "consensus_evidence_json",
+            "rejection_json",
+            "application_digest",
+        ] {
             assert_eq!(journal_columns.get(column), Some(&false));
         }
 

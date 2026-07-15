@@ -152,6 +152,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_checkpoint_persistence() {
+        cdk_common::database::mint::test::federation_checkpoint_persistence(
+            provide_db("federation_checkpoint_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_aleph_bft_backup_persistence() {
         cdk_common::database::mint::test::federation_aleph_bft_backup_persistence(
             provide_db("federation_aleph_bft_backup_persistence".to_string()).await,
@@ -587,6 +596,10 @@ mod test {
             "federation_journal_entries",
             "federation_dkg_member_sequences",
             "federation_catch_up_certificates",
+            "federation_checkpoints",
+            "federation_checkpoint_signatures",
+            "federation_checkpoint_quorums",
+            "federation_checkpoint_state",
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",
             "federation_aleph_bft_pending_operations",
@@ -653,7 +666,11 @@ mod test {
         assert_eq!(journal_columns.get("conflict_keys_json"), Some(&true));
         assert!(!journal_columns.contains_key("operation_outcome_hash"));
         assert!(!journal_columns.contains_key("materialized_state_digest"));
-        for column in ["consensus_evidence_json", "rejection_json"] {
+        for column in [
+            "consensus_evidence_json",
+            "rejection_json",
+            "application_digest",
+        ] {
             assert_eq!(journal_columns.get(column), Some(&false));
         }
 
@@ -764,6 +781,8 @@ mod test {
               AND tbl_name IN (
                   'federation_journal_entries',
                   'federation_catch_up_certificates',
+                  'federation_checkpoints',
+                  'federation_checkpoint_signatures',
                   'federation_aleph_bft_finalized_items',
                   'federation_aleph_bft_pending_operations',
                   'federation_payment_observations',
@@ -793,6 +812,18 @@ mod test {
         assert!(
             index_names.contains("idx_federation_catch_up_certificates_from_index"),
             "missing federation catch-up certificate range index"
+        );
+        assert!(
+            index_names.contains("idx_federation_checkpoints_kind_sequence"),
+            "missing federation checkpoint kind/sequence index"
+        );
+        assert!(
+            index_names.contains("idx_federation_checkpoints_finalized_cursor"),
+            "missing federation checkpoint finalized-cursor index"
+        );
+        assert!(
+            index_names.contains("idx_federation_checkpoint_signatures_checkpoint"),
+            "missing federation checkpoint-signature lookup index"
         );
         assert!(
             index_names.contains("idx_federation_aleph_bft_finalized_items_session_unit"),

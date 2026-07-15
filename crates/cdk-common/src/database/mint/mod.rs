@@ -13,7 +13,9 @@ use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
-    FederationApplicationState, FederationCatchUpCertificate, FederationConfigSnapshot,
+    FederationApplicationState, FederationCatchUpCertificate, FederationCheckpoint,
+    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigSnapshot,
     FederationDkgActivationRequest, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest,
@@ -778,6 +780,40 @@ pub trait FederationJournalTransaction {
         sequence: u64,
     ) -> Result<(), Self::Err>;
 
+    /// Persist a locally derived checkpoint candidate at the exact current durable frontier.
+    async fn add_federation_checkpoint_candidate(
+        &mut self,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one immutable local or remote checkpoint signature.
+    async fn add_federation_checkpoint_signature(
+        &mut self,
+        signature: &FederationCheckpointSignature,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one immutable assembled checkpoint quorum.
+    ///
+    /// Cryptographic quorum verification remains the caller's responsibility;
+    /// persistence validates immutable checkpoint and signer identities.
+    async fn add_federation_checkpoint_quorum(
+        &mut self,
+        quorum: &FederationCheckpointQuorum,
+    ) -> Result<(), Self::Err>;
+
+    /// Atomically promote a caller-verified quorum no further than durable local state.
+    async fn promote_verified_federation_checkpoint(
+        &mut self,
+        quorum: &FederationCheckpointQuorum,
+    ) -> Result<(), Self::Err>;
+
+    /// Durably latch a materialized-state audit mismatch.
+    ///
+    /// This operation is intentionally one-way. Ordinary startup, peer
+    /// agreement, and checkpoint promotion cannot clear the latch.
+    async fn latch_federation_materialized_state_audit_mismatch(&mut self)
+        -> Result<(), Self::Err>;
+
     /// Persist one signed federation catch-up certificate.
     async fn add_federation_catch_up_certificate(
         &mut self,
@@ -1033,6 +1069,50 @@ pub trait FederationJournalDatabase {
     async fn get_federation_dkg_member_sequences(
         &self,
     ) -> Result<BTreeMap<MemberId, u64>, Self::Err>;
+
+    /// Get bounded scalar checkpoint and rolling-digest metadata.
+    async fn get_federation_checkpoint_frontier(
+        &self,
+    ) -> Result<FederationCheckpointFrontier, Self::Err>;
+
+    /// Get one persisted checkpoint payload by ID.
+    async fn get_federation_checkpoint(
+        &self,
+        checkpoint_id: FederationCheckpointId,
+    ) -> Result<Option<FederationCheckpoint>, Self::Err>;
+
+    /// Get persisted checkpoint payloads after a finalized-item cursor.
+    async fn get_federation_checkpoints_after(
+        &self,
+        finalized_next_item_index: u64,
+    ) -> Result<Vec<FederationCheckpoint>, Self::Err>;
+
+    /// Get all persisted signatures for one checkpoint ID.
+    async fn get_federation_checkpoint_signatures(
+        &self,
+        checkpoint_id: FederationCheckpointId,
+    ) -> Result<Vec<FederationCheckpointSignature>, Self::Err>;
+
+    /// Get one persisted assembled quorum by checkpoint ID.
+    async fn get_federation_checkpoint_quorum(
+        &self,
+        checkpoint_id: FederationCheckpointId,
+    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
+
+    /// Get the newest assembled quorum of one checkpoint kind.
+    ///
+    /// Callers must verify the returned proof against the active public config.
+    async fn get_latest_federation_checkpoint_quorum(
+        &self,
+        kind: FederationCheckpointKind,
+    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
+
+    /// Get the locally trusted assembled checkpoint quorum.
+    ///
+    /// Callers must re-verify the bounded proof before using it at startup.
+    async fn get_trusted_federation_checkpoint_quorum(
+        &self,
+    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
 
     /// Get all persisted signed federation catch-up certificates.
     async fn get_federation_catch_up_certificates(

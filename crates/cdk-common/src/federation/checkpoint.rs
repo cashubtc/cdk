@@ -260,6 +260,54 @@ pub enum FederationCheckpointKind {
     Recovery,
 }
 
+/// Scalar durable checkpoint metadata used by bounded startup validation.
+///
+/// The three rolling frontiers advance only through contiguous persisted rows.
+/// `application_next_index` may lag the journal while accepted operations are
+/// being applied, but it can never advance beyond `journal_next_index`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationCheckpointFrontier {
+    /// First accepted-operation index not yet durably journaled.
+    pub journal_next_index: u64,
+    /// Cumulative accepted-operation order digest at `journal_next_index`.
+    pub journal_order_digest: FederationJournalDigest,
+    /// First finalized-item index not yet durably recorded.
+    pub finalized_next_item_index: u64,
+    /// Cumulative finalized-item digest at `finalized_next_item_index`.
+    pub finalized_item_digest: FederationFinalizedItemDigest,
+    /// First accepted-operation index without a terminal durable application result.
+    pub application_next_index: u64,
+    /// Cumulative terminal-application digest at `application_next_index`.
+    pub application_digest: FederationApplicationDigest,
+    /// Latest locally trusted quorum checkpoint, when one has been promoted.
+    pub trusted_checkpoint_id: Option<FederationCheckpointId>,
+    /// Latest checkpoint candidate whose full local state projection was audited.
+    pub latest_audited_checkpoint_id: Option<FederationCheckpointId>,
+    /// Full materialized-state digest captured with the latest local audit.
+    pub latest_materialized_state_digest: Option<FederationMaterializedStateDigest>,
+    /// Durable fail-closed latch set by a failed explicit or checkpoint-time audit.
+    pub materialized_state_audit_mismatch: bool,
+}
+
+impl FederationCheckpointFrontier {
+    /// Return the empty-history durable frontier.
+    #[must_use]
+    pub fn genesis() -> Self {
+        Self {
+            journal_next_index: 0,
+            journal_order_digest: FederationJournalDigest::genesis(),
+            finalized_next_item_index: 0,
+            finalized_item_digest: FederationFinalizedItemDigest::genesis(),
+            application_next_index: 0,
+            application_digest: FederationApplicationDigest::genesis(),
+            trusted_checkpoint_id: None,
+            latest_audited_checkpoint_id: None,
+            latest_materialized_state_digest: None,
+            materialized_state_audit_mismatch: false,
+        }
+    }
+}
+
 /// Canonical quorum-signed federation recovery frontier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

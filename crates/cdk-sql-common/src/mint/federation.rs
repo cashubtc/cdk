@@ -57,21 +57,23 @@ use cdk_common::database::mint::{
 use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftPendingOperationRecord, FederationApplicationState,
-    FederationCatchUpCertificate, FederationConfigDigest, FederationConfigSnapshot,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignatureRequest, FederationFrostApplicationConfig,
-    FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
-    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationAlephBftPendingOperationRecord, FederationApplicationDigest,
+    FederationApplicationState, FederationCatchUpCertificate, FederationCheckpoint,
+    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigDigest,
+    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignatureRequest, FederationFinalizedItemDigest,
+    FederationFrostApplicationConfig, FederationFrostDkgConfirmationRequest,
+    FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalConsensusEvidence, FederationJournalDigest,
-    FederationJournalEntry, FederationJournalTip, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationSignatureShareRecord, MemberId,
+    FederationJournalEntry, FederationJournalTip, FederationMaterializedStateDigest,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;
@@ -97,6 +99,7 @@ const FEDERATION_FROST_DKG_LOCAL_ROUND2_RECORD: &str = "local_round2";
 const FEDERATION_FROST_DKG_ROOT_RECORD: &str = "root";
 const FEDERATION_FROST_DKG_CONFIRMATION_RECORD: &str = "confirmation";
 const FEDERATION_ALEPH_BFT_ACTIVE_SESSION_KEY: &str = "active";
+const FEDERATION_CHECKPOINT_STATE_KEY: &str = "active";
 
 fn status_to_str(status: FederationOperationStatus) -> &'static str {
     match status {
@@ -139,6 +142,13 @@ fn aleph_bft_finalized_item_status_to_str(
         FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation => {
             "rejected_invalid_operation"
         }
+    }
+}
+
+fn checkpoint_kind_to_str(kind: FederationCheckpointKind) -> &'static str {
+    match kind {
+        FederationCheckpointKind::Scheduled => "scheduled",
+        FederationCheckpointKind::Recovery => "recovery",
     }
 }
 
@@ -717,4 +727,132 @@ fn sql_row_to_federation_catch_up_certificate(
     unpack_into!(let (certificate_json) = row);
     serde_json::from_str(&column_as_string!(&certificate_json))
         .map_err(|e| Error::Internal(format!("Invalid federation catch-up certificate JSON: {e}")))
+}
+
+fn sql_row_to_federation_checkpoint(row: Vec<Column>) -> Result<FederationCheckpoint, Error> {
+    unpack_into!(let (checkpoint_id, checkpoint_json) = row);
+    let checkpoint_id = FederationCheckpointId::from_hex(column_as_string!(&checkpoint_id))
+        .map_err(|e| Error::Internal(format!("Invalid federation checkpoint ID: {e}")))?;
+    let checkpoint =
+        serde_json::from_str::<FederationCheckpoint>(&column_as_string!(&checkpoint_json))
+            .map_err(|e| Error::Internal(format!("Invalid federation checkpoint JSON: {e}")))?;
+    let computed_id = checkpoint
+        .id()
+        .map_err(|e| Error::Internal(format!("Invalid federation checkpoint payload: {e}")))?;
+    if checkpoint_id != computed_id {
+        return Err(Error::Internal(format!(
+            "Federation checkpoint ID mismatch: stored={checkpoint_id}, computed={computed_id}"
+        )));
+    }
+    Ok(checkpoint)
+}
+
+fn sql_row_to_federation_checkpoint_signature(
+    row: Vec<Column>,
+) -> Result<FederationCheckpointSignature, Error> {
+    unpack_into!(let (checkpoint_id, signer_member_id, signature_json) = row);
+    let checkpoint_id = FederationCheckpointId::from_hex(column_as_string!(&checkpoint_id))
+        .map_err(|e| Error::Internal(format!("Invalid federation checkpoint ID: {e}")))?;
+    let signer = sql_member_id(signer_member_id)?;
+    let signature =
+        serde_json::from_str::<FederationCheckpointSignature>(&column_as_string!(&signature_json))
+            .map_err(|e| {
+                Error::Internal(format!("Invalid federation checkpoint signature JSON: {e}"))
+            })?;
+    if signature.checkpoint_id != checkpoint_id || signature.signer != signer {
+        return Err(Error::Internal(
+            "Federation checkpoint signature metadata mismatch".to_string(),
+        ));
+    }
+    Ok(signature)
+}
+
+fn sql_row_to_federation_checkpoint_quorum(
+    row: Vec<Column>,
+) -> Result<FederationCheckpointQuorum, Error> {
+    unpack_into!(let (checkpoint_id, quorum_json) = row);
+    let checkpoint_id = FederationCheckpointId::from_hex(column_as_string!(&checkpoint_id))
+        .map_err(|e| Error::Internal(format!("Invalid federation checkpoint ID: {e}")))?;
+    let quorum =
+        serde_json::from_str::<FederationCheckpointQuorum>(&column_as_string!(&quorum_json))
+            .map_err(|e| {
+                Error::Internal(format!("Invalid federation checkpoint quorum JSON: {e}"))
+            })?;
+    let computed_id = quorum.checkpoint.id().map_err(|e| {
+        Error::Internal(format!("Invalid federation checkpoint quorum payload: {e}"))
+    })?;
+    if checkpoint_id != computed_id
+        || quorum
+            .signatures
+            .iter()
+            .any(|signature| signature.checkpoint_id != checkpoint_id)
+    {
+        return Err(Error::Internal(
+            "Federation checkpoint quorum metadata mismatch".to_string(),
+        ));
+    }
+    Ok(quorum)
+}
+
+fn sql_row_to_federation_checkpoint_frontier(
+    row: Vec<Column>,
+) -> Result<FederationCheckpointFrontier, Error> {
+    unpack_into!(
+        let (
+            journal_next_index,
+            journal_order_digest,
+            finalized_next_item_index,
+            finalized_item_digest,
+            application_next_index,
+            application_digest,
+            trusted_checkpoint_id,
+            latest_audited_checkpoint_id,
+            latest_materialized_state_digest,
+            materialized_state_audit_mismatch
+        ) = row
+    );
+    let trusted_checkpoint_id = column_as_nullable_string!(&trusted_checkpoint_id)
+        .map(FederationCheckpointId::from_hex)
+        .transpose()
+        .map_err(|e| Error::Internal(format!("Invalid trusted checkpoint ID: {e}")))?;
+    let latest_audited_checkpoint_id = column_as_nullable_string!(&latest_audited_checkpoint_id)
+        .map(FederationCheckpointId::from_hex)
+        .transpose()
+        .map_err(|e| Error::Internal(format!("Invalid audited checkpoint ID: {e}")))?;
+    let latest_materialized_state_digest =
+        column_as_nullable_string!(&latest_materialized_state_digest)
+            .map(FederationMaterializedStateDigest::from_hex)
+            .transpose()
+            .map_err(|e| {
+                Error::Internal(format!("Invalid materialized-state audit digest: {e}"))
+            })?;
+    let materialized_state_audit_mismatch: u64 =
+        column_as_number!(materialized_state_audit_mismatch);
+    if materialized_state_audit_mismatch > 1 {
+        return Err(Error::Internal(format!(
+            "Invalid materialized-state audit mismatch latch: {materialized_state_audit_mismatch}"
+        )));
+    }
+
+    Ok(FederationCheckpointFrontier {
+        journal_next_index: column_as_number!(journal_next_index),
+        journal_order_digest: FederationJournalDigest::from_hex(column_as_string!(
+            &journal_order_digest
+        ))
+        .map_err(|e| Error::Internal(format!("Invalid federation journal digest: {e}")))?,
+        finalized_next_item_index: column_as_number!(finalized_next_item_index),
+        finalized_item_digest: FederationFinalizedItemDigest::from_hex(column_as_string!(
+            &finalized_item_digest
+        ))
+        .map_err(|e| Error::Internal(format!("Invalid finalized-item digest: {e}")))?,
+        application_next_index: column_as_number!(application_next_index),
+        application_digest: FederationApplicationDigest::from_hex(column_as_string!(
+            &application_digest
+        ))
+        .map_err(|e| Error::Internal(format!("Invalid application digest: {e}")))?,
+        trusted_checkpoint_id,
+        latest_audited_checkpoint_id,
+        latest_materialized_state_digest,
+        materialized_state_audit_mismatch: materialized_state_audit_mismatch == 1,
+    })
 }
