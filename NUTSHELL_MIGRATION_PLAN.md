@@ -20,6 +20,7 @@ cdk-mintd --config path/to/cdk-config.toml migrate-nutshell --nutshell-db "postg
 1. **Initialize CLI and Configuration**: Parse command-line args and load the CDK target `Settings` (which configures the target database path/engine).
 2. **Setup Target Database Schema**: Instantiate the CDK database using `setup_database()`. This automatically runs all target migrations so that all required CDK tables exist and are up to date.
 3. **Connect to Source**: Establish a read-only connection to the source Nutshell database (SQLite or Postgres).
+   The Nutshell mint must be stopped for the duration of the migration so the batched reads observe a stable database.
 4. **Validation (Pre-flight Checks)**:
    - Check if the target database is already populated. If any target data exists (e.g. `proof`, `blind_signature`, `keyset`), abort the migration to prevent corruption.
    - Verify that the source database contains the standard Nutshell schema.

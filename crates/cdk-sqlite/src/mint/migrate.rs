@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 
@@ -21,12 +21,15 @@ use chrono::NaiveDateTime;
 use super::MintSqliteDatabase;
 
 const MAX_SUPPORTED_NUTSHELL_VERSION: &str = "0.20.2";
+const SUPPORTED_NUTSHELL_SCHEMA_VERSION: i64 = 36;
 const CHUNK_SIZE: i64 = 2000;
 
 enum MigratedPromise {
-    Signature(PublicKey, BlindSignature, Option<QuoteId>, Id),
-    Message(BlindedMessage, Option<QuoteId>, Id),
+    Signature(PublicKey, BlindSignature, Option<QuoteId>, Id, u64),
+    Message(BlindedMessage, Option<QuoteId>, Id, u64),
 }
+
+type PendingMeltRequest = (QuoteId, Amount<CurrencyUnit>, Amount<CurrencyUnit>);
 
 fn parse_nutshell_version(v: &str) -> Option<(u32, u32, u32)> {
     let parts: Vec<&str> = v.split('.').collect();
@@ -72,6 +75,162 @@ fn val_to_string(val: rusqlite::types::Value) -> String {
         rusqlite::types::Value::Text(s) => s,
         rusqlite::types::Value::Blob(b) => String::from_utf8_lossy(&b).to_string(),
     }
+}
+
+fn source_count(conn: &rusqlite::Connection, table: &str) -> Result<usize, Error> {
+    let sql = format!("SELECT COUNT(*) FROM {table}");
+    conn.query_row(&sql, [], |row| row.get::<_, i64>(0))
+        .map(|count| count as usize)
+        .map_err(|e| Error::Database(Box::new(e)))
+}
+
+fn source_proof_count(conn: &rusqlite::Connection) -> Result<usize, Error> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM (SELECT y FROM proofs_used UNION SELECT y FROM proofs_pending)",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count as usize)
+    .map_err(|e| Error::Database(Box::new(e)))
+}
+
+fn validate_nutshell_schema(conn: &rusqlite::Connection) -> Result<(), Error> {
+    let version = conn
+        .query_row(
+            "SELECT version FROM dbversions WHERE db = 'mint'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    if version != SUPPORTED_NUTSHELL_SCHEMA_VERSION {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Unsupported Nutshell mint schema version {version}; expected version {SUPPORTED_NUTSHELL_SCHEMA_VERSION} from Nutshell {MAX_SUPPORTED_NUTSHELL_VERSION}"
+        )))));
+    }
+    Ok(())
+}
+
+fn query_pairs(conn: &rusqlite::Connection, sql: &str) -> Result<Vec<(String, i64)>, Error> {
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    rows.collect::<Result<_, _>>()
+        .map_err(|e| Error::Database(Box::new(e)))
+}
+
+fn liability_totals(
+    conn: &rusqlite::Connection,
+    sql: &str,
+) -> Result<BTreeMap<String, (i64, i64)>, Error> {
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?))))
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    rows.collect::<Result<_, _>>()
+        .map_err(|e| Error::Database(Box::new(e)))
+}
+
+/// Independently verify an already migrated Nutshell 0.20.2 SQLite database.
+pub fn verify_nutshell_migration(
+    cdk_db_path: &Path,
+    nutshell_db_path: &str,
+    db_password: Option<&str>,
+) -> Result<(), Error> {
+    let source = rusqlite::Connection::open_with_flags(
+        nutshell_db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| Error::Database(Box::new(e)))?;
+    let target = rusqlite::Connection::open_with_flags(
+        cdk_db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|e| Error::Database(Box::new(e)))?;
+    if let Some(password) = db_password {
+        target
+            .pragma_update(None, "key", password)
+            .map_err(|e| Error::Database(Box::new(e)))?;
+    }
+    validate_nutshell_schema(&source)?;
+
+    for (source_table, target_table) in [
+        ("keysets", "keyset"),
+        ("mint_quotes", "mint_quote"),
+        ("melt_quotes", "melt_quote"),
+        ("promises", "blind_signature"),
+    ] {
+        let expected = source_count(&source, source_table)?;
+        let actual = source_count(&target, target_table)?;
+        if expected != actual {
+            return Err(Error::Database(Box::new(std::io::Error::other(format!(
+                "Verification failed for {source_table}: source has {expected} rows, target has {actual}"
+            )))));
+        }
+    }
+    let expected_proofs = source_proof_count(&source)?;
+    let actual_proofs = source_count(&target, "proof")?;
+    if expected_proofs != actual_proofs {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Verification failed for proofs: source has {expected_proofs} rows, target has {actual_proofs}"
+        )))));
+    }
+
+    let source_quote_accounting = query_pairs(
+        &source,
+        "SELECT quote || ':' || COALESCE(amount_paid, 0), COALESCE(amount_issued, 0) FROM mint_quotes ORDER BY quote",
+    )?;
+    let target_quote_accounting = query_pairs(
+        &target,
+        "SELECT id || ':' || amount_paid, amount_issued FROM mint_quote ORDER BY id",
+    )?;
+    if source_quote_accounting != target_quote_accounting {
+        return Err(Error::Database(Box::new(std::io::Error::other(
+            "Verification failed: mint quote accounting differs",
+        ))));
+    }
+
+    let source_order = query_pairs(
+        &source,
+        "SELECT lower(b_), COALESCE(order_index, 0) FROM promises ORDER BY lower(b_)",
+    )?;
+    let target_order = query_pairs(
+        &target,
+        "SELECT lower(hex(blinded_message)), order_index FROM blind_signature ORDER BY lower(hex(blinded_message))",
+    )?;
+    if source_order != target_order {
+        return Err(Error::Database(Box::new(std::io::Error::other(
+            "Verification failed: promise order indexes differ",
+        ))));
+    }
+
+    let source_liabilities = liability_totals(
+        &source,
+        "SELECT k.id, COALESCE((SELECT SUM(amount) FROM promises p WHERE p.id = k.id AND p.c_ IS NOT NULL), 0), COALESCE((SELECT SUM(amount) FROM proofs_used u WHERE u.id = k.id), 0) FROM keysets k ORDER BY k.id",
+    )?;
+    let target_liabilities = liability_totals(
+        &target,
+        "SELECT keyset_id, total_issued, total_redeemed FROM keyset_amounts ORDER BY keyset_id",
+    )?;
+    if source_liabilities != target_liabilities {
+        return Err(Error::Database(Box::new(std::io::Error::other(
+            "Verification failed: per-keyset liabilities differ",
+        ))));
+    }
+
+    tracing::info!(
+        keysets = source_count(&source, "keysets")?,
+        mint_quotes = source_count(&source, "mint_quotes")?,
+        melt_quotes = source_count(&source, "melt_quotes")?,
+        promises = source_count(&source, "promises")?,
+        proofs = expected_proofs,
+        "Independent Nutshell migration verification succeeded"
+    );
+    Ok(())
 }
 
 fn read_keysets_sqlite(conn: &rusqlite::Connection) -> Result<Vec<MintKeySetInfo>, Error> {
@@ -201,14 +360,20 @@ fn read_keysets_sqlite(conn: &rusqlite::Connection) -> Result<Vec<MintKeySetInfo
     Ok(keysets)
 }
 
-type MigratedMintQuoteInfo = (MintQuote, String, Option<u64>, bool, bool);
+type MigratedMintQuoteInfo = (
+    MintQuote,
+    String,
+    Option<u64>,
+    Amount<CurrencyUnit>,
+    Amount<CurrencyUnit>,
+);
 
 fn read_mint_quotes_chunk_sqlite(
     conn: &rusqlite::Connection,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<MigratedMintQuoteInfo>, Error> {
-    let mut stmt = conn.prepare("SELECT quote, method, request, checking_id, unit, amount, created_time, paid_time, state, pubkey FROM mint_quotes LIMIT ? OFFSET ?;")
+    let mut stmt = conn.prepare("SELECT quote, method, request, checking_id, unit, amount, created_time, paid_time, state, pubkey, amount_paid, amount_issued, updated_at FROM mint_quotes ORDER BY quote LIMIT ? OFFSET ?;")
         .map_err(|e| Error::Database(Box::new(e)))?;
     let mint_quotes_iter = stmt
         .query_map([limit, offset], |row| {
@@ -222,9 +387,15 @@ fn read_mint_quotes_chunk_sqlite(
             let paid_time_val = row.get::<_, Option<rusqlite::types::Value>>(7)?;
             let state_str: String = row.get(8)?;
             let pubkey_str: Option<String> = row.get(9)?;
+            let stored_amount_paid: Option<i64> = row.get(10)?;
+            let stored_amount_issued: Option<i64> = row.get(11)?;
+            let updated_at_val = row.get::<_, Option<rusqlite::types::Value>>(12)?;
 
             let created_time_str = created_time_val.map(val_to_string);
             let paid_time_str = paid_time_val.map(val_to_string);
+            let updated_at = updated_at_val
+                .map(val_to_string)
+                .map(|value| parse_nutshell_timestamp(&value));
 
             let q_id = match QuoteId::from_str(&quote) {
                 Ok(id) => id,
@@ -281,13 +452,22 @@ fn read_mint_quotes_chunk_sqlite(
                 _ => MintQuoteState::Unpaid,
             };
 
-            let is_paid =
-                state_mapped == MintQuoteState::Paid || state_mapped == MintQuoteState::Issued;
-            let is_issued = state_mapped == MintQuoteState::Issued;
-
-            let amount_paid = Amount::from(0).with_unit(unit.clone());
-            let amount_issued = Amount::from(0).with_unit(unit.clone());
-
+            let amount_paid = Amount::from(stored_amount_paid.unwrap_or_else(|| {
+                if state_mapped == MintQuoteState::Paid || state_mapped == MintQuoteState::Issued {
+                    amount
+                } else {
+                    0
+                }
+            }) as u64)
+            .with_unit(unit.clone());
+            let amount_issued = Amount::from(stored_amount_issued.unwrap_or_else(|| {
+                if state_mapped == MintQuoteState::Issued {
+                    amount
+                } else {
+                    0
+                }
+            }) as u64)
+            .with_unit(unit.clone());
             let pubkey = pubkey_str
                 .as_ref()
                 .and_then(|pk| PublicKey::from_hex(pk).ok());
@@ -301,14 +481,15 @@ fn read_mint_quotes_chunk_sqlite(
                 Some(q_id),
                 request,
                 unit.clone(),
-                Some(Amount::from(amount as u64).with_unit(unit)),
+                Some(Amount::from(amount as u64).with_unit(unit.clone())),
                 expiry,
                 request_lookup_id,
                 pubkey,
-                amount_paid,
-                amount_issued,
+                Amount::ZERO.with_unit(unit.clone()),
+                Amount::ZERO.with_unit(unit.clone()),
                 method,
                 created_time,
+                updated_at.unwrap_or(created_time),
                 vec![],
                 vec![],
                 None,
@@ -320,8 +501,8 @@ fn read_mint_quotes_chunk_sqlite(
                 quote_obj,
                 checking_id,
                 paid_time,
-                is_paid,
-                is_issued,
+                amount_paid,
+                amount_issued,
             )))
         })
         .map_err(|e| Error::Database(Box::new(e)))?;
@@ -344,7 +525,7 @@ fn read_melt_quotes_chunk_sqlite(
     offset: i64,
     seen_paid_pending_lookup_ids: &RefCell<HashSet<String>>,
 ) -> Result<Vec<MeltQuote>, Error> {
-    let mut stmt = conn.prepare("SELECT quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time, paid_time, state, expiry, proof FROM melt_quotes LIMIT ? OFFSET ?;")
+    let mut stmt = conn.prepare("SELECT quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time, paid_time, state, expiry, proof FROM melt_quotes ORDER BY quote LIMIT ? OFFSET ?;")
         .map_err(|e| Error::Database(Box::new(e)))?;
     let melt_quotes_iter = stmt
         .query_map([limit, offset], |row| {
@@ -426,7 +607,10 @@ fn read_melt_quotes_chunk_sqlite(
             let state_mapped = match state_str.to_lowercase().as_str() {
                 "paid" => MeltQuoteState::Paid,
                 "pending" => MeltQuoteState::Pending,
-                "failed" => MeltQuoteState::Failed,
+                // CDK's persisted melt quote schema has no FAILED state. A
+                // failed Nutshell payment is not paid or in flight, so preserve
+                // it as UNPAID rather than aborting the entire migration.
+                "failed" => MeltQuoteState::Unpaid,
                 _ => MeltQuoteState::Unpaid,
             };
 
@@ -498,7 +682,7 @@ fn read_promises_chunk_sqlite(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<MigratedPromise>, Error> {
-    let mut stmt = conn.prepare("SELECT amount, id, b_, c_, dleq_e, dleq_s, mint_quote, melt_quote FROM promises LIMIT ? OFFSET ?;")
+    let mut stmt = conn.prepare("SELECT amount, id, b_, c_, dleq_e, dleq_s, mint_quote, melt_quote, order_index FROM promises ORDER BY b_ LIMIT ? OFFSET ?;")
         .map_err(|e| Error::Database(Box::new(e)))?;
     let promises_iter = stmt
         .query_map([limit, offset], |row| {
@@ -510,6 +694,7 @@ fn read_promises_chunk_sqlite(
             let dleq_s_str: Option<String> = row.get(5)?;
             let mint_quote_str: Option<String> = row.get(6)?;
             let melt_quote_str: Option<String> = row.get(7)?;
+            let order_index = row.get::<_, Option<i64>>(8)?.unwrap_or(0) as u64;
 
             let amount = Amount::from(amount_val as u64);
             let keyset_id = match Id::from_str(&keyset_id_str) {
@@ -573,6 +758,7 @@ fn read_promises_chunk_sqlite(
                     cdk_sig,
                     q_id,
                     keyset_id,
+                    order_index,
                 )))
             } else {
                 let cdk_msg = BlindedMessage {
@@ -581,7 +767,12 @@ fn read_promises_chunk_sqlite(
                     blinded_secret: blinded_message_pubkey,
                     witness: None,
                 };
-                Ok(Some(MigratedPromise::Message(cdk_msg, q_id, keyset_id)))
+                Ok(Some(MigratedPromise::Message(
+                    cdk_msg,
+                    q_id,
+                    keyset_id,
+                    order_index,
+                )))
             }
         })
         .map_err(|e| Error::Database(Box::new(e)))?;
@@ -607,9 +798,9 @@ fn read_proofs_chunk_sqlite(
     spent: bool,
 ) -> Result<Vec<MigratedProofInfo>, Error> {
     let query_str = if spent {
-        "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_used LIMIT ? OFFSET ?;"
+        "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_used ORDER BY secret LIMIT ? OFFSET ?;"
     } else {
-        "SELECT amount, id, c, secret, NULL, melt_quote FROM proofs_pending LIMIT ? OFFSET ?;"
+        "SELECT amount, id, c, secret, NULL, melt_quote FROM proofs_pending ORDER BY secret LIMIT ? OFFSET ?;"
     };
     let target_state = if spent {
         ProofState::Spent
@@ -697,20 +888,76 @@ fn read_proofs_chunk_sqlite(
     Ok(chunk)
 }
 
-/// Migrates a nutshell database to CDK sqlite database
-pub async fn migrate_from_nutshell(
+fn read_pending_melt_requests_sqlite(
+    conn: &rusqlite::Connection,
+) -> Result<Vec<PendingMeltRequest>, Error> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.melt_quote, SUM(p.amount), COALESCE(SUM(k.input_fee_ppk), 0), m.unit
+             FROM proofs_pending p
+             JOIN keysets k ON k.id = p.id
+             JOIN melt_quotes m ON m.quote = p.melt_quote
+             WHERE p.melt_quote IS NOT NULL
+             GROUP BY p.melt_quote, m.unit",
+        )
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let rows = stmt
+        .query_map([], |row| {
+            let quote: String = row.get(0)?;
+            let inputs_amount: i64 = row.get(1)?;
+            let fee_ppk: i64 = row.get(2)?;
+            let unit: String = row.get(3)?;
+            Ok((quote, inputs_amount, fee_ppk, unit))
+        })
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let mut requests = Vec::new();
+    for row in rows {
+        let (quote, inputs_amount, fee_ppk, unit) =
+            row.map_err(|e| Error::Database(Box::new(e)))?;
+        let quote_id = QuoteId::from_str(&quote)
+            .map_err(|e| Error::Database(Box::new(std::io::Error::other(e.to_string()))))?;
+        let unit = CurrencyUnit::from_str(&unit)
+            .map_err(|e| Error::Database(Box::new(std::io::Error::other(e.to_string()))))?;
+        requests.push((
+            quote_id,
+            Amount::from(inputs_amount as u64).with_unit(unit.clone()),
+            Amount::from((fee_ppk as u64).div_ceil(1000)).with_unit(unit),
+        ));
+    }
+    Ok(requests)
+}
+
+async fn migrate_from_nutshell_into(
     cdk_db_path: &Path,
     nutshell_db_path: &str,
     db_password: Option<String>,
 ) -> Result<(), Error> {
     tracing::info!("Starting nutshell database migration...");
+    let verification_password = db_password.clone();
 
     // Connect to source database
     let sqlite_conn =
         rusqlite::Connection::open(nutshell_db_path).map_err(|e| Error::Database(Box::new(e)))?;
+    validate_nutshell_schema(&sqlite_conn)?;
+
+    let source_keysets = source_count(&sqlite_conn, "keysets")?;
+    let source_mint_quotes = source_count(&sqlite_conn, "mint_quotes")?;
+    let source_melt_quotes = source_count(&sqlite_conn, "melt_quotes")?;
+    let source_promises = source_count(&sqlite_conn, "promises")?;
+    let source_spent_proofs = source_count(&sqlite_conn, "proofs_used")?;
+    let source_pending_proofs = source_count(&sqlite_conn, "proofs_pending")?;
+    // A failed Nutshell melt can leave the same proof in both state tables.
+    // CDK stores one row per Y, with the stricter state winning.
+    let source_proofs = source_proof_count(&sqlite_conn)?;
 
     // 1. Read and validate keysets (Pre-flight checks on nutshell version)
     let nutshell_keysets = read_keysets_sqlite(&sqlite_conn)?;
+    if nutshell_keysets.len() != source_keysets {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Source validation failed: read {} of {source_keysets} keysets",
+            nutshell_keysets.len()
+        )))));
+    }
 
     let max_v = parse_nutshell_version(MAX_SUPPORTED_NUTSHELL_VERSION).unwrap_or((0, 20, 1));
     for keyset in &nutshell_keysets {
@@ -735,9 +982,14 @@ pub async fn migrate_from_nutshell(
 
     // 3. Pre-flight checks on target database population
     let existing_keyset_infos = db.get_keyset_infos().await?;
-    if !existing_keyset_infos.is_empty() {
+    if !existing_keyset_infos.is_empty()
+        || !db.get_mint_quotes().await?.is_empty()
+        || !db.get_melt_quotes().await?.is_empty()
+        || !db.get_total_issued().await?.is_empty()
+        || !db.get_total_redeemed().await?.is_empty()
+    {
         return Err(Error::Database(Box::new(std::io::Error::other(
-            "Target CDK database already contains keyset data! Aborting migration to prevent accidental data overwrite/corruption."
+            "Target CDK database already contains mint data! Aborting migration to prevent accidental data overwrite/corruption."
         ))));
     }
 
@@ -798,14 +1050,10 @@ pub async fn migrate_from_nutshell(
 
     // 4. Chunked Migration of Mint Quotes
     let mut offset = 0;
-    loop {
+    while offset < source_mint_quotes as i64 {
         let chunk = read_mint_quotes_chunk_sqlite(&sqlite_conn, CHUNK_SIZE, offset)?;
 
-        if chunk.is_empty() {
-            break;
-        }
-
-        for (quote_obj, checking_id, paid_time_opt, is_paid, is_issued) in chunk {
+        for (quote_obj, checking_id, paid_time_opt, amount_paid, amount_issued) in chunk {
             let mut acquired_quote =
                 tx.add_mint_quote(quote_obj.clone())
                     .await
@@ -814,26 +1062,16 @@ pub async fn migrate_from_nutshell(
                         println!("Failed migrating Mint Quote: {}", quote_obj.id);
                     })?;
 
-            if is_paid {
+            if amount_paid.value() > 0 {
                 let paid_time = paid_time_opt.unwrap_or(quote_obj.created_time);
-                let unit = quote_obj.unit.clone();
-                let amount = quote_obj
-                    .amount
-                    .clone()
-                    .unwrap_or_else(|| Amount::from(0).with_unit(unit));
                 acquired_quote
-                    .add_payment(amount, checking_id, Some(paid_time))
+                    .add_payment(amount_paid, checking_id, Some(paid_time))
                     .map_err(|e| Error::Database(Box::new(std::io::Error::other(e.to_string()))))?;
             }
 
-            if is_issued {
-                let unit = quote_obj.unit.clone();
-                let amount = quote_obj
-                    .amount
-                    .clone()
-                    .unwrap_or_else(|| Amount::from(0).with_unit(unit));
+            if amount_issued.value() > 0 {
                 let _ = acquired_quote
-                    .add_issuance(amount)
+                    .add_issuance(amount_issued)
                     .map_err(|e| Error::Database(Box::new(std::io::Error::other(e.to_string()))))?;
             }
 
@@ -852,17 +1090,13 @@ pub async fn migrate_from_nutshell(
 
     // 5. Chunked Migration of Melt Quotes
     let mut offset = 0;
-    loop {
+    while offset < source_melt_quotes as i64 {
         let chunk = read_melt_quotes_chunk_sqlite(
             &sqlite_conn,
             CHUNK_SIZE,
             offset,
             &seen_paid_pending_lookup_ids,
         )?;
-
-        if chunk.is_empty() {
-            break;
-        }
 
         for quote in chunk {
             let quote_id = quote.id.clone();
@@ -883,24 +1117,27 @@ pub async fn migrate_from_nutshell(
         PaymentMethod::from_str("bolt11").unwrap_or_else(|_| PaymentMethod::from("bolt11")),
     );
     let mut offset = 0;
-    loop {
+    while offset < source_promises as i64 {
         let chunk = read_promises_chunk_sqlite(&sqlite_conn, CHUNK_SIZE, offset)?;
-
-        if chunk.is_empty() {
-            break;
-        }
 
         for promise in chunk {
             match promise {
-                MigratedPromise::Signature(blinded_message_pubkey, cdk_sig, q_id, keyset_id) => {
+                MigratedPromise::Signature(
+                    blinded_message_pubkey,
+                    cdk_sig,
+                    q_id,
+                    keyset_id,
+                    order_index,
+                ) => {
                     if !migrated_keyset_ids.contains(&keyset_id) {
                         skipped_promises_count += 1;
                         continue;
                     }
-                    tx.add_blind_signatures(
+                    tx.add_blind_signatures_with_order(
                         &[blinded_message_pubkey],
                         std::slice::from_ref(&cdk_sig),
                         q_id,
+                        &[order_index],
                     )
                     .await
                     .inspect_err(|_| {
@@ -918,15 +1155,16 @@ pub async fn migrate_from_nutshell(
                     _migrated_promises += 1;
                     migrated_promises_signed += 1;
                 }
-                MigratedPromise::Message(cdk_msg, q_id, keyset_id) => {
+                MigratedPromise::Message(cdk_msg, q_id, keyset_id, order_index) => {
                     if !migrated_keyset_ids.contains(&keyset_id) {
                         skipped_promises_count += 1;
                         continue;
                     }
-                    tx.add_blinded_messages(
+                    tx.add_blinded_messages_with_order(
                         q_id.as_ref(),
                         std::slice::from_ref(&cdk_msg),
                         &dummy_operation,
+                        &[order_index],
                     )
                     .await
                     .inspect_err(|_| {
@@ -952,12 +1190,13 @@ pub async fn migrate_from_nutshell(
     // 7. Chunked Migration of Proofs
     for spent in &[true, false] {
         let mut offset = 0;
-        loop {
+        let table_count = if *spent {
+            source_spent_proofs
+        } else {
+            source_pending_proofs
+        };
+        while offset < table_count as i64 {
             let chunk = read_proofs_chunk_sqlite(&sqlite_conn, CHUNK_SIZE, offset, *spent)?;
-
-            if chunk.is_empty() {
-                break;
-            }
 
             for (cdk_proof, melt_q_id, keyset_id, target_state) in chunk {
                 if !migrated_keyset_ids.contains(&keyset_id) {
@@ -1000,6 +1239,22 @@ pub async fn migrate_from_nutshell(
         }
     }
     tracing::info!("Migrated proofs successfully.");
+
+    for (quote_id, inputs_amount, inputs_fee) in read_pending_melt_requests_sqlite(&sqlite_conn)? {
+        tx.add_melt_request(&quote_id, inputs_amount, inputs_fee)
+            .await?;
+    }
+
+    if source_keysets != migrated_keysets + skipped_keysets_count
+        || source_mint_quotes != migrated_mint_quotes
+        || source_melt_quotes != migrated_melt_quotes
+        || source_promises != _migrated_promises + skipped_promises_count
+        || source_proofs != migrated_proofs + skipped_proofs_count
+    {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Source verification failed: source/migrated counts differ (keysets {source_keysets}/{migrated_keysets}, mint quotes {source_mint_quotes}/{migrated_mint_quotes}, melt quotes {source_melt_quotes}/{migrated_melt_quotes}, promises {source_promises}/{_migrated_promises}, proofs {source_proofs}/{migrated_proofs})"
+        )))));
+    }
 
     tx.commit().await?;
     tracing::info!("Transaction committed successfully.");
@@ -1065,5 +1320,182 @@ pub async fn migrate_from_nutshell(
         "Migration complete: Nutshell mint has been fully and successfully migrated to CDK!"
     );
 
+    verify_nutshell_migration(
+        cdk_db_path,
+        nutshell_db_path,
+        verification_password.as_deref(),
+    )?;
+
     Ok(())
+}
+
+/// Migrates a Nutshell database into a new CDK SQLite database atomically.
+pub async fn migrate_from_nutshell(
+    cdk_db_path: &Path,
+    nutshell_db_path: &str,
+    db_password: Option<String>,
+) -> Result<(), Error> {
+    if cdk_db_path.exists() {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Target CDK database {} already exists; migration requires a new target path",
+            cdk_db_path.display()
+        )))));
+    }
+    let file_name = cdk_db_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("cdk-mintd.sqlite");
+    let staging_path = cdk_db_path.with_file_name(format!(".{file_name}.migration-staging"));
+    if staging_path.exists() {
+        std::fs::remove_file(&staging_path).map_err(|e| Error::Database(Box::new(e)))?;
+    }
+
+    match migrate_from_nutshell_into(&staging_path, nutshell_db_path, db_password).await {
+        Ok(()) => {
+            std::fs::rename(&staging_path, cdk_db_path).map_err(|e| Error::Database(Box::new(e)))
+        }
+        Err(error) => {
+            if let Err(cleanup_error) = std::fs::remove_file(&staging_path) {
+                if cleanup_error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!(%cleanup_error, "Could not remove failed migration staging database");
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_nutshell_0202_schema_version() {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory database");
+        conn.execute(
+            "CREATE TABLE dbversions (db TEXT PRIMARY KEY, version INTEGER NOT NULL)",
+            [],
+        )
+        .expect("create dbversions");
+        conn.execute(
+            "INSERT INTO dbversions (db, version) VALUES ('mint', 36)",
+            [],
+        )
+        .expect("insert supported version");
+
+        validate_nutshell_schema(&conn).expect("0.20.2 schema should be accepted");
+    }
+
+    #[test]
+    fn rejects_other_nutshell_schema_versions() {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory database");
+        conn.execute(
+            "CREATE TABLE dbversions (db TEXT PRIMARY KEY, version INTEGER NOT NULL)",
+            [],
+        )
+        .expect("create dbversions");
+        conn.execute(
+            "INSERT INTO dbversions (db, version) VALUES ('mint', 35)",
+            [],
+        )
+        .expect("insert unsupported version");
+
+        let error = validate_nutshell_schema(&conn).expect_err("old schema should be rejected");
+        assert!(error.to_string().contains("schema version 35"));
+    }
+
+    #[test]
+    fn empty_filtered_page_does_not_mean_end_of_source() {
+        let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE promises (
+                amount INTEGER NOT NULL,
+                id TEXT NOT NULL,
+                b_ TEXT NOT NULL UNIQUE,
+                c_ TEXT,
+                dleq_e TEXT,
+                dleq_s TEXT,
+                mint_quote TEXT,
+                melt_quote TEXT,
+                order_index INTEGER
+            );",
+        )
+        .expect("create promises");
+        let tx = conn.transaction().expect("begin source fixture");
+        for index in 0..CHUNK_SIZE {
+            tx.execute(
+                "INSERT INTO promises (amount, id, b_, order_index) VALUES (1, '0000000000000000', ?1, 0)",
+                [format!("00-invalid-{index:04}")],
+            )
+            .expect("insert malformed promise");
+        }
+        tx.execute(
+            "INSERT INTO promises (amount, id, b_, order_index) VALUES (1, '0000000000000000', '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798', 7)",
+            [],
+        )
+        .expect("insert valid promise after malformed page");
+        tx.commit().expect("commit source fixture");
+
+        assert_eq!(source_count(&conn, "promises").expect("source count"), 2001);
+        assert!(read_promises_chunk_sqlite(&conn, CHUNK_SIZE, 0)
+            .expect("read malformed page")
+            .is_empty());
+        let final_page =
+            read_promises_chunk_sqlite(&conn, CHUNK_SIZE, CHUNK_SIZE).expect("read final page");
+        assert_eq!(final_page.len(), 1, "later valid rows must still be read");
+    }
+
+    #[tokio::test]
+    async fn failed_migration_does_not_leave_partial_target() {
+        let id = uuid::Uuid::new_v4();
+        let source_path = std::env::temp_dir().join(format!("nutshell-invalid-{id}.sqlite"));
+        let target_path = std::env::temp_dir().join(format!("cdk-partial-{id}.sqlite"));
+        let source = rusqlite::Connection::open(&source_path).expect("source fixture");
+        source
+            .execute_batch(
+                "CREATE TABLE dbversions (db TEXT PRIMARY KEY, version INTEGER NOT NULL);
+                 INSERT INTO dbversions (db, version) VALUES ('mint', 36);",
+            )
+            .expect("create incomplete source");
+        drop(source);
+
+        migrate_from_nutshell(
+            &target_path,
+            source_path.to_str().expect("utf8 source path"),
+            None,
+        )
+        .await
+        .expect_err("incomplete source must fail");
+        assert!(
+            !target_path.exists(),
+            "failed migration left a target database"
+        );
+
+        let _ = std::fs::remove_file(source_path);
+    }
+
+    #[tokio::test]
+    async fn existing_target_is_rejected_without_modification() {
+        let id = uuid::Uuid::new_v4();
+        let target_path = std::env::temp_dir().join(format!("cdk-existing-{id}.sqlite"));
+        let target = rusqlite::Connection::open(&target_path).expect("target fixture");
+        target
+            .execute("CREATE TABLE sentinel (value TEXT NOT NULL)", [])
+            .expect("create sentinel");
+        target
+            .execute("INSERT INTO sentinel VALUES ('keep')", [])
+            .expect("insert sentinel");
+        drop(target);
+
+        migrate_from_nutshell(&target_path, "/does/not/matter.sqlite", None)
+            .await
+            .expect_err("existing target must be rejected");
+        let target = rusqlite::Connection::open(&target_path).expect("reopen target");
+        let sentinel: String = target
+            .query_row("SELECT value FROM sentinel", [], |row| row.get(0))
+            .expect("sentinel remains");
+        assert_eq!(sentinel, "keep");
+        drop(target);
+        let _ = std::fs::remove_file(target_path);
+    }
 }

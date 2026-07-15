@@ -186,6 +186,16 @@ impl Id {
         input_fee_ppk: u64,
         expiry: Option<u64>,
     ) -> Self {
+        Self::v2_from_data_inner(map, unit, input_fee_ppk, expiry, false)
+    }
+
+    fn v2_from_data_inner(
+        map: &Keys,
+        unit: &CurrencyUnit,
+        input_fee_ppk: u64,
+        expiry: Option<u64>,
+        include_zero_expiry: bool,
+    ) -> Self {
         let mut keys: Vec<(&Amount, &super::PublicKey)> = map.iter().collect();
         keys.sort_by_key(|(amt, _v)| *amt);
 
@@ -203,7 +213,7 @@ impl Id {
         }
 
         if let Some(expiry) = expiry {
-            if expiry > 0 {
+            if expiry > 0 || include_zero_expiry {
                 data.push_str(&format!("|final_expiry:{}", expiry));
             }
         }
@@ -516,12 +526,25 @@ impl KeySet {
             ),
         };
 
-        ensure_cdk!(
-            u32::from(keys_id) == u32::from(self.id),
-            Error::IncorrectKeysetId
-        );
-
-        ensure_cdk!(keys_id == self.id, Error::IncorrectKeysetId);
+        if keys_id != self.id {
+            // Nutshell 0.20.2 included an explicitly stored zero expiry in its
+            // v2 keyset hash. Accept that representation so its rotated keysets
+            // and proofs remain usable after migration.
+            let legacy_zero_expiry_id = match (self.id.version, self.final_expiry) {
+                (KeySetVersion::Version01, None | Some(0)) => Some(Id::v2_from_data_inner(
+                    &self.keys,
+                    &self.unit,
+                    self.input_fee_ppk,
+                    Some(0),
+                    true,
+                )),
+                _ => None,
+            };
+            ensure_cdk!(
+                legacy_zero_expiry_id == Some(self.id),
+                Error::IncorrectKeysetId
+            );
+        }
 
         Ok(())
     }
@@ -746,7 +769,7 @@ mod test {
 
     use bitcoin::secp256k1::rand::{self, RngCore};
 
-    use super::{KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId};
+    use super::{KeySet, KeySetInfo, KeySetVersion, Keys, KeysetResponse, ShortKeysetId};
     use crate::nuts::nut02::{Error, Id};
     use crate::nuts::KeysResponse;
     use crate::util::hex;
@@ -1062,6 +1085,23 @@ mod test {
             id_with_none, id_with_zero,
             "expiry=Some(0) should be treated the same as expiry=None"
         );
+    }
+
+    #[test]
+    fn test_verify_nutshell_legacy_zero_expiry_id() {
+        let unit = CurrencyUnit::Sat;
+        let keys: Keys = serde_json::from_str(SHORT_KEYSET).unwrap();
+        let id = Id::v2_from_data_inner(&keys, &unit, 100, Some(0), true);
+        let keyset = KeySet {
+            id,
+            unit,
+            active: Some(true),
+            keys,
+            input_fee_ppk: 100,
+            final_expiry: None,
+        };
+
+        assert!(keyset.verify_id().is_ok());
     }
 
     #[test]

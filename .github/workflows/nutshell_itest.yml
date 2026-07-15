@@ -57,7 +57,7 @@ jobs:
   nutshell-migration-integration-tests:
     name: Nutshell Migration Integration Tests
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: checkout
         uses: actions/checkout@v5
@@ -68,4 +68,8 @@ jobs:
           useDaemon: false
         continue-on-error: true
       - name: Test Nutshell Migration
-        run: nix develop -i -L .#integration --command just nutshell-migration-itest
+        run: |
+          for seed in 137 202002 2002002002; do
+            echo "Running migration fuzzer with seed ${seed}"
+            CDK_MIGRATION_FUZZ_SEED="${seed}" nix develop -i -L .#integration --command just nutshell-migration-itest
+          done

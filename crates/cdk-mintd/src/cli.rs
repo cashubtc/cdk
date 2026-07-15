@@ -50,5 +50,8 @@ pub enum Subcommand {
             help = "Path to nutshell sqlite DB file or nutshell postgres connection string"
         )]
         nutshell_db: String,
+        /// Verify an already migrated target without writing either database
+        #[arg(long, default_value_t = false)]
+        verify_only: bool,
     },
 }

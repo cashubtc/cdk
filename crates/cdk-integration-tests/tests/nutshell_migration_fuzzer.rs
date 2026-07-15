@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,10 +8,148 @@ use bip39::Mnemonic;
 use bitcoin::bip32::DerivationPath;
 use bitcoin::hashes::Hash;
 use cdk::amount::{Amount, SplitTarget};
-use cdk::cdk_database::{MintKeysDatabase, WalletDatabase};
+use cdk::cdk_database::{MintDatabase, MintKeysDatabase, WalletDatabase};
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, MeltQuoteState, PaymentMethod, ProofsMethods, State};
 use cdk::wallet::Wallet;
+use cdk_common::wallet::KeysetLoadPolicy;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
+
+const DEFAULT_FUZZ_SEED: u64 = 0x20_02_cd_c0_de;
+
+#[derive(Debug, Default)]
+struct Coverage {
+    mints: usize,
+    swaps: usize,
+    melts: usize,
+    rotations: usize,
+}
+
+impl Coverage {
+    fn assert_complete(&self) {
+        assert!(self.mints > 0, "fuzzer did not complete a mint");
+        assert!(self.swaps > 0, "fuzzer did not complete a swap");
+        assert!(self.melts > 0, "fuzzer did not complete a melt");
+        assert!(self.rotations > 0, "fuzzer did not rotate a keyset");
+    }
+}
+
+fn fuzz_seed() -> Result<u64> {
+    match std::env::var("CDK_MIGRATION_FUZZ_SEED") {
+        Ok(seed) => seed
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid CDK_MIGRATION_FUZZ_SEED '{seed}': {e}")),
+        Err(_) => Ok(DEFAULT_FUZZ_SEED),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Liability {
+    issued: i64,
+    redeemed: i64,
+}
+
+fn source_liabilities(conn: &rusqlite::Connection) -> Result<BTreeMap<String, Liability>> {
+    let mut result = BTreeMap::new();
+    let mut stmt = conn.prepare("SELECT id FROM keysets ORDER BY id")?;
+    let ids: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    for id in ids {
+        let issued = conn.query_row(
+            "SELECT COALESCE(SUM(amount), 0) FROM promises WHERE id = ?1 AND c_ IS NOT NULL",
+            [&id],
+            |row| row.get(0),
+        )?;
+        let redeemed = conn.query_row(
+            "SELECT COALESCE(SUM(amount), 0) FROM proofs_used WHERE id = ?1",
+            [&id],
+            |row| row.get(0),
+        )?;
+        result.insert(id, Liability { issued, redeemed });
+    }
+    Ok(result)
+}
+
+fn target_liabilities(conn: &rusqlite::Connection) -> Result<BTreeMap<String, Liability>> {
+    let mut stmt = conn.prepare(
+        "SELECT keyset_id, total_issued, total_redeemed FROM keyset_amounts ORDER BY keyset_id",
+    )?;
+    let liabilities = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                Liability {
+                    issued: row.get(1)?,
+                    redeemed: row.get(2)?,
+                },
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+    Ok(liabilities)
+}
+
+fn query_strings(conn: &rusqlite::Connection, sql: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(sql)?;
+    let values = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()
+        .map_err(anyhow::Error::from)?;
+    Ok(values)
+}
+
+fn verify_semantic_manifest(
+    source: &rusqlite::Connection,
+    target: &rusqlite::Connection,
+) -> Result<()> {
+    let source_melts = query_strings(
+        source,
+        "SELECT quote || '|' || method || '|' || request || '|' || unit || '|' || amount || '|' || COALESCE(fee_reserve, 0) || '|' || CASE upper(state) WHEN 'FAILED' THEN 'UNPAID' ELSE upper(state) END || '|' || COALESCE(proof, '') FROM melt_quotes ORDER BY quote",
+    )?;
+    let target_melts = query_strings(
+        target,
+        "SELECT id || '|' || payment_method || '|' || COALESCE(json_extract(request, '$.Bolt11.bolt11'), json_extract(request, '$.Custom.request')) || '|' || unit || '|' || amount || '|' || fee_reserve || '|' || state || '|' || COALESCE(payment_proof, '') FROM melt_quote ORDER BY id",
+    )?;
+    assert_eq!(source_melts, target_melts, "melt quote manifest mismatch");
+
+    let source_promises = query_strings(
+        source,
+        "SELECT lower(b_) || '|' || amount || '|' || id || '|' || lower(COALESCE(c_, '')) || '|' || lower(COALESCE(dleq_e, '')) || '|' || lower(COALESCE(dleq_s, '')) || '|' || COALESCE(mint_quote, melt_quote, '') || '|' || COALESCE(order_index, 0) FROM promises ORDER BY lower(b_)",
+    )?;
+    let target_promises = query_strings(
+        target,
+        "SELECT lower(hex(blinded_message)) || '|' || amount || '|' || keyset_id || '|' || lower(hex(COALESCE(c, x''))) || '|' || lower(COALESCE(dleq_e, '')) || '|' || lower(COALESCE(dleq_s, '')) || '|' || COALESCE(quote_id, '') || '|' || order_index FROM blind_signature ORDER BY lower(hex(blinded_message))",
+    )?;
+    assert_eq!(
+        source_promises, target_promises,
+        "promise manifest mismatch"
+    );
+
+    let source_proofs = query_strings(
+        source,
+        "SELECT lower(y) || '|' || amount || '|' || id || '|' || secret || '|' || lower(c) || '|' || COALESCE(witness, '') || '|SPENT|' || COALESCE(melt_quote, '') FROM proofs_used UNION ALL SELECT lower(y) || '|' || amount || '|' || id || '|' || secret || '|' || lower(c) || '||PENDING|' || COALESCE(melt_quote, '') FROM proofs_pending p WHERE NOT EXISTS (SELECT 1 FROM proofs_used u WHERE u.y = p.y) ORDER BY 1",
+    )?;
+    let target_proofs = query_strings(
+        target,
+        "SELECT lower(hex(y)) || '|' || amount || '|' || keyset_id || '|' || secret || '|' || lower(hex(c)) || '|' || COALESCE(witness, '') || '|' || state || '|' || COALESCE(quote_id, '') FROM proof ORDER BY 1",
+    )?;
+    assert_eq!(source_proofs, target_proofs, "proof manifest mismatch");
+
+    let source_liabilities = source_liabilities(source)?;
+    let target_liabilities = target_liabilities(target)?;
+    assert_eq!(
+        source_liabilities, target_liabilities,
+        "keyset liabilities mismatch"
+    );
+    for (keyset, liability) in source_liabilities {
+        assert!(
+            liability.issued >= liability.redeemed,
+            "negative outstanding liability for keyset {keyset}"
+        );
+    }
+    Ok(())
+}
 
 enum MintRuntime {
     Poetry { path: String },
@@ -96,10 +234,10 @@ async fn do_mint(
     Ok(())
 }
 
-async fn do_swap(wallet: &Wallet) -> Result<()> {
+async fn do_swap(wallet: &Wallet) -> Result<bool> {
     let unspent = wallet.get_unspent_proofs().await?;
     if unspent.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     // Swap/split the proofs
@@ -107,14 +245,13 @@ async fn do_swap(wallet: &Wallet) -> Result<()> {
         .swap(None, SplitTarget::default(), unspent, None, false, false)
         .await?;
     println!("Successfully performed swap");
-    Ok(())
+    Ok(true)
 }
 
-async fn do_melt(wallet: &Wallet) -> Result<()> {
+async fn do_melt(wallet: &Wallet) -> Result<bool> {
     let balance = wallet.total_balance().await?;
     if balance < Amount::from(20) {
-        // Not enough balance to melt
-        return Ok(());
+        return Ok(false);
     }
 
     let fake_invoice = create_truly_random_fake_invoice(10_000); // 10 sats
@@ -126,13 +263,26 @@ async fn do_melt(wallet: &Wallet) -> Result<()> {
             None,
         )
         .await?;
-
     let prepared = wallet.prepare_melt(&melt_quote.id, HashMap::new()).await?;
-    let melt_response = prepared.confirm().await?;
-
-    assert_eq!(melt_response.state(), MeltQuoteState::Paid);
-    println!("Successfully performed melt");
-    Ok(())
+    match prepared.confirm().await {
+        Ok(response) if response.state() == MeltQuoteState::Paid => {
+            println!("Successfully performed melt");
+            Ok(true)
+        }
+        Ok(response) => {
+            println!(
+                "FakeWallet melt ended in state {}; recording no coverage",
+                response.state()
+            );
+            Ok(false)
+        }
+        Err(error) => {
+            // FakeWallet intentionally injects payment failures. They remain in
+            // the source state but do not count as successful melt coverage.
+            println!("FakeWallet melt failed ({error}); recording no coverage");
+            Ok(false)
+        }
+    }
 }
 
 async fn rotate_nutshell_keyset(
@@ -227,6 +377,11 @@ impl Drop for CleanupGuard {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_nutshell_migration_fuzzer() -> Result<()> {
     println!("Initializing nutshell migration fuzzer...");
+    let seed = fuzz_seed()?;
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut operation_log = Vec::new();
+    let mut coverage = Coverage::default();
+    println!("Migration fuzz seed: {seed} (replay with CDK_MIGRATION_FUZZ_SEED={seed})");
 
     // Detect runtime
     let runtime = if std::env::var("CDK_TEST_USE_POETRY").is_ok()
@@ -386,39 +541,105 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     for (i, wallet) in wallets.iter().enumerate() {
         println!("Initial funding for wallet {}...", i);
         do_mint(wallet, &container_name, &poetry_path).await?;
+        coverage.mints += 1;
+        operation_log.push(format!("initial mint wallet={i}"));
     }
 
-    // 2. Perform random operations
-    println!("Performing random wallet operations (40 operations)...");
-    for i in 0..40 {
-        if i == 15 {
-            if let Err(e) = rotate_nutshell_keyset(&container_name, &poetry_path).await {
-                println!("Warning: Keysets rotation failed on Nutshell: {:?}", e);
-            }
+    // Mandatory deterministic coverage. Random operations below extend this state but
+    // are not allowed to be the only way a migration-critical state is reached.
+    assert!(do_swap(&wallets[0]).await?, "required swap was skipped");
+    coverage.swaps += 1;
+    operation_log.push("required swap wallet=0".to_string());
+    let mut required_melt_completed = false;
+    for wallet in wallets.iter().skip(1).take(5) {
+        if do_melt(wallet).await? {
+            required_melt_completed = true;
+            break;
         }
-        let wallet_idx = rand::random_range(0..10);
-        let op_idx = rand::random_range(0..3);
+    }
+    assert!(required_melt_completed, "required melt was skipped");
+    coverage.melts += 1;
+    operation_log.push("required successful melt".to_string());
+    rotate_nutshell_keyset(&container_name, &poetry_path).await?;
+    coverage.rotations += 1;
+    operation_log.push("required keyset rotation".to_string());
+    for wallet in &wallets {
+        wallet.keysets(KeysetLoadPolicy::Refresh).await?;
+    }
+    // Use a fresh wallet after rotation. Existing wallet instances intentionally
+    // retain mint metadata, which would make this a cache test instead of a
+    // migration fixture and can select the now-inactive keyset.
+    let post_rotation_store = Arc::new(cdk_sqlite::wallet::memory::empty().await?);
+    let post_rotation_mnemonic = Mnemonic::generate(12)?;
+    let post_rotation_seed = post_rotation_mnemonic.to_seed_normalized("");
+    let post_rotation_wallet = Wallet::new(
+        "http://127.0.0.1:4444",
+        CurrencyUnit::Sat,
+        post_rotation_store.clone(),
+        post_rotation_seed,
+        None,
+    )?;
+    post_rotation_wallet
+        .keysets(KeysetLoadPolicy::Refresh)
+        .await?;
+    do_mint(&post_rotation_wallet, &container_name, &poetry_path).await?;
+    wallets.push(post_rotation_wallet);
+    wallet_seeds.push(post_rotation_seed);
+    wallet_stores.push(post_rotation_store);
+    coverage.mints += 1;
+    operation_log.push("required post-rotation mint wallet=10".to_string());
+
+    // 2. Perform random operations
+    println!("Performing random wallet operations (12 operations)...");
+    for i in 0..12 {
+        // Successful and failed melt states are created deterministically above
+        // and below. Reusing a wallet after Nutshell's fault-injecting FakeWallet
+        // fails a melt can leave its local proof view stale and make later random
+        // swaps test the harness instead of migration.
+        let op_idx = rng.random_range(0..2);
+        let wallet_idx = match op_idx {
+            // Only the fresh wallet has post-rotation mint metadata. The other
+            // wallets remain useful for swap and melt coverage.
+            0 => wallets.len() - 1,
+            // Wallets 1-5 are reserved for the mandatory fault-injecting melt
+            // attempts and may have a stale local proof view after a failure.
+            _ => rng.random_range(6..wallets.len()),
+        };
         let wallet = &wallets[wallet_idx];
 
         println!("Round {}: Wallet {}, Op {}", i, wallet_idx, op_idx);
         match op_idx {
             0 => {
-                if let Err(e) = do_mint(wallet, &container_name, &poetry_path).await {
-                    println!("Warning: do_mint failed during fuzzing: {:?}", e);
-                }
+                do_mint(wallet, &container_name, &poetry_path).await?;
+                coverage.mints += 1;
+                operation_log.push(format!("round={i} mint wallet={wallet_idx}"));
             }
             1 => {
-                if let Err(e) = do_swap(wallet).await {
-                    println!("Warning: do_swap failed during fuzzing: {:?}", e);
+                if do_swap(wallet).await? {
+                    coverage.swaps += 1;
+                    operation_log.push(format!("round={i} swap wallet={wallet_idx}"));
                 }
             }
-            _ => {
-                if let Err(e) = do_melt(wallet).await {
-                    println!("Warning: do_melt failed during fuzzing: {:?}", e);
-                }
-            }
+            _ => unreachable!("random operation index is bounded to mint and swap"),
         }
     }
+    coverage.assert_complete();
+    println!("Pre-migration coverage: {coverage:?}");
+    println!("Replay log:\n{}", operation_log.join("\n"));
+
+    // Create a deterministic interrupted-operation state. Nutshell normally writes
+    // this row between accepting proofs and completing a melt; constructing it after
+    // the mint is stopped avoids racing the server while guaranteeing coverage.
+    let forced_pending_proof = wallets[0]
+        .get_unspent_proofs()
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("wallet 0 has no proof for pending-state coverage"))?;
+    let forced_pending_y = forced_pending_proof.y()?;
+    wallet_stores[0]
+        .update_proofs_state(vec![forced_pending_y], State::Pending)
+        .await?;
 
     // Record total balance of each wallet before migration
     let mut balances_before = Vec::new();
@@ -466,12 +687,78 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
 
     // Read the seed from nutshell's database directly
     let conn = rusqlite::Connection::open(&nutshell_db_path)?;
+    conn.execute(
+        "INSERT INTO proofs_pending (amount, id, c, secret, y, witness, created, melt_quote) VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch(), NULL)",
+        rusqlite::params![
+            u64::from(forced_pending_proof.amount) as i64,
+            forced_pending_proof.keyset_id.to_string(),
+            forced_pending_proof.c.to_hex(),
+            forced_pending_proof.secret.to_string(),
+            forced_pending_y.to_hex(),
+            forced_pending_proof
+                .witness
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?,
+        ],
+    )?;
+    let failed_melt_quote = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO melt_quotes (quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time, paid_time, fee_paid, proof, state, expiry) VALUES (?1, 'bolt11', 'failed-fixture', ?2, 'sat', 2, 0, 0, unixepoch(), NULL, 0, NULL, 'FAILED', unixepoch() + 3600)",
+        rusqlite::params![failed_melt_quote, format!("checking-{failed_melt_quote}")],
+    )?;
+    println!("Inserted deterministic pending proof {forced_pending_y}");
     let seed_str: String = conn.query_row(
         "SELECT seed FROM keysets WHERE active = 1 LIMIT 1;",
         [],
         |row| row.get(0),
     )?;
     println!("Retrieved nutshell seed from database: {}", seed_str);
+    let active_keyset_id: String = conn.query_row(
+        "SELECT id FROM keysets WHERE active = 1 LIMIT 1",
+        [],
+        |row| row.get(0),
+    )?;
+
+    // Deterministic 0.20.2 accounting fixtures cover states that ordinary Bolt11
+    // FakeWallet traffic cannot reliably produce: partial issuance and overpayment.
+    for (state, amount_paid, amount_issued) in [
+        ("UNPAID", 0_i64, 0_i64),
+        ("PAID", 60, 20),
+        ("PAID", 130, 100),
+        ("ISSUED", 100, 100),
+    ] {
+        let quote = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO mint_quotes (quote, method, request, checking_id, unit, amount, created_time, paid_time, issued_time, state, pubkey, amount_paid, amount_issued, updated_at) VALUES (?1, 'bolt11', ?2, ?3, 'sat', 100, unixepoch(), unixepoch(), unixepoch(), ?4, NULL, ?5, ?6, unixepoch())",
+            rusqlite::params![quote, format!("fixture-{quote}"), format!("checking-{quote}"), state, amount_paid, amount_issued],
+        )?;
+    }
+
+    let pending_melt_quote = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO melt_quotes (quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time, paid_time, fee_paid, proof, state, expiry) VALUES (?1, 'bolt11', 'pending-fixture', ?2, 'sat', 2, 0, 0, unixepoch(), NULL, 0, NULL, 'PENDING', unixepoch() + 3600)",
+        rusqlite::params![pending_melt_quote, format!("checking-{pending_melt_quote}")],
+    )?;
+    conn.execute(
+        "UPDATE proofs_pending SET melt_quote = ?1 WHERE y = ?2",
+        rusqlite::params![pending_melt_quote, forced_pending_y.to_hex()],
+    )?;
+    for (order_index, blinded_message) in [
+        (
+            1_i64,
+            "0379be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        ),
+        (
+            0_i64,
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        ),
+    ] {
+        conn.execute(
+            "INSERT INTO promises (amount, id, b_, c_, created, melt_quote, order_index) VALUES (1, ?1, ?2, NULL, unixepoch(), ?3, ?4)",
+            rusqlite::params![active_keyset_id, blinded_message, pending_melt_quote, order_index],
+        )?;
+    }
 
     let mut stmt = conn.prepare("SELECT id FROM keysets;")?;
     let nutshell_keyset_ids: std::collections::HashSet<String> = stmt
@@ -491,11 +778,54 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     .expect("Migration failed");
     println!("Migration complete!");
 
-    // Reset any pending proofs to UNSPENT by deleting them from the proof table on the new mint
+    // Nutshell 0.20.2 persists cumulative quote accounting and promise ordering.
+    // Both are required for safe quote recovery after the cutover.
     {
-        let conn = rusqlite::Connection::open(&cdk_db_path)?;
-        let rows_deleted = conn.execute("DELETE FROM proof WHERE state = 'PENDING';", [])?;
-        println!("Reset {} pending proof(s) to UNSPENT.", rows_deleted);
+        let source = rusqlite::Connection::open(&nutshell_db_path)?;
+        let target = rusqlite::Connection::open(&cdk_db_path)?;
+
+        let mut source_quotes = source.prepare(
+            "SELECT quote, COALESCE(amount_paid, 0), COALESCE(amount_issued, 0) FROM mint_quotes ORDER BY quote",
+        )?;
+        let source_quotes: Vec<(String, i64, i64)> = source_quotes
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut target_quotes =
+            target.prepare("SELECT id, amount_paid, amount_issued FROM mint_quote ORDER BY id")?;
+        let target_quotes: Vec<(String, i64, i64)> = target_quotes
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        assert_eq!(
+            source_quotes, target_quotes,
+            "mint quote accounting must be preserved"
+        );
+
+        let mut source_order = source.prepare(
+            "SELECT lower(b_), COALESCE(order_index, 0) FROM promises ORDER BY lower(b_)",
+        )?;
+        let source_order: Vec<(String, i64)> = source_order
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        let mut target_order = target.prepare(
+            "SELECT lower(hex(blinded_message)), order_index FROM blind_signature ORDER BY lower(hex(blinded_message))",
+        )?;
+        let target_order: Vec<(String, i64)> = target_order
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        assert_eq!(
+            source_order, target_order,
+            "promise order indexes must be preserved"
+        );
+        verify_semantic_manifest(&source, &target)?;
+        let pending_state: String = target.query_row(
+            "SELECT state FROM proof WHERE y = ?1",
+            [forced_pending_y.to_bytes().to_vec()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            pending_state, "PENDING",
+            "pending proof state must survive migration"
+        );
     }
 
     // 5. Instantiate and run the new CDK mint in-process pointing to port 4444 (matching original URL)
@@ -503,6 +833,24 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     let db = cdk_sqlite::mint::MintSqliteDatabase::new(cdk_db_path.clone())
         .await
         .unwrap();
+
+    let mut recovery_tx = MintDatabase::begin_transaction(&db).await?;
+    let recovered_melt = recovery_tx
+        .get_melt_request_and_blinded_messages(&cdk_common::quote_id::QuoteId::from_str(
+            &pending_melt_quote,
+        )?)
+        .await?
+        .expect("pending melt recovery metadata must be migrated");
+    assert_eq!(recovered_melt.change_outputs.len(), 2);
+    assert_eq!(
+        recovered_melt.change_outputs[0].blinded_secret.to_hex(),
+        "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    );
+    assert_eq!(
+        recovered_melt.change_outputs[1].blinded_secret.to_hex(),
+        "0379be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    );
+    recovery_tx.commit().await?;
 
     let target_keysets = db.get_keyset_infos().await?;
     let cdk_keyset_ids: std::collections::HashSet<String> =
@@ -608,7 +956,9 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     println!("CDK Mint is online on port 4444.");
 
-    // Reset any pending proofs inside the wallets' local stores too
+    // Reconcile only spent wallet proofs. Pending proofs must remain pending: deleting
+    // or rewriting them here would mask a migration failure in the exact state that is
+    // most important for interrupted-operation recovery.
     {
         let conn = rusqlite::Connection::open(&cdk_db_path)?;
         let mut stmt = conn.prepare("SELECT y FROM proof WHERE state = 'SPENT';")?;
@@ -630,29 +980,18 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
             let proofs_info = store.get_proofs(None, None, None, None).await.unwrap();
 
             let mut local_spent_ys = Vec::new();
-            let mut local_pending_ys = Vec::new();
 
             for p in proofs_info {
                 let y = p.proof.y().unwrap();
                 println!("Wallet {} proof: y={}, state={:?}", w_idx, y, p.state);
-                if spent_ys.contains(&y) {
-                    if p.state != State::Spent {
-                        local_spent_ys.push(y);
-                    }
-                } else if p.state == State::Pending {
-                    local_pending_ys.push(y);
+                if spent_ys.contains(&y) && p.state != State::Spent {
+                    local_spent_ys.push(y);
                 }
             }
 
             if !local_spent_ys.is_empty() {
                 store
                     .update_proofs_state(local_spent_ys, State::Spent)
-                    .await
-                    .unwrap();
-            }
-            if !local_pending_ys.is_empty() {
-                store
-                    .update_proofs_state(local_pending_ys, State::Unspent)
                     .await
                     .unwrap();
             }
@@ -686,13 +1025,25 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     }
     println!("Success: All wallet balances match exactly after migration!");
 
+    // Force every outstanding wallet proof through CDK's cryptographic verification.
+    // A row-count or balance-only check cannot detect a wrong seed/derivation path.
+    for (i, wallet) in ported_wallets.iter().enumerate() {
+        let proofs = wallet.get_unspent_proofs().await?;
+        if !proofs.is_empty() {
+            wallet
+                .swap(None, SplitTarget::default(), proofs, None, false, false)
+                .await?;
+            println!("Cryptographically revalidated wallet {i} proofs through a swap");
+        }
+    }
+
     // Verify wallet operations on the newly migrated CDK mint
     println!(
         "Testing spendability and wallet operations on the migrated CDK mint (40 operations)..."
     );
     for i in 0..40 {
-        let wallet_idx = rand::random_range(0..10);
-        let op_idx = rand::random_range(0..3);
+        let wallet_idx = rng.random_range(0..ported_wallets.len());
+        let op_idx = rng.random_range(0..3);
         let wallet = &ported_wallets[wallet_idx];
 
         println!("CDK Round {}: Wallet {}, Op {}", i, wallet_idx, op_idx);
@@ -700,40 +1051,30 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
             0 => {
                 // Mint
                 let amount = Amount::from(50);
-                if let Ok(mint_quote) = wallet
+                let mint_quote = wallet
                     .mint_quote(PaymentMethod::BOLT11, Some(amount), None, None)
-                    .await
-                {
-                    if let Err(e) = wallet
-                        .wait_and_mint_quote(
-                            mint_quote,
-                            SplitTarget::default(),
-                            None,
-                            Duration::from_secs(30),
-                        )
-                        .await
-                    {
-                        println!("Warning: wait_and_mint_quote failed on CDK: {:?}", e);
-                    }
-                }
+                    .await?;
+                wallet
+                    .wait_and_mint_quote(
+                        mint_quote,
+                        SplitTarget::default(),
+                        None,
+                        Duration::from_secs(30),
+                    )
+                    .await?;
             }
             1 => {
                 // Swap
-                let unspent = wallet.get_unspent_proofs().await.unwrap_or_default();
+                let unspent = wallet.get_unspent_proofs().await?;
                 if !unspent.is_empty() {
-                    if let Err(e) = wallet
+                    wallet
                         .swap(None, SplitTarget::default(), unspent, None, false, false)
-                        .await
-                    {
-                        println!("Warning: swap failed on CDK: {:?}", e);
-                    }
+                        .await?;
                 }
             }
             _ => {
                 // Melt
-                if let Err(e) = do_melt(wallet).await {
-                    println!("Warning: do_melt failed on CDK: {:?}", e);
-                }
+                do_melt(wallet).await?;
             }
         }
     }

@@ -186,7 +186,12 @@ mint-cli rotate-next-keyset --use-keyset-v2=false # Rotate to V1
 
 ## Migrating from a Nutshell Mint
 
-`cdk-mintd` provides a built-in migration tool to seamlessly migrate your active Nutshell database to CDK. This transfers all keysets, active quotes, blinded signatures (promises), and proofs (unspent/spent).
+`cdk-mintd` provides a built-in migration tool to migrate a Nutshell database to CDK. This transfers all keysets, quotes, blinded signatures (promises), and proofs (pending/spent).
+
+> **Important:** Stop the Nutshell mint before starting the migration and keep it stopped
+> until the CDK mint is ready to take over. The migration reads the source database in
+> batches; migrating a database that Nutshell is still modifying can produce an
+> inconsistent snapshot. Back up the source database before continuing.
 
 ### 1. Run the Migration Command
 
@@ -224,6 +229,27 @@ To migrate from a Nutshell PostgreSQL database to a CDK PostgreSQL database:
    ```
 
 *(Note: If you have already compiled `cdk-mintd` or are using a pre-built binary, replace `cargo run --package cdk-mintd --` with `cdk-mintd`.)*
+
+### Verify an Existing Migration
+
+The migration automatically performs an independent verification pass after writing the
+target. It compares raw table counts, cumulative mint quote accounting, promise ordering,
+and issued/redeemed totals for every keyset.
+
+The same read-only verification can be repeated before cutover:
+
+```bash
+cdk-mintd --work-dir ~/.cdk-mintd migrate-nutshell \
+  --nutshell-db /path/to/nutshell/mint.db \
+  --verify-only
+```
+
+For PostgreSQL, configure the CDK target in `config.toml` and pass the Nutshell connection
+string as usual. SQLite-to-PostgreSQL and PostgreSQL-to-SQLite migrations are deliberately
+rejected; migrate between matching database engines.
+
+See [Nutshell migration fuzzer hardening](../../docs/nutshell-migration-fuzzer.md) for the
+CI verification model and replay instructions.
 
 ### 2. Configure Nutshell's Private Key as CDK's Master Seed
 
