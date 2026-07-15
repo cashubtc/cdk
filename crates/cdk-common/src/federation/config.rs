@@ -14,9 +14,10 @@ use super::dkg::{FederationDkgTranscript, FederationDkgTranscriptHash};
 use super::frost_config::FederationFrostWalletConfig;
 use super::operation::{FederationKeysetRotationOperation, FederationPaymentObservationQuorum};
 use super::{
-    append_bytes, append_str, FederationError, Result, FEDERATION_CONFIG_DIGEST_VERSION,
-    FEDERATION_INVITE_PREFIX, FEDERATION_INVITE_VERSION, FEDERATION_KEYSET_ROTATION_PROOF_VERSION,
-    FEDERATION_MIN_MEMBERS, FEDERATION_ROSTER_HASH_VERSION, FEDERATION_WALLET_PROTOCOL_VERSION,
+    append_bytes, append_str, FederationCheckpointPolicy, FederationError, Result,
+    FEDERATION_CONFIG_DIGEST_VERSION, FEDERATION_INVITE_PREFIX, FEDERATION_INVITE_VERSION,
+    FEDERATION_KEYSET_ROTATION_PROOF_VERSION, FEDERATION_MIN_MEMBERS,
+    FEDERATION_ROSTER_HASH_VERSION, FEDERATION_WALLET_PROTOCOL_VERSION,
 };
 use crate::nuts::nut01::{
     aggregate_public_key_shares, verify_blind_signature_share, BlsAggregatePublicKey,
@@ -893,6 +894,9 @@ pub struct FederationConfig {
     pub setup_transcript: Option<FederationDkgTranscript>,
     /// Policy for mint and melt payment observations.
     pub payment_observation_policy: FederationPaymentObservationPolicy,
+    /// Consensus-configured scheduled-checkpoint intervals.
+    #[serde(default)]
+    pub checkpoint_policy: FederationCheckpointPolicy,
     /// Optional reusable FROST root and federated on-chain wallet configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frost_wallet: Option<FederationFrostWalletConfig>,
@@ -918,6 +922,7 @@ impl FederationConfig {
             payment_observation_policy: FederationPaymentObservationPolicy::member_quorum(
                 threshold_params.consensus_threshold,
             ),
+            checkpoint_policy: FederationCheckpointPolicy::default(),
             frost_wallet: None,
         };
         config.validate()?;
@@ -982,6 +987,7 @@ impl FederationConfig {
 
         self.payment_observation_policy
             .validate(self.threshold_params)?;
+        self.checkpoint_policy.validate()?;
         if let Some(wallet) = &self.frost_wallet {
             wallet.validate(self)?;
         }
@@ -1017,6 +1023,7 @@ impl FederationConfig {
 
         self.payment_observation_policy
             .validate(self.threshold_params)?;
+        self.checkpoint_policy.validate()?;
         if let Some(wallet) = &self.frost_wallet {
             wallet.validate(self)?;
         }

@@ -34,6 +34,10 @@ const FEDERATION_CHECKPOINT_SIGNATURE_DOMAIN: &[u8] = b"cdk-federation-checkpoin
 
 /// Canonical checkpoint payload version supported by this build.
 pub const FEDERATION_CHECKPOINT_VERSION: u16 = 1;
+/// Default accepted-operation interval between scheduled checkpoints.
+pub const DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS: u64 = 10_000;
+/// Default finalized-item interval between scheduled checkpoints.
+pub const DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS: u64 = 10_000;
 
 /// Cumulative digest of terminal application results in accepted-operation order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -260,6 +264,55 @@ pub enum FederationCheckpointKind {
     Recovery,
 }
 
+/// Consensus-configured scheduled-checkpoint interval policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCheckpointPolicy {
+    /// Accepted operations since the preceding scheduled checkpoint.
+    pub checkpoint_interval_journal_operations: u64,
+    /// Finalized consensus items since the preceding scheduled checkpoint.
+    pub checkpoint_interval_finalized_items: u64,
+}
+
+impl FederationCheckpointPolicy {
+    /// Create and validate a scheduled-checkpoint policy.
+    pub fn new(
+        checkpoint_interval_journal_operations: u64,
+        checkpoint_interval_finalized_items: u64,
+    ) -> Result<Self> {
+        let policy = Self {
+            checkpoint_interval_journal_operations,
+            checkpoint_interval_finalized_items,
+        };
+        policy.validate()?;
+        Ok(policy)
+    }
+
+    /// Validate that both progress dimensions have a non-zero interval.
+    pub fn validate(self) -> Result<()> {
+        if self.checkpoint_interval_journal_operations == 0 {
+            return Err(checkpoint_invalid(
+                "journal-operation checkpoint interval must be non-zero",
+            ));
+        }
+        if self.checkpoint_interval_finalized_items == 0 {
+            return Err(checkpoint_invalid(
+                "finalized-item checkpoint interval must be non-zero",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for FederationCheckpointPolicy {
+    fn default() -> Self {
+        Self {
+            checkpoint_interval_journal_operations: DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS,
+            checkpoint_interval_finalized_items: DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
+        }
+    }
+}
+
 /// Scalar durable checkpoint metadata used by bounded startup validation.
 ///
 /// The three rolling frontiers advance only through contiguous persisted rows.
@@ -305,6 +358,231 @@ impl FederationCheckpointFrontier {
             latest_materialized_state_digest: None,
             materialized_state_audit_mismatch: false,
         }
+    }
+}
+
+/// Exact durable frontier captured after one complete finalized unit is terminally applied.
+///
+/// Callers construct this while holding the federation operation-application
+/// lock. Construction rejects a partial application frontier; the explicit
+/// unit cursors make the complete-unit boundary part of the derived checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederationCheckpointBoundary {
+    /// First accepted-operation index after this boundary.
+    pub journal_next_index: u64,
+    /// Cumulative accepted-operation order digest at this boundary.
+    pub journal_order_digest: FederationJournalDigest,
+    /// First finalized-item index after this boundary.
+    pub finalized_next_item_index: u64,
+    /// Cumulative finalized-item digest at this boundary.
+    pub finalized_item_digest: FederationFinalizedItemDigest,
+    /// Cumulative terminal-application digest at this boundary.
+    pub application_digest: FederationApplicationDigest,
+    /// AlephBFT session containing the completed unit.
+    pub aleph_bft_session: u64,
+    /// Next finalized-unit index expected in the active session.
+    pub next_unit_finalization_index: u64,
+    /// Next unit index expected from each member observed in the active session.
+    pub next_unit_index_by_member: BTreeMap<MemberId, u64>,
+}
+
+impl FederationCheckpointBoundary {
+    /// Capture a terminal durable frontier at an explicitly completed unit boundary.
+    pub fn from_complete_unit(
+        frontier: &FederationCheckpointFrontier,
+        aleph_bft_session: u64,
+        next_unit_finalization_index: u64,
+        next_unit_index_by_member: BTreeMap<MemberId, u64>,
+    ) -> Result<Self> {
+        if frontier.materialized_state_audit_mismatch {
+            return Err(checkpoint_invalid(
+                "materialized-state audit mismatch is latched",
+            ));
+        }
+        if frontier.application_next_index != frontier.journal_next_index {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary has non-terminal accepted operations",
+            ));
+        }
+        if frontier.journal_next_index > frontier.finalized_next_item_index {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary journal is ahead of finalized items",
+            ));
+        }
+        if frontier.finalized_next_item_index == 0 || next_unit_finalization_index == 0 {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary does not contain a complete finalized unit",
+            ));
+        }
+        if next_unit_index_by_member.is_empty() {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary has no member unit watermarks",
+            ));
+        }
+
+        Ok(Self {
+            journal_next_index: frontier.journal_next_index,
+            journal_order_digest: frontier.journal_order_digest,
+            finalized_next_item_index: frontier.finalized_next_item_index,
+            finalized_item_digest: frontier.finalized_item_digest,
+            application_digest: frontier.application_digest,
+            aleph_bft_session,
+            next_unit_finalization_index,
+            next_unit_index_by_member,
+        })
+    }
+
+    /// Return whether this complete boundary has crossed either interval after the anchor.
+    pub fn is_scheduled_eligible(
+        &self,
+        policy: FederationCheckpointPolicy,
+        latest_scheduled: Option<&FederationCheckpoint>,
+    ) -> Result<bool> {
+        policy.validate()?;
+        let (base_journal_next_index, base_finalized_next_item_index) = match latest_scheduled {
+            Some(checkpoint) => {
+                if checkpoint.kind != FederationCheckpointKind::Scheduled {
+                    return Err(checkpoint_invalid(
+                        "scheduled eligibility anchor is not a scheduled checkpoint",
+                    ));
+                }
+                (
+                    checkpoint.journal_next_index,
+                    checkpoint.finalized_next_item_index,
+                )
+            }
+            None => (0, 0),
+        };
+        let journal_progress = self
+            .journal_next_index
+            .checked_sub(base_journal_next_index)
+            .ok_or_else(|| checkpoint_invalid("scheduled journal frontier regressed"))?;
+        let finalized_progress = self
+            .finalized_next_item_index
+            .checked_sub(base_finalized_next_item_index)
+            .ok_or_else(|| checkpoint_invalid("scheduled finalized-item frontier regressed"))?;
+
+        Ok(
+            journal_progress >= policy.checkpoint_interval_journal_operations
+                || finalized_progress >= policy.checkpoint_interval_finalized_items,
+        )
+    }
+
+    /// Build the next scheduled checkpoint at this eligible complete boundary.
+    pub fn scheduled_checkpoint(
+        &self,
+        config: &FederationConfig,
+        latest_scheduled: Option<&FederationCheckpoint>,
+        materialized_state_digest: FederationMaterializedStateDigest,
+    ) -> Result<FederationCheckpoint> {
+        if !self.is_scheduled_eligible(config.checkpoint_policy, latest_scheduled)? {
+            return Err(checkpoint_invalid(
+                "complete unit boundary has not crossed a scheduled interval",
+            ));
+        }
+        let (scheduled_checkpoint_sequence, scheduled_anchor_id) = match latest_scheduled {
+            Some(checkpoint) => (
+                checkpoint
+                    .scheduled_checkpoint_sequence
+                    .checked_add(1)
+                    .ok_or_else(|| checkpoint_invalid("scheduled checkpoint sequence overflow"))?,
+                Some(checkpoint.id()?),
+            ),
+            None => (1, None),
+        };
+        let checkpoint = self.build_checkpoint(
+            config,
+            FederationCheckpointKind::Scheduled,
+            scheduled_checkpoint_sequence,
+            scheduled_anchor_id,
+            materialized_state_digest,
+        )?;
+        checkpoint.validate_promotion_from(latest_scheduled)?;
+        Ok(checkpoint)
+    }
+
+    /// Build an on-demand recovery checkpoint without advancing scheduled lineage.
+    pub fn recovery_checkpoint(
+        &self,
+        config: &FederationConfig,
+        latest_scheduled: Option<&FederationCheckpoint>,
+        materialized_state_digest: FederationMaterializedStateDigest,
+    ) -> Result<FederationCheckpoint> {
+        if latest_scheduled
+            .is_some_and(|checkpoint| checkpoint.kind != FederationCheckpointKind::Scheduled)
+        {
+            return Err(checkpoint_invalid(
+                "recovery anchor is not a scheduled checkpoint",
+            ));
+        }
+        let (scheduled_checkpoint_sequence, scheduled_anchor_id) = match latest_scheduled {
+            Some(checkpoint) => (
+                checkpoint.scheduled_checkpoint_sequence,
+                Some(checkpoint.id()?),
+            ),
+            None => (0, None),
+        };
+        let checkpoint = self.build_checkpoint(
+            config,
+            FederationCheckpointKind::Recovery,
+            scheduled_checkpoint_sequence,
+            scheduled_anchor_id,
+            materialized_state_digest,
+        )?;
+        checkpoint.validate_promotion_from(latest_scheduled)?;
+        Ok(checkpoint)
+    }
+
+    fn build_checkpoint(
+        &self,
+        config: &FederationConfig,
+        kind: FederationCheckpointKind,
+        scheduled_checkpoint_sequence: u64,
+        scheduled_anchor_id: Option<FederationCheckpointId>,
+        materialized_state_digest: FederationMaterializedStateDigest,
+    ) -> Result<FederationCheckpoint> {
+        config.validate()?;
+        if self
+            .next_unit_index_by_member
+            .keys()
+            .any(|member_id| !config.members.contains_key(member_id))
+        {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary contains an unknown member watermark",
+            ));
+        }
+        let next_unit_index_by_member = config
+            .members
+            .keys()
+            .map(|member_id| {
+                (
+                    *member_id,
+                    self.next_unit_index_by_member
+                        .get(member_id)
+                        .copied()
+                        .unwrap_or(0),
+                )
+            })
+            .collect();
+        let checkpoint = FederationCheckpoint {
+            version: FEDERATION_CHECKPOINT_VERSION,
+            federation_id: config.federation_id,
+            federation_config_digest: config.config_digest_for_validated_config()?,
+            kind,
+            scheduled_checkpoint_sequence,
+            scheduled_anchor_id,
+            journal_next_index: self.journal_next_index,
+            journal_order_digest: self.journal_order_digest,
+            finalized_next_item_index: self.finalized_next_item_index,
+            finalized_item_digest: self.finalized_item_digest,
+            application_digest: self.application_digest,
+            aleph_bft_session: self.aleph_bft_session,
+            next_unit_finalization_index: self.next_unit_finalization_index,
+            next_unit_index_by_member,
+            materialized_state_digest,
+        };
+        checkpoint.validate_against_config(config)?;
+        Ok(checkpoint)
     }
 }
 
@@ -975,6 +1253,37 @@ mod tests {
         }
     }
 
+    fn complete_boundary(
+        config: &FederationConfig,
+        journal_next_index: u64,
+        finalized_next_item_index: u64,
+    ) -> FederationCheckpointBoundary {
+        let frontier = FederationCheckpointFrontier {
+            journal_next_index,
+            journal_order_digest: FederationJournalDigest::from_bytes([11; 32]),
+            finalized_next_item_index,
+            finalized_item_digest: FederationFinalizedItemDigest::from_bytes([12; 32]),
+            application_next_index: journal_next_index,
+            application_digest: FederationApplicationDigest::from_bytes([13; 32]),
+            trusted_checkpoint_id: None,
+            latest_audited_checkpoint_id: None,
+            latest_materialized_state_digest: None,
+            materialized_state_audit_mismatch: false,
+        };
+        FederationCheckpointBoundary::from_complete_unit(
+            &frontier,
+            2,
+            4,
+            config
+                .members
+                .keys()
+                .copied()
+                .map(|member_id| (member_id, u64::from(member_id.get())))
+                .collect(),
+        )
+        .expect("complete checkpoint boundary")
+    }
+
     fn advanced_recovery(
         current: &FederationCheckpoint,
         latest_scheduled: &FederationCheckpoint,
@@ -1047,10 +1356,87 @@ mod tests {
                 finalized_digest.as_str(),
             ),
             (
-                "e7abf8c59a987296a5537a25f7bd4a04ac430987a07256f2263f9793dc9a6a2a",
+                "d2b571bd919ab092745c317ddf0029d7ad1ff469fd5e30a7d2aa0ace574630cc",
                 "6f98c1caffcb0b8c7970d6b697c821e0f46949fce43c74c4e349a10e38ccfb3d",
                 "d741b5d8863d623672627c1d7fd5ccea7a0420e78b9b68ac89b231ae2be5daa2",
             )
+        );
+    }
+
+    #[test]
+    fn scheduled_eligibility_requires_terminal_complete_unit_progress() {
+        assert_eq!(
+            FederationCheckpointPolicy::default(),
+            FederationCheckpointPolicy {
+                checkpoint_interval_journal_operations: 10_000,
+                checkpoint_interval_finalized_items: 10_000,
+            }
+        );
+        assert!(FederationCheckpointPolicy::new(0, 10).is_err());
+        assert!(FederationCheckpointPolicy::new(10, 0).is_err());
+
+        let (mut config, _) = configs();
+        config.checkpoint_policy = FederationCheckpointPolicy::new(5, 10).expect("policy");
+        let mut frontier = FederationCheckpointFrontier::genesis();
+        frontier.journal_next_index = 5;
+        frontier.journal_order_digest = FederationJournalDigest::from_bytes([11; 32]);
+        frontier.finalized_next_item_index = 9;
+        frontier.finalized_item_digest = FederationFinalizedItemDigest::from_bytes([12; 32]);
+        frontier.application_next_index = 4;
+        frontier.application_digest = FederationApplicationDigest::from_bytes([13; 32]);
+        let watermarks = config
+            .members
+            .keys()
+            .copied()
+            .map(|member_id| (member_id, 0))
+            .collect();
+
+        assert!(
+            FederationCheckpointBoundary::from_complete_unit(&frontier, 0, 1, watermarks).is_err()
+        );
+
+        let before = complete_boundary(&config, 4, 9);
+        assert!(!before
+            .is_scheduled_eligible(config.checkpoint_policy, None)
+            .expect("eligibility before interval"));
+        let journal_eligible = complete_boundary(&config, 6, 9);
+        assert!(journal_eligible
+            .is_scheduled_eligible(config.checkpoint_policy, None)
+            .expect("journal eligibility"));
+        let finalized_eligible = complete_boundary(&config, 4, 12);
+        assert!(finalized_eligible
+            .is_scheduled_eligible(config.checkpoint_policy, None)
+            .expect("finalized eligibility"));
+    }
+
+    #[test]
+    fn boundary_builders_keep_recovery_out_of_scheduled_lineage() {
+        let (mut config, _) = configs();
+        config.checkpoint_policy = FederationCheckpointPolicy::new(5, 10).expect("policy");
+        let first_boundary = complete_boundary(&config, 6, 12);
+        let audit = FederationMaterializedStateDigest::from_bytes([14; 32]);
+        let first = first_boundary
+            .scheduled_checkpoint(&config, None, audit)
+            .expect("first scheduled checkpoint");
+        let recovery_boundary = complete_boundary(&config, 8, 14);
+        let recovery = recovery_boundary
+            .recovery_checkpoint(&config, Some(&first), audit)
+            .expect("recovery checkpoint");
+        let second_boundary = complete_boundary(&config, 12, 22);
+        let second = second_boundary
+            .scheduled_checkpoint(&config, Some(&first), audit)
+            .expect("second scheduled checkpoint");
+
+        assert_eq!(first.scheduled_checkpoint_sequence, 1);
+        assert_eq!(recovery.scheduled_checkpoint_sequence, 1);
+        assert_eq!(
+            recovery.scheduled_anchor_id,
+            Some(first.id().expect("first id"))
+        );
+        assert_eq!(second.scheduled_checkpoint_sequence, 2);
+        assert_eq!(
+            second.scheduled_anchor_id,
+            Some(first.id().expect("first id"))
         );
     }
 

@@ -1,6 +1,6 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (milestone 1 commitments/direct audit and milestone 2 persistence core implemented)
+Status: in progress (milestone 1 protocol complete and milestone 2 persistence core implemented)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -626,7 +626,7 @@ bounded quorum proof.
       database frontiers and verifies only the suffix; arbitrary row corruption
       is checked by checkpoint creation or an explicit operator audit, not by a
       startup full-state scan.
-- [ ] Define deterministic checkpoint eligibility at complete unit and terminal
+- [x] Define deterministic checkpoint eligibility at complete unit and terminal
       application boundaries.
 - [x] Verify distinct known signers, reject duplicates, and require the
       configured consensus threshold.
@@ -664,11 +664,18 @@ database rows, including deterministic missing-row markers. The registry is
 only a direct row-discovery index; rejection details remain exclusively in the
 cumulative application digest. Effective keyset reconstruction reuses the same
 rotation records instead of replaying the journal. Deterministic boundary
-capture remains the open milestone-1 work.
+selection is now centralized in `FederationCheckpointBoundary`. The public
+federation config commits to non-zero journal-operation and finalized-item
+intervals, both defaulting to 10,000. A boundary is constructible only after a
+complete finalized unit with a terminal application frontier, scheduled
+eligibility triggers when either configured interval crosses, and the shared
+scheduled/recovery builders enforce sequence and anchor rules. Runtime capture,
+candidate persistence under the application lock, and signature exchange
+remain milestone-3 work rather than protocol-definition work.
 
 Verified with:
 
-- `cargo test -p cdk-common --features federation checkpoint --lib` (8 passed);
+- `cargo test -p cdk-common --features federation checkpoint --lib` (10 passed);
 - `cargo test -p cdk-sqlite --features federation federation_checkpoint_persistence`
   (1 passed);
 - `cargo test -p cdk-common --features federation
