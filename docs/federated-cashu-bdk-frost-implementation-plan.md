@@ -43,8 +43,7 @@ federation partially ready.
 
 ## Encountered bugs and things to remember
 
-> Keep below 500 words: symptom, cause, fix/open question, and regression.
-> Move investigations elsewhere.
+> Keep below 500 words: symptom, cause, fix, regression.
 
 - Cashu BLS shares and member identity keys cannot become Bitcoin custody
   shares. Reuse ceremony/authentication infrastructure only; persist the
@@ -88,12 +87,14 @@ federation partially ready.
   superseded nonce atomically, permit exact consumed commitment/share replay,
   and reject future or delayed attempts; preserve the reopen and coordinator-
   loss regressions.
-- Milestone 25 found a failed-melt catch-up test whose fixed operation elected
-  the other member, so the local observer correctly made no payment. Select a
-  locally elected operation deterministically in that fixture; no mint business
-  logic change was needed, and the focused catch-up regression now passes.
+- Milestone 25's failed-melt catch-up fixture elected a remote actor, so the
+  local observer correctly did not pay. Elect a local operation
+  deterministically; no mint logic changed, and the regression passes.
 - Milestone 25 replaced vulnerable Hickory and Tor-trusted resolver JSON with a
   transport-neutral, locally DNSSEC-validating resolver; preserve live smoke.
+- Milestone 25 audit found stale fuzz harnesses and `rand` 0.8.5. Update to
+  0.8.6, track public API changes in harnesses, and require all-target plus
+  sanitizer builds.
 - Milestone 26 runtime metrics must sample portable cumulative `ps time`; BSD
   `stime` is process start time, not system CPU time.
 
@@ -2334,24 +2335,35 @@ required before the continuous-fuzz checkbox can close. A bounded four-target
 60-second-per-target campaign completed without crashes. Deterministic 512-case
 accounting/ownership and 512-step lifecycle properties preserve conservation,
 uniqueness, exact rollback on rejected transitions, sticky reservations, and
-terminal monotonicity.
+terminal monotonicity. A fresh all-target build then exposed API drift in the
+retained spending-condition, DLEQ-verification, and federation-request
+conversion harnesses. Test-only compatibility repairs restored current public
+types without changing production code. Every fuzz target now passes both a
+normal all-target check and the nightly sanitizer build; the four security
+targets and all three repaired harnesses also complete bounded sanitizer runs.
+This local evidence does not replace the still-open continuous hosted campaign.
 
 Strict workspace Clippy, all-target checking, stable formatting, spelling, and
 workflow syntax pass. Secret scans of the repository, generated test material,
 the goal commit range, and the current patch pass with exact allowlist
 fingerprints for reviewed deterministic fixtures. The dependency audit removed
-the vulnerable `crossbeam-epoch` and `protobuf` versions. Aligning the supported
-Arti runtime with its existing native-TLS Hyper connector also removed the
-legacy `x509-signature` -> `ring` 0.16.20 path without changing the transport
-API. The BIP353 resolver now builds bounded wire-format DNSSEC proofs over the
-existing ordinary or Tor HTTPS transport and verifies the complete proof and
+the vulnerable `crossbeam-epoch` and `protobuf` versions. A fresh RustSec audit
+also found `RUSTSEC-2026-0097` in the fuzz lockfile; updating `rand` from 0.8.5
+to 0.8.6 cleared its unsoundness warning, and the fuzz lockfile now reports no
+vulnerabilities or unsoundness warnings. Aligning the supported Arti runtime
+with its existing native-TLS Hyper connector removed the legacy
+`x509-signature` -> `ring` 0.16.20 path without changing the transport API. The
+BIP353 resolver now builds bounded wire-format DNSSEC proofs over the existing
+ordinary or Tor HTTPS transport and verifies the complete proof and
 signature-validity interval locally before returning TXT records. This removed
 Hickory and its two advisories and closed the Tor path that previously trusted
-resolver JSON. One unsuppressed medium-severity RSA advisory remains through the
-optional Arti graph; the security packet records its path and disposition. A
-larger Arti update would require replacing the discontinued `arti-hyper`
-connector and still would not remove that upstream RSA dependency. The combined
-static and dependency gate therefore remains unchecked.
+resolver JSON. The all-features root audit still reports the unsuppressed
+medium-severity RSA vulnerability plus `RUSTSEC-2021-0145` against `atty` on the
+legacy Arti TLS connector path; the security packet records both. The latest
+Arti 0.44 line still uses `rsa` 0.9 and requires Rust 1.91, while the published
+`arti-hyper` connector remains on 0.19. Replacing either boundary locally would
+add new unreviewed transport or cryptographic surface without closing the RSA
+advisory. The combined static and dependency gate therefore remains unchecked.
 
 The standalone and federation regression matrix passes. The workspace library
 suite, federation-enabled `cdk-common`, serial `cdk-bdk`, all remaining
@@ -2363,9 +2375,9 @@ regression passes without changing mint behavior. The federation-enabled mint
 daemon, strict workspace Clippy, and all-target workspace check also pass.
 
 The independent cryptographic and two-adapter interoperability reviews, their
-finding resolution, the first scheduled fuzz run, unresolved dependency
-advisories, and continuous hosted fuzz evidence remain deliberately unchecked.
-Mainnet release is still blocked on them.
+finding resolution, the first hosted fuzz run, unresolved dependency findings,
+and continuous hosted fuzz evidence remain deliberately unchecked. Mainnet
+release is still blocked on them.
 
 ### Milestone 26: performance, capacity, and release gate
 

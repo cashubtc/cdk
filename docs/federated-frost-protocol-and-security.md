@@ -300,6 +300,15 @@ tests cover canonical derivation, decoder truncation/trailing bytes, accounting
 conservation, UTXO and intent uniqueness, randomized operation order/failure,
 and terminal monotonicity.
 
+The 2026-07-15 release recheck runs both
+`cargo check --manifest-path fuzz/Cargo.toml --all-targets --locked` and the
+nightly `cargo fuzz build`. It repaired test-only API drift in the retained
+spending-condition, DLEQ-verification, and federation-request-conversion
+harnesses. All targets build under the sanitizer, and bounded runs of the four
+security targets plus the repaired harnesses complete without crashes. These
+checks prove that the campaign can start; they do not constitute continuous
+hosted fuzz evidence.
+
 The local release review must also run formatting, workspace checks and Clippy,
 unit and integration tests, documentation tests, dependency audit, and a scan of
 logs, fixtures, snapshots, generated configs, and staged diffs for secrets.
@@ -309,20 +318,25 @@ Tool output and generated runtime directories are not release artifacts.
 
 The 2026-07-14 lockfile audit removed vulnerable `crossbeam-epoch` and
 `protobuf` versions by updating `crossbeam-epoch` and moving Prometheus to its
-non-Protobuf 0.14 implementation. The fuzz-workspace lockfile has no reported
-vulnerabilities. The BIP353 resolver no longer uses Hickory. It now builds a
-bounded RFC 9102 proof chain from wire-format DNS-over-HTTPS responses carried
-by the existing ordinary or Tor transport, then verifies the chain, resolved
-name, and signature-validity interval locally before exposing TXT records. This
-removes `RUSTSEC-2026-0118` and `RUSTSEC-2026-0119` and closes the prior Tor path
-that trusted resolver JSON for authenticity.
+non-Protobuf 0.14 implementation. A fresh 2026-07-15 audit found
+`RUSTSEC-2026-0097` against `rand` 0.8.5 in the fuzz lockfile; updating to the
+compatible 0.8.6 patch removed that unsoundness warning. The fuzz lockfile now
+reports no vulnerabilities or unsoundness warnings. The BIP353 resolver no
+longer uses Hickory. It builds a bounded RFC 9102 proof chain from wire-format
+DNS-over-HTTPS responses carried by the existing ordinary or Tor transport,
+then verifies the chain, resolved name, and signature-validity interval locally
+before exposing TXT records. This removes `RUSTSEC-2026-0118` and
+`RUSTSEC-2026-0119` and closes the prior Tor path that trusted resolver JSON for
+authenticity.
 
-The root lockfile still reports one unresolved advisory, so the dependency
-release gate remains failed rather than ignored:
+The all-features root lockfile still reports one unresolved vulnerability and
+one unsoundness warning, so the dependency release gate remains failed rather
+than ignored:
 
 | Advisory | Dependency path | Disposition |
 |---|---|---|
 | `RUSTSEC-2023-0071` | optional Tor transport -> Arti -> `rsa` 0.9.10 | medium severity and no fixed upstream release is available; do not suppress |
+| `RUSTSEC-2021-0145` | optional Tor transport -> `arti-hyper` -> `tls-api-native-tls` -> `tls-api-test` -> `env_logger` -> `atty` 0.2.14 | unsoundness warning with no patched `atty` release; do not suppress |
 
 The supported Arti runtime now uses native TLS, matching the existing
 `arti-hyper` connector, and therefore no longer pulls `x509-signature` and
@@ -333,10 +347,15 @@ but they remain supported code and therefore remain in the release audit. The
 Arti client uses RSA only for public-key signature verification, so the
 advisory's private-key timing-recovery path is not reachable through this
 transport. The medium-severity crate finding nevertheless remains unsuppressed:
-there is no patched `rsa` release, and current Arti releases still depend on the
-same major version. A larger Arti update is not a drop-in dependency change
-because `arti-hyper` ends at 0.19; replacing that connector locally would add
-unreviewed network security surface without closing the advisory.
+there is no patched `rsa` release. Registry metadata checked on 2026-07-15 shows
+that [`arti-client` 0.44.0](https://crates.io/crates/arti-client/0.44.0) still
+uses [`tor-llcrypto` 0.44.0](https://crates.io/crates/tor-llcrypto/0.44.0),
+which still depends on `rsa` 0.9 and requires Rust 1.91 rather than CDK's 1.85
+MSRV. The newest published [`arti-hyper` connector remains
+0.19.0](https://crates.io/crates/arti-hyper/0.19.0) and requires the 0.19 Arti
+line. Replacing that connector or Tor cryptography locally would add unreviewed
+network security surface without closing the RSA advisory; the same connector
+boundary also owns the retained `atty` path.
 
 Repository and goal-commit secret scans pass with exact fingerprints for known
 deterministic Cashu vectors, fuzz proofs, local demo credentials, and CI
