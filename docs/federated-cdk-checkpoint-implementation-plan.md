@@ -50,28 +50,45 @@ two creation policies:
   to authenticate the finalized but not-yet-scheduled tail.
 
 Each checkpoint commits to the cumulative accepted-operation order, the
-cumulative finalized-item stream, the materialized application state, and the
+cumulative finalized-item stream, a cumulative terminal-application digest, a
+full audit digest of the authoritative materialized application state, and the
 recovery cursors at a stable AlephBFT unit boundary. Members derive and sign a
 checkpoint once, persist its individual signatures and assembled quorum, and
 serve that stored proof without rescanning history or signing it again. A node
 verifies a checkpoint quorum once, persists that trusted recovery frontier,
 initializes the runtime at that nonzero frontier, and processes only the suffix
-after it.
+after it. Normal startup trusts the transactionally persisted checkpoint and
+application frontiers; it does not recompute the full materialized-state audit
+digest.
 
 The target complexity is:
 
 - steady state with no new checkpoint: O(1), with no signatures and no journal
   or certificate scan;
-- scheduled checkpoint creation: O(new batch + federation threshold), once per
-  deterministic boundary;
-- recovery checkpoint creation: O(tail + federation threshold), only when
-  recovery needs a stable post-scheduled frontier;
+- scheduled checkpoint creation: O(current authoritative materialized state +
+  new batch + federation threshold), once per deterministic boundary, because
+  version 1 deliberately performs one full state audit instead of maintaining
+  a Merkle tree;
+- recovery checkpoint creation: O(current authoritative materialized state +
+  tail + federation threshold), only when recovery needs a stable
+  post-scheduled frontier;
 - catch-up: O(number of missing operations/finalized items), not O(total
   history) per poll;
-- startup at an exact trusted checkpoint: O(federation threshold + current
-  materialized-state validation), independent of historical journal length;
-- startup with a tail after the checkpoint: O(federation threshold + tail),
-  with the tail bounded by checkpoint policy in the normal case.
+- startup at an exact trusted checkpoint: O(federation threshold + bounded
+  current-session AlephBFT backup), independent of historical journal and
+  materialized-state size;
+- startup with a tail after the checkpoint: O(federation threshold + tail +
+  bounded current-session AlephBFT backup), with the tail bounded by checkpoint
+  policy in the normal case.
+
+This design intentionally optimizes the startup critical path rather than
+checkpoint creation. Detecting arbitrary out-of-band corruption of every
+materialized database row before readiness would require either a full state
+scan on every startup or an incrementally maintained authenticated state tree.
+Version 1 does neither. It relies on database transaction integrity for crash
+consistency, checks the full authoritative state when a checkpoint is created,
+and provides an explicit operator audit that can recompute the full state
+digest and durably halt the member on mismatch.
 
 Signed checkpoints do not replace AlephBFT and must never become an alternate
 ordering path. AlephBFT continues to decide and order operations. A checkpoint
@@ -197,8 +214,15 @@ hold:
 - A second cumulative digest commits to every finalized AlephBFT item,
   including invalid, duplicate, and non-operation items that do not appear in
   the accepted-operation journal.
-- The materialized-state digest is distinct from both ordering commitments and
-  remains in the checkpoint.
+- A third cumulative application digest commits in accepted-operation order to
+  every terminal application result. Business-state writes, terminal journal
+  state, the applied cursor, and this digest must advance atomically.
+- The full materialized-state audit digest is distinct from all cumulative
+  ordering/application commitments and remains in the checkpoint. It covers
+  only consensus-authoritative state and is computed from database state
+  directly, without discovering rows by scanning historical journal entries.
+- Member-local, transient, uncommitted, or diagnostic state must not influence
+  either signed application commitment.
 - A member signs only a checkpoint that exactly matches its own fully applied,
   durable state at that checkpoint boundary.
 - Scheduled checkpoint eligibility and boundary selection are deterministic
@@ -216,10 +240,15 @@ hold:
 - Catch-up data from one peer remains untrusted until it reaches a known
   quorum checkpoint. It must not open public authoritative routes early.
 - A persisted checkpoint must never point ahead of the journal, finalized-item
-  stream, or materialized state committed in the same database.
+  stream, terminal application frontier, or materialized state committed in the
+  same database.
 - A materialized-state mismatch remains latched/fail-closed across restart.
 - Starting from a checkpoint must preserve old-operation idempotency and old
   finalized-unit replay rejection without rebuilding unbounded in-memory sets.
+- Checkpoint boundaries do not need to coincide with AlephBFT session
+  boundaries. The current live-session backup remains a separate, bounded
+  recovery input and must never become an alternate source of authoritative
+  application state.
 - Standalone mint behavior and public Cashu wallet APIs remain unchanged.
 
 ## Target checkpoint model
@@ -239,6 +268,7 @@ journal_next_index
 journal_order_digest
 finalized_next_item_index
 finalized_item_digest
+application_digest
 aleph_bft_session
 next_unit_finalization_index
 next_unit_index_by_member
@@ -270,7 +300,42 @@ checkpoints use this same type and verification path.
 The exact payload should be finalized in milestone 1. Fields may be removed
 only with an explicit proof that neither runtime recovery nor safety validation
 needs them. Local-only data such as pending submissions or raw AlephBFT backup
-bytes must not be placed in the quorum transcript.
+bytes must not be placed in the quorum transcript. `application_digest` is a
+domain-separated cumulative chain over canonical terminal application results.
+`materialized_state_digest` is the full authoritative-state audit captured at
+checkpoint creation. Normal restart verifies the signed stored value and its
+atomic frontier metadata but does not recompute that full audit.
+
+### Application and materialized-state commitments
+
+`application_digest` starts from a domain-separated genesis value and advances
+exactly once for each accepted-journal operation when that operation reaches a
+terminal application state. Its append transcript includes at least the prior
+application digest, operation index, operation ID, and canonical terminal
+`FederationApplicationState`, including deterministic rejection details. A
+valid checkpoint requires the terminal application frontier to equal
+`journal_next_index`. Retries or idempotent re-observation of an already
+terminal operation do not append the digest again.
+
+The application digest is a cumulative commitment to deterministic application
+results, not a Merkle root over current SQL rows. Its safety depends on committing
+the operation's business-state writes, terminal journal state, applied frontier,
+and next application digest in one database transaction. Startup recomputes
+this chain only over the retained suffix after its checkpoint base and compares
+the result with scalar durable metadata.
+
+`materialized_state_digest` retains the stronger whole-state comparison. It is
+computed at checkpoint creation from a canonical direct enumeration of every
+consensus-authoritative materialized table. It must not use the full journal to
+discover row keys, and it excludes local payment/backend metadata, transient
+work queues, private signing material, and other member-local state. Version 1
+does not maintain an incremental authenticated state tree. Consequently this
+audit is proportional to current authoritative state, but normal startup and
+status are not.
+
+The same full audit is available only through an explicit operator command
+outside checkpoint creation. There is no periodic or background audit and no
+normal-startup audit in this plan.
 
 ### Checkpoint creation policies
 
@@ -290,8 +355,12 @@ after eligibility at which every accepted operation through that unit has a
 terminal, durably materialized application state. The actual journal boundary
 may therefore be 10,003 rather than exactly 10,000. What is consensus-stable is
 the interval policy and deterministic boundary rule, not an unsafe partial-unit
-cut. Boundary digests and cursors must be captured before later finalization can
-change the materialized state being certified.
+cut. Under the federation operation-application lock, the member captures the
+rolling digests/cursors, computes the full materialized-state audit directly
+from authoritative database tables in a transactionally stable view, and
+persists the checkpoint candidate before later finalization may change the
+state being certified. Signature exchange happens after this local durable
+capture and does not hold the application lock.
 
 At an eligible boundary each member:
 
@@ -344,6 +413,39 @@ and a matching trusted checkpoint. Restoring an empty member from an arbitrary
 checkpoint would require a separate state-snapshot transfer protocol and is not
 part of this plan.
 
+The startup fast path assumes the mint database preserves committed
+transactions. It detects partial writes by requiring the journal, finalized,
+terminal-application, cumulative-digest, and checkpoint-frontier metadata to be
+atomically consistent. Arbitrary out-of-band row modification is handled by an
+explicit operator materialized-state audit, not by normal startup. An audit
+mismatch durably latches the member fail-closed and cannot be cleared by an
+ordinary restart or peer agreement.
+
+### AlephBFT live-session backup policy
+
+Checkpoints initialize CDK's journal, finalization handler, duplicate guards,
+and recovery cursors. They do not replace upstream AlephBFT's current-session
+backup. Checkpoints may occur at any complete finalized-unit boundary,
+including in the middle of an AlephBFT session.
+
+After checkpoint and suffix validation, startup loads the local backup for the
+active session. If it is missing or stale, the member reuses the existing
+authenticated private-REST backup recovery path and fetches the bounded current
+session backup from a peer whose session and durable tip match the selected
+target. AlephBFT validates the protocol data in the backup; every newly
+finalized payload still passes CDK's signed base cursors, per-member unit
+watermarks, duplicate checks, and normal deterministic application path. An
+invalid backup may fail recovery but must not advance authoritative state; the
+member backs off that source and tries another peer.
+
+Session rotation is the backup-compaction boundary. Configuration and runtime
+limits must bound current-session rounds, backup chunks, and total recovered
+backup bytes independently of federation lifetime. Once a newer session is
+durably active and a retained checkpoint/finalized frontier covers older
+sessions, obsolete backup sessions may be pruned according to a crash-safe
+retention rule. A single recovering member must never force a session rotation
+as a checkpoint shortcut.
+
 ### Transport policy
 
 Checkpoint proposals/signatures use authenticated private REST, not AlephBFT.
@@ -366,18 +468,24 @@ status; they do not embed complete signature sets in every status response.
 
 1. Load the newest locally persisted scheduled or recovery checkpoint quorum
    compatible with the configured federation.
-2. Verify its bounded signature set once and compare its journal/finalized
-   cursors and digests with scalar database metadata.
+2. Verify its bounded signature set once and compare its journal, finalized,
+   terminal-application, and cumulative-digest frontiers with scalar database
+   metadata.
 3. Initialize the journal and AlephBFT runtime from the checkpoint's nonzero
    base digests and cursors.
-4. Load and validate only local journal/finalized-item rows after the checkpoint.
-5. Recompute the current materialized-state digest once before readiness. This
-   preserves restart mismatch detection while avoiding historical certificate
-   and finalized-item replay.
+4. Load only local journal/finalized-item rows after the checkpoint. Recompute
+   the operation, finalized-item, and terminal-application digest chains across
+   that suffix, require every application to be terminal, and compare the
+   resulting cursors/digests with the transactionally persisted local frontier.
+   Do not reapply an already materialized local suffix.
+5. Do not recompute the full materialized-state audit on normal startup. The
+   signed stored audit digest is trusted only together with the atomic local
+   checkpoint/application frontier. Operators may run the explicit full audit
+   separately; mismatch durably halts the member.
 6. Ask peers for their newest stored scheduled checkpoint quorums, recovery
    checkpoint quorum, and scalar consensus tips.
 7. If local state is behind, fetch each missing scheduled-checkpoint-bounded
-   batch from one selected healthy source, validate both rolling digest chains
+   batch from one selected healthy source, validate all rolling digest chains
    against the already stored quorum proof, apply the batch, and persist the
    advanced trusted checkpoint transactionally. The serving member does not
    recalculate a signature and the requester does not contact historical
@@ -389,20 +497,25 @@ status; they do not embed complete signature sets in every status response.
    stable target and form/fetch one recovery checkpoint quorum using the same
    checkpoint proof type. Download the tail from one source and promote it only
    after the recovery quorum verifies.
-10. Open authoritative routes only when local order, finalized cursor,
-    materialized-state digest, peer tip, and live-session readiness satisfy the
-    existing fail-closed convergence rules.
+10. Load the bounded local backup for the active AlephBFT session. If it is
+    missing or stale, fetch it from an authenticated matching peer with source
+    failover, then start the live session. Do not fetch or replay backups from
+    every historical session.
+11. Open authoritative routes only when local order, finalized cursor,
+    application digest, peer tip, bounded-backup recovery, and live-session
+    readiness satisfy the existing fail-closed convergence rules.
 
-The unavoidable startup work is verifying one quorum and validating current
-materialized state. Historical journal length must not determine startup time
-when the database is exactly at a trusted checkpoint.
+The unavoidable startup work is verifying one quorum and restoring the bounded
+current AlephBFT session backup. Historical journal length and materialized
+state size must not determine startup time when the database is exactly at a
+trusted checkpoint.
 
 ## Milestone dependency map
 
 | Milestone | Result |
 | --- | --- |
 | 0 | Reproducible CPU/startup baseline and work counters |
-| 1 | Canonical checkpoint, finalized-item digest, and quorum verification |
+| 1 | Canonical checkpoint, application/finalized digests, and quorum verification |
 | 2 | SQLite/Postgres checkpoint persistence and atomic promotion |
 | 3 | Event-driven scheduled/recovery checkpoint production and reusable quorum exchange |
 | 4 | Scheduled-batch and stable-tail catch-up without range certificates |
@@ -434,7 +547,8 @@ the existing safety regressions as checkpoint requirements.
 
 - [ ] Add counters/timers for full journal rows loaded, finalized items loaded,
       certificate/checkpoint signatures verified, startup replayed entries,
-      materialized-state digest duration, and readiness duration.
+      materialized-state digest duration, AlephBFT backup bytes/chunks loaded,
+      and readiness duration.
 - [ ] Keep instrumentation bounded and free of operation payloads or secrets.
 - [ ] Add synthetic histories at 1,000, 10,000, and at least 100,000 operations
       without requiring public networking.
@@ -443,8 +557,9 @@ the existing safety regressions as checkpoint requirements.
 - [ ] Record cold-start time and rows/signatures processed at each history size.
 - [ ] Run the existing receive stress benchmark and preserve its raw output
       outside the repository; record only aggregate results.
-- [ ] Turn the startup materialized-state mismatch regression, partial evidence
-      regression, and restart catch-up regressions into named gates for this plan.
+- [ ] Preserve the materialized-state mismatch regression as an explicit
+      operator-audit gate, and preserve partial evidence and restart catch-up
+      regressions as startup/recovery gates.
 
 ### Files and references
 
@@ -463,8 +578,11 @@ the existing safety regressions as checkpoint requirements.
 - The baseline demonstrates whether unchanged sync rounds perform historical
   database reads or signature verification.
 - Startup measurements distinguish journal reconstruction, finalized-item
-  reconstruction, certificate verification, and materialized-state projection.
-- All existing fail-closed restart and catch-up tests pass unchanged.
+  reconstruction, certificate verification, materialized-state projection, and
+  current-session AlephBFT backup loading.
+- Existing partial-evidence and restart/catch-up tests remain fail-closed. The
+  former startup full-state mismatch regression is preserved through the
+  explicit operator-audit path rather than a normal-startup scan.
 
 ### Test conditions
 
@@ -478,8 +596,9 @@ the existing safety regressions as checkpoint requirements.
 
 ### Objective
 
-Introduce a cumulative checkpoint primitive that can authenticate both the
-application journal and the complete AlephBFT finalized-item prefix with a
+Introduce a cumulative checkpoint primitive that can authenticate the
+application journal, terminal application results, the complete AlephBFT
+finalized-item prefix, and one checkpoint-time authoritative-state audit with a
 bounded quorum proof.
 
 ### Checklist
@@ -495,6 +614,18 @@ bounded quorum proof.
       finalized item, including status and consensus/unit provenance.
 - [ ] Persist or derive the rolling finalized-item digest during finalization;
       never recompute it from genesis for normal checkpoint creation.
+- [ ] Add a domain-separated cumulative application digest over canonical
+      terminal application results, including deterministic rejection details.
+- [ ] Require business-state changes, terminal journal application state, the
+      applied cursor, and the cumulative application digest to commit in one
+      database transaction.
+- [ ] Define the authoritative materialized-state audit projection. It must
+      enumerate database state directly, exclude member-local/transient rows,
+      and require no historical journal scan.
+- [ ] Document the startup integrity model: normal startup trusts atomic
+      database frontiers and verifies only the suffix; arbitrary row corruption
+      is checked by checkpoint creation or an explicit operator audit, not by a
+      startup full-state scan.
 - [ ] Define deterministic checkpoint eligibility at complete unit and terminal
       application boundaries.
 - [ ] Verify distinct known signers, reject duplicates, and require the
@@ -509,6 +640,8 @@ bounded quorum proof.
       checkpoints anchored to the same scheduled checkpoint.
 - [ ] Document explicitly that checkpoint quorum is recovery evidence, not
       consensus finality.
+- [ ] Document explicitly that raw AlephBFT backup bytes are not checkpoint
+      evidence and cannot authorize application state.
 
 ### Files and references
 
@@ -519,6 +652,8 @@ bounded quorum proof.
 - `crates/cdk-common/src/federation/consensus/tests.rs`
 - `crates/cdk-common/src/federation/journal.rs`
 - `crates/cdk-common/src/federation/config.rs`
+- `crates/cdk/src/mint/federation.rs`
+- `crates/cdk/src/mint/federation/projection.rs`
 
 ### Success criteria
 
@@ -526,6 +661,8 @@ bounded quorum proof.
   journal length.
 - Verifying the newest checkpoint does not require journal entries, historical
   checkpoints, or finalized-item bodies.
+- At an exact checkpoint, validating the local application frontier requires
+  only scalar metadata and does not recompute the materialized-state audit.
 - One peer holding an assembled quorum can transfer the proof without any
   signer recomputing a signature or the receiver contacting those signers.
 - Any mutation to a committed field invalidates the checkpoint signature.
@@ -537,6 +674,8 @@ bounded quorum proof.
 ### Test conditions
 
 - Unit-test canonical encoding and fixed digest vectors.
+- Unit-test application-digest continuation for applied, consensus-rejected,
+  deterministically rejected, duplicate, and retry-after-restart cases.
 - Property-test or table-test every committed field for mutation rejection.
 - Test 1-of-1, threshold-of-N, duplicate signer, unknown signer, and insufficient
   quorum cases.
@@ -546,6 +685,8 @@ bounded quorum proof.
 - Test scheduled checkpoints with multiple recovery checkpoints between them,
   including stale recovery rollback rejection and deterministic next-scheduled
   checkpoint derivation.
+- Test that member-local or uncommitted diagnostic/payment state does not alter
+  either signed application commitment at a fixed finalized frontier.
 
 ## Milestone 2: Add checkpoint persistence and atomic promotion
 
@@ -567,12 +708,24 @@ checkpoint to move ahead of durable consensus or application state.
       checkpoints after a cursor, store/fetch an assembled quorum, load the
       newest scheduled and recovery quorums, and atomically promote a verified
       quorum.
-- [ ] Add scalar metadata queries for journal next index/order digest and
-      finalized next index/finalized digest so startup does not load bodies.
+- [ ] Add scalar metadata queries for journal next index/order digest,
+      finalized next index/finalized digest, terminal applied cursor/application
+      digest, and latest audited materialized-state digest so startup does not
+      load bodies or project full state.
 - [ ] Persist rolling finalized-item digests with finalized items or in an
       atomically updated frontier record.
-- [ ] Ensure catch-up promotion persists the journal/finalized batch and trusted
+- [ ] Persist the rolling application digest and applied cursor in the same
+      transaction as every successful or deterministically rejected federation
+      operation's business-state writes and terminal journal application state.
+- [ ] Persist a locally derived checkpoint candidate and its full
+      materialized-state audit digest before releasing the boundary capture
+      lock; later signature/quorum storage may occur after the database has
+      advanced.
+- [ ] Ensure catch-up promotion persists the journal/finalized batch, business
+      application changes, terminal application frontier/digest, and trusted
       checkpoint in one transaction, or leaves the checkpoint behind the data.
+- [ ] Persist a durable materialized-state-audit mismatch latch that ordinary
+      startup, peer agreement, and retry cannot clear.
 - [ ] Define crash-safe retention: keep all scheduled quorum checkpoints; prune
       superseded non-quorum proposals and prune recovery quorums only after a
       scheduled quorum covers them and no trusted frontier depends on them.
@@ -599,7 +752,10 @@ checkpoint to move ahead of durable consensus or application state.
 - Re-inserting or transferring an assembled quorum is idempotent and requires
   no signature regeneration.
 - No transaction failure can leave a trusted checkpoint ahead of either durable
-  journal/application state or the finalized-item cursor.
+  journal/application state, application digest, or the finalized-item cursor.
+- No transaction failure can expose business-state changes without the matching
+  terminal application state, applied cursor, and application digest, or vice
+  versa.
 - Loading the latest trusted checkpoint is an indexed bounded query.
 
 ### Test conditions
@@ -608,7 +764,10 @@ checkpoint to move ahead of durable consensus or application state.
   scheduled/recovery lookup, quorum promotion, restart, duplicate insert,
   conflicting payload, retention, and ordered lookup.
 - SQLite and Postgres transaction-failure tests at every promotion write step.
+- SQLite and Postgres transaction-failure tests at every terminal-application
+  digest/frontier write step.
 - Concurrent signature insert/promotion tests.
+- Operator-audit mismatch latch round-trip, restart, and ordinary-retry tests.
 - SQLite `EXPLAIN QUERY PLAN` and Postgres schema/index assertions for the new
   hot-path queries.
 
@@ -616,10 +775,11 @@ checkpoint to move ahead of durable consensus or application state.
 
 ### Objective
 
-Make scheduled checkpoint work event-driven and proportional to newly finalized
-batches, make recovery checkpoints on-demand at a converged stable tip, and do
-no certificate/checkpoint computation or journal catch-up request on an
-unchanged peer-sync tick.
+Make scheduled checkpoint work event-driven, with one explicit full
+authoritative-state audit only at an eligible boundary, make recovery
+checkpoints on-demand at a converged stable tip, and do no
+certificate/checkpoint computation or journal catch-up request on an unchanged
+peer-sync tick.
 
 ### Checklist
 
@@ -633,6 +793,12 @@ unchanged peer-sync tick.
 - [ ] Select the first terminal, fully materialized, complete finalized-unit
       boundary after eligibility and capture its exact boundary commitments
       before later finalization advances state.
+- [ ] Under the operation-application lock and a transactionally stable database
+      view, compute the full authoritative materialized-state audit directly
+      from database tables, persist it with the checkpoint candidate, and then
+      release the lock before signature exchange.
+- [ ] Ensure checkpoint audit projection performs no historical journal read and
+      excludes member-local, transient, and uncommitted state.
 - [ ] Derive, persist, and sign each scheduled local checkpoint exactly once.
 - [ ] Add authenticated private REST request/response types and message kinds for
       checkpoint summary, fetch, and signature request.
@@ -677,12 +843,14 @@ unchanged peer-sync tick.
 - `crates/cdk-mintd/src/config.rs`
 - `crates/cdk-mintd/src/lib.rs`
 - `crates/cdk-mintd/example.config.toml`
+- `crates/cdk/src/mint/federation/projection.rs`
 
 ### Success criteria
 
 - Twelve unchanged sync rounds produce zero checkpoint signatures, zero
-  checkpoint DB writes, zero full journal reads, zero historical signature
-  verifications, and zero journal catch-up requests.
+  checkpoint DB writes, zero materialized-state audits, zero full journal
+  reads, zero historical signature verifications, and zero journal catch-up
+  requests.
 - A batch produces at most one local signature per member per checkpoint ID.
 - A quorum checkpoint is eventually formed with the minimum threshold of
   available honest members.
@@ -690,6 +858,8 @@ unchanged peer-sync tick.
   new signatures and zero journal reads by the original signers.
 - A moving tip cannot change the contents of an already identified scheduled
   checkpoint.
+- One eligible boundary performs at most one local full materialized-state audit
+  per member and that audit does not load historical journal entries.
 - A recovery checkpoint forms only for an exact converged stable tip and is
   superseded by a later scheduled quorum that covers it.
 - Checkpoint production does not change readiness of a healthy live member.
@@ -704,6 +874,9 @@ unchanged peer-sync tick.
   be promoted.
 - Scheduled-boundary tests for an interval crossed mid-unit, rejected-only
   finalized progress, and simultaneous journal/finalized interval crossing.
+- Boundary-capture tests that pause later application until the audited
+  checkpoint candidate is durable, then allow signature collection without
+  holding the application lock.
 - Recovery-checkpoint tests for quiet tip, moving tip, disagreement, repeated
   identical requests, stored-quorum transfer, and next-scheduled derivation.
 
@@ -723,11 +896,14 @@ frontier that becomes authoritative.
       contact or wake the original signers.
 - [ ] Request finalized items and compact journal entries strictly after the
       current trusted checkpoint and no farther than the target checkpoint.
-- [ ] Initialize rolling operation and finalized-item digests from the trusted
-      checkpoint and update them only across received suffix items.
+- [ ] Initialize rolling operation, finalized-item, and terminal-application
+      digests from the trusted checkpoint and update them only across received
+      suffix items.
 - [ ] Require exact equality with the target checkpoint's journal cursor/order
       digest, finalized cursor/finalized digest, session cursors, and projected
-      materialized-state digest.
+      application digest. Apply the batch in an isolated transaction and require
+      its final authoritative materialized-state audit to equal the target
+      checkpoint before commit/promotion.
 - [ ] Apply and promote one checkpoint-bounded batch atomically; do not expose
       public routes between an unverified batch write and promotion.
 - [ ] Resume interrupted catch-up from the last promoted checkpoint without
@@ -775,7 +951,8 @@ frontier that becomes authoritative.
 ### Test conditions
 
 - Tampered operation, reordered operation, missing finalized item, altered
-  finalized status, truncated unit, wrong session, and wrong state-digest tests.
+  finalized status, altered terminal application result, truncated unit, wrong
+  session, wrong application digest, and wrong state-audit-digest tests.
 - Source-peer failure between pages and between data persistence/quorum
   promotion.
 - Long partition spanning several checkpoints followed by recovery.
@@ -791,8 +968,9 @@ frontier that becomes authoritative.
 
 ### Objective
 
-Eliminate full-history AlephBFT runtime and journal reconstruction when a valid
-local scheduled or recovery checkpoint exists.
+Eliminate full-history CDK/AlephBFT finalized-item and journal reconstruction
+when a valid local scheduled or recovery checkpoint exists, while restoring
+only the independently bounded current AlephBFT live-session backup.
 
 ### Checklist
 
@@ -811,11 +989,32 @@ local scheduled or recovery checkpoint exists.
       previously required.
 - [ ] Reject replayed pre-checkpoint finalized units using signed cursor/session
       watermarks rather than a set reconstructed from every historical unit.
-- [ ] Restore the local member's next unit index from the signed per-member
-      cursor map and restore pending local operations through the existing
-      pending-operation table.
-- [ ] Validate only the local suffix against the checkpoint base and compare
-      the current materialized-state digest before opening readiness.
+- [ ] Install the signed per-member next-unit indexes as lower replay watermarks
+      for every configured member, restore the local member's data-provider
+      index from its entry, and restore pending local operations through the
+      existing pending-operation table.
+- [ ] Validate only the local suffix against the checkpoint's operation,
+      finalized-item, and application-digest bases. Require terminal application
+      state and exact equality with the scalar atomic database frontier; do not
+      reapply an already materialized local suffix.
+- [ ] Do not run the full materialized-state audit on the normal startup fast
+      path. Reject inconsistent checkpoint/frontier metadata and leave arbitrary
+      row-corruption detection to the explicit operator audit.
+- [ ] Start from a checkpoint at any complete finalized-unit boundary; do not
+      require or force an AlephBFT session boundary.
+- [ ] Load only the backup for the active AlephBFT session. If the local backup
+      is missing or stale, reuse authenticated private-REST backup recovery from
+      a peer whose session and durable target frontier match, with size bounds,
+      backoff, and source failover.
+- [ ] Ensure invalid or mismatched backup bytes cannot advance authoritative
+      journal/application state. Validate newly finalized payloads against the
+      checkpoint base and suffix through the normal CDK finalization path.
+- [ ] Keep current-session backup work bounded by hard round/chunk/byte limits
+      and session rotation; never load or transfer every historical session
+      backup during startup.
+- [ ] Define crash-safe pruning for obsolete session backups after a newer
+      session is durably active and retained checkpoint/finalized evidence covers
+      the older session.
 - [ ] Fall back fail-closed to genesis/full recovery only for an empty federation
       or an explicitly supported database with no checkpoint; do not silently
       trust an invalid checkpoint.
@@ -829,19 +1028,26 @@ local scheduled or recovery checkpoint exists.
 - `crates/cdk-sql-common/src/mint/federation/journal.rs`
 - `crates/cdk-axum/src/lib.rs` (`create_federation_runtime_state`)
 - `crates/cdk-axum/src/federation/node_runtime.rs`
+- `crates/cdk-axum/src/federation/aleph_bft_runtime.rs`
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs`
+- `crates/cdk-axum/src/federation/catch_up_routes.rs`
+- `crates/cdk-axum/src/federation/sync_loop.rs`
 - `crates/cdk-axum/src/custom_handlers.rs`
 - `crates/cdk-axum/src/federation/tests.rs`
 
 ### Success criteria
 
 - At an exact trusted checkpoint, startup loads no pre-checkpoint journal or
-  finalized-item bodies and verifies only one bounded checkpoint quorum.
-- With a suffix of S items, startup work is O(S), independent of checkpoint
-  height.
+  finalized-item bodies, performs no full materialized-state audit, and verifies
+  only one bounded checkpoint quorum.
+- With a suffix of S items and active-session backup size B, startup work is
+  O(S + B), independent of checkpoint height and federation lifetime.
 - Old operation retries remain idempotent and old finalized-unit replays remain
   rejected.
-- Materialized-state corruption at or after the checkpoint cannot result in
-  Healthy readiness.
+- Partial writes or inconsistent journal/finalized/application/checkpoint
+  frontier metadata cannot result in Healthy readiness. Arbitrary authoritative
+  row corruption is detected by the explicit operator audit and durably latches
+  the member unhealthy.
 - Session rotation, local unit indexes, pending operations, and response replay
   continue from the correct nonzero cursors.
 
@@ -850,13 +1056,23 @@ local scheduled or recovery checkpoint exists.
 - Synthetic equal-tail startup at checkpoint heights 1,000, 10,000, and 100,000
   with assertions on rows loaded and signatures verified, not only elapsed time.
 - Startup with suffix lengths 0, 1, batch-size minus 1, and multiple batches.
+- Startup with identical suffix and active-session backup sizes at historical
+  heights 1,000, 10,000, and 100,000.
 - Restart immediately before and after checkpoint promotion.
 - Restart from both a scheduled checkpoint and a later recovery checkpoint
   anchored to it.
 - Restart all members simultaneously from matching checkpoints.
-- Restart with one member's state altered, checkpoint signature corrupted,
-  checkpoint missing, or database cursor ahead/behind the checkpoint.
-- Replay a pre-checkpoint operation ID and finalized unit after restart.
+- Restart with checkpoint signature corrupted, checkpoint missing, application
+  digest altered, or a database cursor ahead/behind the checkpoint.
+- Run the operator audit with one member's authoritative materialized row
+  altered and require a durable fail-closed latch across restart.
+- Restart from a checkpoint in the middle of an AlephBFT session with a valid
+  local backup, a missing backup recovered from a peer, and an invalid first
+  source followed by a valid second source.
+- Restart after session rotation and assert no historical-session backup is
+  loaded.
+- Replay a pre-checkpoint operation ID and finalized unit from every configured
+  member after restart.
 
 ## Milestone 6: Make readiness and observability checkpoint-native
 
@@ -873,7 +1089,8 @@ trusted checkpoint frontier as scalar runtime state.
       quorum, unavailable checkpoint, and checkpoint-tail catch-up errors.
 - [ ] Replace local status certificate fields with latest local scheduled
       checkpoint, latest scheduled quorum, latest recovery quorum, latest
-      trusted frontier, checkpoint kind/lag, and signer count/IDs.
+      trusted frontier, checkpoint kind/lag, application digest, last audited
+      frontier, durable audit-mismatch latch, and signer count/IDs.
 - [ ] Read status fields from in-memory/durable scalar frontier state without
       scanning journal or signature rows.
 - [ ] Replace certificate Prometheus metrics and add scheduled/recovery
@@ -881,6 +1098,13 @@ trusted checkpoint frontier as scalar runtime state.
       signature-verification, and startup-tail counters/timers.
 - [ ] Rename the mintd status guard to
       `--require-checkpoint-quorum` and update digest comparison output.
+- [ ] Add an explicit mintd operator materialized-state audit command. It
+      computes the full authoritative-state digest at an exact stable frontier,
+      forms or fetches the matching checkpoint quorum, compares the local audit
+      with the signed digest, and durably latches the member fail-closed on
+      mismatch.
+- [ ] Do not schedule that operator audit automatically and do not invoke it
+      from normal startup, status, readiness polling, or the peer-sync loop.
 - [ ] Update smoke scripts to wait for checkpoint coverage only at explicit
       recovery/checkpoint gates, not after every lightweight operation.
 - [ ] Keep logs transition-based and bounded; unchanged checkpoint polls must
@@ -898,6 +1122,7 @@ trusted checkpoint frontier as scalar runtime state.
 - `crates/cdk-mintd/src/federation_status.rs`
 - `crates/cdk-mintd/src/federation_status/tests.rs`
 - `crates/cdk-mintd/src/federation_digest_compare/tests.rs`
+- `crates/cdk/src/mint/federation/projection.rs`
 - `crates/cdk-mintd/dev/federation/smoke-local-federation.sh.in`
 
 ### Success criteria
@@ -906,8 +1131,12 @@ trusted checkpoint frontier as scalar runtime state.
   verification.
 - Idle status and sync polling produce no repetitive warning/info logs.
 - Operators can distinguish local tip, latest scheduled checkpoint, recovery
-  checkpoint, trusted/target frontier, suffix length, and whether live AlephBFT
-  owns the remaining tail.
+  checkpoint, trusted/target frontier, application digest, suffix length,
+  current-session backup state, last operator-audited frontier, durable audit
+  mismatch, and whether live AlephBFT owns the remaining tail.
+- An operator audit either verifies one exact signed checkpoint frontier or
+  fails clearly because an exact stable frontier/quorum is unavailable; it
+  never reports success from a moving or merely local tip.
 - Existing alerting semantics remain fail-closed under checkpoint mismatch.
 
 ### Test conditions
@@ -918,6 +1147,9 @@ trusted checkpoint frontier as scalar runtime state.
 - Metrics tests proving gauges are replaced rather than duplicated.
 - Repeated status request test asserting no database history read or signature
   verification.
+- Operator-audit tests for exact scheduled frontier, exact recovery frontier,
+  moving tip, local row mismatch, insufficient quorum, durable mismatch latch,
+  and restart after a successful audit.
 - Log-capture test asserting stable idle rounds do not emit repeated recovery
   transitions.
 
@@ -1026,7 +1258,8 @@ weakening catch-up, restart, or Byzantine fault handling.
 - [ ] Measure idle CPU and work counters for at least ten minutes with a long
       synthetic history.
 - [ ] Measure cold start at multiple history sizes with suffix zero and a fixed
-      suffix; fit/report whether work scales with history or suffix.
+      suffix and fixed active-session backup size; fit/report whether work
+      scales with history, suffix, or current-session backup.
 - [ ] Repeat the federation receive stress matrix and compare confirmed TPS,
       journal TPS, latency, CPU, log rate, catch-up transitions, and checkpoint
       traffic with milestone 0.
@@ -1035,6 +1268,9 @@ weakening catch-up, restart, or Byzantine fault handling.
 - [ ] Recover a long-offline member using checkpoint quorums fetched from one
       peer and assert that historical signers perform zero new signature or
       journal-scan work.
+- [ ] Run the explicit operator materialized-state audit against matching and
+      altered members; confirm that it is never invoked by normal startup,
+      status, or peer sync.
 - [ ] Record aggregate findings without credentials, private URLs, machine
       identifiers, private keys, database copies, or bearer tokens.
 
@@ -1054,10 +1290,11 @@ weakening catch-up, restart, or Byzantine fault handling.
 
 - Idle sync/status polling performs zero history scans and zero checkpoint
   signature verification.
-- With zero suffix, rows loaded and signatures verified at startup are constant
-  as historical height increases.
-- With fixed suffix S, startup work remains constant as historical height
-  increases and grows only with S.
+- With zero suffix and fixed active-session backup size B, rows/backup bytes
+  loaded and signatures verified at startup are constant as historical height
+  increases, and startup performs zero full materialized-state audits.
+- With fixed suffix S and active-session backup size B, startup work remains
+  constant as historical height increases and grows only with S + B.
 - A restarted member catches up from its trusted checkpoint and reaches the
   consensus tip without replaying the prefix before that checkpoint.
 - A member can download every scheduled historical batch from one source and
@@ -1065,6 +1302,8 @@ weakening catch-up, restart, or Byzantine fault handling.
   original signers do no recovery-time work.
 - A post-scheduled tail becomes authoritative only through live AlephBFT or one
   exact stable-tip recovery checkpoint quorum.
+- Current-session backup loading remains bounded independently of federation
+  lifetime; startup never loads historical-session backups.
 - CPU returns to an idle baseline after load; there is no recurring five-second
   CPU spike correlated with peer sync.
 - Log volume remains bounded and transition-based.
@@ -1094,8 +1333,13 @@ finalized-item intervals, and any member can later obtain those stored proofs
 from one peer without causing historical rescans or new signatures. A member
 can restart from a quorum-signed checkpoint at a large nonzero history,
 initialize the journal and AlephBFT runtime from checkpoint cursors,
-validate/catch up only the suffix, recompute current materialized state once,
-and become healthy without loading or verifying the pre-checkpoint history.
+validate/catch up only the suffix, restore only the bounded current AlephBFT
+session backup, and become healthy without loading or verifying the
+pre-checkpoint history or recomputing the full materialized state. The member
+trusts only transactionally consistent local frontier metadata on this fast
+path. An explicit operator audit can recompute authoritative materialized state
+at an exact signed frontier and durably halt the member on mismatch; no
+background or startup audit is part of version 1.
 
 In steady state, scheduled checkpoint creation is a sparse consequence of
 finalized progress. An unchanged five-second peer-sync or status round performs
@@ -1110,6 +1354,9 @@ routes, status fields, metrics, configuration, and compatibility behavior have
 been removed.
 
 Most importantly, the safety argument becomes simpler: AlephBFT orders the
-history; cumulative digests commit to its finalized and accepted prefixes; a
-configured quorum signs sparse durable checkpoints; and recovery advances from
-one verified checkpoint to the next without repeatedly re-proving genesis.
+history; cumulative digests commit to its finalized, accepted, and terminally
+applied prefixes; checkpoint-time audits commit to authoritative materialized
+state; a configured quorum signs sparse durable checkpoints; the bounded
+current-session backup resumes upstream AlephBFT without authorizing
+application state; and recovery advances from one verified checkpoint to the
+next without repeatedly re-proving genesis.
