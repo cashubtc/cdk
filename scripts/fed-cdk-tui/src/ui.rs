@@ -6,7 +6,7 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::{short, ActivityRecord, App, MemberState, Modal, Tab};
+use crate::app::{short, ActivityRecord, App, FormField, MemberState, Modal, Tab};
 
 const BG: Color = Color::Rgb(10, 14, 20);
 const PANEL: Color = Color::Rgb(18, 24, 33);
@@ -548,7 +548,9 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
         Modal::Help => centered_rect(72, 20, area),
         Modal::Form(form) => centered_rect(
             76,
-            if form.payment_methods.is_empty() {
+            if form.has_separate_amount_field() {
+                17
+            } else if form.payment_methods.is_empty() {
                 11
             } else {
                 14
@@ -559,16 +561,6 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
     frame.render_widget(Clear, modal_area);
     match modal {
         Modal::Form(form) => {
-            let value = if form.value.is_empty() {
-                "type or paste here".to_string()
-            } else {
-                form.value.clone()
-            };
-            let value_style = if form.value.is_empty() {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default().fg(TEXT)
-            };
             let mut lines = Vec::new();
             if !form.payment_methods.is_empty() {
                 let mut method_line = vec![Span::styled("Method  ", Style::default().fg(MUTED))];
@@ -584,22 +576,48 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
                 }
                 lines.push(Line::from(method_line));
                 lines.push(Line::from(Span::styled(
-                    "←/→ or Tab switches payment method",
+                    if form.has_separate_amount_field() {
+                        "←/→ switches method   Tab or ↑/↓ switches field"
+                    } else {
+                        "←/→ or Tab switches payment method"
+                    },
                     Style::default().fg(AMBER),
                 )));
                 lines.push(Line::from(""));
             }
-            lines.extend([
-                Line::from(Span::styled(form.label(), Style::default().fg(CYAN).bold())),
-                Line::from(""),
-                Line::from(Span::styled(value, value_style)),
-                Line::from(""),
-                Line::from(Span::styled(form.hint(), Style::default().fg(MUTED))),
-                Line::from(Span::styled(
-                    "Enter submit   Esc cancel   Ctrl-U clear",
-                    Style::default().fg(AMBER),
-                )),
-            ]);
+            lines.push(form_field_label(
+                form.label(),
+                form.focused_field == FormField::Primary,
+            ));
+            lines.push(Line::from(""));
+            lines.push(form_field_value(
+                form.field_value(FormField::Primary),
+                "type or paste here",
+            ));
+            if form.has_separate_amount_field() {
+                lines.push(Line::from(""));
+                lines.push(form_field_label(
+                    "Amount (sat)",
+                    form.focused_field == FormField::Amount,
+                ));
+                lines.push(form_field_value(
+                    form.field_value(FormField::Amount),
+                    "enter amount",
+                ));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                form.hint(),
+                Style::default().fg(MUTED),
+            )));
+            lines.push(Line::from(Span::styled(
+                if form.has_separate_amount_field() {
+                    "Enter next/submit   Esc cancel   Ctrl-U clear field"
+                } else {
+                    "Enter submit   Esc cancel   Ctrl-U clear"
+                },
+                Style::default().fg(AMBER),
+            )));
             frame.render_widget(
                 Paragraph::new(lines)
                     .wrap(Wrap { trim: false })
@@ -681,6 +699,26 @@ fn key_value<'a>(key: &'a str, value: &'a str, color: Color) -> Line<'a> {
         Span::styled(format!("{key:<17}"), Style::default().fg(MUTED)),
         Span::styled(value, Style::default().fg(color)),
     ])
+}
+
+fn form_field_label(label: &str, focused: bool) -> Line<'_> {
+    let marker = if focused { "▶ " } else { "  " };
+    let color = if focused { CYAN } else { MUTED };
+    Line::from(Span::styled(
+        format!("{marker}{label}"),
+        Style::default().fg(color).bold(),
+    ))
+}
+
+fn form_field_value<'a>(value: &'a str, placeholder: &'a str) -> Line<'a> {
+    if value.is_empty() {
+        Line::from(Span::styled(
+            placeholder,
+            Style::default().fg(Color::DarkGray),
+        ))
+    } else {
+        Line::from(Span::styled(value, Style::default().fg(TEXT)))
+    }
 }
 
 fn advertised_methods(methods: &[String]) -> String {

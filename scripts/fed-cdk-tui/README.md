@@ -82,9 +82,9 @@ the dialog, and enter an amount in satoshis.
 For on-chain minting, send funds to the displayed address; the wallet waits for
 the federation's confirmation policy and then aggregates the Cashu signature
 shares. Press `p` and select on-chain to melt eCash to an address; enter the
-address and amount separated by whitespace. The TUI selects the lowest-fee quote
-offered by the federation. The last mint and melt methods selected during the
-session are reused whenever the federation supports them.
+address and amount in their separate fields. The TUI selects the lowest-fee
+quote offered by the federation. The last mint and melt methods selected during
+the session are reused whenever the federation supports them.
 
 Quote and wallet operations run independently. A pending on-chain confirmation
 does not disable the controls, so additional mint, melt, send, or receive

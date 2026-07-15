@@ -1024,6 +1024,45 @@ mod tests {
     }
 
     #[test]
+    fn onchain_melt_submits_address_and_amount_from_separate_fields() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.modal = Some(Modal::Form(Form {
+            kind: FormKind::Melt,
+            title: "Melt eCash",
+            value: "tb1qexample".to_string(),
+            amount_value: "2500".to_string(),
+            focused_field: FormField::Amount,
+            payment_methods: vec![PaymentMethodChoice::Onchain],
+            selected_payment_method: 0,
+        }));
+
+        let commands = app.submit_form();
+
+        assert!(matches!(
+            commands.as_slice(),
+            [AppCommand::OnchainMelt { address, amount }]
+                if address == "tb1qexample" && *amount == 2500
+        ));
+    }
+
+    #[test]
+    fn onchain_melt_tab_moves_focus_to_amount_field() {
+        let mut form = Form {
+            kind: FormKind::Melt,
+            title: "Melt eCash",
+            value: String::new(),
+            amount_value: String::new(),
+            focused_field: FormField::Primary,
+            payment_methods: vec![PaymentMethodChoice::Onchain],
+            selected_payment_method: 0,
+        };
+
+        form.cycle_field(false);
+
+        assert_eq!(form.focused_field, FormField::Amount);
+    }
+
+    #[test]
     fn concurrent_operations_are_counted_until_each_one_finishes() {
         let mut app = App::new(PathBuf::from("test-wallet"), None);
         app.operation_started("mint-onchain", "first quote");
