@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::ops::Bound::{Excluded, Unbounded};
 
 use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::wallet::ProofInfo;
@@ -318,22 +319,42 @@ impl Wallet {
         }
         let mut remaining_amounts: Vec<Amount> = Vec::new();
 
+        let mut available_proofs = BTreeMap::<Amount, VecDeque<Proof>>::new();
+        for proof in proofs
+            .iter()
+            .filter(|proof| !selected_proofs.contains(proof))
+        {
+            available_proofs
+                .entry(proof.amount)
+                .or_default()
+                .push_back(proof.clone());
+        }
+
         // Select proof with the exact amount and not already selected
-        let mut select_proof = |proofs: &Proofs, amount: Amount, exact: bool| -> bool {
-            let mut last_proof = None;
-            for proof in proofs.iter() {
-                if !selected_proofs.contains(proof) {
-                    if proof.amount == amount {
-                        selected_proofs.insert(proof.clone());
-                        return true;
-                    } else if !exact && proof.amount > amount {
-                        last_proof = Some(proof.clone());
-                    } else if proof.amount < amount {
-                        break;
-                    }
-                }
+        let mut select_proof = |amount: Amount, exact: bool| -> bool {
+            let denomination = if exact {
+                available_proofs.contains_key(&amount).then_some(amount)
+            } else {
+                available_proofs
+                    .range((Excluded(amount), Unbounded))
+                    .next()
+                    .map(|(amount, _)| *amount)
+            };
+            let Some(denomination) = denomination else {
+                return false;
+            };
+            let Some(proofs) = available_proofs.get_mut(&denomination) else {
+                return false;
+            };
+            let proof = if exact {
+                proofs.pop_front()
+            } else {
+                proofs.pop_back()
+            };
+            if proofs.is_empty() {
+                available_proofs.remove(&denomination);
             }
-            if let Some(proof) = last_proof {
+            if let Some(proof) = proof {
                 selected_proofs.insert(proof);
                 true
             } else {
@@ -351,7 +372,7 @@ impl Wallet {
         // Select proofs with the optimal amounts (only split once, not per keyset)
         if let Some(fee_and_amounts) = fee_and_amounts {
             for optimal_amount in amount.split(fee_and_amounts)? {
-                if !select_proof(&proofs, optimal_amount, true) {
+                if !select_proof(optimal_amount, true) {
                     // Add the remaining amount to the remaining amounts because proof with the optimal amount was not found
                     remaining_amounts.push(optimal_amount);
                 }
@@ -396,7 +417,7 @@ impl Wallet {
                 // Select proofs with the current amount
                 let mut count = 0;
                 for _ in 0..n {
-                    if select_proof(&proofs, curr_amount, true) {
+                    if select_proof(curr_amount, true) {
                         count += 1;
                     } else {
                         break;
@@ -417,7 +438,7 @@ impl Wallet {
 
             // Find closest amount over the remaining amount
             if !found {
-                select_proof(&proofs, remaining_amount, false);
+                select_proof(remaining_amount, false);
             }
         }
 

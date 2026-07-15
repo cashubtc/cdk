@@ -25,7 +25,7 @@ use uuid::Uuid;
 use crate::common::migrate;
 use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::{DatabasePool, Pool, PooledResource};
-use crate::stmt::{query, Column};
+use crate::stmt::{query, Column, Statement};
 use crate::{
     column_as_binary, column_as_nullable_binary, column_as_nullable_number,
     column_as_nullable_string, column_as_number, column_as_string, unpack_into,
@@ -141,6 +141,62 @@ where
 
         Ok(())
     }
+}
+
+fn get_proofs_query(
+    mint_url: Option<&MintUrl>,
+    unit: Option<&CurrencyUnit>,
+    states: Vec<String>,
+) -> Result<Statement, Error> {
+    let mut query_str = r#"
+        SELECT
+            amount,
+            unit,
+            keyset_id,
+            secret,
+            c,
+            witness,
+            dleq_e,
+            dleq_s,
+            dleq_r,
+            y,
+            mint_url,
+            state,
+            spending_condition,
+            used_by_operation,
+            created_by_operation,
+            p2pk_e
+        FROM proof
+        "#
+    .to_owned();
+    let mut where_clauses = Vec::new();
+
+    if mint_url.is_some() {
+        where_clauses.push("mint_url = :mint_url");
+    }
+    if unit.is_some() {
+        where_clauses.push("unit = :unit");
+    }
+    if !states.is_empty() {
+        where_clauses.push("state IN (:states)");
+    }
+    if !where_clauses.is_empty() {
+        query_str.push_str(" WHERE ");
+        query_str.push_str(&where_clauses.join(" AND "));
+    }
+
+    let mut statement = query(&query_str)?;
+    if let Some(mint_url) = mint_url {
+        statement = statement.bind("mint_url", mint_url.to_string());
+    }
+    if let Some(unit) = unit {
+        statement = statement.bind("unit", unit.to_string());
+    }
+    if !states.is_empty() {
+        statement = statement.bind_vec("states", states)?;
+    }
+
+    Ok(statement)
 }
 
 #[async_trait]
@@ -513,47 +569,33 @@ where
         state: Option<Vec<State>>,
         spending_conditions: Option<Vec<SpendingConditions>>,
     ) -> Result<Vec<ProofInfo>, database::Error> {
+        if state.as_ref().is_some_and(Vec::is_empty) {
+            return Ok(Vec::new());
+        }
+
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"
-            SELECT
-                amount,
-                unit,
-                keyset_id,
-                secret,
-                c,
-                witness,
-                dleq_e,
-                dleq_s,
-                dleq_r,
-                y,
-                mint_url,
-                state,
-                spending_condition,
-                used_by_operation,
-                created_by_operation,
-                derivation_index,
-                p2pk_e
-            FROM proof
-            "#,
-        )?
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .filter_map(|row| {
-            let row = sql_row_to_proof_info(row).ok()?;
+        let states = state
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let rows = get_proofs_query(mint_url.as_ref(), unit.as_ref(), states)?
+            .fetch_all(&*conn)
+            .await?;
 
-            if row.matches_conditions(&mint_url, &unit, &state, &spending_conditions) {
-                Some(row)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>())
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let row = sql_row_to_proof_info(row).ok()?;
+                row.matches_conditions(&None, &None, &None, &spending_conditions)
+                    .then_some(row)
+            })
+            .collect())
     }
 
     #[instrument(skip(self, ys))]
@@ -2418,5 +2460,23 @@ mod tests {
             deserialize_transaction_ys(&bls.to_bytes()).expect("legacy BLS encoding"),
             vec![bls]
         );
+    }
+
+    #[test]
+    fn proof_query_pushes_supported_filters_into_sql() {
+        let mint_url = MintUrl::from_str("https://mint.example").expect("valid mint URL");
+        let (sql, values) = get_proofs_query(
+            Some(&mint_url),
+            Some(&CurrencyUnit::Sat),
+            vec![State::Unspent.to_string(), State::Reserved.to_string()],
+        )
+        .expect("valid proof query")
+        .to_sql()
+        .expect("bound proof query");
+
+        assert!(sql.contains("WHERE mint_url = $1"));
+        assert!(sql.contains("AND unit = $2"));
+        assert!(sql.contains("AND state IN ( $3, $4 )"));
+        assert_eq!(values.len(), 4);
     }
 }

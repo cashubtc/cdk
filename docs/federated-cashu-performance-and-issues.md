@@ -125,7 +125,7 @@ result must prove; they are not additional independent tasks.
 | 4 | AlephBFT cadence, network backpressure, and HTTP liveness | Complete | 8 |
 | 5 | Signed private-status liveness and bounded operator reporting | Complete | 7, 12 |
 | 6 | Federation discovery and import completion | Complete | 9 |
-| 7 | Wallet token-preparation and fragmentation scaling | Unconfirmed | 10 |
+| 7 | Wallet token-preparation and fragmentation scaling | Complete | 10 |
 | 8 | Controlled local and remote capacity characterization | Pending | 11 and performance baselines |
 | 9 | Production release validation and operator readiness | Pending | Remaining release work |
 | U1 | Validate payment-report quote-age semantics | Unconfirmed | 13 |
@@ -1066,7 +1066,7 @@ interruption plus idempotent retry; and standalone single-mint import tests.
 
 ### Milestone 7: Wallet token-preparation and fragmentation scaling
 
-**Status:** Unconfirmed
+**Status:** Complete
 
 **Covers:** Issue 10
 
@@ -1082,19 +1082,106 @@ network latency, and fix only the measured owning path.
   plausible contributors, but none is yet established as the cause.
 - A controlled proof-count scaling curve has not yet confirmed a defect.
 
+#### Root cause
+
+A temporary release-profile diagnostic held the useful set at 64 unspent
+one-unit proofs for one mint while adding unspent proofs for another mint. Each
+point contained 15 filtered reads and selections. Median filtered-read latency
+rose from 0.528 ms with no unrelated proofs to 5.815 ms at 1,000, 27.493 ms at
+5,000, and 108.921 ms at 20,000; p95 at 20,000 was 109.809 ms. Selection of the
+unchanged 32 proofs remained 0.038-0.054 ms. Code inspection then confirmed
+that the shared SQL wallet query selected every proof row, decoded every proof,
+and only afterwards applied mint, unit, and state predicates in Rust. The
+database already had suitable SQLite indexes. This proves full wallet-table
+retrieval and decoding, rather than consensus or network work, as one owning
+storage defect.
+
+A second 15-sample curve used only matching one-unit proofs and selected half
+the wallet. At 64, 1,024, and 5,000 proofs, median selection took 0.036 ms,
+7.286 ms, and 181.707 ms; the respective p95 values were 0.040 ms, 7.449 ms,
+and 190.885 ms. The selector scanned the sorted proof vector from its beginning
+for every denomination attempt, repeatedly crossing proofs it had already
+selected. In the same curve, median token serialization was only 0.011 ms,
+0.161 ms, and 0.819 ms. This separately proves a coin-selection rescan defect
+under severe same-denomination fragmentation and rules out serialization as
+its cause.
+
+The curve contained no online calls. Existing send-boundary tests confirmed
+that offline preparation uses cached keysets without contacting the mint and
+that online preparation loads missing keysets through the connector. A warm
+release `cdk-cli --help` process-start sample had a 4.08 ms median across 14
+runs; the first cold-cache run was 702.512 ms. Startup is therefore a separate,
+proof-count-independent fixed cost in this measurement. Network and federation
+latency remain intentionally outside this local curve and belong to Milestone
+8.
+
+#### Fix
+
+The shared SQL wallet query now pushes its supported mint URL, currency unit,
+and proof-state predicates into SQL before rows are transferred and decoded.
+Only structured spending-condition matching remains in Rust, preserving its
+existing semantics. An explicit empty state list still returns no proofs. No
+schema, index, backend-specific branch, or federation logic was added.
+
+Proof selection now builds one ordered queue per available denomination after
+the existing proof sort and inactive-proof selection. Exact requests consume
+the same first proof for a denomination, while over-value requests consume the
+same last proof from the smallest higher denomination. This preserves the
+selection policy and privacy behavior while replacing repeated full-vector
+rescans with ordered denomination lookup.
+
+#### Verification and measurements
+
+- The identical unrelated-row curve after predicate pushdown measured median
+  filtered reads of 0.529, 0.389, 0.436, and 0.710 ms at 0, 1,000, 5,000, and
+  20,000 unrelated proofs; p95 at 20,000 was 1.059 ms. The 20,000-row case
+  improved from 108.921 ms to 0.710 ms, while still returning exactly the same
+  64 proofs.
+- The identical 64/1,024/5,000 matching-proof curve measured median selection
+  of 0.014/0.237/1.406 ms and p95 of 0.019/0.358/1.881 ms. The 5,000-proof case
+  improved from 181.707 ms to 1.406 ms. Matching-row SQL decoding remained
+  proportional to rows actually returned, and serialization remained below
+  1 ms median at all points.
+- The focused shared-query regression passed and asserts that mint, unit, and
+  multi-state predicates are bound into the generated SQL. All 136
+  `cdk-sqlite` library tests passed, including wallet mint/unit/state filtering,
+  proof state transitions, reservations, sagas, and BLS persistence.
+- All 42 proof-selection tests passed, including exact, closest-over, inactive
+  keyset, multiple-keyset, fragmented, fee-convergence, and many-one-unit proof
+  shapes.
+- Three offline preparation tests passed for empty versus primed keyset caches
+  and locked proofs; the online empty-cache preparation test passed; and all
+  seven interrupted-send recovery tests passed for reserved, token-created,
+  rolling-back, spent, and unspent outcomes.
+- `cargo check -p cdk-postgres` passed. The query change is shared by SQLite and
+  PostgreSQL, but no PostgreSQL service was available for a live performance
+  curve. No PostgreSQL index change was made without backend-specific evidence.
+- `cargo build -p cdk-cli --release` passed. The process-start measurements
+  above used the resulting standalone CLI binary.
+- Targeted Clippy was attempted. The normal invocation stopped in unchanged
+  `cashu` code on 28 existing Rust 1.95 `useless_conversion`,
+  `missing_panics_doc`, and `large_enum_variant` findings; `--no-deps` then
+  stopped in unchanged shared database code on the existing `single_match`
+  finding before providing a clean changed-crate result.
+- The temporary ignored diagnostic test and all temporary SQLite files were
+  removed. No production instrumentation was retained. A live federated
+  capacity run was not repeated here because it mixes the now-isolated local
+  path with network and consensus latency; Milestone 8 owns that controlled
+  process matrix.
+
 #### Work checklist
 
-- [ ] Build one controlled proof-count curve that separates startup, storage,
+- [x] Build one controlled proof-count curve that separates startup, storage,
   selection, serialization, and online calls. If no material product defect is
   confirmed, record the curve and close without code; otherwise record the
   causal algorithm/query and owning layer.
-- [ ] Implement the smallest existing wallet/storage/query fix, avoiding
+- [x] Implement the smallest existing wallet/storage/query fix, avoiding
   federation-specific logic for a general wallet problem and preserving proof
   state, selection, fees, privacy, and restart safety.
-- [ ] Add the narrow regression/benchmark and verify the improved scaling curve,
+- [x] Add the narrow regression/benchmark and verify the improved scaling curve,
   online/offline correctness, bounded resources, interrupted restart, and any
   other backend affected by shared code.
-- [ ] Remove profiling artifacts, record sanitized distributions and tests not
+- [x] Remove profiling artifacts, record sanitized distributions and tests not
   run, update the milestone with cause or invalidation, and commit.
 
 #### Acceptance
@@ -2524,18 +2611,26 @@ left no partial or duplicate state.
 
 ### 10. Sequential token preparation degrades with wallet fragmentation
 
-**Status:** Observed, not precisely quantified
+**Status:** Resolved and verified in Milestone 7
 
 The bounded local preparation run produced 240 independent tokens before it was
 stopped. Progress slowed materially over the run. Only 84 new consensus entries
 were added while producing those 240 tokens, because many sends could use exact
 local proofs without an online swap.
 
-The slowdown therefore cannot be attributed solely to consensus journal growth.
-The most likely contributors are increasing wallet proof fragmentation, coin
-selection, repeated CLI startup and SQLite work, plus occasional federated swaps.
-A future benchmark must separately count offline sends and online pre-send swaps
-and record per-send latency against wallet proof count and journal height.
+The slowdown could not be attributed solely to consensus journal growth.
+Milestone 7 isolated and fixed two local proof-count defects: shared SQL wallet
+reads decoded the complete proof table before filtering, and same-denomination
+coin selection repeatedly rescanned already-selected proofs. At 20,000
+unrelated rows, filtered-read median improved from 108.921 ms to 0.710 ms. At
+5,000 matching one-unit proofs, selection median improved from 181.707 ms to
+1.406 ms. Serialization and warm process startup were independently small.
+
+This does not retroactively assign every pause in the original mixed federated
+workflow to these local defects: that run did not record per-send phase timing.
+Milestone 8 must count offline versus online preparation and correlate remaining
+latency with proof count, journal height, and federation calls rather than
+combining those phases again.
 
 ### 11. Remote sustained throughput and latency remain poor
 
