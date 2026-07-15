@@ -1,6 +1,6 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: proposed  
+Status: in progress (milestone 1 protocol primitive implemented)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -603,18 +603,18 @@ bounded quorum proof.
 
 ### Checklist
 
-- [ ] Add `FederationCheckpoint`, `FederationCheckpointId`,
+- [x] Add `FederationCheckpoint`, `FederationCheckpointId`,
       `FederationCheckpointSignature`, and `FederationCheckpointQuorum` in a
       dedicated federation checkpoint module.
-- [ ] Add one signed `FederationCheckpointKind` discriminator for `Scheduled`
+- [x] Add one signed `FederationCheckpointKind` discriminator for `Scheduled`
       and `Recovery`; do not create a second range-certificate proof type.
-- [ ] Define a versioned, domain-separated canonical signature transcript.
-- [ ] Bind the checkpoint to the federation config digest/identity-key epoch.
-- [ ] Add `FederationFinalizedItemDigest` and define canonical hashing for every
+- [x] Define a versioned, domain-separated canonical signature transcript.
+- [x] Bind the checkpoint to the federation config digest/identity-key epoch.
+- [x] Add `FederationFinalizedItemDigest` and define canonical hashing for every
       finalized item, including status and consensus/unit provenance.
 - [ ] Persist or derive the rolling finalized-item digest during finalization;
       never recompute it from genesis for normal checkpoint creation.
-- [ ] Add a domain-separated cumulative application digest over canonical
+- [x] Add a domain-separated cumulative application digest over canonical
       terminal application results, including deterministic rejection details.
 - [ ] Require business-state changes, terminal journal application state, the
       applied cursor, and the cumulative application digest to commit in one
@@ -628,24 +628,44 @@ bounded quorum proof.
       startup full-state scan.
 - [ ] Define deterministic checkpoint eligibility at complete unit and terminal
       application boundaries.
-- [ ] Verify distinct known signers, reject duplicates, and require the
+- [x] Verify distinct known signers, reject duplicates, and require the
       configured consensus threshold.
-- [ ] Define scheduled sequence/anchor rules so recovery checkpoints do not
+- [x] Define scheduled sequence/anchor rules so recovery checkpoints do not
       change the next scheduled checkpoint ID or fork the scheduled chain.
-- [ ] Reject an older scheduled sequence, broken scheduled anchor, cursor
+- [x] Reject an older scheduled sequence, broken scheduled anchor, cursor
       regression, incompatible recovery frontier, config mismatch, unknown
       signer, wrong federation, modified digest, modified cursor, and bad
       signature.
-- [ ] Define monotonic trusted-frontier promotion for multiple recovery
+- [x] Define monotonic trusted-frontier promotion for multiple recovery
       checkpoints anchored to the same scheduled checkpoint.
-- [ ] Document explicitly that checkpoint quorum is recovery evidence, not
+- [x] Document explicitly that checkpoint quorum is recovery evidence, not
       consensus finality.
-- [ ] Document explicitly that raw AlephBFT backup bytes are not checkpoint
+- [x] Document explicitly that raw AlephBFT backup bytes are not checkpoint
       evidence and cannot authorize application state.
+
+### Progress and verification
+
+The first milestone-1 implementation unit is complete in
+`crates/cdk-common/src/federation/checkpoint.rs`. It centralizes the canonical
+payload, rolling application/finalized-item digests, checkpoint ID and Schnorr
+signature transcripts, bounded quorum verification, and scheduled/recovery
+promotion rules. Database-backed rolling frontiers, atomic application writes,
+the direct authoritative-state projection, and deterministic boundary capture
+remain unchecked and are the next implementation unit.
+
+Verified with:
+
+- `cargo test -p cdk-common --features federation checkpoint --lib` (8 passed);
+- `cargo clippy -p cdk-common --lib --features federation -- -D warnings`;
+- `cargo fmt --all`.
+
+The broader `cdk-common --all-targets` clippy gate currently stops on the
+pre-existing `cloned_ref_to_slice_refs` lint in the federation operation tests;
+the checkpoint production-library clippy gate is clean.
 
 ### Files and references
 
-- Add `crates/cdk-common/src/federation/checkpoint.rs`.
+- `crates/cdk-common/src/federation/checkpoint.rs`
 - `crates/cdk-common/src/federation.rs`
 - `crates/cdk-common/src/federation/transport.rs`
 - `crates/cdk-common/src/federation/consensus.rs`

@@ -487,6 +487,15 @@ impl FederationApplicationState {
             _ => None,
         }
     }
+
+    /// Return whether this state is a durable terminal application result.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Applied {} | Self::ConsensusRejected {} | Self::Rejected { .. }
+        )
+    }
 }
 
 /// Consensus evidence attached to a journal entry accepted from an ordering backend.

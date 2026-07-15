@@ -8,6 +8,7 @@ use thiserror::Error;
 
 mod address_allocation;
 mod chain_observation;
+mod checkpoint;
 mod config;
 mod consensus;
 mod dkg;
@@ -56,6 +57,11 @@ pub use self::chain_observation::{
     FederationChainSourceDescriptor, FederationChainSourceScope, FederationChainSourceSummary,
     FederationDepositConfirmation, FederationDepositObservation, FederationDepositReorgObservation,
     FederationOnchainQuotePayment, FederationWalletUtxo, FederationWalletUtxoState,
+};
+pub use self::checkpoint::{
+    FederationApplicationDigest, FederationCheckpoint, FederationCheckpointId,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
+    FederationFinalizedItemDigest, FEDERATION_CHECKPOINT_VERSION,
 };
 pub use self::config::{
     FederatedKeyset, FederationConfig, FederationConfigDigest, FederationConfigSnapshot,
@@ -476,6 +482,75 @@ pub enum FederationError {
         expected: usize,
         /// Actual byte length.
         found: usize,
+    },
+    /// A federation application digest must be exactly 32 bytes.
+    #[error("Invalid federation application digest size: expected={expected}, found={found}")]
+    InvalidApplicationDigestSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation finalized-item digest must be exactly 32 bytes.
+    #[error("Invalid federation finalized-item digest size: expected={expected}, found={found}")]
+    InvalidFinalizedItemDigestSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation checkpoint ID must be exactly 32 bytes.
+    #[error("Invalid federation checkpoint id size: expected={expected}, found={found}")]
+    InvalidCheckpointIdSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation checkpoint signature must be exactly 64 bytes.
+    #[error("Invalid federation checkpoint signature size: expected={expected}, found={found}")]
+    InvalidCheckpointSignatureSize {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        found: usize,
+    },
+    /// A federation checkpoint signature is not a valid Schnorr signature.
+    #[error("Invalid federation checkpoint signature")]
+    InvalidCheckpointSignature,
+    /// A checkpoint uses an unsupported canonical payload version.
+    #[error("Federation checkpoint version mismatch: expected={expected}, found={found}")]
+    CheckpointVersionMismatch {
+        /// Checkpoint version supported by this build.
+        expected: u16,
+        /// Version found in the checkpoint.
+        found: u16,
+    },
+    /// A checkpoint payload or promotion violates a protocol invariant.
+    #[error("Federation checkpoint is invalid: {reason}")]
+    CheckpointInvalid {
+        /// Stable validation reason without operation payloads.
+        reason: String,
+    },
+    /// One member signature does not verify for the checkpoint ID.
+    #[error("Federation checkpoint signature verification failed for member {member_id}")]
+    CheckpointSignatureVerificationFailed {
+        /// Member whose signature failed verification.
+        member_id: MemberId,
+    },
+    /// One checkpoint quorum contains the same signer more than once.
+    #[error("Duplicate federation checkpoint signer {member_id}")]
+    DuplicateCheckpointSigner {
+        /// Repeated member identifier.
+        member_id: MemberId,
+    },
+    /// A checkpoint proof does not contain the configured consensus quorum.
+    #[error("Federation checkpoint quorum not reached: required={required}, found={found}")]
+    CheckpointQuorumNotReached {
+        /// Configured consensus threshold.
+        required: u16,
+        /// Number of distinct valid signatures found.
+        found: u16,
     },
     /// Member IDs are non-zero u16 values.
     #[error("Invalid federation member id: {0}")]
