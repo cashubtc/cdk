@@ -5,7 +5,7 @@ use std::fmt;
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cdk_common::error::ErrorResponse;
@@ -1121,34 +1121,6 @@ impl FederatedMintConnector {
         )))
     }
 
-    async fn recover_mint_quote_after_ambiguous_creation(
-        &self,
-        request: &MintQuoteRequest,
-        quote_id: &QuoteId,
-        remaining: Duration,
-    ) -> Result<Option<MintQuoteResponse<String>>, Error> {
-        if remaining.is_zero() {
-            return Ok(None);
-        }
-
-        let recovery = async {
-            loop {
-                if let Some(response) = self
-                    .threshold_visible_mint_quote_after_ambiguous_creation(request, quote_id)
-                    .await?
-                {
-                    return Ok(response);
-                }
-                tokio::time::sleep(self.config.mint_quote_visibility_retry_delay).await;
-            }
-        };
-
-        match tokio::time::timeout(remaining, recovery).await {
-            Ok(result) => result.map(Some),
-            Err(_) => Ok(None),
-        }
-    }
-
     async fn threshold_visible_mint_quote_after_ambiguous_creation(
         &self,
         request: &MintQuoteRequest,
@@ -1173,34 +1145,6 @@ impl FederatedMintConnector {
         };
         validate_assigned_mint_quote_response(request, quote_id, &response)?;
         Ok(Some(response))
-    }
-
-    async fn recover_melt_quote_after_ambiguous_creation(
-        &self,
-        request: &MeltQuoteRequest,
-        quote_id: &QuoteId,
-        remaining: Duration,
-    ) -> Result<Option<MeltQuoteCreateResponse<String>>, Error> {
-        if remaining.is_zero() {
-            return Ok(None);
-        }
-
-        let recovery = async {
-            loop {
-                if let Some(response) = self
-                    .threshold_visible_melt_quote_after_ambiguous_creation(request, quote_id)
-                    .await?
-                {
-                    return Ok(response);
-                }
-                tokio::time::sleep(self.config.mint_quote_visibility_retry_delay).await;
-            }
-        };
-
-        match tokio::time::timeout(remaining, recovery).await {
-            Ok(result) => result.map(Some),
-            Err(_) => Ok(None),
-        }
     }
 
     async fn threshold_visible_melt_quote_after_ambiguous_creation(
@@ -1239,7 +1183,6 @@ impl FederatedMintConnector {
         for (member_id, connector) in
             self.ordered_quote_creation_connectors(&self.member_connectors)
         {
-            let started = Instant::now();
             let result = tokio::time::timeout(
                 self.config.member_fallback_timeout,
                 connector.post_mint_quote_with_id(request.clone(), &quote_id),
@@ -1260,12 +1203,10 @@ impl FederatedMintConnector {
                     return Err(into_wallet_error(err));
                 }
                 Ok(Err(err)) => {
-                    let remaining = self
-                        .config
-                        .member_fallback_timeout
-                        .saturating_sub(started.elapsed());
+                    // Quote IDs are assigned once and reused across members, so
+                    // retrying after one visibility check remains idempotent.
                     if let Some(response) = self
-                        .recover_mint_quote_after_ambiguous_creation(&request, &quote_id, remaining)
+                        .threshold_visible_mint_quote_after_ambiguous_creation(&request, &quote_id)
                         .await?
                     {
                         return Ok(response);
@@ -1304,7 +1245,6 @@ impl FederatedMintConnector {
         for (member_id, connector) in
             self.ordered_quote_creation_connectors(&self.member_connectors)
         {
-            let started = Instant::now();
             let result = tokio::time::timeout(
                 self.config.member_fallback_timeout,
                 connector.post_melt_quote_with_id(request.clone(), &quote_id),
@@ -1325,12 +1265,10 @@ impl FederatedMintConnector {
                     return Err(into_wallet_error(err));
                 }
                 Ok(Err(err)) => {
-                    let remaining = self
-                        .config
-                        .member_fallback_timeout
-                        .saturating_sub(started.elapsed());
+                    // Quote IDs are assigned once and reused across members, so
+                    // retrying after one visibility check remains idempotent.
                     if let Some(response) = self
-                        .recover_melt_quote_after_ambiguous_creation(&request, &quote_id, remaining)
+                        .threshold_visible_melt_quote_after_ambiguous_creation(&request, &quote_id)
                         .await?
                     {
                         return Ok(response);

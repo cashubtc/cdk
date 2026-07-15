@@ -135,8 +135,8 @@ result must prove; they are not additional independent tasks.
 | U5 | Validate paged catch-up full-tip digest mismatch | Closed; hypothesis not reproduced | Found during Milestone U4 certificate-boundary tracing |
 | U6 | Validate large-history catch-up page-cost scaling | Unconfirmed | Found during Milestone U5 scale verification |
 | U7 | Validate BLS transaction-identifier persistence | Resolved and verified | Found during Milestone 2 cancellation recovery |
-| U8 | Validate finalized-item catch-up response-count mismatch | Unconfirmed | Found during Milestone 2 parallel receive verification |
-| U9 | Validate intermittent 60-second melt-quote creation latency | Unconfirmed | Found during Milestone 3 process verification |
+| U8 | Validate finalized-item catch-up response-count mismatch | Confirmed transient mismatch; cause unconfirmed | Found during Milestone 2 parallel receive verification; reproduced during U9 verification |
+| U9 | Validate intermittent 60-second melt-quote creation latency | Resolved and verified | Found during Milestone 3 process verification |
 | U10 | Validate parallel quote-state observation failures | Unconfirmed | Found during Milestone 5 status-load verification |
 | U11 | Validate release-only status fixture quote failures | Unconfirmed | Found during Milestone 5 focused verification |
 | U12 | Validate federation registry save interruption atomicity | Unconfirmed | Found during Milestone 6 interruption verification |
@@ -1611,7 +1611,7 @@ coverage. All passed as recorded in Milestone 2.
 
 ### Milestone U8: Validate finalized-item catch-up response-count mismatch
 
-**Status:** Unconfirmed
+**Status:** Confirmed transient mismatch; cause unconfirmed
 
 **Found during:** Milestone 2 parallel receive verification
 
@@ -1630,6 +1630,16 @@ cursor/range boundary defect, or state left by the long-lived experimental
 fixture. One occurrence does not distinguish these explanations. This issue
 must receive more scrutiny than an ordinary regression failure because relaxing
 the check without proving the intended mapping could admit incomplete replay.
+
+Fresh U9 offline-member verification independently reproduced the mismatch on
+clean state. During successive member restarts, peer sync logged recovered
+response-count pairs of zero-versus-two and one-versus-two. Unlike the original
+120-second failure, every affected member retried, reached the exact current
+operation height, became healthy, and the final five-member digest comparison
+converged at 77 operations. This confirms that the mismatch is real and can be
+transient, but does not establish whether the rejected response or the local
+reconstruction count was wrong. U9 therefore did not weaken or alter this
+check; the invariant still requires the dedicated investigation below.
 
 #### Work checklist
 
@@ -1659,7 +1669,7 @@ offline/rejoin process test, and relevant malformed/digest/certificate tests.
 
 ### Milestone U9: Validate intermittent 60-second melt-quote creation latency
 
-**Status:** Unconfirmed
+**Status:** Resolved and verified
 
 **Found during:** Milestone 3 post-fix process verification
 
@@ -1672,28 +1682,85 @@ converged with empty pending queues. The earlier pre-fix minimal run created its
 second melt quote in well under one second, so the long delay is not yet a
 stable part of the original Issue 6 reproduction.
 
-One occurrence cannot distinguish quote-coordinator fallback behavior, an
-offline-member timeout, a delayed consensus submission or response, temporary
-HTTP/AlephBFT scheduling pressure, fakewallet quote preparation, or a harness
-artifact. It must be independently reproduced before any timeout, retry,
-coordinator, handler, or consensus change is considered. In particular, the
-near-60-second duration is not evidence by itself that a configured timeout is
-wrong.
+#### Reproduction and root cause
+
+Fresh five-member all-healthy runs reproduced both mint- and melt-quote
+outliers at 62-65 seconds. Temporary lifecycle, handler, consensus-lock, and
+SQLite write-gate instrumentation established one shared timeline:
+
+- normal submissions reached AlephBFT's data provider within about 500 ms and
+  finalized in roughly two to three seconds;
+- during an outlier, the preferred member entered the public quote handler but
+  its readiness check observed a temporarily non-ready sync state and returned
+  before quote preparation or consensus admission;
+- no SQLite write-gate wait exceeded one second, consensus locks were acquired
+  immediately, and the next member's identical submission finalized in about
+  2.5 seconds; and
+- the wallet nevertheless waited for the entire 60-second member-fallback
+  budget. On a non-definitive returned error, it repeatedly polled threshold
+  quote visibility until the remaining budget expired. Because the first
+  member had rejected the request before admission, no quote could become
+  visible; only then did the wallet try the next member.
+
+This rejects the initial transport-reuse, fakewallet-preparation, SQLite
+contention, consensus-lock, and AlephBFT-finality hypotheses. The owning defect
+was the wallet's ambiguous-creation recovery policy after an immediate member
+error, not a slow server or an undersized timeout.
+
+#### Fix
+
+Federation quote IDs are assigned once by the wallet and reused across member
+attempts. After a non-definitive member error, the connector now performs one
+threshold-visibility check to recover an already accepted ambiguous request;
+if the quote is not visible, it immediately tries the next member with the same
+ID. Actual in-flight member calls retain their configured timeout, and timed-out
+submissions retain the existing final visibility check. The change removes the
+unbounded recovery loop without adding a retry, weakening validation, or
+creating a second quote identity.
+
+#### Verification results
+
+- The complete federation-wallet test group passed: 88 tests, including
+  delayed-submission recovery, timeout fallback, pending-quote recovery,
+  definitive-error handling, and the new mint/melt regressions. The regressions
+  use a paused 30-second fallback budget and prove that an immediate error falls
+  through before that budget while both members receive the same assigned quote
+  ID.
+- Standalone HTTP mint- and melt-quote serialization tests passed unchanged.
+- A clean release five-member all-healthy run completed 20 standard batches.
+  The maximum observed mint-quote time was about 5.3 seconds, the maximum
+  melt-quote time about 3.0 seconds, and the slowest complete batch about 20.0
+  seconds. The run ended with 147 converged operations, all five members ready,
+  and no pending work.
+- A second clean federation completed ten one-member-offline batches. Member 5
+  was offline for six batches, and members 4, 3, 2, and the preferred quote
+  coordinator member 1 were each offline for one batch. The preferred-
+  coordinator-offline batch created its mint quote in about 4.6 seconds and its
+  melt quote in about 2.5 seconds. Every restarted member caught up and became
+  healthy; the final five-member comparison converged at 77 operations.
+- All temporary instrumentation was removed before the final builds and runs.
+  The restart exercise also produced the fresh U8 evidence recorded in that
+  milestone; no U8 behavior was changed here.
+- Formatting checks pass for both changed Rust files. Workspace-wide formatting
+  remains blocked by a pre-existing difference in the federation test module,
+  and strict Clippy remains blocked in `cashu` by the existing Rust 1.95
+  conversion, panic-documentation, and enum-size findings; neither blocker is
+  in the U9 change.
 
 #### Work checklist
 
-- [ ] Run fresh bounded quote-only and standard-batch samples with all members
+- [x] Run fresh bounded quote-only and standard-batch samples with all members
   healthy and with each member offline in turn. Record coordinator choice,
   member request/fallback phases, consensus submission/finality, public handler
   latency, and quote visibility without changing protocol behavior.
-- [ ] If the delay reproduces, isolate one owning phase and compare its latency
+- [x] If the delay reproduces, isolate one owning phase and compare its latency
   with the configured fallback, member-request, submission, and observer
   bounds. Reject correlated queue or status symptoms as causes without a shared
   timeline.
-- [ ] If confirmed, implement the smallest correction in the existing quote
+- [x] If confirmed, implement the smallest correction in the existing quote
   coordinator, connector, handler, or consensus boundary. Do not increase a
   timeout, add retries, or special-case an offline roster position to mask it.
-- [ ] Verify a latency distribution across repeated all-healthy and
+- [x] Verify a latency distribution across repeated all-healthy and
   one-offline runs, cancellation cleanup, quote idempotency, restart, and
   standalone quote creation; update this milestone and commit separately.
 

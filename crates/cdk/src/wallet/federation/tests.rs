@@ -2930,52 +2930,72 @@ async fn federated_mint_connector_rejects_single_member_mint_quote_status() {
     assert!(matches!(error, crate::Error::InvalidMintResponse(_)));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn federated_mint_connector_creates_mint_quote_with_first_healthy_member() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);
-    let quote_id = QuoteId::new();
-    let expected = bolt11_quote_response(&quote_id, 3);
-    let mut connectors = BTreeMap::new();
+    let expected = bolt11_quote_response(&QuoteId::new(), 3);
+    let fallback_timeout = Duration::from_secs(30);
 
-    let unavailable_member = MockMintConnector::new();
+    let unavailable_member = Arc::new(MockMintConnector::new());
     unavailable_member.set_active_keyset(advertised.clone());
     unavailable_member.set_post_mint_quote_response(Err(crate::Error::Custom(
         "quote coordinator unavailable".to_string(),
     )));
     set_mint_quote_status_from_response(&unavailable_member, &expected);
-    connectors.insert(
-        member_id(1),
-        Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
-    );
+    unavailable_member.push_mint_quote_status_response(Err(crate::Error::UnknownQuote));
 
-    let healthy_member = MockMintConnector::new();
+    let healthy_member = Arc::new(MockMintConnector::new());
     healthy_member.set_active_keyset(advertised.clone());
     healthy_member.set_post_mint_quote_response(Ok(expected.clone()));
     set_mint_quote_status_from_response(&healthy_member, &expected);
-    connectors.insert(
-        member_id(2),
-        Arc::new(healthy_member) as Arc<dyn MintConnector + Send + Sync>,
-    );
+    healthy_member.push_mint_quote_status_response(Err(crate::Error::UnknownQuote));
 
-    let unused_member = MockMintConnector::new();
+    let unused_member = Arc::new(MockMintConnector::new());
     unused_member.set_active_keyset(advertised);
     set_mint_quote_status_from_response(&unused_member, &expected);
-    connectors.insert(
-        member_id(3),
-        Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
-    );
+    unused_member.push_mint_quote_status_response(Err(crate::Error::UnknownQuote));
 
-    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
-        .expect("federated mint connector");
+    let connectors = BTreeMap::from([
+        (
+            member_id(1),
+            unavailable_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+        ),
+        (
+            member_id(2),
+            healthy_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+        ),
+        (
+            member_id(3),
+            unused_member as Arc<dyn MintConnector + Send + Sync>,
+        ),
+    ]);
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_fallback_timeout: fallback_timeout,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let started = tokio::time::Instant::now();
     let response = connector
         .post_mint_quote(bolt11_quote_request(3))
         .await
         .expect("mint quote");
 
+    assert!(started.elapsed() < fallback_timeout);
     QuoteId::from_str(response.quote()).expect("valid assigned mint quote id");
     assert_eq!(response.request(), expected.request());
     assert_eq!(response.method(), expected.method());
+    assert_eq!(unavailable_member.assigned_mint_quote_ids().len(), 1);
+    assert_eq!(healthy_member.assigned_mint_quote_ids().len(), 1);
+    assert_eq!(
+        unavailable_member.assigned_mint_quote_ids(),
+        healthy_member.assigned_mint_quote_ids(),
+        "fallback must reuse the same assigned mint quote id"
+    );
 }
 
 #[tokio::test]
@@ -4393,52 +4413,71 @@ async fn federated_mint_connector_honors_configured_fanout_concurrency() {
     assert_eq!(active_calls.load(Ordering::SeqCst), 0);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn federated_mint_connector_creates_melt_quote_with_first_healthy_member() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);
     let expected = melt_quote_create_response();
-    let mut connectors = BTreeMap::new();
+    let status = melt_quote_status_from_create_response(&expected);
+    let fallback_timeout = Duration::from_secs(30);
 
-    let unavailable_member = MockMintConnector::new();
+    let unavailable_member = Arc::new(MockMintConnector::new());
     unavailable_member.set_active_keyset(advertised.clone());
     unavailable_member.set_post_melt_quote_response(Err(crate::Error::Custom(
         "quote coordinator unavailable".to_string(),
     )));
-    unavailable_member
-        .set_melt_quote_status_response(Ok(melt_quote_status_from_create_response(&expected)));
-    connectors.insert(
-        member_id(1),
-        Arc::new(unavailable_member) as Arc<dyn MintConnector + Send + Sync>,
-    );
+    unavailable_member.set_melt_quote_status_response(Ok(status.clone()));
+    unavailable_member.push_melt_quote_status_response(Err(crate::Error::UnknownQuote));
 
-    let healthy_member = MockMintConnector::new();
+    let healthy_member = Arc::new(MockMintConnector::new());
     healthy_member.set_active_keyset(advertised.clone());
     healthy_member.set_post_melt_quote_response(Ok(expected.clone()));
-    healthy_member
-        .set_melt_quote_status_response(Ok(melt_quote_status_from_create_response(&expected)));
-    connectors.insert(
-        member_id(2),
-        Arc::new(healthy_member) as Arc<dyn MintConnector + Send + Sync>,
-    );
+    healthy_member.set_melt_quote_status_response(Ok(status.clone()));
+    healthy_member.push_melt_quote_status_response(Err(crate::Error::UnknownQuote));
 
-    let unused_member = MockMintConnector::new();
+    let unused_member = Arc::new(MockMintConnector::new());
     unused_member.set_active_keyset(advertised);
-    unused_member
-        .set_melt_quote_status_response(Ok(melt_quote_status_from_create_response(&expected)));
-    connectors.insert(
-        member_id(3),
-        Arc::new(unused_member) as Arc<dyn MintConnector + Send + Sync>,
-    );
+    unused_member.set_melt_quote_status_response(Ok(status));
+    unused_member.push_melt_quote_status_response(Err(crate::Error::UnknownQuote));
 
-    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
-        .expect("federated mint connector");
+    let connectors = BTreeMap::from([
+        (
+            member_id(1),
+            unavailable_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+        ),
+        (
+            member_id(2),
+            healthy_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+        ),
+        (
+            member_id(3),
+            unused_member as Arc<dyn MintConnector + Send + Sync>,
+        ),
+    ]);
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_fallback_timeout: fallback_timeout,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let started = tokio::time::Instant::now();
     let response = connector
         .post_melt_quote(bolt11_melt_quote_request())
         .await
         .expect("melt quote");
 
+    assert!(started.elapsed() < fallback_timeout);
     assert_melt_quote_matches_except_assigned_id(&response, &expected);
+    assert_eq!(unavailable_member.assigned_melt_quote_ids().len(), 1);
+    assert_eq!(healthy_member.assigned_melt_quote_ids().len(), 1);
+    assert_eq!(
+        unavailable_member.assigned_melt_quote_ids(),
+        healthy_member.assigned_melt_quote_ids(),
+        "fallback must reuse the same assigned melt quote id"
+    );
 }
 
 #[tokio::test]
