@@ -2329,9 +2329,10 @@ FROST fuzz coverage now includes both DKG rounds, every public signing wire
 type, nonce records, config and DKG REST records, signing packages, catch-up,
 raw transactions, and PSBTs. A dedicated sanitizer campaign composes those
 targets with the existing operation and transaction-proposal fuzzers, retains
-corpora, and supports continuous or bounded execution. A scheduled CI workflow
-now restores and retains the evolving corpus; its first hosted run remains
-required before the continuous-fuzz checkbox can close. A bounded four-target
+corpora, and supports continuous or bounded execution. A manually dispatched CI
+workflow restores and retains the evolving corpus; no automatic schedule is
+configured, and hosted run evidence remains required before the continuous-fuzz
+checkbox can close. A bounded four-target
 60-second-per-target campaign completed without crashes. Deterministic 512-case
 accounting/ownership and 512-step lifecycle properties preserve conservation,
 uniqueness, exact rollback on rejected transitions, sticky reservations, and
