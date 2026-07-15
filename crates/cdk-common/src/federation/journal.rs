@@ -674,6 +674,12 @@ impl FederationJournalEntry {
         self.application.rejection()
     }
 
+    /// Return whether this entry reserves its semantic conflict keys.
+    #[must_use]
+    pub fn reserves_conflict_keys(&self) -> bool {
+        application_reserves_conflict_keys(&self.application)
+    }
+
     /// Derive the bounded set of authoritative materialized row keys written by this operation.
     ///
     /// Storage calls this only when the operation reaches `Applied`, in the
@@ -809,6 +815,7 @@ pub struct InMemoryFederationJournal {
     base_next_index: u64,
     entries: Vec<FederationJournalEntry>,
     operation_indices: BTreeMap<FederationOperationId, usize>,
+    historical_entries: BTreeMap<FederationOperationId, FederationJournalEntry>,
     conflict_keys: HashMap<FederationOperationConflictKey, FederationOperationId>,
     latest_order_digest: FederationJournalDigest,
 }
@@ -827,6 +834,7 @@ impl InMemoryFederationJournal {
             base_next_index: 0,
             entries: Vec::new(),
             operation_indices: BTreeMap::new(),
+            historical_entries: BTreeMap::new(),
             conflict_keys: HashMap::new(),
             latest_order_digest: FederationJournalDigest::genesis(),
         }
@@ -839,6 +847,7 @@ impl InMemoryFederationJournal {
             base_next_index: next_index,
             entries: Vec::new(),
             operation_indices: BTreeMap::new(),
+            historical_entries: BTreeMap::new(),
             conflict_keys: HashMap::new(),
             latest_order_digest: order_digest,
         }
@@ -1031,6 +1040,54 @@ impl InMemoryFederationJournal {
         self.operation_indices
             .get(&operation_id)
             .and_then(|index| self.entries.get(*index))
+            .or_else(|| self.historical_entries.get(&operation_id))
+    }
+
+    /// Register one indexed durable entry before the trusted retained suffix.
+    ///
+    /// This hydrates only duplicate and semantic-conflict decisions. It does
+    /// not retain or recount the historical prefix.
+    pub fn register_historical_entry(&mut self, entry: FederationJournalEntry) -> Result<()> {
+        let expected_operation_id = entry.envelope.operation_id()?;
+        if expected_operation_id != entry.operation_id {
+            return Err(FederationError::CatchUpOperationIdMismatch {
+                index: entry.index,
+                expected: expected_operation_id,
+                found: entry.operation_id,
+            });
+        }
+        if entry.conflict_keys != entry.envelope.operation.conflict_keys() {
+            return Err(FederationError::JournalConflictKeysMismatch { index: entry.index });
+        }
+        if let Some(existing) = self.entry_by_operation_id(entry.operation_id) {
+            if serde_json::to_vec(existing)? == serde_json::to_vec(&entry)? {
+                return Ok(());
+            }
+            return Err(FederationError::CheckpointInvalid {
+                reason: format!(
+                    "indexed durable operation {} disagrees with the retained journal",
+                    entry.operation_id
+                ),
+            });
+        }
+        if entry.index >= self.base_next_index {
+            return Err(FederationError::CheckpointInvalid {
+                reason: format!(
+                    "indexed durable operation {} at index {} is missing from the retained suffix",
+                    entry.operation_id, entry.index
+                ),
+            });
+        }
+
+        if entry.reserves_conflict_keys() {
+            for conflict_key in &entry.conflict_keys {
+                self.conflict_keys
+                    .entry(conflict_key.clone())
+                    .or_insert(entry.operation_id);
+            }
+        }
+        self.historical_entries.insert(entry.operation_id, entry);
+        Ok(())
     }
 
     /// Append an accepted operation envelope or return an idempotent duplicate.
@@ -1070,12 +1127,7 @@ impl InMemoryFederationJournal {
         consensus_evidence: Option<FederationJournalConsensusEvidence>,
     ) -> Result<FederationJournalAppendOutcome> {
         let operation_id = envelope.operation_id()?;
-        if let Some(existing_index) = self.operation_indices.get(&operation_id) {
-            let entry = self
-                .entries
-                .get(*existing_index)
-                .expect("operation index points to an entry")
-                .clone();
+        if let Some(entry) = self.entry_by_operation_id(operation_id).cloned() {
             return Ok(FederationJournalAppendOutcome::Duplicate(entry));
         }
 
@@ -1109,12 +1161,7 @@ impl InMemoryFederationJournal {
         consensus_evidence: FederationJournalConsensusEvidence,
     ) -> Result<FederationJournalAppendOutcome> {
         let operation_id = envelope.operation_id()?;
-        if let Some(existing_index) = self.operation_indices.get(&operation_id) {
-            let entry = self
-                .entries
-                .get(*existing_index)
-                .expect("operation index points to an entry")
-                .clone();
+        if let Some(entry) = self.entry_by_operation_id(operation_id).cloned() {
             return Ok(FederationJournalAppendOutcome::Duplicate(entry));
         }
 
@@ -1446,6 +1493,45 @@ mod tests {
                 .map(|stored| stored.index),
             Some(100)
         );
+    }
+
+    #[test]
+    fn checkpoint_journal_hydrates_only_indexed_historical_decisions() {
+        let envelope = mint_quote_envelope(1);
+        let evidence = FederationJournalConsensusEvidence::new(0, 0, 0, member_id(), 0);
+        let mut prefix = InMemoryFederationJournal::new();
+        let historical = prefix
+            .append_with_consensus_evidence(envelope.clone(), evidence)
+            .expect("append historical operation")
+            .entry()
+            .clone();
+        let mut journal = InMemoryFederationJournal::from_base(1, historical.order_digest);
+        journal
+            .register_historical_entry(historical.clone())
+            .expect("register indexed historical operation");
+
+        let duplicate = journal
+            .append_finalized_with_consensus_evidence(envelope, evidence)
+            .expect("append historical duplicate");
+        assert!(matches!(
+            duplicate,
+            FederationJournalAppendOutcome::Duplicate(entry)
+                if entry.operation_id == historical.operation_id
+        ));
+        assert_eq!(journal.len(), 0);
+        assert_eq!(journal.operation_count(), 1);
+
+        let rejected_conflict = journal
+            .append_finalized_with_consensus_evidence(mint_quote_envelope(2), evidence)
+            .expect("append historical conflict")
+            .entry()
+            .clone();
+        assert!(matches!(
+            rejected_conflict.application,
+            FederationApplicationState::ConsensusRejected {}
+        ));
+        assert!(!rejected_conflict.reserves_conflict_keys());
+        assert_eq!(journal.operation_count(), 2);
     }
 
     #[test]

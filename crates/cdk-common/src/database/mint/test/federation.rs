@@ -488,6 +488,14 @@ where
         first_by_operation_id.consensus_evidence,
         Some(first_evidence)
     );
+    for conflict_key in &first.conflict_keys {
+        let first_by_conflict_key = db
+            .get_federation_journal_entry_by_conflict_key(conflict_key)
+            .await
+            .expect("first entry by conflict key")
+            .expect("first conflict owner");
+        assert_eq!(first_by_conflict_key.operation_id, first.operation_id);
+    }
 
     let second_by_operation_id = db
         .get_federation_journal_entry_by_operation_id(second.operation_id)
@@ -506,6 +514,16 @@ where
         .await
         .expect("missing entry by operation id");
     assert!(missing_by_operation_id.is_none());
+    let missing_conflict_key = mint_quote_envelope("missing-quote", 99)
+        .operation
+        .conflict_keys()
+        .pop()
+        .expect("missing conflict key");
+    assert!(db
+        .get_federation_journal_entry_by_conflict_key(&missing_conflict_key)
+        .await
+        .expect("missing entry by conflict key")
+        .is_none());
 
     let catch_up_entries = db
         .get_federation_journal_entries_from(1)

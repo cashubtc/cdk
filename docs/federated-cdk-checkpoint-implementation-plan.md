@@ -1139,8 +1139,8 @@ only the independently bounded current AlephBFT live-session backup.
 - [x] Stop calling the full-history
       `authenticated_aleph_bft_from_finalized_items` path when a checkpoint fast
       path is available.
-- [ ] Move old-operation duplicate/idempotency checks to existing indexed
-      durable operation lookup where an unbounded historical in-memory set was
+- [x] Move old-operation duplicate/idempotency and semantic-conflict checks to
+      indexed durable lookups where unbounded historical in-memory sets were
       previously required.
 - [x] Reject replayed pre-checkpoint finalized units using signed cursor/session
       watermarks rather than a set reconstructed from every historical unit.
@@ -1185,13 +1185,18 @@ suffix without reapplying already materialized rows. Inconsistent or missing
 trusted metadata and invalid suffixes fail closed; only a database with no
 trusted checkpoint uses full recovery. Pending-operation restoration uses the
 indexed durable operation lookup so a checkpointed operation is not requeued.
-Moving live old-operation duplicate and conflict decisions to indexed durable
-lookups remains required before milestone 5 is complete.
+Live finalization uses the same operation-ID lookup plus a normalized durable
+conflict-key index. It hydrates only historical entries referenced by the next
+bounded finalized unit into the existing journal/finalizer decision logic, so
+old duplicates and semantic conflicts remain deterministic without rebuilding
+an unbounded prefix set.
 
 Verified with:
 
 - `cargo test -p cdk-common --features federation
   journal_continues_from_a_trusted_base_without_retaining_the_prefix --lib`;
+- `cargo test -p cdk-common --features federation
+  checkpoint_journal_hydrates_only_indexed_historical_decisions --lib`;
 - `cargo test -p cdk-common --features federation
   consensus_runtime_starts_at_a_trusted_checkpoint_without_prefix_rows --lib`;
 - `cargo test -p cdk-axum --features federation
@@ -1208,7 +1213,9 @@ Verified with:
 - `crates/cdk-common/src/federation/consensus/tests.rs`
 - `crates/cdk-common/src/database/mint/mod.rs`
 - `crates/cdk-sql-common/src/mint/federation/journal.rs`
+- `crates/cdk-sql-common/src/mint/migrations/{sqlite,postgres}/20260712000000_create_federation_schema.sql`
 - `crates/cdk-axum/src/lib.rs` (`create_federation_runtime_state`)
+- `crates/cdk-axum/src/federation/node_runtime.rs`
 - `crates/cdk-axum/src/federation/node_runtime.rs`
 - `crates/cdk-axum/src/federation/aleph_bft_runtime.rs`
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs`

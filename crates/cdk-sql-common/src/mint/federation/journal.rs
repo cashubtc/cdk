@@ -683,6 +683,23 @@ where
         .execute(&self.inner)
         .await?;
 
+        if entry.reserves_conflict_keys() {
+            for conflict_key in &entry.conflict_keys {
+                query(
+                    r#"
+                    INSERT INTO federation_journal_conflict_keys
+                    (conflict_key_json, operation_id)
+                    VALUES (:conflict_key_json, :operation_id)
+                    ON CONFLICT (conflict_key_json) DO NOTHING
+                    "#,
+                )?
+                .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
+                .bind("operation_id", entry.operation_id.to_string())
+                .execute(&self.inner)
+                .await?;
+            }
+        }
+
         advance_federation_journal_frontier(self).await?;
         advance_federation_application_frontier(self).await?;
 
@@ -1436,6 +1453,29 @@ where
             "WHERE operation_id = :operation_id"
         ))?
         .bind("operation_id", operation_id.to_string())
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_federation_journal_entry)
+        .transpose()
+    }
+
+    async fn get_federation_journal_entry_by_conflict_key(
+        &self,
+        conflict_key: &FederationOperationConflictKey,
+    ) -> Result<Option<FederationJournalEntry>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(federation_journal_entry_select!(
+            "WHERE operation_id = (
+                SELECT operation_id
+                FROM federation_journal_conflict_keys
+                WHERE conflict_key_json = :conflict_key_json
+            )"
+        ))?
+        .bind("conflict_key_json", serde_json::to_string(conflict_key)?)
         .fetch_one(&*conn)
         .await?
         .map(sql_row_to_federation_journal_entry)

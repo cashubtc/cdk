@@ -71,8 +71,9 @@ use cdk_common::federation::{
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalConsensusEvidence, FederationJournalDigest,
     FederationJournalEntry, FederationJournalTip, FederationMaterializedStateDigest,
-    FederationMaterializedStateKeyRecord, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationMaterializedStateKeyRecord, FederationOperationConflictKey,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,
 };
 use cdk_common::quote_id::QuoteId;

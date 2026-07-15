@@ -24,7 +24,7 @@ use crate::federation::{
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalEntry, FederationJournalTip,
-    FederationMaterializedStateKeyRecord, FederationOperationId,
+    FederationMaterializedStateKeyRecord, FederationOperationConflictKey, FederationOperationId,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationSignatureShareRecord, MemberId,
 };
@@ -1058,6 +1058,12 @@ pub trait FederationJournalDatabase {
     async fn get_federation_journal_entry_by_operation_id(
         &self,
         operation_id: FederationOperationId,
+    ) -> Result<Option<FederationJournalEntry>, Self::Err>;
+
+    /// Get the first accepted federation journal entry reserving a conflict key.
+    async fn get_federation_journal_entry_by_conflict_key(
+        &self,
+        conflict_key: &FederationOperationConflictKey,
     ) -> Result<Option<FederationJournalEntry>, Self::Err>;
 
     /// Get accepted federation journal entries starting at `next_index`.

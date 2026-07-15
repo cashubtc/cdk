@@ -19,6 +19,11 @@ CREATE TABLE federation_journal_entries (
 CREATE INDEX idx_federation_journal_operation_id
 ON federation_journal_entries (operation_id);
 
+CREATE TABLE federation_journal_conflict_keys (
+    conflict_key_json TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL REFERENCES federation_journal_entries(operation_id)
+);
+
 CREATE TABLE federation_dkg_member_sequences (
     member_id INTEGER PRIMARY KEY,
     last_sequence BIGINT NOT NULL

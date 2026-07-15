@@ -17,16 +17,17 @@ use cdk::cdk_payment::{
 };
 use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftActivityRequest,
-    FederationAlephBftBackupResponse, FederationAlephBftNetworkMessageRequest,
-    FederationAlephBftNetworkMessageResponse, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitPayload, FederationApplicationState, FederationCheckpointBoundary,
-    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigSnapshot,
-    FederationConsensusItem, FederationConsensusRuntime, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
-    FederationDkgCommitmentRound, FederationDkgMemberKeysetShare, FederationDkgSetupMethod,
-    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignature,
-    FederationError, FederationJournalAppendOutcome, FederationJournalDigest,
-    FederationJournalEntry, FederationKeysetRotationOperation, FederationMeltQuoteMetadata,
+    FederationAlephBftBackupResponse, FederationAlephBftFinalizedItemStatus,
+    FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
+    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
+    FederationApplicationState, FederationCheckpointBoundary, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationConfigSnapshot, FederationConsensusItem,
+    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
+    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
+    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMeltQuoteMetadata,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
@@ -8350,9 +8351,10 @@ async fn federation_runtime_startup_persists_public_config_snapshot() {
 #[tokio::test]
 async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows() {
     let (state, public_config, peer_private) = federation_route_state().await;
-    let envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&state, &quote_id);
     state
-        .submit_federation_envelope(envelope)
+        .submit_federation_envelope(envelope.clone())
         .await
         .expect("persist checkpointed operation");
 
@@ -8411,23 +8413,105 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
         .expect("promote checkpoint");
     tx.commit().await.expect("commit checkpoint promotion");
 
-    let (consensus, _) = crate::create_federation_runtime_state(&state.mint)
+    let (checkpoint_consensus, _) = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect("checkpoint startup");
-    let consensus = consensus.expect("consensus");
-    let consensus = consensus.lock().await;
-    assert_eq!(consensus.status().accepted_operation_count, 1);
-    assert_eq!(consensus.status().finalized_item_count, 1);
-    assert!(consensus.journal().entries().is_empty());
-    assert!(consensus.finalized_items().is_empty());
-    assert_eq!(
-        consensus.journal().latest_order_digest(),
-        checkpoint.journal_order_digest
-    );
-    drop(consensus);
+    let checkpoint_consensus = checkpoint_consensus.expect("consensus");
+    {
+        let consensus = checkpoint_consensus.lock().await;
+        assert_eq!(consensus.status().accepted_operation_count, 1);
+        assert_eq!(consensus.status().finalized_item_count, 1);
+        assert!(consensus.journal().entries().is_empty());
+        assert!(consensus.finalized_items().is_empty());
+        assert_eq!(
+            consensus.journal().latest_order_digest(),
+            checkpoint.journal_order_digest
+        );
+    }
 
-    state
-        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+    let mut restarted_state = state.clone();
+    restarted_state.federation.consensus = Some(checkpoint_consensus);
+    let mut conflicting = mint_quote_envelope(&restarted_state, &quote_id);
+    let FederationOperation::MintQuote(operation) = &mut conflicting.operation else {
+        panic!("mint quote operation");
+    };
+    let cdk::mint::MintQuoteResponse::Bolt11(response) = &mut operation.response else {
+        panic!("bolt11 mint quote response");
+    };
+    response.request.push_str("-conflict");
+    conflicting = conflicting
+        .authorize(local_private)
+        .expect("authorize conflicting operation");
+    let conflict_payload = {
+        let consensus = restarted_state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("checkpoint consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            vec![FederationConsensusItem::operation(conflicting)],
+        )
+        .expect("conflicting finalized payload")
+    };
+    let conflict = restarted_state
+        .federation
+        .apply_finalized_unit(conflict_payload)
+        .await
+        .expect("finalize pre-checkpoint conflict")
+        .pop()
+        .expect("conflict response");
+    assert!(matches!(
+        conflict.outcome,
+        FederationJournalAppendOutcome::Appended(ref entry)
+            if matches!(
+                entry.application,
+                FederationApplicationState::ConsensusRejected {}
+            )
+    ));
+
+    let (suffix_consensus, _) = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("checkpoint suffix startup before duplicate");
+    restarted_state.federation.consensus = suffix_consensus;
+    let duplicate_payload = {
+        let consensus = restarted_state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("suffix consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            vec![FederationConsensusItem::operation(envelope)],
+        )
+        .expect("duplicate finalized payload")
+    };
+    let duplicate = restarted_state
+        .federation
+        .apply_finalized_unit(duplicate_payload)
+        .await
+        .expect("finalize pre-checkpoint duplicate")
+        .pop()
+        .expect("duplicate response");
+    assert!(matches!(
+        duplicate.outcome,
+        FederationJournalAppendOutcome::Duplicate(ref entry) if entry.index == 0
+    ));
+
+    restarted_state
+        .submit_federation_envelope(mint_quote_envelope(&restarted_state, &QuoteId::new()))
         .await
         .expect("persist post-checkpoint suffix");
     let (consensus, _) = crate::create_federation_runtime_state(&state.mint)
@@ -8435,12 +8519,18 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
         .expect("checkpoint suffix startup");
     let consensus = consensus.expect("suffix consensus");
     let consensus = consensus.lock().await;
-    assert_eq!(consensus.status().accepted_operation_count, 2);
-    assert_eq!(consensus.status().finalized_item_count, 2);
-    assert_eq!(consensus.journal().entries().len(), 1);
+    assert_eq!(consensus.status().accepted_operation_count, 3);
+    assert_eq!(consensus.status().finalized_item_count, 4);
+    assert_eq!(consensus.journal().entries().len(), 2);
     assert_eq!(consensus.journal().entries()[0].index, 1);
-    assert_eq!(consensus.finalized_items().len(), 1);
+    assert_eq!(consensus.journal().entries()[1].index, 2);
+    assert_eq!(consensus.finalized_items().len(), 3);
     assert_eq!(consensus.finalized_items()[0].accepted_item_index, 1);
+    assert_eq!(
+        consensus.finalized_items()[1].status,
+        FederationAlephBftFinalizedItemStatus::DuplicateOperation
+    );
+    assert_eq!(consensus.finalized_items()[2].accepted_item_index, 3);
 }
 
 #[tokio::test]

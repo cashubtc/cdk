@@ -1,5 +1,6 @@
 //! Federation node runtime ownership.
 
+use std::collections::BTreeMap;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -22,13 +23,13 @@ use cdk::federation::{
     FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
     FederationCheckpointQuorumResponse, FederationCheckpointSignature,
     FederationCheckpointSignatureResponse, FederationCheckpointSummary,
-    FederationCheckpointSummaryResponse, FederationConfig, FederationConsensusItemAdmission,
-    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
+    FederationCheckpointSummaryResponse, FederationConfig, FederationConsensusItem,
+    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
+    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgSetupState, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
+    FederationError, FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record, FederationFrostRootRecord,
     FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalDigest,
     FederationJournalEntry, FederationMaterializedStateDigest, FederationOperationEnvelope,
@@ -1749,6 +1750,28 @@ impl FederationNodeRuntime {
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
         let _application = self.operation_application.lock().await;
+        let db = self.active_mint()?.localstore();
+        let mut durable_entries = BTreeMap::new();
+        for item in &payload.items {
+            let FederationConsensusItem::Operation(envelope) = item else {
+                continue;
+            };
+            let operation_id = envelope.operation_id()?;
+            if let Some(entry) = db
+                .get_federation_journal_entry_by_operation_id(operation_id)
+                .await?
+            {
+                durable_entries.insert(entry.index, entry);
+            }
+            for conflict_key in envelope.operation.conflict_keys() {
+                if let Some(entry) = db
+                    .get_federation_journal_entry_by_conflict_key(&conflict_key)
+                    .await?
+                {
+                    durable_entries.insert(entry.index, entry);
+                }
+            }
+        }
         let consensus = self
             .consensus
             .as_ref()
@@ -1768,6 +1791,9 @@ impl FederationNodeRuntime {
         }
 
         let mut next_consensus = consensus.clone();
+        for entry in durable_entries.into_values() {
+            next_consensus.register_historical_journal_entry(entry)?;
+        }
         let finalized_item_start = next_consensus.aleph_bft_finalized_items()?.len();
         let responses = next_consensus.finalize_aleph_bft_unit(payload)?;
         let finalized_items =

@@ -1356,6 +1356,10 @@ impl FederationAlephBftFinalizationHandler {
         self.next_item_index
     }
 
+    fn register_finalized_operation_id(&mut self, operation_id: FederationOperationId) {
+        self.finalized_operation_ids.insert(operation_id);
+    }
+
     /// Return the count of allowed unit submitters when this handler is roster-bound.
     #[must_use]
     pub fn allowed_member_count(&self) -> Option<u64> {
@@ -1845,6 +1849,18 @@ impl FederationConsensusRuntime {
     #[must_use]
     pub fn journal(&self) -> &InMemoryFederationJournal {
         &self.journal
+    }
+
+    /// Register one durable pre-checkpoint operation for live idempotency and conflict checks.
+    pub fn register_historical_journal_entry(
+        &mut self,
+        entry: FederationJournalEntry,
+    ) -> Result<()> {
+        let operation_id = entry.operation_id;
+        self.journal.register_historical_entry(entry)?;
+        self.finalization_handler
+            .register_finalized_operation_id(operation_id);
+        Ok(())
     }
 
     /// Return finalized consensus items in local finalization order.
