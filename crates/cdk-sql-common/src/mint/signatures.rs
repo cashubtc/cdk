@@ -9,7 +9,7 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{Amount, BlindSignature, BlindSignatureDleq, Id, PublicKey, SecretKey};
 
-use super::proofs::sql_row_to_hashmap_amount;
+use super::proofs::{sql_row_to_hashmap_amount, sql_row_to_hashmap_count};
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
@@ -125,10 +125,12 @@ where
 
                     query(
                         r#"
-                        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                        VALUES (:keyset_id, :amount, 0)
+                        INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, issued_count)
+                        VALUES (:keyset_id, :amount, 0, 1)
                         ON CONFLICT (keyset_id)
-                        DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
+                        DO UPDATE SET
+                            total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued,
+                            issued_count = keyset_amounts.issued_count + EXCLUDED.issued_count
                         "#,
                     )?
                     .bind("amount", u64::from(signature.amount) as i64)
@@ -165,10 +167,12 @@ where
 
                             query(
                                 r#"
-                                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                                VALUES (:keyset_id, :amount, 0)
+                                INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, issued_count)
+                                VALUES (:keyset_id, :amount, 0, 1)
                                 ON CONFLICT (keyset_id)
-                                DO UPDATE SET total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued
+                                DO UPDATE SET
+                                    total_issued = keyset_amounts.total_issued + EXCLUDED.total_issued,
+                                    issued_count = keyset_amounts.issued_count + EXCLUDED.issued_count
                                 "#,
                             )?
                             .bind("amount", u64::from(signature.amount) as i64)
@@ -371,7 +375,6 @@ where
         .collect::<Result<Vec<BlindSignature>, _>>()?)
     }
 
-    /// Get total proofs redeemed by keyset id
     async fn get_total_issued(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
         let conn = self
             .pool
@@ -391,6 +394,28 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_hashmap_amount)
+        .collect()
+    }
+
+    async fn get_total_issued_count(&self) -> Result<HashMap<Id, u64>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                keyset_id,
+                issued_count as count
+            FROM
+                keyset_amounts
+        "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_hashmap_count)
         .collect()
     }
 
