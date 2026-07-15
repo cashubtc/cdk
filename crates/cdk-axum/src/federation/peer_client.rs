@@ -5,9 +5,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationConfig, FederationDkgActivationRequest, FederationDkgCommitmentRequest,
-    FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgSetupResponse, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationCheckpoint, FederationCheckpointFetchRequest, FederationCheckpointFetchResponse,
+    FederationCheckpointId, FederationCheckpointQuorum, FederationCheckpointQuorumRequest,
+    FederationCheckpointQuorumResponse, FederationCheckpointSignatureRequest,
+    FederationCheckpointSignatureResponse, FederationCheckpointSummaryRequest,
+    FederationCheckpointSummaryResponse, FederationConfig, FederationDkgActivationRequest,
+    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgTranscriptSignatureRequest, FederationError,
     FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
     FederationFrostCommitmentResponse, FederationFrostDkgConfirmationRequest,
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Request,
@@ -161,6 +166,101 @@ where
             .await?;
         validate_peer_status(self.federation_id, member, &status)?;
         Ok(status)
+    }
+
+    pub(crate) async fn checkpoint_summary(
+        &self,
+        member: &MemberConfigPublic,
+    ) -> anyhow::Result<FederationCheckpointSummaryResponse> {
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::CheckpointSummary,
+            FederationCheckpointSummaryRequest::new(),
+        )?;
+        let response: FederationCheckpointSummaryResponse = self
+            .http_post_with_timeout(
+                member,
+                "checkpoints/summary",
+                "checkpoint summary request",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(self.federation_id, member.member_id)?;
+        Ok(response)
+    }
+
+    pub(crate) async fn fetch_checkpoint(
+        &self,
+        member: &MemberConfigPublic,
+        checkpoint_id: FederationCheckpointId,
+    ) -> anyhow::Result<FederationCheckpointFetchResponse> {
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::CheckpointFetch,
+            FederationCheckpointFetchRequest::new(checkpoint_id),
+        )?;
+        let response: FederationCheckpointFetchResponse = self
+            .http_post_with_timeout(
+                member,
+                "checkpoints/fetch",
+                "checkpoint fetch request",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(&self.public_config, member.member_id, checkpoint_id)?;
+        Ok(response)
+    }
+
+    pub(crate) async fn request_checkpoint_signature(
+        &self,
+        member: &MemberConfigPublic,
+        checkpoint: &FederationCheckpoint,
+    ) -> anyhow::Result<FederationCheckpointSignatureResponse> {
+        checkpoint.validate_against_config(&self.public_config)?;
+        let checkpoint_id = checkpoint.id()?;
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::CheckpointSignature,
+            FederationCheckpointSignatureRequest::new(checkpoint_id),
+        )?;
+        let response: FederationCheckpointSignatureResponse = self
+            .http_post_with_timeout(
+                member,
+                "checkpoints/signature",
+                "checkpoint signature request",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(&self.public_config, member.member_id, checkpoint)?;
+        Ok(response)
+    }
+
+    pub(crate) async fn publish_checkpoint_quorum(
+        &self,
+        member: &MemberConfigPublic,
+        quorum: &FederationCheckpointQuorum,
+    ) -> anyhow::Result<()> {
+        quorum.verify(&self.public_config)?;
+        let checkpoint_id = quorum.checkpoint.id()?;
+        let request = self.signed_request(
+            member,
+            FederationRestMessageKind::CheckpointQuorum,
+            FederationCheckpointQuorumRequest::new(quorum.clone()),
+        )?;
+        let response: FederationCheckpointQuorumResponse = self
+            .http_post_with_timeout(
+                member,
+                "checkpoints/quorum",
+                "checkpoint quorum publication",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        response.validate(self.federation_id, member.member_id, checkpoint_id)?;
+        Ok(())
     }
 
     pub(crate) async fn submit_operation(

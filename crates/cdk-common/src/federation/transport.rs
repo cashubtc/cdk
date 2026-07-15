@@ -14,11 +14,12 @@ use bitcoin::secp256k1::schnorr::Signature;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    FederationAlephBftFinalizedItem, FederationApplicationState, FederationConfig,
-    FederationConfigDigest, FederationConsensusRuntimeStatus, FederationDkgCeremonyId,
-    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationAlephBftFinalizedItem, FederationApplicationState, FederationCheckpoint,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationConfig, FederationConfigDigest,
+    FederationConsensusRuntimeStatus, FederationDkgCeremonyId, FederationDkgKeysetSpec,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
@@ -47,6 +48,14 @@ const FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION: &[u8] =
 pub enum FederationRestMessageKind {
     /// Peer status request.
     Status,
+    /// Request bounded scalar checkpoint metadata.
+    CheckpointSummary,
+    /// Fetch one stored checkpoint payload and assembled quorum by ID.
+    CheckpointFetch,
+    /// Request one member's stored signature for a checkpoint ID.
+    CheckpointSignature,
+    /// Publish one already assembled transferable checkpoint quorum.
+    CheckpointQuorum,
     /// Request targeted redacted wallet transaction status.
     WalletTransactionStatus,
     /// Request an immediate exact-byte retry for one durable transaction.
@@ -113,6 +122,10 @@ impl FederationRestMessageKind {
     fn as_bytes(self) -> &'static [u8] {
         match self {
             Self::Status => b"status",
+            Self::CheckpointSummary => b"checkpoint_summary",
+            Self::CheckpointFetch => b"checkpoint_fetch",
+            Self::CheckpointSignature => b"checkpoint_signature",
+            Self::CheckpointQuorum => b"checkpoint_quorum",
             Self::WalletTransactionStatus => b"wallet_transaction_status",
             Self::WalletRebroadcast => b"wallet_rebroadcast",
             Self::DkgReadiness => b"dkg_readiness",
@@ -1202,6 +1215,390 @@ impl FederationPeerStatusRequest {
             include_materialized_rows: true,
         }
     }
+}
+
+/// Signed request for bounded scalar checkpoint metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCheckpointSummaryRequest {
+    /// Private REST payload version.
+    pub version: u16,
+}
+
+impl FederationCheckpointSummaryRequest {
+    /// Construct a checkpoint-summary request.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+        }
+    }
+
+    /// Validate the private REST payload version.
+    pub fn validate(&self) -> Result<()> {
+        ensure_federation_rest_version(self.version)
+    }
+}
+
+impl Default for FederationCheckpointSummaryRequest {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Scalar identity and cursors for one stored checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCheckpointSummary {
+    /// Canonical checkpoint ID.
+    pub checkpoint_id: FederationCheckpointId,
+    /// Scheduled or recovery checkpoint policy.
+    pub kind: FederationCheckpointKind,
+    /// Latest scheduled sequence represented by the checkpoint.
+    pub scheduled_checkpoint_sequence: u64,
+    /// First accepted-operation index after the checkpoint.
+    pub journal_next_index: u64,
+    /// First finalized-item index after the checkpoint.
+    pub finalized_next_item_index: u64,
+}
+
+impl FederationCheckpointSummary {
+    /// Build scalar metadata from a validated checkpoint payload.
+    pub fn from_checkpoint(checkpoint: &FederationCheckpoint) -> Result<Self> {
+        Ok(Self {
+            checkpoint_id: checkpoint.id()?,
+            kind: checkpoint.kind,
+            scheduled_checkpoint_sequence: checkpoint.scheduled_checkpoint_sequence,
+            journal_next_index: checkpoint.journal_next_index,
+            finalized_next_item_index: checkpoint.finalized_next_item_index,
+        })
+    }
+
+    /// Confirm that this summary describes the exact supplied checkpoint.
+    pub fn validate_checkpoint(&self, checkpoint: &FederationCheckpoint) -> Result<()> {
+        if *self != Self::from_checkpoint(checkpoint)? {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "checkpoint summary does not match the checkpoint payload".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Bounded scalar checkpoint metadata returned during ordinary peer polling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCheckpointSummaryResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Federation served by this peer.
+    pub federation_id: FederationId,
+    /// Member serving this response.
+    pub member_id: MemberId,
+    /// Newest locally stored scheduled candidate, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_scheduled_candidate: Option<FederationCheckpointSummary>,
+    /// Newest locally stored recovery candidate, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_recovery_candidate: Option<FederationCheckpointSummary>,
+    /// Newest locally stored scheduled quorum, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_scheduled_quorum: Option<FederationCheckpointSummary>,
+    /// Newest locally stored recovery quorum, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_recovery_quorum: Option<FederationCheckpointSummary>,
+}
+
+impl FederationCheckpointSummaryResponse {
+    /// Validate response bindings and summary kinds.
+    pub fn validate(
+        &self,
+        expected_federation_id: FederationId,
+        expected_member_id: MemberId,
+    ) -> Result<()> {
+        ensure_federation_rest_version(self.version)?;
+        if self.federation_id != expected_federation_id {
+            return Err(FederationError::RestFederationMismatch {
+                expected: expected_federation_id,
+                found: self.federation_id,
+            });
+        }
+        if self.member_id != expected_member_id {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "checkpoint summary response member mismatch".to_string(),
+            });
+        }
+        for (summary, expected_kind) in [
+            (
+                self.latest_scheduled_candidate.as_ref(),
+                FederationCheckpointKind::Scheduled,
+            ),
+            (
+                self.latest_recovery_candidate.as_ref(),
+                FederationCheckpointKind::Recovery,
+            ),
+            (
+                self.latest_scheduled_quorum.as_ref(),
+                FederationCheckpointKind::Scheduled,
+            ),
+            (
+                self.latest_recovery_quorum.as_ref(),
+                FederationCheckpointKind::Recovery,
+            ),
+        ] {
+            if summary.is_some_and(|summary| summary.kind != expected_kind) {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "checkpoint summary field contains the wrong checkpoint kind"
+                        .to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Signed request to fetch one stored checkpoint payload and quorum by ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCheckpointFetchRequest {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Exact checkpoint to fetch.
+    pub checkpoint_id: FederationCheckpointId,
+}
+
+impl FederationCheckpointFetchRequest {
+    /// Construct a checkpoint fetch request.
+    #[must_use]
+    pub const fn new(checkpoint_id: FederationCheckpointId) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            checkpoint_id,
+        }
+    }
+
+    /// Validate the private REST payload version.
+    pub fn validate(&self) -> Result<()> {
+        ensure_federation_rest_version(self.version)
+    }
+}
+
+/// Stored checkpoint material returned without recomputation or new signing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCheckpointFetchResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Federation served by this peer.
+    pub federation_id: FederationId,
+    /// Member serving this response.
+    pub member_id: MemberId,
+    /// Stored checkpoint payload, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<FederationCheckpoint>,
+    /// Stored assembled quorum, if known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quorum: Option<FederationCheckpointQuorum>,
+}
+
+impl FederationCheckpointFetchResponse {
+    /// Validate response bindings and all returned checkpoint material.
+    pub fn validate(
+        &self,
+        config: &FederationConfig,
+        expected_member_id: MemberId,
+        expected_checkpoint_id: FederationCheckpointId,
+    ) -> Result<()> {
+        ensure_federation_rest_version(self.version)?;
+        if self.federation_id != config.federation_id {
+            return Err(FederationError::RestFederationMismatch {
+                expected: config.federation_id,
+                found: self.federation_id,
+            });
+        }
+        if self.member_id != expected_member_id {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "checkpoint fetch response member mismatch".to_string(),
+            });
+        }
+        if let Some(checkpoint) = self.checkpoint.as_ref() {
+            checkpoint.validate_against_config(config)?;
+            if checkpoint.id()? != expected_checkpoint_id {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "checkpoint fetch returned a different checkpoint payload".to_string(),
+                });
+            }
+        }
+        if let Some(quorum) = self.quorum.as_ref() {
+            quorum.verify(config)?;
+            if quorum.checkpoint.id()? != expected_checkpoint_id {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "checkpoint fetch returned a quorum for a different checkpoint"
+                        .to_string(),
+                });
+            }
+            if self
+                .checkpoint
+                .as_ref()
+                .is_some_and(|checkpoint| checkpoint != &quorum.checkpoint)
+            {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "checkpoint fetch payload and quorum disagree".to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Signed request for one member's signature over an exact checkpoint ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCheckpointSignatureRequest {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Exact locally derived checkpoint whose stored signature is requested.
+    pub checkpoint_id: FederationCheckpointId,
+}
+
+impl FederationCheckpointSignatureRequest {
+    /// Construct a checkpoint-signature request.
+    #[must_use]
+    pub const fn new(checkpoint_id: FederationCheckpointId) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            checkpoint_id,
+        }
+    }
+
+    /// Validate the private REST payload version.
+    pub fn validate(&self) -> Result<()> {
+        ensure_federation_rest_version(self.version)
+    }
+}
+
+/// One already persisted member checkpoint signature, when available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCheckpointSignatureResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Federation served by this peer.
+    pub federation_id: FederationId,
+    /// Member serving this response.
+    pub member_id: MemberId,
+    /// Stored local signature, if this member independently derived the checkpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<FederationCheckpointSignature>,
+}
+
+impl FederationCheckpointSignatureResponse {
+    /// Validate response bindings and the optional signature.
+    pub fn validate(
+        &self,
+        config: &FederationConfig,
+        expected_member_id: MemberId,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<()> {
+        ensure_federation_rest_version(self.version)?;
+        if self.federation_id != config.federation_id {
+            return Err(FederationError::RestFederationMismatch {
+                expected: config.federation_id,
+                found: self.federation_id,
+            });
+        }
+        if self.member_id != expected_member_id {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "checkpoint signature response member mismatch".to_string(),
+            });
+        }
+        if let Some(signature) = self.signature.as_ref() {
+            let member =
+                config
+                    .member(expected_member_id)
+                    .ok_or(FederationError::UnknownMember {
+                        member_id: expected_member_id,
+                    })?;
+            signature.verify(checkpoint, member)?;
+        }
+        Ok(())
+    }
+}
+
+/// Signed publication of one already assembled transferable checkpoint quorum.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCheckpointQuorumRequest {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Bounded quorum proof to verify and persist.
+    pub quorum: FederationCheckpointQuorum,
+}
+
+impl FederationCheckpointQuorumRequest {
+    /// Construct a checkpoint quorum publication.
+    #[must_use]
+    pub fn new(quorum: FederationCheckpointQuorum) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            quorum,
+        }
+    }
+
+    /// Validate the payload version and bounded quorum proof.
+    pub fn validate(&self, config: &FederationConfig) -> Result<()> {
+        ensure_federation_rest_version(self.version)?;
+        self.quorum.verify(config)?;
+        Ok(())
+    }
+}
+
+/// Acknowledgement that a checkpoint quorum was verified and persisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCheckpointQuorumResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Federation served by this peer.
+    pub federation_id: FederationId,
+    /// Member serving this response.
+    pub member_id: MemberId,
+    /// Checkpoint whose quorum was persisted.
+    pub checkpoint_id: FederationCheckpointId,
+}
+
+impl FederationCheckpointQuorumResponse {
+    /// Validate the acknowledgement bindings.
+    pub fn validate(
+        &self,
+        expected_federation_id: FederationId,
+        expected_member_id: MemberId,
+        expected_checkpoint_id: FederationCheckpointId,
+    ) -> Result<()> {
+        ensure_federation_rest_version(self.version)?;
+        if self.federation_id != expected_federation_id {
+            return Err(FederationError::RestFederationMismatch {
+                expected: expected_federation_id,
+                found: self.federation_id,
+            });
+        }
+        if self.member_id != expected_member_id || self.checkpoint_id != expected_checkpoint_id {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "checkpoint quorum acknowledgement mismatch".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
+fn ensure_federation_rest_version(version: u16) -> Result<()> {
+    if version != FEDERATION_REST_API_VERSION {
+        return Err(FederationError::RestVersionMismatch {
+            expected: FEDERATION_REST_API_VERSION,
+            found: version,
+        });
+    }
+    Ok(())
 }
 
 /// Signed targeted operator request for one durable wallet transaction.
@@ -3927,6 +4324,84 @@ mod tests {
         let decoded: FederationSignedRequest<FederationPeerStatusRequest> =
             serde_json::from_str(&json).expect("decoded request");
         decoded.verify(&config, receiver).expect("decoded verifies");
+    }
+
+    #[test]
+    fn checkpoint_transport_messages_are_bound_and_bounded() {
+        let (config, first_private, _) = transport_config();
+        let receiver = roster_member_id(2);
+        let checkpoint_id = FederationCheckpointId::from_bytes([41; 32]);
+
+        let summary_request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            1,
+            FederationRestMessageKind::CheckpointSummary,
+            FederationCheckpointSummaryRequest::new(),
+            &first_private,
+        )
+        .expect("signed checkpoint summary request");
+        summary_request
+            .verify(&config, receiver)
+            .expect("checkpoint summary request verifies");
+        summary_request
+            .payload
+            .validate()
+            .expect("checkpoint summary payload validates");
+
+        let fetch_request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            2,
+            FederationRestMessageKind::CheckpointFetch,
+            FederationCheckpointFetchRequest::new(checkpoint_id),
+            &first_private,
+        )
+        .expect("signed checkpoint fetch request");
+        fetch_request
+            .verify(&config, receiver)
+            .expect("checkpoint fetch request verifies");
+
+        let signature_request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            3,
+            FederationRestMessageKind::CheckpointSignature,
+            FederationCheckpointSignatureRequest::new(checkpoint_id),
+            &first_private,
+        )
+        .expect("signed checkpoint signature request");
+        signature_request
+            .verify(&config, receiver)
+            .expect("checkpoint signature request verifies");
+
+        let summary_response = FederationCheckpointSummaryResponse {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id: config.federation_id,
+            member_id: receiver,
+            latest_scheduled_candidate: None,
+            latest_recovery_candidate: None,
+            latest_scheduled_quorum: None,
+            latest_recovery_quorum: None,
+        };
+        summary_response
+            .validate(config.federation_id, receiver)
+            .expect("checkpoint summary response validates");
+        let encoded = serde_json::to_value(&summary_response).expect("checkpoint summary json");
+        assert!(encoded.get("latest_scheduled_candidate").is_none());
+        assert!(encoded.get("latest_recovery_candidate").is_none());
+        assert!(encoded.get("latest_scheduled_quorum").is_none());
+        assert!(encoded.get("latest_recovery_quorum").is_none());
+
+        FederationCheckpointFetchResponse {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id: config.federation_id,
+            member_id: receiver,
+            checkpoint: None,
+            quorum: None,
+        }
+        .validate(&config, receiver, checkpoint_id)
+        .expect("empty checkpoint fetch response validates");
     }
 
     #[test]

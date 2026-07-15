@@ -1,9 +1,11 @@
 use std::collections::BTreeSet;
 
 use cdk::federation::{
-    FederationCatchUpCertificate, FederationCatchUpOperation, FederationError,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationMaterializedStateDigest, FederationPeerStatus, MemberConfigPublic, MemberId,
+    FederationCatchUpCertificate, FederationCatchUpOperation, FederationCheckpoint,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSummary,
+    FederationCheckpointSummaryResponse, FederationError, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationPeerStatus, MemberConfigPublic, MemberId,
 };
 use cdk_http_client::{Async, Transport};
 use tokio::time::{self, Instant};
@@ -190,6 +192,13 @@ where
             }
         }
     }
+    let checkpoint_updates = exchange_checkpoint_round(state, client, &evidence_peers).await;
+    if checkpoint_updates > 0 {
+        tracing::debug!(
+            checkpoint_updates,
+            "Federation peer sync exchanged checkpoint evidence"
+        );
+    }
     let collected = if evidence_peers.is_empty() {
         0
     } else {
@@ -209,6 +218,284 @@ where
     )
     .await;
     synced
+}
+
+async fn exchange_checkpoint_round<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peers: &[&MemberConfigPublic],
+) -> usize
+where
+    T: Transport,
+{
+    if peers.is_empty() {
+        return 0;
+    }
+    if let Err(err) = state
+        .federation
+        .ensure_scheduled_checkpoint_candidate()
+        .await
+    {
+        tracing::warn!("Could not capture local scheduled checkpoint: {}", err);
+        return 0;
+    }
+    let mut updates = 0;
+    let mut peer_summaries = Vec::with_capacity(peers.len());
+    for &peer in peers {
+        match client.checkpoint_summary(peer).await {
+            Ok(summary) => peer_summaries.push((peer, summary)),
+            Err(err) => tracing::warn!(
+                member_id = %peer.member_id,
+                "Federation checkpoint summary request failed: {}",
+                err
+            ),
+        }
+    }
+
+    for (peer, summary) in &peer_summaries {
+        for peer_quorum in [
+            summary.latest_scheduled_quorum.as_ref(),
+            summary.latest_recovery_quorum.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if local_checkpoint_quorum_is_current(state, peer_quorum).await {
+                continue;
+            }
+            match client
+                .fetch_checkpoint(peer, peer_quorum.checkpoint_id)
+                .await
+            {
+                Ok(response) => {
+                    let Some(quorum) = response.quorum.as_ref() else {
+                        tracing::warn!(
+                            member_id = %peer.member_id,
+                            checkpoint_id = %peer_quorum.checkpoint_id,
+                            "Federation peer advertised a checkpoint quorum but did not serve it"
+                        );
+                        continue;
+                    };
+                    match state.federation.persist_checkpoint_quorum(quorum).await {
+                        Ok(_) => updates += 1,
+                        Err(err) => tracing::warn!(
+                            member_id = %peer.member_id,
+                            checkpoint_id = %peer_quorum.checkpoint_id,
+                            "Could not persist fetched federation checkpoint quorum: {}",
+                            err
+                        ),
+                    }
+                }
+                Err(err) => tracing::warn!(
+                    member_id = %peer.member_id,
+                    checkpoint_id = %peer_quorum.checkpoint_id,
+                    "Federation checkpoint quorum fetch failed: {}",
+                    err
+                ),
+            }
+        }
+    }
+
+    let Some(candidate) = local_pending_scheduled_checkpoint(state).await else {
+        disseminate_latest_checkpoint_quorums(state, client, &peer_summaries, &mut updates).await;
+        return updates;
+    };
+    let checkpoint_id = match candidate.id() {
+        Ok(checkpoint_id) => checkpoint_id,
+        Err(err) => {
+            tracing::warn!("Could not identify local federation checkpoint: {}", err);
+            return updates;
+        }
+    };
+    let mut stored_signers = match state
+        .mint
+        .localstore()
+        .get_federation_checkpoint_signatures(checkpoint_id)
+        .await
+    {
+        Ok(signatures) => signatures
+            .into_iter()
+            .map(|signature| signature.signer)
+            .collect::<BTreeSet<_>>(),
+        Err(err) => {
+            tracing::warn!(
+                checkpoint_id = %checkpoint_id,
+                "Could not load federation checkpoint signatures: {}",
+                err
+            );
+            return updates;
+        }
+    };
+
+    for (peer, summary) in &peer_summaries {
+        if stored_signers.contains(&peer.member_id)
+            || summary
+                .latest_scheduled_candidate
+                .as_ref()
+                .is_none_or(|peer_candidate| peer_candidate.checkpoint_id != checkpoint_id)
+        {
+            continue;
+        }
+        match client.request_checkpoint_signature(peer, &candidate).await {
+            Ok(response) => {
+                let Some(signature) = response.signature.as_ref() else {
+                    continue;
+                };
+                match state
+                    .federation
+                    .persist_checkpoint_signature(checkpoint_id, signature)
+                    .await
+                {
+                    Ok(quorum) => {
+                        updates += 1;
+                        stored_signers.insert(signature.signer);
+                        if quorum.is_some() {
+                            break;
+                        }
+                    }
+                    Err(err) => tracing::warn!(
+                        member_id = %peer.member_id,
+                        checkpoint_id = %checkpoint_id,
+                        "Could not persist federation checkpoint signature: {}",
+                        err
+                    ),
+                }
+            }
+            Err(err) => tracing::warn!(
+                member_id = %peer.member_id,
+                checkpoint_id = %checkpoint_id,
+                "Federation checkpoint signature request failed: {}",
+                err
+            ),
+        }
+    }
+
+    disseminate_latest_checkpoint_quorums(state, client, &peer_summaries, &mut updates).await;
+    updates
+}
+
+async fn local_checkpoint_quorum_is_current(
+    state: &MintState,
+    peer_quorum: &FederationCheckpointSummary,
+) -> bool {
+    match state
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint_quorum(peer_quorum.kind)
+        .await
+    {
+        Ok(Some(local_quorum)) => {
+            let Ok(local_summary) =
+                FederationCheckpointSummary::from_checkpoint(&local_quorum.checkpoint)
+            else {
+                return false;
+            };
+            local_summary.checkpoint_id == peer_quorum.checkpoint_id
+                || local_summary.scheduled_checkpoint_sequence
+                    > peer_quorum.scheduled_checkpoint_sequence
+                || (local_summary.scheduled_checkpoint_sequence
+                    == peer_quorum.scheduled_checkpoint_sequence
+                    && local_summary.finalized_next_item_index
+                        >= peer_quorum.finalized_next_item_index
+                    && local_summary.journal_next_index >= peer_quorum.journal_next_index)
+        }
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!("Could not load local federation checkpoint quorum: {}", err);
+            false
+        }
+    }
+}
+
+async fn local_pending_scheduled_checkpoint(state: &MintState) -> Option<FederationCheckpoint> {
+    let db = state.mint.localstore();
+    let candidate = match db
+        .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+        .await
+    {
+        Ok(candidate) => candidate?,
+        Err(err) => {
+            tracing::warn!("Could not load local scheduled checkpoint: {}", err);
+            return None;
+        }
+    };
+    let checkpoint_id = match candidate.id() {
+        Ok(checkpoint_id) => checkpoint_id,
+        Err(err) => {
+            tracing::warn!("Could not identify local scheduled checkpoint: {}", err);
+            return None;
+        }
+    };
+    match db.get_federation_checkpoint_quorum(checkpoint_id).await {
+        Ok(Some(_)) => None,
+        Ok(None) => Some(candidate),
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect local scheduled checkpoint quorum: {}",
+                err
+            );
+            None
+        }
+    }
+}
+
+async fn disseminate_latest_checkpoint_quorums<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peer_summaries: &[(&MemberConfigPublic, FederationCheckpointSummaryResponse)],
+    updates: &mut usize,
+) where
+    T: Transport,
+{
+    for kind in [
+        FederationCheckpointKind::Scheduled,
+        FederationCheckpointKind::Recovery,
+    ] {
+        let quorum = match state
+            .mint
+            .localstore()
+            .get_latest_federation_checkpoint_quorum(kind)
+            .await
+        {
+            Ok(Some(quorum)) => quorum,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::warn!(
+                    "Could not load checkpoint quorum for dissemination: {}",
+                    err
+                );
+                continue;
+            }
+        };
+        let checkpoint_id = match quorum.checkpoint.id() {
+            Ok(checkpoint_id) => checkpoint_id,
+            Err(err) => {
+                tracing::warn!(
+                    "Could not identify checkpoint quorum for dissemination: {}",
+                    err
+                );
+                continue;
+            }
+        };
+        for (peer, summary) in peer_summaries {
+            let peer_quorum = match kind {
+                FederationCheckpointKind::Scheduled => summary.latest_scheduled_quorum.as_ref(),
+                FederationCheckpointKind::Recovery => summary.latest_recovery_quorum.as_ref(),
+            };
+            if peer_quorum.is_some_and(|summary| summary.checkpoint_id == checkpoint_id) {
+                continue;
+            }
+            match client.publish_checkpoint_quorum(peer, &quorum).await {
+                Ok(()) => *updates += 1,
+                Err(err) => tracing::warn!(
+                    member_id = %peer.member_id,
+                    checkpoint_id = %checkpoint_id,
+                    "Federation checkpoint quorum publication failed: {}",
+                    err
+                ),
+            }
+        }
+    }
 }
 
 async fn reconcile_federation_startup_with_quorum(

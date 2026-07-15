@@ -1,6 +1,6 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (milestone 1 complete; milestone 2 persistence and milestone 3 local capture in progress)
+Status: in progress (milestone 1 complete; milestone 2 persistence and milestone 3 scheduled production/exchange in progress)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -882,27 +882,27 @@ peer-sync tick.
 - [x] Ensure checkpoint audit projection performs no historical journal read and
       excludes member-local, transient, and uncommitted state.
 - [x] Derive, persist, and sign each scheduled local checkpoint exactly once.
-- [ ] Add authenticated private REST request/response types and message kinds for
+- [x] Add authenticated private REST request/response types and message kinds for
       checkpoint summary, fetch, and signature request.
-- [ ] Add checkpoint routes under `/federation/v1` and matching peer-client
+- [x] Add checkpoint routes under `/federation/v1` and matching peer-client
       methods with existing request admission, authentication, replay-window,
       timeout, and backoff rules.
 - [ ] Have peers return an already stored local signature when available. A peer
       may create one only when the exact checkpoint equals its own deterministic
       scheduled boundary or exact fully applied stable tip; never sign arbitrary
       caller data.
-- [ ] Collect stored signatures until threshold, promote the quorum once, persist
+- [x] Collect stored signatures until threshold, promote the quorum once, persist
       the assembled transferable proof, and disseminate it to reachable honest
       members.
-- [ ] Serve a stored assembled quorum directly so a recovering member does not
+- [x] Serve a stored assembled quorum directly so a recovering member does not
       contact its historical signers or cause any new signing.
 - [ ] Add the recovery-checkpoint stable-tip path with quorum tip discovery,
       scheduled-anchor validation, debounce, checkpoint-ID deduplication, and no
       periodic work while the tip is unchanged.
 - [ ] Ensure a recovery checkpoint cannot alter the derivation of the next
       scheduled checkpoint.
-- [ ] Keep checkpoint traffic off AlephBFT and out of the operation journal.
-- [ ] Ensure ordinary status polling transfers only scalar checkpoint summary
+- [x] Keep checkpoint traffic off AlephBFT and out of the operation journal.
+- [x] Ensure ordinary status polling transfers only scalar checkpoint summary
       fields, not full signature sets.
 - [ ] When the local journal and finalized-item cursors already match the peer,
       issue no `/federation/v1/journal` request. Healthy idle peer synchronization
@@ -924,11 +924,28 @@ audit and local signature are not repeated while quorum exchange is pending.
 Duplicate finalized-unit retry follows the same capture hook, which closes the
 ordinary post-commit retry window.
 
-The startup re-entry path for a crash before candidate capture, authenticated
-signature/quorum exchange, quorum dissemination, and recovery-checkpoint stable
-tip orchestration remain open. Until those are implemented, the first-boundary
-selection and event-driven-frontier checklist items remain intentionally
-unchecked.
+Authenticated private REST now exposes four bounded checkpoint message classes:
+scalar summary, exact-ID fetch, exact-ID local-signature request, and assembled
+quorum publication. They use the existing signed envelope, request admission,
+kind-isolated replay windows, peer timeout, and reconnect selection. Signature
+requests do not contain a checkpoint payload. The receiver first re-enters the
+scheduled-candidate capture path under the application lock, then returns only
+its already persisted signature for that exact locally derived checkpoint ID.
+
+The peer-sync round compares scalar summaries, fetches an advertised assembled
+quorum from one holder, requests only missing signatures for an identical local
+scheduled candidate, promotes once threshold is reached, and publishes the
+stored proof only to peers that do not report it. An ahead quorum is verified
+and stored without being promoted before the local durable frontier reaches it.
+Unchanged rounds therefore perform no checkpoint signing, audit, quorum write,
+or full-proof transfer. The summary re-entry hook also closes the ordinary
+crash window between a durable eligible boundary and candidate capture.
+
+Recovery-checkpoint stable-tip orchestration remains open. The first-boundary
+selection and event-driven-frontier checklist items also remain intentionally
+unchecked until catch-up/restart paths prove that a member which missed the
+live hook selects the same earliest eligible complete-unit boundary rather than
+its later catch-up tip.
 
 Verified with:
 
@@ -939,7 +956,10 @@ Verified with:
 - `cargo test -p cdk-sqlite --features federation federation_checkpoint_persistence`;
 - `cargo clippy -p cdk-common --lib --features federation -- -D warnings`;
 - `cargo clippy -p cdk-sql-common --lib --features federation -- -D warnings`;
-- `cargo check -p cdk-axum --features federation`.
+- `cargo check -p cdk-axum --features federation`;
+- `cargo test -p cdk-common --features federation
+  checkpoint_transport_messages_are_bound_and_bounded --lib`;
+- `cargo clippy -p cdk-axum --lib --features federation -- -D warnings`.
 
 ### Files and references
 

@@ -35,6 +35,7 @@ mod aleph_bft_runtime;
 mod aleph_bft_session;
 mod broadcast;
 mod catch_up_routes;
+mod checkpoint_routes;
 mod dkg_driver;
 mod dkg_routes;
 pub(crate) mod frost_signing;
@@ -65,6 +66,10 @@ pub(crate) use self::aleph_bft_session::{
 };
 pub(crate) use self::broadcast::FederationTransactionBroadcaster;
 use self::catch_up_routes::post_journal;
+use self::checkpoint_routes::{
+    post_checkpoint_fetch, post_checkpoint_quorum, post_checkpoint_signature,
+    post_checkpoint_summary,
+};
 #[cfg(test)]
 use self::dkg_driver::{
     complete_federation_dkg_ceremony, federation_dkg_readiness_required,
@@ -159,6 +164,10 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .merge(frost_signing_router)
         .route("/config", get(get_public_config))
         .route("/status", post(post_status))
+        .route("/checkpoints/summary", post(post_checkpoint_summary))
+        .route("/checkpoints/fetch", post(post_checkpoint_fetch))
+        .route("/checkpoints/signature", post(post_checkpoint_signature))
+        .route("/checkpoints/quorum", post(post_checkpoint_quorum))
         .route("/local-status", post(post_local_status))
         .route(
             "/wallet/transactions/status",

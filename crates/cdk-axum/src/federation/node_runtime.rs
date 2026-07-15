@@ -18,10 +18,13 @@ use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
     FederationApplicationState, FederationCatchUpCertificate, FederationCatchUpOperation,
-    FederationCheckpointBoundary, FederationCheckpointKind, FederationCheckpointSignature,
-    FederationConfig, FederationConsensusItemAdmission, FederationConsensusRuntime,
-    FederationConsensusRuntimeStatus, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
+    FederationCheckpoint, FederationCheckpointBoundary, FederationCheckpointFetchResponse,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
+    FederationCheckpointQuorumResponse, FederationCheckpointSignature,
+    FederationCheckpointSignatureResponse, FederationCheckpointSummary,
+    FederationCheckpointSummaryResponse, FederationConfig, FederationConsensusItemAdmission,
+    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationError,
@@ -88,6 +91,22 @@ pub(crate) struct FederationNodeRuntime {
 
 fn runtime_unavailable(component: &'static str) -> cdk::Error {
     FederationError::RuntimeUnavailable { component }.into()
+}
+
+fn checkpoint_summary(
+    checkpoint: &FederationCheckpoint,
+    config: &FederationConfig,
+) -> Result<FederationCheckpointSummary, cdk::Error> {
+    checkpoint.validate_against_config(config)?;
+    Ok(FederationCheckpointSummary::from_checkpoint(checkpoint)?)
+}
+
+fn checkpoint_quorum_summary(
+    quorum: &FederationCheckpointQuorum,
+    config: &FederationConfig,
+) -> Result<FederationCheckpointSummary, cdk::Error> {
+    quorum.verify(config)?;
+    checkpoint_summary(&quorum.checkpoint, config)
 }
 
 fn finalized_unit_recovery_mismatch(
@@ -1718,7 +1737,8 @@ impl FederationNodeRuntime {
                 .collect::<Vec<_>>();
             let entries_to_apply = crate::accepted_federation_journal_entries(&entries);
             self.apply_journal_entries(&entries_to_apply).await?;
-            self.capture_scheduled_checkpoint_if_eligible().await?;
+            self.capture_scheduled_checkpoint_if_eligible_under_application_lock()
+                .await?;
             return self.publish_terminal_operation_responses(&responses).await;
         }
 
@@ -1741,11 +1761,14 @@ impl FederationNodeRuntime {
         drop(consensus);
 
         self.apply_journal_entries(&entries_to_apply).await?;
-        self.capture_scheduled_checkpoint_if_eligible().await?;
+        self.capture_scheduled_checkpoint_if_eligible_under_application_lock()
+            .await?;
         self.publish_terminal_operation_responses(&responses).await
     }
 
-    async fn capture_scheduled_checkpoint_if_eligible(&self) -> Result<(), cdk::Error> {
+    async fn capture_scheduled_checkpoint_if_eligible_under_application_lock(
+        &self,
+    ) -> Result<(), cdk::Error> {
         let mint = self.active_mint()?;
         let runtime_config = mint
             .federation_config()
@@ -1818,6 +1841,208 @@ impl FederationNodeRuntime {
         tx.add_federation_checkpoint_signature(&signature).await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    pub(crate) async fn ensure_scheduled_checkpoint_candidate(&self) -> Result<(), cdk::Error> {
+        let _application = self.operation_application.lock().await;
+        self.capture_scheduled_checkpoint_if_eligible_under_application_lock()
+            .await
+    }
+
+    pub(crate) async fn checkpoint_summary(
+        &self,
+    ) -> Result<FederationCheckpointSummaryResponse, cdk::Error> {
+        self.ensure_scheduled_checkpoint_candidate().await?;
+        let mint = self.active_mint()?;
+        let runtime_config = mint
+            .federation_config()
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
+        let public_config = runtime_config.public_config();
+        let db = mint.localstore();
+
+        let latest_scheduled_candidate = db
+            .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+            .await?
+            .map(|checkpoint| checkpoint_summary(&checkpoint, public_config))
+            .transpose()?;
+        let latest_recovery_candidate = db
+            .get_latest_federation_checkpoint(FederationCheckpointKind::Recovery)
+            .await?
+            .map(|checkpoint| checkpoint_summary(&checkpoint, public_config))
+            .transpose()?;
+        let latest_scheduled_quorum = db
+            .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+            .await?
+            .map(|quorum| checkpoint_quorum_summary(&quorum, public_config))
+            .transpose()?;
+        let latest_recovery_quorum = db
+            .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
+            .await?
+            .map(|quorum| checkpoint_quorum_summary(&quorum, public_config))
+            .transpose()?;
+
+        Ok(FederationCheckpointSummaryResponse {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id: runtime_config.federation_id(),
+            member_id: runtime_config.member_id(),
+            latest_scheduled_candidate,
+            latest_recovery_candidate,
+            latest_scheduled_quorum,
+            latest_recovery_quorum,
+        })
+    }
+
+    pub(crate) async fn fetch_checkpoint(
+        &self,
+        checkpoint_id: FederationCheckpointId,
+    ) -> Result<FederationCheckpointFetchResponse, cdk::Error> {
+        let mint = self.active_mint()?;
+        let runtime_config = mint
+            .federation_config()
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
+        let public_config = runtime_config.public_config();
+        let db = mint.localstore();
+        let checkpoint = db.get_federation_checkpoint(checkpoint_id).await?;
+        if let Some(checkpoint) = checkpoint.as_ref() {
+            checkpoint.validate_against_config(public_config)?;
+            if checkpoint.id()? != checkpoint_id {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "stored checkpoint does not match its lookup id".to_string(),
+                }
+                .into());
+            }
+        }
+        let quorum = db.get_federation_checkpoint_quorum(checkpoint_id).await?;
+        if let Some(quorum) = quorum.as_ref() {
+            quorum.verify(public_config)?;
+        }
+        Ok(FederationCheckpointFetchResponse {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id: runtime_config.federation_id(),
+            member_id: runtime_config.member_id(),
+            checkpoint,
+            quorum,
+        })
+    }
+
+    pub(crate) async fn local_checkpoint_signature(
+        &self,
+        checkpoint_id: FederationCheckpointId,
+    ) -> Result<FederationCheckpointSignatureResponse, cdk::Error> {
+        self.ensure_scheduled_checkpoint_candidate().await?;
+        let mint = self.active_mint()?;
+        let runtime_config = mint
+            .federation_config()
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
+        let public_config = runtime_config.public_config();
+        let db = mint.localstore();
+        let checkpoint = db.get_federation_checkpoint(checkpoint_id).await?;
+        let signature = match checkpoint.as_ref() {
+            Some(checkpoint) => {
+                checkpoint.validate_against_config(public_config)?;
+                db.get_federation_checkpoint_signatures(checkpoint_id)
+                    .await?
+                    .into_iter()
+                    .find(|signature| signature.signer == runtime_config.member_id())
+            }
+            None => None,
+        };
+        if let (Some(checkpoint), Some(signature)) = (checkpoint.as_ref(), signature.as_ref()) {
+            let member = public_config.member(runtime_config.member_id()).ok_or(
+                FederationError::UnknownMember {
+                    member_id: runtime_config.member_id(),
+                },
+            )?;
+            signature.verify(checkpoint, member)?;
+        }
+        Ok(FederationCheckpointSignatureResponse {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id: runtime_config.federation_id(),
+            member_id: runtime_config.member_id(),
+            signature,
+        })
+    }
+
+    pub(crate) async fn persist_checkpoint_quorum(
+        &self,
+        quorum: &FederationCheckpointQuorum,
+    ) -> Result<FederationCheckpointQuorumResponse, cdk::Error> {
+        let _application = self.operation_application.lock().await;
+        let mint = self.active_mint()?;
+        let runtime_config = mint
+            .federation_config()
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
+        quorum.verify(runtime_config.public_config())?;
+        let checkpoint_id = quorum.checkpoint.id()?;
+        let db = mint.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_checkpoint_quorum(quorum).await?;
+        tx.commit().await?;
+        let frontier = db.get_federation_checkpoint_frontier().await?;
+        if quorum.checkpoint.journal_next_index <= frontier.journal_next_index
+            && quorum.checkpoint.journal_next_index <= frontier.application_next_index
+            && quorum.checkpoint.finalized_next_item_index <= frontier.finalized_next_item_index
+        {
+            let mut tx = db.begin_transaction().await?;
+            tx.promote_verified_federation_checkpoint(quorum).await?;
+            tx.commit().await?;
+        }
+        Ok(FederationCheckpointQuorumResponse {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id: runtime_config.federation_id(),
+            member_id: runtime_config.member_id(),
+            checkpoint_id,
+        })
+    }
+
+    pub(crate) async fn persist_checkpoint_signature(
+        &self,
+        checkpoint_id: FederationCheckpointId,
+        signature: &FederationCheckpointSignature,
+    ) -> Result<Option<FederationCheckpointQuorum>, cdk::Error> {
+        let _application = self.operation_application.lock().await;
+        let mint = self.active_mint()?;
+        let runtime_config = mint
+            .federation_config()
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
+        let public_config = runtime_config.public_config();
+        let db = mint.localstore();
+        let checkpoint = db
+            .get_federation_checkpoint(checkpoint_id)
+            .await?
+            .ok_or_else(|| FederationError::CheckpointInvalid {
+                reason: "cannot store a signature for an unknown checkpoint".to_string(),
+            })?;
+        checkpoint.validate_against_config(public_config)?;
+        if checkpoint.id()? != checkpoint_id || signature.checkpoint_id != checkpoint_id {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "checkpoint signature lookup binding mismatch".to_string(),
+            }
+            .into());
+        }
+        let member =
+            public_config
+                .member(signature.signer)
+                .ok_or(FederationError::UnknownMember {
+                    member_id: signature.signer,
+                })?;
+        signature.verify(&checkpoint, member)?;
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_checkpoint_signature(signature).await?;
+        tx.commit().await?;
+
+        let signatures = db
+            .get_federation_checkpoint_signatures(checkpoint_id)
+            .await?;
+        if signatures.len() < usize::from(public_config.threshold_params.consensus_threshold) {
+            return Ok(None);
+        }
+        let quorum = FederationCheckpointQuorum::new(checkpoint, signatures);
+        quorum.verify(public_config)?;
+        let mut tx = db.begin_transaction().await?;
+        tx.promote_verified_federation_checkpoint(&quorum).await?;
+        tx.commit().await?;
+        Ok(Some(quorum))
     }
 
     pub(crate) async fn apply_journal_entries(
