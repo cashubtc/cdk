@@ -280,7 +280,7 @@ impl SupervisedStream for PaymentWaiter {
 #[cfg(feature = "federation")]
 #[derive(Debug, Clone)]
 struct EffectiveFederationConfigCache {
-    applied_config_transitions: Vec<(u64, cdk_common::federation::FederationOperationId)>,
+    applied_rotations: Vec<(u64, cdk_common::federation::FederationOperationId)>,
     config: FederationRuntimeConfig,
 }
 

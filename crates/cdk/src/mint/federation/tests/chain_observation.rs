@@ -3,7 +3,7 @@ use bitcoin::{Amount as BitcoinAmount, BlockHash, OutPoint, TxOut, Txid};
 use cdk_common::federation::{
     FederationAllocatedAddressRef, FederationChainObservation, FederationChainSourceDescriptor,
     FederationChainSourceScope, FederationDepositConfirmation, FederationDepositObservation,
-    FederationDepositReorgObservation, FederationFrostEpochState, FederationWalletUtxoState,
+    FederationDepositReorgObservation, FederationWalletUtxoState,
 };
 
 use super::address_allocation::{
@@ -57,86 +57,6 @@ fn confirmed_observation(
         )
         .expect("source"),
     })
-}
-
-#[test]
-fn activation_routes_new_allocations_to_the_new_epoch_but_keeps_old_deposits_recognizable() {
-    let (mut runtime, application_id) = runtime_with_address_application();
-    let wallet = runtime
-        .public_config
-        .frost_wallet
-        .as_mut()
-        .expect("wallet config");
-    wallet.cdk_onchain_applications[0].state = FederationFrostEpochState::Retiring;
-    let mut active = wallet.cdk_onchain_applications[0].clone();
-    active.application_key_epoch = 4;
-    active.state = FederationFrostEpochState::Active;
-    wallet.cdk_onchain_applications.push(active);
-    wallet
-        .active_epochs
-        .application_key_epochs
-        .insert(application_id, 4);
-
-    assert!(runtime
-        .address_allocation_operation(
-            "old-after-cutoff",
-            application_id,
-            3,
-            cdk_common::federation::FederationAddressKeychain::External,
-        )
-        .is_err());
-    runtime
-        .address_allocation_operation(
-            "new-after-cutoff",
-            application_id,
-            4,
-            cdk_common::federation::FederationAddressKeychain::External,
-        )
-        .expect("new epoch allocation");
-
-    let old_script = runtime
-        .public_config()
-        .frost_wallet
-        .as_ref()
-        .expect("wallet")
-        .derive_cdk_onchain_script_for_known_epoch(
-            application_id,
-            3,
-            cdk_common::federation::FederationAddressKeychain::External,
-            0,
-        )
-        .expect("old descriptor");
-    for (marker, label) in [(61_u8, "before-cutoff"), (62_u8, "after-cutoff")] {
-        runtime
-            .chain_observation_operation(FederationChainObservation::Deposit(
-                FederationDepositObservation {
-                    allocation: FederationAllocatedAddressRef {
-                        application_id,
-                        application_key_epoch: 3,
-                        quote: label.to_string(),
-                        keychain: cdk_common::federation::FederationAddressKeychain::External,
-                        derivation_index: 0,
-                    },
-                    outpoint: OutPoint::new(Txid::from_byte_array([marker; 32]), 0),
-                    txout: TxOut {
-                        value: BitcoinAmount::from_sat(10_000),
-                        script_pubkey: old_script.clone(),
-                    },
-                    confirmation: Some(FederationDepositConfirmation {
-                        block_hash: BlockHash::from_byte_array([marker.saturating_add(1); 32]),
-                        block_height: 300 + u32::from(marker),
-                        confirmation_depth: 2,
-                    }),
-                    observer: runtime.member_id(),
-                    source: FederationChainSourceDescriptor::new(
-                        FederationChainSourceScope::Independent,
-                        format!("rotation-source-{marker}"),
-                    )
-                    .expect("source"),
-                },
-            ))
-            .expect("old epoch deposit remains admissible");
-    }
 }
 
 #[tokio::test]
@@ -354,7 +274,7 @@ async fn accepted_onchain_outputs_pay_one_quote_and_reuse_existing_mint_flow() {
         .expect("allocation lookup")
         .expect("allocation");
     let application = runtime
-        .active_cdk_onchain_application()
+        .cdk_onchain_application()
         .expect("active application");
     let script = runtime
         .public_config()

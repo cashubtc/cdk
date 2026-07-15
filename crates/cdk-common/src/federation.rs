@@ -14,7 +14,6 @@ mod dkg;
 mod dkg_driver;
 mod frost_config;
 mod frost_dkg;
-mod frost_rotation;
 mod journal;
 mod liveness;
 mod operation;
@@ -76,36 +75,28 @@ pub use self::consensus::{
     FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
 };
 pub use self::dkg::{
-    validate_federation_dkg_base_config, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgCeremonyState, FederationDkgCommitmentHash, FederationDkgCommitmentRound,
-    FederationDkgFinalizedMemberConfig, FederationDkgKeysetSpec, FederationDkgKeysetTranscript,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgPublicCeremony, FederationDkgSetupMethod, FederationDkgSetupState,
-    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptPayload,
-    FederationDkgTranscriptSignature,
+    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
+    FederationDkgCommitmentHash, FederationDkgCommitmentRound, FederationDkgFinalizedMemberConfig,
+    FederationDkgKeysetSpec, FederationDkgKeysetTranscript, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgPublicCeremony, FederationDkgSetupMethod,
+    FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptHash,
+    FederationDkgTranscriptPayload, FederationDkgTranscriptSignature,
 };
 pub use self::dkg_driver::{
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
     FederationDkgDriverRecords, ValidatedFederationDkgParticipantState,
 };
 pub use self::frost_config::{
-    FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostActiveEpochs,
-    FederationFrostApplicationConfig, FederationFrostApplicationId,
-    FederationFrostConsumerRegistration, FederationFrostEpochState,
-    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig,
-    FederationFrostSealedStorageMetadata, FederationFrostWalletConfig,
-    FederationOnchainConfirmationPolicy,
+    FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostApplicationConfig,
+    FederationFrostApplicationId, FederationFrostRootPrivateConfig,
+    FederationFrostRootPublicConfig, FederationFrostSealedStorageMetadata,
+    FederationFrostWalletConfig, FederationOnchainConfirmationPolicy,
 };
 pub use self::frost_dkg::{
     FederationDualDkgResult, FederationFrostDkgConfirmationRequest, FederationFrostDkgContext,
     FederationFrostDkgLocalPhase, FederationFrostDkgLocalState, FederationFrostDkgRound1Request,
     FederationFrostDkgRound2Record, FederationFrostDkgRound2Request, FederationFrostRootRecord,
-};
-pub use self::frost_rotation::{
-    FederationFrostApplicationEpochStatus, FederationFrostApplicationUsage,
-    FederationFrostRootEpochStatus, FederationFrostRotationGuard, FederationFrostRotationOperation,
-    FederationFrostRotationStatus, FederationFrostRotationTransition,
 };
 pub use self::journal::{
     FederationApplicationState, FederationJournalAppendOutcome, FederationJournalConsensusEvidence,
@@ -159,13 +150,13 @@ pub use self::transaction_proposal::{
     FederationTransactionBroadcastObservationRecord, FederationTransactionBroadcastResult,
     FederationTransactionBroadcastState, FederationTransactionChangeOutput,
     FederationTransactionInput, FederationTransactionPolicyAudit, FederationTransactionProposal,
-    FederationTransactionProposalId, FederationTransactionPurpose,
-    FederationTransactionRecipientOutput, FederationTransactionScope,
-    FederationTransactionSettlement, FederationTransactionSettlementPolicy,
-    FederationTransactionState, FederationTransactionStateOutcome,
-    FEDERATION_MAX_ONCHAIN_BATCH_INTENTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_BYTES,
-    FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS, FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS,
-    FEDERATION_MAX_ONCHAIN_PSBT_CONSENSUS_BYTES, FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
+    FederationTransactionProposalId, FederationTransactionRecipientOutput,
+    FederationTransactionScope, FederationTransactionSettlement,
+    FederationTransactionSettlementPolicy, FederationTransactionState,
+    FederationTransactionStateOutcome, FEDERATION_MAX_ONCHAIN_BATCH_INTENTS,
+    FEDERATION_MAX_ONCHAIN_PROPOSAL_BYTES, FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS,
+    FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS, FEDERATION_MAX_ONCHAIN_PSBT_CONSENSUS_BYTES,
+    FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
 };
 pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,

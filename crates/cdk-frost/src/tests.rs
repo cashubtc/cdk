@@ -131,16 +131,6 @@ fn wallet_registration() -> ApplicationRegistration {
     .expect("registration")
 }
 
-fn wallet_registration_for_epoch(epoch: u64) -> ApplicationRegistration {
-    ApplicationRegistration::new(
-        wallet_registration().id(),
-        ApplicationKeyEpoch::new(epoch).expect("key epoch"),
-        ApplicationDerivationVersion::new(1).expect("version"),
-        Sha256::digest(b"wallet-test-policy/v1").into(),
-    )
-    .expect("registration")
-}
-
 fn derived_registration() -> ApplicationRegistration {
     ApplicationRegistration::new(
         ApplicationId::from_label("org.cashubtc.cdk.test-derived-wallet").expect("application ID"),
@@ -391,7 +381,7 @@ fn sign_with_subset(
     crate::AggregateSignature,
 ) {
     let public = managers[0]
-        .public_package(registration)
+        .public_package(registration.id())
         .expect("public package")
         .clone();
     let context = signing_context(
@@ -548,11 +538,11 @@ fn additively_derived_taproot_target_signs_and_rejects_target_swaps() {
         })
         .collect::<Vec<_>>();
     let application = managers[0]
-        .public_package(registration)
+        .public_package(registration.id())
         .expect("application public")
         .clone();
     let target = managers[0]
-        .signing_public_package(registration, &derivation)
+        .signing_public_package(registration.id(), &derivation)
         .expect("target public");
     let signature = ParticipantKeyManager::aggregate_for_derivation(
         &application,
@@ -663,7 +653,7 @@ fn threshold_minus_one_and_wrong_application_are_rejected() {
     );
     assert!(matches!(
         managers[0].sign_share(commitment.nonce_id(), &wrong, &full_set),
-        Err(Error::Application(_))
+        Err(Error::WrongSession)
     ));
     let wrong_version = AuthorizationRequest::new(
         registration.id(),
@@ -726,10 +716,10 @@ fn applications_are_domain_separated_and_root_stays_stable() {
     let managers = managers(3, 2, 12);
     let root_before = managers[0].root_public_package().encode();
     let wallet = managers[0]
-        .public_package(wallet_registration())
+        .public_package(wallet_registration().id())
         .expect("wallet package");
     let compatibility = managers[0]
-        .public_package(compatibility_registration())
+        .public_package(compatibility_registration().id())
         .expect("compatibility package");
     assert_ne!(wallet.group_key(), compatibility.group_key());
     assert_ne!(wallet.verifying_shares(), compatibility.verifying_shares());
@@ -746,51 +736,6 @@ fn applications_are_domain_separated_and_root_stays_stable() {
         hex_bytes(&compatibility.group_key()),
         "03396bb048b17ba7a46fb6624d6328005d46cec043588f26a5dd9d06b6d08d34e9"
     );
-}
-
-#[test]
-fn one_application_can_rotate_epochs_without_mutating_its_root() {
-    let mut managers = managers(3, 2, 118);
-    let root_before = managers[0].root_public_package().encode();
-    let second_epoch = wallet_registration_for_epoch(2);
-    for manager in &mut managers {
-        manager
-            .register_application(WalletTestAdapter {
-                registration: second_epoch,
-            })
-            .expect("second application epoch");
-    }
-    assert_ne!(
-        managers[0]
-            .public_package(wallet_registration())
-            .expect("first epoch")
-            .group_key(),
-        managers[0]
-            .public_package(second_epoch)
-            .expect("second epoch")
-            .group_key()
-    );
-    let (first_public, _, _, first_signature) = sign_with_subset(
-        &mut managers,
-        &[0, 1],
-        wallet_registration(),
-        session(118),
-        [118; 32],
-        b"wallet-test-policy/v1",
-        119,
-    );
-    verify_with_rust_bitcoin(&first_public, [118; 32], first_signature);
-    let (second_public, _, _, second_signature) = sign_with_subset(
-        &mut managers,
-        &[0, 1],
-        second_epoch,
-        session(119),
-        [119; 32],
-        b"wallet-test-policy/v1",
-        120,
-    );
-    verify_with_rust_bitcoin(&second_public, [119; 32], second_signature);
-    assert_eq!(managers[0].root_public_package().encode(), root_before);
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
@@ -899,7 +844,7 @@ fn invalid_share_message_group_and_signer_set_are_rejected() {
 
     let mut other_managers = managers(5, 3, 15);
     let other_public = other_managers[0]
-        .public_package(wallet_registration())
+        .public_package(wallet_registration().id())
         .expect("other public")
         .clone();
     let mut wrong_group = public.clone();
@@ -974,7 +919,7 @@ fn invalid_share_message_group_and_signer_set_are_rejected() {
         })
         .collect::<Vec<_>>();
     let signer_public = signer_set_managers[0]
-        .public_package(registration)
+        .public_package(registration.id())
         .expect("public")
         .clone();
     assert!(matches!(

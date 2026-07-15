@@ -1653,14 +1653,9 @@ impl FederationDkgActivationRequest {
         expected_setup.keysets.clear();
         expected_setup.setup_transcript = None;
         expected_setup.frost_wallet = None;
-        let mut actual_setup = setup_public_config.clone();
-        actual_setup.keysets.clear();
-        actual_setup.setup_transcript = None;
-        actual_setup.frost_wallet = None;
-        if expected_setup != actual_setup {
+        if &expected_setup != setup_public_config {
             return Err(FederationError::DkgTranscriptMismatch {
-                reason: "DKG activation candidate changes immutable base config metadata"
-                    .to_string(),
+                reason: "DKG activation final config does not extend the setup config".to_string(),
             });
         }
         let transcript = final_public_config
@@ -1954,9 +1949,6 @@ pub struct FederationLocalStatusResponse {
     /// Bounded accepted-state wallet diagnosis without addresses or transaction contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_operator: Option<super::FederationWalletOperatorStatus>,
-    /// Public reusable-root and application epoch lifecycle metadata.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub frost_rotation: Option<super::FederationFrostRotationStatus>,
 }
 
 /// Peer status response for federation health and catch-up checks.
@@ -3231,7 +3223,6 @@ mod tests {
             ),
             wallet_liveness: Some(crate::federation::FederationWalletLivenessStatus::default()),
             wallet_operator: None,
-            frost_rotation: None,
         };
 
         let value = serde_json::to_value(&status).expect("local status json");

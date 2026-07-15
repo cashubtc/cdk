@@ -57,7 +57,6 @@ All operator requests are authenticated by a federation member identity:
 
 ```console
 cdk-mintd federation dkg-status
-cdk-mintd federation frost-status --require-ready --require-converged
 cdk-mintd federation wallet-status --require-ready
 cdk-mintd federation transaction-status --proposal-id <proposal-id>
 ```
@@ -92,24 +91,10 @@ intent/observation state machine. It cannot construct a new spend, change an
 output, release a reservation, skip policy validation, or bypass threshold
 signing.
 
-## Rotation, replacement, and abandonment
+## Replacement and abandonment
 
-Submit a typed lifecycle operation only after checking the active epochs:
-
-```console
-cdk-mintd federation frost-rotate \
-  --operation rotation.json \
-  --expected-root-epoch <epoch> \
-  --expected-application-epoch <epoch> \
-  --acknowledge-guarded-rotation
-```
-
-The command rejects a stale active-epoch expectation. Consensus then enforces
-the registered-application usage contract, old-descriptor sweep requirements,
-unresolved transaction guards, and root-share retirement rules described in
-the [rotation runbook](federated-frost-key-rotation.md).
-
-Abandonment and replacement are typed consensus operations. Accepted inputs
+Abandonment and replacement are typed consensus operations. FROST root and
+application key rotation is intentionally unsupported. Accepted inputs
 remain sticky because an older transaction may still reach Bitcoin; replacement
 must use the reviewed fee-bump policy and a fresh FROST signing session. There
 is intentionally no force-spend, force-release, share export, nonce export, or

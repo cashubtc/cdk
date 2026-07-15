@@ -98,11 +98,6 @@ pub(super) async fn post_local_status(
     let wallet_operator = federation_wallet_operator_status(&state, wallet_liveness.as_ref())
         .await
         .map_err(cdk_error_response)?;
-    let frost_rotation = state
-        .mint
-        .federation_frost_rotation_status()
-        .await
-        .map_err(cdk_error_response)?;
     let response = federation_local_status_response(
         peer_status,
         sync_status,
@@ -124,7 +119,6 @@ pub(super) async fn post_local_status(
         wallet_recovery,
         wallet_liveness,
         wallet_operator,
-        frost_rotation,
     );
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
@@ -152,7 +146,6 @@ fn federation_local_status_response(
     wallet_recovery: Option<FederationWalletRecoveryStatus>,
     wallet_liveness: Option<cdk::federation::FederationWalletLivenessStatus>,
     wallet_operator: Option<cdk::federation::FederationWalletOperatorStatus>,
-    frost_rotation: Option<cdk::federation::FederationFrostRotationStatus>,
 ) -> FederationLocalStatusResponse {
     let (
         catch_up_certificate_quorum_operation_count,
@@ -203,7 +196,6 @@ fn federation_local_status_response(
         wallet_recovery,
         wallet_liveness,
         wallet_operator,
-        frost_rotation,
     }
 }
 

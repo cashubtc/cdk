@@ -761,39 +761,6 @@ impl FederationChainObservationState {
         self.validate()
     }
 
-    /// Atomically mark a confirmed transaction's exact reserved inputs spent.
-    pub fn mark_utxos_spent(&mut self, outpoints: &[OutPoint]) -> Result<()> {
-        if outpoints.is_empty() {
-            return Err(invalid_state("wallet spent set is empty"));
-        }
-        let unique = outpoints.iter().copied().collect::<BTreeSet<_>>();
-        if unique.len() != outpoints.len() {
-            return Err(invalid_state("wallet spent set contains duplicates"));
-        }
-        for outpoint in outpoints {
-            let utxo = self
-                .utxos
-                .get(&outpoint.to_string())
-                .ok_or_else(|| invalid_state("spent transition references an unknown UTXO"))?;
-            if !matches!(
-                utxo.state,
-                FederationWalletUtxoState::Reserved | FederationWalletUtxoState::Spent
-            ) {
-                return Err(invalid_state(
-                    "spent transition requires a reserved wallet UTXO",
-                ));
-            }
-        }
-        for outpoint in outpoints {
-            let utxo = self
-                .utxos
-                .get_mut(&outpoint.to_string())
-                .ok_or_else(|| invalid_state("spent wallet UTXO disappeared"))?;
-            utxo.state = FederationWalletUtxoState::Spent;
-        }
-        self.validate()
-    }
-
     /// Build stable state-digest rows for UTXOs and all accepted evidence.
     pub fn materialized_rows(&self) -> Result<Vec<FederationMaterializedStateRow>> {
         self.validate()?;
@@ -1108,38 +1075,6 @@ mod tests {
         assert_eq!(utxo.state, FederationWalletUtxoState::Spendable);
         assert_eq!(utxo.matching_confirmed_observers(), 2);
         assert_eq!(utxo.source_summary().independent_sources, 2);
-    }
-
-    #[test]
-    fn confirmed_transaction_spends_reserved_inputs_atomically_and_idempotently() {
-        let mut state = FederationChainObservationState::new();
-        for (operation, observer) in [(2, 1), (3, 2)] {
-            let evidence = observation(
-                observer,
-                Some(block(9, 100, 2)),
-                FederationChainSourceScope::Independent,
-            );
-            apply(&mut state, &evidence, operation);
-        }
-        let selected = outpoint(3);
-        state
-            .reserve_utxos(&[selected])
-            .expect("reserve sweep input");
-        assert_eq!(
-            state.utxo(selected).expect("reserved input").state,
-            FederationWalletUtxoState::Reserved
-        );
-        state
-            .mark_utxos_spent(&[selected])
-            .expect("mark confirmed input spent");
-        state
-            .mark_utxos_spent(&[selected])
-            .expect("replay confirmed input spent");
-        assert_eq!(
-            state.utxo(selected).expect("spent input").state,
-            FederationWalletUtxoState::Spent
-        );
-        assert!(state.mark_utxos_spent(&[outpoint(99)]).is_err());
     }
 
     #[test]

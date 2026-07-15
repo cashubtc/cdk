@@ -3,8 +3,6 @@ use super::*;
 const ROOT_PUBLIC: &str = "root_public";
 const ROOT_PRIVATE: &str = "root_private";
 const APPLICATION: &str = "application";
-const CONSUMER: &str = "consumer";
-const ACTIVE_EPOCHS: &str = "active_epochs";
 
 async fn insert_immutable<C, T>(
     connection: &C,
@@ -120,41 +118,6 @@ where
         )
         .await
     }
-
-    async fn add_federation_frost_consumer_registration(
-        &mut self,
-        registration: &FederationFrostConsumerRegistration,
-    ) -> Result<(), Self::Err> {
-        insert_immutable(
-            &self.inner,
-            CONSUMER,
-            registration.root_key_epoch,
-            registration.application_id.to_string(),
-            registration.application_key_epoch,
-            registration,
-        )
-        .await
-    }
-
-    async fn set_federation_frost_active_epochs(
-        &mut self,
-        active_epochs: &FederationFrostActiveEpochs,
-    ) -> Result<(), Self::Err> {
-        query(
-            r#"
-            INSERT INTO federation_frost_wallet_config
-            (record_kind, root_key_epoch, application_id, application_key_epoch, payload_json)
-            VALUES (:record_kind, 0, '', 0, :payload_json)
-            ON CONFLICT (record_kind, root_key_epoch, application_id, application_key_epoch)
-            DO UPDATE SET payload_json = EXCLUDED.payload_json
-            "#,
-        )?
-        .bind("record_kind", ACTIVE_EPOCHS.to_string())
-        .bind("payload_json", serde_json::to_string(active_epochs)?)
-        .execute(&self.inner)
-        .await?;
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -195,35 +158,5 @@ where
             .await
             .map_err(|error| Error::Database(Box::new(error)))?;
         fetch_records(&*connection, APPLICATION).await
-    }
-
-    async fn get_federation_frost_consumer_registrations(
-        &self,
-    ) -> Result<Vec<FederationFrostConsumerRegistration>, Self::Err> {
-        let connection = self
-            .pool
-            .get()
-            .await
-            .map_err(|error| Error::Database(Box::new(error)))?;
-        fetch_records(&*connection, CONSUMER).await
-    }
-
-    async fn get_federation_frost_active_epochs(
-        &self,
-    ) -> Result<Option<FederationFrostActiveEpochs>, Self::Err> {
-        let connection = self
-            .pool
-            .get()
-            .await
-            .map_err(|error| Error::Database(Box::new(error)))?;
-        let records: Vec<FederationFrostActiveEpochs> =
-            fetch_records(&*connection, ACTIVE_EPOCHS).await?;
-        match records.as_slice() {
-            [] => Ok(None),
-            [active] => Ok(Some(active.clone())),
-            _ => Err(Error::Internal(
-                "Multiple federation FROST active epoch records".to_string(),
-            )),
-        }
     }
 }

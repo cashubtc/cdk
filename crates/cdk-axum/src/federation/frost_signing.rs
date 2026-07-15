@@ -1,9 +1,9 @@
 //! Application-aware FROST signing runtime and private REST handlers.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -220,8 +220,7 @@ where
             .await?;
         let runtime = state
             .mint
-            .effective_federation_config()
-            .await?
+            .federation_config()
             .ok_or_else(|| anyhow::anyhow!("federation configuration is unavailable"))?;
         let scope = wallet.scope();
         if scope.root_key_epoch() != accepted.proposal.scope.root_key_epoch
@@ -344,9 +343,7 @@ where
 /// One participant's long-lived, application-neutral FROST key boundary.
 #[derive(Clone)]
 pub(crate) struct FederationFrostSigningRuntime {
-    managers:
-        Arc<tokio::sync::Mutex<BTreeMap<u64, Arc<tokio::sync::Mutex<ParticipantKeyManager>>>>>,
-    nonce_root: Option<Arc<PathBuf>>,
+    managers: Arc<BTreeMap<u64, Arc<tokio::sync::Mutex<ParticipantKeyManager>>>>,
     aggregate_results: Arc<tokio::sync::Mutex<AggregateResultCache>>,
     #[cfg(test)]
     test_authorizations: Arc<
@@ -365,7 +362,7 @@ impl std::fmt::Debug for FederationFrostSigningRuntime {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("FederationFrostSigningRuntime")
-            .field("root_managers", &"<runtime>")
+            .field("root_epochs", &self.managers.keys())
             .field("key_material", &"<redacted>")
             .finish()
     }
@@ -374,26 +371,13 @@ impl std::fmt::Debug for FederationFrostSigningRuntime {
 impl FederationFrostSigningRuntime {
     /// Open durable nonce stores, root shares, and reviewed application adapters.
     pub(crate) async fn open(mint: &Mint, storage_root: &Path) -> anyhow::Result<Option<Self>> {
-        let Some(runtime) = mint.effective_federation_config().await? else {
+        let Some(runtime) = mint.federation_config() else {
             return Ok(None);
         };
         let Some(wallet) = runtime.public_config().frost_wallet.as_ref() else {
             return Ok(None);
         };
-        let signable_applications = wallet
-            .cdk_onchain_applications
-            .iter()
-            .filter(|application| {
-                matches!(
-                    application.state,
-                    cdk::federation::FederationFrostEpochState::Active
-                        | cdk::federation::FederationFrostEpochState::Retiring
-                )
-            })
-            .collect::<Vec<_>>();
-        if signable_applications.is_empty() {
-            return Ok(None);
-        }
+        let application = &wallet.cdk_onchain_application;
 
         let private_roots = mint
             .localstore()
@@ -403,52 +387,41 @@ impl FederationFrostSigningRuntime {
         std::fs::create_dir_all(&nonce_root)?;
         #[cfg(unix)]
         std::fs::set_permissions(&nonce_root, std::fs::Permissions::from_mode(0o700))?;
-        let root_epochs = signable_applications
-            .iter()
-            .map(|application| application.root_key_epoch)
-            .collect::<BTreeSet<_>>();
         let mut managers = BTreeMap::new();
-        for root_epoch in root_epochs {
-            let public_root = wallet
-                .root(root_epoch)
-                .ok_or_else(|| anyhow::anyhow!("active FROST application root is missing"))?;
-            let private_root = private_roots
-                .iter()
-                .find(|root| root.root_key_epoch == root_epoch)
-                .ok_or_else(|| anyhow::anyhow!("local FROST root share is missing"))?;
-            let context = cdk::federation::FederationFrostDkgContext::new(
-                runtime.public_config(),
-                public_root.ceremony_id,
-                public_root.root_key_epoch,
-            )?;
-            let root_key =
-                super::dkg_driver::frost_storage_key(runtime.private_config(), &context)?;
-            let root = private_root.open(
-                runtime.public_config(),
-                public_root,
-                runtime.member_id(),
-                &root_key,
-            )?;
-            let nonce_key = nonce_encryption_key(&runtime, public_root.root_key_epoch)?;
-            let nonce_path = nonce_root.join(format!("root-{}.redb", public_root.root_key_epoch));
-            let store = RedbNonceStore::open(&nonce_path)?;
-            #[cfg(unix)]
-            std::fs::set_permissions(&nonce_path, std::fs::Permissions::from_mode(0o600))?;
-            let manager = ParticipantKeyManager::with_nonce_store(root, nonce_key, store)?;
-            managers.insert(root_epoch, Arc::new(tokio::sync::Mutex::new(manager)));
-        }
-        for application in signable_applications {
-            let manager = managers
-                .get(&application.root_key_epoch)
-                .ok_or_else(|| anyhow::anyhow!("FROST root manager was not initialized"))?;
-            let mut manager = manager.lock().await;
-            manager.register_application(FederationCdkOnchainFrostAuthorizationAdapter::new(
-                application,
-            )?)?;
-        }
+        let public_root = wallet
+            .root(application.root_key_epoch)
+            .ok_or_else(|| anyhow::anyhow!("FROST application root is missing"))?;
+        let private_root = private_roots
+            .iter()
+            .find(|root| root.root_key_epoch == application.root_key_epoch)
+            .ok_or_else(|| anyhow::anyhow!("local FROST root share is missing"))?;
+        let context = cdk::federation::FederationFrostDkgContext::new(
+            runtime.public_config(),
+            public_root.ceremony_id,
+            public_root.root_key_epoch,
+        )?;
+        let root_key = super::dkg_driver::frost_storage_key(runtime.private_config(), &context)?;
+        let root = private_root.open(
+            runtime.public_config(),
+            public_root,
+            runtime.member_id(),
+            &root_key,
+        )?;
+        let nonce_key = nonce_encryption_key(runtime, public_root.root_key_epoch)?;
+        let nonce_path = nonce_root.join(format!("root-{}.redb", public_root.root_key_epoch));
+        let store = RedbNonceStore::open(&nonce_path)?;
+        #[cfg(unix)]
+        std::fs::set_permissions(&nonce_path, std::fs::Permissions::from_mode(0o600))?;
+        let mut manager = ParticipantKeyManager::with_nonce_store(root, nonce_key, store)?;
+        manager.register_application(FederationCdkOnchainFrostAuthorizationAdapter::new(
+            application,
+        )?)?;
+        managers.insert(
+            public_root.root_key_epoch,
+            Arc::new(tokio::sync::Mutex::new(manager)),
+        );
         Ok(Some(Self {
-            managers: Arc::new(tokio::sync::Mutex::new(managers)),
-            nonce_root: Some(Arc::new(nonce_root)),
+            managers: Arc::new(managers),
             aggregate_results: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             #[cfg(test)]
             test_authorizations: Arc::new(BTreeMap::new()),
@@ -467,8 +440,7 @@ impl FederationFrostSigningRuntime {
         >,
     ) -> Self {
         Self {
-            managers: Arc::new(tokio::sync::Mutex::new(managers)),
-            nonce_root: None,
+            managers: Arc::new(managers),
             aggregate_results: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
             test_authorizations: Arc::new(
                 authorizations
@@ -490,8 +462,8 @@ impl FederationFrostSigningRuntime {
         if &validated.derivation != derivation {
             return Err(frost_invalid("round-one derivation differs from accepted input").into());
         }
-        let manager = self.manager(mint, context).await?;
-        let result = manager
+        let manager = self.manager(context.root_epoch().get())?;
+        manager
             .lock()
             .await
             .commit_nonce_for_derivation(
@@ -499,8 +471,7 @@ impl FederationFrostSigningRuntime {
                 derivation.clone(),
                 &mut cdk_frost::rand_core::OsRng,
             )
-            .map_err(frost_boundary_error);
-        result
+            .map_err(frost_boundary_error)
     }
 
     async fn sign(
@@ -512,13 +483,12 @@ impl FederationFrostSigningRuntime {
         commitments: &cdk_frost::NonceCommitmentSet,
     ) -> Result<SignatureShare, cdk::Error> {
         self.validate(mint, context, authorization).await?;
-        let manager = self.manager(mint, context).await?;
-        let result = manager
+        let manager = self.manager(context.root_epoch().get())?;
+        manager
             .lock()
             .await
             .sign_share(nonce_id, authorization, commitments)
-            .map_err(frost_boundary_error);
-        result
+            .map_err(frost_boundary_error)
     }
 
     async fn record_aggregate(
@@ -533,10 +503,10 @@ impl FederationFrostSigningRuntime {
         if package_hash == [0; 32] {
             return Err(frost_invalid("aggregate result package hash is empty").into());
         }
-        let manager = self.manager(mint, context).await?;
+        let manager = self.manager(context.root_epoch().get())?;
         let manager = manager.lock().await;
         let public = manager
-            .public_package(context.registration())
+            .public_package(authorization.application_id())
             .map_err(frost_boundary_error)?;
         ParticipantKeyManager::verify_aggregate_for_derivation(
             public,
@@ -576,120 +546,20 @@ impl FederationFrostSigningRuntime {
         reason: cdk_frost::NonceBurnReason,
     ) -> Result<(), cdk::Error> {
         self.validate(mint, context, authorization).await?;
-        self.manager(mint, context)
-            .await?
+        self.manager(context.root_epoch().get())?
             .lock()
             .await
             .burn_session(context.session_id(), reason)
             .map_err(frost_boundary_error)
     }
 
-    async fn manager(
+    fn manager(
         &self,
-        mint: &Mint,
-        context: &SigningSessionContext,
-    ) -> Result<Arc<tokio::sync::Mutex<ParticipantKeyManager>>, cdk::Error> {
-        let root_epoch = context.root_epoch().get();
-        if let Some(manager) = self.managers.lock().await.get(&root_epoch).cloned() {
-            if manager
-                .lock()
-                .await
-                .public_package(context.registration())
-                .is_ok()
-            {
-                return Ok(manager);
-            }
-        }
-
-        let runtime = mint
-            .effective_federation_config()
-            .await?
-            .ok_or_else(|| frost_invalid("federation configuration is unavailable"))?;
-        let wallet = runtime
-            .public_config()
-            .frost_wallet
-            .as_ref()
-            .ok_or_else(|| frost_invalid("FROST wallet configuration is unavailable"))?;
-        let mut selected = None;
-        for application in &wallet.cdk_onchain_applications {
-            if application.root_key_epoch != root_epoch
-                || !matches!(
-                    application.state,
-                    cdk::federation::FederationFrostEpochState::Active
-                        | cdk::federation::FederationFrostEpochState::Retiring
-                )
-            {
-                continue;
-            }
-            let root = wallet
-                .root(application.root_key_epoch)
-                .ok_or_else(|| frost_invalid("FROST application root is unavailable"))?;
-            let public = application.derived_public_package(runtime.public_config(), root)?;
-            if public.registration() == context.registration() {
-                selected = Some((application, root));
-                break;
-            }
-        }
-        let (application, public_root) = selected
-            .ok_or_else(|| frost_invalid("FROST application epoch is not active or retiring"))?;
-
-        let mut managers = self.managers.lock().await;
-        let manager = match managers.get(&root_epoch).cloned() {
-            Some(manager) => manager,
-            None => {
-                let nonce_root = self.nonce_root.as_ref().ok_or_else(|| {
-                    frost_invalid("test FROST root manager was not preconfigured")
-                })?;
-                let private_roots = mint
-                    .localstore()
-                    .get_federation_frost_root_private_configs()
-                    .await?;
-                let private_root = private_roots
-                    .iter()
-                    .find(|root| root.root_key_epoch == root_epoch)
-                    .ok_or_else(|| frost_invalid("local FROST root share is missing"))?;
-                let dkg_context = cdk::federation::FederationFrostDkgContext::new(
-                    runtime.public_config(),
-                    public_root.ceremony_id,
-                    root_epoch,
-                )?;
-                let root_key =
-                    super::dkg_driver::frost_storage_key(runtime.private_config(), &dkg_context)?;
-                let root = private_root.open(
-                    runtime.public_config(),
-                    public_root,
-                    runtime.member_id(),
-                    &root_key,
-                )?;
-                let nonce_key = nonce_encryption_key(&runtime, root_epoch)?;
-                let nonce_path = nonce_root.join(format!("root-{root_epoch}.redb"));
-                let store = RedbNonceStore::open(&nonce_path).map_err(frost_boundary_error)?;
-                #[cfg(unix)]
-                std::fs::set_permissions(&nonce_path, std::fs::Permissions::from_mode(0o600))
-                    .map_err(|_| {
-                        cdk::Error::Custom(
-                            "could not protect the FROST nonce store permissions".to_string(),
-                        )
-                    })?;
-                let manager = Arc::new(tokio::sync::Mutex::new(
-                    ParticipantKeyManager::with_nonce_store(root, nonce_key, store)
-                        .map_err(frost_boundary_error)?,
-                ));
-                managers.insert(root_epoch, manager.clone());
-                manager
-            }
-        };
-        drop(managers);
-        let mut boundary = manager.lock().await;
-        if boundary.public_package(context.registration()).is_err() {
-            boundary
-                .register_application(FederationCdkOnchainFrostAuthorizationAdapter::new(
-                    application,
-                )?)
-                .map_err(frost_boundary_error)?;
-        }
-        drop(boundary);
-        Ok(manager)
+        root_epoch: u64,
+    ) -> Result<&Arc<tokio::sync::Mutex<ParticipantKeyManager>>, cdk::Error> {
+        self.managers
+            .get(&root_epoch)
+            .ok_or_else(|| frost_invalid("FROST root epoch is not active").into())
     }
 
     async fn validate(
@@ -735,24 +605,23 @@ async fn validate_cdk_authorization(
         .get(input_index)
         .ok_or_else(|| frost_invalid("FROST input index is out of bounds"))?;
     let runtime = mint
-        .effective_federation_config()
-        .await?
+        .federation_config()
         .ok_or_else(|| frost_invalid("federation configuration is unavailable"))?;
     let wallet = runtime
         .public_config()
         .frost_wallet
         .as_ref()
         .ok_or_else(|| frost_invalid("FROST wallet configuration is unavailable"))?;
-    let application = wallet
-        .cdk_onchain_applications
-        .iter()
-        .find(|application| {
-            application.application_id == accepted.proposal.scope.application_id
-                && application.application_key_epoch
-                    == accepted.proposal.scope.application_key_epoch
-                && application.root_key_epoch == accepted.proposal.scope.root_key_epoch
-        })
-        .ok_or_else(|| frost_invalid("accepted transaction application is not registered"))?;
+    let application = &wallet.cdk_onchain_application;
+    if application.application_id != accepted.proposal.scope.application_id
+        || application.application_key_epoch != accepted.proposal.scope.application_key_epoch
+        || application.root_key_epoch != accepted.proposal.scope.root_key_epoch
+    {
+        return Err(frost_invalid(
+            "accepted transaction application does not match the configured wallet",
+        )
+        .into());
+    }
     let root = wallet
         .root(application.root_key_epoch)
         .ok_or_else(|| frost_invalid("accepted transaction root epoch is unavailable"))?;

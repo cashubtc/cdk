@@ -4,16 +4,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use cdk::federation::{
-    redact_federation_operator_message, validate_federation_dkg_base_config, FederationConfig,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyState,
-    FederationDkgCommitmentRequest, FederationDkgDriverPhase, FederationDkgDriverPlan,
-    FederationDkgDriverProgress, FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig,
-    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgReadinessRequest,
-    FederationDkgRevealRequest, FederationDkgSecretShareRequest,
+    redact_federation_operator_message, FederationConfig, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgCeremonyState, FederationDkgCommitmentRequest,
+    FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
+    FederationDkgDriverRecords, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
+    FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
     FederationDkgTranscriptSignatureRequest, FederationError,
     FederationFrostDkgConfirmationRequest, FederationFrostDkgContext, FederationFrostDkgLocalPhase,
     FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
-    FederationFrostDkgRound2Request, FederationFrostEpochState, FederationFrostRootPrivateConfig,
+    FederationFrostDkgRound2Request, FederationFrostRootPrivateConfig,
     FederationFrostRootPublicConfig, FederationFrostRootRecord, MemberId,
     ValidatedFederationDkgParticipantState,
 };
@@ -109,7 +108,14 @@ impl FederationDkgAutoStartConfig {
         &self,
         public_config: &FederationConfig,
     ) -> Result<(), cdk::Error> {
-        validate_federation_dkg_base_config(public_config)?;
+        public_config.validate()?;
+        if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: "live DKG start requires a public setup config without finalized keysets or transcript"
+                    .to_string(),
+            }
+            .into());
+        }
         self.keyset_spec.validate_for_federation(public_config)?;
         if self.root_key_epoch == 0 {
             return Err(cdk::Error::Custom(
@@ -557,7 +563,14 @@ pub(crate) async fn prepare_federation_dkg_participant_state(
     })?;
     let public_config = runtime_config.public_config().clone();
     let local_member = runtime_config.member_id();
-    validate_federation_dkg_base_config(&public_config)?;
+    if !public_config.keysets.is_empty() || public_config.setup_transcript.is_some() {
+        return Err(FederationError::DkgTranscriptMismatch {
+            reason:
+                "live DKG setup requires a public config without finalized keysets or transcript"
+                    .to_string(),
+        }
+        .into());
+    }
 
     let db = state.mint.localstore();
     let participant_states = db.get_federation_dkg_participant_states().await?;
@@ -1316,7 +1329,7 @@ pub(crate) fn spawn_federation_dkg_driver(
                     attempted_deliveries = outcome.attempted_deliveries,
                     successful_deliveries = outcome.successful_deliveries,
                     failed_deliveries = outcome.failed_deliveries,
-                    "Federation dual DKG completed; bootstrap activation or an explicit rotation proposal may proceed"
+                    "Federation DKG ceremony completed; restart this member to activate the finalized keyset"
                 );
             }
             Ok(outcome) => {
@@ -1498,20 +1511,6 @@ pub(crate) async fn complete_federation_dkg_ceremony(
         }
         .into());
     }
-    let transcript_signatures = db.get_federation_dkg_transcript_signatures().await?;
-    let activations = db
-        .get_federation_dkg_activations()
-        .await?
-        .into_iter()
-        .filter(|activation| activation.ceremony_id == ceremony_id)
-        .collect::<Vec<_>>();
-    let finalized_bls = FederationDkgFinalizedMemberConfig::from_records(
-        public_config,
-        runtime_config.private_config(),
-        &bls_results,
-        &transcript_signatures,
-    )?;
-    finalized_bls.validate_activation_records(public_config, &activations)?;
     for bls in bls_results {
         cdk::federation::FederationDualDkgResult {
             bls,
@@ -1519,23 +1518,7 @@ pub(crate) async fn complete_federation_dkg_ceremony(
         }
         .validate(public_config)?;
     }
-    let existing_roots = db.get_federation_frost_root_public_configs().await?;
-    let existing_active_root = existing_roots.iter().any(|root| {
-        root.root_key_epoch != frost_context.root_key_epoch
-            && root.state == FederationFrostEpochState::Active
-    }) || public_config.frost_wallet.as_ref().is_some_and(|wallet| {
-        wallet.roots.iter().any(|root| {
-            root.root_key_epoch != frost_context.root_key_epoch
-                && root.state == FederationFrostEpochState::Active
-        })
-    });
-    let root_state = if existing_active_root {
-        FederationFrostEpochState::Proposed
-    } else {
-        FederationFrostEpochState::Active
-    };
-    let root_public =
-        FederationFrostRootPublicConfig::from_dkg_record(public_config, &frost_root, root_state)?;
+    let root_public = FederationFrostRootPublicConfig::from_dkg_record(public_config, &frost_root)?;
     let root_private =
         FederationFrostRootPrivateConfig::from_dkg_record(&root_public, &frost_root)?;
     let ceremonies = db.get_federation_dkg_ceremonies().await?;

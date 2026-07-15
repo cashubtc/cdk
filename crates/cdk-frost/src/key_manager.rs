@@ -15,10 +15,10 @@ use crate::nonce::{
     NonceReservation, SigningSessionContext,
 };
 use crate::types::{
-    derive_nonce_id, AggregateSignature, ApplicationRegistration, AuthorizationRequest,
-    AuthorizedSigningRequest, DerivedPublicPackage, DerivedSigningPublicPackage, NonceCommitment,
-    NonceCommitmentSet, NonceId, SignatureMode, SignatureShare, SigningDerivation,
-    SigningSessionId, MAX_COMMITMENT_BYTES,
+    derive_nonce_id, AggregateSignature, ApplicationId, ApplicationRegistration,
+    AuthorizationRequest, AuthorizedSigningRequest, DerivedPublicPackage,
+    DerivedSigningPublicPackage, NonceCommitment, NonceCommitmentSet, NonceId, SignatureMode,
+    SignatureShare, SigningDerivation, SigningSessionId, MAX_COMMITMENT_BYTES,
 };
 use crate::{sealed, Error, SecretEncryptionKey};
 
@@ -47,7 +47,7 @@ struct RegisteredApplication {
 /// single-use nonce state.
 pub struct ParticipantKeyManager {
     root: CanonicalRootKeyPackage,
-    applications: BTreeMap<ApplicationRegistration, RegisteredApplication>,
+    applications: BTreeMap<ApplicationId, RegisteredApplication>,
     nonce_store: Box<dyn DurableNonceStore>,
     nonce_encryption_key: SecretEncryptionKey,
 }
@@ -117,15 +117,15 @@ impl ParticipantKeyManager {
         adapter: impl ApplicationAuthorization + 'static,
     ) -> Result<DerivedPublicPackage, Error> {
         let registration = adapter.registration();
-        if self.applications.contains_key(&registration) {
+        if self.applications.contains_key(&registration.id()) {
             return Err(Error::Application(
-                "application key epoch is already registered".to_string(),
+                "application identifier is already registered".to_string(),
             ));
         }
         let derived = self.root.derive_application(registration)?;
         let public = derived.public_boundary;
         self.applications.insert(
-            registration,
+            registration.id(),
             RegisteredApplication {
                 adapter: Box::new(adapter),
                 public: public.clone(),
@@ -137,10 +137,10 @@ impl ParticipantKeyManager {
     /// Return the derived public package for a registered application.
     pub fn public_package(
         &self,
-        registration: ApplicationRegistration,
+        application_id: ApplicationId,
     ) -> Result<&DerivedPublicPackage, Error> {
         self.applications
-            .get(&registration)
+            .get(&application_id)
             .map(|application| &application.public)
             .ok_or_else(|| Error::Application("application is not registered".to_string()))
     }
@@ -172,7 +172,7 @@ impl ParticipantKeyManager {
         let registration = context.registration();
         let application = self
             .applications
-            .get(&registration)
+            .get(&registration.id())
             .ok_or_else(|| Error::Application("application is not registered".to_string()))?;
         if application.adapter.registration() != registration
             || context.root_epoch() != self.root.public().epoch()
@@ -273,19 +273,16 @@ impl ParticipantKeyManager {
             .load_nonce(nonce_id)?
             .ok_or_else(|| Error::InvalidCommitment("nonce is unknown".to_string()))?;
         let validated = (|| {
-            let registration = record.context().registration();
             let application = self
                 .applications
-                .get(&registration)
+                .get(&request.application_id())
                 .ok_or_else(|| Error::Application("application is not registered".to_string()))?;
-            if request.application_id() != registration.id()
-                || request.application_key_epoch() != registration.key_epoch()
+            let registration = application.adapter.registration();
+            if request.application_key_epoch() != registration.key_epoch()
                 || request.derivation_version() != registration.derivation_version()
-                || application.adapter.registration() != registration
             {
                 return Err(Error::Application(
-                    "request uses another application identity, key epoch, or derivation version"
-                        .to_string(),
+                    "request uses another application key epoch or derivation version".to_string(),
                 ));
             }
             if record.context().registration() != registration
@@ -641,10 +638,10 @@ impl ParticipantKeyManager {
     /// Publicly derive one registered application's exact signing target.
     pub fn signing_public_package(
         &self,
-        registration: ApplicationRegistration,
+        application_id: ApplicationId,
         derivation: &SigningDerivation,
     ) -> Result<DerivedSigningPublicPackage, Error> {
-        derive_signing_public(self.public_package(registration)?, derivation)
+        derive_signing_public(self.public_package(application_id)?, derivation)
     }
 }
 

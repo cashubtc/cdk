@@ -69,12 +69,13 @@ that another member still lacks.
 ## Residual risks and later milestones
 
 - The current local sealing key is domain-separated from the member identity
-  secret. Milestone 5 must make sealed-storage provider and rotation metadata
-  explicit and preserve startup validation; production deployments should use
+  secret. Startup must keep the sealed-storage provider explicit and validated;
+  production deployments should use
   an independently protected secret store where available.
-- Public root/application configuration snapshots, active epoch persistence,
-  state-digest inclusion, and catch-up transfer belong to Milestone 5.
-- Root refresh/rotation and recovery are deferred to Milestone 16.
+- Public immutable root/application configuration snapshots, state-digest
+  inclusion, and catch-up transfer belong to Milestone 5.
+- Root refresh and in-place rotation are intentionally unsupported. Custody-key
+  replacement requires a separate wallet and a threshold-authorized migration.
 - `frost-secp256k1-tr`, the canonical conversion boundary, transcript design,
   sealed storage, and the dual activation gate still require the external review
   and audit gates later in the implementation plan before funds are at risk.

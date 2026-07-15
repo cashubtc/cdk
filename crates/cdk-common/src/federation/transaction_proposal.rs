@@ -25,13 +25,12 @@ use super::{
 
 const PAYMENT_INTENT_VERSION: u16 = 3;
 const PAYMENT_BATCH_VERSION: u16 = 1;
-const TRANSACTION_PROPOSAL_VERSION: u16 = 3;
+const TRANSACTION_PROPOSAL_VERSION: u16 = 2;
 const TRANSACTION_STATE_VERSION: u16 = 3;
 const SIGNED_TRANSACTION_VERSION: u16 = 1;
 const PAYMENT_INTENT_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-intent-v3";
 const PAYMENT_BATCH_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-payment-batch-v1";
-const TRANSACTION_PROPOSAL_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-transaction-proposal-v3";
-const EPOCH_SWEEP_BATCH_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-epoch-sweep-batch-v1";
+const TRANSACTION_PROPOSAL_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-transaction-proposal-v2";
 const PSBT_CONSENSUS_HASH_DOMAIN: &[u8] = b"cdk-federation-onchain-psbt-consensus-v1";
 const FROST_SIGNING_AUTHORIZATION_HASH_DOMAIN: &[u8] =
     b"cdk-federation-frost-signing-authorization-v1";
@@ -582,21 +581,6 @@ pub struct FederationTransactionChangeOutput {
     pub output: TxOut,
 }
 
-/// Consensus purpose of an accepted wallet transaction.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "data", rename_all = "snake_case")]
-pub enum FederationTransactionPurpose {
-    /// Pay one canonical batch of accepted on-chain melt intents.
-    PaymentBatch,
-    /// Move every selected input from one retiring epoch to one active epoch.
-    EpochSweep {
-        /// Active destination epoch receiving the sweep output.
-        destination_scope: FederationTransactionScope,
-        /// Exact consensus-allocated internal destination address.
-        destination_allocation: FederationAllocatedAddressRef,
-    },
-}
-
 /// Complete bounded candidate transaction, before policy acceptance or signing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -611,8 +595,6 @@ pub struct FederationTransactionProposal {
     pub eligibility_cutoff: u64,
     /// FROST/application/network/policy binding.
     pub scope: FederationTransactionScope,
-    /// Payment or epoch-migration policy branch.
-    pub purpose: FederationTransactionPurpose,
     /// Diagnostic proposer identity; this grants no authority.
     pub proposer: MemberId,
     /// Selected wallet inputs in unsigned-transaction order.
@@ -657,7 +639,6 @@ impl FederationTransactionProposal {
             intent_ids: batch.intent_ids.clone(),
             eligibility_cutoff: batch.eligibility_cutoff,
             scope: batch.scope,
-            purpose: FederationTransactionPurpose::PaymentBatch,
             proposer,
             selected_inputs,
             recipient_outputs,
@@ -669,55 +650,6 @@ impl FederationTransactionProposal {
             psbt_commitment: [0; 32],
             replacement_of,
             replacement_lineage: batch.batch_id,
-        };
-        proposal.normalize_metadata()?;
-        proposal.fee_rate_sat_per_kwu = proposal.expected_fee_rate_sat_per_kwu()?;
-        proposal.psbt_commitment = proposal.expected_psbt_commitment()?;
-        proposal.validate()?;
-        Ok(proposal)
-    }
-
-    /// Construct an old-to-new epoch sweep using the normal custody lifecycle.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_epoch_sweep(
-        source_scope: FederationTransactionScope,
-        destination_scope: FederationTransactionScope,
-        destination_allocation: FederationAllocatedAddressRef,
-        activation_index: u64,
-        proposer: MemberId,
-        unsigned_transaction: Transaction,
-        selected_inputs: Vec<FederationTransactionInput>,
-        sweep_output: FederationTransactionChangeOutput,
-        fee_sat: u64,
-    ) -> Result<Self> {
-        let batch_id = epoch_sweep_batch_id(
-            source_scope,
-            destination_scope,
-            &destination_allocation,
-            activation_index,
-            &selected_inputs,
-        )?;
-        let mut proposal = Self {
-            version: TRANSACTION_PROPOSAL_VERSION,
-            batch_id,
-            intent_ids: Vec::new(),
-            eligibility_cutoff: activation_index,
-            scope: source_scope,
-            purpose: FederationTransactionPurpose::EpochSweep {
-                destination_scope,
-                destination_allocation,
-            },
-            proposer,
-            selected_inputs,
-            recipient_outputs: Vec::new(),
-            change_output: Some(sweep_output),
-            unsigned_transaction,
-            fee_sat,
-            fee_rate_sat_per_kwu: 0,
-            sighash_type: FederationTaprootSighashType::Default,
-            psbt_commitment: [0; 32],
-            replacement_of: None,
-            replacement_lineage: batch_id,
         };
         proposal.normalize_metadata()?;
         proposal.fee_rate_sat_per_kwu = proposal.expected_fee_rate_sat_per_kwu()?;
@@ -745,7 +677,8 @@ impl FederationTransactionProposal {
         if self.version != TRANSACTION_PROPOSAL_VERSION {
             return Err(invalid("unsupported transaction proposal version"));
         }
-        if self.intent_ids.len() > FEDERATION_MAX_ONCHAIN_BATCH_INTENTS
+        if self.intent_ids.is_empty()
+            || self.intent_ids.len() > FEDERATION_MAX_ONCHAIN_BATCH_INTENTS
             || self.eligibility_cutoff == 0
             || self.selected_inputs.is_empty()
             || self.selected_inputs.len() > FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS
@@ -754,7 +687,6 @@ impl FederationTransactionProposal {
         {
             return Err(invalid("transaction proposal count is out of bounds"));
         }
-        self.validate_purpose()?;
         if self.selected_inputs.len() != self.unsigned_transaction.input.len() {
             return Err(invalid(
                 "transaction proposal previous-output count differs from inputs",
@@ -859,9 +791,7 @@ impl FederationTransactionProposal {
                 sum.checked_add(recipient.fee_contribution_sat)
                     .ok_or_else(|| invalid("transaction proposal fee allocation overflow"))
             })?;
-        if matches!(self.purpose, FederationTransactionPurpose::PaymentBatch)
-            && assigned_fee != self.fee_sat
-        {
+        if assigned_fee != self.fee_sat {
             return Err(invalid(
                 "transaction proposal fee allocations do not equal the transaction fee",
             ));
@@ -903,56 +833,6 @@ impl FederationTransactionProposal {
             return Err(invalid(
                 "transaction proposal canonical encoding is oversized",
             ));
-        }
-        Ok(())
-    }
-
-    fn validate_purpose(&self) -> Result<()> {
-        match &self.purpose {
-            FederationTransactionPurpose::PaymentBatch => {
-                if self.intent_ids.is_empty()
-                    || self.recipient_outputs.len() != self.intent_ids.len()
-                {
-                    return Err(invalid(
-                        "payment transaction requires one output per non-empty intent set",
-                    ));
-                }
-            }
-            FederationTransactionPurpose::EpochSweep {
-                destination_scope,
-                destination_allocation,
-            } => {
-                destination_scope.validate()?;
-                if !self.intent_ids.is_empty()
-                    || !self.recipient_outputs.is_empty()
-                    || self.change_output.is_none()
-                    || self.replacement_of.is_some()
-                    || self.scope.application_id != destination_scope.application_id
-                    || self.scope.application_key_epoch == destination_scope.application_key_epoch
-                    || self.scope.network != destination_scope.network
-                    || destination_allocation.application_id != destination_scope.application_id
-                    || destination_allocation.application_key_epoch
-                        != destination_scope.application_key_epoch
-                    || destination_allocation.keychain != super::FederationAddressKeychain::Internal
-                    || self.change_output.as_ref().is_some_and(|output| {
-                        output.derivation_index != destination_allocation.derivation_index
-                    })
-                {
-                    return Err(invalid(
-                        "epoch sweep must move one application from a distinct source epoch to one internal destination",
-                    ));
-                }
-                let expected_batch = epoch_sweep_batch_id(
-                    self.scope,
-                    *destination_scope,
-                    destination_allocation,
-                    self.eligibility_cutoff,
-                    &self.selected_inputs,
-                )?;
-                if self.batch_id != expected_batch {
-                    return Err(invalid("epoch sweep batch id does not match its payload"));
-                }
-            }
         }
         Ok(())
     }
@@ -2690,37 +2570,6 @@ fn batch_id(
     )))
 }
 
-fn epoch_sweep_batch_id(
-    source_scope: FederationTransactionScope,
-    destination_scope: FederationTransactionScope,
-    destination_allocation: &FederationAllocatedAddressRef,
-    activation_index: u64,
-    selected_inputs: &[FederationTransactionInput],
-) -> Result<FederationOnchainBatchId> {
-    #[derive(Serialize)]
-    struct Payload<'a> {
-        version: u16,
-        source_scope: FederationTransactionScope,
-        destination_scope: FederationTransactionScope,
-        destination_allocation: &'a FederationAllocatedAddressRef,
-        activation_index: u64,
-        input_outpoints: Vec<OutPoint>,
-    }
-
-    let payload = Payload {
-        version: 1,
-        source_scope,
-        destination_scope,
-        destination_allocation,
-        activation_index,
-        input_outpoints: selected_inputs.iter().map(|input| input.outpoint).collect(),
-    };
-    Ok(FederationOnchainBatchId::from_bytes(canonical_hash(
-        EPOCH_SWEEP_BATCH_HASH_DOMAIN,
-        &canonical_json_bytes(&payload)?,
-    )))
-}
-
 fn checked_txout_sum<'a, I>(outputs: I) -> Result<u64>
 where
     I: IntoIterator<Item = &'a TxOut>,
@@ -2968,131 +2817,6 @@ mod tests {
         .expect("proposal")
     }
 
-    fn epoch_sweep_proposal() -> FederationTransactionProposal {
-        let input = allocation(5, outpoint(5, 0));
-        let destination_scope = FederationTransactionScope {
-            root_key_epoch: 4,
-            application_key_epoch: 4,
-            ..scope()
-        };
-        let destination = FederationAllocatedAddressRef {
-            application_id: destination_scope.application_id,
-            application_key_epoch: destination_scope.application_key_epoch,
-            quote: "epoch-sweep-destination".to_string(),
-            keychain: FederationAddressKeychain::Internal,
-            derivation_index: 2,
-        };
-        let output = TxOut {
-            value: input
-                .previous_output
-                .value
-                .checked_sub(Amount::from_sat(500))
-                .expect("sweep fee"),
-            script_pubkey: ScriptBuf::from_bytes(vec![0x51, 0x44]),
-        };
-        FederationTransactionProposal::new_epoch_sweep(
-            scope(),
-            destination_scope,
-            destination,
-            41,
-            member(1),
-            Transaction {
-                version: Version::TWO,
-                lock_time: LockTime::ZERO,
-                input: vec![TxIn {
-                    previous_output: input.outpoint,
-                    script_sig: ScriptBuf::new(),
-                    sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                    witness: Witness::new(),
-                }],
-                output: vec![output.clone()],
-            },
-            vec![input],
-            FederationTransactionChangeOutput {
-                derivation_index: 2,
-                output_index: 0,
-                output,
-            },
-            500,
-        )
-        .expect("epoch sweep proposal")
-    }
-
-    #[test]
-    fn epoch_sweep_is_epoch_bound_and_reuses_the_durable_transaction_state() {
-        let sweep = epoch_sweep_proposal();
-        sweep.validate().expect("valid epoch sweep");
-        assert!(sweep.intent_ids.is_empty());
-        assert!(matches!(
-            sweep.purpose,
-            FederationTransactionPurpose::EpochSweep { .. }
-        ));
-        let decoded = FederationTransactionProposal::from_json_slice(
-            &serde_json::to_vec(&sweep).expect("sweep JSON"),
-        )
-        .expect("decoded sweep");
-        assert_eq!(decoded, sweep);
-
-        let mut mixed = sweep.clone();
-        mixed.selected_inputs[0].allocation.application_key_epoch += 1;
-        assert!(mixed.validate().is_err());
-        let mut same_epoch = sweep.clone();
-        let FederationTransactionPurpose::EpochSweep {
-            destination_scope, ..
-        } = &mut same_epoch.purpose
-        else {
-            panic!("sweep purpose");
-        };
-        destination_scope.application_key_epoch = same_epoch.scope.application_key_epoch;
-        assert!(same_epoch.validate().is_err());
-
-        let proposal_id = sweep.proposal_id().expect("proposal id");
-        let audit = FederationTransactionPolicyAudit {
-            proposal_id,
-            txid: sweep.unsigned_transaction.compute_txid(),
-            fee_sat: sweep.fee_sat,
-            fee_rate_sat_per_kwu: sweep.fee_rate_sat_per_kwu,
-            weight: sweep.estimated_signed_weight(),
-            fee_contributions: BTreeMap::new(),
-            taproot_sighashes: vec![[7; 32]],
-        };
-        let mut state = FederationTransactionState::new();
-        state
-            .accept_transaction(sweep, audit, FederationOperationId::from_bytes([8; 32]), 42)
-            .expect("accepted sweep");
-        assert_eq!(
-            state
-                .accepted_transaction(proposal_id)
-                .expect("durable sweep")
-                .state,
-            FederationAcceptedTransactionState::Accepted
-        );
-        let mut restarted = FederationTransactionState::from_bytes(
-            &state.to_bytes().expect("accepted sweep state bytes"),
-        )
-        .expect("restart accepted sweep state");
-        assert_eq!(restarted, state);
-        let signed = structurally_sign(
-            restarted
-                .accepted_transaction(proposal_id)
-                .expect("restarted accepted sweep"),
-        );
-        restarted
-            .mark_transaction_signed(proposal_id, signed)
-            .expect("resume sweep signing after restart");
-        let resumed = FederationTransactionState::from_bytes(
-            &restarted.to_bytes().expect("signed sweep state bytes"),
-        )
-        .expect("restart signed sweep state");
-        assert_eq!(
-            resumed
-                .accepted_transaction(proposal_id)
-                .expect("resumed signed sweep")
-                .state,
-            FederationAcceptedTransactionState::Signed
-        );
-    }
-
     fn replacement_proposal(
         original: &FederationTransactionProposal,
         additional_fee_sat: u64,
@@ -3326,7 +3050,7 @@ mod tests {
         }
         assert_eq!(
             proposal.proposal_id().expect("proposal id").to_hex(),
-            "d36b856242349b2366f0d6aea0d05373e7f8ad8801146574896de2e8942e9f16"
+            "0a1ea7aeccbb4d99a8cdcb970ef4c8ca0f533be34c78e7ac9c855bed923f9b88"
         );
     }
 

@@ -16,10 +16,9 @@ use crate::federation::{
     FederationDkgParticipantState, FederationDkgPublicCeremony, FederationDkgSecretShareRequest,
     FederationDkgSetupMethod, FederationDkgSetupState, FederationDkgTranscript,
     FederationDkgTranscriptSignature, FederationDkgTranscriptSignatureRequest,
-    FederationFrostActiveEpochs, FederationFrostApplicationConfig, FederationFrostApplicationId,
-    FederationFrostConsumerRegistration, FederationFrostDkgConfirmationRequest,
-    FederationFrostDkgContext, FederationFrostDkgLocalPhase, FederationFrostDkgLocalState,
-    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record, FederationFrostEpochState,
+    FederationFrostApplicationConfig, FederationFrostApplicationId,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgContext, FederationFrostDkgLocalPhase,
+    FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationFrostSealedStorageMetadata, FederationId, FederationJournalAppendOutcome,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
@@ -2147,7 +2146,6 @@ where
         federation_id: public_config.federation_id,
         ceremony_id: dkg_ceremony_id(),
         root_key_epoch: 1,
-        state: FederationFrostEpochState::Active,
         dkg_protocol_version: 1,
         ciphersuite_version: 1,
         threshold: public_config.threshold_params.signature_threshold,
@@ -2179,7 +2177,6 @@ where
         application_id,
         application_key_epoch: 1,
         root_key_epoch: 1,
-        state: FederationFrostEpochState::Active,
         derivation_version: 1,
         authorization_policy: [11; 32],
         threshold: public_config.threshold_params.signature_threshold,
@@ -2198,17 +2195,6 @@ where
         },
         fee_policy_version: 1,
     };
-    let consumer = FederationFrostConsumerRegistration {
-        version: 1,
-        root_key_epoch: 1,
-        application_id,
-        application_key_epoch: 1,
-    };
-    let active = FederationFrostActiveEpochs {
-        root_key_epoch: 1,
-        application_key_epochs: [(application_id, 1)].into_iter().collect(),
-    };
-
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
     tx.add_federation_frost_root_public_config(&root)
         .await
@@ -2222,12 +2208,6 @@ where
     tx.add_federation_frost_application_config(&application)
         .await
         .expect("application");
-    tx.add_federation_frost_consumer_registration(&consumer)
-        .await
-        .expect("consumer");
-    tx.set_federation_frost_active_epochs(&active)
-        .await
-        .expect("active epochs");
     tx.commit().await.expect("commit wallet config");
 
     assert_eq!(
@@ -2248,19 +2228,6 @@ where
             .expect("applications"),
         vec![application]
     );
-    assert_eq!(
-        db.get_federation_frost_consumer_registrations()
-            .await
-            .expect("consumers"),
-        vec![consumer]
-    );
-    assert_eq!(
-        db.get_federation_frost_active_epochs()
-            .await
-            .expect("active epochs"),
-        Some(active)
-    );
-
     let mut conflicting = root;
     conflicting.transcript_binding[0] ^= 1;
     let mut tx = Database::begin_transaction(&db)

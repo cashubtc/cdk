@@ -43,10 +43,7 @@ impl Mint {
         observation: &FederationChainObservation,
     ) -> Result<FederationChainObservationOutcome, Error> {
         observation.validate()?;
-        let runtime = self
-            .effective_federation_config()
-            .await?
-            .ok_or(Error::Internal)?;
+        let runtime = self.federation_config().ok_or(Error::Internal)?;
         let public = runtime.public_config();
         let required_observers = public
             .payment_observation_policy
@@ -97,21 +94,21 @@ impl Mint {
                             reason: "deposit requires an accepted FROST wallet config".to_string(),
                         }
                     })?;
-                    let application = wallet
-                        .cdk_onchain_applications
-                        .iter()
-                        .find(|application| {
-                            application.application_id == observation.allocation.application_id
-                                && application.application_key_epoch
-                                    == observation.allocation.application_key_epoch
-                        })
-                        .ok_or_else(|| {
+                    let application = &wallet.cdk_onchain_application;
+                    if application.application_id != observation.allocation.application_id
+                        || application.application_key_epoch
+                            != observation.allocation.application_key_epoch
+                    {
+                        return Err(
                             cdk_common::federation::FederationError::ChainObservationInvalid {
                                 reason: "deposit references an unknown application epoch"
                                     .to_string(),
                             }
-                        })?;
-                    let expected_script = wallet.derive_cdk_onchain_script_for_known_epoch(
+                            .into(),
+                        );
+                    }
+                    let expected_script = wallet.derive_cdk_onchain_script(
+                        public,
                         observation.allocation.application_id,
                         observation.allocation.application_key_epoch,
                         observation.allocation.keychain,

@@ -149,8 +149,6 @@ pub enum FederationOperationKind {
     Swap,
     /// Propose a new federated v3/BLS aggregate keyset.
     KeysetRotation,
-    /// Propose, activate, or retire a reusable FROST root/application epoch.
-    FrostRotation,
     /// Propose and reserve one independently validated on-chain transaction.
     TransactionProposal,
     /// Persist one exact threshold-signed on-chain transaction.
@@ -175,7 +173,6 @@ impl fmt::Display for FederationOperationKind {
             Self::Melt => f.write_str("melt"),
             Self::Swap => f.write_str("swap"),
             Self::KeysetRotation => f.write_str("keyset_rotation"),
-            Self::FrostRotation => f.write_str("frost_rotation"),
             Self::TransactionProposal => f.write_str("transaction_proposal"),
             Self::TransactionSigned => f.write_str("transaction_signed"),
             Self::TransactionBroadcastIntent => f.write_str("transaction_broadcast_intent"),
@@ -273,27 +270,6 @@ pub enum FederationOperationConflictKey {
     KeysetRotation {
         /// Proposed aggregate keyset ID.
         keyset_id: Id,
-    },
-    /// One root epoch may carry only one exact proposal.
-    FrostRootProposal {
-        /// Proposed reusable root epoch.
-        root_key_epoch: u64,
-    },
-    /// One application epoch may carry only one exact proposal.
-    FrostApplicationProposal {
-        /// Stable application identity.
-        application_id: super::FederationFrostApplicationId,
-        /// Proposed application key epoch.
-        application_key_epoch: u64,
-    },
-    /// One exact root-consumer registration may be accepted only once.
-    FrostConsumerRegistration {
-        /// Reusable root epoch.
-        root_key_epoch: u64,
-        /// Stable application identity.
-        application_id: super::FederationFrostApplicationId,
-        /// Application key epoch.
-        application_key_epoch: u64,
     },
     /// One accepted on-chain payment intent may be assigned only once.
     OnchainPaymentIntent {
@@ -798,7 +774,6 @@ impl FederationPaymentObservation {
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
             | FederationOperation::KeysetRotation(_)
-            | FederationOperation::FrostRotation(_)
             | FederationOperation::TransactionProposal(_)
             | FederationOperation::TransactionSigned(_)
             | FederationOperation::TransactionBroadcastIntent(_)
@@ -960,7 +935,6 @@ impl FederationPaymentObservationQuarantineRecord {
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
             | FederationOperation::KeysetRotation(_)
-            | FederationOperation::FrostRotation(_)
             | FederationOperation::TransactionProposal(_)
             | FederationOperation::TransactionSigned(_)
             | FederationOperation::TransactionBroadcastIntent(_)
@@ -1524,8 +1498,6 @@ pub enum FederationOperation {
     Swap(FederationSwapOperation),
     /// Add a new federated aggregate keyset after consensus.
     KeysetRotation(FederationKeysetRotationOperation),
-    /// Transition reusable FROST root and application lifecycle state.
-    FrostRotation(super::FederationFrostRotationOperation),
     /// Accept an exact unsigned on-chain transaction after consensus.
     TransactionProposal(FederationTransactionProposal),
     /// Accept the exact threshold-signed transaction after consensus.
@@ -1554,7 +1526,6 @@ impl FederationOperation {
             Self::Melt(_) => FederationOperationKind::Melt,
             Self::Swap(_) => FederationOperationKind::Swap,
             Self::KeysetRotation(_) => FederationOperationKind::KeysetRotation,
-            Self::FrostRotation(_) => FederationOperationKind::FrostRotation,
             Self::TransactionProposal(_) => FederationOperationKind::TransactionProposal,
             Self::TransactionSigned(_) => FederationOperationKind::TransactionSigned,
             Self::TransactionBroadcastIntent(_) => {
@@ -1647,32 +1618,6 @@ impl FederationOperation {
                     keyset_id: operation.keyset.id,
                 }]
             }
-            Self::FrostRotation(operation) => match &operation.transition {
-                super::FederationFrostRotationTransition::ProposeRoot { root } => {
-                    vec![FederationOperationConflictKey::FrostRootProposal {
-                        root_key_epoch: root.root_key_epoch,
-                    }]
-                }
-                super::FederationFrostRotationTransition::ProposeApplication {
-                    application,
-                    ..
-                } => vec![FederationOperationConflictKey::FrostApplicationProposal {
-                    application_id: application.application_id,
-                    application_key_epoch: application.application_key_epoch,
-                }],
-                super::FederationFrostRotationTransition::RegisterConsumer { registration } => {
-                    vec![FederationOperationConflictKey::FrostConsumerRegistration {
-                        root_key_epoch: registration.root_key_epoch,
-                        application_id: registration.application_id,
-                        application_key_epoch: registration.application_key_epoch,
-                    }]
-                }
-                super::FederationFrostRotationTransition::ActivateRoot { .. }
-                | super::FederationFrostRotationTransition::ActivateApplication { .. }
-                | super::FederationFrostRotationTransition::CompleteConsumerRetirement { .. }
-                | super::FederationFrostRotationTransition::RetireApplication { .. }
-                | super::FederationFrostRotationTransition::RetireRoot { .. } => Vec::new(),
-            },
             Self::TransactionProposal(proposal) => {
                 if proposal.replacement_of.is_some() {
                     return Vec::new();
@@ -1721,7 +1666,6 @@ impl FederationOperation {
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
             Self::Swap(_)
             | Self::KeysetRotation(_)
-            | Self::FrostRotation(_)
             | Self::TransactionProposal(_)
             | Self::TransactionSigned(_)
             | Self::TransactionBroadcastIntent(_)
@@ -1743,7 +1687,6 @@ impl FederationOperation {
             | Self::MintQuote(_)
             | Self::PaymentObservationQuarantine(_)
             | Self::KeysetRotation(_)
-            | Self::FrostRotation(_)
             | Self::TransactionProposal(_)
             | Self::TransactionSigned(_)
             | Self::TransactionBroadcastIntent(_)
@@ -2005,7 +1948,6 @@ impl FederationOperationEnvelope {
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
             | FederationOperation::KeysetRotation(_)
-            | FederationOperation::FrostRotation(_)
             | FederationOperation::TransactionSigned(_)
             | FederationOperation::TransactionBroadcastIntent(_) => None,
         };

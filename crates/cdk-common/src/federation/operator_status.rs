@@ -230,24 +230,7 @@ impl FederationWalletOperatorStatus {
         addresses.validate()?;
         chain.validate()?;
         transactions.validate()?;
-        let mut active = wallet
-            .cdk_onchain_applications
-            .iter()
-            .filter(|application| {
-                wallet
-                    .active_epochs
-                    .application_key_epochs
-                    .get(&application.application_id)
-                    == Some(&application.application_key_epoch)
-            });
-        let application = active
-            .next()
-            .ok_or_else(|| invalid("operator status has no active CDK application"))?;
-        if active.next().is_some() {
-            return Err(invalid(
-                "operator status has multiple active CDK applications",
-            ));
-        }
+        let application = &wallet.cdk_onchain_application;
         let address_scope = FederationAddressAllocationScope {
             application_id: application.application_id,
             application_key_epoch: application.application_key_epoch,
@@ -438,12 +421,6 @@ fn all_operation_phases() -> [FederationWalletOperationPhase; 7] {
         FederationWalletOperationPhase::Confirmation,
         FederationWalletOperationPhase::Terminal,
     ]
-}
-
-fn invalid(reason: impl Into<String>) -> FederationError {
-    FederationError::FrostConfigurationInvalid {
-        reason: reason.into(),
-    }
 }
 
 #[cfg(test)]

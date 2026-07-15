@@ -113,8 +113,7 @@ An untrusted proposer may use its watch-only BDK wallet to construct a candidate
 but consensus carries a bounded canonical projection rather than arbitrary PSBT
 maps. The proposal binds:
 
-- one root/application/network/policy scope and one payment batch or epoch
-  sweep;
+- one root/application/network/policy scope and one payment batch;
 - every accepted payment intent and recipient output;
 - every exact input outpoint, previous output, and address allocation;
 - optional consensus-allocated change;
@@ -169,15 +168,13 @@ materialized-state digest. Catch-up application and dependent live finality are
 serialized. A recovered member must converge before commitments, shares,
 observations, or broadcast side effects are enabled.
 
-### 2.7 Rotation
+### 2.7 Static custody keys
 
-Root and application epochs rotate through consensus states `proposed`,
-`active`, `retiring`, and `retired`. New allocations use only the active
-application. Retiring descriptors remain watch-only and retain signing ability
-for known UTXOs. Old-to-new movement uses the ordinary proposal, reservation,
-FROST, broadcast, and confirmation lifecycle. Root retirement requires every
-registered consumer to retire and every old UTXO and operation to resolve. See
-[`federated-frost-key-rotation.md`](federated-frost-key-rotation.md).
+The initial dual DKG produces one immutable FROST root and one immutable CDK
+on-chain application key. In-place root/application rotation, retiring
+descriptors, and automatic UTXO sweeps are intentionally unsupported. Replacing
+custody keys requires creating a new federation wallet and migrating funds with
+an ordinary threshold-authorized transaction.
 
 ## 3. Canonical encoding and domain review
 
@@ -271,7 +268,6 @@ details are redacted before persistence or response.
 | Exact signed bytes before broadcast | transaction state, broadcaster | ambiguous result, rebroadcast, duplicate-payment and convergence tests |
 | Authenticated bounded private REST | `transport.rs`, Axum federation router/peer client | replay, sender/receiver, body, concurrency, timeout and redaction tests |
 | Ordered certified recovery | journal, consensus catch-up, sync loop | digest/certificate tamper, chunk, partition and catch-up/live serialization tests |
-| Safe root/application rotation | `frost_rotation.rs`, wallet liveness | epoch separation, sweep, retirement guards and restart tests |
 
 Every FROST input audit traces root epoch and application/key epoch through the
 accepted transaction scope; derivation and authorization through the signing
@@ -376,7 +372,7 @@ Reviewers should start with this packet, then inspect:
    calls the participant key manager;
 5. the CDK on-chain authorization adapter and the independent test application
    adapter proving root reuse and domain separation; and
-6. rotation retirement guards and shared-compromise documentation.
+6. static custody-key boundaries and shared-compromise documentation.
 
 Requested reviewer deliverables are a written severity-ranked finding list,
 explicit approval or rejection of the derivation/tweak order and nonce model,

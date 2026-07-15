@@ -251,33 +251,6 @@ fn print_statuses(
         if let Some(wallet) = &status.wallet_operator {
             println!("{}", wallet_operator_status_line(wallet));
         }
-        if let Some(rotation) = &status.frost_rotation {
-            for root in &rotation.roots {
-                println!(
-                    "  frost_root epoch={} state={} active={} threshold={} dkg_version={} ciphersuite_version={} transcript={} registered_consumers={} applications={}",
-                    root.root_key_epoch,
-                    root.state,
-                    root.active,
-                    root.threshold,
-                    root.dkg_protocol_version,
-                    root.ciphersuite_version,
-                    encode_commitment(&root.transcript_binding),
-                    root.registered_consumers,
-                    display_list(&root.application_ids)
-                );
-            }
-            for application in &rotation.applications {
-                println!(
-                    "  frost_application id={} epoch={} root_epoch={} state={} active={} descriptor_commitment={}",
-                    application.application_id,
-                    application.application_key_epoch,
-                    application.root_key_epoch,
-                    application.state,
-                    application.active,
-                    encode_commitment(&application.descriptor_commitment)
-                );
-            }
-        }
         for report in &status.payment_observation_reports {
             print_payment_observation_report(report);
         }

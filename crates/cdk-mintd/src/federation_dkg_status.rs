@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -11,9 +11,8 @@ use cdk_common::federation::{
     FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
-    FederationDkgTranscriptSignatureRequest, FederationFrostActiveEpochs,
-    FederationFrostApplicationConfig, FederationFrostConsumerRegistration,
-    FederationFrostEpochState, FederationFrostRootPublicConfig, FederationFrostWalletConfig,
+    FederationDkgTranscriptSignatureRequest, FederationFrostApplicationConfig,
+    FederationFrostRootPublicConfig, FederationFrostWalletConfig,
     FederationOnchainConfirmationPolicy, MemberConfigPrivate, MemberId,
 };
 
@@ -199,43 +198,22 @@ fn attach_initial_frost_cdk_wallet(
     if finalized.public_config.frost_wallet.is_some() {
         bail!("initial FROST CDK bootstrap requires a config without an existing wallet");
     }
-    let active_roots = frost_roots
-        .iter()
-        .filter(|root| root.state == FederationFrostEpochState::Active)
-        .collect::<Vec<_>>();
-    let [root] = active_roots.as_slice() else {
-        bail!(
-            "initial FROST CDK bootstrap requires exactly one active root from the completed dual DKG"
-        );
+    let [root] = frost_roots else {
+        bail!("initial FROST CDK bootstrap requires exactly one root from the completed dual DKG");
     };
     root.validate(&finalized.public_config)?;
     let application = FederationFrostApplicationConfig::new_cdk_onchain(
         &finalized.public_config,
         root,
         bootstrap.application_key_epoch,
-        FederationFrostEpochState::Active,
         bootstrap.network,
         FederationOnchainConfirmationPolicy::new(bootstrap.minimum_confirmations)?,
         bootstrap.fee_policy_version,
     )?;
-    let consumer = FederationFrostConsumerRegistration::new(
-        root.root_key_epoch,
-        application.application_id,
-        application.application_key_epoch,
-    )?;
-    let active_epochs = FederationFrostActiveEpochs {
-        root_key_epoch: root.root_key_epoch,
-        application_key_epochs: BTreeMap::from([(
-            application.application_id,
-            application.application_key_epoch,
-        )]),
-    };
     finalized.public_config.frost_wallet = Some(FederationFrostWalletConfig::new(
         &finalized.public_config,
-        vec![(*root).clone()],
-        vec![application],
-        vec![consumer],
-        active_epochs,
+        root.clone(),
+        application,
     )?);
     finalized.public_config.validate()?;
     finalized

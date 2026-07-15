@@ -92,7 +92,7 @@ async fn create_mint_quote_for_route(
         if matches!(request, cdk::mint::MintQuoteRequest::Onchain(_)) {
             state.mint.check_mint_request_acceptable(&request).await?;
             let runtime = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-            let application = runtime.active_cdk_onchain_application()?;
+            let application = runtime.cdk_onchain_application()?;
             let address = state
                 .allocate_federation_onchain_address(
                     &quote_id.to_string(),

@@ -68,6 +68,9 @@ federation partially ready.
 - Application derivation, authorization, nonces, transcripts, descriptors, and
   signing targets must bind the application key epoch. Preserve wrong-epoch
   rejection and epoch-separated descriptor vectors.
+- The on-chain FROST root and application key are immutable after initial dual
+  DKG. In-place rotation, retiring descriptors, consumer retirement registries,
+  and automatic old-epoch UTXO sweeps are intentionally unsupported.
 - Milestone 15 found that a pre-validation signed-transaction conflict key let
   an invalid ordered record block a later valid signature. Reserve no such key;
   accepted-state verification makes the first valid record durable and rejects
@@ -144,8 +147,8 @@ The intended deployment supports on-chain Cashu mint quotes and melt quotes:
 - Keep coordinators replaceable and untrusted; safety must not depend on which
   member proposes a transaction, collects shares, or broadcasts it.
 - Support Bitcoin Core RPC and Esplora-compatible lightweight chain sources.
-- Establish explicit key epochs so future wallet-key and federation-member
-  rotations can be implemented without redesigning every persisted record.
+- Bind explicit immutable key epochs into every persisted signing record so
+  configuration mismatches fail closed.
 - Produce a versioned, application-neutral secp256k1 FROST root key epoch whose
   shares can be reused by future payment backends and compatible FROST
   applications through domain-separated derivation and authorization adapters.
@@ -205,8 +208,8 @@ The intended deployment supports on-chain Cashu mint quotes and melt quotes:
 - The key manager must not expose a sign-arbitrary-digest operation. Requests
   must bind the root epoch, application ID, application key epoch, derivation
   context, protocol/ciphersuite version, and application authorization proof.
-- Reusing one root across applications creates a shared compromise and rotation
-  domain. Public additive child derivation provides namespace separation, not
+- Reusing one root across applications creates a shared compromise and
+  replacement domain. Public additive child derivation provides namespace separation, not
   compromise isolation, so derived aggregate private keys must never be
   reconstructed or exported.
 - Applications that require access to a complete derived private key, use an
@@ -787,17 +790,13 @@ state and make both explicit, versioned, validated, and catch-up safe.
   application ID and key epoch, referenced root epoch, derivation version,
   derived aggregate/verification keys, chain code, descriptors or descriptor
   commitment, network, confirmation policy, and fee policy version.
-- [x] Define active, retiring, and retired states independently for root epochs
-  and application key epochs, plus an explicit registry of applications using
-  each root epoch.
 - [x] Add startup fail-closed validation for descriptor/group-key mismatch,
   wrong network, wrong root share, root/application derivation mismatch,
-  incomplete transcript, unregistered application, or unsupported protocol
-  version.
-- [x] Add database records for root config snapshots, application config
-  snapshots, registered consumers, and active root/application epochs.
-- [x] Include public root and CDK application configs and active epochs in the
-  federation config digest.
+  incomplete transcript, or unsupported protocol version.
+- [x] Add database records for the immutable root and application config
+  snapshots.
+- [x] Include public root and CDK application configs in the federation config
+  digest.
 - [x] Include materialized wallet records in state snapshots and catch-up
   verification.
 - [x] Ensure private shares and nonce records are excluded from public snapshots
@@ -811,8 +810,8 @@ state and make both explicit, versioned, validated, and catch-up safe.
 - [x] A copied private root config from another member is rejected.
 - [x] Public root plus application config is sufficient to derive addresses but
   insufficient to sign.
-- [x] Adding a registered test consumer does not change the root package or CDK
-  descriptors.
+- [x] Deriving a domain-separated test application does not change the root
+  package or CDK descriptors.
 - [x] Wallet config divergence changes state/config digests and blocks readiness.
 
 **Required tests:**
@@ -822,15 +821,15 @@ state and make both explicit, versioned, validated, and catch-up safe.
 - [x] Wrong member, epoch, network, threshold, descriptor, transcript, and group
   key startup rejection.
 - [x] Wrong application ID, root reference, derivation version, derived key, and
-  unregistered-consumer rejection.
+  authorization-adapter rejection.
 - [x] Missing private share and extra unknown participant rejection.
 - [x] SQLite/PostgreSQL schema and migration tests.
 - [x] Snapshot/catch-up equality with wallet config present.
 - [x] Secret-redaction tests for debug, JSON, status, and support output.
 
-**Milestone record:** completed on 2026-07-13. Public root, local sealed
-root, CDK application, consumer registry, lifecycle, and active-selector
-configuration now live behind an isolated federation FROST config boundary.
+**Milestone record:** completed on 2026-07-13 and simplified for static custody.
+One public root, one local sealed root, and one CDK application configuration
+live behind an isolated federation FROST config boundary.
 Dual-DKG completion atomically materializes the public/private root snapshots;
 startup validates the complete public derivation, exact persisted records, and
 reopens only the local member-bound sealed share before readiness. Public wallet
@@ -931,7 +930,7 @@ address-allocation operation now lets accepted journal order assign indexes;
 proposers never carry or mutate a local cursor. One atomically persisted,
 strictly validated federation projection owns independent external/internal
 counters and immutable quote mappings per CDK application epoch, rejects gaps,
-reuse, remapping, inactive epochs, and indexes beyond `2^31 - 1`, and contributes
+reuse, remapping, unknown epochs, and indexes beyond `2^31 - 1`, and contributes
 stable counter/mapping rows to catch-up state digests. The isolated BDK adapter
 reconciles accepted max-plus-one counters with `reveal_addresses_to` semantics
 at startup, live apply, and catch-up. The public allocation boundary first
@@ -1723,15 +1722,15 @@ side effects.
 - [x] Failure injection before and after every durable transition.
 - [x] Full federation restart during DKG, allocation, observation, proposal,
   FROST rounds, signed persistence, broadcast, and confirmation.
-- [x] Restart with two registered applications and pending sessions in both.
+- [x] Restart with concurrent CDK and test-application sessions.
 - [x] One member offline across address-index gaps and multiple spends.
 - [x] Catch-up from snapshot plus journal tail.
 - [x] Tampered snapshot, transaction, descriptor, and nonce metadata rejection.
 - [x] Repeated recovery invocation idempotency.
 
-**Milestone record:** completed on 2026-07-14. Startup already validates and
-materializes root/application epochs and the consumer registry before opening
-the isolated signer or watch-only adapters, then replays the authenticated
+**Milestone record:** completed on 2026-07-14 and simplified for static custody.
+Startup validates and materializes the immutable root/application pair before
+opening the isolated signer or watch-only adapters, then replays the authenticated
 journal and reconciles accepted descriptor counters and exact signed bytes into
 BDK. The existing DKG driver, observer, and broadcaster restart workers resume
 their idempotent durable work; an accepted signing state is deliberately
@@ -2022,94 +2021,20 @@ check and stable rustfmt check pass. Strict no-dependency Clippy passes for
 pre-existing warning baseline. Broad mintd/Axum suites still contain unrelated
 pre-existing federation fixture failures, while every M21-focused test passes.
 
-### Milestone 22: root and application key rotation and federation preparation
+### Milestone 22: keep FROST custody keys static
 
-**Objective:** rotate reusable root keys and CDK application keys safely, account
-for every registered consumer, and leave a clean path for future membership
-changes.
+**Status: completed by scope reduction.** In-place FROST root/application key
+rotation is not part of this implementation. The initial dual DKG installs one
+immutable root and one immutable CDK on-chain application. The implementation
+contains no rotation consensus operations, lifecycle registry, retiring wallet
+descriptors, automatic epoch sweeps, rotation operator command, or repeat-DKG
+activation path.
 
-**Work:**
-
-- [x] Add consensus proposal and activation operations for a new root key epoch
-  after successful DKG and for a new CDK application key epoch derived from an
-  active root.
-- [x] Maintain an explicit usage registry so a root epoch cannot retire while
-  any registered payment backend or FROST application still references it.
-- [x] Allow an application to rotate its derived key or derivation version
-  without silently rotating or mutating the reusable root package.
-- [x] Keep old descriptors recognized for deposits and UTXO ownership during a
-  bounded migration window.
-- [x] Direct all new addresses and change to the active epoch after activation.
-- [x] Build and threshold-sign sweep transactions from retiring epochs to the
-  active epoch.
-- [x] Prevent CDK application retirement while spendable/reserved UTXOs or
-  unresolved transactions remain, and prevent root retirement until every
-  application-specific retirement condition is satisfied.
-- [x] Expose public active/retiring root and application epoch metadata without
-  exposing private shares.
-- [x] Bind signing sessions to root and application epochs and bind address
-  mappings permanently to their CDK application epoch.
-- [x] Document that adding members requires fresh DKG or a separately reviewed
-  resharing protocol; basic FROST refresh is not silently treated as complete
-  federation reconfiguration.
-
-**Success criteria:**
-
-- [x] New deposits use only the new epoch after activation.
-- [x] Old UTXOs remain spendable by the old threshold until swept.
-- [x] No transaction signs with shares or derivation data from mixed epochs.
-- [x] Root retirement is blocked while a test consumer remains registered and
-  succeeds after every consumer completes its retirement contract.
-- [x] Rotation and sweep survive member restart and catch-up.
-
-**Required tests:**
-
-- [x] DKG, proposed activation, rejected activation, and successful activation.
-- [x] Deposit arriving at old address before and after cutoff.
-- [x] Old-to-new sweep with one member offline.
-- [x] Mixed-epoch input policy and rejection.
-- [x] Restart during sweep and final retirement.
-- [x] Attempt to delete old shares while unresolved UTXOs remain.
-- [x] Attempt to retire or delete a root share while another application still
-  references it.
-- [x] Independent CDK application-key rotation without root-share mutation.
-
-**Milestone record:** completed on 2026-07-14. Consensus now owns explicit
-proposed, active, retiring, and retired root/application epoch transitions,
-including a registered-consumer usage contract that blocks premature
-retirement and local share deletion. Application registrations are keyed by
-their complete root/application/version tuple, so a CDK application can rotate
-without mutating its reusable root package. Public status exposes only redacted
-lifecycle metadata and commitments.
-
-Address allocation uses only the active application epoch, while chain
-observation retains bounded knowledge of active and retiring descriptors.
-Epoch-sweep proposals have a distinct canonical purpose, accept inputs from
-exactly one retiring epoch, pay one consensus-allocated active internal script,
-and are revalidated before signing. Confirmation atomically and idempotently
-marks their source UTXOs spent. The normal proposal, signing, broadcast, and
-recovery state machines are reused through thin federation adapters; existing
-mint quote, saga, and payment behavior was not reimplemented.
-
-Rotation revealed one genuine pre-existing gap outside the wallet boundary:
-the DKG startup path rejected every ceremony once a finalized BLS federation
-configuration existed. The focused fix validates a finalized configuration as
-an immutable rotation base, permits a new dual-result ceremony, reconstructs
-and verifies the complete new BLS candidate, and persists the new FROST root as
-`Proposed`. Bootstrap still activates both independent results together, while
-rotation requires explicit consensus activation. Both ceremonies remain bound
-to the same roster and threshold and fail closed on any mismatch.
-
-The [key-rotation runbook](federated-frost-key-rotation.md) covers dual DKG,
-restart/catch-up, application activation, old-descriptor migration, threshold
-sweeps, guarded retirement, and the requirement for a fresh dual DKG or a
-separately reviewed resharing protocol when membership changes. All 25
-`cdk-frost` tests, 381 active `cdk-common` federation library tests, 5 external
-FROST-DKG tests, 128 CDK mint-federation tests, 124 `cdk-bdk` tests, 9 Axum
-FROST-signing tests, and 16 Axum DKG-driver tests pass. Workspace all-targets
-checking and stable rustfmt pass. Strict no-dependency Clippy passes for the
-new FROST and BDK boundaries; broader common/CDK strict Clippy remains blocked
-only by its documented pre-existing warning baseline.
+Custody-key replacement requires a separately configured federation wallet and
+an ordinary threshold-authorized migration transaction. Membership changes or
+BLS-share replacement require a separately designed federation reconfiguration
+protocol. Immutable epoch identifiers remain only for cryptographic domain
+separation and persisted signing context.
 
 ### Milestone 23: operator configuration, status, metrics, and tooling
 
@@ -2127,13 +2052,12 @@ secrets or requiring database inspection.
   tip, revealed indexes, UTXO counts, reserved value, pending batches, signing
   attempts, and broadcast health.
 - [x] Expose safe root-key status containing root epoch, DKG/ciphersuite version,
-  threshold, transcript commitment, registered application IDs, and lifecycle
-  state without exposing shares or derivation-sensitive secrets.
+  threshold, and transcript commitment without exposing shares or
+  derivation-sensitive secrets.
 - [x] Add bounded Prometheus metrics without quote IDs, addresses, tx contents,
   key material, or unbounded labels.
-- [x] Add operator commands for root DKG status, registered-application status,
-  wallet status, transaction status, safe rebroadcast, and guarded root or
-  application key rotation.
+- [x] Add operator commands for root DKG status, wallet status, transaction
+  status, and safe rebroadcast.
 - [x] Require explicit guarded procedures for abandoning/replacing transactions;
   do not provide a force-spend or private-key export command.
 - [x] Document mempool.space, self-hosted Esplora, and Bitcoin Core deployment
@@ -2154,9 +2078,9 @@ secrets or requiring database inspection.
   combinations.
 - [x] Status for every wallet operation phase.
 - [x] Metric cardinality and secret-redaction tests.
-- [x] CLI smoke tests for status, rebroadcast, and rotation safety guards.
+- [x] CLI smoke tests for status and safe rebroadcast.
 - [x] Startup fail-closed tests for missing wallet config/share/chain source.
-- [x] Root/application registration, status, and retirement-guard tests.
+- [x] Static root/application configuration and status tests.
 
 **Milestone 23 completion record:** mintd now selects `federated-bdk`
 explicitly, rejects standalone mnemonic custody and mixed wallet modes, validates
@@ -2168,18 +2092,16 @@ standalone spender.
 
 The authenticated private operator API provides targeted transaction status
 and exact-byte rebroadcast only. The CLI combines these routes with existing DKG
-status, safe public root/application status, and consensus-gated rotation.
-Rebroadcast and rotation require explicit acknowledgements, and no force-spend,
+and wallet status. Rebroadcast requires explicit acknowledgement, and no force-spend,
 force-release, share-export, nonce-export, mnemonic-export, or private-key
 export command exists. The [federated BDK operations runbook](federated-bdk-operations.md)
 documents configuration, independent versus correlated chain sources, status,
-bounded metrics, diagnosis, rebroadcast, and guarded rotation.
+bounded metrics, diagnosis, and rebroadcast.
 
 Verification covers all fixed wallet phases, exact public/private root-epoch
 inventory at startup, mixed/missing wallet and chain-source failures, config and
 environment parsing, CLI parsing and safety guards, targeted authenticated
-status, public status redaction, fixed-label metric cardinality, and guarded
-root/application retirement. All 218 mintd library tests with federation test
+status, public status redaction, and fixed-label metric cardinality. All 218 mintd library tests with federation test
 utilities, all 9 Prometheus tests, 382 active cdk-common federation library
 tests, and the focused Axum operator/startup tests pass. Stable rustfmt and
 all-target checking pass. Strict no-dependency Clippy passes for Prometheus;
@@ -2272,16 +2194,16 @@ mainnet use.
 **Work:**
 
 - [x] Produce a protocol specification for DKG, derivation, address allocation,
-  transaction consensus, FROST sessions, nonce lifecycle, and key rotation.
+  transaction consensus, FROST sessions, and nonce lifecycle.
 - [x] Specify the canonical untweaked root package, root-to-application adapter
   boundary, compatibility requirements, authorization contract, shared
-  compromise domain, and multi-application rotation rules.
+  compromise domain, and application isolation rules.
 - [x] Map every security requirement in this plan to code and tests.
 - [x] Threat-model malicious proposer, coordinator, signer, observer,
   broadcaster, database, chain source, and wallet client.
 - [x] Threat-model a malicious or compromised registered application attempting
   cross-application signing, nonce reuse, derivation confusion, root extraction,
-  or premature root retirement.
+  or cross-application authorization.
 - [x] Review all canonical encodings, domain separators, participant mappings,
   scalar tweaks, parity handling, and Taproot sighashes.
 - [x] Fuzz DKG, config, proposal, PSBT, signing-package, signature-share,
@@ -2321,7 +2243,7 @@ mainnet use.
 [`federated-frost-protocol-and-security.md`](federated-frost-protocol-and-security.md)
 now specifies the dual ceremony, root/application boundary, address and deposit
 rules, exact transaction authorization, FROST session and nonce lifecycle,
-broadcast/catch-up, rotation, canonical encodings, threat model, persistence and
+broadcast/catch-up, static custody keys, canonical encodings, threat model, persistence and
 REST boundaries, and a requirement-to-code/test matrix. It is also the explicit
 independent-review handoff and states that it is not an external approval.
 
@@ -2403,7 +2325,7 @@ limits.
 - [ ] Keep only optimizations with repeatable improvement and no loss of
   verification, restart safety, transcript equality, or responsiveness.
 - [ ] Publish operator sizing, chain-source, confirmation, fee, recovery, and
-  key-rotation guidance.
+  custody-key migration guidance.
 
 **Success criteria:**
 
@@ -2475,6 +2397,6 @@ true:
   behaviorally unchanged.
 - The derivation and FROST nonce/signing design has received focused independent
   review before mainnet funds are accepted.
-- Root/application compatibility, authorization isolation, and shared rotation
-  behavior have received focused independent review before the root epoch is
+- Root/application compatibility, authorization isolation, and shared
+  compromise behavior have received focused independent review before the root epoch is
   advertised as reusable by external payment backends or FROST applications.

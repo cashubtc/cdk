@@ -195,8 +195,7 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 cli::FederationCommand::Status(status) => {
                     federation_status::run_status_command(args, status).await?;
                 }
-                cli::FederationCommand::FrostStatus(status)
-                | cli::FederationCommand::WalletStatus(status) => {
+                cli::FederationCommand::WalletStatus(status) => {
                     federation_status::run_status_command(args, status).await?;
                 }
                 cli::FederationCommand::TransactionStatus(transaction) => {
@@ -205,9 +204,6 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 }
                 cli::FederationCommand::Rebroadcast(rebroadcast) => {
                     federation_wallet_operator::run_rebroadcast_command(args, rebroadcast).await?;
-                }
-                cli::FederationCommand::FrostRotate(rotation) => {
-                    federation_wallet_operator::run_frost_rotate_command(args, rotation).await?;
                 }
             },
         }
@@ -1406,17 +1402,7 @@ fn validate_federated_bdk_startup(
         anyhow!("federated-bdk requires an activated public FROST wallet configuration")
     })?;
     frost_wallet.validate(public_config)?;
-    let application = frost_wallet
-        .cdk_onchain_applications
-        .iter()
-        .find(|application| {
-            frost_wallet
-                .active_epochs
-                .application_key_epochs
-                .get(&application.application_id)
-                == Some(&application.application_key_epoch)
-        })
-        .ok_or_else(|| anyhow!("federated-bdk requires one active CDK on-chain application"))?;
+    let application = &frost_wallet.cdk_onchain_application;
     let network = wallet.network.as_deref().ok_or_else(|| {
         anyhow!("federation.onchain_wallet.network must be explicitly configured")
     })?;

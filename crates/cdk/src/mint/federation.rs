@@ -6,7 +6,6 @@
 
 mod address_allocation;
 mod chain_observation;
-mod frost_rotation;
 mod projection;
 mod transaction_policy;
 mod transaction_state;
@@ -22,8 +21,7 @@ use cdk_common::federation::{
     FederationAddressAllocationOperation, FederationAddressAllocationScope,
     FederationAddressKeychain, FederationApplicationState, FederationBlindSignatureShareSet,
     FederationChainObservation, FederationConfig, FederationConfigDigest, FederationError,
-    FederationFrostApplicationId, FederationFrostRotationGuard, FederationFrostRotationOperation,
-    FederationFrostRotationTransition, FederationId, FederationJournalEntry,
+    FederationFrostApplicationId, FederationId, FederationJournalEntry,
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
     FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
@@ -139,12 +137,8 @@ impl FederationRuntimeConfig {
         self.config_digest
     }
 
-    /// Return the single active CDK on-chain FROST application.
-    ///
-    /// Quote routing is intentionally unambiguous. Future FROST-backed payment
-    /// applications must add an explicit selector instead of depending on list
-    /// order.
-    pub fn active_cdk_onchain_application(
+    /// Return the federation's immutable CDK on-chain FROST application.
+    pub fn cdk_onchain_application(
         &self,
     ) -> Result<&cdk_common::federation::FederationFrostApplicationConfig, Error> {
         let wallet = self.public_config.frost_wallet.as_ref().ok_or_else(|| {
@@ -152,32 +146,7 @@ impl FederationRuntimeConfig {
                 reason: "federation has no accepted FROST wallet configuration".to_string(),
             }
         })?;
-        let mut active = wallet
-            .cdk_onchain_applications
-            .iter()
-            .filter(|application| {
-                application.state == cdk_common::federation::FederationFrostEpochState::Active
-                    && wallet
-                        .active_epochs
-                        .application_key_epochs
-                        .get(&application.application_id)
-                        == Some(&application.application_key_epoch)
-            });
-        let application =
-            active
-                .next()
-                .ok_or_else(|| FederationError::AddressAllocationInvalid {
-                    reason: "federation has no active CDK on-chain application".to_string(),
-                })?;
-        if active.next().is_some() {
-            return Err(FederationError::AddressAllocationInvalid {
-                reason:
-                    "federation has multiple active CDK on-chain applications without a selector"
-                        .to_string(),
-            }
-            .into());
-        }
-        Ok(application)
+        Ok(&wallet.cdk_onchain_application)
     }
 
     /// Resolve the versioned outgoing settlement policy for an accepted wallet scope.
@@ -190,21 +159,17 @@ impl FederationRuntimeConfig {
             .frost_wallet
             .as_ref()
             .ok_or(Error::Internal)?;
-        let application = wallet
-            .cdk_onchain_applications
-            .iter()
-            .find(|application| {
-                application.root_key_epoch == scope.root_key_epoch
-                    && application.application_id == scope.application_id
-                    && application.application_key_epoch == scope.application_key_epoch
-                    && application.network == scope.network
-                    && application.fee_policy_version == scope.policy_version
-            })
-            .ok_or_else(|| {
-                Error::Custom(
-                    "accepted transaction scope has no FROST application policy".to_string(),
-                )
-            })?;
+        let application = &wallet.cdk_onchain_application;
+        if application.root_key_epoch != scope.root_key_epoch
+            || application.application_id != scope.application_id
+            || application.application_key_epoch != scope.application_key_epoch
+            || application.network != scope.network
+            || application.fee_policy_version != scope.policy_version
+        {
+            return Err(Error::Custom(
+                "accepted transaction scope has no FROST application policy".to_string(),
+            ));
+        }
         let observation_policy = self
             .public_config
             .payment_verification_policy(FederationPaymentObservationContext::MeltQuote);
@@ -246,25 +211,12 @@ impl FederationRuntimeConfig {
                 reason: "federation has no accepted FROST wallet configuration".to_string(),
             }
         })?;
-        let application = wallet
-            .cdk_onchain_applications
-            .iter()
-            .find(|application| {
-                application.application_id == operation.application_id
-                    && application.application_key_epoch == operation.application_key_epoch
-            })
-            .ok_or_else(|| FederationError::AddressAllocationInvalid {
-                reason: "allocation references an unknown CDK application epoch".to_string(),
-            })?;
-        if application.state != cdk_common::federation::FederationFrostEpochState::Active
-            || wallet
-                .active_epochs
-                .application_key_epochs
-                .get(&operation.application_id)
-                != Some(&operation.application_key_epoch)
+        let application = &wallet.cdk_onchain_application;
+        if application.application_id != operation.application_id
+            || application.application_key_epoch != operation.application_key_epoch
         {
             return Err(FederationError::AddressAllocationInvalid {
-                reason: "allocation requires the active CDK application epoch".to_string(),
+                reason: "allocation references an unknown CDK application epoch".to_string(),
             }
             .into());
         }
@@ -294,28 +246,13 @@ impl FederationRuntimeConfig {
             .into());
         }
         if let FederationChainObservation::Deposit(observation) = observation {
-            let wallet = self.public_config.frost_wallet.as_ref().ok_or_else(|| {
-                FederationError::AddressAllocationInvalid {
-                    reason: "deposit requires an accepted FROST wallet configuration".to_string(),
-                }
-            })?;
-            let known = wallet.cdk_onchain_applications.iter().any(|application| {
-                application.application_id == observation.allocation.application_id
-                    && application.application_key_epoch
-                        == observation.allocation.application_key_epoch
-                    && matches!(
-                        application.state,
-                        cdk_common::federation::FederationFrostEpochState::Active
-                            | cdk_common::federation::FederationFrostEpochState::Retiring
-                    )
-            });
-            if !known {
-                return Err(FederationError::AddressAllocationInvalid {
-                    reason: "deposit references an unknown or retired application epoch"
-                        .to_string(),
-                }
-                .into());
-            }
+            let allocation_operation = FederationAddressAllocationOperation::new(
+                observation.allocation.quote.clone(),
+                observation.allocation.application_id,
+                observation.allocation.application_key_epoch,
+                observation.allocation.keychain,
+            )?;
+            self.validate_federated_address_allocation_submission(&allocation_operation)?;
         }
         Ok(())
     }
@@ -363,20 +300,6 @@ impl FederationRuntimeConfig {
                 secret_shares,
             )?;
         self.with_public_config(self.public_config.apply_keyset_rotation(operation)?)
-    }
-
-    /// Return a validated runtime view after one accepted FROST lifecycle transition.
-    pub fn apply_frost_rotation(
-        &self,
-        operation: &FederationFrostRotationOperation,
-        guard: &FederationFrostRotationGuard,
-    ) -> Result<Self, Error> {
-        let mut public = self.public_config.clone();
-        let wallet = public.frost_wallet.clone().ok_or_else(|| {
-            Error::Custom("FROST rotation requires an accepted wallet configuration".to_string())
-        })?;
-        public.frost_wallet = Some(wallet.apply_rotation(&public, operation, guard)?);
-        self.with_public_config(public)
     }
 
     /// Local member private federation config.
@@ -759,10 +682,6 @@ impl FederationRuntimeConfig {
             FederationOperation::KeysetRotation(operation) => {
                 self.validate_federated_keyset_rotation_submission(operation)
             }
-            FederationOperation::FrostRotation(operation) => {
-                operation.validate()?;
-                Ok(())
-            }
             FederationOperation::TransactionProposal(proposal) => {
                 proposal.validate()?;
                 self.validate_federation_observer(proposal.proposer)
@@ -997,15 +916,6 @@ impl FederationRuntimeConfig {
             .into());
         }
         Ok(self.operation_envelope(FederationOperation::TransactionProposal(proposal)))
-    }
-
-    /// Build an authenticated reusable-root/application lifecycle operation.
-    pub fn frost_rotation_operation(
-        &self,
-        operation: FederationFrostRotationOperation,
-    ) -> Result<FederationOperationEnvelope, Error> {
-        operation.validate()?;
-        Ok(self.operation_envelope(FederationOperation::FrostRotation(operation)))
     }
 
     /// Build an authorized consensus operation for one exact signed transaction.
@@ -1546,47 +1456,38 @@ impl Mint {
         };
 
         let entries = self.localstore.get_federation_journal_entries().await?;
-        let applied_config_transitions = entries
+        let applied_rotations = entries
             .iter()
             .filter(|entry| entry.status() == FederationOperationStatus::Applied)
             .filter(|entry| {
                 matches!(
                     &entry.envelope.operation,
-                    FederationOperation::KeysetRotation(_) | FederationOperation::FrostRotation(_)
+                    FederationOperation::KeysetRotation(_)
                 )
             })
             .map(|entry| (entry.index, entry.operation_id))
             .collect::<Vec<_>>();
 
-        let cache = self.federation_effective_config_cache.lock().await;
+        let mut cache = self.federation_effective_config_cache.lock().await;
         if let Some(cached) = cache.as_ref() {
-            if cached.applied_config_transitions == applied_config_transitions {
+            if cached.applied_rotations == applied_rotations {
                 return Ok(Some(cached.config.clone()));
             }
         }
-        drop(cache);
 
-        let guard = self.federation_frost_rotation_guard().await?;
         let mut effective = config.clone();
         for entry in entries {
             if entry.status() != FederationOperationStatus::Applied {
                 continue;
             }
 
-            match &entry.envelope.operation {
-                FederationOperation::KeysetRotation(operation) => {
-                    effective = effective.apply_keyset_rotation(operation)?;
-                }
-                FederationOperation::FrostRotation(operation) => {
-                    effective = effective.apply_frost_rotation(operation, &guard)?;
-                }
-                _ => {}
+            if let FederationOperation::KeysetRotation(operation) = &entry.envelope.operation {
+                effective = effective.apply_keyset_rotation(operation)?;
             }
         }
 
-        let mut cache = self.federation_effective_config_cache.lock().await;
         *cache = Some(super::EffectiveFederationConfigCache {
-            applied_config_transitions,
+            applied_rotations,
             config: effective.clone(),
         });
 
@@ -1844,11 +1745,6 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
-            FederationOperation::FrostRotation(operation) => {
-                self.apply_federation_frost_rotation(entry, operation)
-                    .await?;
-                Ok(true)
-            }
             FederationOperation::TransactionProposal(proposal) => {
                 self.apply_federation_transaction_proposal(entry, proposal)
                     .await?;
@@ -2034,7 +1930,7 @@ impl Mint {
         &self,
         operation: &FederationMintQuoteOperation,
     ) -> Result<(), Error> {
-        let Some(runtime) = self.effective_federation_config().await? else {
+        let Some(runtime) = self.federation_config() else {
             return Ok(());
         };
         if runtime.public_config().frost_wallet.is_none()
@@ -2058,7 +1954,7 @@ impl Mint {
             return Err(Error::InvalidPaymentRequest);
         }
 
-        let application = runtime.active_cdk_onchain_application()?;
+        let application = runtime.cdk_onchain_application()?;
         let allocation = self
             .federation_address_allocation(
                 FederationAddressAllocationScope {
@@ -2151,45 +2047,6 @@ impl Mint {
             .ok_or(Error::Internal)?
             .apply_keyset_rotation(operation)?;
 
-        let transaction = self.localstore.begin_transaction().await?;
-        finish_federation_apply_transaction(transaction, entry, Ok(())).await
-    }
-
-    async fn apply_federation_frost_rotation(
-        &self,
-        entry: &FederationJournalEntry,
-        operation: &FederationFrostRotationOperation,
-    ) -> Result<(), Error> {
-        let effective = self
-            .effective_federation_config()
-            .await?
-            .ok_or(Error::Internal)?;
-        if let FederationFrostRotationTransition::ProposeRoot { root } = &operation.transition {
-            let stored_public = self
-                .localstore()
-                .get_federation_frost_root_public_configs()
-                .await?;
-            let stored_private = self
-                .localstore()
-                .get_federation_frost_root_private_configs()
-                .await?;
-            if !stored_public.iter().any(|candidate| candidate == root) {
-                return Err(Error::Custom(
-                    "FROST root proposal has no completed local dual-DKG result".to_string(),
-                ));
-            }
-            let private = stored_private
-                .iter()
-                .find(|candidate| candidate.root_key_epoch == root.root_key_epoch)
-                .ok_or_else(|| {
-                    Error::Custom(
-                        "FROST root proposal has no participant-local root share".to_string(),
-                    )
-                })?;
-            private.validate_metadata(root, effective.member_id())?;
-        }
-        let guard = self.federation_frost_rotation_guard().await?;
-        effective.apply_frost_rotation(operation, &guard)?;
         let transaction = self.localstore.begin_transaction().await?;
         finish_federation_apply_transaction(transaction, entry, Ok(())).await
     }

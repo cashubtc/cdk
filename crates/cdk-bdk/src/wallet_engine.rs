@@ -339,42 +339,6 @@ impl BdkWalletEngine {
         Ok(psbt)
     }
 
-    /// Build an all-value epoch sweep to one consensus-allocated destination.
-    ///
-    /// The watch-only builder may select only the supplied accepted outpoints;
-    /// it creates no implicit address and sends the remainder, less fee, to the
-    /// exact active-epoch script supplied by consensus.
-    pub async fn build_federated_sweep_psbt(
-        &self,
-        destination_script: ScriptBuf,
-        fee_rate: FeeRate,
-        allowed_outpoints: &[OutPoint],
-    ) -> Result<Psbt, Error> {
-        if allowed_outpoints.is_empty() || destination_script.is_empty() {
-            return Err(Error::Wallet(
-                "federated sweep requires inputs and an allocated destination".to_string(),
-            ));
-        }
-        let mut wallet_with_db = self.wallet_with_db.lock().await;
-        let mut builder = wallet_with_db.wallet.build_tx();
-        builder
-            .add_utxos(allowed_outpoints)
-            .map_err(|error| Error::Wallet(error.to_string()))?;
-        builder
-            .manually_selected_only()
-            .drain_wallet()
-            .drain_to(destination_script)
-            .fee_rate(fee_rate)
-            .version(2)
-            .nlocktime(absolute::LockTime::ZERO)
-            .set_exact_sequence(Sequence::ENABLE_RBF_NO_LOCKTIME);
-        let psbt = builder
-            .finish()
-            .map_err(|error| Error::Wallet(error.to_string()))?;
-        wallet_with_db.persist()?;
-        Ok(psbt)
-    }
-
     /// Return the wallet's currently unspent outputs.
     pub async fn list_unspent(&self) -> Vec<bdk_wallet::LocalOutput> {
         let wallet_with_db = self.wallet_with_db.lock().await;
@@ -1003,87 +967,6 @@ mod tests {
                 FeeRate::from_sat_per_vb(1).expect("fee rate"),
                 allocated_change,
                 &[unknown],
-            )
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn federated_epoch_sweep_drains_only_selected_inputs_to_active_script() {
-        let retiring_dir = tempfile::tempdir().expect("retiring tempdir");
-        let active_dir = tempfile::tempdir().expect("active tempdir");
-        let (retiring_config, _) = descriptor_config(13, Network::Regtest);
-        let (active_config, _) = descriptor_config(14, Network::Regtest);
-        let retiring =
-            BdkWalletEngine::open_watch_only(retiring_config, chain_source(), retiring_dir.path())
-                .expect("retiring watch-only wallet");
-        let active =
-            BdkWalletEngine::open_watch_only(active_config, chain_source(), active_dir.path())
-                .expect("active watch-only wallet");
-        let funding_addresses = retiring
-            .reveal_addresses_to(KeychainKind::External, 1)
-            .await
-            .expect("retiring funding addresses");
-        let funding = Transaction {
-            version: transaction::Version::TWO,
-            lock_time: absolute::LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: OutPoint::new(Txid::all_zeros(), 0),
-                script_sig: ScriptBuf::new(),
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                witness: Witness::new(),
-            }],
-            output: funding_addresses
-                .iter()
-                .map(|address| TxOut {
-                    value: Amount::from_sat(30_000),
-                    script_pubkey: address.address.script_pubkey(),
-                })
-                .collect(),
-        };
-        retiring
-            .apply_accepted_transaction(funding.clone(), 1)
-            .await
-            .expect("apply retiring funding");
-        let destination = active
-            .reveal_addresses_to(KeychainKind::Internal, 0)
-            .await
-            .expect("active destination")
-            .pop()
-            .expect("active destination address")
-            .address
-            .script_pubkey();
-        let selected = OutPoint::new(funding.compute_txid(), 1);
-        let psbt = retiring
-            .build_federated_sweep_psbt(
-                destination.clone(),
-                FeeRate::from_sat_per_vb(1).expect("fee rate"),
-                &[selected],
-            )
-            .await
-            .expect("epoch sweep PSBT");
-
-        assert_eq!(psbt.unsigned_tx.version, transaction::Version::TWO);
-        assert_eq!(psbt.unsigned_tx.lock_time, absolute::LockTime::ZERO);
-        assert_eq!(psbt.unsigned_tx.input.len(), 1);
-        assert_eq!(psbt.unsigned_tx.input[0].previous_output, selected);
-        assert_eq!(
-            psbt.unsigned_tx.input[0].sequence,
-            Sequence::ENABLE_RBF_NO_LOCKTIME
-        );
-        assert_eq!(psbt.unsigned_tx.output.len(), 1);
-        assert_eq!(psbt.unsigned_tx.output[0].script_pubkey, destination);
-        assert!(psbt.unsigned_tx.output[0].value < Amount::from_sat(30_000));
-        assert!(!psbt
-            .unsigned_tx
-            .input
-            .iter()
-            .any(|input| input.previous_output == OutPoint::new(funding.compute_txid(), 0)));
-        assert!(retiring
-            .build_federated_sweep_psbt(
-                psbt.unsigned_tx.output[0].script_pubkey.clone(),
-                FeeRate::from_sat_per_vb(1).expect("fee rate"),
-                &[OutPoint::new(Txid::all_zeros(), 42)],
             )
             .await
             .is_err());

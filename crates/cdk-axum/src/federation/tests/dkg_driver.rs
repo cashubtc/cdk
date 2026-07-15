@@ -22,7 +22,6 @@ struct DkgDriverTestMember {
 struct DkgDriverTestFederation {
     public_config: FederationConfig,
     ceremony_id: FederationDkgCeremonyId,
-    root_key_epoch: u64,
     keyset_spec: FederationDkgKeysetSpec,
     transport: RouterFederationTransportRegistry,
     members: Vec<DkgDriverTestMember>,
@@ -114,7 +113,6 @@ impl DkgDriverTestFederation {
         Self {
             public_config,
             ceremony_id,
-            root_key_epoch: 1,
             keyset_spec,
             transport,
             members,
@@ -123,7 +121,6 @@ impl DkgDriverTestFederation {
 
     async fn drive_until_complete(&self, max_rounds: usize) -> usize {
         let mut attempted_deliveries = 0usize;
-        let mut last_outcomes = Vec::new();
         for _ in 0..max_rounds {
             let outcomes = self.drive_round().await;
             attempted_deliveries += outcomes
@@ -136,10 +133,9 @@ impl DkgDriverTestFederation {
             {
                 return attempted_deliveries;
             }
-            last_outcomes = outcomes;
         }
 
-        panic!("DKG ceremony did not complete in {max_rounds} rounds: {last_outcomes:#?}");
+        panic!("DKG ceremony did not complete in {max_rounds} rounds");
     }
 
     async fn drive_round(&self) -> Vec<FederationDkgDriverTickOutcome> {
@@ -163,7 +159,6 @@ impl DkgDriverTestFederation {
 
     async fn restart_member(&mut self, index: usize) {
         let member = &self.members[index];
-        let previous_ceremony = member.participant.participant_state().ceremony_id();
         let mut state = federation_route_state_for_private_with_db(
             self.public_config.clone(),
             member.private_config.clone(),
@@ -173,7 +168,7 @@ impl DkgDriverTestFederation {
         .await;
         state.federation.dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
             ceremony_id: self.ceremony_id,
-            root_key_epoch: self.root_key_epoch,
+            root_key_epoch: 1,
             keyset_spec: self.keyset_spec.clone(),
             driver: FederationDkgDriverRunConfig::default(),
         }));
@@ -184,12 +179,10 @@ impl DkgDriverTestFederation {
         )
         .await
         .expect("reload participant state");
-        if previous_ceremony == self.ceremony_id {
-            assert_eq!(
-                participant.participant_state(),
-                member.participant.participant_state()
-            );
-        }
+        assert_eq!(
+            participant.participant_state(),
+            member.participant.participant_state()
+        );
         let client = FederationRestPeerClient::new(
             self.transport.clone(),
             &self.public_config,
@@ -211,18 +204,6 @@ impl DkgDriverTestFederation {
         self.members[index].delivery_tracker =
             tokio::sync::Mutex::new(FederationDkgDeliveryTracker::default());
         self.members[index].client = client;
-    }
-
-    async fn start_next_ceremony(
-        &mut self,
-        ceremony_id: FederationDkgCeremonyId,
-        root_key_epoch: u64,
-    ) {
-        self.ceremony_id = ceremony_id;
-        self.root_key_epoch = root_key_epoch;
-        for index in 0..self.members.len() {
-            self.restart_member(index).await;
-        }
     }
 
     async fn assert_complete_and_consistent(&self) {
@@ -578,7 +559,7 @@ async fn dkg_completion_marks_registered_ceremony_complete_idempotently() {
         tx.commit().await.expect("commit ceremony registration");
     }
 
-    let _ = federation.drive_until_complete(12).await;
+    let _ = federation.drive_until_complete(24).await;
     let mut materialized_wallet_digest = None;
     for member in &federation.members {
         complete_federation_dkg_ceremony(&member.state, federation.ceremony_id)
@@ -629,120 +610,6 @@ async fn dkg_completion_marks_registered_ceremony_complete_idempotently() {
             None => materialized_wallet_digest = Some(digest),
         }
     }
-}
-
-#[tokio::test]
-async fn a_second_successful_dual_dkg_is_persisted_as_proposed_before_activation() {
-    let mut federation = DkgDriverTestFederation::new().await;
-    let _ = federation.drive_until_complete(24).await;
-    for member in &federation.members {
-        complete_federation_dkg_ceremony(&member.state, federation.ceremony_id)
-            .await
-            .expect("complete initial dual DKG");
-    }
-    federation
-        .start_next_ceremony(FederationDkgCeremonyId::from_bytes([78; 32]), 2)
-        .await;
-    let _ = federation.drive_until_complete(12).await;
-    for member in &federation.members {
-        complete_federation_dkg_ceremony(&member.state, federation.ceremony_id)
-            .await
-            .expect("complete rotating dual DKG");
-        let roots = member
-            .db
-            .get_federation_frost_root_public_configs()
-            .await
-            .expect("dual DKG roots");
-        assert_eq!(roots.len(), 2);
-        assert_eq!(
-            roots
-                .iter()
-                .find(|root| root.root_key_epoch == 1)
-                .expect("active root")
-                .state,
-            cdk::federation::FederationFrostEpochState::Active
-        );
-        assert_eq!(
-            roots
-                .iter()
-                .find(|root| root.root_key_epoch == 2)
-                .expect("proposed root")
-                .state,
-            cdk::federation::FederationFrostEpochState::Proposed
-        );
-    }
-}
-
-#[tokio::test]
-async fn completed_member_accepts_exact_activation_replay_without_volatile_finalized_config() {
-    let federation = DkgDriverTestFederation::new().await;
-    let _ = federation.drive_until_complete(12).await;
-    let receiver = &federation.members[0];
-    let sender = &federation.members[1];
-    let activations = receiver
-        .db
-        .get_federation_dkg_activations()
-        .await
-        .expect("activations before replay");
-    let activation = *activations
-        .iter()
-        .find(|activation| activation.signer == sender.private_config.member_id)
-        .expect("sender activation");
-    let sequences = receiver
-        .db
-        .get_federation_dkg_member_sequences()
-        .await
-        .expect("sequences before replay");
-    let sequence = sequences
-        .get(&sender.private_config.member_id)
-        .copied()
-        .unwrap_or_default()
-        .saturating_add(1);
-    let mut restarted_state = receiver.state.clone();
-    let dkg_config = restarted_state
-        .federation
-        .dkg_auto_start_config
-        .as_ref()
-        .expect("DKG config")
-        .clone();
-    restarted_state.federation.dkg_member_admission = Some(crate::federation_dkg_member_admission(
-        &federation.public_config,
-        dkg_config.driver.member_request_burst,
-        dkg_config.driver.member_request_refill_interval,
-    ));
-    assert!(restarted_state
-        .ready_federation_dkg_finalized_member_config()
-        .is_none());
-    let request = FederationSignedRequest::new_signed(
-        federation.public_config.federation_id,
-        receiver.private_config.member_id,
-        sequence,
-        FederationRestMessageKind::DkgActivation,
-        activation,
-        &sender.private_config,
-    )
-    .expect("signed activation replay");
-
-    let _ = post_dkg_activation(State(restarted_state), Json(request))
-        .await
-        .expect("exact durable activation replay");
-    assert_eq!(
-        receiver
-            .db
-            .get_federation_dkg_activations()
-            .await
-            .expect("activations after replay"),
-        activations
-    );
-    assert_eq!(
-        receiver
-            .db
-            .get_federation_dkg_member_sequences()
-            .await
-            .expect("sequences after replay")
-            .get(&sender.private_config.member_id),
-        Some(&sequence)
-    );
 }
 
 #[tokio::test]

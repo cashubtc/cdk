@@ -54,14 +54,12 @@ impl FederationPaymentObserver {
             let Some(allocation_wallet) = allocations.wallet(scope) else {
                 continue;
             };
-            let application = wallet_config
-                .cdk_onchain_applications
-                .iter()
-                .find(|application| {
-                    application.application_id == scope.application_id
-                        && application.application_key_epoch == scope.application_key_epoch
-                })
-                .ok_or(cdk::Error::Internal)?;
+            let application = &wallet_config.cdk_onchain_application;
+            if application.application_id != scope.application_id
+                || application.application_key_epoch != scope.application_key_epoch
+            {
+                return Err(cdk::Error::Internal.into());
+            }
             let source = FederationChainSourceDescriptor::new(
                 match wallet.observation_source().scope {
                     cdk_bdk::FederatedChainSourceScope::Independent => {

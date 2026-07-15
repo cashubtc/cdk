@@ -50,7 +50,7 @@ impl Default for ProposalOptions {
 
 fn transaction_scope(runtime: &FederationRuntimeConfig) -> FederationTransactionScope {
     let application = runtime
-        .active_cdk_onchain_application()
+        .cdk_onchain_application()
         .expect("active application");
     FederationTransactionScope {
         root_key_epoch: application.root_key_epoch,
@@ -468,102 +468,6 @@ fn accepted_consensus_state_validates_without_a_local_bdk_cache_and_allows_coin_
     assert!(runtime
         .validate_onchain_transaction_proposal(&state, &single_records, &single)
         .is_ok());
-}
-
-#[test]
-fn retiring_epoch_sweep_requires_one_active_destination_and_rejects_mixed_inputs() {
-    let (mut runtime, application_id) = runtime_with_address_application();
-    let source_scope = transaction_scope(&runtime);
-    let mut chain_state = FederationChainObservationState::new();
-    let input = spendable_input(&runtime, &mut chain_state, 9, 40_000);
-    let wallet = runtime
-        .public_config
-        .frost_wallet
-        .as_mut()
-        .expect("wallet config");
-    wallet.cdk_onchain_applications[0].state =
-        cdk_common::federation::FederationFrostEpochState::Retiring;
-    let mut destination_application = wallet.cdk_onchain_applications[0].clone();
-    destination_application.application_key_epoch = 4;
-    destination_application.state = cdk_common::federation::FederationFrostEpochState::Active;
-    wallet
-        .cdk_onchain_applications
-        .push(destination_application.clone());
-    wallet
-        .active_epochs
-        .application_key_epochs
-        .insert(application_id, 4);
-    let destination_scope = FederationTransactionScope {
-        root_key_epoch: destination_application.root_key_epoch,
-        application_id,
-        application_key_epoch: 4,
-        network: destination_application.network,
-        policy_version: destination_application.fee_policy_version,
-    };
-    let destination_script = wallet
-        .derive_cdk_onchain_script_for_known_epoch(
-            application_id,
-            4,
-            FederationAddressKeychain::Internal,
-            9,
-        )
-        .expect("destination script");
-    let output = TxOut {
-        value: BitcoinAmount::from_sat(39_500),
-        script_pubkey: destination_script,
-    };
-    let proposal = FederationTransactionProposal::new_epoch_sweep(
-        source_scope,
-        destination_scope,
-        FederationAllocatedAddressRef {
-            application_id,
-            application_key_epoch: 4,
-            quote: "accepted-sweep-destination".to_string(),
-            keychain: FederationAddressKeychain::Internal,
-            derivation_index: 9,
-        },
-        77,
-        runtime.member_id(),
-        Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: input.outpoint,
-                script_sig: ScriptBuf::new(),
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-                witness: Witness::new(),
-            }],
-            output: vec![output.clone()],
-        },
-        vec![input],
-        FederationTransactionChangeOutput {
-            derivation_index: 9,
-            output_index: 0,
-            output,
-        },
-        500,
-    )
-    .expect("sweep proposal");
-    runtime
-        .validate_onchain_transaction_proposal(&chain_state, &BTreeMap::new(), &proposal)
-        .expect("retiring-to-active sweep policy");
-
-    let mut mixed = proposal.clone();
-    mixed.selected_inputs[0].allocation.application_key_epoch = 4;
-    assert!(runtime
-        .validate_onchain_transaction_proposal(&chain_state, &BTreeMap::new(), &mixed)
-        .is_err());
-    let mut inactive_destination = runtime.clone();
-    inactive_destination
-        .public_config
-        .frost_wallet
-        .as_mut()
-        .expect("wallet")
-        .cdk_onchain_applications[1]
-        .state = cdk_common::federation::FederationFrostEpochState::Proposed;
-    assert!(inactive_destination
-        .validate_onchain_transaction_proposal(&chain_state, &BTreeMap::new(), &proposal)
-        .is_err());
 }
 
 #[test]

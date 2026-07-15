@@ -990,11 +990,11 @@ mod tests {
             }
             assert_ne!(
                 managers[0]
-                    .public_package(registration)
+                    .public_package(registration.id())
                     .expect("first application")
                     .group_key(),
                 managers[0]
-                    .public_package(second_registration)
+                    .public_package(second_registration.id())
                     .expect("second application")
                     .group_key()
             );
@@ -1050,7 +1050,7 @@ mod tests {
                 .collect::<Vec<_>>();
             ParticipantKeyManager::aggregate(
                 managers[0]
-                    .public_package(registration)
+                    .public_package(registration.id())
                     .expect("public package"),
                 session,
                 &message,

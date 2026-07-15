@@ -1,7 +1,7 @@
 use cdk_common::federation::{
-    FederationAddressAllocationScope, FederationAddressKeychain, FederationFrostActiveEpochs,
-    FederationFrostApplicationConfig, FederationFrostApplicationId, FederationFrostEpochState,
-    FederationFrostWalletConfig, FederationJournalAppendOutcome,
+    FederationAddressAllocationScope, FederationAddressKeychain, FederationDkgCeremonyId,
+    FederationFrostApplicationConfig, FederationFrostApplicationId,
+    FederationFrostRootPublicConfig, FederationFrostWalletConfig, FederationJournalAppendOutcome,
     FederationOnchainConfirmationPolicy,
 };
 
@@ -11,15 +11,28 @@ pub(super) fn attach_address_application(
     runtime: &mut FederationRuntimeConfig,
 ) -> FederationFrostApplicationId {
     let application_id = FederationFrostApplicationId::from_bytes([7; 32]).expect("application");
+    let root = FederationFrostRootPublicConfig {
+        version: 1,
+        federation_id: runtime.public_config.federation_id,
+        ceremony_id: FederationDkgCeremonyId::from_bytes([6; 32]),
+        root_key_epoch: 1,
+        dkg_protocol_version: 1,
+        ciphersuite_version: 1,
+        threshold: 1,
+        participant_mapping: BTreeMap::new(),
+        verification_shares: BTreeMap::new(),
+        untweaked_group_key: [2; 33],
+        transcript_binding: [5; 32],
+        canonical_public_package: Vec::new(),
+    };
     runtime.public_config.frost_wallet = Some(FederationFrostWalletConfig {
         version: 1,
-        roots: Vec::new(),
-        cdk_onchain_applications: vec![FederationFrostApplicationConfig {
+        root,
+        cdk_onchain_application: FederationFrostApplicationConfig {
             version: 1,
             application_id,
             application_key_epoch: 3,
             root_key_epoch: 1,
-            state: FederationFrostEpochState::Active,
             derivation_version: 1,
             authorization_policy: [8; 32],
             threshold: 1,
@@ -51,11 +64,6 @@ pub(super) fn attach_address_application(
             confirmation_policy: FederationOnchainConfirmationPolicy::new(2)
                 .expect("confirmation policy"),
             fee_policy_version: 1,
-        }],
-        registered_consumers: Vec::new(),
-        active_epochs: FederationFrostActiveEpochs {
-            root_key_epoch: 1,
-            application_key_epochs: BTreeMap::from([(application_id, 3)]),
         },
     });
     application_id

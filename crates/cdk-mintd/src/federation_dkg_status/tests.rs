@@ -334,12 +334,7 @@ fn completed_frost_root(config: &FederationConfig) -> FederationFrostRootPublicC
         public_package: root.public().encode(),
         encrypted_root_share: encrypted.to_bytes(),
     };
-    FederationFrostRootPublicConfig::from_dkg_record(
-        config,
-        &record,
-        FederationFrostEpochState::Active,
-    )
-    .expect("public FROST root")
+    FederationFrostRootPublicConfig::from_dkg_record(config, &record).expect("public FROST root")
 }
 
 #[cfg(feature = "sqlcipher")]
@@ -645,7 +640,7 @@ fn finalized_dkg_configs_are_exported_with_overwrite_protection() {
 }
 
 #[test]
-fn completed_dual_dkg_bootstraps_one_active_cdk_onchain_application() {
+fn completed_dual_dkg_bootstraps_one_cdk_onchain_application() {
     let fixture = dkg_completion_fixture(member_id(2));
     let mut finalized = FederationDkgFinalizedMemberConfig::from_records(
         &fixture.setup_public_config,
@@ -674,19 +669,12 @@ fn completed_dual_dkg_bootstraps_one_active_cdk_onchain_application() {
         .frost_wallet
         .as_ref()
         .expect("FROST wallet");
-    assert_eq!(wallet.roots.len(), 1);
-    assert_eq!(wallet.cdk_onchain_applications.len(), 1);
-    assert_eq!(wallet.registered_consumers.len(), 1);
-    assert_eq!(wallet.active_epochs.root_key_epoch, 1);
-    let application = &wallet.cdk_onchain_applications[0];
+    let application = &wallet.cdk_onchain_application;
     assert_eq!(application.network, bitcoin::Network::Regtest);
     assert_eq!(application.confirmation_policy.minimum_confirmations, 1);
     assert_eq!(application.fee_policy_version, 1);
     assert_eq!(application.threshold, 2);
-    assert_eq!(
-        wallet.roots[0].canonical_public_package,
-        root_package_before
-    );
+    assert_eq!(wallet.root.canonical_public_package, root_package_before);
     finalized
         .private_config
         .validate_against_public(&finalized.public_config)
@@ -707,7 +695,7 @@ fn completed_dual_dkg_bootstraps_one_active_cdk_onchain_application() {
 }
 
 #[test]
-fn frost_cdk_bootstrap_fails_closed_without_exactly_one_active_dual_dkg_root() {
+fn frost_cdk_bootstrap_fails_closed_without_exactly_one_dual_dkg_root() {
     let fixture = dkg_completion_fixture(member_id(2));
     let mut finalized = FederationDkgFinalizedMemberConfig::from_records(
         &fixture.setup_public_config,
@@ -727,7 +715,7 @@ fn frost_cdk_bootstrap_fails_closed_without_exactly_one_active_dual_dkg_root() {
         },
     )
     .expect_err("missing FROST root fails closed");
-    assert!(err.to_string().contains("exactly one active root"));
+    assert!(err.to_string().contains("exactly one root"));
     assert!(finalized.public_config.frost_wallet.is_none());
 }
 

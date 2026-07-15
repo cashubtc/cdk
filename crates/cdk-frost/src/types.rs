@@ -143,7 +143,7 @@ impl ApplicationKeyEpoch {
 }
 
 /// Immutable metadata for a reviewed application authorization adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplicationRegistration {
     id: ApplicationId,
     key_epoch: ApplicationKeyEpoch,

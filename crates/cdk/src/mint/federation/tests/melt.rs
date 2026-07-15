@@ -19,7 +19,7 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
         .derive_cdk_onchain_script(
             runtime_config.public_config(),
             runtime_config
-                .active_cdk_onchain_application()
+                .cdk_onchain_application()
                 .expect("application")
                 .application_id,
             3,

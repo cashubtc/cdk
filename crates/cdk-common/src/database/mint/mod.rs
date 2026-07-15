@@ -17,8 +17,7 @@ use crate::federation::{
     FederationDkgActivationRequest, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationFrostActiveEpochs,
-    FederationFrostApplicationConfig, FederationFrostConsumerRegistration,
+    FederationDkgTranscriptSignatureRequest, FederationFrostApplicationConfig,
     FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
@@ -987,18 +986,6 @@ pub trait FederationFrostWalletTransaction {
         &mut self,
         config: &FederationFrostApplicationConfig,
     ) -> Result<(), Self::Err>;
-
-    /// Persist one immutable root consumer registration.
-    async fn add_federation_frost_consumer_registration(
-        &mut self,
-        registration: &FederationFrostConsumerRegistration,
-    ) -> Result<(), Self::Err>;
-
-    /// Persist the canonical active root/application epoch selectors.
-    async fn set_federation_frost_active_epochs(
-        &mut self,
-        active_epochs: &FederationFrostActiveEpochs,
-    ) -> Result<(), Self::Err>;
 }
 
 #[cfg(feature = "federation")]
@@ -1228,16 +1215,6 @@ pub trait FederationFrostWalletDatabase {
     async fn get_federation_frost_application_configs(
         &self,
     ) -> Result<Vec<FederationFrostApplicationConfig>, Self::Err>;
-
-    /// Load all immutable root consumer registrations.
-    async fn get_federation_frost_consumer_registrations(
-        &self,
-    ) -> Result<Vec<FederationFrostConsumerRegistration>, Self::Err>;
-
-    /// Load the canonical active root/application epoch selectors.
-    async fn get_federation_frost_active_epochs(
-        &self,
-    ) -> Result<Option<FederationFrostActiveEpochs>, Self::Err>;
 }
 
 #[cfg(not(feature = "federation"))]

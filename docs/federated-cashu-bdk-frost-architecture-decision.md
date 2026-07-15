@@ -69,8 +69,8 @@ verification shares, group key, and transcript. It contains no BDK descriptor,
 Bitcoin network, chain code, BIP32 child, BIP341 tweak, transaction policy, or
 AlephBFT operation.
 
-Every consumer registers a stable application identifier, derivation version,
-authorization adapter, and lifecycle contract. Public additive derivation gives
+Every application defines a stable application identifier, derivation version,
+and authorization adapter. Public additive derivation gives
 namespace separation but not compromise isolation. The key manager exposes
 derived public packages, durable nonce commitments, authorized signature
 shares, and aggregate verification. It does not expose a plaintext share,
@@ -79,7 +79,7 @@ signing operation.
 
 Root reuse is permitted only when an adapter uses compatible secp256k1
 Schnorr/FROST algebra and satisfies the shared authorization, domain separation,
-nonce, persistence, recovery, and rotation rules. A consumer that needs another
+nonce, persistence, recovery, and static-key rules. An application that needs another
 curve or scheme, a complete private key, hardened private derivation, or an
 incompatible lifecycle requires a separate DKG.
 

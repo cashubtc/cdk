@@ -7,13 +7,10 @@ use std::str::FromStr;
 use cashu::MintUrl;
 use cdk_common::federation::{
     FederationAddressKeychain, FederationConfig, FederationDkgCeremonyId,
-    FederationFrostActiveEpochs, FederationFrostApplicationConfig, FederationFrostApplicationId,
-    FederationFrostApplicationUsage, FederationFrostConsumerRegistration,
-    FederationFrostDkgContext, FederationFrostDkgRound1Request, FederationFrostDkgRound2Request,
-    FederationFrostEpochState, FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig,
-    FederationFrostRootRecord, FederationFrostRotationGuard, FederationFrostRotationOperation,
-    FederationFrostWalletConfig, FederationOnchainConfirmationPolicy, MemberConfigPublic, MemberId,
-    ThresholdParams,
+    FederationFrostApplicationConfig, FederationFrostDkgContext, FederationFrostDkgRound1Request,
+    FederationFrostDkgRound2Request, FederationFrostRootPrivateConfig,
+    FederationFrostRootPublicConfig, FederationFrostRootRecord, FederationFrostWalletConfig,
+    FederationOnchainConfirmationPolicy, MemberConfigPublic, MemberId, ThresholdParams,
 };
 use cdk_common::SecretKey;
 use cdk_frost::rand_core::{OsRng, SeedableRng};
@@ -55,27 +52,12 @@ fn completed_roots() -> (
     Vec<FederationFrostRootRecord>,
     Vec<SecretEncryptionKey>,
 ) {
-    completed_roots_for(1, 51, 52)
-}
-
-fn completed_roots_for(
-    root_key_epoch: u64,
-    ceremony_seed: u8,
-    rng_seed: u8,
-) -> (
-    FederationConfig,
-    Vec<FederationFrostRootRecord>,
-    Vec<SecretEncryptionKey>,
-) {
     let config = config();
-    let context = FederationFrostDkgContext::new(
-        &config,
-        FederationDkgCeremonyId::from_bytes([ceremony_seed; 32]),
-        root_key_epoch,
-    )
-    .expect("FROST context");
+    let context =
+        FederationFrostDkgContext::new(&config, FederationDkgCeremonyId::from_bytes([51; 32]), 1)
+            .expect("FROST context");
     let frost_context = context.to_frost_context().expect("crypto context");
-    let mut rng = ChaCha20Rng::from_seed([rng_seed; 32]);
+    let mut rng = ChaCha20Rng::from_seed([52; 32]);
     let mut round1_secrets = BTreeMap::new();
     let mut round1_packages = BTreeMap::new();
     for id in 1..=3 {
@@ -227,12 +209,8 @@ fn frost_rest_payloads_reject_spoofed_senders_and_wrong_recipients() {
 #[test]
 fn frost_wallet_configs_round_trip_derive_addresses_and_reject_wrong_bindings() {
     let (mut config, records, storage_keys) = completed_roots();
-    let root = FederationFrostRootPublicConfig::from_dkg_record(
-        &config,
-        &records[0],
-        FederationFrostEpochState::Active,
-    )
-    .expect("public root config");
+    let root = FederationFrostRootPublicConfig::from_dkg_record(&config, &records[0])
+        .expect("public root config");
     let private = FederationFrostRootPrivateConfig::from_dkg_record(&root, &records[0])
         .expect("private root config");
     private
@@ -246,42 +224,25 @@ fn frost_wallet_configs_round_trip_derive_addresses_and_reject_wrong_bindings() 
         &config,
         &root,
         1,
-        FederationFrostEpochState::Active,
         bitcoin::Network::Regtest,
         FederationOnchainConfirmationPolicy::new(2).expect("confirmation policy"),
         1,
     )
     .expect("application config");
-    let registration = FederationFrostConsumerRegistration::new(
-        root.root_key_epoch,
-        application.application_id,
-        application.application_key_epoch,
-    )
-    .expect("consumer registration");
-    let active_epochs = FederationFrostActiveEpochs {
-        root_key_epoch: root.root_key_epoch,
-        application_key_epochs: [(application.application_id, 1)].into_iter().collect(),
-    };
-    let wallet = FederationFrostWalletConfig::new(
-        &config,
-        vec![root.clone()],
-        vec![application.clone()],
-        vec![registration.clone()],
-        active_epochs,
-    )
-    .expect("wallet config");
+    let wallet = FederationFrostWalletConfig::new(&config, root.clone(), application.clone())
+        .expect("wallet config");
     assert_eq!(
         root.digest().expect("root digest vector"),
         [
-            163, 120, 199, 199, 114, 188, 77, 172, 189, 65, 171, 138, 224, 143, 181, 208, 103, 87,
-            201, 171, 79, 152, 195, 105, 100, 68, 247, 1, 205, 95, 255, 119,
+            25, 49, 167, 123, 1, 143, 175, 217, 177, 47, 221, 160, 245, 195, 67, 219, 31, 20, 83,
+            120, 106, 214, 48, 43, 6, 104, 214, 253, 89, 124, 113, 25,
         ]
     );
     assert_eq!(
         wallet.digest().expect("wallet digest vector"),
         [
-            156, 124, 24, 13, 193, 23, 94, 231, 7, 105, 243, 93, 222, 198, 124, 56, 0, 122, 31,
-            173, 75, 124, 80, 25, 40, 240, 87, 253, 60, 87, 167, 154,
+            233, 128, 91, 98, 239, 186, 145, 186, 60, 3, 251, 56, 63, 200, 60, 237, 163, 147, 65,
+            140, 209, 134, 103, 58, 221, 27, 253, 123, 52, 232, 55, 58,
         ]
     );
     let base_digest = config.config_digest().expect("base config digest");
@@ -366,383 +327,12 @@ fn frost_wallet_configs_round_trip_derive_addresses_and_reject_wrong_bindings() 
         .validate_metadata(&root, member(1))
         .is_err());
 
-    let unregistered = FederationFrostWalletConfig::new(
-        &config,
-        vec![root.clone()],
-        vec![application.clone()],
-        Vec::new(),
-        wallet.active_epochs.clone(),
-    );
-    assert!(unregistered.is_err());
-    let mut consumers = wallet.registered_consumers.clone();
-    consumers.push(
-        FederationFrostConsumerRegistration::new(
-            root.root_key_epoch,
-            cdk_common::federation::FederationFrostApplicationId::from_bytes([99; 32])
-                .expect("test application"),
-            1,
-        )
-        .expect("test consumer"),
-    );
-    let with_test_consumer = FederationFrostWalletConfig::new(
-        &config,
-        vec![root.clone()],
-        vec![application.clone()],
-        consumers,
-        wallet.active_epochs.clone(),
-    )
-    .expect("additional consumer");
-    assert_eq!(with_test_consumer.roots[0], root);
-    assert_eq!(with_test_consumer.cdk_onchain_applications[0], application);
+    assert_eq!(wallet.root, root);
+    assert_eq!(wallet.cdk_onchain_application, application);
 
     let private_json = serde_json::to_string(&private).expect("private JSON");
     assert!(private_json.contains("encrypted_root_share"));
     let private_debug = format!("{private:?}");
     assert!(private_debug.contains("<redacted>"));
     assert!(!private_debug.contains(&format!("{:?}", private.encrypted_root_share)));
-}
-
-#[test]
-fn root_and_application_rotation_are_consensus_gated_and_usage_guarded() {
-    let (mut federation, first_records, _) = completed_roots_for(1, 71, 72);
-    let (_, second_records, _) = completed_roots_for(2, 73, 74);
-    let first_root = FederationFrostRootPublicConfig::from_dkg_record(
-        &federation,
-        &first_records[0],
-        FederationFrostEpochState::Active,
-    )
-    .expect("first root");
-    let second_root = FederationFrostRootPublicConfig::from_dkg_record(
-        &federation,
-        &second_records[0],
-        FederationFrostEpochState::Proposed,
-    )
-    .expect("second root");
-    let first_application = FederationFrostApplicationConfig::new_cdk_onchain(
-        &federation,
-        &first_root,
-        1,
-        FederationFrostEpochState::Active,
-        bitcoin::Network::Regtest,
-        FederationOnchainConfirmationPolicy::new(2).expect("confirmation policy"),
-        1,
-    )
-    .expect("first application");
-    let first_consumer = FederationFrostConsumerRegistration::new(
-        first_root.root_key_epoch,
-        first_application.application_id,
-        first_application.application_key_epoch,
-    )
-    .expect("first consumer");
-    let external_consumer = FederationFrostConsumerRegistration::new(
-        first_root.root_key_epoch,
-        FederationFrostApplicationId::from_bytes([91; 32]).expect("external application"),
-        1,
-    )
-    .expect("external consumer");
-    let initial = FederationFrostWalletConfig::new(
-        &federation,
-        vec![first_root.clone()],
-        vec![first_application.clone()],
-        vec![first_consumer, external_consumer.clone()],
-        FederationFrostActiveEpochs {
-            root_key_epoch: 1,
-            application_key_epochs: [(first_application.application_id, 1)]
-                .into_iter()
-                .collect(),
-        },
-    )
-    .expect("initial wallet");
-    federation.frost_wallet = Some(initial.clone());
-    federation.validate().expect("federation wallet");
-
-    let clear = FederationFrostRotationGuard::default();
-    let proposed = initial
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::propose_root(second_root.clone()),
-            &clear,
-        )
-        .expect("root proposal");
-    assert!(proposed
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::activate_root(99),
-            &clear,
-        )
-        .is_err());
-    let root_activated = proposed
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::activate_root(2),
-            &clear,
-        )
-        .expect("root activation");
-    assert_eq!(
-        root_activated.root(1).expect("old root").state,
-        FederationFrostEpochState::Retiring
-    );
-    assert_eq!(
-        root_activated.root(2).expect("new root").state,
-        FederationFrostEpochState::Active
-    );
-
-    let second_application = FederationFrostApplicationConfig::new_cdk_onchain(
-        &federation,
-        &second_root,
-        2,
-        FederationFrostEpochState::Proposed,
-        bitcoin::Network::Regtest,
-        FederationOnchainConfirmationPolicy::new(2).expect("confirmation policy"),
-        1,
-    )
-    .expect("second application");
-    let second_consumer = FederationFrostConsumerRegistration::new(
-        second_root.root_key_epoch,
-        second_application.application_id,
-        second_application.application_key_epoch,
-    )
-    .expect("second consumer");
-    let application_proposed = root_activated
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::propose_application(
-                second_application.clone(),
-                second_consumer,
-            ),
-            &clear,
-        )
-        .expect("application proposal");
-    let pending_payment = FederationFrostRotationGuard::new(
-        [(
-            (first_application.application_id, 1),
-            FederationFrostApplicationUsage {
-                unresolved_transactions: 1,
-                unresolved_payment_transactions: 1,
-                ..FederationFrostApplicationUsage::default()
-            },
-        )]
-        .into_iter()
-        .collect(),
-    );
-    assert!(application_proposed
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::activate_application(
-                second_application.application_id,
-                2,
-            ),
-            &pending_payment,
-        )
-        .is_err());
-    let post_activation_sweep = FederationFrostRotationGuard::new(
-        [(
-            (first_application.application_id, 1),
-            FederationFrostApplicationUsage {
-                unresolved_transactions: 1,
-                ..FederationFrostApplicationUsage::default()
-            },
-        )]
-        .into_iter()
-        .collect(),
-    );
-    let application_activated = application_proposed
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::activate_application(
-                second_application.application_id,
-                2,
-            ),
-            &post_activation_sweep,
-        )
-        .expect("application activation replay with a later migration sweep");
-    assert!(application_activated
-        .derive_cdk_onchain_script(
-            &federation,
-            first_application.application_id,
-            1,
-            FederationAddressKeychain::External,
-            0,
-        )
-        .is_err());
-    application_activated
-        .derive_cdk_onchain_script_for_known_epoch(
-            first_application.application_id,
-            1,
-            FederationAddressKeychain::External,
-            0,
-        )
-        .expect("retiring descriptor remains recognized");
-    application_activated
-        .derive_cdk_onchain_script(
-            &federation,
-            second_application.application_id,
-            2,
-            FederationAddressKeychain::External,
-            0,
-        )
-        .expect("new descriptor is active");
-    let public_status = application_activated.rotation_status();
-    assert_eq!(public_status.roots.len(), 2);
-    assert_eq!(public_status.applications.len(), 2);
-    for root in &public_status.roots {
-        assert_eq!(root.dkg_protocol_version, 1);
-        assert_eq!(root.ciphersuite_version, 1);
-        assert_eq!(
-            root.threshold,
-            federation.threshold_params.signature_threshold
-        );
-        assert!(!root.application_ids.is_empty());
-    }
-    let public_status_json = serde_json::to_string(&public_status).expect("public status JSON");
-    assert!(!public_status_json.contains("verification_shares"));
-    assert!(!public_status_json.contains("encrypted_root_share"));
-    assert!(!public_status_json.contains("secret"));
-    assert!(!public_status_json.contains("nonce"));
-    assert!(!public_status_json.contains("mnemonic"));
-    let restarted: FederationFrostWalletConfig = serde_json::from_slice(
-        &serde_json::to_vec(&application_activated).expect("persist rotating wallet"),
-    )
-    .expect("restart rotating wallet");
-    assert_eq!(restarted, application_activated);
-
-    let blocked = FederationFrostRotationGuard::new(
-        [(
-            (first_application.application_id, 1),
-            FederationFrostApplicationUsage {
-                unspent_utxos: 1,
-                ..FederationFrostApplicationUsage::default()
-            },
-        )]
-        .into_iter()
-        .collect(),
-    );
-    assert!(restarted
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::retire_application(
-                first_application.application_id,
-                1,
-            ),
-            &blocked,
-        )
-        .is_err());
-    assert!(restarted.ensure_root_share_deletable(1, &blocked).is_err());
-    let retire_application: FederationFrostRotationOperation = serde_json::from_slice(
-        &serde_json::to_vec(&FederationFrostRotationOperation::retire_application(
-            first_application.application_id,
-            1,
-        ))
-        .expect("persist catch-up operation"),
-    )
-    .expect("decode catch-up operation");
-    let application_retired = restarted
-        .apply_rotation(&federation, &retire_application, &clear)
-        .expect("drained application retirement after restart and catch-up");
-    assert!(application_retired
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::retire_root(1),
-            &clear,
-        )
-        .is_err());
-    let external_retired = application_retired
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::complete_consumer_retirement(external_consumer),
-            &clear,
-        )
-        .expect("external consumer retirement");
-    let root_retired = external_retired
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::retire_root(1),
-            &clear,
-        )
-        .expect("root retirement");
-    root_retired
-        .ensure_root_share_deletable(1, &clear)
-        .expect("retired root share deletion");
-}
-
-#[test]
-fn application_rotation_does_not_mutate_the_reusable_root() {
-    let (mut federation, records, _) = completed_roots_for(1, 81, 82);
-    let root = FederationFrostRootPublicConfig::from_dkg_record(
-        &federation,
-        &records[0],
-        FederationFrostEpochState::Active,
-    )
-    .expect("root");
-    let first = FederationFrostApplicationConfig::new_cdk_onchain(
-        &federation,
-        &root,
-        1,
-        FederationFrostEpochState::Active,
-        bitcoin::Network::Regtest,
-        FederationOnchainConfirmationPolicy::new(2).expect("confirmation policy"),
-        1,
-    )
-    .expect("first application");
-    let first_consumer = FederationFrostConsumerRegistration::new(
-        1,
-        first.application_id,
-        first.application_key_epoch,
-    )
-    .expect("first consumer");
-    let initial = FederationFrostWalletConfig::new(
-        &federation,
-        vec![root.clone()],
-        vec![first.clone()],
-        vec![first_consumer],
-        FederationFrostActiveEpochs {
-            root_key_epoch: 1,
-            application_key_epochs: [(first.application_id, 1)].into_iter().collect(),
-        },
-    )
-    .expect("initial wallet");
-    federation.frost_wallet = Some(initial.clone());
-    let root_digest = initial.root(1).expect("root").digest().expect("digest");
-    let second = FederationFrostApplicationConfig::new_cdk_onchain(
-        &federation,
-        &root,
-        2,
-        FederationFrostEpochState::Proposed,
-        bitcoin::Network::Regtest,
-        FederationOnchainConfirmationPolicy::new(2).expect("confirmation policy"),
-        1,
-    )
-    .expect("second application");
-    let second_consumer = FederationFrostConsumerRegistration::new(
-        1,
-        second.application_id,
-        second.application_key_epoch,
-    )
-    .expect("second consumer");
-    let proposed = initial
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::propose_application(second.clone(), second_consumer),
-            &FederationFrostRotationGuard::default(),
-        )
-        .expect("proposal");
-    let activated = proposed
-        .apply_rotation(
-            &federation,
-            &FederationFrostRotationOperation::activate_application(second.application_id, 2),
-            &FederationFrostRotationGuard::default(),
-        )
-        .expect("activation");
-    assert_eq!(
-        activated
-            .root(1)
-            .expect("same root")
-            .digest()
-            .expect("digest"),
-        root_digest
-    );
-    assert_eq!(
-        activated.root(1).expect("same root").state,
-        FederationFrostEpochState::Active
-    );
 }

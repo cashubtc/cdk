@@ -50,44 +50,6 @@ impl Mint {
                 .with_field("payload_json", serde_json::to_string(&application)?),
             );
         }
-        for consumer in db.get_federation_frost_consumer_registrations().await? {
-            snapshot.push(
-                FederationMaterializedStateRow::new(
-                    "federation_frost_consumer_registration",
-                    format!(
-                        "{}:{}:{}",
-                        consumer.root_key_epoch,
-                        consumer.application_id,
-                        consumer.application_key_epoch
-                    ),
-                )
-                .with_field("payload_json", serde_json::to_string(&consumer)?),
-            );
-        }
-        if let Some(active_epochs) = db.get_federation_frost_active_epochs().await? {
-            snapshot.push(
-                FederationMaterializedStateRow::new(
-                    "federation_frost_active_epochs",
-                    "active".to_string(),
-                )
-                .with_field("payload_json", serde_json::to_string(&active_epochs)?),
-            );
-        }
-        if let Some(runtime) = self.effective_federation_config().await? {
-            if let Some(wallet) = &runtime.public_config().frost_wallet {
-                snapshot.push(
-                    FederationMaterializedStateRow::new(
-                        "federation_frost_effective_wallet_config",
-                        "accepted".to_string(),
-                    )
-                    .with_field("payload_json", serde_json::to_string(wallet)?)
-                    .with_field(
-                        "rotation_status",
-                        serde_json::to_string(&wallet.rotation_status())?,
-                    ),
-                );
-            }
-        }
         for row in self
             .federation_address_allocation_state()
             .await?
@@ -219,7 +181,6 @@ impl Mint {
                         operation.keyset.clone(),
                     ));
                 }
-                FederationOperation::FrostRotation(_) => {}
                 FederationOperation::TransactionProposal(_)
                 | FederationOperation::TransactionSigned(_)
                 | FederationOperation::TransactionBroadcastIntent(_)
