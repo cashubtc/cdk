@@ -8424,6 +8424,23 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
         consensus.journal().latest_order_digest(),
         checkpoint.journal_order_digest
     );
+    drop(consensus);
+
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("persist post-checkpoint suffix");
+    let (consensus, _) = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("checkpoint suffix startup");
+    let consensus = consensus.expect("suffix consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.status().accepted_operation_count, 2);
+    assert_eq!(consensus.status().finalized_item_count, 2);
+    assert_eq!(consensus.journal().entries().len(), 1);
+    assert_eq!(consensus.journal().entries()[0].index, 1);
+    assert_eq!(consensus.finalized_items().len(), 1);
+    assert_eq!(consensus.finalized_items()[0].accepted_item_index, 1);
 }
 
 #[tokio::test]

@@ -1867,6 +1867,24 @@ fn consensus_runtime_starts_at_a_trusted_checkpoint_without_prefix_rows() {
     assert_eq!(runtime.finalized_items()[0].accepted_item_index, 1_200);
     assert_eq!(runtime.status().finalized_item_count, 1_201);
     assert_eq!(runtime.status().next_unit_finalization_index, 10);
+
+    let recovered = FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint_suffix(
+        &config,
+        member_id_value(1),
+        7,
+        &checkpoint,
+        Vec::new(),
+        runtime.finalized_items().to_vec(),
+    )
+    .expect("recover checkpoint suffix");
+    assert_eq!(recovered.status().accepted_operation_count, 1_000);
+    assert_eq!(recovered.status().finalized_item_count, 1_201);
+    assert_eq!(recovered.status().next_unit_finalization_index, 10);
+    assert_eq!(
+        recovered.next_unit_index_by_member()[&member_id_value(2)],
+        6
+    );
+    assert_eq!(recovered.finalized_items().len(), 1);
 }
 
 #[test]

@@ -1050,6 +1050,7 @@ impl FederationAlephBftFinalizationHandler {
         max_unit_payload_bytes: usize,
         allowed_members: Option<BTreeSet<MemberId>>,
         operation_config: Option<FederationConfig>,
+        checkpoint: Option<&FederationCheckpoint>,
         finalized_items: &[FederationAlephBftFinalizedItem],
     ) -> Result<Self> {
         ensure_non_zero_consensus_limit("max_unit_payload_bytes", max_unit_payload_bytes)?;
@@ -1061,20 +1062,42 @@ impl FederationAlephBftFinalizationHandler {
         let mut last_unit_key = None;
         let mut closed_unit_keys = BTreeSet::new();
         let mut next_item_index_by_unit = BTreeMap::new();
-        let mut next_unit_finalization_index_by_session = BTreeMap::new();
-        let mut next_unit_finalization_index = 0;
-        let mut next_item_index = 0;
-        let mut last_seen_session = None;
-        let mut next_unit_index_by_member = allowed_members
-            .iter()
-            .flatten()
-            .copied()
-            .map(|member_id| (member_id, 0))
-            .collect::<BTreeMap<_, _>>();
+        let mut next_unit_finalization_index_by_session = checkpoint
+            .map(|checkpoint| {
+                BTreeMap::from([(
+                    checkpoint.aleph_bft_session,
+                    checkpoint.next_unit_finalization_index,
+                )])
+            })
+            .unwrap_or_default();
+        let mut next_unit_finalization_index = checkpoint.map_or(0, |checkpoint| {
+            if checkpoint.aleph_bft_session == session {
+                checkpoint.next_unit_finalization_index
+            } else {
+                0
+            }
+        });
+        let base_next_item_index =
+            checkpoint.map_or(0, |checkpoint| checkpoint.finalized_next_item_index);
+        let mut next_item_index = base_next_item_index;
+        let mut last_seen_session = checkpoint.map(|checkpoint| checkpoint.aleph_bft_session);
+        let mut next_unit_index_by_member = match checkpoint {
+            Some(checkpoint) if checkpoint.aleph_bft_session == session => {
+                checkpoint.next_unit_index_by_member.clone()
+            }
+            _ => allowed_members
+                .iter()
+                .flatten()
+                .copied()
+                .map(|member_id| (member_id, 0))
+                .collect::<BTreeMap<_, _>>(),
+        };
+        let replay_floor_by_member = next_unit_index_by_member.clone();
 
         for (expected_index, finalized_item) in finalized_items.iter().enumerate() {
-            let expected_index =
-                u64::try_from(expected_index).expect("finalized item count fits in u64");
+            let expected_index = base_next_item_index.saturating_add(
+                u64::try_from(expected_index).expect("finalized item count fits in u64"),
+            );
             if finalized_item.accepted_item_index != expected_index {
                 return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
                     reason: format!(
@@ -1138,7 +1161,7 @@ impl FederationAlephBftFinalizationHandler {
                     }
                 }
                 (FederationAlephBftFinalizedItemStatus::DuplicateOperation, Some(operation_id)) => {
-                    if finalized_operation_ids.insert(operation_id) {
+                    if finalized_operation_ids.insert(operation_id) && checkpoint.is_none() {
                         return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
                             reason: "duplicate operation finalized before its accepted item"
                                 .to_string(),
@@ -1166,6 +1189,17 @@ impl FederationAlephBftFinalizationHandler {
                 finalized_item.unit_submitting_member,
                 finalized_item.unit_index,
             );
+            if checkpoint.is_some_and(|checkpoint| {
+                finalized_item.session == checkpoint.aleph_bft_session
+                    && checkpoint
+                        .next_unit_index_by_member
+                        .get(&finalized_item.unit_submitting_member)
+                        .is_some_and(|floor| finalized_item.unit_index < *floor)
+            }) {
+                return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                    reason: "finalized suffix replays a pre-checkpoint unit".to_string(),
+                });
+            }
             if last_unit_key != Some(unit_key) {
                 if let Some(previous_unit_key) = last_unit_key {
                     closed_unit_keys.insert(previous_unit_key);
@@ -1275,6 +1309,13 @@ impl FederationAlephBftFinalizationHandler {
             }
         }
 
+        if last_seen_session.is_some_and(|last_seen| last_seen < session) {
+            next_unit_finalization_index = 0;
+            for next_unit_index in next_unit_index_by_member.values_mut() {
+                *next_unit_index = 0;
+            }
+        }
+
         Ok(Self {
             federation_id,
             session,
@@ -1285,11 +1326,7 @@ impl FederationAlephBftFinalizationHandler {
             operation_config,
             finalized_units,
             finalized_operation_ids,
-            replay_floor_by_member: next_unit_index_by_member
-                .keys()
-                .copied()
-                .map(|member_id| (member_id, 0))
-                .collect(),
+            replay_floor_by_member,
             next_unit_index_by_member,
         })
     }
@@ -1664,6 +1701,58 @@ impl FederationConsensusRuntime {
         })
     }
 
+    fn recover_authenticated_checkpoint_suffix(
+        public_config: FederationConfig,
+        local_member: MemberId,
+        session: u64,
+        checkpoint: &FederationCheckpoint,
+        journal_entries: Vec<FederationJournalEntry>,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    ) -> Result<Self> {
+        checkpoint.validate_against_config(&public_config)?;
+        let allowed_members = public_config
+            .members
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let finalization_handler =
+            FederationAlephBftFinalizationHandler::recover_from_finalized_items(
+                public_config.federation_id,
+                session,
+                FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+                Some(allowed_members),
+                Some(public_config.clone()),
+                Some(checkpoint),
+                &finalized_items,
+            )?;
+        let next_local_unit_index = finalization_handler
+            .next_unit_index_by_member()
+            .get(&local_member)
+            .copied()
+            .ok_or(FederationError::UnknownMember {
+                member_id: local_member,
+            })?;
+        let journal = InMemoryFederationJournal::from_base_and_entries(
+            checkpoint.journal_next_index,
+            checkpoint.journal_order_digest,
+            journal_entries,
+        )?;
+        Ok(Self {
+            data_provider: FederationAlephBftUnitDataProvider::new(
+                public_config.federation_id,
+                local_member,
+                session,
+            )
+            .with_next_unit_index(next_local_unit_index),
+            finalization_handler,
+            journal,
+            finalized_items,
+            pending_finalization_units: BTreeMap::new(),
+            pending_finalization_operation_ids: BTreeSet::new(),
+            pending_finalization_conflict_keys: HashMap::new(),
+        })
+    }
+
     fn recover_inner(
         federation_id: FederationId,
         local_member: MemberId,
@@ -1679,6 +1768,7 @@ impl FederationConsensusRuntime {
                 FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
                 allowed_members,
                 operation_config,
+                None,
                 &finalized_items,
             )?;
         let mut journal = InMemoryFederationJournal::new();
@@ -2092,6 +2182,30 @@ impl FederationConsensusRuntime {
             member_id,
         )?;
         Self::from_authenticated_checkpoint(public_config.clone(), member_id, checkpoint)
+    }
+
+    /// Recover an authenticated retained suffix rooted at a verified checkpoint.
+    pub fn authenticated_aleph_bft_from_checkpoint_suffix(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        session: u64,
+        checkpoint: &FederationCheckpoint,
+        journal_entries: Vec<FederationJournalEntry>,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    ) -> Result<Self> {
+        validate_runtime_roster(
+            public_config.members.keys().copied(),
+            public_config.threshold_params.consensus_threshold,
+            member_id,
+        )?;
+        Self::recover_authenticated_checkpoint_suffix(
+            public_config.clone(),
+            member_id,
+            session,
+            checkpoint,
+            journal_entries,
+            finalized_items,
+        )
     }
 
     /// Recover an authenticated AlephBFT runtime from retained finalized items.

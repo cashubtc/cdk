@@ -993,7 +993,9 @@ impl InMemoryFederationJournal {
                             });
                         }
                     }
-                } else if !journal.conflict_keys.contains_key(conflict_key) {
+                } else if journal.base_next_index == 0
+                    && !journal.conflict_keys.contains_key(conflict_key)
+                {
                     return Err(FederationError::ConflictingOperation {
                         conflict_key: serde_json::to_string(conflict_key)?,
                         existing_operation_id: "none".to_string(),
