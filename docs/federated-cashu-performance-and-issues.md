@@ -124,7 +124,7 @@ result must prove; they are not additional independent tasks.
 | 3 | Exactly-once melt completion under repetition and member faults | Complete | 6 |
 | 4 | AlephBFT cadence, network backpressure, and HTTP liveness | Complete | 8 |
 | 5 | Signed private-status liveness and bounded operator reporting | Complete | 7, 12 |
-| 6 | Federation discovery and import completion | Confirmed historically; revalidation pending | 9 |
+| 6 | Federation discovery and import completion | Complete | 9 |
 | 7 | Wallet token-preparation and fragmentation scaling | Unconfirmed | 10 |
 | 8 | Controlled local and remote capacity characterization | Pending | 11 and performance baselines |
 | 9 | Production release validation and operator readiness | Pending | Remaining release work |
@@ -139,6 +139,7 @@ result must prove; they are not additional independent tasks.
 | U9 | Validate intermittent 60-second melt-quote creation latency | Unconfirmed | Found during Milestone 3 process verification |
 | U10 | Validate parallel quote-state observation failures | Unconfirmed | Found during Milestone 5 status-load verification |
 | U11 | Validate release-only status fixture quote failures | Unconfirmed | Found during Milestone 5 focused verification |
+| U12 | Validate federation registry save interruption atomicity | Unconfirmed | Found during Milestone 6 interruption verification |
 
 ## Executive summary
 
@@ -968,7 +969,7 @@ tests only if report construction or caching is the proven cause.
 
 ### Milestone 6: Federation discovery and import completion
 
-**Status:** Confirmed historically; revalidation pending
+**Status:** Complete
 
 **Covers:** Issue 9
 
@@ -987,18 +988,68 @@ file.
 - The failure has not yet been revalidated against the current code and
   local process harness.
 
+#### Current-revision investigation result
+
+The historical hang did not reproduce. The current URL path performs two
+sequential fetches from only the selected discovery member: the public
+federation config and public mint info. It then validates the source member,
+advertised federation ID/config digest, active v3 keyset, roster, and protocol
+metadata before entering the same registry `upsert` and save path as
+file and invite imports. It does not fan out to member metadata or keyset
+endpoints after discovery, so the historical post-fetch fanout hypothesis no
+longer describes this code.
+
+A fresh local five-member, threshold-three production-path DKG federation
+produced the following bounded results:
+
+- Ten fresh URL imports completed with no failures, 296.2 ms mean latency, and
+  300 ms maximum latency. Ten imports of the same immutable public config from
+  a file also completed with no failures, 170.9 ms mean latency, and 175 ms
+  maximum latency.
+- Every URL/file pair produced byte-equivalent normalized registries. Repeating
+  both imports in place kept exactly one wallet entry, proving idempotent
+  upsert rather than duplicate persistence.
+- With member 5 offline, five additional imports through healthy member 1 all
+  completed, with 328.4 ms mean and 418 ms maximum latency. Both a URL-imported
+  and file-imported wallet then used the stored connector successfully while
+  that minority member remained unavailable, in 74 ms and 68 ms respectively.
+- Interrupting URL import after 50 ms left no federation registry. Two retries
+  completed and retained exactly one entry.
+- Addressing the same discovery server through an unlisted source identity was
+  rejected with the expected source-URL mismatch and created no registry.
+- A standalone fakewallet mint returned HTTP 404 for the federation config;
+  URL import failed in 35 ms and created no federation registry.
+
+No current phase hung or approached its ten-second bound, and the tested
+pre-save interruption plus retry left no partial or duplicate registry. The
+historical Issue 9 failure is therefore closed on this revision without a
+production change. Direct-write crash atomicity is not proven and is tracked
+separately in U12 without a speculative persistence change.
+
+#### Verification and cleanup
+
+All 18 focused release-profile CLI federation tests passed, covering matching
+and mismatched discovery identity/digest, active v3 keysets, roster and protocol
+metadata, registry schema and privacy, invite/file loading, coordinator
+selection, and connector-policy reconstruction. The healthy, offline-member,
+conflicting-source, interruption/retry, connector-use, and standalone process
+checks above cover the remaining discovery boundaries. All generated member
+identities, databases, wallet seeds, registries, configs, logs, and measurement
+files were removed, and every temporary listener was stopped.
+
 #### Work checklist
 
-- [ ] Revalidate URL and file import against the same current local federation.
+- [x] Revalidate URL and file import against the same current local federation.
   If URL import no longer fails in repeated bounded runs, record the evidence
   and close without code; otherwise isolate and record the causal phase.
-- [ ] Implement the smallest discovery/import or centralized-connector fix,
-  preserving strict identity validation, semantic equivalence, idempotent
-  persistence, and bounded cancellation/cleanup.
-- [ ] Add the narrow regression and verify healthy URL/file equivalence, the
-  minority-member condition that exercises the cause, conflicting-identity
-  failure, interruption/retry, and standalone import behavior.
-- [ ] Remove temporary instrumentation, record sanitized results and tests not
+- [x] Implement the smallest discovery/import or centralized-connector fix only
+  if confirmed. No production fix was permitted because the current path did
+  not reproduce the historical hang.
+- [x] Use the existing narrow regressions and verify healthy URL/file
+  equivalence, the minority-member condition that exercises the cause,
+  conflicting-identity failure, interruption/retry, and standalone import
+  behavior.
+- [x] Remove temporary instrumentation, record sanitized results and tests not
   run, update the status with invalidation or fix evidence, and commit.
 
 #### Acceptance
@@ -1668,6 +1719,51 @@ behavior.
 **Minimum verification:** Repeated clean debug/release runs, setup-state and
 operation-order evidence, the two focused tests, adjacent payment-observation
 tests, and standalone quote coverage if shared production code changes.
+
+### Milestone U12: Validate federation registry save interruption atomicity
+
+**Status:** Unconfirmed
+
+**Found during:** Milestone 6 interruption/retry verification
+
+**Observation:** Interrupting one URL import after 50 ms left no federation
+registry, and two retries produced exactly one valid entry. Code inspection
+then showed that `FederationWalletRegistry::save` serializes the validated
+registry and writes the destination directly with `fs::write`; it does not use
+a temporary file plus atomic rename. The observed interruption occurred before
+registry creation and therefore did not exercise open/truncate/write failure.
+
+No partial registry or data loss was observed. A synchronous write of the
+current bounded registry may complete too quickly for ordinary process timing
+to reach the vulnerable interval, and filesystem behavior is another variable.
+The code shape alone is insufficient evidence for a persistence change, but
+the possibility of a truncated registry during process or host failure merits
+fault-injected validation rather than an atomicity claim.
+
+#### Work checklist
+
+- [ ] Add test-only filesystem fault injection around open/truncate/write and
+  process interruption, preserving the previous valid registry as the oracle.
+  Test an absent registry, replacement, and a bounded multi-wallet registry.
+- [ ] Compare the registry behavior with existing CDK durable-file patterns and
+  record filesystem assumptions, permissions, cleanup, and restart results.
+- [ ] If corruption or loss reproduces, apply the smallest existing bounded
+  temp-file, sync, and rename pattern. Do not invent a general storage layer or
+  claim durability beyond the proven filesystem contract.
+- [ ] Verify malformed temporary/destination files, retry, concurrent command
+  exclusion if relevant, secret-free permissions, and unchanged file/invite/URL
+  imports; remove fault injection, update the milestone, and commit separately.
+
+#### Acceptance
+
+**Success criteria:** An interrupted registry save either leaves the previous
+validated registry intact or leaves no registry on first creation, and retry
+produces exactly one normalized entry without accepting partial JSON or
+weakening validation.
+
+**Minimum verification:** Deterministic faults at each write boundary, previous
+file preservation, first-create and replacement cases, idempotent retry, and
+all three import sources.
 
 ## Scope and evidence labels
 
@@ -2405,7 +2501,8 @@ the retry policy creates avoidable duplicate delivery work.
 ### 9. Federation discovery/import can hang after a healthy config response
 
 **Severity:** Medium  
-**Status:** Confirmed in the Nocean setup; needs revalidation
+**Status:** Historical failure not reproduced on the current revision; closed
+without a production fix in Milestone 6
 
 `GET /federation/v1/config` returned HTTP 200 with a valid configuration, but
 `cdk-cli federation add --mint-url ...` hung during post-discovery
@@ -2414,6 +2511,14 @@ import/validation. Importing the same immutable config from a file succeeded.
 **Most likely cause:** the problem is after config retrieval, probably member
 metadata/keyset validation or incomplete fanout cancellation, not the discovery
 route itself. The exact import path must be rerun after the wallet fanout work.
+
+Milestone 6 showed that this hypothesis no longer matches the implementation:
+current discovery fetches config and mint info only from the selected member,
+validates them, and then uses the same registry path as file import. Ten URL
+imports and ten file imports completed within 300 ms and produced equivalent
+registries. Minority-member unavailability, interruption/retry, conflicting
+source identity, connector use, and standalone rejection were all bounded and
+left no partial or duplicate state.
 
 ## Detailed performance evidence
 
