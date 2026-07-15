@@ -596,7 +596,7 @@ async fn dkg_completion_marks_registered_ceremony_complete_idempotently() {
         let snapshot = member
             .state
             .mint
-            .federation_materialized_state_snapshot(&[])
+            .federation_materialized_state_snapshot()
             .await
             .expect("wallet materialized snapshot");
         let fingerprints = snapshot.row_fingerprints().expect("wallet fingerprints");

@@ -1,6 +1,6 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (milestone 1 rolling commitments and milestone 2 persistence core implemented)
+Status: in progress (milestone 1 commitments/direct audit and milestone 2 persistence core implemented)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -619,7 +619,7 @@ bounded quorum proof.
 - [x] Require business-state changes, terminal journal application state, the
       applied cursor, and the cumulative application digest to commit in one
       database transaction.
-- [ ] Define the authoritative materialized-state audit projection. It must
+- [x] Define the authoritative materialized-state audit projection. It must
       enumerate database state directly, exclude member-local/transient rows,
       and require no historical journal scan.
 - [x] Document the startup integrity model: normal startup trusts atomic
@@ -653,15 +653,31 @@ promotion rules. The second unit adds durable contiguous journal,
 finalized-item, and terminal-application frontiers in the shared SQL layer.
 Every finalized item and terminal application result now receives its rolling
 digest exactly once in the transaction that persists it; rollback tests prove
-the scalar frontier does not escape the transaction. The direct
-authoritative-state projection and deterministic boundary capture remain the
-open milestone-1 work.
+the scalar frontier does not escape the transaction.
+
+The direct authoritative-state projection no longer accepts or scans journal
+bodies. Applied operations transactionally maintain a compact typed registry
+of the current quote, completed-operation, proof-state, blind-signature, and
+keyset rows they write. A full audit enumerates that registry together with the
+federation-specific authoritative tables and hashes the current referenced
+database rows, including deterministic missing-row markers. The registry is
+only a direct row-discovery index; rejection details remain exclusively in the
+cumulative application digest. Effective keyset reconstruction reuses the same
+rotation records instead of replaying the journal. Deterministic boundary
+capture remains the open milestone-1 work.
 
 Verified with:
 
 - `cargo test -p cdk-common --features federation checkpoint --lib` (8 passed);
 - `cargo test -p cdk-sqlite --features federation federation_checkpoint_persistence`
   (1 passed);
+- `cargo test -p cdk-common --features federation
+  applied_operation_derives_direct_materialized_state_keys --lib` (1 passed);
+- `cargo test -p cdk --features mint,federation effective_federation_config`
+  (2 passed);
+- `cargo test -p cdk --features mint,federation materialized_digest` (1 passed);
+- `cargo test -p cdk --features mint,federation
+  accepted_member_quorum_materializes_and_catches_up_identically` (1 passed);
 - `cargo clippy -p cdk-common --lib --features federation -- -D warnings`;
 - `cargo clippy -p cdk-sql-common --lib --features federation -- -D warnings`;
 - `cargo fmt --all`.

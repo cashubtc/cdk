@@ -71,8 +71,8 @@ use cdk_common::federation::{
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalConsensusEvidence, FederationJournalDigest,
     FederationJournalEntry, FederationJournalTip, FederationMaterializedStateDigest,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationMaterializedStateKeyRecord, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,
 };
 use cdk_common::quote_id::QuoteId;
@@ -282,6 +282,37 @@ fn sql_row_to_federation_payment_observation_record(
         operation_index,
         observation,
     })
+}
+
+fn sql_row_to_federation_materialized_state_key(
+    row: Vec<Column>,
+) -> Result<FederationMaterializedStateKeyRecord, Error> {
+    unpack_into!(
+        let (state_kind, state_key, operation_index, operation_id, record_json) = row
+    );
+    let state_kind = column_as_string!(&state_kind);
+    let state_key = column_as_string!(&state_key);
+    let operation_index: u64 = column_as_number!(operation_index);
+    let operation_id = FederationOperationId::from_hex(column_as_string!(&operation_id))
+        .map_err(|e| Error::Internal(format!("Invalid federation operation ID: {e}")))?;
+    let record = serde_json::from_str::<FederationMaterializedStateKeyRecord>(&column_as_string!(
+        &record_json
+    ))
+    .map_err(|e| {
+        Error::Internal(format!(
+            "Invalid federation materialized-state key JSON: {e}"
+        ))
+    })?;
+    if record.operation_index != operation_index
+        || record.operation_id != operation_id
+        || record.kind_label() != state_kind
+        || record.row_key() != state_key
+    {
+        return Err(Error::Internal(
+            "Federation materialized-state key metadata mismatch".to_string(),
+        ));
+    }
+    Ok(record)
 }
 
 fn sql_row_to_federation_signature_share_record(

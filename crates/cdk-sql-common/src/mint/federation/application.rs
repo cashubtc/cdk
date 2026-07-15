@@ -167,6 +167,28 @@ where
         .collect()
     }
 
+    async fn get_federation_materialized_state_keys(
+        &self,
+    ) -> Result<Vec<FederationMaterializedStateKeyRecord>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT state_kind, state_key, operation_index, operation_id, record_json
+            FROM federation_materialized_state_keys
+            ORDER BY state_kind ASC, state_key ASC
+            "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_materialized_state_key)
+        .collect()
+    }
+
     async fn get_federation_mint_quote_states(
         &self,
         quote_ids: &[QuoteId],

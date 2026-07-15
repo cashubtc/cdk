@@ -10,11 +10,11 @@ use crate::federation::{
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
     FederationApplicationDigest, FederationApplicationState, FederationCheckpoint,
     FederationCheckpointFrontier, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationConfig,
-    FederationConfigDigest, FederationConfigSnapshot, FederationConsensusItem,
-    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
-    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationCheckpointSignature, FederationConfig, FederationConfigDigest,
+    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRuntime,
+    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
+    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgKeysetSpec,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
     FederationDkgPublicCeremony, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
     FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
@@ -837,6 +837,11 @@ where
             .application_next_index,
         0
     );
+    assert!(db
+        .get_federation_materialized_state_keys()
+        .await
+        .expect("materialized keys after application rollback")
+        .is_empty());
 
     let rejection = ErrorResponse::from(Error::TokenAlreadySpent);
     let terminal_states = [
@@ -873,6 +878,14 @@ where
         .expect("terminal checkpoint frontier");
     assert_eq!(frontier.application_next_index, 2);
     assert_eq!(frontier.application_digest, expected_application_digest);
+    let materialized_keys = db
+        .get_federation_materialized_state_keys()
+        .await
+        .expect("direct materialized-state keys");
+    assert_eq!(materialized_keys.len(), 1);
+    assert_eq!(materialized_keys[0].operation_id, entries[0].operation_id);
+    assert_eq!(materialized_keys[0].kind_label(), "mint_quote");
+    assert_eq!(materialized_keys[0].row_key(), "checkpoint-quote-1");
 
     let checkpoint = FederationCheckpoint {
         version: FEDERATION_CHECKPOINT_VERSION,

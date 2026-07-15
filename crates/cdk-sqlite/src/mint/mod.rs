@@ -600,6 +600,7 @@ mod test {
             "federation_checkpoint_signatures",
             "federation_checkpoint_quorums",
             "federation_checkpoint_state",
+            "federation_materialized_state_keys",
             "federation_aleph_bft_finalized_items",
             "federation_aleph_bft_backups",
             "federation_aleph_bft_pending_operations",
@@ -783,6 +784,7 @@ mod test {
                   'federation_catch_up_certificates',
                   'federation_checkpoints',
                   'federation_checkpoint_signatures',
+                  'federation_materialized_state_keys',
                   'federation_aleph_bft_finalized_items',
                   'federation_aleph_bft_pending_operations',
                   'federation_payment_observations',
@@ -824,6 +826,10 @@ mod test {
         assert!(
             index_names.contains("idx_federation_checkpoint_signatures_checkpoint"),
             "missing federation checkpoint-signature lookup index"
+        );
+        assert!(
+            index_names.contains("idx_federation_materialized_state_keys_operation"),
+            "missing federation materialized-state operation index"
         );
         assert!(
             index_names.contains("idx_federation_aleph_bft_finalized_items_session_unit"),

@@ -286,7 +286,7 @@ async fn concurrent_member_requests_and_offline_catch_up_converge_without_gaps()
         (0..24).collect()
     );
     let expected_digest = members[0]
-        .federation_materialized_state_snapshot(&entries)
+        .federation_materialized_state_snapshot()
         .await
         .expect("snapshot")
         .digest()
@@ -301,7 +301,7 @@ async fn concurrent_member_requests_and_offline_catch_up_converge_without_gaps()
         );
         assert_eq!(
             member
-                .federation_materialized_state_snapshot(&entries)
+                .federation_materialized_state_snapshot()
                 .await
                 .expect("member snapshot")
                 .digest()
@@ -441,13 +441,13 @@ async fn materialized_digest_changes_with_mapping_and_counter_state() {
         persist_and_apply_entry(&second_mint, entry).await;
     }
     let first_digest = first_mint
-        .federation_materialized_state_snapshot(&first_entries)
+        .federation_materialized_state_snapshot()
         .await
         .expect("first snapshot")
         .digest()
         .expect("first digest");
     let altered_mapping_digest = second_mint
-        .federation_materialized_state_snapshot(&second_entries)
+        .federation_materialized_state_snapshot()
         .await
         .expect("second snapshot")
         .digest()
@@ -456,7 +456,7 @@ async fn materialized_digest_changes_with_mapping_and_counter_state() {
 
     persist_and_apply_entry(&counter_mint, &first_entries[0]).await;
     let counter_digest = counter_mint
-        .federation_materialized_state_snapshot(&first_entries[..1])
+        .federation_materialized_state_snapshot()
         .await
         .expect("counter snapshot")
         .digest()

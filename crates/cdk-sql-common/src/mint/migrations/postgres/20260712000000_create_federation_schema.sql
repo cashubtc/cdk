@@ -88,6 +88,18 @@ CREATE TABLE federation_checkpoint_state (
     )
 );
 
+CREATE TABLE federation_materialized_state_keys (
+    state_kind TEXT NOT NULL,
+    state_key TEXT NOT NULL,
+    operation_index BIGINT NOT NULL,
+    operation_id TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    PRIMARY KEY (state_kind, state_key)
+);
+
+CREATE INDEX idx_federation_materialized_state_keys_operation
+ON federation_materialized_state_keys (operation_index, operation_id);
+
 CREATE TABLE federation_payment_observations (
     operation_id TEXT PRIMARY KEY NOT NULL,
     operation_index BIGINT NOT NULL,

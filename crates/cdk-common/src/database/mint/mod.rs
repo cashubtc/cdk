@@ -23,7 +23,8 @@ use crate::federation::{
     FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
-    FederationId, FederationJournalEntry, FederationJournalTip, FederationOperationId,
+    FederationId, FederationJournalEntry, FederationJournalTip,
+    FederationMaterializedStateKeyRecord, FederationOperationId,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
     FederationSignatureShareRecord, MemberId,
 };
@@ -1199,6 +1200,11 @@ pub trait FederationApplicationDatabase {
     async fn get_all_federation_payment_observations(
         &self,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
+
+    /// Get the direct registry of consensus-authoritative materialized row keys.
+    async fn get_federation_materialized_state_keys(
+        &self,
+    ) -> Result<Vec<FederationMaterializedStateKeyRecord>, Self::Err>;
 
     /// Get minimal mint-quote state for convergence projection in input order.
     async fn get_federation_mint_quote_states(

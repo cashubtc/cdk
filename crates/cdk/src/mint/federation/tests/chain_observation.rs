@@ -209,26 +209,16 @@ async fn accepted_member_quorum_materializes_and_catches_up_identically() {
         before_restart
     );
 
-    let entries = members[0]
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-        .expect("entries");
     let digest = members[0]
-        .federation_materialized_state_snapshot(&entries)
+        .federation_materialized_state_snapshot()
         .await
         .expect("snapshot")
         .digest()
         .expect("digest");
     for member in &members[1..] {
-        let member_entries = member
-            .localstore()
-            .get_federation_journal_entries()
-            .await
-            .expect("entries");
         assert_eq!(
             member
-                .federation_materialized_state_snapshot(&member_entries)
+                .federation_materialized_state_snapshot()
                 .await
                 .expect("snapshot")
                 .digest()

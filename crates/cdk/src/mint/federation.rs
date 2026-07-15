@@ -22,9 +22,10 @@ use cdk_common::federation::{
     FederationAddressKeychain, FederationApplicationState, FederationBlindSignatureShareSet,
     FederationChainObservation, FederationConfig, FederationConfigDigest, FederationError,
     FederationFrostApplicationId, FederationId, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
-    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
+    FederationKeysetRotationOperation, FederationMaterializedStateKey, FederationMeltOperation,
+    FederationMeltQuoteMetadata, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationMintRequest,
     FederationOnchainMeltPaymentReceipt, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -1420,17 +1421,24 @@ impl Mint {
         #[cfg(test)]
         self.federation_effective_config_rebuild_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let entries = self.localstore.get_federation_journal_entries().await?;
-
         let mut effective = config.clone();
-        for entry in entries {
-            if entry.status() != FederationOperationStatus::Applied {
-                continue;
-            }
-
-            if let FederationOperation::KeysetRotation(operation) = &entry.envelope.operation {
-                effective = effective.apply_keyset_rotation(operation)?;
-            }
+        let mut rotations = self
+            .localstore
+            .get_federation_materialized_state_keys()
+            .await?
+            .into_iter()
+            .filter_map(|record| match record.key {
+                FederationMaterializedStateKey::KeysetRotation { keyset } => {
+                    Some((record.operation_index, record.operation_id, keyset))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        rotations
+            .sort_by_key(|(operation_index, operation_id, _)| (*operation_index, *operation_id));
+        for (_, _, keyset) in rotations {
+            effective =
+                effective.apply_keyset_rotation(&FederationKeysetRotationOperation { keyset })?;
         }
 
         *cache = Some(effective.clone());

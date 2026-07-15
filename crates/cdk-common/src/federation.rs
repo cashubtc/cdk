@@ -107,7 +107,8 @@ pub use self::frost_dkg::{
 pub use self::journal::{
     FederationApplicationState, FederationJournalAppendOutcome, FederationJournalConsensusEvidence,
     FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
-    FederationMaterializedStateDigest, FederationMaterializedStateRow,
+    FederationMaterializedStateDigest, FederationMaterializedStateKey,
+    FederationMaterializedStateKeyRecord, FederationMaterializedStateRow,
     FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
     FederationOperationStatus, InMemoryFederationJournal,
 };
@@ -1480,6 +1481,9 @@ pub enum FederationError {
     /// Hex parsing error.
     #[error(transparent)]
     Hex(#[from] crate::util::hex::Error),
+    /// NUT-00 proof error.
+    #[error(transparent)]
+    Nut00(#[from] crate::nuts::nut00::Error),
     /// NUT-01 threshold BLS error.
     #[error(transparent)]
     Nut01(#[from] crate::nuts::nut01::Error),

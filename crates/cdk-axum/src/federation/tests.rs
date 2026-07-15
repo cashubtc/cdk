@@ -20938,7 +20938,7 @@ async fn local_status_uses_materialized_database_state_digest() {
 }
 
 #[tokio::test]
-async fn materialized_state_digest_tracks_rejection_without_changing_ordering_hash() {
+async fn materialized_state_digest_excludes_rejection_metadata() {
     let (state, _, _) = federation_route_state().await;
     let quote_id = QuoteId::new();
     state
@@ -20973,7 +20973,7 @@ async fn materialized_state_digest_tracks_rejection_without_changing_ordering_ha
         .await
         .expect("duplicate rejection digest");
 
-    assert_ne!(spent_digest, duplicate_digest);
+    assert_eq!(spent_digest, duplicate_digest);
 }
 
 #[tokio::test]

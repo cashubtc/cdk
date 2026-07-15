@@ -13,10 +13,11 @@ use bitcoin::hashes::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    FederationError, FederationOperation, FederationOperationConflictKey,
+    FederatedKeyset, FederationError, FederationOperation, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, MemberId, Result,
 };
 use crate::error::ErrorResponse;
+use crate::PublicKey;
 
 const FEDERATION_JOURNAL_GENESIS_VERSION: &[u8] = b"cdk-federation-journal-genesis-v1";
 const FEDERATION_JOURNAL_ENTRY_VERSION: &[u8] = b"cdk-federation-journal-entry-v1";
@@ -376,6 +377,97 @@ impl FederationMaterializedStateSnapshot {
     }
 }
 
+/// One consensus-authoritative SQL row key discovered when an operation is applied.
+///
+/// These keys are persisted transactionally with the operation's business
+/// writes and terminal application state. Full-state audits enumerate this
+/// compact registry and the referenced current rows instead of replaying the
+/// historical operation journal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FederationMaterializedStateKey {
+    /// Mint quote identified by its public quote ID.
+    MintQuote {
+        /// Quote ID.
+        quote: String,
+    },
+    /// Melt quote identified by its public quote ID.
+    MeltQuote {
+        /// Quote ID.
+        quote: String,
+    },
+    /// Completed value operation identified by its federation operation ID.
+    CompletedOperation,
+    /// Durable proof state identified by the proof's public Y.
+    ProofState {
+        /// Proof Y.
+        y: PublicKey,
+    },
+    /// Aggregate blind signature identified by its blinded message.
+    BlindSignature {
+        /// Blinded message.
+        blinded_message: PublicKey,
+    },
+    /// Applied public keyset rotation, including its complete deterministic payload.
+    KeysetRotation {
+        /// Rotated federated keyset.
+        keyset: FederatedKeyset,
+    },
+}
+
+impl FederationMaterializedStateKey {
+    /// Stable storage kind label.
+    #[must_use]
+    pub fn kind_label(&self) -> &'static str {
+        match self {
+            Self::MintQuote { .. } => "mint_quote",
+            Self::MeltQuote { .. } => "melt_quote",
+            Self::CompletedOperation => "completed_operation",
+            Self::ProofState { .. } => "proof_state",
+            Self::BlindSignature { .. } => "blind_signature",
+            Self::KeysetRotation { .. } => "keyset_rotation",
+        }
+    }
+
+    /// Stable logical row key within this storage kind.
+    #[must_use]
+    pub fn row_key(&self, operation_id: FederationOperationId) -> String {
+        match self {
+            Self::MintQuote { quote } | Self::MeltQuote { quote } => quote.clone(),
+            Self::CompletedOperation => operation_id.to_string(),
+            Self::ProofState { y } => y.to_hex(),
+            Self::BlindSignature { blinded_message } => blinded_message.to_hex(),
+            Self::KeysetRotation { keyset } => keyset.id.to_string(),
+        }
+    }
+}
+
+/// Durable reference to one consensus-authoritative materialized row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationMaterializedStateKeyRecord {
+    /// Accepted-operation index that most recently wrote this logical row.
+    pub operation_index: u64,
+    /// Accepted operation that most recently wrote this logical row.
+    pub operation_id: FederationOperationId,
+    /// Typed logical row key or applied config transition.
+    pub key: FederationMaterializedStateKey,
+}
+
+impl FederationMaterializedStateKeyRecord {
+    /// Stable storage kind label.
+    #[must_use]
+    pub fn kind_label(&self) -> &'static str {
+        self.key.kind_label()
+    }
+
+    /// Stable logical row key within this storage kind.
+    #[must_use]
+    pub fn row_key(&self) -> String {
+        self.key.row_key(self.operation_id)
+    }
+}
+
 /// Local application status for an accepted operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -580,6 +672,114 @@ impl FederationJournalEntry {
     #[must_use]
     pub fn rejection(&self) -> Option<&ErrorResponse> {
         self.application.rejection()
+    }
+
+    /// Derive the bounded set of authoritative materialized row keys written by this operation.
+    ///
+    /// Storage calls this only when the operation reaches `Applied`, in the
+    /// same transaction as its business writes and terminal digest frontier.
+    pub fn materialized_state_keys(&self) -> Result<Vec<FederationMaterializedStateKeyRecord>> {
+        let mut keys = BTreeMap::new();
+        let mut insert = |key: FederationMaterializedStateKey| {
+            keys.insert(
+                (key.kind_label().to_string(), key.row_key(self.operation_id)),
+                key,
+            );
+        };
+
+        match &self.envelope.operation {
+            FederationOperation::AddressAllocation(_)
+            | FederationOperation::ChainObservation(_)
+            | FederationOperation::TransactionProposal(_)
+            | FederationOperation::TransactionSigned(_)
+            | FederationOperation::TransactionBroadcastIntent(_)
+            | FederationOperation::TransactionBroadcastObservation(_) => {}
+            FederationOperation::MintQuote(operation) => {
+                insert(FederationMaterializedStateKey::MintQuote {
+                    quote: operation.quote.clone(),
+                });
+            }
+            FederationOperation::MintQuotePayment(observation) => {
+                insert(FederationMaterializedStateKey::MintQuote {
+                    quote: observation.quote.clone(),
+                });
+            }
+            FederationOperation::Mint(operation) => {
+                insert(FederationMaterializedStateKey::CompletedOperation);
+                for quote in operation.request.quote_ids() {
+                    insert(FederationMaterializedStateKey::MintQuote {
+                        quote: quote.to_string(),
+                    });
+                }
+                match &operation.request {
+                    super::FederationMintRequest::Single(request) => {
+                        for output in &request.outputs {
+                            insert(FederationMaterializedStateKey::BlindSignature {
+                                blinded_message: output.blinded_secret,
+                            });
+                        }
+                    }
+                    super::FederationMintRequest::Batch(request) => {
+                        for output in &request.outputs {
+                            insert(FederationMaterializedStateKey::BlindSignature {
+                                blinded_message: output.blinded_secret,
+                            });
+                        }
+                    }
+                }
+            }
+            FederationOperation::MeltQuote(operation) => {
+                insert(FederationMaterializedStateKey::MeltQuote {
+                    quote: operation.quote.clone(),
+                });
+            }
+            FederationOperation::MeltQuotePayment(observation) => {
+                insert(FederationMaterializedStateKey::MeltQuote {
+                    quote: observation.quote.clone(),
+                });
+            }
+            FederationOperation::Melt(operation) => {
+                insert(FederationMaterializedStateKey::CompletedOperation);
+                insert(FederationMaterializedStateKey::MeltQuote {
+                    quote: operation.request.quote().to_string(),
+                });
+                for proof in operation.request.inputs() {
+                    insert(FederationMaterializedStateKey::ProofState { y: proof.y()? });
+                }
+                if let Some(outputs) = operation.request.outputs() {
+                    for output in outputs {
+                        insert(FederationMaterializedStateKey::BlindSignature {
+                            blinded_message: output.blinded_secret,
+                        });
+                    }
+                }
+            }
+            FederationOperation::Swap(operation) => {
+                insert(FederationMaterializedStateKey::CompletedOperation);
+                for proof in operation.request.inputs() {
+                    insert(FederationMaterializedStateKey::ProofState { y: proof.y()? });
+                }
+                for output in operation.request.outputs() {
+                    insert(FederationMaterializedStateKey::BlindSignature {
+                        blinded_message: output.blinded_secret,
+                    });
+                }
+            }
+            FederationOperation::KeysetRotation(operation) => {
+                insert(FederationMaterializedStateKey::KeysetRotation {
+                    keyset: operation.keyset.clone(),
+                });
+            }
+        }
+
+        Ok(keys
+            .into_values()
+            .map(|key| FederationMaterializedStateKeyRecord {
+                operation_index: self.index,
+                operation_id: self.operation_id,
+                key,
+            })
+            .collect())
     }
 }
 
@@ -1392,6 +1592,30 @@ mod tests {
         assert!(
             serde_json::from_str::<FederationApplicationState>(r#"{"state":"rejected"}"#,).is_err()
         );
+    }
+
+    #[test]
+    fn applied_operation_derives_direct_materialized_state_keys() {
+        let mut journal = InMemoryFederationJournal::new();
+        let entry = journal
+            .append(mint_quote_envelope(1))
+            .expect("append mint quote")
+            .entry()
+            .clone();
+
+        let records = entry
+            .materialized_state_keys()
+            .expect("derive materialized-state keys");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].operation_index, entry.index);
+        assert_eq!(records[0].operation_id, entry.operation_id);
+        assert_eq!(records[0].kind_label(), "mint_quote");
+        assert_eq!(records[0].row_key(), "quote-1");
+        assert!(matches!(
+            &records[0].key,
+            FederationMaterializedStateKey::MintQuote { quote } if quote == "quote-1"
+        ));
     }
 
     #[test]

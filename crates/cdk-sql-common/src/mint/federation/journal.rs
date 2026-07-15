@@ -227,6 +227,43 @@ where
     Ok(())
 }
 
+async fn record_federation_materialized_state_keys<RM>(
+    transaction: &SQLTransaction<RM>,
+    entry: &FederationJournalEntry,
+) -> Result<(), Error>
+where
+    RM: DatabasePool + 'static,
+{
+    let records = entry.materialized_state_keys().map_err(|e| {
+        Error::Internal(format!(
+            "Could not derive federation materialized-state keys: {e}"
+        ))
+    })?;
+    for record in records {
+        query(
+            r#"
+            INSERT INTO federation_materialized_state_keys
+            (state_kind, state_key, operation_index, operation_id, record_json)
+            VALUES
+            (:state_kind, :state_key, :operation_index, :operation_id, :record_json)
+            ON CONFLICT (state_kind, state_key)
+            DO UPDATE SET
+                operation_index = EXCLUDED.operation_index,
+                operation_id = EXCLUDED.operation_id,
+                record_json = EXCLUDED.record_json
+            "#,
+        )?
+        .bind("state_kind", record.kind_label())
+        .bind("state_key", record.row_key())
+        .bind("operation_index", record.operation_index as i64)
+        .bind("operation_id", record.operation_id.to_string())
+        .bind("record_json", serde_json::to_string(&record)?)
+        .execute(&transaction.inner)
+        .await?;
+    }
+    Ok(())
+}
+
 async fn advance_federation_finalized_item_frontier<RM>(
     transaction: &SQLTransaction<RM>,
 ) -> Result<(), Error>
@@ -688,6 +725,23 @@ where
             return Err(Error::Internal(format!(
                 "Cannot change terminal federation application state at index {operation_index}"
             )));
+        }
+
+        if matches!(application, FederationApplicationState::Applied {}) {
+            let entry = query(federation_journal_entry_select!(
+                "WHERE operation_id = :operation_id FOR UPDATE"
+            ))?
+            .bind("operation_id", operation_id.to_string())
+            .fetch_one(&self.inner)
+            .await?
+            .map(sql_row_to_federation_journal_entry)
+            .transpose()?
+            .ok_or_else(|| {
+                Error::Internal(format!(
+                    "Cannot index missing federation operation {operation_id}"
+                ))
+            })?;
+            record_federation_materialized_state_keys(self, &entry).await?;
         }
 
         query(

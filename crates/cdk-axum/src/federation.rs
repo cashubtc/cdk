@@ -850,12 +850,9 @@ pub(crate) async fn materialized_state_digest(
 
 async fn materialized_state_snapshot(
     state: &MintState,
-    entries: &[FederationJournalEntry],
+    _entries: &[FederationJournalEntry],
 ) -> anyhow::Result<FederationMaterializedStateSnapshot> {
-    Ok(state
-        .mint
-        .federation_materialized_state_snapshot(entries)
-        .await?)
+    Ok(state.mint.federation_materialized_state_snapshot().await?)
 }
 
 #[cfg(test)]

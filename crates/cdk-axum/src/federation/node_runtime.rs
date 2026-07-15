@@ -610,7 +610,7 @@ impl FederationNodeRuntime {
             return;
         }
 
-        let local_digest = match mint.federation_materialized_state_snapshot(&entries).await {
+        let local_digest = match mint.federation_materialized_state_snapshot().await {
             Ok(snapshot) => match snapshot.digest() {
                 Ok(digest) => digest,
                 Err(err) => {
