@@ -22,7 +22,7 @@ use bdk_wallet::coin_selection::{
     decide_change, BranchAndBoundCoinSelection, CoinSelectionAlgorithm, CoinSelectionResult,
     Excess, InsufficientFunds,
 };
-use bdk_wallet::{KeychainKind, Utxo, WeightedUtxo};
+use bdk_wallet::WeightedUtxo;
 
 use crate::error::Error;
 use crate::types::{FeeEstimationConfig, PaymentTier};
@@ -260,35 +260,11 @@ impl CdkBdk {
             .map_err(|e| Error::Wallet(e.to_string()))?
             .script_pubkey();
 
-        let (weighted_utxos, change_script) = {
-            let wallet_with_db = self.wallet_with_db.lock().await;
-            let max_inputs = self
-                .batch_config
-                .fee_estimation
-                .quote_max_input_count
-                .max(1);
-            let weighted_utxos = wallet_with_db
-                .wallet
-                .list_unspent()
-                .take(max_inputs)
-                .map(|utxo| {
-                    Ok(WeightedUtxo {
-                        satisfaction_weight: wallet_with_db
-                            .wallet
-                            .public_descriptor(utxo.keychain)
-                            .max_weight_to_satisfy()
-                            .map_err(|e| Error::Wallet(e.to_string()))?,
-                        utxo: Utxo::Local(utxo),
-                    })
-                })
-                .collect::<Result<Vec<_>, Error>>()?;
-            let change_script = wallet_with_db
-                .wallet
-                .peek_address(KeychainKind::Internal, 0)
-                .address
-                .script_pubkey();
-            (weighted_utxos, change_script)
-        };
+        let max_inputs = self.batch_config.fee_estimation.quote_max_input_count;
+        let (weighted_utxos, change_script) = self
+            .wallet_engine
+            .fee_estimation_snapshot(max_inputs)
+            .await?;
 
         if weighted_utxos.is_empty() {
             return Err(Error::NoSpendableUtxos);
@@ -366,7 +342,11 @@ impl CdkBdk {
         }
 
         let target_blocks = target_blocks_for_tier(tier);
-        let rate_result = self.chain_source.fetch_fee_rate(target_blocks).await;
+        let rate_result = self
+            .wallet_engine
+            .chain_source
+            .fetch_fee_rate(target_blocks)
+            .await;
 
         let rate = match rate_result {
             Ok(rate) => rate,

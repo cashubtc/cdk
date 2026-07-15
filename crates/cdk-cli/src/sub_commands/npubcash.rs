@@ -383,7 +383,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
 
-    use super::{get_wallet_for_mint, get_wallet_for_mint_without_probe, set_mint};
+    use super::set_mint;
 
     #[cfg(feature = "federation")]
     #[tokio::test]

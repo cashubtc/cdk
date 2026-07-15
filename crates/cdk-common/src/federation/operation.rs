@@ -17,8 +17,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::journal::FederationJournalEntry;
 use super::{
-    FederatedKeyset, FederationConfig, FederationError, FederationId,
-    FederationPaymentObservationContext, MemberConfigPrivate, MemberId, Result,
+    FederatedKeyset, FederationAddressAllocationOperation, FederationChainObservation,
+    FederationConfig, FederationError, FederationId, FederationPaymentObservationContext,
+    FederationSignedTransaction, FederationTransactionBroadcastIntent,
+    FederationTransactionBroadcastObservation, FederationTransactionProposal, MemberConfigPrivate,
+    MemberId, Result,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::payment::PaymentIdentifier;
@@ -33,7 +36,7 @@ const FEDERATION_OPERATION_AUTHORIZATION_VERSION: &[u8] =
     b"cdk-federation-operation-authorization-v1";
 
 /// Version of the federation operation envelope format.
-pub const FEDERATION_OPERATION_VERSION: u16 = 1;
+pub const FEDERATION_OPERATION_VERSION: u16 = 4;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -124,6 +127,10 @@ impl<'de> Deserialize<'de> for FederationOperationId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FederationOperationKind {
+    /// Allocate one descriptor address in accepted consensus order.
+    AddressAllocation,
+    /// Submit bounded member-local Bitcoin chain evidence.
+    ChainObservation,
     /// Create and persist a mint quote.
     MintQuote,
     /// Observe a mint quote payment state.
@@ -140,11 +147,21 @@ pub enum FederationOperationKind {
     Swap,
     /// Propose a new federated v3/BLS aggregate keyset.
     KeysetRotation,
+    /// Propose and reserve one independently validated on-chain transaction.
+    TransactionProposal,
+    /// Persist one exact threshold-signed on-chain transaction.
+    TransactionSigned,
+    /// Persist authorization to broadcast one exact signed transaction.
+    TransactionBroadcastIntent,
+    /// Persist one authenticated member broadcast result.
+    TransactionBroadcastObservation,
 }
 
 impl fmt::Display for FederationOperationKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::AddressAllocation => f.write_str("address_allocation"),
+            Self::ChainObservation => f.write_str("chain_observation"),
             Self::MintQuote => f.write_str("mint_quote"),
             Self::MintQuotePayment => f.write_str("mint_quote_payment"),
             Self::Mint => f.write_str("mint"),
@@ -153,6 +170,12 @@ impl fmt::Display for FederationOperationKind {
             Self::Melt => f.write_str("melt"),
             Self::Swap => f.write_str("swap"),
             Self::KeysetRotation => f.write_str("keyset_rotation"),
+            Self::TransactionProposal => f.write_str("transaction_proposal"),
+            Self::TransactionSigned => f.write_str("transaction_signed"),
+            Self::TransactionBroadcastIntent => f.write_str("transaction_broadcast_intent"),
+            Self::TransactionBroadcastObservation => {
+                f.write_str("transaction_broadcast_observation")
+            }
         }
     }
 }
@@ -161,6 +184,31 @@ impl fmt::Display for FederationOperationKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum FederationOperationConflictKey {
+    /// One application-epoch quote key may only map to one address.
+    AddressAllocation {
+        /// Registered CDK on-chain application.
+        application_id: super::FederationFrostApplicationId,
+        /// Exact descriptor application epoch.
+        application_key_epoch: u64,
+        /// Quote/allocation key.
+        quote: String,
+    },
+    /// One member may submit one canonical view per outpoint and observed depth.
+    DepositObservation {
+        /// Observed transaction output.
+        outpoint: bitcoin::OutPoint,
+        /// Zero before confirmation, otherwise the observer's claimed depth.
+        confirmation_depth: u32,
+        /// Reporting federation member.
+        observer: MemberId,
+    },
+    /// One member may report one conservative reorg event per outpoint.
+    DepositReorgObservation {
+        /// Disconnected transaction output.
+        outpoint: bitcoin::OutPoint,
+        /// Reporting federation member.
+        observer: MemberId,
+    },
     /// One mint quote ID may only map to one quote request.
     MintQuote {
         /// Quote ID assigned by the federation.
@@ -179,6 +227,15 @@ pub enum FederationOperationConflictKey {
         state: MintQuoteState,
         /// Member that observed the payment state.
         observer: MemberId,
+    },
+    /// A cumulative on-chain payment revision is unique by its output commitment.
+    MintQuotePaymentRevision {
+        /// Quote ID being observed.
+        quote: String,
+        /// Member that observed the cumulative payment.
+        observer: MemberId,
+        /// Commitment to the exact accepted output set.
+        payment_id: [u8; 32],
     },
     /// One melt quote ID may only map to one quote request.
     MeltQuote {
@@ -203,6 +260,31 @@ pub enum FederationOperationConflictKey {
     KeysetRotation {
         /// Proposed aggregate keyset ID.
         keyset_id: Id,
+    },
+    /// One accepted on-chain payment intent may be assigned only once.
+    OnchainPaymentIntent {
+        /// Melt quote authorizing the intent.
+        quote: String,
+    },
+    /// One canonical intent may be assigned to only one accepted transaction.
+    OnchainPaymentIntentAssignment {
+        /// Canonical intent identifier.
+        intent_id: super::FederationOnchainPaymentIntentId,
+    },
+    /// One deterministic payment batch may accept only one transaction lineage.
+    OnchainBatch {
+        /// Canonical batch identifier.
+        batch_id: super::FederationOnchainBatchId,
+    },
+    /// One wallet UTXO may be reserved by only one accepted transaction.
+    OnchainUtxo {
+        /// Exact wallet outpoint.
+        outpoint: bitcoin::OutPoint,
+    },
+    /// Original and replacement proposals share one serialized lineage.
+    OnchainReplacementLineage {
+        /// Batch-bound replacement lineage.
+        lineage: super::FederationOnchainBatchId,
     },
 }
 
@@ -511,12 +593,14 @@ pub(crate) fn test_melt_quote_operation(
                 change: None,
                 request: Some(request.request.to_string()),
                 unit: Some(request.unit.clone()),
+                method: PaymentMethod::BOLT11,
             })
         }
         MeltQuoteRequest::Custom(request) => MeltQuoteCreateResponse::Custom((
             PaymentMethod::from(request.method.as_str()),
             crate::MeltQuoteCustomResponse {
                 quote: quote.to_string(),
+                method: PaymentMethod::from(request.method.as_str()),
                 amount: Amount::from(1),
                 fee_reserve: Some(Amount::from(1)),
                 state: MeltQuoteState::Unpaid,
@@ -635,12 +719,18 @@ impl FederationPaymentObservation {
             FederationOperation::MeltQuotePayment(observation) => {
                 Some(Self::MeltQuote(observation.clone()))
             }
-            FederationOperation::MintQuote(_)
+            FederationOperation::AddressAllocation(_)
+            | FederationOperation::ChainObservation(_)
+            | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)
             | FederationOperation::MeltQuote(_)
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
-            | FederationOperation::KeysetRotation(_) => None,
+            | FederationOperation::KeysetRotation(_)
+            | FederationOperation::TransactionProposal(_)
+            | FederationOperation::TransactionSigned(_)
+            | FederationOperation::TransactionBroadcastIntent(_)
+            | FederationOperation::TransactionBroadcastObservation(_) => None,
         }
     }
 
@@ -1042,10 +1132,7 @@ impl FederationPaymentObservationReport {
                 .map(|group| FederationPaymentObservationEvidenceGroupSummary {
                     state: group.representative.state_label(),
                     observers: group.observers.clone(),
-                    observer_count: match group.observers.len().try_into() {
-                        Ok(count) => count,
-                        Err(_) => u16::MAX,
-                    },
+                    observer_count: group.observers.len().try_into().unwrap_or(u16::MAX),
                     operation_ids: group.operation_ids.clone(),
                     operation_indices: group.operation_indices.clone(),
                     conflicting_observers: group.conflicting_observers.clone(),
@@ -1094,19 +1181,16 @@ impl FederationPaymentObservationQuorum {
     /// Number of distinct members with matching observations.
     #[must_use]
     pub fn matching_count(&self) -> u16 {
-        match self.matching_observers.len().try_into() {
-            Ok(count) => count,
-            Err(_) => u16::MAX,
-        }
+        self.matching_observers.len().try_into().unwrap_or(u16::MAX)
     }
 
     /// Number of distinct members with conflicting observations.
     #[must_use]
     pub fn conflicting_count(&self) -> u16 {
-        match self.conflicting_observers.len().try_into() {
-            Ok(count) => count,
-            Err(_) => u16::MAX,
-        }
+        self.conflicting_observers
+            .len()
+            .try_into()
+            .unwrap_or(u16::MAX)
     }
 
     /// Return true once the matching observer set reaches the configured quorum.
@@ -1251,6 +1335,7 @@ impl FederationOperationBalanceAudit {
 }
 
 /// Consensus operation payload.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -1259,6 +1344,10 @@ impl FederationOperationBalanceAudit {
     deny_unknown_fields
 )]
 pub enum FederationOperation {
+    /// Allocate one deterministic descriptor address after consensus.
+    AddressAllocation(FederationAddressAllocationOperation),
+    /// Submit one bounded local-chain observation for consensus materialization.
+    ChainObservation(FederationChainObservation),
     /// Create and persist a mint quote.
     MintQuote(FederationMintQuoteOperation),
     /// Observe a mint quote payment state.
@@ -1275,6 +1364,14 @@ pub enum FederationOperation {
     Swap(FederationSwapOperation),
     /// Add a new federated aggregate keyset after consensus.
     KeysetRotation(FederationKeysetRotationOperation),
+    /// Accept an exact unsigned on-chain transaction after consensus.
+    TransactionProposal(FederationTransactionProposal),
+    /// Accept the exact threshold-signed transaction after consensus.
+    TransactionSigned(FederationSignedTransaction),
+    /// Authorize network submission only after exact signed-byte persistence.
+    TransactionBroadcastIntent(FederationTransactionBroadcastIntent),
+    /// Record one authenticated local-backend broadcast result.
+    TransactionBroadcastObservation(FederationTransactionBroadcastObservation),
 }
 
 impl FederationOperation {
@@ -1282,6 +1379,8 @@ impl FederationOperation {
     #[must_use]
     pub fn kind(&self) -> FederationOperationKind {
         match self {
+            Self::AddressAllocation(_) => FederationOperationKind::AddressAllocation,
+            Self::ChainObservation(_) => FederationOperationKind::ChainObservation,
             Self::MintQuote(_) => FederationOperationKind::MintQuote,
             Self::MintQuotePayment(_) => FederationOperationKind::MintQuotePayment,
             Self::Mint(_) => FederationOperationKind::Mint,
@@ -1290,6 +1389,14 @@ impl FederationOperation {
             Self::Melt(_) => FederationOperationKind::Melt,
             Self::Swap(_) => FederationOperationKind::Swap,
             Self::KeysetRotation(_) => FederationOperationKind::KeysetRotation,
+            Self::TransactionProposal(_) => FederationOperationKind::TransactionProposal,
+            Self::TransactionSigned(_) => FederationOperationKind::TransactionSigned,
+            Self::TransactionBroadcastIntent(_) => {
+                FederationOperationKind::TransactionBroadcastIntent
+            }
+            Self::TransactionBroadcastObservation(_) => {
+                FederationOperationKind::TransactionBroadcastObservation
+            }
         }
     }
 
@@ -1297,15 +1404,48 @@ impl FederationOperation {
     #[must_use]
     pub fn conflict_keys(&self) -> Vec<FederationOperationConflictKey> {
         match self {
+            Self::AddressAllocation(operation) => {
+                vec![FederationOperationConflictKey::AddressAllocation {
+                    application_id: operation.application_id,
+                    application_key_epoch: operation.application_key_epoch,
+                    quote: operation.quote.clone(),
+                }]
+            }
+            Self::ChainObservation(FederationChainObservation::Deposit(observation)) => {
+                vec![FederationOperationConflictKey::DepositObservation {
+                    outpoint: observation.outpoint,
+                    confirmation_depth: observation
+                        .confirmation
+                        .map_or(0, |confirmation| confirmation.confirmation_depth),
+                    observer: observation.observer,
+                }]
+            }
+            Self::ChainObservation(FederationChainObservation::Reorg(observation)) => {
+                vec![FederationOperationConflictKey::DepositReorgObservation {
+                    outpoint: observation.outpoint,
+                    observer: observation.observer,
+                }]
+            }
             Self::MintQuote(operation) => vec![FederationOperationConflictKey::MintQuote {
                 quote: operation.quote.clone(),
             }],
             Self::MintQuotePayment(observation) => {
-                vec![FederationOperationConflictKey::MintQuotePayment {
-                    quote: observation.quote.clone(),
-                    state: observation.state,
-                    observer: observation.observer,
-                }]
+                match (&observation.method, &observation.payment_id) {
+                    (method, Some(PaymentIdentifier::PaymentId(payment_id)))
+                        if method.is_onchain() =>
+                    {
+                        vec![FederationOperationConflictKey::MintQuotePaymentRevision {
+                            quote: observation.quote.clone(),
+                            observer: observation.observer,
+                            payment_id: *payment_id,
+                        }]
+                    }
+                    _ => vec![FederationOperationConflictKey::MintQuotePayment {
+                        quote: observation.quote.clone(),
+                        state: observation.state,
+                        observer: observation.observer,
+                    }],
+                }
             }
             Self::Mint(operation) => operation
                 .request
@@ -1333,7 +1473,33 @@ impl FederationOperation {
                     keyset_id: operation.keyset.id,
                 }]
             }
-            Self::Swap(_) => Vec::new(),
+            Self::TransactionProposal(proposal) => {
+                if proposal.replacement_of.is_some() {
+                    return Vec::new();
+                }
+                let mut keys = Vec::with_capacity(
+                    proposal.intent_ids.len() + proposal.selected_inputs.len() + 2,
+                );
+                keys.push(FederationOperationConflictKey::OnchainBatch {
+                    batch_id: proposal.batch_id,
+                });
+                keys.push(FederationOperationConflictKey::OnchainReplacementLineage {
+                    lineage: proposal.replacement_lineage,
+                });
+                keys.extend(proposal.intent_ids.iter().copied().map(|intent_id| {
+                    FederationOperationConflictKey::OnchainPaymentIntentAssignment { intent_id }
+                }));
+                keys.extend(proposal.selected_inputs.iter().map(|input| {
+                    FederationOperationConflictKey::OnchainUtxo {
+                        outpoint: input.outpoint,
+                    }
+                }));
+                keys
+            }
+            Self::Swap(_)
+            | Self::TransactionSigned(_)
+            | Self::TransactionBroadcastIntent(_)
+            | Self::TransactionBroadcastObservation(_) => Vec::new(),
         }
     }
 
@@ -1341,13 +1507,23 @@ impl FederationOperation {
     #[must_use]
     pub fn quote(&self) -> Option<&str> {
         match self {
+            Self::AddressAllocation(operation) => Some(operation.quote.as_str()),
+            Self::ChainObservation(FederationChainObservation::Deposit(observation)) => {
+                Some(observation.allocation.quote.as_str())
+            }
+            Self::ChainObservation(FederationChainObservation::Reorg(_)) => None,
             Self::MintQuote(operation) => Some(operation.quote.as_str()),
             Self::MintQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::Mint(operation) => operation.request.quote_ids().into_iter().next(),
             Self::MeltQuote(operation) => Some(operation.quote.as_str()),
             Self::MeltQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
-            Self::Swap(_) | Self::KeysetRotation(_) => None,
+            Self::Swap(_)
+            | Self::KeysetRotation(_)
+            | Self::TransactionProposal(_)
+            | Self::TransactionSigned(_)
+            | Self::TransactionBroadcastIntent(_)
+            | Self::TransactionBroadcastObservation(_) => None,
         }
     }
 
@@ -1360,7 +1536,14 @@ impl FederationOperation {
     pub fn balance_audit(&self) -> Result<FederationOperationBalanceAudit> {
         let operation_kind = self.kind();
         match self {
-            Self::MintQuote(_) | Self::KeysetRotation(_) => {
+            Self::AddressAllocation(_)
+            | Self::ChainObservation(_)
+            | Self::MintQuote(_)
+            | Self::KeysetRotation(_)
+            | Self::TransactionProposal(_)
+            | Self::TransactionSigned(_)
+            | Self::TransactionBroadcastIntent(_)
+            | Self::TransactionBroadcastObservation(_) => {
                 Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
             }
             Self::MintQuotePayment(observation) => FederationOperationBalanceAudit::checked(
@@ -1603,14 +1786,22 @@ impl FederationOperationEnvelope {
             })?;
 
         let claimed_observer = match &self.operation {
+            FederationOperation::ChainObservation(observation) => Some(observation.observer()),
             FederationOperation::MintQuotePayment(observation) => Some(observation.observer),
             FederationOperation::MeltQuotePayment(observation) => Some(observation.observer),
-            FederationOperation::MintQuote(_)
+            FederationOperation::TransactionProposal(proposal) => Some(proposal.proposer),
+            FederationOperation::TransactionBroadcastObservation(observation) => {
+                Some(observation.observer)
+            }
+            FederationOperation::AddressAllocation(_)
+            | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)
             | FederationOperation::MeltQuote(_)
             | FederationOperation::Melt(_)
             | FederationOperation::Swap(_)
-            | FederationOperation::KeysetRotation(_) => None,
+            | FederationOperation::KeysetRotation(_)
+            | FederationOperation::TransactionSigned(_)
+            | FederationOperation::TransactionBroadcastIntent(_) => None,
         };
         if let Some(claimed_observer) = claimed_observer {
             if claimed_observer != authorization.author {
@@ -1818,6 +2009,7 @@ mod tests {
                 change: None,
                 request: Some(offer.to_string()),
                 unit: Some(CurrencyUnit::Sat),
+                method: PaymentMethod::BOLT12,
             }),
             metadata: FederationMeltQuoteMetadata::default(),
         };
@@ -1844,6 +2036,7 @@ mod tests {
                 quote: onchain_quote_id.to_string(),
                 amount: Amount::from(100),
                 unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Custom("onchain".to_string()),
                 state: MeltQuoteState::Unpaid,
                 expiry: 4_000_000_000,
                 request: "bcrt1qexample".to_string(),
@@ -1903,6 +2096,27 @@ mod tests {
 
     fn keyset_rotation_operation(seed: u8) -> FederationOperation {
         FederationOperation::KeysetRotation(keyset_rotation(seed))
+    }
+
+    fn signed_transaction_operation(seed: u8) -> FederationOperation {
+        let proposal_id = super::super::FederationTransactionProposalId::from_bytes([11; 32]);
+        let txid = bitcoin::Txid::from_str(&"22".repeat(32)).expect("txid");
+        FederationOperation::TransactionSigned(FederationSignedTransaction {
+            version: 1,
+            proposal_id,
+            txid,
+            transaction_bytes: vec![seed],
+            policy_audit: super::super::FederationTransactionPolicyAudit {
+                proposal_id,
+                txid,
+                fee_sat: 1,
+                fee_rate_sat_per_kwu: 1,
+                weight: 1,
+                fee_contributions: BTreeMap::new(),
+                taproot_sighashes: Vec::new(),
+            },
+            input_signatures: Vec::new(),
+        })
     }
 
     fn output(amount: u64, hex: &str) -> BlindedMessage {
@@ -1998,6 +2212,10 @@ mod tests {
             request: format!("invoice-{quote}"),
             amount: Some(Amount::from(amount)),
             unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
+            amount_paid: Amount::ZERO,
+            amount_issued: Amount::ZERO,
+            updated_at: 0,
             state: MintQuoteState::Unpaid,
             expiry: None,
             pubkey: None,
@@ -2090,7 +2308,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v1_golden_vector() {
+    fn canonical_operation_encoding_matches_v4_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -2106,12 +2324,12 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":1}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":4}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "f3c0714fa42d9af1c4ac53555c9d854ee66fc4bc2d28710bbdb26acde2278bcd"
+            "01d678fdcaea34b609ebd79940f71c02100e94f731b0ccb174f63e2e5abdc20c"
         );
     }
 
@@ -2171,7 +2389,7 @@ mod tests {
             )],
         ));
 
-        for found in [0, 2, u16::MAX] {
+        for found in [0, 1, u16::MAX] {
             let mut unsupported = envelope.clone();
             unsupported.version = found;
             let err = unsupported
@@ -2210,7 +2428,7 @@ mod tests {
         let encoded = serde_json::to_vec(&envelope).expect("operation json");
         FederationOperationEnvelope::from_json_slice(&encoded).expect("valid operation envelope");
 
-        for found in [0, 2, u16::MAX] {
+        for found in [0, 1, u16::MAX] {
             let mut unsupported = envelope.clone();
             unsupported.version = found;
             let unsupported = serde_json::to_vec(&unsupported).expect("unsupported operation json");
@@ -2428,6 +2646,21 @@ mod tests {
     }
 
     #[test]
+    fn signed_transactions_defer_conflicts_until_signature_validation() {
+        let first = envelope(signed_transaction_operation(1));
+        let duplicate = envelope(signed_transaction_operation(1));
+        let different = envelope(signed_transaction_operation(2));
+
+        assert!(first.operation.conflict_keys().is_empty());
+        assert_eq!(
+            first.operation.kind(),
+            FederationOperationKind::TransactionSigned
+        );
+        assert!(!first.conflicts_with(&duplicate).expect("conflict check"));
+        assert!(!first.conflicts_with(&different).expect("conflict check"));
+    }
+
+    #[test]
     fn keyset_rotation_operation_id_tracks_payload() {
         let first = envelope(keyset_rotation_operation(7));
         let duplicate = envelope(keyset_rotation_operation(7));
@@ -2448,7 +2681,7 @@ mod tests {
         let request_one = MintQuoteRequest::Custom {
             method: PaymentMethod::Custom("custom".to_string()),
             request: crate::MintQuoteCustomRequest {
-                amount: Amount::from(21),
+                amount: Some(Amount::from(21)),
                 unit: CurrencyUnit::Sat,
                 description: None,
                 pubkey: None,
@@ -2458,7 +2691,7 @@ mod tests {
         let request_two = MintQuoteRequest::Custom {
             method: PaymentMethod::Custom("custom".to_string()),
             request: crate::MintQuoteCustomRequest {
-                amount: Amount::from(21),
+                amount: Some(Amount::from(21)),
                 unit: CurrencyUnit::Sat,
                 description: None,
                 pubkey: None,
@@ -2475,9 +2708,11 @@ mod tests {
                     response: MintQuoteCustomResponse {
                         quote: "quote-custom".to_string(),
                         request: "custom-payment-request".to_string(),
+                        method: PaymentMethod::Custom("custom".to_string()),
                         amount: Some(Amount::from(21)),
                         amount_paid: Amount::ZERO,
                         amount_issued: Amount::ZERO,
+                        updated_at: 0,
                         unit: Some(CurrencyUnit::Sat),
                         expiry: None,
                         pubkey: None,
@@ -2496,9 +2731,11 @@ mod tests {
                     response: MintQuoteCustomResponse {
                         quote: "quote-custom".to_string(),
                         request: "custom-payment-request".to_string(),
+                        method: PaymentMethod::Custom("custom".to_string()),
                         amount: Some(Amount::from(21)),
                         amount_paid: Amount::ZERO,
                         amount_issued: Amount::ZERO,
+                        updated_at: 0,
                         unit: Some(CurrencyUnit::Sat),
                         expiry: None,
                         pubkey: None,
@@ -2974,7 +3211,7 @@ mod tests {
             FederationPaymentObservationContext::MintQuote,
             "mint-quote",
             2,
-            &[matching_second.clone()],
+            std::slice::from_ref(&matching_second),
         );
         assert_eq!(
             quorum.status,
@@ -3192,6 +3429,7 @@ mod tests {
             method: "custom".to_string(),
             request: "payreq".to_string(),
             unit: CurrencyUnit::Sat,
+            amount: None,
             extra: json!({"route": "fake"}),
         });
         let melt_quote =

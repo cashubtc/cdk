@@ -360,6 +360,7 @@ pub struct FederationAlephBftPendingOperationRecord {
 }
 
 /// One item that can enter the federation consensus pipeline.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -1403,6 +1404,10 @@ type FederationAlephBftPendingUnitKey = (u64, MemberId, u64, FederationAlephBftU
 
 impl FederationConsensusRuntime {
     /// Create an AlephBFT runtime with default limits.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the compile-time default finalization limits are zero.
     #[must_use]
     pub fn new(federation_id: FederationId, local_member: MemberId, session: u64) -> Self {
         Self {
@@ -1640,6 +1645,10 @@ impl FederationConsensusRuntime {
     }
 
     /// Return an operator-facing status snapshot for this runtime.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an in-memory item count cannot be represented as `u64`.
     #[must_use]
     pub fn status(&self) -> FederationConsensusRuntimeStatus {
         FederationConsensusRuntimeStatus {
@@ -2007,7 +2016,7 @@ impl FederationConsensusRuntime {
         self.begin_session(session)
     }
 
-    /// Begin a later AlephBFT session, requeueing local units that were not
+    /// Begin a later AlephBFT session, requeuing local units that were not
     /// finalized before the previous session ended.
     pub fn begin_aleph_bft_session_requeue_pending_finalization(
         &mut self,

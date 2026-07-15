@@ -69,6 +69,11 @@ const SMOKE_SCRIPT_TEMPLATE: &str = include_str!("../dev/federation/smoke-local-
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const LIVE_DKG_MEMBER_CONFIG_FILE: &str = "dkg-live-config.toml";
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
+const FROST_BDK_MEMBER_CONFIG_FILE: &str = "frost-bdk-config.toml";
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
+const FROST_BDK_MEMBER_CONFIG_TEMPLATE: &str =
+    include_str!("../dev/federation/frost-bdk-member-config.toml.in");
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
 const LIVE_DKG_CONFIG_TEMPLATE: &str = include_str!("../dev/federation/live-dkg-config.toml.in");
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
 const LIVE_DKG_FINAL_CONFIG_DIR: &str = "dkg-final";
@@ -125,6 +130,7 @@ pub(crate) struct TrustedDealerMemberArtifacts {
     pub(crate) config_path: PathBuf,
     pub(crate) dkg_setup_config_path: PathBuf,
     pub(crate) live_dkg_config_path: PathBuf,
+    pub(crate) frost_bdk_config_path: PathBuf,
     pub(crate) private_config_path: PathBuf,
     pub(crate) dkg_setup_private_config_path: PathBuf,
     pub(crate) work_dir: PathBuf,
@@ -412,6 +418,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         let config_path = member_dir.join(MEMBER_CONFIG_FILE);
         let dkg_setup_config_path = member_dir.join(DKG_SETUP_MEMBER_CONFIG_FILE);
         let live_dkg_config_path = member_dir.join(LIVE_DKG_MEMBER_CONFIG_FILE);
+        let frost_bdk_config_path = member_dir.join(FROST_BDK_MEMBER_CONFIG_FILE);
         let member_url = member.public_mint_url.to_string();
         let federation_api_url = member.federation_api_url.to_string();
         let database_config = member_database_config(args, *member_id)?;
@@ -474,6 +481,21 @@ pub(crate) fn generate_trusted_dealer_artifacts(
         )?;
         live_dkg_config_toml.push_str(&live_dkg_config_suffix);
         write_private_text_file(&live_dkg_config_path, &live_dkg_config_toml, args.force)?;
+        let frost_bdk_config_toml = member_frost_bdk_config_toml(
+            member_id,
+            &args.host,
+            &member_url,
+            &federation_api_url,
+            listen_port,
+            prometheus_port,
+            &live_dkg_final_config_dir.join(PUBLIC_CONFIG_FILE),
+            &live_dkg_final_config_dir.join(PRIVATE_CONFIG_FILE),
+            &frost_bdk_config_path,
+            &live_dkg_work_dir,
+            &database_config,
+            args.deterministic_test_seed.as_deref(),
+        )?;
+        write_private_text_file(&frost_bdk_config_path, &frost_bdk_config_toml, args.force)?;
 
         member_artifacts.insert(
             *member_id,
@@ -481,6 +503,7 @@ pub(crate) fn generate_trusted_dealer_artifacts(
                 config_path,
                 dkg_setup_config_path,
                 live_dkg_config_path,
+                frost_bdk_config_path,
                 private_config_path: core_member.private_config_path.clone(),
                 dkg_setup_private_config_path: core_member.dkg_setup_private_config_path.clone(),
                 work_dir,
@@ -1408,6 +1431,65 @@ fn member_config_toml(
 }
 
 #[cfg(all(feature = "federation", feature = "fakewallet"))]
+#[allow(clippy::too_many_arguments)]
+fn member_frost_bdk_config_toml(
+    member_id: &MemberId,
+    listen_host: &str,
+    mint_url: &str,
+    federation_url: &str,
+    listen_port: u16,
+    prometheus_port: u16,
+    public_config_path: &Path,
+    private_config_path: &Path,
+    config_path: &Path,
+    work_dir: &Path,
+    database_config: &str,
+    deterministic_test_seed: Option<&str>,
+) -> Result<String> {
+    let member_label = member_id.get().to_string();
+    let mnemonic = match deterministic_test_seed {
+        Some(seed) => deterministic_test_mnemonic(seed, &[&member_label])?,
+        None => Mnemonic::generate(12)
+            .map_err(|err| anyhow!("failed to generate member mnemonic: {err}"))?,
+    }
+    .to_string();
+    let description = format!(
+        "Local federated BDK member {} at {}",
+        member_id.get(),
+        federation_url
+    );
+    render_generated_template(
+        FROST_BDK_MEMBER_CONFIG_TEMPLATE,
+        &[
+            ("@@WORK_DIR@@", &toml_string(&path_to_string(work_dir))?),
+            (
+                "@@CONFIG_PATH@@",
+                &toml_string(&path_to_string(config_path))?,
+            ),
+            ("@@MINT_URL@@", &toml_string(mint_url)?),
+            ("@@LISTEN_HOST@@", &toml_string(listen_host)?),
+            ("@@LISTEN_PORT@@", &listen_port.to_string()),
+            ("@@MNEMONIC@@", &toml_string(&mnemonic)?),
+            (
+                "@@NAME@@",
+                &toml_string(&format!("CDK FROST federation member {}", member_id.get()))?,
+            ),
+            ("@@DESCRIPTION@@", &toml_string(&description)?),
+            ("@@PROMETHEUS_PORT@@", &prometheus_port.to_string()),
+            ("# @@DATABASE_CONFIG@@\n", database_config),
+            (
+                "@@PUBLIC_CONFIG_PATH@@",
+                &toml_string(&path_to_string(public_config_path))?,
+            ),
+            (
+                "@@PRIVATE_CONFIG_PATH@@",
+                &toml_string(&path_to_string(private_config_path))?,
+            ),
+        ],
+    )
+}
+
+#[cfg(all(feature = "federation", feature = "fakewallet"))]
 fn member_database_config(
     args: &FederationTrustedDealerArgs,
     member_id: MemberId,
@@ -1562,6 +1644,8 @@ fn local_live_dkg_smoke_script(
         .live_dkg_final_config_dir
         .join(PUBLIC_CONFIG_FILE);
     let config_cases = member_path_cases(member_artifacts, |member| &member.live_dkg_config_path)?;
+    let frost_bdk_config_cases =
+        member_path_cases(member_artifacts, |member| &member.frost_bdk_config_path)?;
     let work_dir_cases = member_path_cases(member_artifacts, |member| &member.live_dkg_work_dir)?;
     let setup_private_config_cases = member_path_cases(member_artifacts, |member| {
         &member.dkg_setup_private_config_path
@@ -1570,6 +1654,8 @@ fn local_live_dkg_smoke_script(
         member_path_cases(member_artifacts, |member| &member.live_dkg_final_config_dir)?;
     let public_mint_url_cases =
         member_string_cases(member_artifacts, |member| &member.public_mint_url);
+    let prometheus_url_cases =
+        member_string_cases(member_artifacts, |member| &member.prometheus_url);
     let setup_public_config_path = shell_single_quote(&path_to_string(setup_public_config_path));
     let primary_final_public_config =
         shell_single_quote(&path_to_string(&primary_final_public_config));
@@ -1583,6 +1669,7 @@ fn local_live_dkg_smoke_script(
     let interrupted_member = interrupted_member.get().to_string();
     let held_member = held_member.get().to_string();
     let member_count = member_artifacts.len().to_string();
+    let signature_threshold = args.threshold.to_string();
     let unit = shell_single_quote(&unit);
     render_generated_template(
         LIVE_DKG_SMOKE_SCRIPT_TEMPLATE,
@@ -1598,6 +1685,7 @@ fn local_live_dkg_smoke_script(
             ("@@INTERRUPTED_MEMBER@@", &interrupted_member),
             ("@@HELD_MEMBER@@", &held_member),
             ("# @@CONFIG_CASES@@\n", &config_cases),
+            ("# @@FROST_BDK_CONFIG_CASES@@\n", &frost_bdk_config_cases),
             ("# @@WORK_DIR_CASES@@\n", &work_dir_cases),
             (
                 "# @@SETUP_PRIVATE_CONFIG_CASES@@\n",
@@ -1605,11 +1693,13 @@ fn local_live_dkg_smoke_script(
             ),
             ("# @@FINAL_CONFIG_DIR_CASES@@\n", &final_config_dir_cases),
             ("# @@PUBLIC_MINT_URL_CASES@@\n", &public_mint_url_cases),
+            ("# @@PROMETHEUS_URL_CASES@@\n", &prometheus_url_cases),
             (
                 "# @@POSTGRES_SCHEMA_RESET_CASES@@\n",
                 &postgres_schema_reset_cases,
             ),
             ("@@MEMBER_COUNT@@", &member_count),
+            ("@@THRESHOLD@@", &signature_threshold),
             ("@@UNIT@@", &unit),
         ],
     )

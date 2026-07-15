@@ -110,6 +110,7 @@ impl<'de> Deserialize<'de> for Settings {
 }
 
 /// Auth Token
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthToken {
     /// Clear Auth token

@@ -135,6 +135,12 @@ pub enum FederationDkgDriverPhase {
     TranscriptSignature,
     /// Confirm complete final config assembly and collect every member confirmation.
     Activation,
+    /// FROST root DKG is still collecting round-one broadcasts.
+    FrostRound1,
+    /// FROST root DKG is still collecting confidential round-two packages.
+    FrostRound2,
+    /// FROST roots exist but all members have not confirmed one identical public package.
+    FrostConfirmation,
     /// Every member confirmed the same finalized config.
     Complete,
 }
@@ -601,6 +607,7 @@ impl FederationDkgDriverRecords {
         Ok(Some(plan))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn plan_for_phase(
         phase: FederationDkgDriverPhase,
         progress: FederationDkgDriverProgress,

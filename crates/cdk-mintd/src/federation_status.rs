@@ -235,10 +235,69 @@ fn print_statuses(
     );
     for status in statuses {
         println!("{}", member_status_line(status));
+        for source in &status.onchain_wallets {
+            println!(
+                "  chain_source source={} scope={} id={} correlated={} health={} tip_height={} tip_hash={} failures={}",
+                source.source,
+                source.source_scope,
+                source.source_id,
+                source.correlated_source_warning,
+                source.health,
+                source.local_tip_height,
+                source.local_tip_hash,
+                source.consecutive_failures
+            );
+        }
+        if let Some(wallet) = &status.wallet_operator {
+            println!("{}", wallet_operator_status_line(wallet));
+        }
         for report in &status.payment_observation_reports {
             print_payment_observation_report(report);
         }
     }
+}
+
+fn wallet_operator_status_line(
+    wallet: &cdk_common::federation::FederationWalletOperatorStatus,
+) -> String {
+    let utxos = wallet
+        .utxos
+        .iter()
+        .map(|status| format!("{}:{}/{}sat", status.state, status.count, status.value_sat))
+        .collect::<Vec<_>>()
+        .join(",");
+    let phases = wallet
+        .operation_phases
+        .iter()
+        .map(|status| format!("{}:{}", status.phase, status.count))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "  wallet root_epoch={} application_epoch={} descriptor_commitment={} network={} confirmations={} fee_policy_version={} external_revealed={} internal_revealed={} utxos={} reserved_value_sat={} phases={} pending_batches={} signing_attempts={} signing_failures={} broadcast_health={} broadcast_failures={}",
+        wallet.root_key_epoch,
+        wallet.application_key_epoch,
+        encode_commitment(&wallet.descriptor_commitment),
+        wallet.network,
+        wallet.minimum_confirmations,
+        wallet.fee_policy_version,
+        wallet.external_revealed_count,
+        wallet.internal_revealed_count,
+        utxos,
+        wallet.reserved_value_sat,
+        phases,
+        wallet.pending_batches,
+        wallet.signing_attempts,
+        wallet.signing_failures,
+        wallet.broadcast_health,
+        wallet.broadcast_failures
+    )
+}
+
+fn encode_commitment(commitment: &[u8; 32]) -> String {
+    commitment
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn member_status_line(status: &FederationLocalStatusResponse) -> String {

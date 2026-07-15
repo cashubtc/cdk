@@ -361,6 +361,12 @@ pub enum FederationCommand {
     TestTrustedDealer(FederationTrustedDealerArgs),
     /// Query signed local status from federation members.
     Status(FederationStatusArgs),
+    /// Query redacted federated on-chain wallet status.
+    WalletStatus(FederationStatusArgs),
+    /// Query one accepted federated on-chain transaction without transaction contents.
+    TransactionStatus(FederationWalletTransactionArgs),
+    /// Immediately retry one exact durably signed transaction.
+    Rebroadcast(FederationWalletRebroadcastArgs),
 }
 
 #[cfg(feature = "federation")]
@@ -476,6 +482,18 @@ pub struct FederationDkgStatusArgs {
     /// Overwrite existing files in --final-config-dir.
     #[arg(long, action = clap::ArgAction::SetTrue, requires = "final_config_dir")]
     pub force: bool,
+    /// Explicit Bitcoin network for bootstrapping the first CDK FROST application.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_cdk_network: Option<String>,
+    /// Consensus confirmation depth for the bootstrapped CDK FROST application.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_cdk_minimum_confirmations: Option<u32>,
+    /// Consensus transaction-policy version for the bootstrapped CDK FROST application.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_cdk_fee_policy_version: Option<u16>,
+    /// Initial application key epoch derived from the application-neutral FROST root.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_cdk_application_key_epoch: Option<u64>,
 }
 
 #[cfg(feature = "federation")]
@@ -730,6 +748,43 @@ pub struct FederationStatusArgs {
     pub require_no_invalid_operation_alerts: bool,
 }
 
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationWalletTransactionArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign the operator request.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Canonical transaction proposal ID.
+    #[arg(long)]
+    pub proposal_id: String,
+    /// Member to query; defaults to the signing member.
+    #[arg(long)]
+    pub member: Option<u16>,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationWalletRebroadcastArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign the operator request.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Canonical transaction proposal ID.
+    #[arg(long)]
+    pub proposal_id: String,
+    /// Member whose local chain backend should retry; defaults to the signing member.
+    #[arg(long)]
+    pub member: Option<u16>,
+    /// Acknowledge that only the exact persisted bytes are retried and no policy is bypassed.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub acknowledge_exact_byte_retry: bool,
+}
+
 #[cfg(all(test, feature = "federation"))]
 mod tests {
     use super::*;
@@ -860,6 +915,14 @@ mod tests {
             "--require-ready",
             "--final-config-dir",
             "member-1/finalized",
+            "--frost-cdk-network",
+            "regtest",
+            "--frost-cdk-minimum-confirmations",
+            "1",
+            "--frost-cdk-fee-policy-version",
+            "1",
+            "--frost-cdk-application-key-epoch",
+            "1",
             "--force",
         ])
         .expect("dkg status command parses");
@@ -894,6 +957,10 @@ mod tests {
             Some(PathBuf::from("member-1/finalized"))
         );
         assert!(status.force);
+        assert_eq!(status.frost_cdk_network.as_deref(), Some("regtest"));
+        assert_eq!(status.frost_cdk_minimum_confirmations, Some(1));
+        assert_eq!(status.frost_cdk_fee_policy_version, Some(1));
+        assert_eq!(status.frost_cdk_application_key_epoch, Some(1));
     }
 
     #[test]
@@ -1365,5 +1432,50 @@ mod tests {
         assert!(status.require_no_digest_alerts);
         assert!(status.require_no_payment_observation_alerts);
         assert!(status.require_no_invalid_operation_alerts);
+    }
+
+    #[test]
+    fn parses_federated_wallet_operator_commands_and_guards() {
+        let proposal_id = "11".repeat(32);
+        let transaction = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "transaction-status",
+            "--proposal-id",
+            &proposal_id,
+            "--member",
+            "2",
+        ])
+        .expect("transaction status command parses");
+        let Some(CliCommand::Federation(transaction)) = transaction.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            transaction.command,
+            FederationCommand::TransactionStatus(FederationWalletTransactionArgs {
+                member: Some(2),
+                ..
+            })
+        ));
+
+        let rebroadcast = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "rebroadcast",
+            "--proposal-id",
+            &proposal_id,
+            "--acknowledge-exact-byte-retry",
+        ])
+        .expect("rebroadcast command parses");
+        let Some(CliCommand::Federation(rebroadcast)) = rebroadcast.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            rebroadcast.command,
+            FederationCommand::Rebroadcast(FederationWalletRebroadcastArgs {
+                acknowledge_exact_byte_retry: true,
+                ..
+            })
+        ));
     }
 }

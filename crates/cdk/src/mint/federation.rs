@@ -4,7 +4,11 @@
 //! validates aggregate BLS keysets, and produces member signature shares while
 //! preserving standalone mint behavior outside federation mode.
 
+mod address_allocation;
+mod chain_observation;
 mod projection;
+mod transaction_policy;
+mod transaction_state;
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -14,15 +18,21 @@ use std::time::Instant;
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationApplicationState, FederationBlindSignatureShareSet, FederationConfig,
-    FederationConfigDigest, FederationError, FederationId, FederationJournalEntry,
+    FederationAddressAllocationOperation, FederationAddressAllocationScope,
+    FederationAddressKeychain, FederationApplicationState, FederationBlindSignatureShareSet,
+    FederationChainObservation, FederationConfig, FederationConfigDigest, FederationError,
+    FederationFrostApplicationId, FederationId, FederationJournalEntry,
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
     FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
-    FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationSignatureShareRecord, FederationSwapOperation, MemberConfigPrivate, MemberId,
+    FederationOnchainMeltPaymentReceipt, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationPaymentObservationReport, FederationSignatureShareRecord,
+    FederationSignedTransaction, FederationSwapOperation, FederationTransactionBroadcastIntent,
+    FederationTransactionBroadcastObservation, FederationTransactionProposal,
+    FederationTransactionScope, FederationTransactionSettlementPolicy, MemberConfigPrivate,
+    MemberId,
 };
 use cdk_common::mint::{
     MeltQuote, MeltSagaState, MintQuote, Operation, OperationKind, SagaStateEnum,
@@ -44,6 +54,17 @@ use super::Mint;
 use super::MintInput;
 use crate::fees::calculate_fee;
 use crate::types::PaymentProcessorKey;
+
+use self::chain_observation::{
+    CHAIN_OBSERVATION_PRIMARY_NAMESPACE, CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+    CHAIN_OBSERVATION_STATE_KEY,
+};
+use self::transaction_state::persist_pending_onchain_intent;
+
+pub use self::transaction_policy::{
+    FederationCpfpPolicy, FederationFeeRateSource, FederationOnchainTransactionPolicy,
+};
+pub use cdk_common::federation::FederationTransactionPolicyAudit;
 
 struct FederationActiveMeltPayment {
     active: std::sync::Arc<std::sync::Mutex<HashSet<QuoteId>>>,
@@ -113,6 +134,126 @@ impl FederationRuntimeConfig {
     #[must_use]
     pub fn config_digest(&self) -> FederationConfigDigest {
         self.config_digest
+    }
+
+    /// Return the federation's immutable CDK on-chain FROST application.
+    pub fn cdk_onchain_application(
+        &self,
+    ) -> Result<&cdk_common::federation::FederationFrostApplicationConfig, Error> {
+        let wallet = self.public_config.frost_wallet.as_ref().ok_or_else(|| {
+            FederationError::AddressAllocationInvalid {
+                reason: "federation has no accepted FROST wallet configuration".to_string(),
+            }
+        })?;
+        Ok(&wallet.cdk_onchain_application)
+    }
+
+    /// Resolve the versioned outgoing settlement policy for an accepted wallet scope.
+    pub fn onchain_transaction_settlement_policy(
+        &self,
+        scope: FederationTransactionScope,
+    ) -> Result<FederationTransactionSettlementPolicy, Error> {
+        let wallet = self
+            .public_config
+            .frost_wallet
+            .as_ref()
+            .ok_or(Error::Internal)?;
+        let application = &wallet.cdk_onchain_application;
+        if application.root_key_epoch != scope.root_key_epoch
+            || application.application_id != scope.application_id
+            || application.application_key_epoch != scope.application_key_epoch
+            || application.network != scope.network
+            || application.fee_policy_version != scope.policy_version
+        {
+            return Err(Error::Custom(
+                "accepted transaction scope has no FROST application policy".to_string(),
+            ));
+        }
+        let observation_policy = self
+            .public_config
+            .payment_verification_policy(FederationPaymentObservationContext::MeltQuote);
+        Ok(FederationTransactionSettlementPolicy::new(
+            application.confirmation_policy.minimum_confirmations,
+            observation_policy.required_matching_observations(),
+        )?)
+    }
+
+    /// Build and authorize one consensus-controlled descriptor allocation.
+    pub fn address_allocation_operation(
+        &self,
+        quote: impl Into<String>,
+        application_id: FederationFrostApplicationId,
+        application_key_epoch: u64,
+        keychain: FederationAddressKeychain,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        let operation = FederationAddressAllocationOperation::new(
+            quote,
+            application_id,
+            application_key_epoch,
+            keychain,
+        )?;
+        self.validate_federated_address_allocation_submission(&operation)?;
+        Ok(FederationOperationEnvelope::new(
+            self.public_config.federation_id,
+            FederationOperation::AddressAllocation(operation),
+        )
+        .authorize(&self.private_config)?)
+    }
+
+    fn validate_federated_address_allocation_submission(
+        &self,
+        operation: &FederationAddressAllocationOperation,
+    ) -> Result<(), Error> {
+        operation.validate()?;
+        let wallet = self.public_config.frost_wallet.as_ref().ok_or_else(|| {
+            FederationError::AddressAllocationInvalid {
+                reason: "federation has no accepted FROST wallet configuration".to_string(),
+            }
+        })?;
+        let application = &wallet.cdk_onchain_application;
+        if application.application_id != operation.application_id
+            || application.application_key_epoch != operation.application_key_epoch
+        {
+            return Err(FederationError::AddressAllocationInvalid {
+                reason: "allocation references an unknown CDK application epoch".to_string(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Build an authenticated operation from one bounded member-local chain observation.
+    pub fn chain_observation_operation(
+        &self,
+        observation: FederationChainObservation,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        self.validate_federated_chain_observation_submission(&observation)?;
+        Ok(self.operation_envelope(FederationOperation::ChainObservation(observation)))
+    }
+
+    fn validate_federated_chain_observation_submission(
+        &self,
+        observation: &FederationChainObservation,
+    ) -> Result<(), Error> {
+        observation.validate()?;
+        self.validate_federation_observer(observation.observer())?;
+        if observation.observer() != self.member_id() {
+            return Err(FederationError::OperationAuthorMismatch {
+                author: self.member_id(),
+                claimed_member: observation.observer(),
+            }
+            .into());
+        }
+        if let FederationChainObservation::Deposit(observation) = observation {
+            let allocation_operation = FederationAddressAllocationOperation::new(
+                observation.allocation.quote.clone(),
+                observation.allocation.application_id,
+                observation.allocation.application_key_epoch,
+                observation.allocation.keychain,
+            )?;
+            self.validate_federated_address_allocation_submission(&allocation_operation)?;
+        }
+        Ok(())
     }
 
     fn validate_federation_observer(&self, observer: MemberId) -> Result<(), Error> {
@@ -463,6 +604,13 @@ impl FederationRuntimeConfig {
         operation: &FederationOperation,
     ) -> Result<(), Error> {
         match operation {
+            FederationOperation::AddressAllocation(operation) => {
+                self.validate_federated_address_allocation_submission(operation)
+            }
+            FederationOperation::ChainObservation(observation) => {
+                observation.validate()?;
+                self.validate_federation_observer(observation.observer())
+            }
             FederationOperation::MintQuote(operation) => {
                 self.validate_federated_mint_quote_submission(operation)
             }
@@ -486,6 +634,19 @@ impl FederationRuntimeConfig {
             }
             FederationOperation::KeysetRotation(operation) => {
                 self.validate_federated_keyset_rotation_submission(operation)
+            }
+            FederationOperation::TransactionProposal(proposal) => {
+                proposal.validate()?;
+                self.validate_federation_observer(proposal.proposer)
+            }
+            FederationOperation::TransactionSigned(_) => Ok(()),
+            FederationOperation::TransactionBroadcastIntent(intent) => {
+                intent.settlement_policy.validate()?;
+                Ok(())
+            }
+            FederationOperation::TransactionBroadcastObservation(observation) => {
+                observation.validate()?;
+                self.validate_federation_observer(observation.observer)
             }
         }
     }
@@ -690,6 +851,59 @@ impl FederationRuntimeConfig {
             self.operation_envelope(FederationOperation::Melt(FederationMeltOperation {
                 request: consensus_request,
             })),
+        )
+    }
+
+    /// Build an authorized consensus operation for a validated on-chain proposal.
+    pub fn transaction_proposal_operation(
+        &self,
+        proposal: FederationTransactionProposal,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        proposal.validate()?;
+        self.validate_federation_observer(proposal.proposer)?;
+        if proposal.proposer != self.member_id() {
+            return Err(FederationError::OperationAuthorMismatch {
+                author: self.member_id(),
+                claimed_member: proposal.proposer,
+            }
+            .into());
+        }
+        Ok(self.operation_envelope(FederationOperation::TransactionProposal(proposal)))
+    }
+
+    /// Build an authorized consensus operation for one exact signed transaction.
+    pub fn transaction_signed_operation(
+        &self,
+        signed: FederationSignedTransaction,
+    ) -> FederationOperationEnvelope {
+        self.operation_envelope(FederationOperation::TransactionSigned(signed))
+    }
+
+    /// Build an authorized consensus operation that precedes network broadcast.
+    pub fn transaction_broadcast_intent_operation(
+        &self,
+        intent: FederationTransactionBroadcastIntent,
+    ) -> FederationOperationEnvelope {
+        self.operation_envelope(FederationOperation::TransactionBroadcastIntent(intent))
+    }
+
+    /// Build an authenticated local-backend broadcast observation.
+    pub fn transaction_broadcast_observation_operation(
+        &self,
+        observation: FederationTransactionBroadcastObservation,
+    ) -> Result<FederationOperationEnvelope, Error> {
+        observation.validate()?;
+        if observation.observer != self.member_id() {
+            return Err(FederationError::OperationAuthorMismatch {
+                author: self.member_id(),
+                claimed_member: observation.observer,
+            }
+            .into());
+        }
+        Ok(
+            self.operation_envelope(FederationOperation::TransactionBroadcastObservation(
+                observation,
+            )),
         )
     }
 
@@ -927,6 +1141,31 @@ impl Mint {
             .get_mint_quote(quote_id)
             .await?
             .ok_or(Error::UnknownQuote)?;
+        if quote.payment_method.is_onchain() && config.public_config().frost_wallet.is_some() {
+            if quote.unit != CurrencyUnit::Sat {
+                return Err(Error::UnsupportedUnit);
+            }
+            let Some(payment) = self
+                .federation_chain_observation_state()
+                .await?
+                .quote_payment_at_or_before(&quote.id.to_string(), u64::MAX)?
+            else {
+                return Ok(None);
+            };
+            if payment.amount_sat <= quote.amount_paid().value() {
+                return Ok(None);
+            }
+            return Ok(Some(FederationMintQuotePaymentObservation {
+                quote: quote.id.to_string(),
+                observer: config.member_id(),
+                method: quote.payment_method.clone(),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(payment.amount_sat),
+                amount_issued: quote.amount_issued().into(),
+                payment_id: Some(PaymentIdentifier::PaymentId(payment.payment_id)),
+                payment_proof: None,
+            }));
+        }
         if quote.state() == MintQuoteState::Issued {
             return Ok(None);
         }
@@ -945,15 +1184,19 @@ impl Mint {
         let mut payment_id = None;
 
         for payment in payments {
+            let candidate_payment_id =
+                federation_payment_identifier_from_label(&payment.payment_id);
+            let durable_payment_label = federation_payment_identifier_label(&candidate_payment_id);
             if payment.payment_amount.value() == 0
                 || observed_quote.payment_ids().contains(&&payment.payment_id)
+                || observed_quote
+                    .payment_ids()
+                    .contains(&&durable_payment_label)
             {
                 continue;
             }
             let amount = payment.payment_amount.convert_to(&observed_quote.unit)?;
-            payment_id = Some(federation_payment_identifier_from_label(
-                &payment.payment_id,
-            ));
+            payment_id = Some(candidate_payment_id);
             observed_quote.add_payment(amount, payment.payment_id, None)?;
         }
 
@@ -1006,6 +1249,29 @@ impl Mint {
             .as_deref()
             .ok_or(Error::Internal)?
             .parse::<FederationOperationId>()?;
+        if quote.payment_method.is_onchain() && config.public_config().frost_wallet.is_some() {
+            if quote.unit != CurrencyUnit::Sat {
+                return Err(Error::UnsupportedUnit);
+            }
+            let Some(receipt) = self
+                .federation_transaction_state()
+                .await?
+                .completed_payment_for_quote(&quote.id.to_string())?
+            else {
+                return Ok(None);
+            };
+            validate_federation_onchain_melt_receipt(&quote, operation_id, &receipt)?;
+            return Ok(Some(FederationMeltQuotePaymentObservation {
+                quote: quote.id.to_string(),
+                observer: config.member_id(),
+                method: quote.payment_method.clone(),
+                state: cdk_common::MeltQuoteState::Paid,
+                amount: quote.amount().into(),
+                fee_reserve: quote.fee_reserve().into(),
+                payment_id: Some(PaymentIdentifier::QuoteId(quote.id.clone())),
+                payment_proof: Some(receipt.outpoint.to_string()),
+            }));
+        }
         let entry = self
             .localstore
             .get_federation_journal_entry_by_operation_id(operation_id)
@@ -1373,6 +1639,16 @@ impl Mint {
         }
 
         match &entry.envelope.operation {
+            FederationOperation::AddressAllocation(operation) => {
+                self.apply_federation_address_allocation(entry, operation)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::ChainObservation(observation) => {
+                self.apply_federation_chain_observation(entry, observation)
+                    .await?;
+                Ok(true)
+            }
             FederationOperation::MintQuote(operation) => {
                 self.apply_federation_mint_quote(entry, operation).await?;
                 Ok(true)
@@ -1405,6 +1681,26 @@ impl Mint {
             }
             FederationOperation::KeysetRotation(operation) => {
                 self.apply_federation_keyset_rotation(entry, operation)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::TransactionProposal(proposal) => {
+                self.apply_federation_transaction_proposal(entry, proposal)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::TransactionSigned(signed) => {
+                self.apply_federation_signed_transaction(entry, signed)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::TransactionBroadcastIntent(intent) => {
+                self.apply_federation_transaction_broadcast_intent(entry, intent)
+                    .await?;
+                Ok(true)
+            }
+            FederationOperation::TransactionBroadcastObservation(observation) => {
+                self.apply_federation_transaction_broadcast_observation(entry, observation)
                     .await?;
                 Ok(true)
             }
@@ -1503,11 +1799,24 @@ impl Mint {
         let policy = *config
             .public_config()
             .payment_verification_policy(candidate.context());
-        let eligible = observations
+        let mut eligible = observations
             .iter()
             .filter(|record| record.operation_index <= max_operation_index)
             .cloned()
             .collect::<Vec<_>>();
+        let is_onchain = match candidate {
+            FederationPaymentObservation::MintQuote(observation) => observation.method.is_onchain(),
+            FederationPaymentObservation::MeltQuote(observation) => observation.method.is_onchain(),
+        };
+        if is_onchain {
+            eligible.sort_by_key(|record| record.operation_index);
+            let mut latest_by_observer = HashMap::new();
+            for record in eligible {
+                latest_by_observer.insert(record.observation.observer(), record);
+            }
+            eligible = latest_by_observer.into_values().collect();
+            eligible.sort_by_key(|record| record.operation_index);
+        }
         let required = policy.required_matching_observations();
         let quorum = candidate.quorum(eligible.iter().map(|record| &record.observation), required);
 
@@ -1564,6 +1873,8 @@ impl Mint {
         entry: &FederationJournalEntry,
         operation: &FederationMintQuoteOperation,
     ) -> Result<(), Error> {
+        self.validate_federation_onchain_mint_quote_allocation(operation)
+            .await?;
         let proposed_quote = mint_quote_from_federation_operation(
             operation,
             federation_accepted_logical_time(entry),
@@ -1603,6 +1914,76 @@ impl Mint {
             self.pubsub_manager.mint_quote_payment(&quote, amount_paid);
         }
 
+        Ok(())
+    }
+
+    async fn validate_federation_onchain_mint_quote_allocation(
+        &self,
+        operation: &FederationMintQuoteOperation,
+    ) -> Result<(), Error> {
+        let Some(runtime) = self.federation_config() else {
+            return Ok(());
+        };
+        if runtime.public_config().frost_wallet.is_none()
+            || !matches!(operation.request, MintQuoteRequest::Onchain(_))
+        {
+            return Ok(());
+        }
+        let (MintQuoteRequest::Onchain(request), MintQuoteResponse::Onchain(response)) =
+            (&operation.request, &operation.response)
+        else {
+            return Err(Error::InvalidPaymentMethod);
+        };
+        let quote_id = quote_id_from_federation(&operation.quote)?;
+        if operation.request_lookup_id != PaymentIdentifier::QuoteId(quote_id)
+            || response.unit != request.unit
+            || response.pubkey != request.pubkey
+            || response.expiry.is_some()
+            || response.amount_paid != Amount::ZERO
+            || response.amount_issued != Amount::ZERO
+        {
+            return Err(Error::InvalidPaymentRequest);
+        }
+
+        let application = runtime.cdk_onchain_application()?;
+        let allocation = self
+            .federation_address_allocation(
+                FederationAddressAllocationScope {
+                    application_id: application.application_id,
+                    application_key_epoch: application.application_key_epoch,
+                },
+                &operation.quote,
+            )
+            .await?
+            .ok_or_else(|| FederationError::AddressAllocationInvalid {
+                reason: "federated on-chain mint quote has no accepted address allocation"
+                    .to_string(),
+            })?;
+        if allocation.keychain != FederationAddressKeychain::External {
+            return Err(FederationError::AddressAllocationInvalid {
+                reason: "federated on-chain mint quote requires an external address allocation"
+                    .to_string(),
+            }
+            .into());
+        }
+        let wallet = runtime
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .ok_or(Error::Internal)?;
+        let script = wallet.derive_cdk_onchain_script(
+            runtime.public_config(),
+            application.application_id,
+            application.application_key_epoch,
+            allocation.keychain,
+            allocation.derivation_index,
+        )?;
+        let expected_address =
+            cdk_common::bitcoin::Address::from_script(script.as_script(), application.network)
+                .map_err(|_| Error::InvalidPaymentRequest)?;
+        if response.request != expected_address.to_string() {
+            return Err(Error::InvalidPaymentRequest);
+        }
         Ok(())
     }
 
@@ -1664,6 +2045,25 @@ impl Mint {
         let record = payment_observation_record_from_entry(entry)?;
         let mut tx = self.localstore.begin_transaction().await?;
         let outcome = async {
+            let mut quote = tx.get_mint_quote(&quote_id).await?;
+            if quote.is_none()
+                && observation.method.is_onchain()
+                && self
+                    .federation_config()
+                    .is_some_and(|runtime| runtime.public_config().frost_wallet.is_some())
+            {
+                return Err(Error::UnknownQuote);
+            }
+            if let Some(quote) = quote.as_deref() {
+                self.validate_federation_onchain_payment_observation(
+                    &mut tx,
+                    quote,
+                    observation,
+                    record.operation_index,
+                    false,
+                )
+                .await?;
+            }
             tx.add_federation_payment_observation(&record).await?;
             let observations = tx
                 .get_federation_payment_observations(
@@ -1672,7 +2072,7 @@ impl Mint {
                 )
                 .await?;
             let mut paid_notification = None;
-            if let Some(mut quote) = tx.get_mint_quote(&quote_id).await? {
+            if let Some(mut quote) = quote.take() {
                 if let Some(amount_paid) = self
                     .apply_mint_payment_observations_to_quote(&mut tx, &mut quote, &observations)
                     .await?
@@ -1715,6 +2115,14 @@ impl Mint {
             )?;
             let observed_paid = observation.amount_paid.with_unit(quote.unit.clone());
             if can_finalize && observed_paid > quote.amount_paid() {
+                self.validate_federation_onchain_payment_observation(
+                    tx,
+                    quote,
+                    observation,
+                    record.operation_index,
+                    true,
+                )
+                .await?;
                 let additional_amount = observed_paid
                     .checked_sub(&quote.amount_paid())
                     .map_err(|_| Error::AmountOverflow)?;
@@ -1741,6 +2149,71 @@ impl Mint {
         }
 
         Ok(paid_notification)
+    }
+
+    async fn validate_federation_onchain_payment_observation(
+        &self,
+        tx: &mut database::mint::DynMintTransaction,
+        quote: &MintQuote,
+        observation: &FederationMintQuotePaymentObservation,
+        max_operation_index: u64,
+        mark_liability: bool,
+    ) -> Result<(), Error> {
+        let Some(runtime) = self.federation_config() else {
+            return Ok(());
+        };
+        if runtime.public_config().frost_wallet.is_none() || !quote.payment_method.is_onchain() {
+            return Ok(());
+        }
+        if quote.unit != CurrencyUnit::Sat
+            || observation.method != quote.payment_method
+            || observation.state != MintQuoteState::Paid
+            || observation.payment_proof.is_some()
+        {
+            return Err(Error::InvalidPaymentRequest);
+        }
+        let bytes = tx
+            .kv_read(
+                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+                CHAIN_OBSERVATION_STATE_KEY,
+            )
+            .await?
+            .ok_or_else(|| FederationError::ChainObservationStateInvalid {
+                reason: "on-chain payment observation has no wallet UTXO projection".to_string(),
+            })?;
+        let mut state =
+            cdk_common::federation::FederationChainObservationState::from_bytes(&bytes)?;
+        let payment = state
+            .quote_payment_at_or_before(&observation.quote, max_operation_index)?
+            .ok_or_else(|| FederationError::ChainObservationStateInvalid {
+                reason: "on-chain payment observation has no accepted spendable output".to_string(),
+            })?;
+        if u64::from(observation.amount_paid) != payment.amount_sat
+            || observation.payment_id != Some(PaymentIdentifier::PaymentId(payment.payment_id))
+        {
+            return Err(FederationError::ChainObservationStateInvalid {
+                reason: "on-chain payment observation does not match accepted wallet outputs"
+                    .to_string(),
+            }
+            .into());
+        }
+        if mark_liability {
+            state.mark_quote_liability_issued_at_or_before(
+                &observation.quote,
+                max_operation_index,
+                payment.amount_sat,
+                payment.payment_id,
+            )?;
+            tx.kv_write(
+                CHAIN_OBSERVATION_PRIMARY_NAMESPACE,
+                CHAIN_OBSERVATION_SECONDARY_NAMESPACE,
+                CHAIN_OBSERVATION_STATE_KEY,
+                &state.to_bytes()?,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn apply_federation_mint(
@@ -2107,6 +2580,9 @@ impl Mint {
             .ok_or(Error::UnknownQuote)?;
 
         ensure_melt_quote_matches_payment_observation(&quote, observation)?;
+        let onchain_receipt = self
+            .validate_federation_onchain_melt_payment_observation(&quote, observation)
+            .await?;
 
         let can_finalize = {
             let mut tx = self.localstore.begin_transaction().await?;
@@ -2152,6 +2628,7 @@ impl Mint {
                             operation_id,
                             &mut quote,
                             observation,
+                            onchain_receipt.as_ref(),
                         )
                         .await?;
                     }
@@ -2159,8 +2636,12 @@ impl Mint {
                         if let Some(saga) =
                             self.localstore.get_melt_saga_by_quote_id(&quote_id).await?
                         {
-                            let payment_response =
-                                melt_quote_payment_response(operation_id, &quote, observation)?;
+                            let payment_response = melt_quote_payment_response(
+                                operation_id,
+                                &quote,
+                                observation,
+                                onchain_receipt.as_ref(),
+                            )?;
                             super::saga_recovery::process_melt_saga_outcome(
                                 &saga,
                                 &mut quote,
@@ -2217,6 +2698,7 @@ impl Mint {
         operation_id: FederationOperationId,
         quote: &mut MeltQuote,
         observation: &FederationMeltQuotePaymentObservation,
+        onchain_receipt: Option<&FederationOnchainMeltPaymentReceipt>,
     ) -> Result<(), Error> {
         let saga = self
             .localstore
@@ -2227,7 +2709,8 @@ impl Mint {
                     "federation paid melt observation found no pending melt saga".to_string(),
                 )
             })?;
-        let payment_response = melt_quote_payment_response(operation_id, quote, observation)?;
+        let payment_response =
+            melt_quote_payment_response(operation_id, quote, observation, onchain_receipt)?;
         super::saga_recovery::process_melt_saga_outcome(
             &saga,
             quote,
@@ -2237,6 +2720,45 @@ impl Mint {
             self,
         )
         .await
+    }
+
+    async fn validate_federation_onchain_melt_payment_observation(
+        &self,
+        quote: &MeltQuote,
+        observation: &FederationMeltQuotePaymentObservation,
+    ) -> Result<Option<FederationOnchainMeltPaymentReceipt>, Error> {
+        let Some(runtime) = self.federation_config() else {
+            return Ok(None);
+        };
+        if runtime.public_config().frost_wallet.is_none() || !quote.payment_method.is_onchain() {
+            return Ok(None);
+        }
+        if quote.unit != CurrencyUnit::Sat
+            || observation.state != cdk_common::MeltQuoteState::Paid
+            || observation.payment_id != Some(PaymentIdentifier::QuoteId(quote.id.clone()))
+        {
+            return Err(Error::InvalidPaymentRequest);
+        }
+        let receipt = self
+            .federation_transaction_state()
+            .await?
+            .completed_payment_for_quote(&quote.id.to_string())?
+            .ok_or(Error::PendingQuote)?;
+        let melt_operation_id = match self.localstore.get_melt_saga_by_quote_id(&quote.id).await? {
+            Some(saga) => saga
+                .federation_operation_id
+                .as_deref()
+                .ok_or(Error::Internal)?
+                .parse::<FederationOperationId>()?,
+            None if quote.state == cdk_common::MeltQuoteState::Paid => receipt.melt_operation_id,
+            None => return Err(Error::PendingQuote),
+        };
+        validate_federation_onchain_melt_receipt(quote, melt_operation_id, &receipt)?;
+        let expected_proof = receipt.outpoint.to_string();
+        if observation.payment_proof.as_deref() != Some(expected_proof.as_str()) {
+            return Err(Error::InvalidPaymentRequest);
+        }
+        Ok(Some(receipt))
     }
 
     async fn update_melt_quote_payment_observation_state(
@@ -2298,8 +2820,24 @@ impl Mint {
             Err(err) => return Err(err),
         }
 
-        let transaction = self.localstore.begin_transaction().await?;
-        finish_federation_apply_transaction(transaction, entry, Ok(())).await
+        let mut transaction = self.localstore.begin_transaction().await?;
+        let outcome = async {
+            let quote = transaction
+                .get_melt_quote(request.quote())
+                .await?
+                .ok_or(Error::UnknownQuote)?;
+            let runtime = self.federation_config().ok_or(Error::Internal)?;
+            persist_pending_onchain_intent(
+                &mut transaction,
+                runtime,
+                &quote,
+                operation_id,
+                federation_accepted_logical_time(entry),
+            )
+            .await
+        }
+        .await;
+        finish_federation_apply_transaction(transaction, entry, outcome).await
     }
 
     /// Verify federated melt or swap inputs against aggregate BLS keysets.
@@ -2640,10 +3178,29 @@ fn ensure_melt_quote_payment_proof_matches(
     Ok(())
 }
 
+fn validate_federation_onchain_melt_receipt(
+    quote: &MeltQuote,
+    melt_operation_id: FederationOperationId,
+    receipt: &FederationOnchainMeltPaymentReceipt,
+) -> Result<(), Error> {
+    let amount_sat = quote.amount().to_sat()?;
+    let maximum_fee_sat = quote.fee_reserve().to_sat()?;
+    if receipt.quote != quote.id.to_string()
+        || receipt.melt_operation_id != melt_operation_id
+        || receipt.amount_sat != amount_sat
+        || receipt.fee_sat > maximum_fee_sat
+        || receipt.outpoint.txid != receipt.txid
+    {
+        return Err(Error::InvalidPaymentRequest);
+    }
+    Ok(())
+}
+
 fn melt_quote_payment_response(
     operation_id: FederationOperationId,
     quote: &MeltQuote,
     observation: &FederationMeltQuotePaymentObservation,
+    onchain_receipt: Option<&FederationOnchainMeltPaymentReceipt>,
 ) -> Result<MakePaymentResponse, Error> {
     let payment_lookup_id = observation
         .payment_id
@@ -2652,11 +3209,22 @@ fn melt_quote_payment_response(
         .unwrap_or_else(|| {
             PaymentIdentifier::CustomId(format!("federation-melt-observation-{operation_id}"))
         });
-    let amount = observation.amount.with_unit(quote.unit.clone());
-    let fee_reserve = observation.fee_reserve.with_unit(quote.unit.clone());
-    let total_spent = amount
-        .checked_add(&fee_reserve)
-        .map_err(|_| Error::AmountOverflow)?;
+    let total_spent = match onchain_receipt {
+        Some(receipt) => Amount::new(
+            receipt
+                .amount_sat
+                .checked_add(receipt.fee_sat)
+                .ok_or(Error::AmountOverflow)?,
+            quote.unit.clone(),
+        ),
+        None => {
+            let amount = observation.amount.with_unit(quote.unit.clone());
+            let fee_reserve = observation.fee_reserve.with_unit(quote.unit.clone());
+            amount
+                .checked_add(&fee_reserve)
+                .map_err(|_| Error::AmountOverflow)?
+        }
+    };
 
     Ok(MakePaymentResponse {
         payment_lookup_id,

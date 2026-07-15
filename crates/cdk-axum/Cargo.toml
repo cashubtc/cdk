@@ -16,6 +16,9 @@ federation = [
     "cdk-http-client/reqwest",
     "dep:aleph-bft",
     "dep:parity-scale-codec",
+    "dep:cdk-frost",
+    "dep:cdk-frost-bip32",
+    "dep:cdk-bdk",
 ]
 redis = ["dep:redis"]
 integration-tests = []
@@ -31,6 +34,9 @@ cdk = { workspace = true, features = [
     "mint",
 ]}
 cdk-common.workspace = true
+cdk-frost = { workspace = true, optional = true }
+cdk-frost-bip32 = { workspace = true, optional = true }
+cdk-bdk = { workspace = true, optional = true, features = ["bitcoin-rpc", "esplora"] }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 tokio.workspace = true
 tracing.workspace = true

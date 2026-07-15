@@ -1003,6 +1003,11 @@ impl InMemoryFederationJournal {
     }
 
     /// Update local post-consensus application state.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the journal's validated operation index points outside
+    /// its entry collection.
     pub fn update_application_state(
         &mut self,
         operation_id: FederationOperationId,
@@ -1098,6 +1103,10 @@ mod tests {
                         request: "invoice-quote-1".to_string(),
                         amount: Some(Amount::from(amount)),
                         unit: Some(CurrencyUnit::Sat),
+                        method: PaymentMethod::BOLT11,
+                        amount_paid: Amount::ZERO,
+                        amount_issued: Amount::ZERO,
+                        updated_at: 0,
                         state: crate::MintQuoteState::Unpaid,
                         expiry: None,
                         pubkey: None,
@@ -1114,6 +1123,7 @@ mod tests {
             method: "custom".to_string(),
             request: "payreq".to_string(),
             unit: CurrencyUnit::Sat,
+            amount: None,
             extra: serde_json::Value::Null,
         });
         let second = FederationOperationEnvelope::new(
@@ -1524,11 +1534,11 @@ mod tests {
         );
         assert_eq!(
             entry.operation_id.to_string(),
-            "86ce84592b3d0d4795d01d661a8e4153b3f17310b9c867469ab57adc5b38693d"
+            "a2b58bcf783e9936b317f1207a437795972134eb708499b2b3cf97d1b510b117"
         );
         assert_eq!(
             entry.order_digest.to_hex(),
-            "7758c9373ff30295b5f4c8c682b18a61cebfd1e136f4816d5c300293334b6cfd"
+            "20222f79401c3e696d4d06fdbeb393e43c22c56a629f8878616e6afc7016a1fa"
         );
         assert_eq!(
             FederationMaterializedStateDigest::genesis().to_hex(),

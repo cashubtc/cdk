@@ -6,13 +6,21 @@
 
 use thiserror::Error;
 
+mod address_allocation;
+mod chain_observation;
 mod config;
 mod consensus;
 mod dkg;
 mod dkg_driver;
+mod frost_config;
+mod frost_dkg;
 mod journal;
+mod liveness;
 mod operation;
+mod operator_status;
+mod recovery;
 mod signing;
+mod transaction_proposal;
 mod transport;
 mod trusted_dealer;
 
@@ -33,7 +41,22 @@ pub const FEDERATION_MAX_DKG_MEMBERS: usize = 64;
 pub const FEDERATION_MAX_DKG_KEYSET_AMOUNTS: usize = 64;
 /// Maximum JSON body accepted by one private DKG REST route.
 pub const FEDERATION_MAX_DKG_REQUEST_BODY_BYTES: usize = 1024 * 1024;
+/// Maximum JSON body accepted by one private FROST signing REST route.
+pub const FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES: usize = 512 * 1024;
 
+pub use self::address_allocation::{
+    FederationAddressAllocation, FederationAddressAllocationOperation,
+    FederationAddressAllocationOutcome, FederationAddressAllocationScope,
+    FederationAddressAllocationState, FederationAddressKeychain, FederationAddressWalletState,
+    FEDERATION_MAX_DERIVATION_INDEX,
+};
+pub use self::chain_observation::{
+    FederationAllocatedAddressRef, FederationChainObservation, FederationChainObservationEvidence,
+    FederationChainObservationOutcome, FederationChainObservationState,
+    FederationChainSourceDescriptor, FederationChainSourceScope, FederationChainSourceSummary,
+    FederationDepositConfirmation, FederationDepositObservation, FederationDepositReorgObservation,
+    FederationOnchainQuotePayment, FederationWalletUtxo, FederationWalletUtxoState,
+};
 pub use self::config::{
     FederatedKeyset, FederationConfig, FederationConfigDigest, FederationConfigSnapshot,
     FederationId, FederationInvite, FederationPaymentObservationContext,
@@ -64,12 +87,29 @@ pub use self::dkg_driver::{
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
     FederationDkgDriverRecords, ValidatedFederationDkgParticipantState,
 };
+pub use self::frost_config::{
+    FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostApplicationConfig,
+    FederationFrostApplicationId, FederationFrostRootPrivateConfig,
+    FederationFrostRootPublicConfig, FederationFrostSealedStorageMetadata,
+    FederationFrostWalletConfig, FederationOnchainConfirmationPolicy,
+};
+pub use self::frost_dkg::{
+    FederationDualDkgResult, FederationFrostDkgConfirmationRequest, FederationFrostDkgContext,
+    FederationFrostDkgLocalPhase, FederationFrostDkgLocalState, FederationFrostDkgRound1Request,
+    FederationFrostDkgRound2Record, FederationFrostDkgRound2Request, FederationFrostRootRecord,
+};
 pub use self::journal::{
     FederationApplicationState, FederationJournalAppendOutcome, FederationJournalConsensusEvidence,
     FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
     FederationMaterializedStateDigest, FederationMaterializedStateRow,
     FederationMaterializedStateRowFingerprint, FederationMaterializedStateSnapshot,
     FederationOperationStatus, InMemoryFederationJournal,
+};
+pub use self::liveness::{
+    federation_wallet_signing_attempt_at, federation_wallet_signing_attempt_is_current,
+    FederationWalletLivenessActivity, FederationWalletLivenessSchedule,
+    FederationWalletLivenessStatus, FederationWalletSigningPlan,
+    FEDERATION_WALLET_SIGNING_ATTEMPT_LEASE_MILLIS,
 };
 pub use self::operation::{
     FederationKeysetRotationOperation, FederationMeltOperation, FederationMeltQuoteMetadata,
@@ -84,8 +124,37 @@ pub use self::operation::{
     FederationPaymentObservationReportStatus, FederationPaymentObservationReportSummary,
     FederationSwapOperation, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES, FEDERATION_OPERATION_VERSION,
 };
+pub use self::operator_status::{
+    FederationWalletBroadcastHealth, FederationWalletOperationPhase,
+    FederationWalletOperationPhaseCount, FederationWalletOperatorStatus,
+    FederationWalletTransactionStatus, FederationWalletUtxoStatusCount,
+};
+pub use self::recovery::{
+    FederationRecoveryAction, FederationRecoveryActionCount, FederationRecoveryPhase,
+    FederationWalletRecoveryStatus,
+};
 pub use self::signing::{
     FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
+};
+pub use self::transaction_proposal::{
+    FederationAcceptedTransaction, FederationAcceptedTransactionState,
+    FederationCdkOnchainFrostAuthorization, FederationFrostInputSignatureAudit,
+    FederationFrostSigningAuthorizationReference, FederationOnchainBatchId,
+    FederationOnchainMeltPaymentReceipt, FederationOnchainPaymentBatch,
+    FederationOnchainPaymentIntent, FederationOnchainPaymentIntentId,
+    FederationOnchainPaymentIntentRecord, FederationOnchainPaymentIntentState,
+    FederationSignedTransaction, FederationTaprootSighashType,
+    FederationTransactionBroadcastIntent, FederationTransactionBroadcastObservation,
+    FederationTransactionBroadcastObservationRecord, FederationTransactionBroadcastResult,
+    FederationTransactionBroadcastState, FederationTransactionChangeOutput,
+    FederationTransactionInput, FederationTransactionPolicyAudit, FederationTransactionProposal,
+    FederationTransactionProposalId, FederationTransactionRecipientOutput,
+    FederationTransactionScope, FederationTransactionSettlement,
+    FederationTransactionSettlementPolicy, FederationTransactionState,
+    FederationTransactionStateOutcome, FEDERATION_MAX_ONCHAIN_BATCH_INTENTS,
+    FEDERATION_MAX_ONCHAIN_PROPOSAL_BYTES, FEDERATION_MAX_ONCHAIN_PROPOSAL_INPUTS,
+    FEDERATION_MAX_ONCHAIN_PROPOSAL_OUTPUTS, FEDERATION_MAX_ONCHAIN_PSBT_CONSENSUS_BYTES,
+    FEDERATION_MAX_ONCHAIN_TRANSACTION_WEIGHT,
 };
 pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
@@ -94,13 +163,17 @@ pub use self::transport::{
     FederationCatchUpCertificate, FederationCatchUpCertificateQuorum, FederationCatchUpOperation,
     FederationDkgActivationRequest, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
-    FederationDkgTranscriptSignatureRequest, FederationInvalidOperationAlertSummary,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationLocalStatusResponse, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestBodyHash, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationRestSignature, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, FEDERATION_CATCH_UP_CERTIFICATE_VERSION,
-    FEDERATION_REST_API_VERSION,
+    FederationDkgTranscriptSignatureRequest, FederationFrostAggregateResultNotification,
+    FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
+    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
+    FederationFrostSigningAck, FederationFrostSigningPackageRequest,
+    FederationInvalidOperationAlertSummary, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationLocalStatusResponse, FederationOnchainWalletStatus,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRestBodyHash,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationRestSignature,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationWalletRebroadcastResponse, FederationWalletTransactionRequest,
+    FEDERATION_CATCH_UP_CERTIFICATE_VERSION, FEDERATION_REST_API_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, generate_trusted_dealer_configs_with_options,
@@ -308,6 +381,60 @@ fn federation_operator_token_suffix(ch: char) -> bool {
 /// Errors returned by federation configuration helpers.
 #[derive(Debug, Error)]
 pub enum FederationError {
+    /// Canonical address allocation state or operation is malformed.
+    #[error("Federation address allocation is invalid: {reason}")]
+    AddressAllocationInvalid {
+        /// Stable validation reason without local data.
+        reason: String,
+    },
+    /// One quote was already bound to a different descriptor branch.
+    #[error("Federation address allocation conflicts with the existing mapping for quote {quote}")]
+    AddressAllocationConflict {
+        /// Conflicting quote/allocation key.
+        quote: String,
+    },
+    /// A descriptor branch exhausted its non-hardened BIP32 range.
+    #[error("Federation {keychain} address derivation index is exhausted")]
+    AddressDerivationExhausted {
+        /// Exhausted external or internal branch.
+        keychain: FederationAddressKeychain,
+    },
+    /// Canonical member chain evidence is malformed or unauthorized.
+    #[error("Federation chain observation is invalid: {reason}")]
+    ChainObservationInvalid {
+        /// Stable validation reason without member-local source details.
+        reason: String,
+    },
+    /// Durable federation wallet UTXO state violates a safety invariant.
+    #[error("Federation chain observation state is invalid: {reason}")]
+    ChainObservationStateInvalid {
+        /// Stable validation reason without member-local source details.
+        reason: String,
+    },
+    /// Canonical on-chain intent, batch, or transaction proposal is malformed.
+    #[error("Federation on-chain transaction proposal is invalid: {reason}")]
+    TransactionProposalInvalid {
+        /// Stable validation reason without proposer-local details.
+        reason: String,
+    },
+    /// A public or private FROST wallet configuration failed validation.
+    #[error("Invalid federation FROST wallet configuration: {reason}")]
+    FrostConfigurationInvalid {
+        /// Stable validation reason without secret material.
+        reason: String,
+    },
+    /// An application-aware FROST signing transport message failed validation.
+    #[error("Federation FROST signing request is invalid: {reason}")]
+    FrostSigningInvalid {
+        /// Stable validation reason without nonce or local storage material.
+        reason: String,
+    },
+    /// Deterministic wallet proposer or signing-coordinator scheduling is invalid.
+    #[error("Federation wallet liveness schedule is invalid: {reason}")]
+    WalletLivenessInvalid {
+        /// Stable validation reason without local timing or endpoint data.
+        reason: String,
+    },
     /// A federation ID must be exactly 32 bytes.
     #[error("Invalid federation id size: expected={expected}, found={found}")]
     InvalidFederationIdSize {
@@ -2824,7 +2951,7 @@ mod tests {
             private_configs
                 .get(&local_member)
                 .expect("local private config"),
-            &[keyset_share.clone()],
+            std::slice::from_ref(&keyset_share),
             &transcript_signatures,
         )
         .expect("finalized member config");
@@ -3275,7 +3402,7 @@ mod tests {
         );
 
         assert!(matches!(
-            config.validate_blinded_outputs(&[placeholder.clone()]),
+            config.validate_blinded_outputs(std::slice::from_ref(&placeholder)),
             Err(FederationError::UnknownFederatedKeysetAmount { .. })
         ));
         config

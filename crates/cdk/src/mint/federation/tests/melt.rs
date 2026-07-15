@@ -1,6 +1,280 @@
 use super::*;
 
 #[tokio::test]
+async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
+    use cdk_common::bitcoin::{hashes::Hash, BlockHash, OutPoint, Txid};
+    use cdk_common::bitcoin::{Address, Network};
+    use cdk_common::federation::FederationOnchainMeltPaymentReceipt;
+    use cdk_common::nuts::nut30::{
+        MeltQuoteOnchainFeeOption, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse,
+    };
+
+    let (runtime_config, _) = super::address_allocation::runtime_with_address_application();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let destination_script = runtime_config
+        .public_config()
+        .frost_wallet
+        .as_ref()
+        .expect("FROST wallet")
+        .derive_cdk_onchain_script(
+            runtime_config.public_config(),
+            runtime_config
+                .cdk_onchain_application()
+                .expect("application")
+                .application_id,
+            3,
+            cdk_common::federation::FederationAddressKeychain::External,
+            90,
+        )
+        .expect("destination script");
+    let destination = Address::from_script(&destination_script, Network::Regtest)
+        .expect("regtest destination")
+        .to_string();
+    let quote = QuoteId::new();
+    let request = MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
+        request: destination.clone(),
+        unit: CurrencyUnit::Sat,
+        amount: Amount::from(1),
+    });
+    let fee_option = MeltQuoteOnchainFeeOption {
+        fee_index: 7,
+        fee_reserve: Amount::from(1),
+        estimated_blocks: 6,
+    };
+    let response = MeltQuoteCreateResponse::Onchain(MeltQuoteOnchainResponse {
+        quote: quote.clone(),
+        amount: Amount::from(1),
+        unit: CurrencyUnit::Sat,
+        method: PaymentMethod::Known(KnownMethod::Onchain),
+        state: MeltQuoteState::Unpaid,
+        expiry: 4_000_000_000,
+        request: destination,
+        fee_options: vec![fee_option],
+        selected_fee_index: None,
+        outpoint: None,
+        change: None,
+    });
+    let metadata = FederationMeltQuoteMetadata {
+        request_lookup_id: Some(PaymentIdentifier::QuoteId(quote.clone())),
+        extra_json: None,
+        estimated_blocks: Some(6),
+    };
+    let mut journal = InMemoryFederationJournal::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(quote.clone(), request, response, metadata),
+    );
+    persist_and_apply_entry(&mint, &quote_entry).await;
+
+    let proofs = vec![
+        proof_for_runtime(&runtime_config, "frost-onchain-input-one"),
+        proof_for_runtime(&runtime_config, "frost-onchain-input-two"),
+    ];
+    let input_ys = proofs.ys().expect("on-chain melt input ys");
+    let melt = MeltRequest::new(quote.clone(), proofs, None).fee_index(7);
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(melt)
+            .expect("on-chain melt operation"),
+    );
+    persist_and_apply_entry(&mint, &melt_entry).await;
+
+    let stored_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("quote lookup")
+        .expect("stored quote");
+    assert_eq!(stored_quote.state, MeltQuoteState::Pending);
+    let state = mint
+        .federation_transaction_state()
+        .await
+        .expect("transaction state");
+    let intent = state
+        .intent_for_quote(&quote.to_string())
+        .expect("pending payment intent");
+    assert_eq!(intent.intent.amount_sat, 1);
+    assert_eq!(intent.intent.maximum_fee_sat, 1);
+    assert_eq!(intent.intent.fee_tier, 7);
+    assert_eq!(
+        intent.state,
+        cdk_common::federation::FederationOnchainPaymentIntentState::Pending
+    );
+    assert_eq!(
+        intent.intent.creation_time,
+        super::super::federation_accepted_logical_time(&melt_entry)
+    );
+    assert_eq!(intent.intent.melt_operation_id, melt_entry.operation_id);
+    assert!(mint
+        .probe_federation_melt_quote_payment(&quote)
+        .await
+        .expect("joint-wallet payment probe")
+        .is_none());
+    let premature_txid = Txid::from_byte_array([32; 32]);
+    let premature_observation = FederationMeltQuotePaymentObservation {
+        quote: quote.to_string(),
+        observer: runtime_config.member_id(),
+        method: PaymentMethod::Known(KnownMethod::Onchain),
+        state: MeltQuoteState::Paid,
+        amount: Amount::from(1),
+        fee_reserve: Amount::from(1),
+        payment_id: Some(PaymentIdentifier::QuoteId(quote.clone())),
+        payment_proof: Some(OutPoint::new(premature_txid, 0).to_string()),
+    };
+    assert!(matches!(
+        mint.validate_federation_onchain_melt_payment_observation(
+            &stored_quote,
+            &premature_observation
+        )
+        .await,
+        Err(Error::PendingQuote)
+    ));
+
+    let (mut completed_state, signed) =
+        super::transaction_signing::signed_fixture_for_intent(intent.intent.clone(), 1);
+    completed_state
+        .mark_transaction_signed(signed.proposal_id, signed.clone())
+        .expect("persist signed transaction");
+    let settlement_policy = runtime_config
+        .onchain_transaction_settlement_policy(intent.intent.scope)
+        .expect("settlement policy");
+    completed_state
+        .authorize_transaction_broadcast(
+            cdk_common::federation::FederationTransactionBroadcastIntent {
+                proposal_id: signed.proposal_id,
+                txid: signed.txid,
+                settlement_policy,
+            },
+            FederationOperationId::from_bytes([35; 32]),
+            11,
+        )
+        .expect("authorize broadcast");
+    for (offset, observer) in runtime_config
+        .public_config()
+        .members
+        .keys()
+        .copied()
+        .take(usize::from(settlement_policy.required_observers))
+        .enumerate()
+    {
+        completed_state
+            .record_transaction_broadcast_observation(
+                cdk_common::federation::FederationTransactionBroadcastObservation {
+                    proposal_id: signed.proposal_id,
+                    txid: signed.txid,
+                    observer,
+                    attempt: 1,
+                    result:
+                        cdk_common::federation::FederationTransactionBroadcastResult::Confirmed {
+                            block_hash: BlockHash::from_byte_array([36; 32]),
+                            block_height: 200,
+                            confirmation_depth: settlement_policy.minimum_confirmations,
+                        },
+                    detail: None,
+                },
+                FederationOperationId::from_bytes(
+                    [u8::try_from(offset + 37).expect("operation marker"); 32],
+                ),
+                u64::try_from(offset + 12).expect("operation index"),
+            )
+            .expect("record threshold confirmation");
+    }
+    super::transaction_signing::persist_transaction_state(&localstore, &completed_state).await;
+    let terminal_observation = mint
+        .probe_federation_melt_quote_payment(&quote)
+        .await
+        .expect("completed joint-wallet payment probe")
+        .expect("paid observation");
+    let completed_receipt = completed_state
+        .completed_payment_for_quote(&quote.to_string())
+        .expect("completed receipt")
+        .expect("receipt");
+    assert_eq!(
+        terminal_observation.payment_id,
+        Some(PaymentIdentifier::QuoteId(quote.clone()))
+    );
+    assert_eq!(
+        terminal_observation.payment_proof,
+        Some(completed_receipt.outpoint.to_string())
+    );
+    let mut last_payment_entry = None;
+    for observer in runtime_config
+        .public_config()
+        .members
+        .keys()
+        .copied()
+        .take(usize::from(settlement_policy.required_observers))
+    {
+        let mut observation = terminal_observation.clone();
+        observation.observer = observer;
+        let entry = appended_entry(
+            &mut journal,
+            runtime_config.operation_envelope(FederationOperation::MeltQuotePayment(observation)),
+        );
+        persist_and_apply_entry(&mint, &entry).await;
+        last_payment_entry = Some(entry);
+    }
+    let paid_quote = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("paid quote lookup")
+        .expect("paid quote");
+    assert_eq!(paid_quote.state, MeltQuoteState::Paid);
+    assert_eq!(
+        paid_quote.payment_proof,
+        Some(completed_receipt.outpoint.to_string())
+    );
+    assert!(localstore
+        .get_proofs_states(&input_ys)
+        .await
+        .expect("paid input states")
+        .into_iter()
+        .all(|state| state == Some(State::Spent)));
+    assert!(!mint
+        .apply_accepted_federation_operation(
+            last_payment_entry
+                .as_ref()
+                .expect("last payment observation")
+        )
+        .await
+        .expect("payment observation replay"));
+
+    let txid = Txid::from_byte_array([33; 32]);
+    let receipt = FederationOnchainMeltPaymentReceipt {
+        quote: quote.to_string(),
+        melt_operation_id: melt_entry.operation_id,
+        txid,
+        outpoint: OutPoint::new(txid, 0),
+        amount_sat: 1,
+        fee_sat: 0,
+    };
+    let observation = FederationMeltQuotePaymentObservation {
+        quote: quote.to_string(),
+        observer: runtime_config.member_id(),
+        method: PaymentMethod::Known(KnownMethod::Onchain),
+        state: MeltQuoteState::Paid,
+        amount: Amount::from(1),
+        fee_reserve: Amount::from(1),
+        payment_id: Some(PaymentIdentifier::QuoteId(quote.clone())),
+        payment_proof: Some(receipt.outpoint.to_string()),
+    };
+    let response = super::super::melt_quote_payment_response(
+        FederationOperationId::from_bytes([34; 32]),
+        &stored_quote,
+        &observation,
+        Some(&receipt),
+    )
+    .expect("existing on-chain response shape");
+    assert_eq!(
+        response.payment_lookup_id,
+        PaymentIdentifier::QuoteId(quote)
+    );
+    assert_eq!(response.payment_proof, Some(receipt.outpoint.to_string()));
+    assert_eq!(response.status, MeltQuoteState::Paid);
+    assert_eq!(response.total_spent, Amount::new(1, CurrencyUnit::Sat));
+}
+
+#[tokio::test]
 async fn concurrent_same_federation_melt_quote_apply_is_idempotent() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;

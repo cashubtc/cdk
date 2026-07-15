@@ -23,11 +23,13 @@ use cdk::federation::{
     FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignatureRequest, FederationError, FederationJournalAppendOutcome,
-    FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
-    FederationMaterializedStateDigest, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationRestMessageKind, FederationSubmitOperationResponse,
-    MemberId, FEDERATION_REST_API_VERSION,
+    FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
+    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record, FederationFrostRootRecord,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalDigest,
+    FederationJournalEntry, FederationMaterializedStateDigest, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationRestMessageKind,
+    FederationSubmitOperationResponse, MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 
@@ -54,6 +56,12 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) dkg_member_admission: Option<FederationDkgMemberAdmissionHandle>,
     pub(crate) invalid_operation_alerts: Option<FederationInvalidOperationAlertHandle>,
     pub(crate) payment_observer: super::FederationPaymentObserver,
+    pub(crate) transaction_broadcaster: super::FederationTransactionBroadcaster,
+    pub(crate) wallet_liveness: super::FederationWalletLivenessWorker,
+    pub(crate) onchain_wallets: Vec<cdk_bdk::FederatedBdkWallet>,
+    pub(crate) frost_signing: Option<super::frost_signing::FederationFrostSigningRuntime>,
+    /// Serializes journal persistence and application across live finality and catch-up.
+    pub(crate) operation_application: Arc<tokio::sync::Mutex<()>>,
     pub(crate) catch_up_certificate_quorum_cache:
         Arc<tokio::sync::Mutex<Option<Option<super::CatchUpCertificateQuorumStatus>>>>,
     pub(crate) materialized_state_digest_cache:
@@ -152,6 +160,11 @@ impl FederationNodeRuntime {
             dkg_member_admission: None,
             invalid_operation_alerts: None,
             payment_observer: super::FederationPaymentObserver::default(),
+            transaction_broadcaster: super::FederationTransactionBroadcaster::default(),
+            wallet_liveness: super::FederationWalletLivenessWorker::default(),
+            onchain_wallets: Vec::new(),
+            frost_signing: None,
+            operation_application: Arc::new(tokio::sync::Mutex::new(())),
             catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
             materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
             catch_up_certificate_quorum_validation_count: Arc::new(AtomicUsize::new(0)),
@@ -180,7 +193,24 @@ impl FederationNodeRuntime {
             return Ok(());
         };
         envelope.verify_authorization(config.public_config())?;
-        config.validate_federated_operation_submission(&envelope.operation)
+        config.validate_federated_operation_submission(&envelope.operation)?;
+        if let cdk::federation::FederationOperation::TransactionSigned(signed) = &envelope.operation
+        {
+            mint.validate_federation_signed_transaction_submission(signed)
+                .await?;
+        }
+        match &envelope.operation {
+            cdk::federation::FederationOperation::TransactionBroadcastIntent(intent) => {
+                mint.validate_federation_transaction_broadcast_intent_submission(intent)
+                    .await?;
+            }
+            cdk::federation::FederationOperation::TransactionBroadcastObservation(observation) => {
+                mint.validate_federation_transaction_broadcast_observation_submission(observation)
+                    .await?;
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     fn active_mint(&self) -> Result<&Arc<Mint>, cdk::Error> {
@@ -992,6 +1022,7 @@ impl FederationNodeRuntime {
         response: &FederationJournalCatchUpResponse,
         catch_up_certificates: &[&FederationCatchUpCertificate],
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
+        let _application = self.operation_application.lock().await;
         let runtime_config = self
             .active_mint()?
             .federation_config()
@@ -1190,6 +1221,83 @@ impl FederationNodeRuntime {
         tx.commit().await?;
         self.record_sequence(FederationRestMessageKind::DkgReveal, sender, sequence)
             .await;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_frost_dkg_round1(
+        &self,
+        request: &FederationFrostDkgRound1Request,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        let db = self.active_mint()?.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_frost_dkg_round1(request).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence)
+            .await?;
+        tx.commit().await?;
+        self.record_sequence(FederationRestMessageKind::FrostDkgRound1, sender, sequence)
+            .await;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_frost_dkg_round2(
+        &self,
+        record: &FederationFrostDkgRound2Record,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        let db = self.active_mint()?.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_frost_dkg_round2(record).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence)
+            .await?;
+        tx.commit().await?;
+        self.record_sequence(FederationRestMessageKind::FrostDkgRound2, sender, sequence)
+            .await;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_frost_dkg_local_state(
+        &self,
+        state: &FederationFrostDkgLocalState,
+    ) -> Result<(), cdk::Error> {
+        let db = self.active_mint()?.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.set_federation_frost_dkg_local_state(state).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_frost_root_record(
+        &self,
+        record: &FederationFrostRootRecord,
+    ) -> Result<(), cdk::Error> {
+        let db = self.active_mint()?.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_frost_root_record(record).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn persist_frost_dkg_confirmation(
+        &self,
+        request: &FederationFrostDkgConfirmationRequest,
+        sender: MemberId,
+        sequence: u64,
+    ) -> Result<(), cdk::Error> {
+        let db = self.active_mint()?.localstore();
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_frost_dkg_confirmation(request).await?;
+        tx.set_federation_dkg_member_sequence(sender, sequence)
+            .await?;
+        tx.commit().await?;
+        self.record_sequence(
+            FederationRestMessageKind::FrostDkgConfirmation,
+            sender,
+            sequence,
+        )
+        .await;
         Ok(())
     }
 
@@ -1595,6 +1703,7 @@ impl FederationNodeRuntime {
         &self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
+        let _application = self.operation_application.lock().await;
         let consensus = self
             .consensus
             .as_ref()
@@ -1685,6 +1794,15 @@ impl FederationNodeRuntime {
         if !entries.is_empty() {
             self.invalidate_materialized_state_digest().await;
         }
+        let mint = self.active_mint()?;
+        crate::reconcile_federation_onchain_wallets(mint, &self.onchain_wallets)
+            .await
+            .map_err(|_| {
+                cdk::Error::Custom(
+                    "accepted federation on-chain state could not be reconciled locally"
+                        .to_string(),
+                )
+            })?;
         Ok(applied)
     }
 

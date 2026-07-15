@@ -179,3 +179,27 @@ CREATE TABLE federation_dkg_ceremonies (
     ceremony_id TEXT PRIMARY KEY,
     payload_json TEXT NOT NULL
 );
+
+CREATE TABLE federation_frost_dkg_records (
+    ceremony_id TEXT NOT NULL,
+    record_kind TEXT NOT NULL,
+    sender_id INTEGER NOT NULL,
+    receiver_id INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (ceremony_id, record_kind, sender_id, receiver_id)
+);
+
+CREATE INDEX idx_federation_frost_dkg_records_kind
+ON federation_frost_dkg_records (record_kind, ceremony_id, sender_id, receiver_id);
+
+CREATE TABLE federation_frost_wallet_config (
+    record_kind TEXT NOT NULL,
+    root_key_epoch INTEGER NOT NULL,
+    application_id TEXT NOT NULL,
+    application_key_epoch INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (record_kind, root_key_epoch, application_id, application_key_epoch)
+);
+
+CREATE INDEX idx_federation_frost_wallet_config_kind
+ON federation_frost_wallet_config (record_kind, root_key_epoch, application_id, application_key_epoch);

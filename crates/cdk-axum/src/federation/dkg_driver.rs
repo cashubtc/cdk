@@ -9,12 +9,22 @@ use cdk::federation::{
     FederationDkgDriverPhase, FederationDkgDriverPlan, FederationDkgDriverProgress,
     FederationDkgDriverRecords, FederationDkgKeysetSpec, FederationDkgMemberKeysetShare,
     FederationDkgReadinessRequest, FederationDkgRevealRequest, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationError, MemberId,
+    FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgContext, FederationFrostDkgLocalPhase,
+    FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationFrostDkgRound2Request, FederationFrostRootPrivateConfig,
+    FederationFrostRootPublicConfig, FederationFrostRootRecord, MemberId,
     ValidatedFederationDkgParticipantState,
+};
+use cdk_frost::rand_core::OsRng;
+use cdk_frost::{
+    advance_dkg, finish_dkg, start_dkg, CanonicalRootKeyPackage, DkgRound1Package, DkgRound1Secret,
+    DkgRound2Secret, EncryptedSecret, SecretEncryptionKey,
 };
 use cdk_http_client::{Async, HttpError, Transport};
 use futures::future::join_all;
 use futures::{stream, StreamExt};
+use sha2::{Digest, Sha256};
 
 use crate::MintState;
 
@@ -22,6 +32,25 @@ use super::peer_client::{FederationRestPeerClient, FederationRestPeerClientError
 use super::sync_config::FederationPeerSyncConfig;
 
 const FEDERATION_DKG_DELIVERY_CONCURRENCY: usize = 4;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrostDkgPhase {
+    Round1,
+    Round2,
+    Confirmation,
+    Complete,
+}
+
+impl FrostDkgPhase {
+    fn driver_phase(self) -> FederationDkgDriverPhase {
+        match self {
+            Self::Round1 => FederationDkgDriverPhase::FrostRound1,
+            Self::Round2 => FederationDkgDriverPhase::FrostRound2,
+            Self::Confirmation => FederationDkgDriverPhase::FrostConfirmation,
+            Self::Complete => FederationDkgDriverPhase::Complete,
+        }
+    }
+}
 
 /// Confidentiality policy for dealer-free DKG secret-share delivery.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -65,6 +94,8 @@ impl Default for FederationDkgDriverRunConfig {
 pub struct FederationDkgAutoStartConfig {
     /// Unique ceremony ID shared by every configured member.
     pub ceremony_id: FederationDkgCeremonyId,
+    /// Application-neutral FROST root epoch produced alongside the BLS keyset.
+    pub root_key_epoch: u64,
     /// Exact aggregate keyset policy every participant must commit to.
     pub keyset_spec: FederationDkgKeysetSpec,
     /// Bounded retry and confidential-transport policy.
@@ -86,6 +117,11 @@ impl FederationDkgAutoStartConfig {
             .into());
         }
         self.keyset_spec.validate_for_federation(public_config)?;
+        if self.root_key_epoch == 0 {
+            return Err(cdk::Error::Custom(
+                "federation FROST root key epoch must be greater than zero".to_string(),
+            ));
+        }
         self.driver.validate()?;
         validate_federation_dkg_secret_share_transport(
             public_config,
@@ -592,6 +628,277 @@ pub(crate) async fn prepare_federation_dkg_participant_state(
 /// batches remain ordered, while deliveries within one phase run concurrently.
 /// Later plans rebroadcast earlier artifacts, allowing lagging members to catch
 /// up without a separate acknowledgement journal.
+async fn run_frost_dkg_tick<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    public_config: &FederationConfig,
+    private_config: &cdk::federation::MemberConfigPrivate,
+    ceremony_id: FederationDkgCeremonyId,
+    root_key_epoch: u64,
+) -> Result<(FrostDkgPhase, DeliverySummary), cdk::Error>
+where
+    T: Transport,
+{
+    let context = FederationFrostDkgContext::new(public_config, ceremony_id, root_key_epoch)?;
+    let frost_context = context.to_frost_context()?;
+    let local_member = private_config.member_id;
+    let frost_member = cdk_frost::MemberId::new(local_member.get())
+        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+    let storage_key = frost_storage_key(private_config, &context)?;
+    let db = state.mint.localstore();
+    let roots = db.get_federation_frost_root_records().await?;
+    let local_root = roots
+        .iter()
+        .find(|record| record.context == context && record.member_id == local_member);
+    let mut delivery = DeliverySummary::default();
+
+    if let Some(root) = local_root {
+        let public = root.validate(public_config)?;
+        let confirmation = FederationFrostDkgConfirmationRequest {
+            context: context.clone(),
+            member_id: local_member,
+            public_package: public.encode(),
+        };
+        let members = public_config.members.values().cloned().collect::<Vec<_>>();
+        let results = stream::iter(members.into_iter().map(|member| {
+            let confirmation = confirmation.clone();
+            async move {
+                (
+                    member.member_id,
+                    client
+                        .submit_frost_dkg_confirmation(&member, &confirmation)
+                        .await,
+                )
+            }
+        }))
+        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+        record_delivery_results("FROST confirmation", results, &mut delivery);
+        let confirmations = db.get_federation_frost_dkg_confirmations().await?;
+        let matching = confirmations
+            .iter()
+            .filter(|candidate| candidate.context == context)
+            .collect::<Vec<_>>();
+        for candidate in &matching {
+            let candidate_public = candidate.validate(public_config, candidate.member_id)?;
+            if candidate_public.encode() != public.encode() {
+                return Err(FederationError::DkgTranscriptMismatch {
+                    reason: format!(
+                        "FROST public-root confirmation mismatch from member {}",
+                        candidate.member_id
+                    ),
+                }
+                .into());
+            }
+        }
+        return Ok((
+            if matching.len() == public_config.members.len() {
+                FrostDkgPhase::Complete
+            } else {
+                FrostDkgPhase::Confirmation
+            },
+            delivery,
+        ));
+    }
+
+    let states = db.get_federation_frost_dkg_local_states().await?;
+    let local_states = states
+        .iter()
+        .filter(|record| record.context == context && record.member_id == local_member)
+        .collect::<Vec<_>>();
+    let round2_state = local_states
+        .iter()
+        .find(|record| record.phase == FederationFrostDkgLocalPhase::Round2)
+        .copied();
+    let round1_state = local_states
+        .iter()
+        .find(|record| record.phase == FederationFrostDkgLocalPhase::Round1)
+        .copied();
+
+    if round1_state.is_none() && round2_state.is_none() {
+        let (secret, package) = start_dkg(frost_context, frost_member, OsRng)
+            .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+        let encrypted = secret
+            .seal(&storage_key, &mut OsRng)
+            .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+        state
+            .federation
+            .persist_frost_dkg_local_state(&FederationFrostDkgLocalState {
+                context,
+                member_id: local_member,
+                phase: FederationFrostDkgLocalPhase::Round1,
+                encrypted_state: encrypted.to_bytes(),
+            })
+            .await?;
+        let _ = package;
+        return Ok((FrostDkgPhase::Round1, delivery));
+    }
+
+    if let Some(state_record) = round1_state.filter(|_| round2_state.is_none()) {
+        state_record.validate(public_config)?;
+        let encrypted = EncryptedSecret::from_bytes(state_record.encrypted_state.clone())
+            .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+        let secret = DkgRound1Secret::open(
+            frost_context.clone(),
+            frost_member,
+            &storage_key,
+            &encrypted,
+        )
+        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+        let own_package = secret.public_package();
+        let request = FederationFrostDkgRound1Request {
+            context: context.clone(),
+            sender: local_member,
+            package: own_package.encode(),
+        };
+        let members = public_config.members.values().cloned().collect::<Vec<_>>();
+        let results = stream::iter(members.into_iter().map(|member| {
+            let request = request.clone();
+            async move {
+                (
+                    member.member_id,
+                    client.submit_frost_dkg_round1(&member, &request).await,
+                )
+            }
+        }))
+        .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+        record_delivery_results("FROST round one", results, &mut delivery);
+        if delivery.failed != 0 || delivery.successful != public_config.members.len() {
+            return Ok((FrostDkgPhase::Round1, delivery));
+        }
+        let requests = db.get_federation_frost_dkg_round1().await?;
+        let received = requests
+            .iter()
+            .filter(|candidate| candidate.context == context && candidate.sender != local_member)
+            .map(|candidate| candidate.decode_package(public_config, candidate.sender))
+            .collect::<cdk::federation::Result<Vec<_>>>()?;
+        if received.len() + 1 != public_config.members.len() {
+            return Ok((FrostDkgPhase::Round1, delivery));
+        }
+        let (round2_secret, outgoing) =
+            advance_dkg(secret, received).map_err(|error| cdk::Error::Custom(error.to_string()))?;
+        let encrypted = round2_secret
+            .seal(&storage_key, &mut OsRng)
+            .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+        let mut tx = db.begin_transaction().await?;
+        tx.set_federation_frost_dkg_local_state(&FederationFrostDkgLocalState {
+            context: context.clone(),
+            member_id: local_member,
+            phase: FederationFrostDkgLocalPhase::Round2,
+            encrypted_state: encrypted.to_bytes(),
+        })
+        .await?;
+        for (receiver, package) in outgoing {
+            let encrypted = package
+                .seal(&storage_key, &mut OsRng)
+                .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+            tx.add_federation_frost_dkg_round2(&FederationFrostDkgRound2Record {
+                context: context.clone(),
+                sender: local_member,
+                receiver: MemberId::new(receiver.get())?,
+                encrypted_package: encrypted.to_bytes(),
+            })
+            .await?;
+        }
+        tx.commit().await?;
+        return Ok((FrostDkgPhase::Round2, delivery));
+    }
+
+    let state_record = round2_state.ok_or_else(|| {
+        cdk::Error::Custom("FROST DKG has no restartable round-two state".to_string())
+    })?;
+    state_record.validate(public_config)?;
+    let records = db.get_federation_frost_dkg_round2().await?;
+    let outgoing = records
+        .into_iter()
+        .filter(|candidate| candidate.context == context && candidate.sender == local_member)
+        .map(|record| {
+            let package = record.open(public_config, &storage_key)?;
+            Ok(FederationFrostDkgRound2Request {
+                context: record.context,
+                sender: record.sender,
+                receiver: record.receiver,
+                package: package.encode(),
+            })
+        })
+        .collect::<cdk::federation::Result<Vec<_>>>()?;
+    let outgoing_count = outgoing.len();
+    let results = stream::iter(outgoing.into_iter().map(|request| async move {
+        let member = public_config
+            .member(request.receiver)
+            .expect("validated FROST receiver must be configured");
+        (
+            member.member_id,
+            client.submit_frost_dkg_round2(member, &request).await,
+        )
+    }))
+    .buffer_unordered(FEDERATION_DKG_DELIVERY_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+    record_delivery_results("FROST round two", results, &mut delivery);
+    if delivery.failed != 0 || delivery.successful != outgoing_count {
+        return Ok((FrostDkgPhase::Round2, delivery));
+    }
+    let records = db.get_federation_frost_dkg_round2().await?;
+    let incoming = records
+        .iter()
+        .filter(|candidate| {
+            candidate.context == context
+                && candidate.receiver == local_member
+                && candidate.sender != local_member
+        })
+        .map(|candidate| candidate.open(public_config, &storage_key))
+        .collect::<cdk::federation::Result<Vec<_>>>()?;
+    if incoming.len() + 1 != public_config.members.len() {
+        return Ok((FrostDkgPhase::Round2, delivery));
+    }
+    let round1 = db
+        .get_federation_frost_dkg_round1()
+        .await?
+        .into_iter()
+        .filter(|candidate| candidate.context == context && candidate.sender != local_member)
+        .map(|candidate| candidate.decode_package(public_config, candidate.sender))
+        .collect::<cdk::federation::Result<Vec<DkgRound1Package>>>()?;
+    let encrypted = EncryptedSecret::from_bytes(state_record.encrypted_state.clone())
+        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+    let secret = DkgRound2Secret::open(frost_context, frost_member, &storage_key, &encrypted)
+        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+    let root = finish_dkg(secret, round1, incoming)
+        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+    let public = root.public().clone();
+    let encrypted_root = root
+        .seal(&storage_key, &mut OsRng)
+        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+    state
+        .federation
+        .persist_frost_root_record(&FederationFrostRootRecord {
+            context,
+            member_id: local_member,
+            public_package: public.encode(),
+            encrypted_root_share: encrypted_root.to_bytes(),
+        })
+        .await?;
+    Ok((FrostDkgPhase::Confirmation, delivery))
+}
+
+pub(crate) fn frost_storage_key(
+    private_config: &cdk::federation::MemberConfigPrivate,
+    context: &FederationFrostDkgContext,
+) -> Result<SecretEncryptionKey, cdk::Error> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"cdk/federation/frost-sealed-storage/v1");
+    hasher.update(private_config.identity_secret_key.to_secret_bytes());
+    hasher.update(context.federation_id.to_bytes());
+    hasher.update(context.ceremony_id.to_bytes());
+    hasher.update(context.root_key_epoch.to_be_bytes());
+    hasher.update(private_config.member_id.get().to_be_bytes());
+    SecretEncryptionKey::new(hasher.finalize().into())
+        .map_err(|error| cdk::Error::Custom(error.to_string()))
+}
+
 #[cfg(test)]
 pub(crate) async fn run_federation_dkg_driver_tick<T>(
     state: &MintState,
@@ -634,6 +941,12 @@ where
     validate_federation_dkg_secret_share_transport(&public_config, secret_share_transport)?;
 
     let ceremony_id = participant.participant_state().ceremony_id();
+    let root_key_epoch = state
+        .federation
+        .dkg_auto_start_config
+        .as_ref()
+        .ok_or_else(|| cdk::Error::Custom("FROST DKG configuration is missing".to_string()))?
+        .root_key_epoch;
     let records = load_federation_dkg_driver_records(state, ceremony_id).await?;
     let plan = plan_federation_dkg_records(
         records,
@@ -650,6 +963,23 @@ where
     }
     let phase_before = plan.phase;
     let mut delivery = DeliverySummary::default();
+    let (frost_phase, frost_delivery) = run_frost_dkg_tick(
+        state,
+        client,
+        &public_config,
+        &private_config,
+        ceremony_id,
+        root_key_epoch,
+    )
+    .await?;
+    delivery.attempted = delivery.attempted.saturating_add(frost_delivery.attempted);
+    delivery.successful = delivery
+        .successful
+        .saturating_add(frost_delivery.successful);
+    delivery.failed = delivery.failed.saturating_add(frost_delivery.failed);
+    delivery
+        .failed_members
+        .extend(frost_delivery.failed_members);
     let secret_shares_ready_before_tick =
         secret_shares_acknowledged_by_all(&delivery_tracker.secret_shares, &plan.secret_shares);
     let transcript_ready_before_tick = plan.transcript_signature.as_ref().is_some_and(|request| {
@@ -784,7 +1114,11 @@ where
         );
     }
 
-    if let (true, Some(request)) = (transcript_ready_before_tick, plan.activation.as_ref()) {
+    if let (true, true, Some(request)) = (
+        transcript_ready_before_tick,
+        frost_phase == FrostDkgPhase::Complete,
+        plan.activation.as_ref(),
+    ) {
         let targets = pending_broadcast_targets(
             &mut delivery_tracker.activation,
             request,
@@ -817,9 +1151,16 @@ where
         plan_cache,
     )
     .await?;
+    let phase_after = if next_plan.phase == FederationDkgDriverPhase::Complete
+        && frost_phase != FrostDkgPhase::Complete
+    {
+        frost_phase.driver_phase()
+    } else {
+        next_plan.phase
+    };
     Ok(FederationDkgDriverTickOutcome {
         phase_before,
-        phase_after: next_plan.phase,
+        phase_after,
         progress: next_plan.progress,
         attempted_deliveries: delivery.attempted,
         successful_deliveries: delivery.successful,
@@ -1090,27 +1431,123 @@ pub(crate) async fn complete_federation_dkg_ceremony(
     ceremony_id: FederationDkgCeremonyId,
 ) -> Result<(), cdk::Error> {
     let db = state.mint.localstore();
+    let runtime_config = state.mint.federation_config().ok_or_else(|| {
+        cdk::Error::Custom("federation mint is missing its runtime config".to_string())
+    })?;
+    let public_config = runtime_config.public_config();
+    let local_member = runtime_config.member_id();
+    let root_key_epoch = state
+        .federation
+        .dkg_auto_start_config
+        .as_ref()
+        .filter(|config| config.ceremony_id == ceremony_id)
+        .ok_or_else(|| {
+            cdk::Error::Custom(
+                "dual DKG completion requires matching FROST ceremony configuration".to_string(),
+            )
+        })?
+        .root_key_epoch;
+    let frost_context = FederationFrostDkgContext::new(public_config, ceremony_id, root_key_epoch)?;
+    let frost_root = db
+        .get_federation_frost_root_records()
+        .await?
+        .into_iter()
+        .find(|record| record.context == frost_context && record.member_id == local_member)
+        .ok_or_else(|| {
+            cdk::Error::Custom(
+                "dual DKG completion requires the local sealed FROST root share".to_string(),
+            )
+        })?;
+    let frost_public_package = frost_root.validate(public_config)?;
+    let storage_key = frost_storage_key(runtime_config.private_config(), &frost_context)?;
+    let encrypted_root = EncryptedSecret::from_bytes(frost_root.encrypted_root_share.clone())
+        .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+    CanonicalRootKeyPackage::open(
+        cdk_frost::MemberId::new(local_member.get())
+            .map_err(|error| cdk::Error::Custom(error.to_string()))?,
+        frost_public_package.clone(),
+        &storage_key,
+        &encrypted_root,
+    )
+    .map_err(|error| cdk::Error::Custom(error.to_string()))?;
+    let frost_public = frost_public_package.encode();
+    let confirmations = db
+        .get_federation_frost_dkg_confirmations()
+        .await?
+        .into_iter()
+        .filter(|confirmation| confirmation.context == frost_context)
+        .collect::<Vec<_>>();
+    let mut confirmed_members = BTreeSet::new();
+    for confirmation in confirmations {
+        let public = confirmation.validate(public_config, confirmation.member_id)?;
+        if public.encode() != frost_public || !confirmed_members.insert(confirmation.member_id) {
+            return Err(FederationError::DkgTranscriptMismatch {
+                reason: format!(
+                    "conflicting or duplicate FROST activation confirmation from member {}",
+                    confirmation.member_id
+                ),
+            }
+            .into());
+        }
+    }
+    if confirmed_members != public_config.members.keys().copied().collect() {
+        return Err(FederationError::DkgTranscriptMismatch {
+            reason: "dual DKG completion requires matching FROST confirmation from every member"
+                .to_string(),
+        }
+        .into());
+    }
+    let bls_results = db
+        .get_federation_dkg_member_keyset_shares()
+        .await?
+        .into_iter()
+        .filter(|share| {
+            share.member_id == local_member && share.public_ceremony.ceremony_id() == ceremony_id
+        })
+        .collect::<Vec<_>>();
+    if bls_results.is_empty() {
+        return Err(FederationError::DkgTranscriptMismatch {
+            reason: "dual DKG completion requires a local BLS keyset result".to_string(),
+        }
+        .into());
+    }
+    for bls in bls_results {
+        cdk::federation::FederationDualDkgResult {
+            bls,
+            frost: frost_root.clone(),
+        }
+        .validate(public_config)?;
+    }
+    let root_public = FederationFrostRootPublicConfig::from_dkg_record(public_config, &frost_root)?;
+    let root_private =
+        FederationFrostRootPrivateConfig::from_dkg_record(&root_public, &frost_root)?;
     let ceremonies = db.get_federation_dkg_ceremonies().await?;
-    let Some(ceremony) = ceremonies
+    let ceremony = ceremonies
         .iter()
-        .find(|record| record.ceremony_id == ceremony_id)
-    else {
+        .find(|record| record.ceremony_id == ceremony_id);
+    let mut tx = db.begin_transaction().await?;
+    tx.add_federation_frost_root_public_config(&root_public)
+        .await?;
+    tx.add_federation_frost_root_private_config(&root_private)
+        .await?;
+    let Some(ceremony) = ceremony else {
+        tx.commit().await?;
         return Ok(());
     };
     match ceremony.state {
-        FederationDkgCeremonyState::Complete => Ok(()),
+        FederationDkgCeremonyState::Complete | FederationDkgCeremonyState::Active => {
+            if ceremony.state == FederationDkgCeremonyState::Active {
+                let completed = ceremony.completed()?;
+                tx.transition_federation_dkg_ceremony(ceremony, &completed)
+                    .await?;
+            }
+            tx.commit().await?;
+            Ok(())
+        }
         FederationDkgCeremonyState::Aborted => Err(FederationError::DkgTranscriptMismatch {
             reason: format!("aborted DKG ceremony {ceremony_id} cannot complete"),
         }
         .into()),
-        FederationDkgCeremonyState::Active => {
-            let completed = ceremony.completed()?;
-            let mut tx = db.begin_transaction().await?;
-            tx.transition_federation_dkg_ceremony(ceremony, &completed)
-                .await?;
-            tx.commit().await?;
-            Ok(())
-        }
     }
 }
 
@@ -1199,6 +1636,7 @@ mod tests {
         .expect("setup config");
         let config = FederationDkgAutoStartConfig {
             ceremony_id: FederationDkgCeremonyId::from_bytes([7; 32]),
+            root_key_epoch: 1,
             keyset_spec: FederationDkgKeysetSpec::new(
                 CurrencyUnit::Sat,
                 true,

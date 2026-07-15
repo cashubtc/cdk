@@ -57,6 +57,31 @@ fn runtime_config_builds_mint_payment_observation_operations() {
     ));
 }
 
+#[test]
+fn cumulative_onchain_payment_commitments_allow_ordered_revisions() {
+    let runtime_config = runtime_config();
+    let quote = QuoteId::new();
+    let mut journal = InMemoryFederationJournal::new();
+    for (amount, payment_id) in [(10, [1; 32]), (15, [2; 32])] {
+        let envelope = runtime_config.operation_envelope(FederationOperation::MintQuotePayment(
+            FederationMintQuotePaymentObservation {
+                quote: quote.to_string(),
+                observer: runtime_config.member_id(),
+                method: PaymentMethod::Known(KnownMethod::Onchain),
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(amount),
+                amount_issued: Amount::ZERO,
+                payment_id: Some(PaymentIdentifier::PaymentId(payment_id)),
+                payment_proof: None,
+            },
+        ));
+        journal
+            .append(envelope)
+            .expect("distinct accepted output commitment is a new cumulative revision");
+    }
+    assert_eq!(journal.entries().len(), 2);
+}
+
 #[tokio::test]
 async fn real_policy_allows_quorum_despite_minority_disagreement() {
     let policy = FederationPaymentObservationPolicy::member_quorum(2);

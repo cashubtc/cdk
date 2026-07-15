@@ -4,8 +4,11 @@ use cdk::federation::{
     redact_federation_operator_message, FederationDkgActivationRequest,
     FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
     FederationDkgSecretShareRequest, FederationDkgSetupResponse,
-    FederationDkgTranscriptSignatureRequest, FederationRestMessageKind, FederationSignedRequest,
+    FederationDkgTranscriptSignatureRequest, FederationFrostDkgConfirmationRequest,
+    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationFrostDkgRound2Request, FederationRestMessageKind, FederationSignedRequest,
 };
+use cdk_frost::rand_core::OsRng;
 use tracing::instrument;
 
 use crate::MintState;
@@ -236,6 +239,191 @@ pub(super) async fn post_dkg_secret_share(
 }
 
 #[instrument(skip_all)]
+pub(super) async fn post_frost_dkg_round1(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationFrostDkgRound1Request>>,
+) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let kind = FederationRestMessageKind::FrostDkgRound1;
+    let _permit = acquire_private_rest_admission(&state, kind)?;
+    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let _member_permit = acquire_private_dkg_member_admission(&state, verified.sender, kind)?;
+    let dkg_config = active_dkg_config(&state)?;
+    let runtime_config = federation_runtime_config(&state)?;
+    if payload.payload.context.ceremony_id != dkg_config.ceremony_id
+        || payload.payload.context.root_key_epoch != dkg_config.root_key_epoch
+    {
+        return Err(federation_error_response(
+            cdk::federation::FederationError::DkgTranscriptMismatch {
+                reason: "FROST round one belongs to another ceremony or root epoch".to_string(),
+            },
+        ));
+    }
+    payload
+        .payload
+        .decode_package(runtime_config.public_config(), verified.sender)
+        .map_err(federation_error_response)?;
+    state
+        .persist_federation_frost_dkg_round1(&payload.payload, verified.sender, verified.sequence)
+        .await
+        .map_err(dkg_error_response)?;
+    Ok(Json(FederationDkgSetupResponse::new(
+        runtime_config.federation_id(),
+        runtime_config.member_id(),
+        kind,
+        verified.sender,
+    )))
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_frost_dkg_round2(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationFrostDkgRound2Request>>,
+) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let kind = FederationRestMessageKind::FrostDkgRound2;
+    let _permit = acquire_private_rest_admission(&state, kind)?;
+    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let _member_permit = acquire_private_dkg_member_admission(&state, verified.sender, kind)?;
+    let dkg_config = active_dkg_config(&state)?;
+    let runtime_config = federation_runtime_config(&state)?;
+    if payload.payload.context.ceremony_id != dkg_config.ceremony_id
+        || payload.payload.context.root_key_epoch != dkg_config.root_key_epoch
+    {
+        return Err(federation_error_response(
+            cdk::federation::FederationError::DkgTranscriptMismatch {
+                reason: "FROST round two belongs to another ceremony or root epoch".to_string(),
+            },
+        ));
+    }
+    let package = payload
+        .payload
+        .decode_package(
+            runtime_config.public_config(),
+            verified.sender,
+            runtime_config.member_id(),
+        )
+        .map_err(federation_error_response)?;
+    let storage_key = super::dkg_driver::frost_storage_key(
+        runtime_config.private_config(),
+        &payload.payload.context,
+    )
+    .map_err(dkg_error_response)?;
+    let records = state
+        .mint
+        .localstore()
+        .get_federation_frost_dkg_round2()
+        .await
+        .map_err(|error| dkg_error_response(error.into()))?;
+    let existing = records.into_iter().find(|record| {
+        record.context == payload.payload.context
+            && record.sender == verified.sender
+            && record.receiver == runtime_config.member_id()
+    });
+    let record = match existing {
+        Some(record) => {
+            let stored = record
+                .open(runtime_config.public_config(), &storage_key)
+                .map_err(federation_error_response)?;
+            if stored != package {
+                return Err(federation_error_response(
+                    cdk::federation::FederationError::DkgTranscriptMismatch {
+                        reason:
+                            "FROST round-two contribution conflicts with the durable retry record"
+                                .to_string(),
+                    },
+                ));
+            }
+            record
+        }
+        None => {
+            let encrypted = package.seal(&storage_key, &mut OsRng).map_err(|_| {
+                dkg_error_response(cdk::Error::Custom(
+                    "failed to seal FROST round-two contribution".to_string(),
+                ))
+            })?;
+            FederationFrostDkgRound2Record {
+                context: payload.payload.context.clone(),
+                sender: verified.sender,
+                receiver: runtime_config.member_id(),
+                encrypted_package: encrypted.to_bytes(),
+            }
+        }
+    };
+    state
+        .persist_federation_frost_dkg_round2(&record, verified.sender, verified.sequence)
+        .await
+        .map_err(dkg_error_response)?;
+    Ok(Json(FederationDkgSetupResponse::new(
+        runtime_config.federation_id(),
+        runtime_config.member_id(),
+        kind,
+        verified.sender,
+    )))
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_frost_dkg_confirmation(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationFrostDkgConfirmationRequest>>,
+) -> Result<Json<FederationDkgSetupResponse>, Response> {
+    let kind = FederationRestMessageKind::FrostDkgConfirmation;
+    let _permit = acquire_private_rest_admission(&state, kind)?;
+    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let _member_permit = acquire_private_dkg_member_admission(&state, verified.sender, kind)?;
+    let dkg_config = active_dkg_config(&state)?;
+    let runtime_config = federation_runtime_config(&state)?;
+    if payload.payload.context.ceremony_id != dkg_config.ceremony_id
+        || payload.payload.context.root_key_epoch != dkg_config.root_key_epoch
+    {
+        return Err(federation_error_response(
+            cdk::federation::FederationError::DkgTranscriptMismatch {
+                reason: "FROST confirmation belongs to another ceremony or root epoch".to_string(),
+            },
+        ));
+    }
+    let confirmed_public = payload
+        .payload
+        .validate(runtime_config.public_config(), verified.sender)
+        .map_err(federation_error_response)?;
+    let local_roots = state
+        .mint
+        .localstore()
+        .get_federation_frost_root_records()
+        .await
+        .map_err(|error| dkg_error_response(error.into()))?;
+    if let Some(local_root) = local_roots.iter().find(|root| {
+        root.context == payload.payload.context && root.member_id == runtime_config.member_id()
+    }) {
+        let local_public = local_root
+            .validate(runtime_config.public_config())
+            .map_err(federation_error_response)?;
+        if local_public.encode() != confirmed_public.encode() {
+            return Err(federation_error_response(
+                cdk::federation::FederationError::DkgTranscriptMismatch {
+                    reason: format!(
+                        "FROST root confirmation from member {} differs from the local root",
+                        verified.sender
+                    ),
+                },
+            ));
+        }
+    }
+    state
+        .persist_federation_frost_dkg_confirmation(
+            &payload.payload,
+            verified.sender,
+            verified.sequence,
+        )
+        .await
+        .map_err(dkg_error_response)?;
+    Ok(Json(FederationDkgSetupResponse::new(
+        runtime_config.federation_id(),
+        runtime_config.member_id(),
+        kind,
+        verified.sender,
+    )))
+}
+
+#[instrument(skip_all)]
 pub(super) async fn post_dkg_transcript_signature(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgTranscriptSignatureRequest>>,
@@ -301,17 +489,27 @@ pub(super) async fn post_dkg_activation(
         ));
     }
     let runtime_config = federation_runtime_config(&state)?;
-    let finalized = state
-        .ready_federation_dkg_finalized_member_config()
-        .ok_or_else(dkg_finalized_config_not_ready_response)?;
-    payload
-        .payload
-        .validate_sender_against_validated_configs(
-            runtime_config.public_config(),
-            &finalized.public_config,
-            verified.sender,
-        )
-        .map_err(federation_error_response)?;
+    let exact_durable_replay = state
+        .mint
+        .localstore()
+        .get_federation_dkg_activations()
+        .await
+        .map_err(|error| dkg_error_response(error.into()))?
+        .into_iter()
+        .any(|activation| activation == payload.payload && activation.signer == verified.sender);
+    if !exact_durable_replay {
+        let finalized = state
+            .ready_federation_dkg_finalized_member_config()
+            .ok_or_else(dkg_finalized_config_not_ready_response)?;
+        payload
+            .payload
+            .validate_sender_against_validated_configs(
+                runtime_config.public_config(),
+                &finalized.public_config,
+                verified.sender,
+            )
+            .map_err(federation_error_response)?;
+    }
     let federation_id = runtime_config.federation_id();
     let local_member = runtime_config.member_id();
     state

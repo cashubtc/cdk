@@ -1,0 +1,47 @@
+name: Federation security fuzz
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: Seconds to fuzz each security target
+        required: false
+        default: "300"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: federation-security-fuzz
+  cancel-in-progress: false
+
+jobs:
+  federation-security-fuzz:
+    runs-on: [self-hosted, nix, fuzz-a]
+    timeout-minutes: 30
+    env:
+      FUZZ_DURATION: ${{ inputs.duration || '300' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Restore evolving corpus
+        uses: actions/cache@v4
+        with:
+          path: fuzz/corpus
+          key: federation-security-fuzz-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            federation-security-fuzz-${{ runner.os }}-
+
+      - name: Run FROST and federation security targets
+        run: >-
+          nix develop -i -L .#nightly --command
+          just fuzz-federation-security "$FUZZ_DURATION" 1
+
+      - name: Preserve crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: federation-security-fuzz-artifacts-${{ github.run_id }}
+          path: fuzz/artifacts
+          if-no-files-found: ignore

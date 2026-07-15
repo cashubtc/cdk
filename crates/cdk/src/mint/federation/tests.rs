@@ -48,7 +48,9 @@ use cdk_common::{
 use cdk_sqlite::mint::{memory, MintSqliteDatabase};
 use tokio::sync::{Mutex, Semaphore};
 
+mod address_allocation;
 mod admission;
+mod chain_observation;
 mod keyset;
 mod melt;
 mod mint;
@@ -56,6 +58,8 @@ mod payment_observation;
 mod quote;
 mod runtime;
 mod swap;
+mod transaction_policy;
+mod transaction_signing;
 
 use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 
@@ -212,6 +216,36 @@ async fn federated_test_mint(
         CurrencyUnit::Sat,
     );
     federated_test_mint_with_payment_processor(runtime_config, Arc::new(fake_wallet)).await
+}
+
+async fn restart_federated_test_mint(
+    runtime_config: FederationRuntimeConfig,
+    localstore: Arc<MintSqliteDatabase>,
+) -> Mint {
+    let fake_wallet = cdk_fake_wallet::FakeWallet::new(
+        FeeReserve {
+            min_fee_reserve: Amount::from(1),
+            percent_fee_reserve: 1.0,
+        },
+        HashMap::new(),
+        HashSet::new(),
+        0,
+        CurrencyUnit::Sat,
+    );
+    let mut builder = MintBuilder::new(localstore.clone()).with_federation_config(runtime_config);
+    builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt11),
+            MintMeltLimits::new(1, 10_000),
+            Arc::new(fake_wallet),
+        )
+        .await
+        .expect("payment processor");
+    builder
+        .build_with_seed(localstore, &[9; 64])
+        .await
+        .expect("restarted mint")
 }
 
 async fn federated_test_mint_with_payment_processor(

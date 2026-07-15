@@ -1,23 +1,22 @@
 #![no_main]
 
 use cdk_common::federation::{
-    FederationId, FederationJournalDigest, FederationJournalEntry, FederationMeltOperation,
+    FederationId, FederationMeltOperation, FederationMeltQuoteMetadata,
     FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
-    FederationOperation, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservation,
+    FederationOperation, FederationOperationEnvelope, FederationPaymentObservation,
     FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationRestoreOperation, FederationSwapOperation, MemberId,
+    FederationSwapOperation, InMemoryFederationJournal, MemberId,
 };
 use cdk_common::nuts::nut00::KnownMethod;
 use cdk_common::nuts::nut23::QuoteState;
 use cdk_common::nuts::{
-    BatchMintRequest, BlindedMessage, CurrencyUnit, MeltQuoteCustomRequest, MeltQuoteState,
-    MeltRequest, MintQuoteCustomRequest, MintQuoteCustomResponse, MintQuoteState, MintRequest,
-    PaymentMethod, Proof, RestoreRequest, SwapRequest,
+    BatchMintRequest, BlindedMessage, CurrencyUnit, MeltQuoteCustomRequest,
+    MeltQuoteCustomResponse, MeltQuoteState, MeltRequest, MintQuoteCustomRequest,
+    MintQuoteCustomResponse, MintQuoteState, MintRequest, PaymentMethod, Proof, SwapRequest,
 };
 use cdk_common::payment::PaymentIdentifier;
-use cdk_common::{MeltQuoteRequest, MintQuoteRequest, MintQuoteResponse};
+use cdk_common::{MeltQuoteCreateResponse, MeltQuoteRequest, MintQuoteRequest, MintQuoteResponse};
 use cdk_fuzz::arbitrary_ext::{AmountArb, BlindedMessageArb, CurrencyUnitArb, ProofArb};
 use libfuzzer_sys::arbitrary::{Arbitrary, Unstructured};
 use libfuzzer_sys::fuzz_target;
@@ -47,31 +46,17 @@ fn exercise_conversion_surfaces(envelope: &FederationOperationEnvelope) {
     let _ = envelope.ensure_supported_version();
     let _ = envelope.ensure_admissible_size();
     let _ = envelope.operation_id();
-    let _ = envelope.request_transcript();
     let _ = envelope.operation.kind();
     let _ = envelope.operation.quote();
-    let _ = envelope.operation.conflict_key();
     let _ = envelope.operation.conflict_keys();
 
     let _ = FederationPaymentObservation::from_operation(&envelope.operation);
 
-    let entry = FederationJournalEntry {
-        index: 0,
-        operation_id: envelope
-            .operation_id()
-            .unwrap_or_else(|_| FederationOperationId::from_bytes([0; 32])),
-        envelope: envelope.clone(),
-        conflict_key: envelope.operation.conflict_key(),
-        conflict_keys: envelope.operation.conflict_keys(),
-        previous_order_digest: FederationJournalDigest::genesis(),
-        order_digest: FederationJournalDigest::genesis(),
-        operation_outcome_hash: None,
-        state_digest: None,
-        consensus_evidence: None,
-        rejection: None,
-        status: FederationOperationStatus::Accepted,
+    let mut journal = InMemoryFederationJournal::new();
+    let Ok(outcome) = journal.append(envelope.clone()) else {
+        return;
     };
-    let observation = FederationPaymentObservationRecord::from_journal_entry(&entry);
+    let observation = FederationPaymentObservationRecord::from_journal_entry(outcome.entry());
 
     if let Some(record) = observation.as_ref() {
         let _ = record.observation.context();
@@ -91,13 +76,12 @@ fn exercise_conversion_surfaces(envelope: &FederationOperationEnvelope) {
         );
         let _ = report.summary();
     }
-
 }
 
 fn arbitrary_operation(
     u: &mut Unstructured<'_>,
 ) -> libfuzzer_sys::arbitrary::Result<FederationOperation> {
-    Ok(match u.int_in_range(0..=7)? {
+    Ok(match u.int_in_range(0..=6)? {
         0 => FederationOperation::MintQuote(FederationMintQuoteOperation {
             quote: bounded_string(u, 24)?,
             request_lookup_id: PaymentIdentifier::CustomId(bounded_string(u, 24)?),
@@ -113,15 +97,11 @@ fn arbitrary_operation(
             amount_issued: AmountArb::arbitrary(u)?.into_inner(),
             payment_id: None,
             payment_proof: optional_bounded_string(u, 24)?,
-            observed_time: None,
         }),
         2 => FederationOperation::Mint(FederationMintOperation {
             request: mint_request(u)?,
         }),
-        3 => FederationOperation::MeltQuote(FederationMeltQuoteOperation {
-            quote: bounded_string(u, 24)?,
-            request: melt_quote_request(u)?,
-        }),
+        3 => FederationOperation::MeltQuote(melt_quote_operation(u)?),
         4 => FederationOperation::MeltQuotePayment(FederationMeltQuotePaymentObservation {
             quote: bounded_string(u, 24)?,
             observer: member_id(u)?,
@@ -131,7 +111,6 @@ fn arbitrary_operation(
             fee_reserve: AmountArb::arbitrary(u)?.into_inner(),
             payment_id: None,
             payment_proof: optional_bounded_string(u, 24)?,
-            observed_time: None,
         }),
         5 => FederationOperation::Melt(FederationMeltOperation {
             request: MeltRequest::new(
@@ -140,13 +119,8 @@ fn arbitrary_operation(
                 optional_outputs(u, 3)?,
             ),
         }),
-        6 => FederationOperation::Swap(FederationSwapOperation {
+        _ => FederationOperation::Swap(FederationSwapOperation {
             request: SwapRequest::new(proofs(u, 3)?, outputs(u, 3)?),
-        }),
-        _ => FederationOperation::Restore(FederationRestoreOperation {
-            request: RestoreRequest {
-                outputs: outputs(u, 3)?,
-            },
         }),
     })
 }
@@ -199,7 +173,11 @@ fn mint_quote_request(
     Ok(MintQuoteRequest::Custom {
         method: payment_method(u)?,
         request: MintQuoteCustomRequest {
-            amount: AmountArb::arbitrary(u)?.into_inner(),
+            amount: if u.ratio(1, 2)? {
+                Some(AmountArb::arbitrary(u)?.into_inner())
+            } else {
+                None
+            },
             unit: currency_unit(u)?,
             description: optional_bounded_string(u, 32)?,
             pubkey: None,
@@ -216,6 +194,7 @@ fn mint_quote_response(
         response: MintQuoteCustomResponse {
             quote: bounded_string(u, 24)?,
             request: bounded_string(u, 32)?,
+            method: payment_method(u)?,
             amount: if u.ratio(1, 2)? {
                 Some(AmountArb::arbitrary(u)?.into_inner())
             } else {
@@ -223,6 +202,7 @@ fn mint_quote_response(
             },
             amount_paid: AmountArb::arbitrary(u)?.into_inner(),
             amount_issued: AmountArb::arbitrary(u)?.into_inner(),
+            updated_at: u64::arbitrary(u)?,
             unit: if u.ratio(1, 2)? {
                 Some(currency_unit(u)?)
             } else {
@@ -246,8 +226,50 @@ fn melt_quote_request(
         method: bounded_method_name(u)?,
         request: bounded_string(u, 32)?,
         unit: currency_unit(u)?,
+        amount: if u.ratio(1, 2)? {
+            Some(AmountArb::arbitrary(u)?.into_inner())
+        } else {
+            None
+        },
         extra: serde_json::Value::Null,
     }))
+}
+
+fn melt_quote_operation(
+    u: &mut Unstructured<'_>,
+) -> libfuzzer_sys::arbitrary::Result<FederationMeltQuoteOperation> {
+    let quote = bounded_string(u, 24)?;
+    let request = melt_quote_request(u)?;
+    let MeltQuoteRequest::Custom(custom_request) = &request else {
+        return Err(libfuzzer_sys::arbitrary::Error::IncorrectFormat);
+    };
+    let method = PaymentMethod::from(custom_request.method.as_str());
+    let response = MeltQuoteCreateResponse::Custom((
+        method.clone(),
+        MeltQuoteCustomResponse {
+            quote: quote.clone(),
+            method,
+            amount: custom_request.amount.unwrap_or_default(),
+            fee_reserve: if u.ratio(1, 2)? {
+                Some(AmountArb::arbitrary(u)?.into_inner())
+            } else {
+                None
+            },
+            state: melt_quote_state(u)?,
+            expiry: u64::arbitrary(u)?,
+            payment_preimage: optional_bounded_string(u, 24)?,
+            change: None,
+            request: Some(custom_request.request.clone()),
+            unit: Some(custom_request.unit.clone()),
+            extra: serde_json::Value::Null,
+        },
+    ));
+    Ok(FederationMeltQuoteOperation {
+        quote,
+        request,
+        response,
+        metadata: FederationMeltQuoteMetadata::default(),
+    })
 }
 
 fn optional_outputs(

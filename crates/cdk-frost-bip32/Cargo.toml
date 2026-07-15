@@ -1,0 +1,22 @@
+[package]
+name = "cdk-frost-bip32"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "BIP32 and Taproot derivation adapter for CDK FROST wallets"
+
+[dependencies]
+bitcoin.workspace = true
+cdk-frost.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+cdk-bdk.workspace = true
+
+[lints]
+workspace = true

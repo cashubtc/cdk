@@ -17,9 +17,13 @@ use crate::federation::{
     FederationDkgActivationRequest, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalEntry,
-    FederationJournalTip, FederationOperationId, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,
+    FederationDkgTranscriptSignatureRequest, FederationFrostApplicationConfig,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
+    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
+    FederationId, FederationJournalEntry, FederationJournalTip, FederationOperationId,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationSignatureShareRecord, MemberId,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -934,6 +938,62 @@ pub trait FederationDkgTransaction {
         &mut self,
         activation: &FederationDkgActivationRequest,
     ) -> Result<(), Self::Err>;
+
+    /// Persist one distinct FROST DKG round-one broadcast.
+    async fn add_federation_frost_dkg_round1(
+        &mut self,
+        request: &FederationFrostDkgRound1Request,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one confidential FROST DKG round-two contribution.
+    async fn add_federation_frost_dkg_round2(
+        &mut self,
+        record: &FederationFrostDkgRound2Record,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist encrypted local FROST DKG state before phase advancement.
+    async fn set_federation_frost_dkg_local_state(
+        &mut self,
+        state: &FederationFrostDkgLocalState,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist the completed canonical FROST root result.
+    async fn add_federation_frost_root_record(
+        &mut self,
+        record: &FederationFrostRootRecord,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one signed canonical FROST root confirmation.
+    async fn add_federation_frost_dkg_confirmation(
+        &mut self,
+        confirmation: &FederationFrostDkgConfirmationRequest,
+    ) -> Result<(), Self::Err>;
+}
+
+#[cfg(feature = "federation")]
+#[async_trait]
+/// Federation FROST wallet configuration transaction trait.
+pub trait FederationFrostWalletTransaction {
+    /// Federation FROST wallet database error.
+    type Err: Into<Error> + From<Error>;
+
+    /// Persist one immutable public root snapshot.
+    async fn add_federation_frost_root_public_config(
+        &mut self,
+        config: &FederationFrostRootPublicConfig,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist this member's sealed private root snapshot.
+    async fn add_federation_frost_root_private_config(
+        &mut self,
+        config: &FederationFrostRootPrivateConfig,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one immutable application-key snapshot.
+    async fn add_federation_frost_application_config(
+        &mut self,
+        config: &FederationFrostApplicationConfig,
+    ) -> Result<(), Self::Err>;
 }
 
 #[cfg(feature = "federation")]
@@ -1144,6 +1204,54 @@ pub trait FederationDkgDatabase {
     async fn get_federation_dkg_ceremonies(
         &self,
     ) -> Result<Vec<FederationDkgCeremonyRecord>, Self::Err>;
+
+    /// Get all durable FROST DKG round-one broadcasts.
+    async fn get_federation_frost_dkg_round1(
+        &self,
+    ) -> Result<Vec<FederationFrostDkgRound1Request>, Self::Err>;
+
+    /// Get all durable FROST DKG round-two contributions.
+    async fn get_federation_frost_dkg_round2(
+        &self,
+    ) -> Result<Vec<FederationFrostDkgRound2Record>, Self::Err>;
+
+    /// Get encrypted local FROST DKG phase records.
+    async fn get_federation_frost_dkg_local_states(
+        &self,
+    ) -> Result<Vec<FederationFrostDkgLocalState>, Self::Err>;
+
+    /// Get completed canonical FROST root records.
+    async fn get_federation_frost_root_records(
+        &self,
+    ) -> Result<Vec<FederationFrostRootRecord>, Self::Err>;
+
+    /// Get signed canonical FROST root confirmations.
+    async fn get_federation_frost_dkg_confirmations(
+        &self,
+    ) -> Result<Vec<FederationFrostDkgConfirmationRequest>, Self::Err>;
+}
+
+#[cfg(feature = "federation")]
+#[async_trait]
+/// Federation FROST wallet configuration database trait.
+pub trait FederationFrostWalletDatabase {
+    /// Federation FROST wallet database error.
+    type Err: Into<Error> + From<Error>;
+
+    /// Load all immutable public root snapshots.
+    async fn get_federation_frost_root_public_configs(
+        &self,
+    ) -> Result<Vec<FederationFrostRootPublicConfig>, Self::Err>;
+
+    /// Load all participant-local sealed root snapshots.
+    async fn get_federation_frost_root_private_configs(
+        &self,
+    ) -> Result<Vec<FederationFrostRootPrivateConfig>, Self::Err>;
+
+    /// Load all immutable application-key snapshots.
+    async fn get_federation_frost_application_configs(
+        &self,
+    ) -> Result<Vec<FederationFrostApplicationConfig>, Self::Err>;
 }
 
 #[cfg(not(feature = "federation"))]
@@ -1185,6 +1293,7 @@ pub trait Transaction<Error>:
     + FederationJournalTransaction<Err = Error>
     + FederationApplicationTransaction<Err = Error>
     + FederationDkgTransaction<Err = Error>
+    + FederationFrostWalletTransaction<Err = Error>
 {
 }
 
@@ -1216,6 +1325,7 @@ pub trait Database<Error>:
     + FederationJournalDatabase<Err = Error>
     + FederationApplicationDatabase<Err = Error>
     + FederationDkgDatabase<Err = Error>
+    + FederationFrostWalletDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;

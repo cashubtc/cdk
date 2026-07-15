@@ -29,6 +29,48 @@ impl Mint {
     ) -> Result<FederationMaterializedStateSnapshot, Error> {
         let db = self.localstore();
         let mut snapshot = FederationMaterializedStateSnapshot::new();
+        for root in db.get_federation_frost_root_public_configs().await? {
+            snapshot.push(
+                FederationMaterializedStateRow::new(
+                    "federation_frost_root_public_config",
+                    root.root_key_epoch.to_string(),
+                )
+                .with_field("payload_json", serde_json::to_string(&root)?),
+            );
+        }
+        for application in db.get_federation_frost_application_configs().await? {
+            snapshot.push(
+                FederationMaterializedStateRow::new(
+                    "federation_frost_application_config",
+                    format!(
+                        "{}:{}",
+                        application.application_id, application.application_key_epoch
+                    ),
+                )
+                .with_field("payload_json", serde_json::to_string(&application)?),
+            );
+        }
+        for row in self
+            .federation_address_allocation_state()
+            .await?
+            .materialized_rows()?
+        {
+            snapshot.push(row);
+        }
+        for row in self
+            .federation_chain_observation_state()
+            .await?
+            .materialized_rows()?
+        {
+            snapshot.push(row);
+        }
+        for row in self
+            .federation_transaction_state()
+            .await?
+            .materialized_rows()?
+        {
+            snapshot.push(row);
+        }
         let mut mint_quotes = BTreeSet::new();
         let mut melt_quotes = BTreeSet::new();
         let mut payment_observation_quotes = BTreeSet::new();
@@ -54,6 +96,8 @@ impl Mint {
             }
 
             match &entry.envelope.operation {
+                FederationOperation::AddressAllocation(_) => {}
+                FederationOperation::ChainObservation(_) => {}
                 FederationOperation::MintQuote(operation) => {
                     mint_quotes.insert(operation.quote.clone());
                 }
@@ -124,6 +168,10 @@ impl Mint {
                         operation.keyset.clone(),
                     ));
                 }
+                FederationOperation::TransactionProposal(_)
+                | FederationOperation::TransactionSigned(_)
+                | FederationOperation::TransactionBroadcastIntent(_)
+                | FederationOperation::TransactionBroadcastObservation(_) => {}
             }
         }
 

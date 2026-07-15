@@ -760,6 +760,30 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_frost_dkg_persistence() {
+        cdk_common::database::mint::test::federation_frost_dkg_persistence(
+            provide_mint_db(unique_federation_test_id(
+                "federation_frost_dkg_persistence",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_frost_wallet_config_persistence() {
+        cdk_common::database::mint::test::federation_frost_wallet_config_persistence(
+            provide_mint_db(unique_federation_test_id(
+                "federation_frost_wallet_config_persistence",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_concurrent_writes() {
         cdk_common::database::mint::test::federation_journal_concurrent_writes(
             provide_mint_db(unique_federation_test_id(
@@ -843,6 +867,8 @@ mod test {
             "federation_dkg_transcript_signatures",
             "federation_dkg_activations",
             "federation_dkg_ceremonies",
+            "federation_frost_dkg_records",
+            "federation_frost_wallet_config",
         ] {
             assert!(
                 table_names.contains(table),
@@ -886,6 +912,8 @@ mod test {
             "idx_federation_dkg_secret_share_contributions_receiver",
             "idx_federation_dkg_transcript_signatures_member",
             "idx_federation_dkg_activations_member",
+            "idx_federation_frost_dkg_records_kind",
+            "idx_federation_frost_wallet_config_kind",
             "blind_signature_quote_id_index",
         ] {
             assert!(
@@ -966,6 +994,7 @@ mod test {
             SELECT name
             FROM "{schema}".migrations
             WHERE name LIKE '%federation%'
+            ORDER BY name
             "#
         );
         let federation_migrations = client
@@ -977,7 +1006,10 @@ mod test {
             .collect::<Vec<_>>();
         assert_eq!(
             federation_migrations,
-            vec!["20260712000000_create_federation_schema.sql".to_owned()]
+            vec![
+                "20260712000000_create_federation_schema.sql".to_owned(),
+                "20260713000000_allow_federation_payment_observation_revisions.sql".to_owned(),
+            ]
         );
 
         connection_handle.abort();

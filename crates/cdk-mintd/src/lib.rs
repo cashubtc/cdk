@@ -84,6 +84,8 @@ mod config_service;
 mod config_store;
 pub mod env_vars;
 #[cfg(feature = "federation")]
+mod federated_bdk_backend;
+#[cfg(feature = "federation")]
 mod federation_digest_compare;
 #[cfg(feature = "federation")]
 mod federation_dkg_setup;
@@ -102,6 +104,8 @@ mod federation_smoke;
 #[cfg(feature = "federation")]
 mod federation_status;
 mod secret;
+#[cfg(feature = "federation")]
+mod federation_wallet_operator;
 pub mod setup;
 
 pub use config_migration::{migrate_legacy_configuration, MigrationOutcome};
@@ -182,6 +186,16 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 }
                 cli::FederationCommand::Status(status) => {
                     federation_status::run_status_command(args, status).await?;
+                }
+                cli::FederationCommand::WalletStatus(status) => {
+                    federation_status::run_status_command(args, status).await?;
+                }
+                cli::FederationCommand::TransactionStatus(transaction) => {
+                    federation_wallet_operator::run_transaction_status_command(args, transaction)
+                        .await?;
+                }
+                cli::FederationCommand::Rebroadcast(rebroadcast) => {
+                    federation_wallet_operator::run_rebroadcast_command(args, rebroadcast).await?;
                 }
             },
         }
@@ -1289,6 +1303,8 @@ fn configure_federation(
     })?;
 
     let public_config = read_public_federation_config(public_config_path)?;
+    validate_federated_bdk_startup(settings, &public_config)?;
+    warn_federated_wallet_startup_risks(federation, &public_config);
     validate_federation_setup_method_startup_policy(&public_config)?;
     validate_federation_payment_observation_startup_policy(
         &public_config,
@@ -1307,6 +1323,110 @@ fn configure_federation(
     );
 
     Ok(mint_builder.with_federation_config(runtime_config))
+}
+
+#[cfg(feature = "federation")]
+fn warn_federated_wallet_startup_risks(
+    federation: &config::Federation,
+    public_config: &FederationConfig,
+) {
+    if federation.onchain_wallet.enabled && federation.onchain_wallet.chain_source_scope == "shared"
+    {
+        tracing::warn!(
+            source_id = federation
+                .onchain_wallet
+                .chain_source_id
+                .as_deref()
+                .unwrap_or("shared-source"),
+            "Federated wallet chain observations use correlated shared infrastructure; independent member sources are recommended"
+        );
+    }
+    if federation.dkg.enabled && public_config.setup_transcript.is_none() {
+        tracing::warn!(
+            required = public_config.threshold_params.consensus_threshold,
+            members = public_config.threshold_params.member_count,
+            "Federation DKG startup is incomplete until a threshold quorum completes and confirms both the BLS and FROST results"
+        );
+    }
+}
+
+#[cfg(feature = "federation")]
+fn validate_federated_bdk_startup(
+    settings: &config::Settings,
+    public_config: &FederationConfig,
+) -> Result<()> {
+    let federation = settings
+        .federation
+        .as_ref()
+        .ok_or_else(|| anyhow!("federated BDK validation requires federation settings"))?;
+    let selected = settings
+        .onchain
+        .as_ref()
+        .map(|onchain| &onchain.onchain_backend)
+        .unwrap_or(&config::OnchainBackend::None);
+    let wallet = &federation.onchain_wallet;
+
+    if !wallet.enabled {
+        if matches!(selected, config::OnchainBackend::FederatedBdk) {
+            bail!(
+                "onchain_backend = \"federated-bdk\" requires federation.onchain_wallet.enabled=true"
+            );
+        }
+        if public_config.frost_wallet.is_some() && matches!(selected, config::OnchainBackend::Bdk) {
+            bail!(
+                "a federation with an active FROST wallet must use onchain_backend = \"federated-bdk\"; standalone BDK is not a custody backend"
+            );
+        }
+        return Ok(());
+    }
+
+    if !matches!(selected, config::OnchainBackend::FederatedBdk) {
+        bail!(
+            "federation.onchain_wallet.enabled=true requires onchain_backend = \"federated-bdk\""
+        );
+    }
+    if settings.bdk.is_some() {
+        bail!(
+            "the standalone [bdk] section, including local mnemonic configuration, is forbidden with federated-bdk"
+        );
+    }
+    let frost_wallet = public_config.frost_wallet.as_ref().ok_or_else(|| {
+        anyhow!("federated-bdk requires an activated public FROST wallet configuration")
+    })?;
+    frost_wallet.validate(public_config)?;
+    let application = &frost_wallet.cdk_onchain_application;
+    let network = wallet.network.as_deref().ok_or_else(|| {
+        anyhow!("federation.onchain_wallet.network must be explicitly configured")
+    })?;
+    let network = parse_federation_bitcoin_network(network)?;
+    let minimum_confirmations = wallet.minimum_confirmations.ok_or_else(|| {
+        anyhow!("federation.onchain_wallet.minimum_confirmations must be explicitly configured")
+    })?;
+    let fee_policy_version = wallet.fee_policy_version.ok_or_else(|| {
+        anyhow!("federation.onchain_wallet.fee_policy_version must be explicitly configured")
+    })?;
+    if network != application.network
+        || minimum_confirmations != application.confirmation_policy.minimum_confirmations
+        || fee_policy_version != application.fee_policy_version
+    {
+        bail!(
+            "federation.onchain_wallet network, confirmation policy, or fee policy differs from the active consensus application"
+        );
+    }
+    cdk::mint::FederationOnchainTransactionPolicy::for_version(fee_policy_version)?;
+    federation_chain_source(wallet)?;
+    Ok(())
+}
+
+#[cfg(feature = "federation")]
+fn parse_federation_bitcoin_network(value: &str) -> Result<bitcoin::Network> {
+    match value.to_ascii_lowercase().as_str() {
+        "mainnet" | "bitcoin" => Ok(bitcoin::Network::Bitcoin),
+        "testnet" => Ok(bitcoin::Network::Testnet),
+        "signet" => Ok(bitcoin::Network::Signet),
+        "regtest" => Ok(bitcoin::Network::Regtest),
+        network => bail!("unknown federation.onchain_wallet.network {network}"),
+    }
 }
 
 #[cfg(feature = "federation")]
@@ -1452,6 +1572,119 @@ fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::Federat
 }
 
 #[cfg(feature = "federation")]
+fn federation_bdk_local_config(
+    settings: &config::Settings,
+    work_dir: &Path,
+) -> Result<Option<cdk_bdk::FederatedBdkLocalConfig>> {
+    let Some(federation) = settings.federation.as_ref() else {
+        return Ok(None);
+    };
+    let wallet = &federation.onchain_wallet;
+    if !wallet.enabled {
+        return Ok(None);
+    }
+    if !federation.enabled {
+        bail!("federation.onchain_wallet.enabled requires federation.enabled=true");
+    }
+    if wallet.sync_interval_secs == 0 {
+        bail!("federation.onchain_wallet.sync_interval_secs must be greater than zero");
+    }
+    let chain_source = federation_chain_source(wallet)?;
+    let source_scope = match wallet.chain_source_scope.to_ascii_lowercase().as_str() {
+        "independent" => cdk_bdk::FederatedChainSourceScope::Independent,
+        "shared" => cdk_bdk::FederatedChainSourceScope::Shared,
+        scope => bail!(
+            "unknown federation.onchain_wallet.chain_source_scope {scope}; expected independent or shared"
+        ),
+    };
+    let source_id = wallet
+        .chain_source_id
+        .clone()
+        .unwrap_or_else(|| chain_source.opaque_source_id());
+    let observation_source = cdk_bdk::FederatedChainSourceDescriptor::new(source_scope, source_id)?;
+    Ok(Some(cdk_bdk::FederatedBdkLocalConfig {
+        chain_source,
+        storage_root: work_dir.join("federation-wallet"),
+        sync_interval: std::time::Duration::from_secs(wallet.sync_interval_secs),
+        observation_source,
+    }))
+}
+
+#[cfg(feature = "federation")]
+fn federation_chain_source(
+    wallet: &config::FederationOnchainWallet,
+) -> Result<cdk_bdk::ChainSource> {
+    let chain_source = match wallet.chain_source_type.to_ascii_lowercase().as_str() {
+        "esplora" => {
+            let url = wallet
+                .esplora_url
+                .as_ref()
+                .filter(|url| !url.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "federation.onchain_wallet.esplora_url is required for Esplora"
+                    )
+                })?;
+            if wallet.esplora_parallel_requests == 0 {
+                bail!(
+                    "federation.onchain_wallet.esplora_parallel_requests must be greater than zero"
+                );
+            }
+            cdk_bdk::ChainSource::Esplora(cdk_bdk::EsploraConfig {
+                url: url.clone(),
+                parallel_requests: wallet.esplora_parallel_requests,
+                request_timeout_secs: wallet.request_timeout_secs,
+                max_retries: wallet.esplora_max_retries,
+            })
+        }
+        "bitcoinrpc" => {
+            let host = wallet
+                .bitcoind_rpc_host
+                .as_ref()
+                .filter(|host| !host.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "federation.onchain_wallet.bitcoind_rpc_host is required for Bitcoin RPC"
+                    )
+                })?;
+            let port = wallet.bitcoind_rpc_port.ok_or_else(|| {
+                anyhow!("federation.onchain_wallet.bitcoind_rpc_port is required for Bitcoin RPC")
+            })?;
+            let user = wallet
+                .bitcoind_rpc_user
+                .as_ref()
+                .filter(|user| !user.is_empty())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "federation.onchain_wallet.bitcoind_rpc_user is required for Bitcoin RPC"
+                    )
+                })?;
+            let password = wallet
+                .bitcoind_rpc_password
+                .as_ref()
+                .filter(|password| !password.is_empty())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "federation.onchain_wallet.bitcoind_rpc_password is required for Bitcoin RPC"
+                    )
+                })?;
+            cdk_bdk::ChainSource::BitcoinRpc(cdk_bdk::BitcoinRpcConfig {
+                host: host.clone(),
+                port,
+                user: user.clone(),
+                password: password.clone(),
+                request_timeout_secs: wallet.request_timeout_secs,
+            })
+        }
+        source => bail!(
+            "unknown federation.onchain_wallet.chain_source_type {source}; expected bitcoinrpc or esplora"
+        ),
+    };
+    chain_source.validate()?;
+    Ok(chain_source)
+}
+
+#[cfg(feature = "federation")]
 fn federation_dkg_auto_start_config(
     settings: &config::Settings,
 ) -> Result<Option<cdk_axum::FederationDkgAutoStartConfig>> {
@@ -1520,6 +1753,7 @@ fn federation_dkg_auto_start_config(
 
     Ok(Some(cdk_axum::FederationDkgAutoStartConfig {
         ceremony_id,
+        root_key_epoch: 1,
         keyset_spec,
         driver: cdk_axum::FederationDkgDriverRunConfig {
             max_ticks: federation.dkg.max_ticks,
@@ -2060,6 +2294,56 @@ async fn configure_onchain_backend_with_wallet_info(
                     cdk::nuts::CurrencyUnit::Sat,
                     mint_melt_limits,
                     bdk,
+                )
+                .await?;
+            }
+            #[cfg(feature = "federation")]
+            OnchainBackend::FederatedBdk => {
+                let federation = settings.federation.as_ref().ok_or_else(|| {
+                    anyhow!("federated-bdk selected but [federation] config is missing")
+                })?;
+                let wallet = &federation.onchain_wallet;
+                if !federation.enabled || !wallet.enabled {
+                    bail!(
+                        "federated-bdk requires federation.enabled=true and federation.onchain_wallet.enabled=true"
+                    );
+                }
+                if settings.bdk.is_some() {
+                    bail!("standalone [bdk] configuration is forbidden with federated-bdk");
+                }
+                let network =
+                    parse_federation_bitcoin_network(wallet.network.as_deref().ok_or_else(
+                        || anyhow!("federation.onchain_wallet.network must be set"),
+                    )?)?;
+                let confirmations = wallet.minimum_confirmations.ok_or_else(|| {
+                    anyhow!("federation.onchain_wallet.minimum_confirmations must be set")
+                })?;
+                let policy_version = wallet.fee_policy_version.ok_or_else(|| {
+                    anyhow!("federation.onchain_wallet.fee_policy_version must be set")
+                })?;
+                let policy =
+                    cdk::mint::FederationOnchainTransactionPolicy::for_version(policy_version)?;
+                let chain_source = federation_chain_source(wallet)?;
+                let backend = federated_bdk_backend::FederatedBdkPaymentAdapter::new(
+                    network,
+                    confirmations,
+                    u64::from(onchain_settings.min_mint),
+                    u64::from(onchain_settings.min_melt),
+                    policy,
+                    chain_source,
+                )?;
+                let mint_melt_limits = MintMeltLimits {
+                    mint_min: onchain_settings.min_mint,
+                    mint_max: onchain_settings.max_mint,
+                    melt_min: onchain_settings.min_melt,
+                    melt_max: onchain_settings.max_melt,
+                };
+                mint_builder = configure_backend_for_unit(
+                    settings,
+                    mint_builder,
+                    cdk::nuts::CurrencyUnit::Sat,
+                    mint_melt_limits,
+                    Arc::new(backend),
                 )
                 .await?;
             }
@@ -2891,6 +3175,18 @@ impl PreparedMintd {
             }
         }
 
+        #[cfg(feature = "federation")]
+        let v1_service = cdk_axum::create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
+            Arc::clone(&mint),
+            cache,
+            custom_methods,
+            settings.info.enable_info_page.unwrap_or(true),
+            federation_peer_sync_config(settings),
+            federation_dkg_auto_start_config(settings)?,
+            federation_bdk_local_config(settings, work_dir)?,
+        )
+        .await?;
+        #[cfg(not(feature = "federation"))]
         let v1_service = cdk_axum::create_mint_router_with_custom_cache(
             Arc::clone(&mint),
             cache,
@@ -4252,6 +4548,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4302,6 +4599,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4348,6 +4646,7 @@ engine = "sqlite"
                     aleph_bft_live_session_rotation_limit: Some(71),
                 },
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4393,6 +4692,208 @@ engine = "sqlite"
 
     #[cfg(feature = "federation")]
     #[test]
+    fn federation_bdk_config_is_local_redacted_and_fail_closed() {
+        let work_dir = tempfile::tempdir().expect("work dir");
+        let mut settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                onchain_wallet: config::FederationOnchainWallet {
+                    enabled: true,
+                    chain_source_type: "esplora".to_string(),
+                    esplora_url: Some(
+                        "https://wallet-source.example.invalid/private-token".to_string(),
+                    ),
+                    esplora_parallel_requests: 3,
+                    ..config::FederationOnchainWallet::default()
+                },
+                ..config::Federation::default()
+            }),
+            ..config::Settings::default()
+        };
+        let local = federation_bdk_local_config(&settings, work_dir.path())
+            .expect("valid local config")
+            .expect("enabled local config");
+        assert_eq!(local.chain_source.kind(), cdk_bdk::ChainSourceKind::Esplora);
+        assert_eq!(
+            local.observation_source.scope,
+            cdk_bdk::FederatedChainSourceScope::Independent
+        );
+        assert!(!local.observation_source.source_id.contains("private-token"));
+        let debug = format!("{local:?}");
+        assert!(!debug.contains("private-token"));
+        assert!(!debug.contains(&work_dir.path().to_string_lossy().to_string()));
+        let settings_debug = format!(
+            "{:?}",
+            settings
+                .federation
+                .as_ref()
+                .expect("federation")
+                .onchain_wallet
+        );
+        assert!(!settings_debug.contains("private-token"));
+
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .chain_source_scope = "unknown".to_string();
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect_err("unknown source scope must fail")
+            .to_string()
+            .contains("chain_source_scope"));
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .chain_source_scope = "independent".to_string();
+
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .esplora_url = None;
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect_err("missing endpoint must fail")
+            .to_string()
+            .contains("esplora_url"));
+
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .enabled = false;
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect("disabled config")
+            .is_none());
+    }
+
+    #[cfg(all(feature = "federation", feature = "bdk"))]
+    #[test]
+    fn federated_bdk_startup_rejects_mixed_or_incomplete_custody_config() {
+        use crate::config::{Bdk, Onchain, OnchainBackend};
+
+        let (bundle, _) = two_member_trusted_dealer_bundle();
+        let mut settings = config::Settings {
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::FederatedBdk,
+                ..Onchain::default()
+            }),
+            federation: Some(config::Federation {
+                enabled: true,
+                onchain_wallet: config::FederationOnchainWallet {
+                    enabled: true,
+                    network: Some("regtest".to_string()),
+                    minimum_confirmations: Some(1),
+                    fee_policy_version: Some(1),
+                    chain_source_type: "esplora".to_string(),
+                    esplora_url: Some("http://127.0.0.1:3002".to_string()),
+                    ..config::FederationOnchainWallet::default()
+                },
+                ..config::Federation::default()
+            }),
+            bdk: Some(Bdk {
+                mnemonic: Some(TEST_MNEMONIC.to_string()),
+                ..Bdk::default()
+            }),
+            ..config::Settings::default()
+        };
+
+        let mixed = validate_federated_bdk_startup(&settings, &bundle.public_config)
+            .expect_err("standalone mnemonic must be rejected");
+        assert!(mixed.to_string().contains("standalone [bdk]"));
+
+        settings.bdk = None;
+        let missing_wallet = validate_federated_bdk_startup(&settings, &bundle.public_config)
+            .expect_err("missing public FROST wallet must be rejected");
+        assert!(missing_wallet.to_string().contains("public FROST wallet"));
+
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .enabled = false;
+        let disabled = validate_federated_bdk_startup(&settings, &bundle.public_config)
+            .expect_err("selected backend with disabled wallet must be rejected");
+        assert!(disabled.to_string().contains("enabled=true"));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federation_public_esplora_config_is_compatible_and_bounded() {
+        let work_dir = tempfile::tempdir().expect("work dir");
+        let mut settings = config::Settings {
+            federation: Some(config::Federation {
+                enabled: true,
+                onchain_wallet: config::FederationOnchainWallet {
+                    enabled: true,
+                    chain_source_type: "esplora".to_string(),
+                    chain_source_scope: "shared".to_string(),
+                    chain_source_id: Some("public-mempool-space".to_string()),
+                    esplora_url: Some("https://mempool.space/api".to_string()),
+                    esplora_parallel_requests: 1,
+                    request_timeout_secs: 15,
+                    esplora_max_retries: 3,
+                    ..config::FederationOnchainWallet::default()
+                },
+                ..config::Federation::default()
+            }),
+            ..config::Settings::default()
+        };
+
+        let local = federation_bdk_local_config(&settings, work_dir.path())
+            .expect("compatible Esplora config")
+            .expect("enabled local config");
+        assert_eq!(
+            local.observation_source.scope,
+            cdk_bdk::FederatedChainSourceScope::Shared
+        );
+        assert_eq!(local.observation_source.source_id, "public-mempool-space");
+
+        settings
+            .federation
+            .as_mut()
+            .expect("federation")
+            .onchain_wallet
+            .esplora_parallel_requests = cdk_bdk::MAX_ESPLORA_PARALLEL_REQUESTS + 1;
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect_err("excessive Esplora concurrency")
+            .to_string()
+            .contains("parallel requests"));
+        {
+            let wallet = &mut settings
+                .federation
+                .as_mut()
+                .expect("federation")
+                .onchain_wallet;
+            wallet.esplora_parallel_requests = 1;
+            wallet.request_timeout_secs = cdk_bdk::MAX_CHAIN_REQUEST_TIMEOUT_SECS + 1;
+        }
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect_err("excessive request timeout")
+            .to_string()
+            .contains("request timeout"));
+        {
+            let wallet = &mut settings
+                .federation
+                .as_mut()
+                .expect("federation")
+                .onchain_wallet;
+            wallet.request_timeout_secs = 15;
+            wallet.esplora_max_retries = cdk_bdk::MAX_ESPLORA_MAX_RETRIES + 1;
+        }
+        assert!(federation_bdk_local_config(&settings, work_dir.path())
+            .expect_err("excessive Esplora retries")
+            .to_string()
+            .contains("max retries"));
+    }
+
+    #[cfg(feature = "federation")]
+    #[test]
     fn federation_peer_sync_config_rejects_invalid_mintd_settings() {
         let settings = config::Settings {
             federation: Some(config::Federation {
@@ -4406,6 +4907,7 @@ engine = "sqlite"
                     ..config::FederationPeerSync::default()
                 },
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4799,6 +5301,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4845,6 +5348,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4867,6 +5371,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4912,6 +5417,7 @@ engine = "sqlite"
                 private_config_path: Some(private_config_path.clone()),
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -4944,6 +5450,7 @@ engine = "sqlite"
                 private_config_path: None,
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
+                onchain_wallet: config::FederationOnchainWallet::default(),
             }),
             ..Default::default()
         };
@@ -5037,6 +5544,7 @@ engine = "sqlite"
                     private_config_path: Some(private_config_path.clone()),
                     peer_sync: config::FederationPeerSync::default(),
                     dkg: config::FederationDkg::default(),
+                    onchain_wallet: config::FederationOnchainWallet::default(),
                 }),
                 ..Default::default()
             };

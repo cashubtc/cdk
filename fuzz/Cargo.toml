@@ -11,6 +11,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
+serde = "1"
 serde_json = "1"
 bitcoin = { version = "0.32.2", default-features = false }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
@@ -24,6 +25,9 @@ features = ["nostr"]
 path = "../crates/cdk-common"
 default-features = false
 features = ["federation", "mint"]
+
+[dependencies.cdk-frost]
+path = "../crates/cdk-frost"
 
 [lib]
 name = "cdk_fuzz"
@@ -289,6 +293,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fuzz_federation_transaction_proposal"
+path = "fuzz_targets/fuzz_federation_transaction_proposal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "fuzz_federation_request_conversion"
 path = "fuzz_targets/fuzz_federation_request_conversion.rs"
 test = false
@@ -354,6 +365,20 @@ bench = false
 [[bin]]
 name = "fuzz_nut21_settings"
 path = "fuzz_targets/fuzz_nut21_settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_frost_wire"
+path = "fuzz_targets/fuzz_frost_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_federation_security_wire"
+path = "fuzz_targets/fuzz_federation_security_wire.rs"
 test = false
 doc = false
 bench = false

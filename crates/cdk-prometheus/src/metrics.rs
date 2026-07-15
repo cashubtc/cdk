@@ -90,6 +90,15 @@ pub struct CdkMetrics {
     federation_peer_connected: IntGaugeVec,
     federation_peer_operation_count: IntGaugeVec,
     federation_pending_mempool_items: IntGaugeVec,
+    federation_wallet_utxos: IntGaugeVec,
+    federation_wallet_value_sat: IntGaugeVec,
+    federation_wallet_operation_phase: IntGaugeVec,
+    federation_wallet_revealed_count: IntGaugeVec,
+    federation_wallet_pending_batches: IntGaugeVec,
+    federation_wallet_signing_attempts: IntGaugeVec,
+    federation_wallet_signing_failures: IntGaugeVec,
+    federation_wallet_broadcast_health: IntGaugeVec,
+    federation_wallet_broadcast_failures: IntGaugeVec,
     federation_accepted_operations_total: IntCounterVec,
     federation_rejected_operations_total: IntCounterVec,
     federation_signing_share_latency: HistogramVec,
@@ -107,6 +116,15 @@ struct FederationMetricCollectors {
     peer_connected: IntGaugeVec,
     peer_operation_count: IntGaugeVec,
     pending_mempool_items: IntGaugeVec,
+    wallet_utxos: IntGaugeVec,
+    wallet_value_sat: IntGaugeVec,
+    wallet_operation_phase: IntGaugeVec,
+    wallet_revealed_count: IntGaugeVec,
+    wallet_pending_batches: IntGaugeVec,
+    wallet_signing_attempts: IntGaugeVec,
+    wallet_signing_failures: IntGaugeVec,
+    wallet_broadcast_health: IntGaugeVec,
+    wallet_broadcast_failures: IntGaugeVec,
     accepted_operations_total: IntCounterVec,
     rejected_operations_total: IntCounterVec,
     signing_share_latency: HistogramVec,
@@ -171,6 +189,15 @@ impl CdkMetrics {
             federation_peer_connected: federation_metrics.peer_connected,
             federation_peer_operation_count: federation_metrics.peer_operation_count,
             federation_pending_mempool_items: federation_metrics.pending_mempool_items,
+            federation_wallet_utxos: federation_metrics.wallet_utxos,
+            federation_wallet_value_sat: federation_metrics.wallet_value_sat,
+            federation_wallet_operation_phase: federation_metrics.wallet_operation_phase,
+            federation_wallet_revealed_count: federation_metrics.wallet_revealed_count,
+            federation_wallet_pending_batches: federation_metrics.wallet_pending_batches,
+            federation_wallet_signing_attempts: federation_metrics.wallet_signing_attempts,
+            federation_wallet_signing_failures: federation_metrics.wallet_signing_failures,
+            federation_wallet_broadcast_health: federation_metrics.wallet_broadcast_health,
+            federation_wallet_broadcast_failures: federation_metrics.wallet_broadcast_failures,
             federation_accepted_operations_total: federation_metrics.accepted_operations_total,
             federation_rejected_operations_total: federation_metrics.rejected_operations_total,
             federation_signing_share_latency: federation_metrics.signing_share_latency,
@@ -439,6 +466,87 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(federation_pending_mempool_items.clone()))?;
 
+        let federation_wallet_utxos = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_wallet_utxos",
+                "Federated wallet UTXO count grouped by fixed lifecycle state",
+            ),
+            &["member", "state"],
+        )?;
+        registry.register(Box::new(federation_wallet_utxos.clone()))?;
+
+        let federation_wallet_value_sat = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_wallet_value_sat",
+                "Federated wallet value in satoshis grouped by fixed UTXO lifecycle state",
+            ),
+            &["member", "state"],
+        )?;
+        registry.register(Box::new(federation_wallet_value_sat.clone()))?;
+
+        let federation_wallet_operation_phase = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_wallet_operation_phase",
+                "Federated wallet records grouped by fixed operation phase",
+            ),
+            &["member", "phase"],
+        )?;
+        registry.register(Box::new(federation_wallet_operation_phase.clone()))?;
+
+        let federation_wallet_revealed_count = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_wallet_revealed_count",
+                "Consensus-revealed descriptor child count grouped by fixed keychain",
+            ),
+            &["member", "keychain"],
+        )?;
+        registry.register(Box::new(federation_wallet_revealed_count.clone()))?;
+
+        let federation_wallet_pending_batches = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_wallet_pending_batches",
+                "Pending deterministic federated wallet batches",
+            ),
+            &["member"],
+        )?;
+        registry.register(Box::new(federation_wallet_pending_batches.clone()))?;
+
+        let federation_wallet_signing_attempts = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_wallet_signing_attempts",
+                "Local FROST coordination attempts for federated wallet batches",
+            ),
+            &["member"],
+        )?;
+        registry.register(Box::new(federation_wallet_signing_attempts.clone()))?;
+
+        let federation_wallet_signing_failures = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_wallet_signing_failures",
+                "Saturating local FROST signer or transport failures",
+            ),
+            &["member"],
+        )?;
+        registry.register(Box::new(federation_wallet_signing_failures.clone()))?;
+
+        let federation_wallet_broadcast_health = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_wallet_broadcast_health",
+                "Federated wallet broadcast health exported as fixed one-hot gauges",
+            ),
+            &["member", "health"],
+        )?;
+        registry.register(Box::new(federation_wallet_broadcast_health.clone()))?;
+
+        let federation_wallet_broadcast_failures = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_wallet_broadcast_failures",
+                "Non-success federated wallet broadcast observations",
+            ),
+            &["member"],
+        )?;
+        registry.register(Box::new(federation_wallet_broadcast_failures.clone()))?;
+
         let federation_accepted_operations_total = IntCounterVec::new(
             prometheus::Opts::new(
                 "cdk_federation_accepted_operations_total",
@@ -497,6 +605,15 @@ impl CdkMetrics {
             peer_connected: federation_peer_connected,
             peer_operation_count: federation_peer_operation_count,
             pending_mempool_items: federation_pending_mempool_items,
+            wallet_utxos: federation_wallet_utxos,
+            wallet_value_sat: federation_wallet_value_sat,
+            wallet_operation_phase: federation_wallet_operation_phase,
+            wallet_revealed_count: federation_wallet_revealed_count,
+            wallet_pending_batches: federation_wallet_pending_batches,
+            wallet_signing_attempts: federation_wallet_signing_attempts,
+            wallet_signing_failures: federation_wallet_signing_failures,
+            wallet_broadcast_health: federation_wallet_broadcast_health,
+            wallet_broadcast_failures: federation_wallet_broadcast_failures,
             accepted_operations_total: federation_accepted_operations_total,
             rejected_operations_total: federation_rejected_operations_total,
             signing_share_latency: federation_signing_share_latency,
@@ -694,6 +811,69 @@ impl CdkMetrics {
             .set(count);
     }
 
+    /// Set a fixed-state federated wallet UTXO count and value.
+    pub fn set_federation_wallet_utxos(
+        &self,
+        member: &str,
+        state: &str,
+        count: i64,
+        value_sat: i64,
+    ) {
+        self.federation_wallet_utxos
+            .with_label_values(&[member, state])
+            .set(count);
+        self.federation_wallet_value_sat
+            .with_label_values(&[member, state])
+            .set(value_sat);
+    }
+
+    /// Set a fixed federated wallet operation-phase count.
+    pub fn set_federation_wallet_operation_phase(&self, member: &str, phase: &str, count: i64) {
+        self.federation_wallet_operation_phase
+            .with_label_values(&[member, phase])
+            .set(count);
+    }
+
+    /// Set the consensus-revealed descriptor child count for a fixed keychain.
+    pub fn set_federation_wallet_revealed_count(&self, member: &str, keychain: &str, count: i64) {
+        self.federation_wallet_revealed_count
+            .with_label_values(&[member, keychain])
+            .set(count);
+    }
+
+    /// Set bounded local federated wallet liveness counters.
+    pub fn set_federation_wallet_liveness(
+        &self,
+        member: &str,
+        pending_batches: i64,
+        signing_attempts: i64,
+        signing_failures: i64,
+    ) {
+        self.federation_wallet_pending_batches
+            .with_label_values(&[member])
+            .set(pending_batches);
+        self.federation_wallet_signing_attempts
+            .with_label_values(&[member])
+            .set(signing_attempts);
+        self.federation_wallet_signing_failures
+            .with_label_values(&[member])
+            .set(signing_failures);
+    }
+
+    /// Set one fixed one-hot broadcast-health gauge.
+    pub fn set_federation_wallet_broadcast_health(&self, member: &str, health: &str, active: bool) {
+        self.federation_wallet_broadcast_health
+            .with_label_values(&[member, health])
+            .set(if active { 1 } else { 0 });
+    }
+
+    /// Set the number of non-success federated wallet broadcast observations.
+    pub fn set_federation_wallet_broadcast_failures(&self, member: &str, count: i64) {
+        self.federation_wallet_broadcast_failures
+            .with_label_values(&[member])
+            .set(count);
+    }
+
     /// Record a federation operation accepted into local consensus.
     pub fn record_federation_accepted_operation(&self, member: &str, operation: &str) {
         self.federation_accepted_operations_total
@@ -750,6 +930,8 @@ impl Default for CdkMetrics {
 mod tests {
     use std::sync::{Mutex, MutexGuard};
     use std::time::Duration;
+
+    use prometheus::core::Collector;
 
     use super::{CdkMetrics, MintMetricGuard, METRICS};
 
@@ -979,6 +1161,57 @@ mod tests {
                 .with_label_values(&["2", "conflicting", "inspect"])
                 .get(),
             3
+        );
+    }
+
+    #[test]
+    fn federation_wallet_metrics_use_only_fixed_redacted_labels() {
+        let metrics = CdkMetrics::new().expect("metrics should be created");
+        metrics.set_federation_wallet_utxos("2", "reserved", 3, 21_000);
+        metrics.set_federation_wallet_operation_phase("2", "signing", 2);
+        metrics.set_federation_wallet_revealed_count("2", "external", 9);
+        metrics.set_federation_wallet_revealed_count("2", "internal", 4);
+        metrics.set_federation_wallet_liveness("2", 1, 5, 1);
+        for health in [
+            "idle",
+            "awaiting_authorization",
+            "broadcasting",
+            "confirming",
+            "degraded",
+        ] {
+            metrics.set_federation_wallet_broadcast_health("2", health, health == "degraded");
+        }
+        metrics.set_federation_wallet_broadcast_failures("2", 1);
+
+        let scrape = prometheus::TextEncoder::new()
+            .encode_to_string(&metrics.registry().gather())
+            .expect("encode metrics");
+        assert!(scrape.contains("state=\"reserved\""));
+        assert!(scrape.contains("phase=\"signing\""));
+        assert!(scrape.contains("keychain=\"external\""));
+        assert!(scrape.contains("health=\"degraded\""));
+        for secret in [
+            "quote-operator-secret",
+            "bc1p-sensitive-address",
+            "02000000-sensitive-transaction",
+            "wallet-mnemonic-secret",
+            "wallet-password-secret",
+            "/sensitive/local/path",
+        ] {
+            assert!(!scrape.contains(secret));
+        }
+        assert_eq!(
+            metrics.federation_wallet_utxos.collect()[0]
+                .get_metric()
+                .len(),
+            1,
+            "only the one fixed state explicitly recorded by this fixture exists"
+        );
+        assert_eq!(
+            metrics.federation_wallet_broadcast_health.collect()[0]
+                .get_metric()
+                .len(),
+            5
         );
     }
 

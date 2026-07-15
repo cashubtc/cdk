@@ -33,15 +33,19 @@ mod aleph_bft_network;
 mod aleph_bft_routes;
 mod aleph_bft_runtime;
 mod aleph_bft_session;
+mod broadcast;
 mod catch_up_routes;
 mod dkg_driver;
 mod dkg_routes;
+pub(crate) mod frost_signing;
 mod node_runtime;
+mod operator_routes;
 mod payment_observation;
 mod peer_client;
 mod status_routes;
 mod sync_config;
 mod sync_loop;
+mod wallet_liveness;
 
 pub(crate) use self::aleph_bft_network::CdkAlephBftNetworkInboundQueue;
 use self::aleph_bft_routes::{post_aleph_bft_activity, post_aleph_bft_network_message};
@@ -59,14 +63,15 @@ pub(crate) use self::aleph_bft_session::{
     halt_current_federation_aleph_bft_session, start_federation_aleph_bft_live_session,
     AlephBftSessionSupervisor,
 };
+pub(crate) use self::broadcast::FederationTransactionBroadcaster;
 use self::catch_up_routes::post_journal;
-pub(crate) use self::dkg_driver::spawn_federation_dkg_driver;
 #[cfg(test)]
 use self::dkg_driver::{
     complete_federation_dkg_ceremony, federation_dkg_readiness_required,
     prepare_federation_dkg_participant_state, run_federation_dkg_driver_tick,
     run_federation_dkg_readiness_round, FederationDkgDeliveryTracker,
 };
+pub(crate) use self::dkg_driver::{frost_storage_key, spawn_federation_dkg_driver};
 pub use self::dkg_driver::{
     run_federation_dkg_driver, FederationDkgAutoStartConfig, FederationDkgDriverRunConfig,
     FederationDkgDriverRunOutcome, FederationDkgDriverTickOutcome,
@@ -74,9 +79,15 @@ pub use self::dkg_driver::{
 };
 use self::dkg_routes::{
     post_dkg_activation, post_dkg_commitment, post_dkg_readiness, post_dkg_reveal,
-    post_dkg_secret_share, post_dkg_transcript_signature,
+    post_dkg_secret_share, post_dkg_transcript_signature, post_frost_dkg_confirmation,
+    post_frost_dkg_round1, post_frost_dkg_round2,
+};
+use self::frost_signing::{
+    post_frost_aggregate_result, post_frost_signing_abort, post_frost_signing_commitment,
+    post_frost_signing_package,
 };
 pub(crate) use self::node_runtime::FederationNodeRuntime;
+use self::operator_routes::{post_wallet_rebroadcast, post_wallet_transaction_status};
 use self::payment_observation::payment_observation_report_summaries;
 pub(crate) use self::payment_observation::FederationPaymentObserver;
 #[cfg(test)]
@@ -96,6 +107,7 @@ use self::sync_loop::{
     persist_local_catch_up_certificate_chunks, run_federation_peer_sync_round,
     run_federation_peer_sync_round_with_backoff,
 };
+pub(crate) use self::wallet_liveness::FederationWalletLivenessWorker;
 #[cfg(test)]
 use cdk::federation::{
     FederationConfig, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
@@ -118,18 +130,44 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/dkg/commitments", post(post_dkg_commitment))
         .route("/dkg/reveals", post(post_dkg_reveal))
         .route("/dkg/secret-shares", post(post_dkg_secret_share))
+        .route("/dkg/frost/round1", post(post_frost_dkg_round1))
+        .route("/dkg/frost/round2", post(post_frost_dkg_round2))
+        .route(
+            "/dkg/frost/confirmations",
+            post(post_frost_dkg_confirmation),
+        )
         .route(
             "/dkg/transcript-signatures",
             post(post_dkg_transcript_signature),
         )
         .route("/dkg/activations", post(post_dkg_activation))
         .layer(DefaultBodyLimit::max(FEDERATION_MAX_DKG_REQUEST_BODY_BYTES));
+    let frost_signing_router = Router::new()
+        .route(
+            "/frost/signing/commitments",
+            post(post_frost_signing_commitment),
+        )
+        .route("/frost/signing/packages", post(post_frost_signing_package))
+        .route("/frost/signing/aborts", post(post_frost_signing_abort))
+        .route("/frost/signing/results", post(post_frost_aggregate_result))
+        .layer(DefaultBodyLimit::max(
+            cdk::federation::FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES,
+        ));
 
     Router::new()
         .merge(dkg_router)
+        .merge(frost_signing_router)
         .route("/config", get(get_public_config))
         .route("/status", post(post_status))
         .route("/local-status", post(post_local_status))
+        .route(
+            "/wallet/transactions/status",
+            post(post_wallet_transaction_status),
+        )
+        .route(
+            "/wallet/transactions/rebroadcast",
+            post(post_wallet_rebroadcast),
+        )
         .route("/operations", post(post_operation))
         .route("/aleph-bft/activity", post(post_aleph_bft_activity))
         .route("/aleph-bft/messages", post(post_aleph_bft_network_message))

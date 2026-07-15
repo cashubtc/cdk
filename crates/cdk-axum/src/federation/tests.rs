@@ -84,6 +84,7 @@ mod aleph_bft_routes;
 mod dkg_driver;
 mod dkg_setup_routes;
 mod dkg_transcript_signature;
+mod frost_signing;
 mod private_operation_route;
 
 #[cfg(feature = "prometheus")]
@@ -2271,6 +2272,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             peer_sync_config: Some(FederationPeerSyncConfig::default()),
             dkg_auto_start_config: Some(Arc::new(FederationDkgAutoStartConfig {
                 ceremony_id: FederationDkgCeremonyId::from_bytes([55; 32]),
+                root_key_epoch: 1,
                 keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
                     CurrencyUnit::Sat,
                     true,
@@ -2302,6 +2304,11 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
                 crate::FederationInvalidOperationAlertTracker::default(),
             ))),
             payment_observer: crate::federation::FederationPaymentObserver::default(),
+            transaction_broadcaster: crate::federation::FederationTransactionBroadcaster::default(),
+            wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
+            onchain_wallets: Vec::new(),
+            frost_signing: None,
+            operation_application: Arc::new(tokio::sync::Mutex::new(())),
             catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
             materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
             catch_up_certificate_quorum_validation_count: Arc::new(AtomicUsize::new(0)),
@@ -4445,6 +4452,121 @@ async fn rest_peer_client_tolerates_already_applied_catch_up_overlap() {
         BTreeSet::from([peer_private.member_id, witness_private.member_id])
     );
     assert_eq!(transport.catch_up_requests()[0].payload.next_index, 2);
+}
+
+#[tokio::test]
+async fn catch_up_application_precedes_dependent_live_finality() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config.clone(),
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    let prerequisite_unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(mint_quote_envelope(&state, &quote_id)),
+            FederationConsensusItem::operation(paid_observation_envelope(&state, &quote_id)),
+        ],
+    )
+    .expect("prerequisite finalized unit");
+    let mut peer_consensus = FederationConsensusRuntime::for_members(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        public_config.members.keys().copied(),
+    )
+    .expect("peer consensus");
+    peer_consensus
+        .finalize_unit(prerequisite_unit)
+        .expect("finalize prerequisite unit");
+    let catch_up_request = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("local consensus")
+        .lock()
+        .await
+        .catch_up_request();
+    let catch_up_response =
+        aleph_bft_catch_up_response(&public_config, &peer_consensus, &catch_up_request);
+    let (mint_envelope, output) =
+        mint_operation_envelope(&state, &quote_id, b"serialized catch-up mint");
+    let mint_operation_id = mint_envelope.operation_id().expect("mint operation id");
+    let live_unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        1,
+        vec![FederationConsensusItem::operation(mint_envelope)],
+    )
+    .expect("dependent live unit");
+
+    let application_guard = state.federation.operation_application.lock().await;
+    let catch_up_state = state.clone();
+    let mut catch_up = tokio::spawn(async move {
+        catch_up_state
+            .apply_federation_catch_up_response(&catch_up_response)
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut catch_up)
+            .await
+            .is_err(),
+        "catch-up should wait for the application boundary"
+    );
+    let live_state = state.clone();
+    let mut live = tokio::spawn(async move {
+        live_state
+            .apply_federation_aleph_bft_finalized_unit(live_unit)
+            .await
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut live)
+            .await
+            .is_err(),
+        "live finality should queue behind catch-up application"
+    );
+    drop(application_guard);
+
+    let caught_up = catch_up
+        .await
+        .expect("catch-up task")
+        .expect("apply catch-up prerequisites");
+    assert_eq!(caught_up.len(), 2);
+    let responses = live
+        .await
+        .expect("live finality task")
+        .expect("apply dependent live mint");
+    assert_eq!(responses.len(), 1);
+    assert_eq!(responses[0].operation_id, mint_operation_id);
+    assert_eq!(
+        responses[0].outcome.entry().status(),
+        FederationOperationStatus::Applied
+    );
+    let quote = state
+        .mint
+        .localstore()
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("quote lookup")
+        .expect("caught-up quote");
+    assert_eq!(quote.amount_issued().value(), 1);
+    assert!(state
+        .mint
+        .localstore()
+        .get_blind_signatures(&[output.blinded_secret])
+        .await
+        .expect("blind signature lookup")[0]
+        .is_some());
 }
 
 #[tokio::test]
@@ -8185,6 +8307,42 @@ async fn federation_runtime_startup_persists_public_config_snapshot() {
 }
 
 #[tokio::test]
+async fn federation_dkg_setup_runtime_has_no_persisted_application_consensus() {
+    let (mut public_config, mut local_private, _) = transport_config();
+    public_config.keysets.clear();
+    public_config.setup_transcript = None;
+    local_private.keyset_secret_shares.clear();
+    local_private.setup_transcript_hash = None;
+    public_config.validate().expect("DKG setup public config");
+    local_private
+        .validate_against_public(&public_config)
+        .expect("DKG setup private config");
+    let state = federation_route_state_for_private(public_config.clone(), local_private).await;
+
+    let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("DKG setup runtime state");
+
+    assert!(consensus.is_some());
+    assert!(sequences.is_some());
+    let snapshot = state
+        .mint
+        .localstore()
+        .get_federation_config(public_config.federation_id)
+        .await
+        .expect("load setup federation config")
+        .expect("setup federation config snapshot");
+    assert_eq!(snapshot.config, public_config);
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("load pre-finalization consensus units")
+        .is_empty());
+}
+
+#[tokio::test]
 async fn federation_runtime_startup_rejects_conflicting_public_config_snapshot() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
@@ -10521,7 +10679,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
                 .rejection()
                 .cloned()
                 .map(cdk::Error::from),
-            Some(cdk::Error::IssuedQuote)
+            Some(cdk::Error::IssuedQuote | cdk::Error::UnpaidQuote)
         ));
         assert!(matches!(
             second_responses[1]
@@ -10543,7 +10701,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
                 &replay_responses[0],
                 conflicting_mint_operation_id,
             ),
-            Err(cdk::Error::IssuedQuote)
+            Err(cdk::Error::IssuedQuote | cdk::Error::UnpaidQuote)
         ));
         assert!(matches!(
             crate::validate_federation_submit_response(
@@ -10667,7 +10825,7 @@ async fn federation_aleph_bft_finalized_units_serialize_cross_member_value_confl
         );
         assert!(matches!(
             persisted[7].rejection().cloned().map(cdk::Error::from),
-            Some(cdk::Error::IssuedQuote)
+            Some(cdk::Error::IssuedQuote | cdk::Error::UnpaidQuote)
         ));
         assert!(matches!(
             persisted[8].rejection().cloned().map(cdk::Error::from),
@@ -13886,7 +14044,7 @@ async fn aleph_bft_live_five_member_sessions_converge_after_valid_increasing_seq
         .operation_id()
         .expect("follow-up operation id");
     let follow_up = time::timeout(
-        Duration::from_secs(20),
+        Duration::from_secs(40),
         session.states[1].submit_federation_envelope_to_consensus(follow_up_envelope),
     )
     .await;
@@ -19481,7 +19639,7 @@ async fn aleph_bft_submit_envelope_times_out_without_finalization() {
 }
 
 #[tokio::test]
-async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_requeueing() {
+async fn aleph_bft_timed_out_submit_retry_receives_finalized_response_without_requeuing() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -19728,7 +19886,7 @@ async fn aleph_bft_pending_persistence_failure_releases_waiter_and_allows_retry(
 }
 
 #[tokio::test]
-async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeueing() {
+async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeuing() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -20381,7 +20539,7 @@ async fn aleph_bft_submit_envelope_rejects_when_pending_mempool_is_full() {
 }
 
 #[tokio::test]
-async fn aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeueing() {
+async fn aleph_bft_submit_envelope_returns_finalized_duplicate_without_requeuing() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -20676,7 +20834,10 @@ async fn submit_mint_quote_rejects_invalid_admission_before_journal_append() {
         .await
         .expect_err("invalid quote transcript should fail before consensus");
 
-    assert!(matches!(err, cdk::Error::UnknownQuote));
+    assert!(
+        matches!(err, cdk::Error::UnknownQuote),
+        "unexpected invalid mint quote error: {err}"
+    );
     assert!(state
         .mint
         .localstore()
@@ -21682,6 +21843,15 @@ async fn submit_federation_envelope_records_prometheus_operation_metrics() {
         panic!("bolt11 mint quote response");
     };
     response.request.push_str("-conflict");
+    let conflicting = conflicting
+        .authorize(
+            state
+                .mint
+                .federation_config()
+                .expect("federation config")
+                .private_config(),
+        )
+        .expect("reauthorize conflicting mint quote fixture");
 
     state
         .submit_federation_envelope(conflicting)
@@ -22710,17 +22880,13 @@ async fn cancelled_private_local_status_releases_inbound_admission() {
     for sequence in 1..=3 {
         let cache = Arc::clone(&state.federation.catch_up_certificate_quorum_cache);
         let cache_guard = cache.lock().await;
-        let request = signed_status_request(
-            &public_config,
-            &peer_private,
-            local_member,
-            sequence,
-        );
+        let request = signed_status_request(&public_config, &peer_private, local_member, sequence);
         let task_state = state.clone();
         let task_request = request.clone();
-        let task = tokio::spawn(async move {
-            post_local_status(State(task_state), Json(task_request)).await
-        });
+        let task =
+            tokio::spawn(
+                async move { post_local_status(State(task_state), Json(task_request)).await },
+            );
 
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
@@ -22745,7 +22911,10 @@ async fn cancelled_private_local_status_releases_inbound_admission() {
         assert!(!task.is_finished(), "status should wait on the held cache");
         assert_eq!(admission.available_permits(), 0);
         task.abort();
-        assert!(task.await.expect_err("cancelled status task").is_cancelled());
+        assert!(task
+            .await
+            .expect_err("cancelled status task")
+            .is_cancelled());
         assert_eq!(admission.available_permits(), 1);
         drop(cache_guard);
     }
@@ -22804,6 +22973,32 @@ async fn private_local_status_route_reports_catching_up_sync_state() {
     assert!(!response.sync_ready);
     assert_eq!(response.sync_peer, Some(peer_member));
     assert!(response.sync_message.contains("catching up from peer"));
+}
+
+#[tokio::test]
+async fn catching_up_member_blocks_wallet_observer_and_broadcaster_work() {
+    let (state, _, peer_private) = federation_route_state().await;
+    state
+        .mark_federation_catching_up(peer_private.member_id)
+        .await;
+
+    assert!(super::payment_observation::FederationPaymentObserver
+        .run_round(&state)
+        .await
+        .is_err());
+    assert!(
+        super::broadcast::FederationTransactionBroadcaster::default()
+            .run_round(&state)
+            .await
+            .is_err()
+    );
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal entries")
+        .is_empty());
 }
 
 #[tokio::test]

@@ -2,11 +2,16 @@
 set -euo pipefail
 
 CDK_MINTD_BIN="${CDK_MINTD_BIN:-cdk-mintd}"
+CDK_CLI_BIN="${CDK_CLI_BIN:-cdk-cli}"
+BITCOIN_CLI_BIN="${BITCOIN_CLI_BIN:-bitcoin-cli}"
+BITCOIN_DOCKER_CONTAINER="${BITCOIN_DOCKER_CONTAINER:-}"
 SETUP_PUBLIC_CONFIG=@@SETUP_PUBLIC_CONFIG_PATH@@
 FINAL_PUBLIC_CONFIG=@@PRIMARY_FINAL_PUBLIC_CONFIG@@
 POSTGRES_SCHEMA_RESET_URL=@@POSTGRES_SCHEMA_RESET_URL@@
 RESET_POSTGRES_SCHEMAS="${RESET_POSTGRES_SCHEMAS:-0}"
 MEMBERS=(@@MEMBERS@@)
+SIGNATURE_THRESHOLD=@@THRESHOLD@@
+UNIT=@@UNIT@@
 PRIMARY_MEMBER="${PRIMARY_MEMBER:-@@PRIMARY_MEMBER@@}"
 INTERRUPTED_MEMBER="${INTERRUPTED_MEMBER:-@@INTERRUPTED_MEMBER@@}"
 HELD_MEMBER="${HELD_MEMBER:-@@HELD_MEMBER@@}"
@@ -18,18 +23,45 @@ SMOKE_QUOTE_RETRIES="${SMOKE_QUOTE_RETRIES:-600}"
 SMOKE_QUOTE_SLEEP_MS="${SMOKE_QUOTE_SLEEP_MS:-100}"
 SMOKE_OPERATION_TIMEOUT_SECONDS="${SMOKE_OPERATION_TIMEOUT_SECONDS:-300}"
 DKG_EXPORT_JOBS="${DKG_EXPORT_JOBS:-4}"
+DKG_START_JOBS="${DKG_START_JOBS:-2}"
+RUNTIME_START_JOBS="${RUNTIME_START_JOBS:-2}"
 DKG_CAPTURE_METRICS="${DKG_CAPTURE_METRICS:-0}"
 DKG_METRICS_INTERVAL_SECONDS="${DKG_METRICS_INTERVAL_SECONDS:-1}"
 DKG_METRICS_DIR="${DKG_METRICS_DIR:-$(dirname "$SETUP_PUBLIC_CONFIG")/dkg-metrics}"
 DKG_SETUP_PHASE=1
+FROST_BDK_REGTEST="${FROST_BDK_REGTEST:-0}"
+FROST_BDK_FAULT_PROFILE="${FROST_BDK_FAULT_PROFILE:-happy}"
+FROST_BDK_CLI_WORK_DIR="${FROST_BDK_CLI_WORK_DIR:-$(dirname "$SETUP_PUBLIC_CONFIG")/frost-bdk-cli}"
+FROST_BDK_CHECKPOINT_DIR="${FROST_BDK_CHECKPOINT_DIR:-$(dirname "$SETUP_PUBLIC_CONFIG")/frost-bdk-checkpoints}"
+FROST_BDK_DEPOSIT_AMOUNTS="${FROST_BDK_DEPOSIT_AMOUNTS:-50000 40000}"
+FROST_BDK_MELT_AMOUNTS="${FROST_BDK_MELT_AMOUNTS:-10000 12000}"
+FROST_BDK_WAIT_RETRIES="${FROST_BDK_WAIT_RETRIES:-300}"
+FROST_BDK_WAIT_SLEEP_SECONDS="${FROST_BDK_WAIT_SLEEP_SECONDS:-1}"
+FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS="${FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS:-60}"
+FROST_BDK_MEMBER_REQUEST_MAX_RETRIES="${FROST_BDK_MEMBER_REQUEST_MAX_RETRIES:-200}"
+FROST_BDK_LONG_IDLE_SECONDS="${FROST_BDK_LONG_IDLE_SECONDS:-0}"
+FROST_BDK_CAPTURE_RUNTIME_METRICS="${FROST_BDK_CAPTURE_RUNTIME_METRICS:-0}"
+FROST_BDK_RUNTIME_BUILD_PROFILE="${FROST_BDK_RUNTIME_BUILD_PROFILE:-unknown}"
+FROST_BDK_RUNTIME_METRICS_DIR="${FROST_BDK_RUNTIME_METRICS_DIR:-$(dirname "$SETUP_PUBLIC_CONFIG")/frost-bdk-runtime-metrics}"
 PIDS=()
 METRICS_PID=""
 DKG_SETUP_STARTED_SECONDS=0
 DKG_METRICS_REPORTED=0
 
 member_config() {
+  if [[ "$DKG_SETUP_PHASE" == "0" && "$FROST_BDK_REGTEST" == "1" ]]; then
+    member_frost_bdk_config "$1"
+    return
+  fi
   case "$1" in
 # @@CONFIG_CASES@@
+    *) return 1 ;;
+  esac
+}
+
+member_frost_bdk_config() {
+  case "$1" in
+# @@FROST_BDK_CONFIG_CASES@@
     *) return 1 ;;
   esac
 }
@@ -66,6 +98,102 @@ member_mint_url() {
   esac
 }
 
+member_prometheus_url() {
+  case "$1" in
+# @@PROMETHEUS_URL_CASES@@
+    *) return 1 ;;
+  esac
+}
+
+bitcoin_cli() {
+  if [[ -n "$BITCOIN_DOCKER_CONTAINER" ]]; then
+    docker exec "$BITCOIN_DOCKER_CONTAINER" bitcoin-cli -regtest -rpcuser=cdk -rpcpassword=cdk "$@"
+  else
+    "$BITCOIN_CLI_BIN" -regtest -rpcuser=cdk -rpcpassword=cdk "$@"
+  fi
+}
+
+bitcoin_wallet_cli() {
+  bitcoin_cli -rpcwallet=cdk-frost-regtest "$@"
+}
+
+wait_for_bitcoin() {
+  for _ in $(seq 1 "$FROST_BDK_WAIT_RETRIES"); do
+    if bitcoin_cli getblockchaininfo >/dev/null 2>&1; then
+      bitcoin_cli -named createwallet wallet_name=cdk-frost-regtest descriptors=true load_on_startup=true >/dev/null 2>&1 || true
+      if bitcoin_wallet_cli getwalletinfo >/dev/null 2>&1; then
+        return 0
+      fi
+    fi
+    sleep "$FROST_BDK_WAIT_SLEEP_SECONDS"
+  done
+  printf 'Bitcoin Core regtest RPC did not become ready\n' >&2
+  return 1
+}
+
+mine_blocks() {
+  local blocks="$1"
+  local mining_address
+  mining_address="$(bitcoin_wallet_cli getnewaddress cdk-frost-harness bech32)"
+  bitcoin_wallet_cli generatetoaddress "$blocks" "$mining_address" >/dev/null
+}
+
+sats_to_btc() {
+  awk -v sats="$1" 'BEGIN { printf "%.8f", sats / 100000000 }'
+}
+
+wait_for_log_line() {
+  local file="$1"
+  local pattern="$2"
+  for _ in $(seq 1 "$FROST_BDK_WAIT_RETRIES"); do
+    if [[ -f "$file" ]] && grep -q "$pattern" "$file"; then
+      return 0
+    fi
+    sleep "$FROST_BDK_WAIT_SLEEP_SECONDS"
+  done
+  printf 'timed out waiting for %s in %s\n' "$pattern" "$file" >&2
+  [[ -f "$file" ]] && tail -n 120 "$file" >&2
+  return 1
+}
+
+capture_federation_checkpoint_output() {
+  local output="$1"
+  shift
+  if ! "$@" > "$output" 2>&1; then
+    if [[ "$FROST_BDK_FAULT_PROFILE" == "offline-one" \
+      && -z "${PIDS[$HELD_MEMBER]:-}" ]]; then
+      printf 'expected temporary diagnostic unavailability while member %s is offline\n' \
+        "$HELD_MEMBER" >> "$output"
+    else
+      cat "$output" >&2
+      return 1
+    fi
+  fi
+}
+
+capture_frost_bdk_checkpoint() {
+  local label="$1"
+  local checkpoint="$FROST_BDK_CHECKPOINT_DIR/$label"
+  mkdir -p "$checkpoint"
+  if [[ "${#PIDS[@]}" == "${#MEMBERS[@]}" ]]; then
+    wait_for_converged
+  fi
+  capture_federation_checkpoint_output "$checkpoint/federation-status.txt" \
+    "$CDK_MINTD_BIN" federation status \
+    --public-config "$FINAL_PUBLIC_CONFIG" \
+    --private-config "$(member_final_private_config "$PRIMARY_MEMBER")"
+  capture_federation_checkpoint_output "$checkpoint/wallet-status.txt" \
+    "$CDK_MINTD_BIN" federation wallet-status \
+    --public-config "$FINAL_PUBLIC_CONFIG" \
+    --private-config "$(member_final_private_config "$PRIMARY_MEMBER")"
+  capture_federation_checkpoint_output "$checkpoint/digests.txt" compare_digests
+  bitcoin_cli getblockchaininfo > "$checkpoint/bitcoin-chain.json"
+  bitcoin_cli getrawmempool true > "$checkpoint/bitcoin-mempool.json"
+  bitcoin_cli gettxoutsetinfo > "$checkpoint/bitcoin-utxos.json"
+  "$CDK_CLI_BIN" --work-dir "$FROST_BDK_CLI_WORK_DIR" --non-interactive --unit "$UNIT" balance \
+    > "$checkpoint/cashu-balance.txt"
+}
+
 postgres_member_schema() {
   case "$1" in
 # @@POSTGRES_SCHEMA_RESET_CASES@@
@@ -94,7 +222,10 @@ start_member() {
   local member="$1"
   local config
   local work_dir
-  local mintd_env=(CDK_MINTD_PROMETHEUS_ENABLED=false)
+  local mintd_env=()
+  if [[ "$DKG_SETUP_PHASE" == "1" || "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "1" ]]; then
+    mintd_env+=(CDK_MINTD_PROMETHEUS_ENABLED=false)
+  fi
   config="$(member_config "$member")"
   work_dir="$(member_work_dir "$member")"
   mkdir -p "$work_dir"
@@ -111,6 +242,52 @@ start_member() {
   PIDS[$member]=$!
   record_metrics_member_pid "$member" "${PIDS[$member]}"
   printf 'started live DKG member %s with pid %s\n' "$member" "${PIDS[$member]}"
+}
+
+wait_for_dkg_listener() {
+  local member="$1"
+  local pid="${PIDS[$member]:-}"
+  local mint_url
+  mint_url="$(member_mint_url "$member")"
+  for _ in $(seq 1 "$STATUS_RETRIES"); do
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+      printf 'member %s exited during bounded DKG startup\n' "$member" >&2
+      tail -n 120 "$(member_work_dir "$member")/mintd.log" >&2 || true
+      return 1
+    fi
+    if curl --max-time "$STATUS_SLEEP_SECONDS" -fsS "$mint_url/v1/info" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$STATUS_SLEEP_SECONDS"
+  done
+  printf 'member %s did not expose its DKG listener after bounded startup\n' "$member" >&2
+  tail -n 120 "$(member_work_dir "$member")/mintd.log" >&2 || true
+  return 1
+}
+
+start_dkg_members_bounded() {
+  local member
+  local batch=()
+  for member in "${MEMBERS[@]}"; do
+    if [[ "$member" == "$HELD_MEMBER" ]]; then
+      continue
+    fi
+    start_member "$member"
+    batch+=("$member")
+    if (( ${#batch[@]} >= DKG_START_JOBS )); then
+      for member in "${batch[@]}"; do
+        wait_for_dkg_listener "$member"
+      done
+      batch=()
+    fi
+  done
+  if (( ${#batch[@]} > 0 )); then
+    for member in "${batch[@]}"; do
+      wait_for_dkg_listener "$member"
+    done
+  fi
+  start_member "$HELD_MEMBER"
+  wait_for_dkg_listener "$HELD_MEMBER"
 }
 
 stop_member() {
@@ -286,6 +463,139 @@ report_dkg_metrics() {
   printf 'dkg_metrics_dir=%s\n' "$DKG_METRICS_DIR"
 }
 
+wait_for_runtime_metrics() {
+  if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "1" ]]; then
+    return 0
+  fi
+  local member
+  for member in "${MEMBERS[@]}"; do
+    local metrics_url
+    metrics_url="$(member_prometheus_url "$member")"
+    local ready=0
+    for _ in $(seq 1 "$STATUS_RETRIES"); do
+      if curl --max-time "$STATUS_SLEEP_SECONDS" -fsS "$metrics_url" >/dev/null 2>&1; then
+        ready=1
+        break
+      fi
+      sleep "$STATUS_SLEEP_SECONDS"
+    done
+    if [[ "$ready" != "1" ]]; then
+      printf 'member %s did not expose runtime metrics at %s\n' "$member" "$metrics_url" >&2
+      return 1
+    fi
+  done
+}
+
+runtime_process_sample() {
+  local pid="$1"
+  ps -p "$pid" -o time= -o rss= 2>/dev/null | awk '
+    function cpu_seconds(raw, parts, count, day_parts, days) {
+      days = 0;
+      if (index(raw, "-") > 0) {
+        split(raw, day_parts, "-");
+        days = day_parts[1] + 0;
+        raw = day_parts[2];
+      }
+      count = split(raw, parts, ":");
+      if (count == 2) return (days * 86400) + (parts[1] * 60) + parts[2];
+      if (count == 3) return (days * 86400) + (parts[1] * 3600) + (parts[2] * 60) + parts[3];
+      return (days * 86400) + raw;
+    }
+    NF { printf "%.2f,%d\n", cpu_seconds($1), $2; exit }
+  '
+}
+
+runtime_private_rest_requests() {
+  local member="$1"
+  curl --max-time "$STATUS_SLEEP_SECONDS" -fsS "$(member_prometheus_url "$member")" | awk '
+    /^cdk_http_requests_total\{/ && /endpoint="\/federation\/v1\// { total += $NF }
+    END { printf "%.0f\n", total + 0 }
+  '
+}
+
+capture_runtime_metrics_snapshot() {
+  if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "1" ]]; then
+    return 0
+  fi
+  local label="$1"
+  local output="$FROST_BDK_RUNTIME_METRICS_DIR/$label.csv"
+  mkdir -p "$FROST_BDK_RUNTIME_METRICS_DIR"
+  printf 'member,pid,cpu_seconds,rss_kb,private_rest_requests\n' > "$output"
+  local member
+  for member in "${MEMBERS[@]}"; do
+    local pid="${PIDS[$member]:-}"
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+      printf 'member %s is unavailable for runtime metrics snapshot %s\n' "$member" "$label" >&2
+      return 1
+    fi
+    local process_sample
+    process_sample="$(runtime_process_sample "$pid")"
+    if [[ -z "$process_sample" ]]; then
+      printf 'member %s produced no process metrics for snapshot %s\n' "$member" "$label" >&2
+      return 1
+    fi
+    local private_rest_requests
+    private_rest_requests="$(runtime_private_rest_requests "$member")"
+    printf '%s,%s,%s,%s\n' \
+      "$member" "$pid" "$process_sample" "$private_rest_requests" >> "$output"
+  done
+  date +%s > "$FROST_BDK_RUNTIME_METRICS_DIR/$label.epoch"
+}
+
+report_runtime_metrics_window() {
+  if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "1" ]]; then
+    return 0
+  fi
+  local window="$1"
+  local start="$2"
+  local end="$3"
+  local start_epoch
+  local end_epoch
+  read -r start_epoch < "$FROST_BDK_RUNTIME_METRICS_DIR/$start.epoch"
+  read -r end_epoch < "$FROST_BDK_RUNTIME_METRICS_DIR/$end.epoch"
+  local duration_seconds=$((end_epoch - start_epoch))
+  if (( duration_seconds <= 0 )); then
+    printf 'runtime metrics window %s has non-positive duration\n' "$window" >&2
+    return 1
+  fi
+  local result
+  if ! result="$(awk -F, \
+    -v window="$window" \
+    -v duration="$duration_seconds" \
+    -v expected_members="${#MEMBERS[@]}" \
+    -v threshold="$SIGNATURE_THRESHOLD" \
+    -v profile="$FROST_BDK_RUNTIME_BUILD_PROFILE" '
+      FNR == NR {
+        if (FNR > 1) {
+          if ($1 in start_seen) invalid = 1;
+          start_seen[$1] = 1;
+          start_cpu[$1] = $3;
+          start_requests[$1] = $5;
+          start_members += 1;
+        }
+        next;
+      }
+      FNR > 1 {
+        if ($1 in end_seen) invalid = 1;
+        end_seen[$1] = 1;
+        if (!($1 in start_cpu) || $3 < start_cpu[$1] || $5 < start_requests[$1]) invalid = 1;
+        total_cpu += $3 - start_cpu[$1];
+        total_requests += $5 - start_requests[$1];
+        if ($4 > max_end_rss) max_end_rss = $4;
+        members += 1;
+      }
+      END {
+        if (invalid || start_members != expected_members || members != expected_members) exit 1;
+        printf "frost_bdk_runtime_metrics schema_version=1 profile=%s window=%s members=%d threshold=%d duration_seconds=%d total_cpu_seconds=%.2f cpu_millis_per_member_second=%.3f private_rest_requests=%.0f private_rest_requests_per_member_minute=%.3f max_end_rss_kb=%d", profile, window, members, threshold, duration, total_cpu, (total_cpu * 1000) / (duration * members), total_requests, (total_requests * 60) / (duration * members), max_end_rss;
+      }
+    ' "$FROST_BDK_RUNTIME_METRICS_DIR/$start.csv" "$FROST_BDK_RUNTIME_METRICS_DIR/$end.csv")"; then
+    printf 'runtime metrics window %s contains invalid or incomplete counters\n' "$window" >&2
+    return 1
+  fi
+  printf '%s\n' "$result"
+  printf '%s\n' "$result" >> "$FROST_BDK_RUNTIME_METRICS_DIR/results.txt"
+}
+
 reset_postgres_schemas() {
   if [[ -z "$POSTGRES_SCHEMA_RESET_URL" ]]; then
     return 0
@@ -342,7 +652,7 @@ member_dkg_records_complete() {
   local member="$1"
   local line
   line="$(member_dkg_setup_line "$member" 2>/dev/null)" || return 1
-  [[ "$(status_field "$line" keyset_shares || true)" == "1" && "$(status_field "$line" transcript_signatures || true)" == "${#MEMBERS[@]}" && "$(status_field "$line" activations || true)" == "${#MEMBERS[@]}" ]]
+  [[ "$(status_field "$line" keyset_shares || true)" == "1" && "$(status_field "$line" transcript_signatures || true)" == "${#MEMBERS[@]}" && "$(status_field "$line" activations || true)" == "${#MEMBERS[@]}" && "$(status_field "$line" frost_root_public_configs || true)" == "1" ]]
 }
 
 wait_for_dkg_participant() {
@@ -417,6 +727,12 @@ wait_for_dkg_ready() {
   local work_dir
   work_dir="$(member_work_dir "$member")"
   for _ in $(seq 1 "$STATUS_RETRIES"); do
+    local pid="${PIDS[$member]:-}"
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+      printf 'member %s exited before persisting a complete live DKG record set\n' "$member" >&2
+      tail -n 120 "$work_dir/mintd.log" >&2 || true
+      return 1
+    fi
     if member_dkg_records_complete "$member"; then
       return 0
     fi
@@ -430,6 +746,15 @@ wait_for_dkg_ready() {
 
 export_final_config() {
   local member="$1"
+  local bootstrap_args=()
+  if [[ "$FROST_BDK_REGTEST" == "1" ]]; then
+    bootstrap_args+=(
+      --frost-cdk-network regtest
+      --frost-cdk-minimum-confirmations 1
+      --frost-cdk-fee-policy-version 1
+      --frost-cdk-application-key-epoch 1
+    )
+  fi
   "$CDK_MINTD_BIN" \
     --work-dir "$(member_work_dir "$member")" \
     --config "$(member_config "$member")" \
@@ -437,6 +762,7 @@ export_final_config() {
     --public-config "$SETUP_PUBLIC_CONFIG" \
     --private-config "$(member_setup_private_config "$member")" \
     --from-database --require-ready \
+    "${bootstrap_args[@]}" \
     --final-config-dir "$(member_final_config_dir "$member")"
 }
 
@@ -495,6 +821,24 @@ wait_for_runtime_keysets() {
   return 1
 }
 
+start_runtime_members_bounded() {
+  local member
+  local batch=()
+  for member in "${MEMBERS[@]}"; do
+    start_member "$member"
+    batch+=("$member")
+    if (( ${#batch[@]} >= RUNTIME_START_JOBS )); then
+      for member in "${batch[@]}"; do
+        wait_for_runtime_keysets "$member"
+      done
+      batch=()
+    fi
+  done
+  for member in "${batch[@]}"; do
+    wait_for_runtime_keysets "$member"
+  done
+}
+
 member_status_line() {
   local member="$1"
   "$CDK_MINTD_BIN" federation status \
@@ -523,16 +867,260 @@ compare_digests() {
     --private-config "$(member_final_private_config "$PRIMARY_MEMBER")"
 }
 
+has_certified_convergence() {
+  local output="$1"
+  shift
+  local recovered_members=" $* "
+  if ! "$CDK_MINTD_BIN" federation status \
+    --public-config "$FINAL_PUBLIC_CONFIG" \
+    --private-config "$(member_final_private_config "$PRIMARY_MEMBER")" \
+    > "$output" 2>&1; then
+    return 1
+  fi
+  awk -v expected="${#MEMBERS[@]}" -v recovered_members="$recovered_members" '
+    $1 == "member" {
+      members += 1
+      healthy += ($0 ~ /sync=healthy ready=true/)
+      member_id = $2
+      sub(/:$/, "", member_id)
+      latest = ""
+      certified = ""
+      for (field = 1; field <= NF; field += 1) {
+        split($field, value, "=")
+        if (value[1] == "latest_index") latest = value[2]
+        if (value[1] == "catch_up_certificate_quorum_latest") certified = value[2]
+      }
+      requires_certificate = index(recovered_members, " " member_id " ") > 0
+      covered += (!requires_certificate || (latest != "" && latest == certified))
+    }
+    END {
+      exit !(members == expected && healthy == expected && covered == expected)
+    }
+  ' "$output"
+}
+
 wait_for_converged() {
+  mkdir -p "$FROST_BDK_CHECKPOINT_DIR"
+  local convergence_status="$FROST_BDK_CHECKPOINT_DIR/.convergence-status.txt"
   for _ in $(seq 1 "$STATUS_RETRIES"); do
-    if compare_digests >/dev/null 2>&1; then
+    if compare_digests >/dev/null 2>&1 \
+      && has_certified_convergence "$convergence_status" "$@"; then
       return 0
     fi
     sleep "$STATUS_SLEEP_SECONDS"
   done
-  printf 'live DKG federation did not converge after activation\n' >&2
+  printf 'live DKG federation did not reach certified convergence\n' >&2
+  [[ -f "$convergence_status" ]] && cat "$convergence_status" >&2
   compare_digests >&2 || true
   return 1
+}
+
+cashu_balance() {
+  "$CDK_CLI_BIN" --work-dir "$FROST_BDK_CLI_WORK_DIR" --non-interactive --unit "$UNIT" balance \
+    | awk '/Total balance across all wallets:/ { print $(NF - 1); exit }'
+}
+
+run_onchain_mint() {
+  local sequence="$1"
+  local amount="$2"
+  local log="$FROST_BDK_CHECKPOINT_DIR/onchain-mint-$sequence.log"
+  local mint_pid
+  "$CDK_CLI_BIN" --work-dir "$FROST_BDK_CLI_WORK_DIR" --non-interactive --unit "$UNIT" \
+    mint "$(member_mint_url "$PRIMARY_MEMBER")" "$amount" --method onchain --wait-duration 0 \
+    > "$log" 2>&1 &
+  mint_pid=$!
+  wait_for_log_line "$log" '^Send sats to: '
+  local address
+  address="$(awk '/^Send sats to: / { print $4; exit }' "$log")"
+  if [[ -z "$address" ]]; then
+    printf 'on-chain mint %s produced no deposit address\n' "$sequence" >&2
+    return 1
+  fi
+  local txid
+  txid="$(bitcoin_wallet_cli sendtoaddress "$address" "$(sats_to_btc "$amount")")"
+  mine_blocks 1
+  if ! wait "$mint_pid"; then
+    cat "$log" >&2
+    return 1
+  fi
+  grep -q "Received $amount from mint" "$log"
+  bitcoin_wallet_cli gettransaction "$txid" > "$FROST_BDK_CHECKPOINT_DIR/deposit-$sequence-bitcoin.json"
+  printf '%s\n' "$txid" >> "$FROST_BDK_CHECKPOINT_DIR/deposit-txids.txt"
+}
+
+new_mempool_txid() {
+  local before="$1"
+  bitcoin_cli getrawmempool \
+    | jq -r --argjson before "$before" '.[] | select(. as $txid | ($before | index($txid) | not))' \
+    | head -n 1
+}
+
+run_onchain_melt() {
+  local sequence="$1"
+  local amount="$2"
+  local destination
+  destination="$(bitcoin_wallet_cli getnewaddress "cdk-frost-melt-$sequence" bech32m)"
+  local before
+  before="$(bitcoin_cli getrawmempool)"
+  local log="$FROST_BDK_CHECKPOINT_DIR/onchain-melt-$sequence.log"
+  local melt_pid
+  "$CDK_CLI_BIN" --work-dir "$FROST_BDK_CLI_WORK_DIR" --non-interactive --unit "$UNIT" \
+    melt --method onchain --mint-url "$(member_mint_url "$PRIMARY_MEMBER")" \
+    --address "$destination" --amount "$amount" --network regtest --onchain-quote-index 0 \
+    > "$log" 2>&1 &
+  melt_pid=$!
+  local txid=""
+  for _ in $(seq 1 "$FROST_BDK_WAIT_RETRIES"); do
+    txid="$(new_mempool_txid "$before")"
+    if [[ -n "$txid" ]]; then
+      break
+    fi
+    if ! kill -0 "$melt_pid" 2>/dev/null; then
+      wait "$melt_pid" || true
+      cat "$log" >&2
+      return 1
+    fi
+    sleep "$FROST_BDK_WAIT_SLEEP_SECONDS"
+  done
+  if [[ -z "$txid" ]]; then
+    printf 'on-chain melt %s did not broadcast a transaction\n' "$sequence" >&2
+    cat "$log" >&2
+    return 1
+  fi
+  bitcoin_cli getrawtransaction "$txid" true > "$FROST_BDK_CHECKPOINT_DIR/melt-$sequence-transaction.json"
+  local matching_outputs
+  matching_outputs="$(jq --arg destination "$destination" --argjson amount "$amount" \
+    '[.vout[] | select(.scriptPubKey.address == $destination and ((.value * 100000000 | round) == $amount))] | length' \
+    "$FROST_BDK_CHECKPOINT_DIR/melt-$sequence-transaction.json")"
+  if [[ "$matching_outputs" != "1" ]]; then
+    printf 'on-chain melt %s did not contain exactly one authorized recipient output\n' "$sequence" >&2
+    return 1
+  fi
+  mine_blocks 1
+  if ! wait "$melt_pid"; then
+    cat "$log" >&2
+    return 1
+  fi
+  grep -q 'Payment successful:' "$log"
+  printf '%s\n' "$txid" >> "$FROST_BDK_CHECKPOINT_DIR/melt-txids.txt"
+}
+
+exercise_frost_bdk_fault_profile() {
+  case "$FROST_BDK_FAULT_PROFILE" in
+    happy) ;;
+    offline-one)
+      stop_member "$HELD_MEMBER"
+      ;;
+    process-kill)
+      local pid="${PIDS[$INTERRUPTED_MEMBER]:-}"
+      [[ -n "$pid" ]] || return 1
+      kill -9 "$pid"
+      wait "$pid" 2>/dev/null || true
+      unset 'PIDS[$INTERRUPTED_MEMBER]'
+      start_member "$INTERRUPTED_MEMBER"
+      wait_for_member_status "$INTERRUPTED_MEMBER"
+      wait_for_converged "$INTERRUPTED_MEMBER"
+      ;;
+    below-threshold-heal)
+      local stopped=0
+      local member
+      local recovered_members=()
+      for member in "${MEMBERS[@]}"; do
+        if [[ "$member" != "$PRIMARY_MEMBER" && "$stopped" -lt "$SIGNATURE_THRESHOLD" ]]; then
+          stop_member "$member"
+          recovered_members+=("$member")
+          stopped=$((stopped + 1))
+        fi
+      done
+      if "$CDK_CLI_BIN" --work-dir "$FROST_BDK_CLI_WORK_DIR" --non-interactive \
+        mint-info "$(member_mint_url "$PRIMARY_MEMBER")" >/dev/null 2>&1; then
+        printf 'below-threshold wallet read unexpectedly succeeded\n' >&2
+        return 1
+      fi
+      for member in "${MEMBERS[@]}"; do
+        if [[ -z "${PIDS[$member]:-}" ]]; then
+          start_member "$member"
+          wait_for_member_status "$member"
+        fi
+      done
+      wait_for_converged "${recovered_members[@]}"
+      ;;
+    *)
+      printf 'unknown FROST_BDK_FAULT_PROFILE %s\n' "$FROST_BDK_FAULT_PROFILE" >&2
+      return 1
+      ;;
+  esac
+}
+
+run_frost_bdk_regtest() {
+  wait_for_bitcoin
+  rm -rf "$FROST_BDK_CLI_WORK_DIR" "$FROST_BDK_CHECKPOINT_DIR" \
+    "$FROST_BDK_RUNTIME_METRICS_DIR"
+  mkdir -p "$FROST_BDK_CLI_WORK_DIR" "$FROST_BDK_CHECKPOINT_DIR"
+  mine_blocks 101
+  "$CDK_CLI_BIN" --work-dir "$FROST_BDK_CLI_WORK_DIR" --non-interactive \
+    federation add --public-config "$FINAL_PUBLIC_CONFIG" \
+    --member-request-timeout-secs "$FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS" \
+    --member-request-max-retries "$FROST_BDK_MEMBER_REQUEST_MAX_RETRIES"
+  capture_frost_bdk_checkpoint 00-activated
+  if (( FROST_BDK_LONG_IDLE_SECONDS > 0 )); then
+    wait_for_runtime_metrics
+    capture_runtime_metrics_snapshot idle-start
+    printf 'leaving the activated federation idle for %s seconds\n' \
+      "$FROST_BDK_LONG_IDLE_SECONDS"
+    sleep "$FROST_BDK_LONG_IDLE_SECONDS"
+    capture_runtime_metrics_snapshot idle-end
+    report_runtime_metrics_window idle idle-start idle-end
+    capture_frost_bdk_checkpoint 01-after-long-idle
+  fi
+  exercise_frost_bdk_fault_profile
+  capture_runtime_metrics_snapshot active-start
+
+  local sequence=0
+  local amount
+  for amount in $FROST_BDK_DEPOSIT_AMOUNTS; do
+    sequence=$((sequence + 1))
+    run_onchain_mint "$sequence" "$amount"
+    capture_frost_bdk_checkpoint "1$sequence-deposit-confirmed"
+  done
+  local funded_balance
+  funded_balance="$(cashu_balance)"
+  local expected_funded=0
+  for amount in $FROST_BDK_DEPOSIT_AMOUNTS; do
+    expected_funded=$((expected_funded + amount))
+  done
+  if [[ "$funded_balance" != "$expected_funded" ]]; then
+    printf 'Cashu balance after deposits was %s, expected %s\n' "$funded_balance" "$expected_funded" >&2
+    return 1
+  fi
+
+  sequence=0
+  for amount in $FROST_BDK_MELT_AMOUNTS; do
+    sequence=$((sequence + 1))
+    run_onchain_melt "$sequence" "$amount"
+    capture_frost_bdk_checkpoint "2$sequence-melt-confirmed"
+  done
+  local final_balance
+  final_balance="$(cashu_balance)"
+  if [[ -z "$final_balance" || "$final_balance" -ge "$funded_balance" || "$final_balance" -le 0 ]]; then
+    printf 'Cashu balance did not decrease safely after melts: funded=%s final=%s\n' "$funded_balance" "$final_balance" >&2
+    return 1
+  fi
+  if [[ "$(sort -u "$FROST_BDK_CHECKPOINT_DIR/deposit-txids.txt" | wc -l | tr -d ' ')" != "2" \
+    || "$(sort -u "$FROST_BDK_CHECKPOINT_DIR/melt-txids.txt" | wc -l | tr -d ' ')" != "2" ]]; then
+    printf 'expected exactly two unique deposit and two unique melt transactions\n' >&2
+    return 1
+  fi
+  capture_runtime_metrics_snapshot active-end
+  report_runtime_metrics_window active active-start active-end
+
+  if [[ "$FROST_BDK_FAULT_PROFILE" == "offline-one" ]]; then
+    start_member "$HELD_MEMBER"
+    wait_for_member_status "$HELD_MEMBER"
+    wait_for_converged "$HELD_MEMBER"
+  fi
+  capture_frost_bdk_checkpoint 30-recovered
+  printf 'live dealer-free dual DKG and federated BDK on-chain mint/melt smoke passed\n'
 }
 
 validate_live_dkg_smoke() {
@@ -567,6 +1155,53 @@ validate_live_dkg_smoke() {
     printf 'DKG_EXPORT_JOBS must be a positive integer\n' >&2
     return 1
   fi
+  if ! [[ "$DKG_START_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'DKG_START_JOBS must be a positive integer\n' >&2
+    return 1
+  fi
+  if ! [[ "$RUNTIME_START_JOBS" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'RUNTIME_START_JOBS must be a positive integer\n' >&2
+    return 1
+  fi
+  if [[ "$FROST_BDK_REGTEST" != "0" && "$FROST_BDK_REGTEST" != "1" ]]; then
+    printf 'FROST_BDK_REGTEST must be 0 or 1\n' >&2
+    return 1
+  fi
+  if [[ "$FROST_BDK_REGTEST" == "1" ]]; then
+    if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "0" \
+      && "$FROST_BDK_CAPTURE_RUNTIME_METRICS" != "1" ]]; then
+      printf 'FROST_BDK_CAPTURE_RUNTIME_METRICS must be 0 or 1\n' >&2
+      return 1
+    fi
+    if ! [[ "$FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ \
+      && "$FROST_BDK_MEMBER_REQUEST_MAX_RETRIES" =~ ^[0-9]+$ \
+      && "$FROST_BDK_LONG_IDLE_SECONDS" =~ ^[0-9]+$ ]]; then
+      printf 'FROST BDK member request timeout/retry/idle values are invalid\n' >&2
+      return 1
+    fi
+    if (( FROST_BDK_LONG_IDLE_SECONDS > 0 && FROST_BDK_LONG_IDLE_SECONDS < 60 )); then
+      printf 'FROST_BDK_LONG_IDLE_SECONDS must be 0 or at least 60\n' >&2
+      return 1
+    fi
+    if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" == "1" \
+      && "$FROST_BDK_LONG_IDLE_SECONDS" == "0" ]]; then
+      printf 'runtime metrics capture requires a long-idle window\n' >&2
+      return 1
+    fi
+    if [[ "$FROST_BDK_CAPTURE_RUNTIME_METRICS" == "1" \
+      && "$FROST_BDK_RUNTIME_BUILD_PROFILE" != "dev" \
+      && "$FROST_BDK_RUNTIME_BUILD_PROFILE" != "release" ]]; then
+      printf 'runtime metrics capture requires a dev or release build profile\n' >&2
+      return 1
+    fi
+    command -v jq >/dev/null 2>&1 || { printf 'jq is required for FROST BDK regtest\n' >&2; return 1; }
+    command -v "$CDK_CLI_BIN" >/dev/null 2>&1 || { printf 'cdk-cli is required for FROST BDK regtest\n' >&2; return 1; }
+    if [[ -n "$BITCOIN_DOCKER_CONTAINER" ]]; then
+      command -v docker >/dev/null 2>&1 || { printf 'docker is required for containerized Bitcoin Core\n' >&2; return 1; }
+    else
+      command -v "$BITCOIN_CLI_BIN" >/dev/null 2>&1 || { printf 'bitcoin-cli is required for FROST BDK regtest\n' >&2; return 1; }
+    fi
+  fi
 }
 
 handle_signal() {
@@ -581,12 +1216,7 @@ reset_live_dkg_state
 DKG_SETUP_STARTED_SECONDS=$SECONDS
 
 start_metrics_monitor
-for member in "${MEMBERS[@]}"; do
-  if [[ "$member" != "$HELD_MEMBER" ]]; then
-    start_member "$member"
-  fi
-done
-start_member "$HELD_MEMBER"
+start_dkg_members_bounded
 
 interrupted_before="$(wait_for_interrupt_checkpoint "$INTERRUPTED_MEMBER")"
 interrupted_ceremony_before="$(status_field "$interrupted_before" participant_state_ceremonies)"
@@ -623,24 +1253,24 @@ export_final_configs
 compare_final_public_configs
 
 DKG_SETUP_PHASE=0
+start_runtime_members_bounded
 for member in "${MEMBERS[@]}"; do
-  start_member "$member"
-done
-for member in "${MEMBERS[@]}"; do
-  wait_for_runtime_keysets "$member"
   wait_for_member_status "$member"
 done
 wait_for_converged
 
-"$CDK_MINTD_BIN" federation smoke-operations \
-  --public-config "$FINAL_PUBLIC_CONFIG" \
-  --private-config "$(member_final_private_config "$PRIMARY_MEMBER")" \
-  --unit @@UNIT@@ \
-  --mint-amount 16 \
-  --scenario standard \
-  --quote-retries "$SMOKE_QUOTE_RETRIES" \
-  --quote-sleep-ms "$SMOKE_QUOTE_SLEEP_MS" \
-  --operation-timeout-seconds "$SMOKE_OPERATION_TIMEOUT_SECONDS"
-wait_for_converged
-
-printf 'live dealer-free DKG mint/swap/melt/restore smoke passed\n'
+if [[ "$FROST_BDK_REGTEST" == "1" ]]; then
+  run_frost_bdk_regtest
+else
+  "$CDK_MINTD_BIN" federation smoke-operations \
+    --public-config "$FINAL_PUBLIC_CONFIG" \
+    --private-config "$(member_final_private_config "$PRIMARY_MEMBER")" \
+    --unit "$UNIT" \
+    --mint-amount 16 \
+    --scenario standard \
+    --quote-retries "$SMOKE_QUOTE_RETRIES" \
+    --quote-sleep-ms "$SMOKE_QUOTE_SLEEP_MS" \
+    --operation-timeout-seconds "$SMOKE_OPERATION_TIMEOUT_SECONDS"
+  wait_for_converged
+  printf 'live dealer-free DKG mint/swap/melt/restore smoke passed\n'
+fi

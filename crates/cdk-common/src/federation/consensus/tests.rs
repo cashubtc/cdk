@@ -77,6 +77,10 @@ fn mint_quote_envelope_with_amount(
                 request: format!("invoice-{quote}-{amount}"),
                 amount: Some(Amount::from(amount)),
                 unit: Some(CurrencyUnit::Sat),
+                method: crate::PaymentMethod::BOLT11,
+                amount_paid: Amount::ZERO,
+                amount_issued: Amount::ZERO,
+                updated_at: 0,
                 state: crate::MintQuoteState::Unpaid,
                 expiry: None,
                 pubkey: None,
@@ -224,9 +228,7 @@ fn journal_fingerprint(
         .collect()
 }
 
-fn finalized_item_fingerprint(
-    adapter: &FederationConsensusRuntime,
-) -> Vec<(
+type FinalizedItemFingerprint = (
     u64,
     u64,
     u64,
@@ -235,7 +237,11 @@ fn finalized_item_fingerprint(
     u64,
     Option<String>,
     FederationAlephBftFinalizedItemStatus,
-)> {
+);
+
+fn finalized_item_fingerprint(
+    adapter: &FederationConsensusRuntime,
+) -> Vec<FinalizedItemFingerprint> {
     adapter
         .finalized_items()
         .iter()
@@ -1468,7 +1474,7 @@ fn consensus_runtime_finalizes_four_member_order_with_faulty_duplicates() {
     let conflict_id = conflicting_first
         .operation_id()
         .expect("conflict operation id");
-    let units = vec![
+    let units = [
         aleph_operation_unit(
             federation_id,
             members[0],

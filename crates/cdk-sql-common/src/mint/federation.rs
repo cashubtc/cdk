@@ -45,13 +45,14 @@ macro_rules! federation_aleph_bft_finalized_item_select {
 
 mod application;
 mod dkg;
+mod frost_wallet;
 mod journal;
 
 use async_trait::async_trait;
 use cdk_common::database::mint::{
     FederationApplicationDatabase, FederationApplicationTransaction, FederationDkgDatabase,
-    FederationDkgTransaction, FederationJournalDatabase, FederationJournalTransaction,
-    FederationMintQuoteState,
+    FederationDkgTransaction, FederationFrostWalletDatabase, FederationFrostWalletTransaction,
+    FederationJournalDatabase, FederationJournalTransaction, FederationMintQuoteState,
 };
 use cdk_common::database::Error;
 use cdk_common::federation::{
@@ -62,18 +63,25 @@ use cdk_common::federation::{
     FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
     FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalConsensusEvidence,
-    FederationJournalDigest, FederationJournalEntry, FederationJournalTip,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,
+    FederationDkgTranscriptSignatureRequest, FederationFrostApplicationConfig,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
+    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
+    FederationId, FederationJournalConsensusEvidence, FederationJournalDigest,
+    FederationJournalEntry, FederationJournalTip, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationSignatureShareRecord, MemberId,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use super::completed_operations::get_completed_operations_by_ids_inner;
 use super::quotes::{get_federation_melt_quotes_inner, get_federation_mint_quote_states_inner};
 use super::{SQLMintDatabase, SQLTransaction};
+use crate::database::DatabaseExecutor;
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{
@@ -82,6 +90,12 @@ use crate::{
 
 const FEDERATION_DKG_COMMITMENT_PHASE: &str = "commitment";
 const FEDERATION_DKG_REVEAL_PHASE: &str = "reveal";
+const FEDERATION_FROST_DKG_ROUND1_RECORD: &str = "round1";
+const FEDERATION_FROST_DKG_ROUND2_RECORD: &str = "round2";
+const FEDERATION_FROST_DKG_LOCAL_ROUND1_RECORD: &str = "local_round1";
+const FEDERATION_FROST_DKG_LOCAL_ROUND2_RECORD: &str = "local_round2";
+const FEDERATION_FROST_DKG_ROOT_RECORD: &str = "root";
+const FEDERATION_FROST_DKG_CONFIRMATION_RECORD: &str = "confirmation";
 const FEDERATION_ALEPH_BFT_ACTIVE_SESSION_KEY: &str = "active";
 
 fn status_to_str(status: FederationOperationStatus) -> &'static str {
@@ -677,6 +691,7 @@ fn is_dkg_finalization_config_update(
     let mut stripped_replacement = replacement.config.clone();
     stripped_replacement.keysets.clear();
     stripped_replacement.setup_transcript = None;
+    stripped_replacement.frost_wallet = None;
     stripped_replacement == existing.config
 }
 

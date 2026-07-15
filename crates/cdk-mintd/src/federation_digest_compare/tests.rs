@@ -47,6 +47,10 @@ fn local_status(
         aleph_bft_network_inbound_active: false,
         materialized_state_rows: Vec::new(),
         invalid_operation_alerts: Vec::new(),
+        onchain_wallets: Vec::new(),
+        wallet_recovery: None,
+        wallet_liveness: None,
+        wallet_operator: None,
     }
     .with_materialized_state_digest(materialized_state_digest)
 }

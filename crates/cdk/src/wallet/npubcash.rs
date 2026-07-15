@@ -631,7 +631,7 @@ impl Wallet {
             .map(|value| NpubCashQuoteKey::from_bytes(&value)))
     }
 
-    fn is_legacy_npubcash_secret_key(&self, secret_key: &SecretKey) -> bool {
+    pub(crate) fn is_legacy_npubcash_secret_key(&self, secret_key: &SecretKey) -> bool {
         secret_key.as_secret_bytes() == &self.seed[..32]
     }
 

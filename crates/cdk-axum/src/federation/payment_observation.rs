@@ -1,11 +1,15 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cdk::cdk_payment::Event;
 use cdk::federation::{
+    FederationAddressAllocationScope, FederationAddressKeychain, FederationAllocatedAddressRef,
+    FederationChainObservation, FederationChainSourceDescriptor, FederationChainSourceScope,
+    FederationDepositConfirmation, FederationDepositObservation, FederationDepositReorgObservation,
     FederationPaymentObservation, FederationPaymentObservationRecord,
     FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
+    FederationWalletUtxoState,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
@@ -20,6 +24,158 @@ const FEDERATION_PAYMENT_OBSERVER_BATCH_SIZE: usize = 100;
 pub(crate) struct FederationPaymentObserver;
 
 impl FederationPaymentObserver {
+    pub(crate) async fn observe_onchain_wallets(
+        &self,
+        state: &MintState,
+    ) -> Result<usize, cdk::Error> {
+        let Some(runtime) = state.mint.federation_config() else {
+            return Ok(0);
+        };
+        let Some(wallet_config) = runtime.public_config().frost_wallet.as_ref() else {
+            return Ok(0);
+        };
+        let allocations = state.mint.federation_address_allocation_state().await?;
+        let canonical = state.mint.federation_chain_observation_state().await?;
+        let observer = runtime.member_id();
+        let mut submitted = 0_usize;
+
+        for wallet in &state.federation.onchain_wallets {
+            if wallet.ensure_ready(0).await.is_err() {
+                continue;
+            }
+            let wallet_scope = wallet.scope();
+            let application_id = cdk::federation::FederationFrostApplicationId::from_bytes(
+                wallet_scope.application_id(),
+            )?;
+            let scope = FederationAddressAllocationScope {
+                application_id,
+                application_key_epoch: wallet_scope.application_key_epoch(),
+            };
+            let Some(allocation_wallet) = allocations.wallet(scope) else {
+                continue;
+            };
+            let application = &wallet_config.cdk_onchain_application;
+            if application.application_id != scope.application_id
+                || application.application_key_epoch != scope.application_key_epoch
+            {
+                return Err(cdk::Error::Internal.into());
+            }
+            let source = FederationChainSourceDescriptor::new(
+                match wallet.observation_source().scope {
+                    cdk_bdk::FederatedChainSourceScope::Independent => {
+                        FederationChainSourceScope::Independent
+                    }
+                    cdk_bdk::FederatedChainSourceScope::Shared => {
+                        FederationChainSourceScope::Shared
+                    }
+                },
+                wallet.observation_source().source_id.clone(),
+            )?;
+            let outputs = wallet.observed_outputs().await;
+            let outputs_by_outpoint = outputs
+                .iter()
+                .map(|output| (output.outpoint, output))
+                .collect::<BTreeMap<_, _>>();
+
+            for output in &outputs {
+                let keychain = match output.keychain {
+                    cdk_bdk::FederatedWalletKeychain::External => {
+                        FederationAddressKeychain::External
+                    }
+                    cdk_bdk::FederatedWalletKeychain::Internal => {
+                        FederationAddressKeychain::Internal
+                    }
+                };
+                let Some(allocation) = allocation_wallet.allocations.values().find(|allocation| {
+                    allocation.keychain == keychain
+                        && allocation.derivation_index == output.derivation_index
+                }) else {
+                    continue;
+                };
+                let confirmation =
+                    output
+                        .confirmation
+                        .map(|confirmation| FederationDepositConfirmation {
+                            block_hash: confirmation.block_hash,
+                            block_height: confirmation.block_height,
+                            confirmation_depth: confirmation
+                                .confirmation_depth
+                                .min(application.confirmation_policy.minimum_confirmations),
+                        });
+                if canonical.utxo(output.outpoint).is_some_and(|utxo| {
+                    utxo.observations.get(&observer).is_some_and(|evidence| {
+                        matches!(
+                            &evidence.observation,
+                            FederationChainObservation::Deposit(existing)
+                                if existing.allocation.quote == allocation.quote
+                                    && existing.txout == output.txout
+                                    && existing.confirmation.map(|value| value.confirmation_depth)
+                                        >= confirmation.map(|value| value.confirmation_depth)
+                        )
+                    })
+                }) {
+                    continue;
+                }
+                let observation =
+                    FederationChainObservation::Deposit(FederationDepositObservation {
+                        allocation: FederationAllocatedAddressRef {
+                            application_id: scope.application_id,
+                            application_key_epoch: scope.application_key_epoch,
+                            quote: allocation.quote.clone(),
+                            keychain,
+                            derivation_index: allocation.derivation_index,
+                        },
+                        outpoint: output.outpoint,
+                        txout: output.txout.clone(),
+                        confirmation,
+                        observer,
+                        source: source.clone(),
+                    });
+                state
+                    .submit_federation_chain_observation(observation)
+                    .await?;
+                submitted = submitted.saturating_add(1);
+            }
+
+            for utxo in canonical.utxos().filter(|utxo| {
+                utxo.allocation.scope() == scope
+                    && utxo.observations.contains_key(&observer)
+                    && !matches!(
+                        utxo.state,
+                        FederationWalletUtxoState::Reorged | FederationWalletUtxoState::Quarantined
+                    )
+                    && !utxo.reorg_observations.contains_key(&observer)
+            }) {
+                let Some((block_hash, block_height)) = utxo.block else {
+                    continue;
+                };
+                let still_confirmed_in_block = outputs_by_outpoint
+                    .get(&utxo.outpoint)
+                    .and_then(|output| output.confirmation)
+                    .is_some_and(|confirmation| {
+                        confirmation.block_hash == block_hash
+                            && confirmation.block_height == block_height
+                    });
+                if still_confirmed_in_block {
+                    continue;
+                }
+                state
+                    .submit_federation_chain_observation(FederationChainObservation::Reorg(
+                        FederationDepositReorgObservation {
+                            outpoint: utxo.outpoint,
+                            disconnected_block_hash: block_hash,
+                            disconnected_block_height: block_height,
+                            observer,
+                            source: source.clone(),
+                        },
+                    ))
+                    .await?;
+                submitted = submitted.saturating_add(1);
+            }
+        }
+        Ok(submitted)
+    }
+
     pub(crate) async fn observe_mint_quotes(
         &self,
         state: &MintState,
@@ -72,6 +228,9 @@ impl FederationPaymentObserver {
         state: &MintState,
         event: Event,
     ) -> Result<usize, cdk::Error> {
+        state
+            .ensure_federation_ready_for_authoritative_read()
+            .await?;
         match event {
             Event::PaymentReceived(payment) => {
                 let Some(quote) = state
@@ -97,17 +256,27 @@ impl FederationPaymentObserver {
         if state.mint.federation_config().is_none() {
             return Ok(0);
         }
+        state
+            .ensure_federation_ready_for_authoritative_read()
+            .await?;
 
+        let mut submitted = self.observe_onchain_wallets(state).await?;
+        let has_frost_wallet = state
+            .mint
+            .federation_config()
+            .is_some_and(|runtime| runtime.public_config().frost_wallet.is_some());
         let mint_quote_ids = state
             .mint
             .localstore()
             .get_mint_quotes()
             .await?
             .into_iter()
-            .filter(|quote| quote.state() != MintQuoteState::Issued)
+            .filter(|quote| {
+                quote.state() != MintQuoteState::Issued
+                    || (has_frost_wallet && quote.payment_method.is_onchain())
+            })
             .map(|quote| quote.id)
             .collect::<Vec<_>>();
-        let mut submitted = 0usize;
         for quote_ids in mint_quote_ids.chunks(FEDERATION_PAYMENT_OBSERVER_BATCH_SIZE) {
             submitted = submitted.saturating_add(self.observe_mint_quotes(state, quote_ids).await?);
         }
@@ -184,10 +353,8 @@ async fn submit_observation(
         .get_federation_payment_observations(candidate.context(), candidate.quote())
         .await?;
     if records.iter().any(|record| {
-        record.observation.context() == candidate.context()
-            && record.observation.quote() == candidate.quote()
-            && record.observation.observer() == candidate.observer()
-            && record.observation.state_label() == candidate.state_label()
+        record.observation.observer() == candidate.observer()
+            && candidate.matches_payment_evidence(&record.observation)
     }) {
         return Ok(false);
     }

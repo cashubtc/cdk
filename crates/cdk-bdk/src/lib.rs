@@ -35,16 +35,30 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::sync::CancellationToken;
 
-pub use crate::chain::{BitcoinRpcConfig, ChainSource, ElectrumConfig, EsploraConfig};
+pub use crate::chain::{
+    BitcoinRpcConfig, BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ChainSource,
+    ChainSourceKind, ElectrumConfig, EsploraConfig, DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+    DEFAULT_ESPLORA_MAX_RETRIES, MAX_CHAIN_REQUEST_TIMEOUT_SECS, MAX_ESPLORA_MAX_RETRIES,
+    MAX_ESPLORA_PARALLEL_REQUESTS,
+};
 pub use crate::error::Error;
+pub use crate::federation::{
+    FederatedBdkLocalConfig, FederatedBdkWallet, FederatedChainSourceDescriptor,
+    FederatedChainSourceScope, FederatedTransactionConfirmation, FederatedWalletConfig,
+    FederatedWalletKeychain, FederatedWalletOutput, FederatedWalletOutputConfirmation,
+    FederatedWalletReadiness, FederatedWalletScope, FederatedWalletSyncHealth,
+    FederatedWalletSyncStatus,
+};
 pub use crate::storage::{BdkStorage, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
 pub use crate::types::{
     BatchConfig, FeeEstimationConfig, PaymentMetadata, PaymentTier, SyncConfig,
     DEFAULT_TARGET_BLOCK_TIME_SECS,
 };
+pub use crate::wallet_engine::{BdkWalletEngine, DescriptorConfig};
 
 pub mod chain;
 pub mod error;
+pub mod federation;
 pub(crate) mod fee;
 pub mod receive;
 pub(crate) mod recovery;
@@ -111,6 +125,7 @@ pub fn validate_existing_wallet(
         None => Err(Error::ExistingWalletNotInitialized { path: wallet_path }),
     }
 }
+pub mod wallet_engine;
 
 /// Wrapper struct that combines wallet and database to prevent deadlocks
 pub(crate) struct WalletWithDb {
@@ -185,8 +200,7 @@ pub struct CdkBdk {
     pub(crate) payment_sender: tokio::sync::broadcast::Sender<Event>,
     pub(crate) tasks: Arc<Mutex<Option<BackgroundTasks>>>,
     pub(crate) shutdown_timeout: Duration,
-    pub(crate) wallet_with_db: Arc<Mutex<WalletWithDb>>,
-    pub(crate) chain_source: ChainSource,
+    pub(crate) wallet_engine: BdkWalletEngine,
     pub(crate) storage: BdkStorage,
     pub(crate) network: Network,
     /// Batch processor configuration
@@ -302,23 +316,14 @@ impl CdkBdk {
         Ok(())
     }
 
-    pub(crate) fn confirmations_satisfied(&self, tip_height: u32, anchor_height: u32) -> bool {
-        if tip_height < anchor_height {
-            return false;
-        }
-
-        tip_height - anchor_height + 1 >= self.num_confs
-    }
-
     pub(crate) fn should_ignore_receive_amount(&self, amount_sat: u64) -> bool {
         amount_sat < self.min_receive_amount_sat
     }
 
     /// Return `true` when the wallet knows about the transaction and it
     /// satisfies the configured confirmation threshold.
-    pub(crate) fn txid_has_required_confirmations(
+    pub(crate) async fn txid_has_required_confirmations(
         &self,
-        wallet: &PersistedWallet<Connection>,
         txid_str: &str,
         intent_kind: &str,
         intent_id: &str,
@@ -333,17 +338,9 @@ impl CdkBdk {
             return false;
         };
 
-        let Some(tx_details) = wallet.get_tx(parsed_txid) else {
-            return false;
-        };
-
-        let check_point = wallet.latest_checkpoint().height();
-        match &tx_details.chain_position {
-            bdk_wallet::chain::ChainPosition::Confirmed { anchor, .. } => {
-                self.confirmations_satisfied(check_point, anchor.block_id.height)
-            }
-            bdk_wallet::chain::ChainPosition::Unconfirmed { .. } => false,
-        }
+        self.wallet_engine
+            .transaction_has_confirmations(parsed_txid, self.num_confs)
+            .await
     }
 
     /// Create a new CdkBdk instance
@@ -364,62 +361,18 @@ impl CdkBdk {
         sync_config: Option<SyncConfig>,
     ) -> Result<Self, Error> {
         chain_source.validate()?;
-
-        let storage_dir_path = PathBuf::from(storage_dir_path);
-        let storage_dir_path = storage_dir_path.join("bdk_wallet");
-        fs::create_dir_all(&storage_dir_path)?;
-
-        let mut db = Connection::open(storage_dir_path.join("bdk_wallet.sqlite"))?;
-
         let xkey: ExtendedKey = mnemonic.into_extended_key()?;
         let xprv = xkey.into_xprv(network.into()).ok_or(Error::Path)?;
 
         let descriptor = Bip84(xprv, KeychainKind::External);
         let change_descriptor = Bip84(xprv, KeychainKind::Internal);
-
-        let wallet_opt = Wallet::load()
-            .descriptor(KeychainKind::External, Some(descriptor.clone()))
-            .descriptor(KeychainKind::Internal, Some(change_descriptor.clone()))
-            .extract_keys()
-            .check_network(network)
-            .load_wallet(&mut db)
-            .map_err(|e| Error::Wallet(e.to_string()))?;
-
-        // A fresh Bitcoin Core wallet should start at the current tip rather
-        // than scanning from genesis. An explicit rescan height overrides the
-        // tip for seed recovery. Fetch this before creating the wallet so an
-        // unreachable or misconfigured node cannot persist a genesis-pinned
-        // wallet by accident.
-        let initial_checkpoint = match wallet_opt.is_none() {
-            true => chain_source.initial_checkpoint()?,
-            false => None,
-        };
-
-        let mut wallet = match wallet_opt {
-            Some(wallet) => wallet,
-            None => {
-                let mut wallet = Wallet::create(descriptor, change_descriptor)
-                    .network(network)
-                    .create_wallet(&mut db)
-                    .map_err(|e| Error::Wallet(e.to_string()))?;
-
-                if let Some(block_id) = initial_checkpoint {
-                    let checkpoint = wallet.latest_checkpoint().insert(block_id);
-                    wallet
-                        .apply_update(Update {
-                            chain: Some(checkpoint),
-                            ..Default::default()
-                        })
-                        .map_err(|e| Error::Wallet(e.to_string()))?;
-                }
-
-                wallet
-            }
-        };
-
-        wallet.persist(&mut db)?;
-
-        let wallet_with_db = WalletWithDb::new(wallet, db);
+        let wallet_engine = BdkWalletEngine::open_local_signing(
+            descriptor,
+            change_descriptor,
+            chain_source,
+            std::path::Path::new(&storage_dir_path).join("bdk_wallet"),
+            network,
+        )?;
 
         let batch_config = batch_config.unwrap_or_default();
         if batch_config.poll_interval.is_zero() {
@@ -445,8 +398,7 @@ impl CdkBdk {
             payment_sender,
             tasks: Arc::new(Mutex::new(None)),
             shutdown_timeout: Duration::from_secs(shutdown_timeout_secs.unwrap_or(30)),
-            wallet_with_db: Arc::new(Mutex::new(wallet_with_db)),
-            chain_source,
+            wallet_engine,
             storage: BdkStorage::new(kv_store),
             network,
             batch_config,
@@ -1064,6 +1016,8 @@ mod tests {
         let chain_source = ChainSource::Esplora(EsploraConfig {
             url: "http://127.0.0.1:1".to_string(),
             parallel_requests: 1,
+            request_timeout_secs: crate::chain::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS,
+            max_retries: crate::chain::DEFAULT_ESPLORA_MAX_RETRIES,
         });
 
         build_test_instance_with_chain_source(
@@ -1315,7 +1269,7 @@ mod tests {
         let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
 
         {
-            let mut wallet_with_db = backend.wallet_with_db.lock().await;
+            let mut wallet_with_db = backend.wallet_engine.wallet_with_db.lock().await;
             let _ = wallet_with_db
                 .wallet
                 .reveal_addresses_to(KeychainKind::External, 1)
@@ -1343,7 +1297,7 @@ mod tests {
     }
 
     async fn fund_backend_wallet_transactions(backend: &CdkBdk, amounts_sat: &[u64]) -> Vec<Txid> {
-        let mut wallet_with_db = backend.wallet_with_db.lock().await;
+        let mut wallet_with_db = backend.wallet_engine.wallet_with_db.lock().await;
         let funding_script = wallet_with_db
             .wallet
             .reveal_next_address(KeychainKind::External)
@@ -1488,7 +1442,7 @@ mod tests {
         let first_address = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string();
         let second_address = "bcrt1q6rhpng9evdsfnn833a4f4vej0asu6dk5srld6x".to_string();
 
-        let mut wallet_with_db = backend.wallet_with_db.lock().await;
+        let mut wallet_with_db = backend.wallet_engine.wallet_with_db.lock().await;
         let first_recipient_script = bdk_wallet::bitcoin::Address::from_str(&first_address)
             .expect("valid address")
             .require_network(Network::Regtest)
@@ -1648,7 +1602,7 @@ mod tests {
     #[tokio::test]
     async fn wallet_info_reports_multiple_incoming_outputs_in_vout_order() {
         let (backend, _tmp) = build_test_instance_with_tempdir(1).await;
-        let mut wallet_with_db = backend.wallet_with_db.lock().await;
+        let mut wallet_with_db = backend.wallet_engine.wallet_with_db.lock().await;
         let output_script = wallet_with_db
             .wallet
             .reveal_next_address(KeychainKind::External)
@@ -1893,7 +1847,7 @@ mod tests {
             .await
             .expect("quote should succeed with fallback fee rate");
 
-        let wallet_with_db = backend.wallet_with_db.lock().await;
+        let wallet_with_db = backend.wallet_engine.wallet_with_db.lock().await;
         assert!(
             wallet_with_db.wallet.staged().is_none(),
             "quote estimation must not mutate or stage BDK wallet state"

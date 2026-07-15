@@ -76,6 +76,9 @@ pub struct MeltSubCommand {
     /// Amount in sats for amountless payments or onchain melts
     #[arg(long)]
     amount: Option<u64>,
+    /// Deterministic zero-based on-chain quote selection for non-interactive use.
+    #[arg(long, requires = "address")]
+    pub(crate) onchain_quote_index: Option<usize>,
     /// MPP split entry in the form <mint_url>=<amount_sats>; repeat for multiple mints
     #[arg(long = "mpp-split", value_name = "MINT_URL=AMOUNT", action = clap::ArgAction::Append, requires = "mpp")]
     mpp_split: Vec<String>,
@@ -139,9 +142,17 @@ fn parse_mpp_split(entry: &str) -> Result<(MintUrl, Amount)> {
 
 fn select_onchain_quote(
     quotes: &[cdk_common::wallet::MeltQuote],
+    requested_index: Option<usize>,
 ) -> Result<cdk_common::wallet::MeltQuote> {
     if quotes.is_empty() {
         bail!("No onchain melt quotes available");
+    }
+
+    if let Some(index) = requested_index {
+        return quotes
+            .get(index)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Onchain quote index {index} is out of range"));
     }
 
     if quotes.len() == 1 {
@@ -476,7 +487,8 @@ pub async fn pay(
                 .quote_onchain_melt_options(&onchain_address, melt_amount, None)
                 .await?;
 
-            let selected_quote = select_onchain_quote(&quote_options)?;
+            let selected_quote =
+                select_onchain_quote(&quote_options, sub_command_args.onchain_quote_index)?;
             let quote = wallet.select_onchain_melt_quote(selected_quote).await?;
 
             println!("Melt quote selected:");

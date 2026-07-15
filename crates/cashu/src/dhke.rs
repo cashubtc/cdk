@@ -140,11 +140,11 @@ pub fn unblind_message(
     let r: Scalar = Scalar::from(*r.as_secp256k1()?);
 
     // a = r * K
-    let a: PublicKey = mint_pubkey.mul_tweak(&SECP256K1, &r)?.into();
+    let a = mint_pubkey.mul_tweak(&SECP256K1, &r)?;
 
     // C_ - a
-    let a: PublicKey = a.negate(&SECP256K1).into();
-    Ok(blinded_key.combine(&a)?.into()) // C_ + (-a)
+    let a = a.negate(&SECP256K1);
+    Ok(blinded_key.combine(&a)?) // C_ + (-a)
 }
 
 /// Construct Proof

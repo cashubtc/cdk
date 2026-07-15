@@ -57,6 +57,9 @@ impl CdkBdk {
     }
 
     pub(crate) async fn sync_wallet(&self, cancel_token: CancellationToken) -> Result<(), Error> {
-        self.chain_source.sync_wallet(self, cancel_token).await
+        self.wallet_engine
+            .chain_source
+            .sync_wallet(self, cancel_token)
+            .await
     }
 }

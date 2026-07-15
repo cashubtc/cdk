@@ -6,8 +6,10 @@ use cdk_common::federation::{
     generate_trusted_dealer_configs, FederationConsensusRuntimeStatus,
     FederationInvalidOperationAlertSummary, FederationJournalDigest,
     FederationMaterializedStateDigest, FederationPaymentObservationContext,
-    FederationPaymentObservationEvidenceGroupSummary, FederationPeerStatus, ThresholdParams,
-    TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationPaymentObservationEvidenceGroupSummary, FederationPeerStatus,
+    FederationWalletBroadcastHealth, FederationWalletOperationPhase,
+    FederationWalletOperationPhaseCount, FederationWalletOperatorStatus, FederationWalletUtxoState,
+    FederationWalletUtxoStatusCount, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut22::AuthToken;
@@ -202,6 +204,10 @@ fn local_status(
         aleph_bft_network_inbound_active: true,
         materialized_state_rows: Vec::new(),
         invalid_operation_alerts: Vec::new(),
+        onchain_wallets: Vec::new(),
+        wallet_recovery: None,
+        wallet_liveness: None,
+        wallet_operator: None,
     }
 }
 
@@ -1035,4 +1041,48 @@ fn status_guards_accept_ready_converged_members() {
 
     ensure_statuses_ready(&statuses).expect("members ready");
     ensure_statuses_converged(&statuses).expect("members converged");
+}
+
+#[test]
+fn wallet_status_line_reports_fixed_phases_without_sensitive_material() {
+    let status = FederationWalletOperatorStatus {
+        version: 1,
+        root_key_epoch: 3,
+        application_key_epoch: 5,
+        descriptor_commitment: [7; 32],
+        network: "regtest".to_string(),
+        minimum_confirmations: 2,
+        fee_policy_version: 1,
+        external_revealed_count: 8,
+        internal_revealed_count: 2,
+        utxos: vec![FederationWalletUtxoStatusCount {
+            state: FederationWalletUtxoState::Reserved,
+            count: 1,
+            value_sat: 42_000,
+        }],
+        reserved_value_sat: 42_000,
+        operation_phases: vec![FederationWalletOperationPhaseCount {
+            phase: FederationWalletOperationPhase::Signing,
+            count: 1,
+        }],
+        pending_batches: 1,
+        signing_attempts: 4,
+        signing_failures: 1,
+        broadcast_health: FederationWalletBroadcastHealth::Degraded,
+        broadcast_failures: 1,
+    };
+
+    let line = wallet_operator_status_line(&status);
+    assert!(line.contains("phases=signing:1"));
+    assert!(line.contains("broadcast_health=degraded"));
+    assert!(line.contains("reserved_value_sat=42000"));
+    for secret in [
+        "mnemonic-secret",
+        "nonce-secret",
+        "rpc-password",
+        "bc1p-sensitive-address",
+        "/sensitive/local/path",
+    ] {
+        assert!(!line.contains(secret));
+    }
 }

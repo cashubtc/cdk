@@ -248,6 +248,10 @@ pub enum OnchainBackend {
     None,
     #[cfg(feature = "bdk")]
     Bdk,
+    /// Watch-only BDK wallet whose spends are authorized by federation consensus and FROST.
+    #[cfg(feature = "federation")]
+    #[serde(rename = "federated-bdk", alias = "federated_bdk")]
+    FederatedBdk,
     #[cfg(feature = "fakewallet")]
     FakeWallet,
 }
@@ -260,6 +264,8 @@ impl std::str::FromStr for OnchainBackend {
             "none" => Ok(OnchainBackend::None),
             #[cfg(feature = "bdk")]
             "bdk" => Ok(OnchainBackend::Bdk),
+            #[cfg(feature = "federation")]
+            "federated-bdk" | "federated_bdk" | "federatedbdk" => Ok(OnchainBackend::FederatedBdk),
             #[cfg(feature = "fakewallet")]
             "fakewallet" => Ok(OnchainBackend::FakeWallet),
             _ => Err(format!("Unknown Onchain backend: {s}")),
@@ -373,6 +379,12 @@ pub struct Bdk {
     /// Number of scripts to request in each Electrum sync batch
     #[serde(default = "default_bdk_electrum_batch_size")]
     pub electrum_batch_size: usize,
+    /// Per-request chain backend timeout in seconds.
+    #[serde(default = "default_bdk_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    /// Maximum Esplora retries for retryable HTTP responses.
+    #[serde(default = "default_bdk_esplora_max_retries")]
+    pub esplora_max_retries: usize,
     /// Bitcoin RPC host (when chain_source_type = "bitcoinrpc")
     pub bitcoind_rpc_host: Option<String>,
     /// Bitcoin RPC port
@@ -456,6 +468,8 @@ impl Default for Bdk {
             esplora_parallel_requests: default_bdk_esplora_parallel_requests(),
             electrum_url: None,
             electrum_batch_size: default_bdk_electrum_batch_size(),
+            request_timeout_secs: default_bdk_request_timeout_secs(),
+            esplora_max_retries: default_bdk_esplora_max_retries(),
             bitcoind_rpc_host: None,
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,
@@ -496,6 +510,27 @@ impl Bdk {
             return Err("BDK batch_config.poll_interval_secs must be >= 1".to_string());
         }
 
+        if !(1..=cdk_bdk::MAX_CHAIN_REQUEST_TIMEOUT_SECS).contains(&self.request_timeout_secs) {
+            return Err(format!(
+                "BDK request_timeout_secs must be between 1 and {}",
+                cdk_bdk::MAX_CHAIN_REQUEST_TIMEOUT_SECS
+            ));
+        }
+
+        if !(1..=cdk_bdk::MAX_ESPLORA_PARALLEL_REQUESTS).contains(&self.esplora_parallel_requests) {
+            return Err(format!(
+                "BDK esplora_parallel_requests must be between 1 and {}",
+                cdk_bdk::MAX_ESPLORA_PARALLEL_REQUESTS
+            ));
+        }
+
+        if self.esplora_max_retries > cdk_bdk::MAX_ESPLORA_MAX_RETRIES {
+            return Err(format!(
+                "BDK esplora_max_retries must not exceed {}",
+                cdk_bdk::MAX_ESPLORA_MAX_RETRIES
+            ));
+        }
+
         validate_bdk_fee_options(&self.batch_config.fee_options)?;
 
         Ok(())
@@ -530,6 +565,16 @@ fn default_bdk_esplora_parallel_requests() -> usize {
 #[cfg(feature = "bdk")]
 fn default_bdk_electrum_batch_size() -> usize {
     5
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_request_timeout_secs() -> u64 {
+    cdk_bdk::DEFAULT_CHAIN_REQUEST_TIMEOUT_SECS
+}
+
+#[cfg(feature = "bdk")]
+fn default_bdk_esplora_max_retries() -> usize {
+    cdk_bdk::DEFAULT_ESPLORA_MAX_RETRIES
 }
 
 #[cfg(feature = "bdk")]
@@ -1188,6 +1233,111 @@ pub struct Federation {
     /// Optional dealer-free DKG ceremony to start or resume in setup mode.
     #[serde(default)]
     pub dkg: FederationDkg,
+    /// Member-local watch-only BDK storage and chain source.
+    #[serde(default)]
+    pub onchain_wallet: FederationOnchainWallet,
+}
+
+/// Local chain access for the federated watch-only BDK wallet.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(feature = "federation")]
+#[serde(deny_unknown_fields)]
+pub struct FederationOnchainWallet {
+    /// Enable the local watch-only wallet when public config activates it.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Expected consensus Bitcoin network; must match the active application config.
+    pub network: Option<String>,
+    /// Expected consensus confirmation depth; must match the active application config.
+    pub minimum_confirmations: Option<u32>,
+    /// Expected consensus transaction policy version; must match the active application config.
+    pub fee_policy_version: Option<u16>,
+    /// `bitcoinrpc` or `esplora`.
+    #[serde(default = "default_federation_onchain_source_type")]
+    pub chain_source_type: String,
+    /// `independent` for a member-operated source or `shared` for common infrastructure.
+    #[serde(default = "default_federation_onchain_source_scope")]
+    pub chain_source_scope: String,
+    /// Optional stable opaque source label; endpoints and credentials are forbidden.
+    pub chain_source_id: Option<String>,
+    /// Esplora endpoint, required for the Esplora source.
+    pub esplora_url: Option<String>,
+    /// Maximum parallel Esplora requests.
+    #[serde(default = "default_bdk_esplora_parallel_requests")]
+    pub esplora_parallel_requests: usize,
+    /// Per-request chain backend timeout in seconds.
+    #[serde(default = "default_bdk_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    /// Maximum Esplora retries for retryable HTTP responses.
+    #[serde(default = "default_bdk_esplora_max_retries")]
+    pub esplora_max_retries: usize,
+    /// Bitcoin Core RPC host.
+    pub bitcoind_rpc_host: Option<String>,
+    /// Bitcoin Core RPC port.
+    pub bitcoind_rpc_port: Option<u16>,
+    /// Bitcoin Core RPC username.
+    pub bitcoind_rpc_user: Option<String>,
+    /// Bitcoin Core RPC password.
+    pub bitcoind_rpc_password: Option<String>,
+    /// Seconds between local watch-only synchronization attempts.
+    #[serde(default = "default_bdk_sync_interval_secs")]
+    pub sync_interval_secs: u64,
+}
+
+#[cfg(feature = "federation")]
+impl fmt::Debug for FederationOnchainWallet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FederationOnchainWallet")
+            .field("enabled", &self.enabled)
+            .field("network", &self.network)
+            .field("minimum_confirmations", &self.minimum_confirmations)
+            .field("fee_policy_version", &self.fee_policy_version)
+            .field("chain_source_type", &self.chain_source_type)
+            .field("chain_source_scope", &self.chain_source_scope)
+            .field("chain_source_id", &self.chain_source_id)
+            .field("endpoint", &"<redacted>")
+            .field("credentials", &"<redacted>")
+            .field("esplora_parallel_requests", &self.esplora_parallel_requests)
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("esplora_max_retries", &self.esplora_max_retries)
+            .field("sync_interval_secs", &self.sync_interval_secs)
+            .finish()
+    }
+}
+
+#[cfg(feature = "federation")]
+impl Default for FederationOnchainWallet {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            network: None,
+            minimum_confirmations: None,
+            fee_policy_version: None,
+            chain_source_type: default_federation_onchain_source_type(),
+            chain_source_scope: default_federation_onchain_source_scope(),
+            chain_source_id: None,
+            esplora_url: None,
+            esplora_parallel_requests: default_bdk_esplora_parallel_requests(),
+            request_timeout_secs: default_bdk_request_timeout_secs(),
+            esplora_max_retries: default_bdk_esplora_max_retries(),
+            bitcoind_rpc_host: None,
+            bitcoind_rpc_port: None,
+            bitcoind_rpc_user: None,
+            bitcoind_rpc_password: None,
+            sync_interval_secs: default_bdk_sync_interval_secs(),
+        }
+    }
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_onchain_source_type() -> String {
+    "bitcoinrpc".to_string()
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_onchain_source_scope() -> String {
+    "independent".to_string()
 }
 
 /// Dealer-free DKG auto-start settings for one federation member.
@@ -1597,6 +1747,12 @@ impl Settings {
                      \"fakewallet\" or \"none\""
                     .to_string());
             }
+            #[cfg(feature = "federation")]
+            OnchainBackend::FederatedBdk if has_fake_wallet_backend => {
+                return Err("payment_backend = \"fakewallet\" cannot be combined with \
+                     onchain_backend = \"federated-bdk\""
+                    .to_string());
+            }
             OnchainBackend::FakeWallet if has_real_backend => {
                 return Err("onchain_backend = \"fakewallet\" cannot be combined with \
                      a real payment backend; use backend = \"fakewallet\" \
@@ -1675,6 +1831,20 @@ impl Settings {
 mod tests {
 
     use super::*;
+
+    #[cfg(feature = "federation")]
+    #[test]
+    fn federated_bdk_backend_parsing_is_explicit() {
+        assert_eq!(
+            "federated-bdk".parse::<OnchainBackend>(),
+            Ok(OnchainBackend::FederatedBdk)
+        );
+        assert_eq!(
+            "federated_bdk".parse::<OnchainBackend>(),
+            Ok(OnchainBackend::FederatedBdk)
+        );
+        assert_eq!(OnchainBackend::default(), OnchainBackend::None);
+    }
 
     #[test]
     fn postgres_config_debug_redacts_connection_credentials() {

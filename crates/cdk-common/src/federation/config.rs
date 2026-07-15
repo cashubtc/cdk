@@ -11,6 +11,7 @@ use bitcoin::hashes::Hash;
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::dkg::{FederationDkgTranscript, FederationDkgTranscriptHash};
+use super::frost_config::FederationFrostWalletConfig;
 use super::operation::{FederationKeysetRotationOperation, FederationPaymentObservationQuorum};
 use super::{
     append_bytes, append_str, FederationError, Result, FEDERATION_CONFIG_DIGEST_VERSION,
@@ -204,6 +205,10 @@ impl MemberId {
     }
 
     /// Return this member ID as a threshold BLS signer ID.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the validated non-zero member ID invariant is violated.
     #[must_use]
     pub fn to_bls_signer_id(self) -> BlsSignerId {
         BlsSignerId::new(self.0).expect("member id is non-zero")
@@ -888,6 +893,9 @@ pub struct FederationConfig {
     pub setup_transcript: Option<FederationDkgTranscript>,
     /// Policy for mint and melt payment observations.
     pub payment_observation_policy: FederationPaymentObservationPolicy,
+    /// Optional reusable FROST root and federated on-chain wallet configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frost_wallet: Option<FederationFrostWalletConfig>,
 }
 
 impl FederationConfig {
@@ -910,6 +918,7 @@ impl FederationConfig {
             payment_observation_policy: FederationPaymentObservationPolicy::member_quorum(
                 threshold_params.consensus_threshold,
             ),
+            frost_wallet: None,
         };
         config.validate()?;
         Ok(config)
@@ -973,6 +982,9 @@ impl FederationConfig {
 
         self.payment_observation_policy
             .validate(self.threshold_params)?;
+        if let Some(wallet) = &self.frost_wallet {
+            wallet.validate(self)?;
+        }
 
         Ok(())
     }
@@ -1005,6 +1017,9 @@ impl FederationConfig {
 
         self.payment_observation_policy
             .validate(self.threshold_params)?;
+        if let Some(wallet) = &self.frost_wallet {
+            wallet.validate(self)?;
+        }
 
         Ok(())
     }
@@ -1213,13 +1228,13 @@ impl FederationConfig {
                 keyset_id: keyset.id,
             });
         }
-        if output.amount != Amount::ZERO || !allow_zero_amount_change_output {
-            if !keyset.aggregate_keys.contains_key(&output.amount) {
-                return Err(FederationError::UnknownFederatedKeysetAmount {
-                    keyset_id: keyset.id,
-                    amount: output.amount,
-                });
-            }
+        if (output.amount != Amount::ZERO || !allow_zero_amount_change_output)
+            && !keyset.aggregate_keys.contains_key(&output.amount)
+        {
+            return Err(FederationError::UnknownFederatedKeysetAmount {
+                keyset_id: keyset.id,
+                amount: output.amount,
+            });
         }
         if output.amount == Amount::ZERO
             && allow_zero_amount_change_output

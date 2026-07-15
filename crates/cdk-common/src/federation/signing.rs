@@ -282,6 +282,10 @@ mod tests {
                     request: format!("invoice-{quote}"),
                     amount: Some(Amount::from(1)),
                     unit: Some(CurrencyUnit::Sat),
+                    method: crate::PaymentMethod::BOLT11,
+                    amount_paid: Amount::ZERO,
+                    amount_issued: Amount::ZERO,
+                    updated_at: 0,
                     state: MintQuoteState::Unpaid,
                     expiry: None,
                     pubkey: None,
@@ -382,7 +386,11 @@ mod tests {
                 .get(&member_id)
                 .expect("private config");
             let share_set = private
-                .sign_blinded_messages(&bundle.public_config, operation_id, &[output.clone()])
+                .sign_blinded_messages(
+                    &bundle.public_config,
+                    operation_id,
+                    std::slice::from_ref(&output),
+                )
                 .expect("share set");
             shares.push(share_set.shares[0].share);
         }
@@ -415,7 +423,11 @@ mod tests {
             .get(&member_id(1))
             .expect("private config");
         let share_set = private
-            .sign_blinded_messages(&bundle.public_config, entry.operation_id, &[output.clone()])
+            .sign_blinded_messages(
+                &bundle.public_config,
+                entry.operation_id,
+                std::slice::from_ref(&output),
+            )
             .expect("signature share set");
 
         let records =

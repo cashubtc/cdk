@@ -22,8 +22,9 @@ use super::{
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationPaymentObservationReportSummary, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, Result, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+    FederationPaymentObservationReportSummary, FederationWalletRecoveryStatus,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, Result,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
 };
 use crate::nuts::nut01::BlsSecretKeyShare;
 use crate::Amount;
@@ -46,6 +47,10 @@ const FEDERATION_DKG_ACTIVATION_SIGNATURE_VERSION: &[u8] =
 pub enum FederationRestMessageKind {
     /// Peer status request.
     Status,
+    /// Request targeted redacted wallet transaction status.
+    WalletTransactionStatus,
+    /// Request an immediate exact-byte retry for one durable transaction.
+    WalletRebroadcast,
     /// Confirm that a peer is ready for the exact configured DKG ceremony.
     DkgReadiness,
     /// Publish a pre-reveal DKG commitment hash to a peer.
@@ -54,6 +59,20 @@ pub enum FederationRestMessageKind {
     DkgReveal,
     /// Send private DKG secret-share contributions to the intended receiver.
     DkgSecretShare,
+    /// Broadcast an application-neutral FROST DKG round-one package.
+    FrostDkgRound1,
+    /// Send one confidential application-neutral FROST DKG round-two package.
+    FrostDkgRound2,
+    /// Confirm one member independently derived the identical canonical FROST root.
+    FrostDkgConfirmation,
+    /// Ask one selected signer for a durable single-use nonce commitment.
+    FrostSigningCommitment,
+    /// Deliver an exact authorized signing package and request one signature share.
+    FrostSigningPackage,
+    /// Burn a session nonce after timeout, ambiguity, or coordinator failover.
+    FrostSigningAbort,
+    /// Notify selected signers of the independently verified aggregate result.
+    FrostAggregateResult,
     /// Share a member signature over a DKG/setup transcript hash.
     DkgTranscriptSignature,
     /// Confirm that one member assembled the exact finalized DKG config.
@@ -83,6 +102,9 @@ impl FederationRestMessageKind {
             Self::DkgCommitment
                 | Self::DkgReveal
                 | Self::DkgSecretShare
+                | Self::FrostDkgRound1
+                | Self::FrostDkgRound2
+                | Self::FrostDkgConfirmation
                 | Self::DkgTranscriptSignature
                 | Self::DkgActivation
         )
@@ -91,10 +113,19 @@ impl FederationRestMessageKind {
     fn as_bytes(self) -> &'static [u8] {
         match self {
             Self::Status => b"status",
+            Self::WalletTransactionStatus => b"wallet_transaction_status",
+            Self::WalletRebroadcast => b"wallet_rebroadcast",
             Self::DkgReadiness => b"dkg_readiness",
             Self::DkgCommitment => b"dkg_commitment",
             Self::DkgReveal => b"dkg_reveal",
             Self::DkgSecretShare => b"dkg_secret_share",
+            Self::FrostDkgRound1 => b"frost_dkg_round1",
+            Self::FrostDkgRound2 => b"frost_dkg_round2",
+            Self::FrostDkgConfirmation => b"frost_dkg_confirmation",
+            Self::FrostSigningCommitment => b"frost_signing_commitment",
+            Self::FrostSigningPackage => b"frost_signing_package",
+            Self::FrostSigningAbort => b"frost_signing_abort",
+            Self::FrostAggregateResult => b"frost_aggregate_result",
             Self::DkgTranscriptSignature => b"dkg_transcript_signature",
             Self::DkgActivation => b"dkg_activation",
             Self::SubmitOperation => b"submit_operation",
@@ -746,6 +777,415 @@ impl FederationRestSequenceWindow {
     }
 }
 
+/// Coordinator request for one signer to durably reserve a FROST nonce.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostCommitmentRequest {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Canonical signing-session context bytes.
+    pub context: Vec<u8>,
+    /// Canonical additive signing-derivation bytes.
+    pub derivation: Vec<u8>,
+    /// Canonical typed application-authorization bytes.
+    pub authorization: Vec<u8>,
+}
+
+impl FederationFrostCommitmentRequest {
+    /// Construct a bounded round-one request.
+    #[must_use]
+    pub fn new(
+        context: &cdk_frost::SigningSessionContext,
+        derivation: &cdk_frost::SigningDerivation,
+        authorization: &cdk_frost::AuthorizationRequest,
+    ) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            context: context.encode(),
+            derivation: derivation.encode(),
+            authorization: authorization.encode(),
+        }
+    }
+
+    /// Decode and cross-check every round-one session binding.
+    pub fn decode(
+        &self,
+        federation_id: FederationId,
+        signer: MemberId,
+    ) -> Result<(
+        cdk_frost::SigningSessionContext,
+        cdk_frost::SigningDerivation,
+        cdk_frost::AuthorizationRequest,
+    )> {
+        ensure_frost_signing_version(self.version)?;
+        let context =
+            cdk_frost::SigningSessionContext::decode(&self.context).map_err(frost_signing_error)?;
+        let derivation =
+            cdk_frost::SigningDerivation::decode(&self.derivation).map_err(frost_signing_error)?;
+        let authorization = cdk_frost::AuthorizationRequest::decode(&self.authorization)
+            .map_err(frost_signing_error)?;
+        if context.federation_id() != federation_id.to_bytes()
+            || !context
+                .signer_set()
+                .iter()
+                .any(|member| member.get() == signer.get())
+            || context.derivation_binding() != derivation.binding()
+            || authorization.session_id() != context.session_id()
+            || authorization.application_id() != context.registration().id()
+            || authorization.application_key_epoch() != context.registration().key_epoch()
+            || authorization.derivation_version() != context.registration().derivation_version()
+        {
+            return Err(frost_signing_invalid(
+                "commitment request bindings are inconsistent",
+            ));
+        }
+        Ok((context, derivation, authorization))
+    }
+}
+
+/// Signed signer response containing one durable public nonce commitment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostCommitmentResponse {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Fully bound signing session identifier.
+    pub session_id: [u8; 32],
+    /// Canonical public nonce commitment bytes.
+    pub commitment: Vec<u8>,
+}
+
+impl FederationFrostCommitmentResponse {
+    /// Construct a response from one key-manager commitment.
+    #[must_use]
+    pub fn new(commitment: &cdk_frost::NonceCommitment) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            session_id: commitment.session_id().to_bytes(),
+            commitment: commitment.encode(),
+        }
+    }
+
+    /// Decode and verify signer ownership and session identity.
+    pub fn decode(
+        &self,
+        signer: MemberId,
+        expected_session: cdk_frost::SigningSessionId,
+    ) -> Result<cdk_frost::NonceCommitment> {
+        ensure_frost_signing_version(self.version)?;
+        let commitment =
+            cdk_frost::NonceCommitment::decode(&self.commitment).map_err(frost_signing_error)?;
+        if self.session_id != expected_session.to_bytes()
+            || commitment.session_id() != expected_session
+            || commitment.participant().get() != signer.get()
+        {
+            return Err(frost_signing_invalid(
+                "commitment response has the wrong signer or session",
+            ));
+        }
+        Ok(commitment)
+    }
+}
+
+/// Coordinator request delivering one exact authorized FROST signing package.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostSigningPackageRequest {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Canonical signing-session context bytes.
+    pub context: Vec<u8>,
+    /// Local nonce selected by this signer in round one.
+    pub nonce_id: [u8; 32],
+    /// Canonical typed application-authorization bytes.
+    pub authorization: Vec<u8>,
+    /// Canonically ordered signer commitment set.
+    pub commitment_set: Vec<u8>,
+    /// Canonical hash of the exact session, message, and commitments.
+    pub package_hash: [u8; 32],
+}
+
+impl FederationFrostSigningPackageRequest {
+    /// Construct a complete round-two request.
+    pub fn new(
+        context: &cdk_frost::SigningSessionContext,
+        nonce_id: cdk_frost::NonceId,
+        authorization: &cdk_frost::AuthorizationRequest,
+        commitments: &cdk_frost::NonceCommitmentSet,
+    ) -> Result<Self> {
+        let package_hash = cdk_frost::signing_package_hash(
+            context.session_id(),
+            &context.message_commitment(),
+            commitments,
+        )
+        .map_err(frost_signing_error)?;
+        Ok(Self {
+            version: FEDERATION_REST_API_VERSION,
+            context: context.encode(),
+            nonce_id: nonce_id.to_bytes(),
+            authorization: authorization.encode(),
+            commitment_set: commitments.encode(),
+            package_hash,
+        })
+    }
+
+    /// Decode and cross-check the complete round-two package.
+    pub fn decode(
+        &self,
+        federation_id: FederationId,
+        signer: MemberId,
+    ) -> Result<(
+        cdk_frost::SigningSessionContext,
+        cdk_frost::NonceId,
+        cdk_frost::AuthorizationRequest,
+        cdk_frost::NonceCommitmentSet,
+    )> {
+        ensure_frost_signing_version(self.version)?;
+        let context =
+            cdk_frost::SigningSessionContext::decode(&self.context).map_err(frost_signing_error)?;
+        let nonce_id =
+            cdk_frost::NonceId::from_bytes(self.nonce_id).map_err(frost_signing_error)?;
+        let authorization = cdk_frost::AuthorizationRequest::decode(&self.authorization)
+            .map_err(frost_signing_error)?;
+        let commitments = cdk_frost::NonceCommitmentSet::decode(&self.commitment_set)
+            .map_err(frost_signing_error)?;
+        let signer = cdk_frost::MemberId::new(signer.get()).map_err(frost_signing_error)?;
+        let own = commitments.commitments().get(&signer);
+        let expected_hash = cdk_frost::signing_package_hash(
+            context.session_id(),
+            &context.message_commitment(),
+            &commitments,
+        )
+        .map_err(frost_signing_error)?;
+        if context.federation_id() != federation_id.to_bytes()
+            || authorization.session_id() != context.session_id()
+            || authorization.application_id() != context.registration().id()
+            || authorization.application_key_epoch() != context.registration().key_epoch()
+            || authorization.derivation_version() != context.registration().derivation_version()
+            || own.map(cdk_frost::NonceCommitment::nonce_id) != Some(nonce_id)
+            || self.package_hash != expected_hash
+        {
+            return Err(frost_signing_invalid(
+                "signing package bindings are inconsistent",
+            ));
+        }
+        Ok((context, nonce_id, authorization, commitments))
+    }
+}
+
+/// Signed signer response containing one application-authorized signature share.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostSignatureShareResponse {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Canonical signing package hash used by this share.
+    pub package_hash: [u8; 32],
+    /// Canonical signature-share bytes.
+    pub share: Vec<u8>,
+}
+
+/// Coordinator request to permanently burn one exact signing-session nonce.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostSigningAbortRequest {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Canonical signing-session context bytes.
+    pub context: Vec<u8>,
+    /// Canonical typed application authorization bytes.
+    pub authorization: Vec<u8>,
+    /// Terminal reason for burning any local nonce.
+    pub reason: cdk_frost::NonceBurnReason,
+}
+
+impl FederationFrostSigningAbortRequest {
+    /// Construct a session-bound abort request.
+    #[must_use]
+    pub fn new(
+        context: &cdk_frost::SigningSessionContext,
+        authorization: &cdk_frost::AuthorizationRequest,
+        reason: cdk_frost::NonceBurnReason,
+    ) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            context: context.encode(),
+            authorization: authorization.encode(),
+            reason,
+        }
+    }
+
+    /// Decode and validate session, application, federation, and signer bindings.
+    pub fn decode(
+        &self,
+        federation_id: FederationId,
+        signer: MemberId,
+    ) -> Result<(
+        cdk_frost::SigningSessionContext,
+        cdk_frost::AuthorizationRequest,
+        cdk_frost::NonceBurnReason,
+    )> {
+        ensure_frost_signing_version(self.version)?;
+        let context =
+            cdk_frost::SigningSessionContext::decode(&self.context).map_err(frost_signing_error)?;
+        let authorization = cdk_frost::AuthorizationRequest::decode(&self.authorization)
+            .map_err(frost_signing_error)?;
+        if context.federation_id() != federation_id.to_bytes()
+            || authorization.session_id() != context.session_id()
+            || authorization.application_id() != context.registration().id()
+            || !context
+                .signer_set()
+                .iter()
+                .any(|member| member.get() == signer.get())
+        {
+            return Err(frost_signing_invalid(
+                "signing abort bindings are inconsistent",
+            ));
+        }
+        Ok((context, authorization, self.reason))
+    }
+}
+
+impl FederationFrostSignatureShareResponse {
+    /// Construct a share response after durable nonce consumption.
+    #[must_use]
+    pub fn new(package_hash: [u8; 32], share: &cdk_frost::SignatureShare) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            package_hash,
+            share: share.encode(),
+        }
+    }
+
+    /// Decode and verify signer, session, and package ownership.
+    pub fn decode(
+        &self,
+        signer: MemberId,
+        expected_session: cdk_frost::SigningSessionId,
+        expected_package_hash: [u8; 32],
+    ) -> Result<cdk_frost::SignatureShare> {
+        ensure_frost_signing_version(self.version)?;
+        let share = cdk_frost::SignatureShare::decode(&self.share).map_err(frost_signing_error)?;
+        if self.package_hash != expected_package_hash
+            || share.session_id() != expected_session
+            || share.participant().get() != signer.get()
+        {
+            return Err(frost_signing_invalid(
+                "signature share has the wrong signer, session, or package hash",
+            ));
+        }
+        Ok(share)
+    }
+}
+
+/// Coordinator notification of an independently verified aggregate signature.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostAggregateResultNotification {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Canonical signing-session context bytes.
+    pub context: Vec<u8>,
+    /// Canonical typed application-authorization bytes.
+    pub authorization: Vec<u8>,
+    /// Exact signing package hash that produced the aggregate.
+    pub package_hash: [u8; 32],
+    /// Compact BIP340 aggregate signature.
+    pub signature: Vec<u8>,
+}
+
+impl FederationFrostAggregateResultNotification {
+    /// Construct a successful aggregate-result notification.
+    #[must_use]
+    pub fn new(
+        context: &cdk_frost::SigningSessionContext,
+        authorization: &cdk_frost::AuthorizationRequest,
+        package_hash: [u8; 32],
+        signature: cdk_frost::AggregateSignature,
+    ) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            context: context.encode(),
+            authorization: authorization.encode(),
+            package_hash,
+            signature: signature.to_bytes().to_vec(),
+        }
+    }
+
+    /// Decode the bounded aggregate signature and session identifier.
+    pub fn decode(
+        &self,
+    ) -> Result<(
+        cdk_frost::SigningSessionContext,
+        cdk_frost::AuthorizationRequest,
+        [u8; 32],
+        cdk_frost::AggregateSignature,
+    )> {
+        ensure_frost_signing_version(self.version)?;
+        let context =
+            cdk_frost::SigningSessionContext::decode(&self.context).map_err(frost_signing_error)?;
+        let authorization = cdk_frost::AuthorizationRequest::decode(&self.authorization)
+            .map_err(frost_signing_error)?;
+        if authorization.session_id() != context.session_id()
+            || authorization.application_id() != context.registration().id()
+        {
+            return Err(frost_signing_invalid(
+                "aggregate result has inconsistent application or session bindings",
+            ));
+        }
+        let signature: [u8; 64] = self.signature.clone().try_into().map_err(|_| {
+            frost_signing_invalid("aggregate signature must contain exactly 64 bytes")
+        })?;
+        let signature =
+            cdk_frost::AggregateSignature::from_bytes(signature).map_err(frost_signing_error)?;
+        Ok((context, authorization, self.package_hash, signature))
+    }
+}
+
+/// Signed acknowledgement for an aggregate-result notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFrostSigningAck {
+    /// Private signing payload version.
+    pub version: u16,
+    /// Accepted session identifier.
+    pub session_id: [u8; 32],
+    /// Accepted request kind.
+    pub kind: FederationRestMessageKind,
+}
+
+impl FederationFrostSigningAck {
+    /// Construct an acknowledgement for one signing message.
+    #[must_use]
+    pub fn new(session_id: cdk_frost::SigningSessionId, kind: FederationRestMessageKind) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            session_id: session_id.to_bytes(),
+            kind,
+        }
+    }
+}
+
+fn ensure_frost_signing_version(version: u16) -> Result<()> {
+    if version != FEDERATION_REST_API_VERSION {
+        return Err(FederationError::RestVersionMismatch {
+            expected: FEDERATION_REST_API_VERSION,
+            found: version,
+        });
+    }
+    Ok(())
+}
+
+fn frost_signing_error(error: cdk_frost::Error) -> FederationError {
+    frost_signing_invalid(error.to_string())
+}
+
+fn frost_signing_invalid(reason: impl ToString) -> FederationError {
+    FederationError::FrostSigningInvalid {
+        reason: reason.to_string(),
+    }
+}
+
 /// Signed payload used to request a peer status snapshot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -762,6 +1202,50 @@ impl FederationPeerStatusRequest {
             include_materialized_rows: true,
         }
     }
+}
+
+/// Signed targeted operator request for one durable wallet transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationWalletTransactionRequest {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Canonical accepted transaction proposal identity.
+    pub proposal_id: super::FederationTransactionProposalId,
+}
+
+impl FederationWalletTransactionRequest {
+    /// Construct one versioned targeted operator request.
+    #[must_use]
+    pub fn new(proposal_id: super::FederationTransactionProposalId) -> Self {
+        Self {
+            version: FEDERATION_REST_API_VERSION,
+            proposal_id,
+        }
+    }
+
+    /// Reject requests from incompatible private API versions.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != FEDERATION_REST_API_VERSION {
+            return Err(FederationError::RestVersionMismatch {
+                expected: FEDERATION_REST_API_VERSION,
+                found: self.version,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Result of a guarded immediate exact-byte rebroadcast attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationWalletRebroadcastResponse {
+    /// Private REST payload version.
+    pub version: u16,
+    /// Whether this request submitted a durable consensus transition or observation.
+    pub advanced: bool,
+    /// Redacted transaction state after the attempt.
+    pub status: super::FederationWalletTransactionStatus,
 }
 
 /// Signed request payload carrying one member's pre-reveal DKG commitment hash.
@@ -1084,6 +1568,7 @@ impl FederationDkgActivationRequest {
         let mut setup_public_config = final_public_config.clone();
         setup_public_config.keysets.clear();
         setup_public_config.setup_transcript = None;
+        setup_public_config.frost_wallet = None;
         let mut identity_config = private_config.clone();
         identity_config.keyset_secret_shares.clear();
         identity_config.setup_transcript_hash = None;
@@ -1167,6 +1652,7 @@ impl FederationDkgActivationRequest {
         let mut expected_setup = final_public_config.clone();
         expected_setup.keysets.clear();
         expected_setup.setup_transcript = None;
+        expected_setup.frost_wallet = None;
         if &expected_setup != setup_public_config {
             return Err(FederationError::DkgTranscriptMismatch {
                 reason: "DKG activation final config does not extend the setup config".to_string(),
@@ -1360,6 +1846,31 @@ pub struct FederationInvalidOperationAlertSummary {
     pub window_secs: u64,
 }
 
+/// Redacted local status for one active federated on-chain wallet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationOnchainWalletStatus {
+    /// Non-sensitive source implementation name.
+    pub source: String,
+    /// Operator-declared source independence (`independent` or `shared`).
+    pub source_scope: String,
+    /// Stable opaque source identity; never an endpoint or credential.
+    pub source_id: String,
+    /// Whether this source is intentionally correlated with other members.
+    pub correlated_source_warning: bool,
+    /// Stable health name (`never_synced`, `healthy`, or `degraded`).
+    pub health: String,
+    /// Latest locally persisted BDK checkpoint height.
+    pub local_tip_height: u32,
+    /// Latest locally persisted BDK checkpoint hash.
+    pub local_tip_hash: String,
+    /// Unix time of the most recent successful synchronization.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_success_unix: Option<u64>,
+    /// Saturating consecutive failure count.
+    pub consecutive_failures: u32,
+}
+
 /// Detailed private federation member status used by operator tooling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1426,6 +1937,18 @@ pub struct FederationLocalStatusResponse {
     pub materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
     /// Aggregated invalid-operation alerts.
     pub invalid_operation_alerts: Vec<FederationInvalidOperationAlertSummary>,
+    /// Active local federated on-chain wallet health records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub onchain_wallets: Vec<FederationOnchainWalletStatus>,
+    /// Redacted state-to-action recovery classification for the joint wallet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_recovery: Option<FederationWalletRecoveryStatus>,
+    /// Redacted proposer and signing-coordinator liveness state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_liveness: Option<super::FederationWalletLivenessStatus>,
+    /// Bounded accepted-state wallet diagnosis without addresses or transaction contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallet_operator: Option<super::FederationWalletOperatorStatus>,
 }
 
 /// Peer status response for federation health and catch-up checks.
@@ -2390,6 +2913,7 @@ impl FederationJournalCatchUpResponse {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn catch_up_certificate_transcript(
     federation_id: FederationId,
     signer: MemberId,
@@ -2642,6 +3166,10 @@ mod tests {
                         request: "invoice-quote-1".to_string(),
                         amount: Some(Amount::from(1)),
                         unit: Some(CurrencyUnit::Sat),
+                        method: crate::PaymentMethod::BOLT11,
+                        amount_paid: Amount::ZERO,
+                        amount_issued: Amount::ZERO,
+                        updated_at: 0,
                         state: crate::MintQuoteState::Unpaid,
                         expiry: None,
                         pubkey: None,
@@ -2776,6 +3304,27 @@ mod tests {
                 threshold: 20,
                 window_secs: 60,
             }],
+            onchain_wallets: vec![FederationOnchainWalletStatus {
+                source: "bitcoin_rpc".to_string(),
+                source_scope: "shared".to_string(),
+                source_id: "shared-regtest-source".to_string(),
+                correlated_source_warning: true,
+                health: "healthy".to_string(),
+                local_tip_height: 101,
+                local_tip_hash: "00".repeat(32),
+                last_success_unix: Some(1_700_000_000),
+                consecutive_failures: 0,
+            }],
+            wallet_recovery: Some(
+                FederationWalletRecoveryStatus::from_states(
+                    &crate::federation::FederationAddressAllocationState::new(),
+                    &crate::federation::FederationChainObservationState::new(),
+                    &crate::federation::FederationTransactionState::new(),
+                )
+                .expect("wallet recovery fixture"),
+            ),
+            wallet_liveness: Some(crate::federation::FederationWalletLivenessStatus::default()),
+            wallet_operator: None,
         };
 
         let value = serde_json::to_value(&status).expect("local status json");
@@ -2799,6 +3348,7 @@ mod tests {
                 "duplicate_submissions",
                 "invalid_operation_alerts",
                 "materialized_state_rows",
+                "onchain_wallets",
                 "payment_observation_reports",
                 "peer_status",
                 "pending_mempool_items",
@@ -2815,8 +3365,16 @@ mod tests {
                 "sync_ready",
                 "sync_state",
                 "version",
+                "wallet_recovery",
+                "wallet_liveness",
             ])
         );
+        let wallet_status = value["onchain_wallets"][0]
+            .as_object()
+            .expect("on-chain wallet status");
+        assert_eq!(wallet_status["source_scope"], "shared");
+        assert_eq!(wallet_status["source_id"], "shared-regtest-source");
+        assert_eq!(wallet_status["correlated_source_warning"], true);
         let decoded: FederationLocalStatusResponse =
             serde_json::from_value(value).expect("local status round trip");
         assert_eq!(decoded, status);
@@ -4316,6 +4874,10 @@ mod tests {
             FederationRestMessageKind::SubmitOperation,
             FederationRestMessageKind::AlephBftActivity,
             FederationRestMessageKind::AlephBftNetworkMessage,
+            FederationRestMessageKind::FrostSigningCommitment,
+            FederationRestMessageKind::FrostSigningPackage,
+            FederationRestMessageKind::FrostSigningAbort,
+            FederationRestMessageKind::FrostAggregateResult,
         ] {
             assert!(!kind.has_durable_replay_state(), "unexpected durable kind");
         }
@@ -4331,5 +4893,71 @@ mod tests {
                 "DKG mutation must be durable"
             );
         }
+    }
+
+    #[test]
+    fn frost_commitment_transport_binds_federation_signer_application_attempt_and_derivation() {
+        let registration =
+            cdk_frost_bip32::application_registration().expect("application registration");
+        let derivation = cdk_frost::SigningDerivation::application_key();
+        let scope = cdk_frost::SigningAuthorizationScope::new(
+            federation_id().to_bytes(),
+            cdk_frost::RootKeyEpoch::new(1).expect("root epoch"),
+            registration,
+            derivation.binding(),
+            [31; 32],
+            [32; 32],
+        )
+        .expect("authorization scope");
+        let context = cdk_frost::SigningSessionContext::new(
+            scope,
+            7,
+            [
+                cdk_frost::MemberId::new(1).expect("first signer"),
+                cdk_frost::MemberId::new(2).expect("second signer"),
+            ],
+        )
+        .expect("signing context");
+        let authorization = cdk_frost::AuthorizationRequest::new(
+            registration.id(),
+            registration.key_epoch(),
+            registration.derivation_version(),
+            context.session_id(),
+            b"typed authorization".to_vec(),
+        )
+        .expect("authorization request");
+        let request = FederationFrostCommitmentRequest::new(&context, &derivation, &authorization);
+        request
+            .decode(federation_id(), roster_member_id(1))
+            .expect("valid request");
+        assert!(request
+            .decode(FederationId::from_bytes([99; 32]), roster_member_id(1))
+            .is_err());
+        assert!(request
+            .decode(federation_id(), roster_member_id(3))
+            .is_err());
+
+        let wrong_context = cdk_frost::SigningSessionContext::new(
+            cdk_frost::SigningAuthorizationScope::new(
+                federation_id().to_bytes(),
+                cdk_frost::RootKeyEpoch::new(1).expect("root epoch"),
+                registration,
+                derivation.binding(),
+                [31; 32],
+                [32; 32],
+            )
+            .expect("authorization scope"),
+            8,
+            [
+                cdk_frost::MemberId::new(1).expect("first signer"),
+                cdk_frost::MemberId::new(2).expect("second signer"),
+            ],
+        )
+        .expect("wrong attempt context");
+        let mut cross_attempt = request;
+        cross_attempt.context = wrong_context.encode();
+        assert!(cross_attempt
+            .decode(federation_id(), roster_member_id(1))
+            .is_err());
     }
 }
