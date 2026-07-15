@@ -1078,6 +1078,27 @@ frontier that becomes authoritative.
 - [ ] Remove all request-time range certificate creation and verification from
       journal responses.
 
+### Progress and verification
+
+Checkpoint polling can now request the exact next scheduled quorum after the
+locally trusted scheduled sequence. The serving query is indexed and returns
+only sequence `N + 1`; gaps are not skipped. The signed summary binds that
+scalar result to the serving member, the requester rejects an unexpected
+sequence, and the existing exact-ID fetch transfers the stored checkpoint and
+assembled quorum from any holder without contacting its original signers.
+Fetched future quorums remain untrusted until the local durable frontiers reach
+their checkpoint. The catch-up body request is not yet checkpoint-bounded, so
+the discovery checklist item remains open until the body path consumes this
+proof before downloading data.
+
+Coverage added for first/absent next-scheduled-quorum database lookup and
+checkpoint transport request/response serialization. Compilation and linting
+were verified with:
+
+- `cargo test -p cdk-axum --features federation --lib --no-run`;
+- `cargo check -p cdk-axum --features federation`.
+- `cargo clippy -p cdk-common --lib --features federation -- -D warnings`.
+
 ### Files and references
 
 - `crates/cdk-common/src/federation/transport.rs`

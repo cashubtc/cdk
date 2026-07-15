@@ -1755,6 +1755,59 @@ where
         Ok(quorum)
     }
 
+    async fn get_next_federation_scheduled_checkpoint_quorum(
+        &self,
+        scheduled_checkpoint_sequence: u64,
+    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err> {
+        let Some(next_scheduled_checkpoint_sequence) = scheduled_checkpoint_sequence.checked_add(1)
+        else {
+            return Ok(None);
+        };
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let quorum = query(
+            r#"
+            SELECT q.checkpoint_id, q.quorum_json
+            FROM federation_checkpoint_quorums AS q
+            INNER JOIN federation_checkpoints AS c
+                ON c.checkpoint_id = q.checkpoint_id
+            WHERE c.checkpoint_kind = :checkpoint_kind
+                AND c.scheduled_checkpoint_sequence = :scheduled_checkpoint_sequence
+            ORDER BY
+                c.scheduled_checkpoint_sequence ASC,
+                c.finalized_next_item_index ASC,
+                c.journal_next_index ASC,
+                c.checkpoint_id ASC
+            LIMIT 1
+            "#,
+        )?
+        .bind(
+            "checkpoint_kind",
+            checkpoint_kind_to_str(FederationCheckpointKind::Scheduled),
+        )
+        .bind(
+            "scheduled_checkpoint_sequence",
+            next_scheduled_checkpoint_sequence as i64,
+        )
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_federation_checkpoint_quorum)
+        .transpose()?;
+        if quorum.as_ref().is_some_and(|quorum| {
+            quorum.checkpoint.kind != FederationCheckpointKind::Scheduled
+                || quorum.checkpoint.scheduled_checkpoint_sequence
+                    != next_scheduled_checkpoint_sequence
+        }) {
+            return Err(Error::Internal(
+                "Federation scheduled checkpoint index returned an invalid next quorum".to_string(),
+            ));
+        }
+        Ok(quorum)
+    }
+
     async fn get_trusted_federation_checkpoint_quorum(
         &self,
     ) -> Result<Option<FederationCheckpointQuorum>, Self::Err> {

@@ -245,6 +245,29 @@ where
         state.federation.request_recovery_checkpoint();
     }
     let request_recovery_checkpoint = state.federation.recovery_checkpoint_is_requested();
+    let trusted_scheduled_sequence = match state
+        .mint
+        .localstore()
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+    {
+        Ok(Some(quorum)) => {
+            let Some(runtime_config) = state.mint.federation_config() else {
+                tracing::warn!("Could not verify trusted checkpoint without mint configuration");
+                return 0;
+            };
+            if let Err(err) = quorum.verify(runtime_config.public_config()) {
+                tracing::warn!("Could not verify trusted checkpoint for discovery: {}", err);
+                return 0;
+            }
+            quorum.checkpoint.scheduled_checkpoint_sequence
+        }
+        Ok(None) => 0,
+        Err(err) => {
+            tracing::warn!("Could not load trusted checkpoint for discovery: {}", err);
+            return 0;
+        }
+    };
     if let Err(err) = state
         .federation
         .ensure_scheduled_checkpoint_candidate()
@@ -257,7 +280,11 @@ where
     let mut peer_summaries = Vec::with_capacity(peers.len());
     for &peer in peers {
         match client
-            .checkpoint_summary(peer, request_recovery_checkpoint)
+            .checkpoint_summary(
+                peer,
+                request_recovery_checkpoint,
+                Some(trusted_scheduled_sequence),
+            )
             .await
         {
             Ok(summary) => peer_summaries.push((peer, summary)),
@@ -274,14 +301,20 @@ where
     }
 
     for (peer, summary) in &peer_summaries {
-        for peer_quorum in [
-            summary.latest_scheduled_quorum.as_ref(),
-            summary.latest_recovery_quorum.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if local_checkpoint_quorum_is_current(state, peer_quorum).await {
+        for (peer_quorum, require_exact_local_copy) in [
+            (summary.next_scheduled_quorum.as_ref(), true),
+            (summary.latest_scheduled_quorum.as_ref(), false),
+            (summary.latest_recovery_quorum.as_ref(), false),
+        ] {
+            let Some(peer_quorum) = peer_quorum else {
+                continue;
+            };
+            let already_stored = if require_exact_local_copy {
+                local_checkpoint_quorum_is_stored(state, peer_quorum.checkpoint_id).await
+            } else {
+                local_checkpoint_quorum_is_current(state, peer_quorum).await
+            };
+            if already_stored {
                 continue;
             }
             match client
@@ -326,6 +359,29 @@ where
 
     disseminate_latest_checkpoint_quorums(state, client, &peer_summaries, &mut updates).await;
     updates
+}
+
+async fn local_checkpoint_quorum_is_stored(
+    state: &MintState,
+    checkpoint_id: cdk::federation::FederationCheckpointId,
+) -> bool {
+    match state
+        .mint
+        .localstore()
+        .get_federation_checkpoint_quorum(checkpoint_id)
+        .await
+    {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!(
+                checkpoint_id = %checkpoint_id,
+                "Could not inspect local federation checkpoint quorum: {}",
+                err
+            );
+            false
+        }
+    }
 }
 
 async fn exchange_checkpoint_candidate<T>(

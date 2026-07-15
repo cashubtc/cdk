@@ -1226,6 +1226,9 @@ pub struct FederationCheckpointSummaryRequest {
     pub version: u16,
     /// Ask reachable members to form one recovery checkpoint at a stable converged tip.
     pub request_recovery_checkpoint: bool,
+    /// Return the first stored scheduled quorum after this sequence, when requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_scheduled_quorum_after: Option<u64>,
 }
 
 impl FederationCheckpointSummaryRequest {
@@ -1235,6 +1238,7 @@ impl FederationCheckpointSummaryRequest {
         Self {
             version: FEDERATION_REST_API_VERSION,
             request_recovery_checkpoint: false,
+            next_scheduled_quorum_after: None,
         }
     }
 
@@ -1242,6 +1246,16 @@ impl FederationCheckpointSummaryRequest {
     #[must_use]
     pub const fn with_recovery_checkpoint(mut self) -> Self {
         self.request_recovery_checkpoint = true;
+        self
+    }
+
+    /// Request the first stored scheduled quorum after `scheduled_checkpoint_sequence`.
+    #[must_use]
+    pub const fn with_next_scheduled_quorum_after(
+        mut self,
+        scheduled_checkpoint_sequence: u64,
+    ) -> Self {
+        self.next_scheduled_quorum_after = Some(scheduled_checkpoint_sequence);
         self
     }
 
@@ -1321,6 +1335,9 @@ pub struct FederationCheckpointSummaryResponse {
     /// Newest locally stored recovery quorum, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_recovery_quorum: Option<FederationCheckpointSummary>,
+    /// First locally stored scheduled quorum after the requested sequence, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_scheduled_quorum: Option<FederationCheckpointSummary>,
 }
 
 impl FederationCheckpointSummaryResponse {
@@ -1357,6 +1374,10 @@ impl FederationCheckpointSummaryResponse {
             (
                 self.latest_recovery_quorum.as_ref(),
                 FederationCheckpointKind::Recovery,
+            ),
+            (
+                self.next_scheduled_quorum.as_ref(),
+                FederationCheckpointKind::Scheduled,
             ),
         ] {
             if summary.is_some_and(|summary| summary.kind != expected_kind) {
@@ -4375,6 +4396,9 @@ mod tests {
             .verify(&config, receiver)
             .expect("recovery checkpoint request verifies");
         assert!(recovery_request.payload.request_recovery_checkpoint);
+        let next_request =
+            FederationCheckpointSummaryRequest::new().with_next_scheduled_quorum_after(7);
+        assert_eq!(next_request.next_scheduled_quorum_after, Some(7));
 
         let fetch_request = FederationSignedRequest::new_signed(
             config.federation_id,
@@ -4411,6 +4435,7 @@ mod tests {
             latest_recovery_candidate: None,
             latest_scheduled_quorum: None,
             latest_recovery_quorum: None,
+            next_scheduled_quorum: None,
         };
         summary_response
             .validate(&config, receiver)

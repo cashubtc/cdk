@@ -36,7 +36,7 @@ pub(super) async fn post_checkpoint_summary(
     }
     let response = state
         .federation
-        .checkpoint_summary()
+        .checkpoint_summary(payload.payload.next_scheduled_quorum_after)
         .await
         .map_err(cdk_error_response)?;
     let runtime_config = federation_runtime_config(&state)?;

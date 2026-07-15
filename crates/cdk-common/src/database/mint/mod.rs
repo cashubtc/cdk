@@ -1136,6 +1136,14 @@ pub trait FederationJournalDatabase {
         kind: FederationCheckpointKind,
     ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
 
+    /// Get the first assembled scheduled quorum after `scheduled_checkpoint_sequence`.
+    ///
+    /// Callers must verify the returned proof against the active public config.
+    async fn get_next_federation_scheduled_checkpoint_quorum(
+        &self,
+        scheduled_checkpoint_sequence: u64,
+    ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
+
     /// Get the locally trusted assembled checkpoint quorum.
     ///
     /// Callers must re-verify the bounded proof before using it at startup.

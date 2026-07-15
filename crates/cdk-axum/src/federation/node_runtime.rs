@@ -1928,6 +1928,7 @@ impl FederationNodeRuntime {
 
     pub(crate) async fn checkpoint_summary(
         &self,
+        next_scheduled_quorum_after: Option<u64>,
     ) -> Result<FederationCheckpointSummaryResponse, cdk::Error> {
         self.ensure_scheduled_checkpoint_candidate().await?;
         let stable_tip = self.stable_checkpoint_boundary().await?;
@@ -1958,6 +1959,14 @@ impl FederationNodeRuntime {
             .await?
             .map(|quorum| checkpoint_quorum_summary(&quorum, public_config))
             .transpose()?;
+        let next_scheduled_quorum = match next_scheduled_quorum_after {
+            Some(sequence) => db
+                .get_next_federation_scheduled_checkpoint_quorum(sequence)
+                .await?
+                .map(|quorum| checkpoint_quorum_summary(&quorum, public_config))
+                .transpose()?,
+            None => None,
+        };
 
         Ok(FederationCheckpointSummaryResponse {
             version: FEDERATION_REST_API_VERSION,
@@ -1968,6 +1977,7 @@ impl FederationNodeRuntime {
             latest_recovery_candidate,
             latest_scheduled_quorum,
             latest_recovery_quorum,
+            next_scheduled_quorum,
         })
     }
 

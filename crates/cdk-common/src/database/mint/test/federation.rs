@@ -993,6 +993,18 @@ where
         Some(quorum.clone())
     );
     assert_eq!(
+        db.get_next_federation_scheduled_checkpoint_quorum(0)
+            .await
+            .expect("first scheduled quorum"),
+        Some(quorum.clone())
+    );
+    assert_eq!(
+        db.get_next_federation_scheduled_checkpoint_quorum(1)
+            .await
+            .expect("no later scheduled quorum"),
+        None
+    );
+    assert_eq!(
         db.get_trusted_federation_checkpoint_quorum()
             .await
             .expect("trusted checkpoint quorum"),

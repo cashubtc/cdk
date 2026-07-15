@@ -172,12 +172,16 @@ where
         &self,
         member: &MemberConfigPublic,
         request_recovery_checkpoint: bool,
+        next_scheduled_quorum_after: Option<u64>,
     ) -> anyhow::Result<FederationCheckpointSummaryResponse> {
-        let payload = if request_recovery_checkpoint {
+        let mut payload = if request_recovery_checkpoint {
             FederationCheckpointSummaryRequest::new().with_recovery_checkpoint()
         } else {
             FederationCheckpointSummaryRequest::new()
         };
+        if let Some(sequence) = next_scheduled_quorum_after {
+            payload = payload.with_next_scheduled_quorum_after(sequence);
+        }
         let request = self.signed_request(
             member,
             FederationRestMessageKind::CheckpointSummary,
@@ -208,6 +212,26 @@ where
         response
             .payload
             .validate(&self.public_config, member.member_id)?;
+        if let (Some(sequence), Some(next)) = (
+            next_scheduled_quorum_after,
+            response.payload.next_scheduled_quorum.as_ref(),
+        ) {
+            let expected =
+                sequence
+                    .checked_add(1)
+                    .ok_or_else(|| FederationError::CheckpointInvalid {
+                        reason: "scheduled checkpoint sequence overflow".to_string(),
+                    })?;
+            if next.scheduled_checkpoint_sequence != expected {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: format!(
+                        "peer returned scheduled checkpoint sequence {}, expected {}",
+                        next.scheduled_checkpoint_sequence, expected
+                    ),
+                }
+                .into());
+            }
+        }
         Ok(response.payload)
     }
 
