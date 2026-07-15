@@ -1,5 +1,7 @@
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use cdk::nuts::MintInfo;
 use cdk_common::federation::{FederationConfig, MemberId};
 use reqwest::Client;
 use serde_json::Value;
@@ -18,6 +20,8 @@ pub struct MemberProbe {
     pub response_bytes: usize,
     pub mint_name: Option<String>,
     pub version: Option<String>,
+    pub mint_methods: Vec<String>,
+    pub melt_methods: Vec<String>,
     pub advertised_member_id: Option<u16>,
     pub advertised_federation_id: Option<String>,
     pub advertised_config_digest: Option<String>,
@@ -103,6 +107,7 @@ async fn probe_member(
     let (info, keysets) = tokio::join!(fetch(client, &info_url), fetch(client, &keysets_url));
 
     let info_json = serde_json::from_slice::<Value>(&info.bytes).ok();
+    let mint_info = serde_json::from_slice::<MintInfo>(&info.bytes).ok();
     let keysets_json = serde_json::from_slice::<Value>(&keysets.bytes).ok();
     let federation = info_json.as_ref().and_then(|value| value.get("federation"));
     let advertised_member_id = federation
@@ -166,6 +171,14 @@ async fn probe_member(
             .and_then(|value| value.get("version"))
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
+        mint_methods: mint_info
+            .as_ref()
+            .map(advertised_mint_methods)
+            .unwrap_or_default(),
+        melt_methods: mint_info
+            .as_ref()
+            .map(advertised_melt_methods)
+            .unwrap_or_default(),
         advertised_member_id,
         advertised_federation_id,
         advertised_config_digest,
@@ -173,6 +186,34 @@ async fn probe_member(
         error,
         observed_at: unix_time(),
     }
+}
+
+fn advertised_mint_methods(info: &MintInfo) -> Vec<String> {
+    if info.nuts.nut04.disabled {
+        return Vec::new();
+    }
+    info.nuts
+        .nut04
+        .methods
+        .iter()
+        .map(|settings| format!("{}/{}", settings.method, settings.unit))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn advertised_melt_methods(info: &MintInfo) -> Vec<String> {
+    if info.nuts.nut05.disabled {
+        return Vec::new();
+    }
+    info.nuts
+        .nut05
+        .methods
+        .iter()
+        .map(|settings| format!("{}/{}", settings.method, settings.unit))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 async fn fetch(client: &Client, url: &str) -> HttpObservation {
@@ -213,4 +254,44 @@ fn unix_time() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn member_methods_follow_enabled_mint_info_advertisements() {
+        let info: MintInfo = serde_json::from_str(
+            r#"{
+                "nuts": {
+                    "4": {
+                        "methods": [
+                            {
+                                "method": "onchain",
+                                "unit": "sat",
+                                "options": {"confirmations": 1}
+                            },
+                            {"method": "bolt11", "unit": "sat"}
+                        ],
+                        "disabled": false
+                    },
+                    "5": {
+                        "methods": [{"method": "onchain", "unit": "sat"}],
+                        "disabled": false
+                    }
+                }
+            }"#,
+        )
+        .expect("valid mint info");
+
+        assert_eq!(
+            advertised_mint_methods(&info),
+            vec!["bolt11/sat".to_string(), "onchain/sat".to_string()]
+        );
+        assert_eq!(
+            advertised_melt_methods(&info),
+            vec!["onchain/sat".to_string()]
+        );
+    }
 }

@@ -67,10 +67,12 @@ fn render_header(frame: &mut Frame<'_>, area: Rect, app: &App) {
     } else {
         AMBER
     };
-    let busy = app
-        .busy_operation
-        .map(|operation| format!("  RUNNING {operation}"))
-        .unwrap_or_default();
+    let active_operations = app.active_operation_count();
+    let busy = if active_operations > 0 {
+        format!("  RUNNING {active_operations}")
+    } else {
+        String::new()
+    };
 
     let line = Line::from(vec![
         Span::styled(" FED", Style::default().fg(CYAN).bold()),
@@ -228,7 +230,7 @@ fn render_members(frame: &mut Frame<'_>, area: Rect, app: &App) {
         render_empty(frame, area);
         return;
     }
-    let chunks = Layout::vertical([Constraint::Percentage(65), Constraint::Percentage(35)])
+    let chunks = Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
         .spacing(1)
         .split(area);
     render_member_table(frame, chunks[0], app, false);
@@ -313,7 +315,7 @@ fn render_member_detail(frame: &mut Frame<'_>, area: Rect, member: Option<&Membe
         );
         return;
     };
-    let chunks = Layout::vertical([Constraint::Min(8), Constraint::Length(5)])
+    let chunks = Layout::vertical([Constraint::Min(8), Constraint::Length(3)])
         .split(area.inner(Margin::new(1, 1)));
     frame.render_widget(
         panel_block().title(format!(" Member {} ", member.member_id)),
@@ -326,6 +328,8 @@ fn render_member_detail(frame: &mut Frame<'_>, area: Rect, member: Option<&Membe
         member.success_count, member.failure_count, member.request_count
     );
     let response_data = format_bytes(member.response_bytes);
+    let mint_methods = advertised_methods(&member.mint_methods);
+    let melt_methods = advertised_methods(&member.melt_methods);
     let lines = vec![
         key_value(
             "State",
@@ -336,6 +340,8 @@ fn render_member_detail(frame: &mut Frame<'_>, area: Rect, member: Option<&Membe
             },
             status_color,
         ),
+        key_value("Mint methods", &mint_methods, CYAN),
+        key_value("Melt methods", &melt_methods, CYAN),
         key_value("Endpoint", &member.url, TEXT),
         key_value(
             "Mint",
@@ -474,11 +480,30 @@ fn render_empty(frame: &mut Frame<'_>, area: Rect) {
 }
 
 fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let disabled = app.busy_operation.is_some();
-    let command_color = if disabled { Color::DarkGray } else { TEXT };
+    let connected = app.runtime().is_some();
+    let command_color = if connected { TEXT } else { Color::DarkGray };
+    let methods = app
+        .runtime()
+        .map(|runtime| runtime.payment_capabilities())
+        .unwrap_or_default();
+    let method_color = |supported: bool| {
+        if !connected || !supported {
+            Color::DarkGray
+        } else {
+            TEXT
+        }
+    };
     let line = Line::from(vec![
-        shortcut("m", "mint", command_color),
-        shortcut("p", "melt", command_color),
+        shortcut(
+            "m",
+            "mint",
+            method_color(methods.mint_bolt11 || methods.mint_onchain),
+        ),
+        shortcut(
+            "p",
+            "melt",
+            method_color(methods.melt_bolt11 || methods.melt_onchain),
+        ),
         shortcut("s", "send", command_color),
         shortcut("r", "receive", command_color),
         shortcut("c", "copy", TEXT),
@@ -521,7 +546,15 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
     let modal_area = match modal {
         Modal::Payload { .. } => centered_rect(80, 18, area),
         Modal::Help => centered_rect(72, 20, area),
-        Modal::Form(_) => centered_rect(76, 11, area),
+        Modal::Form(form) => centered_rect(
+            76,
+            if form.payment_methods.is_empty() {
+                11
+            } else {
+                14
+            },
+            area,
+        ),
     };
     frame.render_widget(Clear, modal_area);
     match modal {
@@ -536,17 +569,37 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
             } else {
                 Style::default().fg(TEXT)
             };
-            let lines = vec![
-                Line::from(Span::styled(form.label, Style::default().fg(CYAN).bold())),
+            let mut lines = Vec::new();
+            if !form.payment_methods.is_empty() {
+                let mut method_line = vec![Span::styled("Method  ", Style::default().fg(MUTED))];
+                for method in &form.payment_methods {
+                    let selected = Some(*method) == form.selected_payment_method();
+                    let style = if selected {
+                        Style::default().fg(PANEL).bg(CYAN).bold()
+                    } else {
+                        Style::default().fg(MUTED)
+                    };
+                    method_line.push(Span::styled(format!(" {} ", method.label()), style));
+                    method_line.push(Span::raw("  "));
+                }
+                lines.push(Line::from(method_line));
+                lines.push(Line::from(Span::styled(
+                    "←/→ or Tab switches payment method",
+                    Style::default().fg(AMBER),
+                )));
+                lines.push(Line::from(""));
+            }
+            lines.extend([
+                Line::from(Span::styled(form.label(), Style::default().fg(CYAN).bold())),
                 Line::from(""),
                 Line::from(Span::styled(value, value_style)),
                 Line::from(""),
-                Line::from(Span::styled(form.hint, Style::default().fg(MUTED))),
+                Line::from(Span::styled(form.hint(), Style::default().fg(MUTED))),
                 Line::from(Span::styled(
                     "Enter submit   Esc cancel   Ctrl-U clear",
                     Style::default().fg(AMBER),
                 )),
-            ];
+            ]);
             frame.render_widget(
                 Paragraph::new(lines)
                     .wrap(Wrap { trim: false })
@@ -559,7 +612,7 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
                 Line::from(Span::styled(content.clone(), Style::default().fg(TEXT))),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "c copy to clipboard   Enter/Esc close",
+                    "c copy   m/p/s/r start another operation   Enter/Esc close",
                     Style::default().fg(AMBER),
                 )),
             ];
@@ -574,11 +627,20 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
             let lines = vec![
                 Line::from(vec![key_span("1/2/3"), Span::raw(" switch views")]),
                 Line::from(vec![key_span("↑/↓ j/k"), Span::raw(" select member")]),
-                Line::from(vec![key_span("m"), Span::raw(" create mint quote")]),
-                Line::from(vec![key_span("p"), Span::raw(" melt / pay BOLT11 invoice")]),
+                Line::from(vec![
+                    key_span("m"),
+                    Span::raw(" mint; select advertised method in dialog"),
+                ]),
+                Line::from(vec![
+                    key_span("p"),
+                    Span::raw(" melt; select advertised method in dialog"),
+                ]),
                 Line::from(vec![key_span("s"), Span::raw(" online swap and create token")]),
                 Line::from(vec![key_span("r"), Span::raw(" receive pasted token")]),
-                Line::from(vec![key_span("c"), Span::raw(" copy latest invoice or token")]),
+                Line::from(vec![
+                    key_span("c"),
+                    Span::raw(" copy latest payment request or token"),
+                ]),
                 Line::from(vec![key_span("f"), Span::raw(" join when disconnected")]),
                 Line::from(vec![key_span("q"), Span::raw(" quit safely")]),
                 Line::from(""),
@@ -619,6 +681,14 @@ fn key_value<'a>(key: &'a str, value: &'a str, color: Color) -> Line<'a> {
         Span::styled(format!("{key:<17}"), Style::default().fg(MUTED)),
         Span::styled(value, Style::default().fg(color)),
     ])
+}
+
+fn advertised_methods(methods: &[String]) -> String {
+    if methods.is_empty() {
+        "none advertised".to_string()
+    } else {
+        methods.join(", ")
+    }
 }
 
 fn shortcut<'a>(key: &'a str, label: &'a str, color: Color) -> Span<'a> {

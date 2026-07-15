@@ -48,8 +48,10 @@ pub enum AppEvent {
 pub enum AppCommand {
     Quit,
     Join(JoinSource),
-    Mint(u64),
-    Melt(String),
+    Bolt11Mint(u64),
+    OnchainMint(u64),
+    Bolt11Melt(String),
+    OnchainMelt { address: String, amount: u64 },
     Send(u64),
     Receive(String),
 }
@@ -89,6 +91,8 @@ pub struct MemberState {
     pub active_keysets: usize,
     pub mint_name: Option<String>,
     pub version: Option<String>,
+    pub mint_methods: Vec<String>,
+    pub melt_methods: Vec<String>,
     pub advertised_member_id: Option<u16>,
     pub advertised_federation_id: Option<String>,
     pub advertised_config_digest: Option<String>,
@@ -113,6 +117,8 @@ impl MemberState {
             active_keysets: 0,
             mint_name: None,
             version: None,
+            mint_methods: Vec::new(),
+            melt_methods: Vec::new(),
             advertised_member_id: None,
             advertised_federation_id: None,
             advertised_config_digest: None,
@@ -152,9 +158,17 @@ pub enum Modal {
 pub struct Form {
     pub kind: FormKind,
     pub title: &'static str,
-    pub label: &'static str,
     pub value: String,
-    pub hint: &'static str,
+    pub amount_value: String,
+    pub focused_field: FormField,
+    pub payment_methods: Vec<PaymentMethodChoice>,
+    pub selected_payment_method: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormField {
+    Primary,
+    Amount,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +178,112 @@ pub enum FormKind {
     Melt,
     Send,
     Receive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaymentMethodChoice {
+    Bolt11,
+    Onchain,
+}
+
+impl PaymentMethodChoice {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Bolt11 => "BOLT11",
+            Self::Onchain => "On-chain",
+        }
+    }
+}
+
+impl Form {
+    pub fn selected_payment_method(&self) -> Option<PaymentMethodChoice> {
+        self.payment_methods
+            .get(self.selected_payment_method)
+            .copied()
+    }
+
+    pub fn label(&self) -> &'static str {
+        match (self.kind, self.selected_payment_method()) {
+            (FormKind::Join, _) => "Member URL, public config path, or cashufed invite",
+            (FormKind::Mint, _) | (FormKind::Send, _) => "Amount (sat)",
+            (FormKind::Melt, Some(PaymentMethodChoice::Bolt11)) => "BOLT11 invoice",
+            (FormKind::Melt, Some(PaymentMethodChoice::Onchain)) => "On-chain address",
+            (FormKind::Melt, None) => "Payment request",
+            (FormKind::Receive, _) => "Cashu token",
+        }
+    }
+
+    pub fn hint(&self) -> &'static str {
+        match (self.kind, self.selected_payment_method()) {
+            (FormKind::Join, _) => {
+                "The public roster is fully validated before any wallet is created"
+            }
+            (FormKind::Mint, Some(PaymentMethodChoice::Bolt11)) => {
+                "Creates a BOLT11 invoice and waits for payment"
+            }
+            (FormKind::Mint, Some(PaymentMethodChoice::Onchain)) => {
+                "Creates an on-chain mint quote and waits for confirmation"
+            }
+            (FormKind::Mint, None) => "Creates a mint quote",
+            (FormKind::Melt, Some(PaymentMethodChoice::Bolt11)) => {
+                "Paste an invoice; the federation will quote and execute the melt"
+            }
+            (FormKind::Melt, Some(PaymentMethodChoice::Onchain)) => {
+                "The lowest-fee quote offered by the federation is selected"
+            }
+            (FormKind::Melt, None) => "Creates a melt quote",
+            (FormKind::Send, _) => {
+                "Online exact send; CDK swaps first when exact proofs are unavailable"
+            }
+            (FormKind::Receive, _) => "Paste a token issued by the imported federation",
+        }
+    }
+
+    fn cycle_payment_method(&mut self, backwards: bool) {
+        if self.payment_methods.len() < 2 {
+            return;
+        }
+        self.selected_payment_method = if backwards {
+            self.selected_payment_method
+                .checked_sub(1)
+                .unwrap_or(self.payment_methods.len() - 1)
+        } else {
+            (self.selected_payment_method + 1) % self.payment_methods.len()
+        };
+        if !self.has_separate_amount_field() {
+            self.focused_field = FormField::Primary;
+        }
+    }
+
+    pub fn has_separate_amount_field(&self) -> bool {
+        self.kind == FormKind::Melt
+            && self.selected_payment_method() == Some(PaymentMethodChoice::Onchain)
+    }
+
+    pub fn field_value(&self, field: FormField) -> &str {
+        match field {
+            FormField::Primary => &self.value,
+            FormField::Amount => &self.amount_value,
+        }
+    }
+
+    fn focused_value_mut(&mut self) -> &mut String {
+        match self.focused_field {
+            FormField::Primary => &mut self.value,
+            FormField::Amount => &mut self.amount_value,
+        }
+    }
+
+    fn cycle_field(&mut self, backwards: bool) {
+        if self.has_separate_amount_field() {
+            self.focused_field = match (self.focused_field, backwards) {
+                (FormField::Primary, false) | (FormField::Amount, true) => FormField::Amount,
+                (FormField::Amount, false) | (FormField::Primary, true) => FormField::Primary,
+            };
+        } else {
+            self.cycle_payment_method(backwards);
+        }
+    }
 }
 
 pub struct App {
@@ -178,12 +298,14 @@ pub struct App {
     pub reserved: u64,
     pub modal: Option<Modal>,
     pub toast: Option<(String, bool, u16)>,
-    pub busy_operation: Option<&'static str>,
+    pub active_operations: BTreeMap<&'static str, usize>,
     pub last_payload: Option<String>,
     pub animation_tick: u64,
     pub monitor_generation: u64,
     should_quit: bool,
     activity_sequence: u64,
+    last_mint_method: Option<PaymentMethodChoice>,
+    last_melt_method: Option<PaymentMethodChoice>,
 }
 
 impl App {
@@ -200,12 +322,14 @@ impl App {
             reserved: 0,
             modal: None,
             toast: None,
-            busy_operation: None,
+            active_operations: BTreeMap::new(),
             last_payload: None,
             animation_tick: 0,
             monitor_generation: 0,
             should_quit: false,
             activity_sequence: 0,
+            last_mint_method: None,
+            last_melt_method: None,
         };
         if app.runtime.is_some() {
             app.monitor_generation = 1;
@@ -251,7 +375,8 @@ impl App {
     }
 
     pub fn operation_started(&mut self, operation: &'static str, message: &str) {
-        self.busy_operation = Some(operation);
+        let active = self.active_operations.entry(operation).or_default();
+        *active = active.saturating_add(1);
         self.modal = None;
         self.push_activity(operation, None, message, None, None, None);
         self.toast = Some((message.to_string(), true, 24));
@@ -265,7 +390,7 @@ impl App {
                     self.runtime = Some(runtime.clone());
                     self.monitor_generation = self.monitor_generation.saturating_add(1);
                     self.rebuild_members();
-                    self.busy_operation = None;
+                    self.operation_ended("join");
                     self.modal = None;
                     self.push_activity(
                         "join",
@@ -305,7 +430,7 @@ impl App {
                 self.toast = Some((message, true, 24));
             }
             AppEvent::OperationFinished { operation, message } => {
-                self.busy_operation = None;
+                self.operation_ended(operation);
                 self.push_activity(operation, None, &message, Some(true), None, None);
                 self.toast = Some((message, true, 36));
             }
@@ -319,7 +444,7 @@ impl App {
     }
 
     fn operation_failed(&mut self, operation: &'static str, error: String) {
-        self.busy_operation = None;
+        self.operation_ended(operation);
         self.push_activity(operation, None, &error, Some(false), None, None);
         self.toast = Some((error, false, 48));
     }
@@ -351,6 +476,8 @@ impl App {
         member.active_keysets = probe.active_keysets;
         member.mint_name = probe.mint_name;
         member.version = probe.version;
+        member.mint_methods = probe.mint_methods;
+        member.melt_methods = probe.melt_methods;
         member.advertised_member_id = probe.advertised_member_id;
         member.advertised_federation_id = probe.advertised_federation_id;
         member.advertised_config_digest = probe.advertised_config_digest;
@@ -419,7 +546,7 @@ impl App {
             }
             Event::Paste(value) => {
                 if let Some(Modal::Form(form)) = &mut self.modal {
-                    form.value.push_str(value.trim());
+                    form.focused_value_mut().push_str(value.trim());
                 }
                 Vec::new()
             }
@@ -430,6 +557,16 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return vec![AppCommand::Quit];
+        }
+
+        if matches!(self.modal, Some(Modal::Payload { .. }))
+            && self.can_start_operation()
+            && matches!(
+                key.code,
+                KeyCode::Char('m') | KeyCode::Char('p') | KeyCode::Char('s') | KeyCode::Char('r')
+            )
+        {
+            self.modal = None;
         }
 
         if self.modal.is_some() {
@@ -446,39 +583,43 @@ impl App {
                 self.modal = Some(Modal::Form(join_form()));
             }
             KeyCode::Char('m') if self.can_start_operation() => {
-                self.modal = Some(Modal::Form(Form {
-                    kind: FormKind::Mint,
-                    title: "Mint eCash",
-                    label: "Amount (sat)",
-                    value: String::new(),
-                    hint: "Creates a BOLT11 quote, then waits for threshold signatures",
-                }));
+                let methods = self.supported_mint_methods();
+                self.open_payment_form(
+                    FormKind::Mint,
+                    "Mint eCash",
+                    methods,
+                    self.last_mint_method,
+                );
             }
             KeyCode::Char('p') if self.can_start_operation() => {
-                self.modal = Some(Modal::Form(Form {
-                    kind: FormKind::Melt,
-                    title: "Pay invoice",
-                    label: "BOLT11 invoice",
-                    value: String::new(),
-                    hint: "Paste an invoice; the federation will quote and execute the melt",
-                }));
+                let methods = self.supported_melt_methods();
+                self.open_payment_form(
+                    FormKind::Melt,
+                    "Melt eCash",
+                    methods,
+                    self.last_melt_method,
+                );
             }
             KeyCode::Char('s') if self.can_start_operation() => {
                 self.modal = Some(Modal::Form(Form {
                     kind: FormKind::Send,
                     title: "Send eCash",
-                    label: "Amount (sat)",
                     value: String::new(),
-                    hint: "Online exact send; CDK swaps first when exact proofs are unavailable",
+                    amount_value: String::new(),
+                    focused_field: FormField::Primary,
+                    payment_methods: Vec::new(),
+                    selected_payment_method: 0,
                 }));
             }
             KeyCode::Char('r') if self.can_start_operation() => {
                 self.modal = Some(Modal::Form(Form {
                     kind: FormKind::Receive,
                     title: "Receive eCash",
-                    label: "Cashu token",
                     value: String::new(),
-                    hint: "Paste a token issued by the imported federation",
+                    amount_value: String::new(),
+                    focused_field: FormField::Primary,
+                    payment_methods: Vec::new(),
+                    selected_payment_method: 0,
                 }));
             }
             KeyCode::Char('c') => self.copy_last_payload(),
@@ -503,18 +644,42 @@ impl App {
             },
             Some(Modal::Form(form)) => match key.code {
                 KeyCode::Esc => self.modal = None,
+                KeyCode::Right => {
+                    form.cycle_payment_method(false);
+                    match (form.kind, form.selected_payment_method()) {
+                        (FormKind::Mint, method) => self.last_mint_method = method,
+                        (FormKind::Melt, method) => self.last_melt_method = method,
+                        _ => {}
+                    }
+                }
+                KeyCode::Left => {
+                    form.cycle_payment_method(true);
+                    match (form.kind, form.selected_payment_method()) {
+                        (FormKind::Mint, method) => self.last_mint_method = method,
+                        (FormKind::Melt, method) => self.last_melt_method = method,
+                        _ => {}
+                    }
+                }
+                KeyCode::Tab | KeyCode::Down => form.cycle_field(false),
+                KeyCode::BackTab | KeyCode::Up => form.cycle_field(true),
                 KeyCode::Backspace => {
-                    form.value.pop();
+                    form.focused_value_mut().pop();
                 }
                 KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    form.value.clear();
+                    form.focused_value_mut().clear();
                 }
                 KeyCode::Char(character)
                     if !key
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    form.value.push(character);
+                    form.focused_value_mut().push(character);
+                }
+                KeyCode::Enter
+                    if form.has_separate_amount_field()
+                        && form.focused_field == FormField::Primary =>
+                {
+                    form.focused_field = FormField::Amount;
                 }
                 KeyCode::Enter => return self.submit_form(),
                 _ => {}
@@ -537,11 +702,37 @@ impl App {
 
         let command = match form.kind {
             FormKind::Join => AppCommand::Join(JoinSource::parse(value)),
-            FormKind::Mint => match positive_amount(&value) {
-                Ok(amount) => AppCommand::Mint(amount),
-                Err(error) => return self.restore_form_with_error(form, error),
+            FormKind::Mint => {
+                let amount = match positive_amount(&value) {
+                    Ok(amount) => amount,
+                    Err(error) => return self.restore_form_with_error(form, error),
+                };
+                match form.selected_payment_method() {
+                    Some(PaymentMethodChoice::Bolt11) => AppCommand::Bolt11Mint(amount),
+                    Some(PaymentMethodChoice::Onchain) => AppCommand::OnchainMint(amount),
+                    None => {
+                        return self
+                            .restore_form_with_error(form, "No mint method available".to_string())
+                    }
+                }
+            }
+            FormKind::Melt => match form.selected_payment_method() {
+                Some(PaymentMethodChoice::Bolt11) => AppCommand::Bolt11Melt(value),
+                Some(PaymentMethodChoice::Onchain) => {
+                    let amount = match positive_amount(form.amount_value.trim()) {
+                        Ok(amount) => amount,
+                        Err(error) => return self.restore_form_with_error(form, error),
+                    };
+                    AppCommand::OnchainMelt {
+                        address: value,
+                        amount,
+                    }
+                }
+                None => {
+                    return self
+                        .restore_form_with_error(form, "No melt method available".to_string())
+                }
             },
-            FormKind::Melt => AppCommand::Melt(value),
             FormKind::Send => match positive_amount(&value) {
                 Ok(amount) => AppCommand::Send(amount),
                 Err(error) => return self.restore_form_with_error(form, error),
@@ -558,13 +749,68 @@ impl App {
     }
 
     fn can_start_operation(&self) -> bool {
-        self.runtime.is_some() && self.busy_operation.is_none()
+        self.runtime.is_some()
+    }
+
+    fn operation_ended(&mut self, operation: &'static str) {
+        let Some(active) = self.active_operations.get_mut(operation) else {
+            return;
+        };
+        *active = active.saturating_sub(1);
+        if *active == 0 {
+            self.active_operations.remove(operation);
+        }
+    }
+
+    fn supported_mint_methods(&self) -> Vec<PaymentMethodChoice> {
+        let methods = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.payment_capabilities())
+            .unwrap_or_default();
+        supported_methods(methods.mint_bolt11, methods.mint_onchain)
+    }
+
+    fn supported_melt_methods(&self) -> Vec<PaymentMethodChoice> {
+        let methods = self
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.payment_capabilities())
+            .unwrap_or_default();
+        supported_methods(methods.melt_bolt11, methods.melt_onchain)
+    }
+
+    fn open_payment_form(
+        &mut self,
+        kind: FormKind,
+        title: &'static str,
+        payment_methods: Vec<PaymentMethodChoice>,
+        preferred: Option<PaymentMethodChoice>,
+    ) {
+        if payment_methods.is_empty() {
+            self.toast = Some((
+                format!("Federation does not advertise any {} methods", kind.label()),
+                false,
+                28,
+            ));
+            return;
+        }
+        let selected_payment_method = preferred_payment_method_index(&payment_methods, preferred);
+        self.modal = Some(Modal::Form(Form {
+            kind,
+            title,
+            value: String::new(),
+            amount_value: String::new(),
+            focused_field: FormField::Primary,
+            payment_methods,
+            selected_payment_method,
+        }));
     }
 
     fn copy_last_payload(&mut self) {
         let Some(payload) = &self.last_payload else {
             self.toast = Some((
-                "No invoice or token is available to copy".to_string(),
+                "No payment request or token is available to copy".to_string(),
                 false,
                 24,
             ));
@@ -635,16 +881,52 @@ impl App {
             .map(|member| member.response_bytes)
             .sum()
     }
+
+    pub fn active_operation_count(&self) -> usize {
+        self.active_operations.values().sum()
+    }
 }
 
 fn join_form() -> Form {
     Form {
         kind: FormKind::Join,
         title: "Join federation",
-        label: "Member URL, public config path, or cashufed invite",
         value: String::new(),
-        hint: "The public roster is fully validated before any wallet is created",
+        amount_value: String::new(),
+        focused_field: FormField::Primary,
+        payment_methods: Vec::new(),
+        selected_payment_method: 0,
     }
+}
+
+impl FormKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Mint => "mint",
+            Self::Melt => "melt",
+            Self::Join | Self::Send | Self::Receive => "payment",
+        }
+    }
+}
+
+fn supported_methods(bolt11: bool, onchain: bool) -> Vec<PaymentMethodChoice> {
+    let mut methods = Vec::with_capacity(2);
+    if bolt11 {
+        methods.push(PaymentMethodChoice::Bolt11);
+    }
+    if onchain {
+        methods.push(PaymentMethodChoice::Onchain);
+    }
+    methods
+}
+
+fn preferred_payment_method_index(
+    methods: &[PaymentMethodChoice],
+    preferred: Option<PaymentMethodChoice>,
+) -> usize {
+    preferred
+        .and_then(|preferred| methods.iter().position(|method| *method == preferred))
+        .unwrap_or_default()
 }
 
 fn positive_amount(value: &str) -> Result<u64, String> {
@@ -704,5 +986,59 @@ mod tests {
         )));
 
         assert!(matches!(commands.as_slice(), [AppCommand::Quit]));
+    }
+
+    #[test]
+    fn preferred_payment_method_falls_back_to_first_supported_method() {
+        let methods = [PaymentMethodChoice::Onchain];
+
+        assert_eq!(
+            preferred_payment_method_index(&methods, Some(PaymentMethodChoice::Bolt11)),
+            0
+        );
+        assert_eq!(
+            methods[preferred_payment_method_index(&methods, Some(PaymentMethodChoice::Bolt11))],
+            PaymentMethodChoice::Onchain
+        );
+    }
+
+    #[test]
+    fn switching_payment_method_remembers_the_selection() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.modal = Some(Modal::Form(Form {
+            kind: FormKind::Mint,
+            title: "Mint eCash",
+            value: String::new(),
+            amount_value: String::new(),
+            focused_field: FormField::Primary,
+            payment_methods: vec![PaymentMethodChoice::Bolt11, PaymentMethodChoice::Onchain],
+            selected_payment_method: 0,
+        }));
+
+        app.handle_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::NONE,
+        )));
+
+        assert_eq!(app.last_mint_method, Some(PaymentMethodChoice::Onchain));
+    }
+
+    #[test]
+    fn concurrent_operations_are_counted_until_each_one_finishes() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.operation_started("mint-onchain", "first quote");
+        app.operation_started("mint-onchain", "second quote");
+
+        assert_eq!(app.active_operation_count(), 2);
+        app.apply_event(AppEvent::OperationFinished {
+            operation: "mint-onchain",
+            message: "first finished".to_string(),
+        });
+        assert_eq!(app.active_operation_count(), 1);
+        app.apply_event(AppEvent::OperationFinished {
+            operation: "mint-onchain",
+            message: "second finished".to_string(),
+        });
+        assert_eq!(app.active_operation_count(), 0);
     }
 }

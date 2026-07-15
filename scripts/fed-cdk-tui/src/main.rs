@@ -264,16 +264,34 @@ async fn execute_app_command(
                 let _ = tx.send(AppEvent::Joined(result));
             });
         }
-        AppCommand::Mint(amount) => {
+        AppCommand::Bolt11Mint(amount) => {
             if let Some(runtime) = app.runtime() {
-                app.operation_started("mint", &format!("Requesting {amount} sat quote"));
-                wallet::spawn_mint(runtime, amount, tx);
+                app.operation_started("mint-bolt11", &format!("Requesting {amount} sat invoice"));
+                wallet::spawn_bolt11_mint(runtime, amount, tx);
             }
         }
-        AppCommand::Melt(invoice) => {
+        AppCommand::OnchainMint(amount) => {
             if let Some(runtime) = app.runtime() {
-                app.operation_started("melt", "Requesting payment quote");
-                wallet::spawn_melt(runtime, invoice, tx);
+                app.operation_started(
+                    "mint-onchain",
+                    &format!("Creating a {amount} sat on-chain mint quote"),
+                );
+                wallet::spawn_onchain_mint(runtime, amount, tx);
+            }
+        }
+        AppCommand::Bolt11Melt(invoice) => {
+            if let Some(runtime) = app.runtime() {
+                app.operation_started("melt-bolt11", "Requesting Lightning payment quote");
+                wallet::spawn_bolt11_melt(runtime, invoice, tx);
+            }
+        }
+        AppCommand::OnchainMelt { address, amount } => {
+            if let Some(runtime) = app.runtime() {
+                app.operation_started(
+                    "melt-onchain",
+                    &format!("Creating a {amount} sat on-chain melt quote"),
+                );
+                wallet::spawn_onchain_melt(runtime, address, amount, tx);
             }
         }
         AppCommand::Send(amount) => {

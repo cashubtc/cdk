@@ -200,6 +200,7 @@ impl MintBuilder {
                 let mut setup_public_config = public_config.clone();
                 setup_public_config.keysets.clear();
                 setup_public_config.setup_transcript = None;
+                setup_public_config.frost_wallet = None;
                 let finalized = FederationDkgFinalizedMemberConfig {
                     public_config: public_config.clone(),
                     private_config: runtime_config.private_config().clone(),

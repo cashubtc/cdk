@@ -8,7 +8,8 @@ The interface provides:
 
 - federation import from any member URL, `federation-public.json`, or a
   `cashufed` invite;
-- BOLT11 mint and melt flows;
+- BOLT11 and on-chain mint and melt flows, gated by the methods advertised by
+  the federation;
 - exact-value Cashu token send and receive flows;
 - persistent wallet state with startup saga recovery;
 - independent `/v1/info` and `/v1/keysets` probes for every member;
@@ -75,16 +76,21 @@ target/release/fed-cdk-tui \
 The dashboard should settle at `LIVE n/n` once every member endpoint has
 answered and its advertised federation metadata matches the roster.
 
-For a development federation using fakewallet, mint quotes are paid by the test
-backend automatically. Press `m`, enter an amount in satoshis, and wait for the
-wallet to aggregate the federation's signature shares. A fake melt invoice can
-be created on a federation member with:
+The mint and melt dialogs offer only the methods advertised through the
+federation's NUT-04/NUT-05 metadata. Press `m`, select an advertised method in
+the dialog, and enter an amount in satoshis.
+For on-chain minting, send funds to the displayed address; the wallet waits for
+the federation's confirmation policy and then aggregates the Cashu signature
+shares. Press `p` and select on-chain to melt eCash to an address; enter the
+address and amount separated by whitespace. The TUI selects the lowest-fee quote
+offered by the federation. The last mint and melt methods selected during the
+session are reused whenever the federation supports them.
 
-```bash
-cdk-mintd federation fake-invoice --amount-msat 10000
-```
-
-Press `p` in the TUI and paste the returned BOLT11 invoice.
+Quote and wallet operations run independently. A pending on-chain confirmation
+does not disable the controls, so additional mint, melt, send, or receive
+operations can be started while earlier ones remain active.
+From a displayed invoice or address, pressing `m`, `p`, `s`, or `r` opens the
+next operation directly; the latest payload remains available through `c`.
 
 ## Controls
 
@@ -92,11 +98,11 @@ Press `p` in the TUI and paste the returned BOLT11 invoice.
 |---|---|
 | `1`, `2`, `3` | Overview, members, and activity views |
 | `j` / `k`, arrows | Select a federation member |
-| `m` | Create and wait for a mint quote |
-| `p` | Melt eCash by paying a BOLT11 invoice |
+| `m` | Mint eCash; select an advertised payment method in the dialog |
+| `p` | Melt eCash; select an advertised payment method in the dialog |
 | `s` | Prepare an exact-value Cashu token |
 | `r` | Receive and swap a pasted Cashu token |
-| `c` | Copy the latest invoice or token |
+| `c` | Copy the latest address or token |
 | `f` | Open the join dialog when disconnected |
 | `?` | Show help |
 | `Esc` | Close a dialog |

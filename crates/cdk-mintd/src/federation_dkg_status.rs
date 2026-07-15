@@ -779,6 +779,7 @@ fn dkg_status_report_with_setup_records(
         let mut stripped_setup = setup_public_config.clone();
         stripped_setup.keysets.clear();
         stripped_setup.setup_transcript = None;
+        stripped_setup.frost_wallet = None;
         if setup_public_config
             .setup_transcript
             .as_ref()

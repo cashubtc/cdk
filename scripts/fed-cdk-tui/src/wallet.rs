@@ -13,6 +13,7 @@ use bip39::Mnemonic;
 use cdk::amount::SplitTarget;
 use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint_url::MintUrl;
+use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::nuts::{CurrencyUnit, MintInfo, PaymentMethod};
 use cdk::wallet::types::SendKind;
@@ -66,6 +67,39 @@ struct StoredFederation {
 pub struct WalletRuntime {
     wallet: Wallet,
     stored: StoredFederation,
+    payment_capabilities: PaymentCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PaymentCapabilities {
+    pub mint_bolt11: bool,
+    pub mint_onchain: bool,
+    pub melt_bolt11: bool,
+    pub melt_onchain: bool,
+}
+
+impl PaymentCapabilities {
+    fn from_mint_info(mint_info: &MintInfo) -> Self {
+        let supports_mint = |method: &PaymentMethod| {
+            !mint_info.nuts.nut04.disabled
+                && mint_info.nuts.nut04.methods.iter().any(|settings| {
+                    &settings.method == method && settings.unit == CurrencyUnit::Sat
+                })
+        };
+        let supports_melt = |method: &PaymentMethod| {
+            !mint_info.nuts.nut05.disabled
+                && mint_info.nuts.nut05.methods.iter().any(|settings| {
+                    &settings.method == method && settings.unit == CurrencyUnit::Sat
+                })
+        };
+        let onchain = PaymentMethod::Known(KnownMethod::Onchain);
+        Self {
+            mint_bolt11: supports_mint(&PaymentMethod::BOLT11),
+            mint_onchain: supports_mint(&onchain),
+            melt_bolt11: supports_melt(&PaymentMethod::BOLT11),
+            melt_onchain: supports_melt(&onchain),
+        }
+    }
 }
 
 impl WalletRuntime {
@@ -160,7 +194,13 @@ impl WalletRuntime {
             .build()?;
 
         wallet.recover_incomplete_sagas().await?;
-        Ok(Self { wallet, stored })
+        let mint_info = wallet.load_mint_info().await?;
+        let payment_capabilities = PaymentCapabilities::from_mint_info(&mint_info);
+        Ok(Self {
+            wallet,
+            stored,
+            payment_capabilities,
+        })
     }
 
     pub fn public_config(&self) -> FederationConfig {
@@ -177,6 +217,10 @@ impl WalletRuntime {
 
     pub fn wallet(&self) -> Wallet {
         self.wallet.clone()
+    }
+
+    pub fn payment_capabilities(&self) -> PaymentCapabilities {
+        self.payment_capabilities
     }
 }
 
@@ -346,7 +390,69 @@ pub fn spawn_balance_refresh(runtime: Arc<WalletRuntime>, tx: mpsc::UnboundedSen
     });
 }
 
-pub fn spawn_mint(runtime: Arc<WalletRuntime>, amount: u64, tx: mpsc::UnboundedSender<AppEvent>) {
+pub fn spawn_onchain_mint(
+    runtime: Arc<WalletRuntime>,
+    amount: u64,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    tokio::spawn(async move {
+        let result = async {
+            let wallet = runtime.wallet();
+            let quote = wallet
+                .mint_quote(
+                    PaymentMethod::Known(KnownMethod::Onchain),
+                    Some(Amount::from(amount)),
+                    None,
+                    None,
+                )
+                .await?;
+            tx.send(AppEvent::OperationPayload {
+                operation: "mint-onchain",
+                title: "Fund this on-chain address".to_string(),
+                content: quote.request.clone(),
+                message: format!(
+                    "Quote {} is waiting for an on-chain confirmation",
+                    short_id(&quote.id)
+                ),
+            })
+            .ok();
+
+            let quote_id = quote.id.clone();
+            let mut stream = wallet.proof_stream(quote, SplitTarget::default(), None);
+            let mut minted = Amount::ZERO;
+            loop {
+                match stream.next().await {
+                    Some(Ok(proofs)) => {
+                        let batch = proofs.total_amount()?;
+                        minted += batch;
+                        tx.send(AppEvent::OperationProgress {
+                            operation: "mint-onchain",
+                            message: format!(
+                                "Aggregated {batch} sat from quote {}",
+                                short_id(&quote_id)
+                            ),
+                        })
+                        .ok();
+                    }
+                    Some(Err(err)) => return Err(anyhow!(err)),
+                    None => break,
+                }
+            }
+            if minted == Amount::ZERO {
+                bail!("mint completed without issuing proofs");
+            }
+            Ok(format!("Minted {minted} sat"))
+        }
+        .await;
+        finish_operation("mint-onchain", result, runtime, tx).await;
+    });
+}
+
+pub fn spawn_bolt11_mint(
+    runtime: Arc<WalletRuntime>,
+    amount: u64,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
     tokio::spawn(async move {
         let result = async {
             let wallet = runtime.wallet();
@@ -359,7 +465,7 @@ pub fn spawn_mint(runtime: Arc<WalletRuntime>, amount: u64, tx: mpsc::UnboundedS
                 )
                 .await?;
             tx.send(AppEvent::OperationPayload {
-                operation: "mint",
+                operation: "mint-bolt11",
                 title: "Pay mint invoice".to_string(),
                 content: quote.request.clone(),
                 message: format!("Quote {} is waiting for payment", short_id(&quote.id)),
@@ -375,7 +481,7 @@ pub fn spawn_mint(runtime: Arc<WalletRuntime>, amount: u64, tx: mpsc::UnboundedS
                         let batch = proofs.total_amount()?;
                         minted += batch;
                         tx.send(AppEvent::OperationProgress {
-                            operation: "mint",
+                            operation: "mint-bolt11",
                             message: format!(
                                 "Aggregated {batch} sat from quote {}",
                                 short_id(&quote_id)
@@ -394,7 +500,7 @@ pub fn spawn_mint(runtime: Arc<WalletRuntime>, amount: u64, tx: mpsc::UnboundedS
             Ok(format!("Minted {minted} sat"))
         }
         .await;
-        finish_operation("mint", result, runtime, tx).await;
+        finish_operation("mint-bolt11", result, runtime, tx).await;
     });
 }
 
@@ -438,7 +544,52 @@ pub fn spawn_receive(
     });
 }
 
-pub fn spawn_melt(
+pub fn spawn_onchain_melt(
+    runtime: Arc<WalletRuntime>,
+    address: String,
+    amount: u64,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    tokio::spawn(async move {
+        let result = async {
+            let wallet = runtime.wallet();
+            let quotes = wallet
+                .quote_onchain_melt_options(&address, Amount::from(amount), None)
+                .await?;
+            let selected = quotes
+                .into_iter()
+                .min_by_key(|quote| quote.fee_reserve)
+                .ok_or_else(|| anyhow!("the federation returned no on-chain fee options"))?;
+            let quote = wallet.select_onchain_melt_quote(selected).await?;
+            tx.send(AppEvent::OperationProgress {
+                operation: "melt-onchain",
+                message: format!(
+                    "Quote {}: {} sat + {} sat reserve, {} block estimate",
+                    short_id(&quote.id),
+                    quote.amount,
+                    quote.fee_reserve,
+                    quote.estimated_blocks.unwrap_or_default()
+                ),
+            })
+            .ok();
+            let outcome = wallet
+                .prepare_melt(&quote.id, HashMap::new())
+                .await?
+                .confirm()
+                .await?;
+            Ok(format!(
+                "Paid {} sat with {} sat fee ({})",
+                outcome.amount(),
+                outcome.fee_paid(),
+                outcome.state()
+            ))
+        }
+        .await;
+        finish_operation("melt-onchain", result, runtime, tx).await;
+    });
+}
+
+pub fn spawn_bolt11_melt(
     runtime: Arc<WalletRuntime>,
     invoice: String,
     tx: mpsc::UnboundedSender<AppEvent>,
@@ -452,7 +603,7 @@ pub fn spawn_melt(
                 .melt_quote(PaymentMethod::BOLT11, invoice, None, None)
                 .await?;
             tx.send(AppEvent::OperationProgress {
-                operation: "melt",
+                operation: "melt-bolt11",
                 message: format!(
                     "Quote {}: {} sat + {} sat reserve",
                     short_id(&quote.id),
@@ -474,7 +625,7 @@ pub fn spawn_melt(
             ))
         }
         .await;
-        finish_operation("melt", result, runtime, tx).await;
+        finish_operation("melt-bolt11", result, runtime, tx).await;
     });
 }
 
@@ -522,6 +673,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use cdk::nuts::nut01::BlsSecretKey;
+    use cdk::nuts::nut04::{MintMethodOptions, MintMethodSettings};
+    use cdk::nuts::nut05::{MeltMethodOptions, MeltMethodSettings};
     use cdk::Amount;
     use cdk_common::federation::{
         generate_trusted_dealer_configs, FederationConfigDigest, MemberId, ThresholdParams,
@@ -539,6 +692,40 @@ mod tests {
         let mut bytes = [0u8; 32];
         bytes[31] = member_id.get() as u8;
         SecretKey::from_slice(&bytes).expect("valid secp256k1 secret")
+    }
+
+    #[test]
+    fn payment_capabilities_follow_advertised_methods() {
+        let onchain = PaymentMethod::Known(KnownMethod::Onchain);
+        let mut mint_info = MintInfo::new();
+        mint_info.nuts.nut04 = cdk::nuts::nut04::Settings::new(
+            vec![MintMethodSettings {
+                method: onchain.clone(),
+                unit: CurrencyUnit::Sat,
+                method_name: Some("Onchain".to_string()),
+                min_amount: Some(Amount::from(1)),
+                max_amount: Some(Amount::from(50_000_000)),
+                options: Some(MintMethodOptions::Onchain { confirmations: 1 }),
+            }],
+            false,
+        );
+        mint_info.nuts.nut05 = cdk::nuts::nut05::Settings {
+            methods: vec![MeltMethodSettings {
+                method: onchain,
+                unit: CurrencyUnit::Sat,
+                method_name: Some("Onchain".to_string()),
+                min_amount: Some(Amount::from(1)),
+                max_amount: Some(Amount::from(50_000_000)),
+                options: None::<MeltMethodOptions>,
+            }],
+            disabled: false,
+        };
+
+        let methods = PaymentCapabilities::from_mint_info(&mint_info);
+        assert!(methods.mint_onchain);
+        assert!(methods.melt_onchain);
+        assert!(!methods.mint_bolt11);
+        assert!(!methods.melt_bolt11);
     }
 
     fn member(member_id: MemberId) -> TrustedDealerMember {
