@@ -2458,11 +2458,11 @@ impl FederationPeerStatus {
         member_id: MemberId,
         journal: &InMemoryFederationJournal,
     ) -> Self {
-        let latest_index = journal.entries().last().map(|entry| entry.index);
+        let latest_index = journal.next_index().checked_sub(1);
         Self::new(
             federation_id,
             member_id,
-            journal.len() as u64,
+            journal.operation_count(),
             latest_index,
             journal.latest_order_digest(),
         )
@@ -3176,7 +3176,7 @@ impl FederationJournalCatchUpResponse {
             federation_id,
             from_index: request.next_index,
             entries,
-            latest_index: journal.entries().last().map(|entry| entry.index),
+            latest_index: journal.next_index().checked_sub(1),
             latest_order_digest: journal.latest_order_digest(),
             materialized_state_digest,
             catch_up_certificate: None,

@@ -806,6 +806,7 @@ impl FederationJournalAppendOutcome {
 /// Deterministic in-memory journal used until durable storage is wired.
 #[derive(Debug, Clone)]
 pub struct InMemoryFederationJournal {
+    base_next_index: u64,
     entries: Vec<FederationJournalEntry>,
     operation_indices: BTreeMap<FederationOperationId, usize>,
     conflict_keys: HashMap<FederationOperationConflictKey, FederationOperationId>,
@@ -823,6 +824,7 @@ impl InMemoryFederationJournal {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            base_next_index: 0,
             entries: Vec::new(),
             operation_indices: BTreeMap::new(),
             conflict_keys: HashMap::new(),
@@ -830,16 +832,34 @@ impl InMemoryFederationJournal {
         }
     }
 
-    /// Number of accepted operations in the journal.
+    /// Create an empty retained suffix rooted at a trusted journal frontier.
+    #[must_use]
+    pub fn from_base(next_index: u64, order_digest: FederationJournalDigest) -> Self {
+        Self {
+            base_next_index: next_index,
+            entries: Vec::new(),
+            operation_indices: BTreeMap::new(),
+            conflict_keys: HashMap::new(),
+            latest_order_digest: order_digest,
+        }
+    }
+
+    /// Number of retained accepted-operation entries after the trusted base.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Return true when the journal has no accepted operations.
+    /// Total accepted-operation count including the trusted base.
+    #[must_use]
+    pub fn operation_count(&self) -> u64 {
+        self.next_index()
+    }
+
+    /// Return true when the logical journal has no accepted operations.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.next_index() == 0
     }
 
     /// Return the latest order digest.
@@ -851,18 +871,33 @@ impl InMemoryFederationJournal {
     /// Return the next journal index that would be appended locally.
     #[must_use]
     pub fn next_index(&self) -> u64 {
-        self.entries.len() as u64
+        self.base_next_index
+            .saturating_add(self.entries.len() as u64)
     }
 
     /// Return the digest after the entry immediately before `next_index`.
     #[must_use]
     pub fn order_digest_before(&self, next_index: u64) -> Option<FederationJournalDigest> {
+        if next_index == self.base_next_index {
+            return Some(if next_index == 0 {
+                FederationJournalDigest::genesis()
+            } else {
+                self.entries
+                    .first()
+                    .map_or(self.latest_order_digest, |entry| {
+                        entry.previous_order_digest
+                    })
+            });
+        }
+        if next_index < self.base_next_index {
+            return None;
+        }
         if next_index == 0 {
             return Some(FederationJournalDigest::genesis());
         }
 
         self.entries
-            .get(next_index.saturating_sub(1) as usize)
+            .get(next_index.saturating_sub(self.base_next_index + 1) as usize)
             .map(|entry| entry.order_digest)
     }
 
@@ -884,7 +919,16 @@ impl InMemoryFederationJournal {
 
     /// Rebuild a journal from persisted entries after validating the digest chain.
     pub fn from_entries(entries: Vec<FederationJournalEntry>) -> Result<Self> {
-        let mut journal = Self::new();
+        Self::from_base_and_entries(0, FederationJournalDigest::genesis(), entries)
+    }
+
+    /// Rebuild a retained suffix after a trusted journal frontier.
+    pub fn from_base_and_entries(
+        base_next_index: u64,
+        base_order_digest: FederationJournalDigest,
+        entries: Vec<FederationJournalEntry>,
+    ) -> Result<Self> {
+        let mut journal = Self::from_base(base_next_index, base_order_digest);
 
         for entry in entries {
             let expected_index = journal.next_index();
@@ -960,7 +1004,7 @@ impl InMemoryFederationJournal {
 
             journal
                 .operation_indices
-                .insert(entry.operation_id, entry.index as usize);
+                .insert(entry.operation_id, journal.entries.len());
             if application_reserves_conflict_keys(&entry.application) {
                 for conflict_key in conflict_keys {
                     journal
@@ -1103,7 +1147,8 @@ impl InMemoryFederationJournal {
         consensus_evidence: Option<FederationJournalConsensusEvidence>,
         status: FederationOperationStatus,
     ) -> FederationJournalEntry {
-        let index = self.entries.len() as u64;
+        let index = self.next_index();
+        let retained_index = self.entries.len();
         let previous_order_digest = self.latest_order_digest;
         let order_digest = previous_order_digest.append(index, operation_id);
         let application = FederationApplicationState::from_status(status);
@@ -1119,7 +1164,7 @@ impl InMemoryFederationJournal {
         };
 
         self.entries.push(entry.clone());
-        self.operation_indices.insert(operation_id, index as usize);
+        self.operation_indices.insert(operation_id, retained_index);
         if application_reserves_conflict_keys(&application) {
             for conflict_key in conflict_keys {
                 self.conflict_keys
@@ -1361,6 +1406,43 @@ mod tests {
         assert_eq!(
             journal.entries_from(1)[0].operation_id,
             second_entry.operation_id
+        );
+    }
+
+    #[test]
+    fn journal_continues_from_a_trusted_base_without_retaining_the_prefix() {
+        let base_digest = FederationJournalDigest::from_bytes([42; 32]);
+        let mut journal = InMemoryFederationJournal::from_base(100, base_digest);
+        assert_eq!(journal.len(), 0);
+        assert_eq!(journal.operation_count(), 100);
+        assert_eq!(journal.next_index(), 100);
+        assert_eq!(journal.order_digest_before(100), Some(base_digest));
+        assert_eq!(journal.order_digest_before(99), None);
+
+        let entry = journal
+            .append(mint_quote_envelope(1))
+            .expect("append suffix entry")
+            .entry()
+            .clone();
+        assert_eq!(entry.index, 100);
+        assert_eq!(entry.previous_order_digest, base_digest);
+        assert_eq!(journal.operation_count(), 101);
+        assert_eq!(
+            journal
+                .entry_by_operation_id(entry.operation_id)
+                .map(|stored| stored.index),
+            Some(100)
+        );
+
+        let rebuilt =
+            InMemoryFederationJournal::from_base_and_entries(100, base_digest, vec![entry.clone()])
+                .expect("rebuild retained suffix");
+        assert_eq!(rebuilt.operation_count(), 101);
+        assert_eq!(
+            rebuilt
+                .entry_by_operation_id(entry.operation_id)
+                .map(|stored| stored.index),
+            Some(100)
         );
     }
 

@@ -1,6 +1,6 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (milestone 1 complete; milestone 2 persistence and milestone 3 scheduled/recovery production and exchange in progress)
+Status: in progress (milestone 1 complete; milestone 2 persistence, milestone 3 production/exchange, and milestone 5 exact-frontier startup in progress)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -1128,22 +1128,22 @@ only the independently bounded current AlephBFT live-session backup.
 
 ### Checklist
 
-- [ ] Add base-aware constructors for `InMemoryFederationJournal`, the
+- [x] Add base-aware constructors for `InMemoryFederationJournal`, the
       finalization handler, and `FederationConsensusRuntime` using checkpoint
       cursors/digests.
-- [ ] Represent runtime counts as checkpoint base plus retained suffix; status
+- [x] Represent runtime counts as checkpoint base plus retained suffix; status
       must not confuse suffix vector length with total federation height.
 - [ ] Load journal and finalized-item rows with `..._from` queries beginning at
       the checkpoint cursors.
-- [ ] Stop calling the full-history
+- [x] Stop calling the full-history
       `authenticated_aleph_bft_from_finalized_items` path when a checkpoint fast
       path is available.
 - [ ] Move old-operation duplicate/idempotency checks to existing indexed
       durable operation lookup where an unbounded historical in-memory set was
       previously required.
-- [ ] Reject replayed pre-checkpoint finalized units using signed cursor/session
+- [x] Reject replayed pre-checkpoint finalized units using signed cursor/session
       watermarks rather than a set reconstructed from every historical unit.
-- [ ] Install the signed per-member next-unit indexes as lower replay watermarks
+- [x] Install the signed per-member next-unit indexes as lower replay watermarks
       for every configured member, restore the local member's data-provider
       index from its entry, and restore pending local operations through the
       existing pending-operation table.
@@ -1151,10 +1151,10 @@ only the independently bounded current AlephBFT live-session backup.
       finalized-item, and application-digest bases. Require terminal application
       state and exact equality with the scalar atomic database frontier; do not
       reapply an already materialized local suffix.
-- [ ] Do not run the full materialized-state audit on the normal startup fast
+- [x] Do not run the full materialized-state audit on the normal startup fast
       path. Reject inconsistent checkpoint/frontier metadata and leave arbitrary
       row-corruption detection to the explicit operator audit.
-- [ ] Start from a checkpoint at any complete finalized-unit boundary; do not
+- [x] Start from a checkpoint at any complete finalized-unit boundary; do not
       require or force an AlephBFT session boundary.
 - [ ] Load only the backup for the active AlephBFT session. If the local backup
       is missing or stale, reuse authenticated private-REST backup recovery from
@@ -1172,6 +1172,28 @@ only the independently bounded current AlephBFT live-session backup.
 - [ ] Fall back fail-closed to genesis/full recovery only for an empty federation
       or an explicitly supported database with no checkpoint; do not silently
       trust an invalid checkpoint.
+
+The first startup cutover is intentionally the exact-frontier case. Startup now
+loads and verifies the single trusted quorum plus the atomic scalar frontier
+before issuing any full journal/finalized-item query. Exact agreement constructs
+an empty retained suffix rooted at the checkpoint digests and signed
+session/member cursors; inconsistent or missing trusted metadata fails closed.
+Pending-operation restoration uses the indexed durable operation lookup so a
+checkpointed operation is not requeued. A real post-checkpoint suffix still
+uses the existing full-recovery fallback until base-aware suffix validation and
+the `..._from` startup queries are complete.
+
+Verified with:
+
+- `cargo test -p cdk-common --features federation
+  journal_continues_from_a_trusted_base_without_retaining_the_prefix --lib`;
+- `cargo test -p cdk-common --features federation
+  consensus_runtime_starts_at_a_trusted_checkpoint_without_prefix_rows --lib`;
+- `cargo test -p cdk-axum --features federation
+  federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows --lib`;
+- `cargo test -p cdk-common --features federation --lib`;
+- `cargo check -p cdk-axum --features federation`;
+- `cargo clippy -p cdk-common --lib --features federation -- -D warnings`.
 
 ### Files and references
 

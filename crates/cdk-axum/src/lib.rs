@@ -21,17 +21,17 @@ use cache::HttpCache;
 use cdk::federation::{
     redact_federation_operator_message, FederationAddressAllocationScope,
     FederationAddressKeychain, FederationAlephBftFinalizedItem, FederationAlephBftUnitPayload,
-    FederationCatchUpCertificate, FederationChainObservation, FederationConfig,
-    FederationConfigSnapshot, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
-    FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationFrostApplicationId, FederationFrostDkgContext,
-    FederationInvalidOperationAlertSummary, FederationJournalAppendOutcome,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOnchainWalletStatus,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationSubmitOperationResponse, MemberId,
+    FederationCatchUpCertificate, FederationChainObservation, FederationCheckpoint,
+    FederationCheckpointFrontier, FederationConfig, FederationConfigSnapshot,
+    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
+    FederationDkgFinalizedMemberConfig, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationFrostApplicationId,
+    FederationFrostDkgContext, FederationInvalidOperationAlertSummary,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationOnchainWalletStatus, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationKind, FederationOperationStatus, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSubmitOperationResponse, MemberId,
 };
 use cdk::mint::Mint;
 #[cfg(feature = "federation")]
@@ -2791,6 +2791,64 @@ async fn create_mint_router_with_custom_cache_inner(
 }
 
 #[cfg(feature = "federation")]
+fn checkpoint_is_exact_startup_frontier(
+    checkpoint: &FederationCheckpoint,
+    frontier: &FederationCheckpointFrontier,
+) -> std::result::Result<bool, cdk::Error> {
+    if frontier.materialized_state_audit_mismatch {
+        return Err(FederationError::CheckpointInvalid {
+            reason: "materialized-state audit mismatch is latched".to_string(),
+        }
+        .into());
+    }
+    if frontier.application_next_index > frontier.journal_next_index
+        || frontier.journal_next_index > frontier.finalized_next_item_index
+    {
+        return Err(FederationError::CheckpointInvalid {
+            reason: "durable checkpoint frontier cursors are inconsistent".to_string(),
+        }
+        .into());
+    }
+    if frontier.journal_next_index < checkpoint.journal_next_index
+        || frontier.application_next_index < checkpoint.journal_next_index
+        || frontier.finalized_next_item_index < checkpoint.finalized_next_item_index
+    {
+        return Err(FederationError::CheckpointInvalid {
+            reason: "trusted checkpoint is ahead of the durable local frontier".to_string(),
+        }
+        .into());
+    }
+    if frontier.journal_next_index == checkpoint.journal_next_index
+        && frontier.journal_order_digest != checkpoint.journal_order_digest
+    {
+        return Err(FederationError::CheckpointInvalid {
+            reason: "journal digest disagrees with the trusted checkpoint".to_string(),
+        }
+        .into());
+    }
+    if frontier.application_next_index == checkpoint.journal_next_index
+        && frontier.application_digest != checkpoint.application_digest
+    {
+        return Err(FederationError::CheckpointInvalid {
+            reason: "application digest disagrees with the trusted checkpoint".to_string(),
+        }
+        .into());
+    }
+    if frontier.finalized_next_item_index == checkpoint.finalized_next_item_index
+        && frontier.finalized_item_digest != checkpoint.finalized_item_digest
+    {
+        return Err(FederationError::CheckpointInvalid {
+            reason: "finalized-item digest disagrees with the trusted checkpoint".to_string(),
+        }
+        .into());
+    }
+
+    Ok(frontier.journal_next_index == checkpoint.journal_next_index
+        && frontier.application_next_index == checkpoint.journal_next_index
+        && frontier.finalized_next_item_index == checkpoint.finalized_next_item_index)
+}
+
+#[cfg(feature = "federation")]
 async fn create_federation_runtime_state_with_wallet(
     mint: &Arc<Mint>,
     local_wallet_config: Option<FederatedBdkLocalConfig>,
@@ -2826,30 +2884,85 @@ async fn create_federation_runtime_state_with_wallet(
     tx.set_federation_config(&snapshot).await?;
     tx.commit().await?;
 
-    let persisted_entries = db.get_federation_journal_entries().await?;
     let dkg_sequences = db.get_federation_dkg_member_sequences().await?;
-    let finalized_items = db.get_federation_aleph_bft_finalized_items().await?;
     let active_session = db
         .get_federation_aleph_bft_active_session()
         .await?
         .unwrap_or(0);
-    let recovered_session =
-        latest_aleph_bft_finalized_session(&finalized_items).max(active_session);
-    let mut consensus = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
-        config.public_config(),
-        config.member_id(),
-        recovered_session,
-        finalized_items,
-    )?;
-    ensure_persisted_journal_matches_aleph_bft_recovery(
-        &persisted_entries,
-        consensus.journal().entries(),
-    )?;
-    for entry in &persisted_entries {
-        if should_overlay_local_status_after_aleph_bft_recovery(entry.status()) {
-            consensus.update_application_state(entry.operation_id, entry.application.clone())?;
+    let frontier = db.get_federation_checkpoint_frontier().await?;
+    let trusted_quorum = db.get_trusted_federation_checkpoint_quorum().await?;
+    let checkpoint_consensus = match (frontier.trusted_checkpoint_id, trusted_quorum) {
+        (None, None) => None,
+        (Some(_), None) => {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "trusted checkpoint metadata references a missing quorum".to_string(),
+            }
+            .into());
         }
-    }
+        (None, Some(_)) => {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "trusted checkpoint quorum is not bound to the durable frontier"
+                    .to_string(),
+            }
+            .into());
+        }
+        (Some(trusted_checkpoint_id), Some(quorum)) => {
+            quorum.verify(config.public_config())?;
+            if quorum.checkpoint.id()? != trusted_checkpoint_id {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "trusted checkpoint ID does not match its stored quorum".to_string(),
+                }
+                .into());
+            }
+            if active_session < quorum.checkpoint.aleph_bft_session {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "active AlephBFT session is behind the trusted checkpoint".to_string(),
+                }
+                .into());
+            }
+            if checkpoint_is_exact_startup_frontier(&quorum.checkpoint, &frontier)? {
+                let mut consensus =
+                    FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint(
+                        config.public_config(),
+                        config.member_id(),
+                        &quorum.checkpoint,
+                    )?;
+                if active_session > quorum.checkpoint.aleph_bft_session {
+                    consensus.begin_aleph_bft_session(active_session)?;
+                }
+                Some(consensus)
+            } else {
+                None
+            }
+        }
+    };
+    let mut consensus = match checkpoint_consensus {
+        Some(consensus) => consensus,
+        None => {
+            let persisted_entries = db.get_federation_journal_entries().await?;
+            let finalized_items = db.get_federation_aleph_bft_finalized_items().await?;
+            let recovered_session =
+                latest_aleph_bft_finalized_session(&finalized_items).max(active_session);
+            let mut consensus =
+                FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+                    config.public_config(),
+                    config.member_id(),
+                    recovered_session,
+                    finalized_items,
+                )?;
+            ensure_persisted_journal_matches_aleph_bft_recovery(
+                &persisted_entries,
+                consensus.journal().entries(),
+            )?;
+            for entry in &persisted_entries {
+                if should_overlay_local_status_after_aleph_bft_recovery(entry.status()) {
+                    consensus
+                        .update_application_state(entry.operation_id, entry.application.clone())?;
+                }
+            }
+            consensus
+        }
+    };
     let session_id = consensus.aleph_bft_status()?.session;
     let mut tx = db.begin_transaction().await?;
     tx.set_federation_aleph_bft_active_session(session_id)
@@ -2871,6 +2984,10 @@ async fn create_federation_runtime_state_with_wallet(
             .journal()
             .entry_by_operation_id(pending.operation_id)
             .is_some()
+            || db
+                .get_federation_journal_entry_by_operation_id(pending.operation_id)
+                .await?
+                .is_some()
         {
             continue;
         }

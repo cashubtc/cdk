@@ -11,13 +11,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use super::{
     FederationApplicationState, FederationCatchUpCertificate, FederationCatchUpCertificateQuorum,
-    FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationMaterializedStateDigest, FederationOperationConflictKey, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPeerStatus,
-    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
-    ThresholdParams, FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
+    FederationCheckpoint, FederationConfig, FederationError, FederationId,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPeerStatus, FederationRestMessageKind,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    InMemoryFederationJournal, MemberId, Result, ThresholdParams,
+    FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -954,6 +955,7 @@ pub(crate) struct FederationAlephBftFinalizationHandler {
     finalized_units: BTreeSet<(u64, MemberId, u64)>,
     finalized_operation_ids: BTreeSet<FederationOperationId>,
     next_unit_index_by_member: BTreeMap<MemberId, u64>,
+    replay_floor_by_member: BTreeMap<MemberId, u64>,
 }
 
 impl FederationAlephBftFinalizationHandler {
@@ -989,6 +991,7 @@ impl FederationAlephBftFinalizationHandler {
             finalized_units: BTreeSet::new(),
             finalized_operation_ids: BTreeSet::new(),
             next_unit_index_by_member: BTreeMap::new(),
+            replay_floor_by_member: BTreeMap::new(),
         })
     }
 
@@ -1015,8 +1018,30 @@ impl FederationAlephBftFinalizationHandler {
             .copied()
             .map(|member_id| (member_id, 0))
             .collect();
+        handler.replay_floor_by_member = handler.next_unit_index_by_member.clone();
         handler.allowed_members = Some(allowed_members);
         Ok(handler)
+    }
+
+    fn from_checkpoint(
+        config: &FederationConfig,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<Self> {
+        checkpoint.validate_against_config(config)?;
+        let allowed_members = config.members.keys().copied().collect::<BTreeSet<_>>();
+        Ok(Self {
+            federation_id: config.federation_id,
+            session: checkpoint.aleph_bft_session,
+            next_unit_finalization_index: checkpoint.next_unit_finalization_index,
+            next_item_index: checkpoint.finalized_next_item_index,
+            max_unit_payload_bytes: FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+            allowed_members: Some(allowed_members),
+            operation_config: Some(config.clone()),
+            finalized_units: BTreeSet::new(),
+            finalized_operation_ids: BTreeSet::new(),
+            next_unit_index_by_member: checkpoint.next_unit_index_by_member.clone(),
+            replay_floor_by_member: checkpoint.next_unit_index_by_member.clone(),
+        })
     }
 
     fn recover_from_finalized_items(
@@ -1260,6 +1285,11 @@ impl FederationAlephBftFinalizationHandler {
             operation_config,
             finalized_units,
             finalized_operation_ids,
+            replay_floor_by_member: next_unit_index_by_member
+                .keys()
+                .copied()
+                .map(|member_id| (member_id, 0))
+                .collect(),
             next_unit_index_by_member,
         })
     }
@@ -1311,6 +1341,9 @@ impl FederationAlephBftFinalizationHandler {
         for next_unit_index in self.next_unit_index_by_member.values_mut() {
             *next_unit_index = 0;
         }
+        for replay_floor in self.replay_floor_by_member.values_mut() {
+            *replay_floor = 0;
+        }
         Ok(())
     }
 
@@ -1338,6 +1371,17 @@ impl FederationAlephBftFinalizationHandler {
                     member_id: payload.submitting_member,
                 });
             }
+        }
+        if self
+            .replay_floor_by_member
+            .get(&payload.submitting_member)
+            .is_some_and(|floor| payload.unit_index < *floor)
+        {
+            return Err(FederationError::DuplicateAlephBftUnit {
+                session: payload.session,
+                member_id: payload.submitting_member,
+                unit_index: payload.unit_index,
+            });
         }
         if payload.items.is_empty() {
             return Err(FederationError::EmptyAlephBftUnit);
@@ -1585,6 +1629,41 @@ impl FederationConsensusRuntime {
         )
     }
 
+    fn from_authenticated_checkpoint(
+        public_config: FederationConfig,
+        local_member: MemberId,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<Self> {
+        checkpoint.validate_against_config(&public_config)?;
+        let next_local_unit_index = checkpoint
+            .next_unit_index_by_member
+            .get(&local_member)
+            .copied()
+            .ok_or(FederationError::UnknownMember {
+                member_id: local_member,
+            })?;
+        Ok(Self {
+            data_provider: FederationAlephBftUnitDataProvider::new(
+                public_config.federation_id,
+                local_member,
+                checkpoint.aleph_bft_session,
+            )
+            .with_next_unit_index(next_local_unit_index),
+            finalization_handler: FederationAlephBftFinalizationHandler::from_checkpoint(
+                &public_config,
+                checkpoint,
+            )?,
+            journal: InMemoryFederationJournal::from_base(
+                checkpoint.journal_next_index,
+                checkpoint.journal_order_digest,
+            ),
+            finalized_items: Vec::new(),
+            pending_finalization_units: BTreeMap::new(),
+            pending_finalization_operation_ids: BTreeSet::new(),
+            pending_finalization_conflict_keys: HashMap::new(),
+        })
+    }
+
     fn recover_inner(
         federation_id: FederationId,
         local_member: MemberId,
@@ -1701,10 +1780,9 @@ impl FederationConsensusRuntime {
             queued_item_count: u64::try_from(self.queued_len()).expect("queue length fits in u64"),
             pending_finalization_item_count: u64::try_from(self.pending_finalization_len())
                 .expect("pending finalization item count fits in u64"),
-            finalized_item_count: u64::try_from(self.finalized_items.len())
-                .expect("finalized item count fits in u64"),
-            accepted_operation_count: self.journal.len() as u64,
-            latest_accepted_operation_index: self.journal.entries().last().map(|entry| entry.index),
+            finalized_item_count: self.next_item_index(),
+            accepted_operation_count: self.journal.operation_count(),
+            latest_accepted_operation_index: self.journal.next_index().checked_sub(1),
             allowed_member_count: self.finalization_handler.allowed_member_count(),
         }
     }
@@ -2002,6 +2080,20 @@ pub struct FederationQuorumVerifiedCatchUp {
 }
 
 impl FederationConsensusRuntime {
+    /// Start an authenticated runtime at an already verified checkpoint frontier.
+    pub fn authenticated_aleph_bft_from_checkpoint(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<Self> {
+        validate_runtime_roster(
+            public_config.members.keys().copied(),
+            public_config.threshold_params.consensus_threshold,
+            member_id,
+        )?;
+        Self::from_authenticated_checkpoint(public_config.clone(), member_id, checkpoint)
+    }
+
     /// Recover an authenticated AlephBFT runtime from retained finalized items.
     pub fn authenticated_aleph_bft_from_finalized_items(
         public_config: &FederationConfig,

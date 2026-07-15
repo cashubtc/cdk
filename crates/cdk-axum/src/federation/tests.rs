@@ -19,7 +19,8 @@ use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftActivityRequest,
     FederationAlephBftBackupResponse, FederationAlephBftNetworkMessageRequest,
     FederationAlephBftNetworkMessageResponse, FederationAlephBftPendingOperationRecord,
-    FederationAlephBftUnitPayload, FederationApplicationState, FederationConfigSnapshot,
+    FederationAlephBftUnitPayload, FederationApplicationState, FederationCheckpointBoundary,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigSnapshot,
     FederationConsensusItem, FederationConsensusRuntime, FederationDkgActivationRequest,
     FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
     FederationDkgCommitmentRound, FederationDkgMemberKeysetShare, FederationDkgSetupMethod,
@@ -8343,6 +8344,85 @@ async fn federation_runtime_startup_persists_public_config_snapshot() {
     assert_eq!(
         snapshot.config_digest,
         snapshot.config.config_digest().expect("config digest")
+    );
+}
+
+#[tokio::test]
+async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let envelope = mint_quote_envelope(&state, &QuoteId::new());
+    state
+        .submit_federation_envelope(envelope)
+        .await
+        .expect("persist checkpointed operation");
+
+    let db = state.mint.localstore();
+    let frontier = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("checkpoint frontier");
+    let consensus = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await;
+    let status = consensus.status();
+    let boundary = FederationCheckpointBoundary::from_complete_unit(
+        &frontier,
+        status.session,
+        status.next_unit_finalization_index,
+        consensus.next_unit_index_by_member().clone(),
+    )
+    .expect("complete checkpoint boundary");
+    drop(consensus);
+    let materialized_state_digest = state
+        .mint
+        .federation_materialized_state_snapshot()
+        .await
+        .expect("materialized state snapshot")
+        .digest()
+        .expect("materialized state digest");
+    let checkpoint = boundary
+        .recovery_checkpoint(&public_config, None, materialized_state_digest)
+        .expect("recovery checkpoint");
+    let local_private = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .private_config();
+    let quorum = FederationCheckpointQuorum::new(
+        checkpoint.clone(),
+        vec![
+            FederationCheckpointSignature::new_signed(&checkpoint, local_private)
+                .expect("local checkpoint signature"),
+            FederationCheckpointSignature::new_signed(&checkpoint, &peer_private)
+                .expect("peer checkpoint signature"),
+        ],
+    );
+    quorum.verify(&public_config).expect("checkpoint quorum");
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin checkpoint promotion");
+    tx.promote_verified_federation_checkpoint(&quorum)
+        .await
+        .expect("promote checkpoint");
+    tx.commit().await.expect("commit checkpoint promotion");
+
+    let (consensus, _) = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("checkpoint startup");
+    let consensus = consensus.expect("consensus");
+    let consensus = consensus.lock().await;
+    assert_eq!(consensus.status().accepted_operation_count, 1);
+    assert_eq!(consensus.status().finalized_item_count, 1);
+    assert!(consensus.journal().entries().is_empty());
+    assert!(consensus.finalized_items().is_empty());
+    assert_eq!(
+        consensus.journal().latest_order_digest(),
+        checkpoint.journal_order_digest
     );
 }
 

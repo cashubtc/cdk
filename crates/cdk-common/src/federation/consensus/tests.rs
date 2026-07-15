@@ -1793,6 +1793,83 @@ fn consensus_runtime_recovers_from_finalized_items() {
 }
 
 #[test]
+fn consensus_runtime_starts_at_a_trusted_checkpoint_without_prefix_rows() {
+    let (config, _) = consensus_config_three();
+    let boundary = super::super::FederationCheckpointBoundary {
+        journal_next_index: 1_000,
+        journal_order_digest: super::super::FederationJournalDigest::from_bytes([31; 32]),
+        finalized_next_item_index: 1_200,
+        finalized_item_digest: super::super::FederationFinalizedItemDigest::from_bytes([32; 32]),
+        application_digest: super::super::FederationApplicationDigest::from_bytes([33; 32]),
+        aleph_bft_session: 7,
+        next_unit_finalization_index: 9,
+        next_unit_index_by_member: BTreeMap::from([
+            (member_id_value(1), 4),
+            (member_id_value(2), 5),
+            (member_id_value(3), 6),
+        ]),
+    };
+    let checkpoint = boundary
+        .recovery_checkpoint(
+            &config,
+            None,
+            super::super::FederationMaterializedStateDigest::from_bytes([34; 32]),
+        )
+        .expect("recovery checkpoint");
+    let mut runtime = FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint(
+        &config,
+        member_id_value(1),
+        &checkpoint,
+    )
+    .expect("checkpoint runtime");
+
+    let status = runtime.status();
+    assert_eq!(status.accepted_operation_count, 1_000);
+    assert_eq!(status.latest_accepted_operation_index, Some(999));
+    assert_eq!(status.finalized_item_count, 1_200);
+    assert_eq!(status.next_item_index, 1_200);
+    assert_eq!(status.next_unit_finalization_index, 9);
+    assert_eq!(runtime.journal().len(), 0);
+    assert_eq!(runtime.finalized_items().len(), 0);
+    assert_eq!(runtime.next_unit_index(), 4);
+    assert_eq!(runtime.peer_status().operation_count, 1_000);
+    assert_eq!(runtime.peer_status().latest_index, Some(999));
+
+    let replay = FederationAlephBftUnitPayload::new(
+        config.federation_id,
+        member_id_value(2),
+        7,
+        4,
+        vec![module_fact_item("replay")],
+    )
+    .expect("pre-checkpoint replay");
+    assert!(matches!(
+        runtime.finalize_unit(replay),
+        Err(FederationError::DuplicateAlephBftUnit {
+            session: 7,
+            member_id,
+            unit_index: 4,
+        }) if member_id == member_id_value(2)
+    ));
+
+    let suffix = FederationAlephBftUnitPayload::new(
+        config.federation_id,
+        member_id_value(2),
+        7,
+        5,
+        vec![module_fact_item("suffix")],
+    )
+    .expect("post-checkpoint unit");
+    assert!(runtime
+        .finalize_unit(suffix)
+        .expect("finalize suffix")
+        .is_empty());
+    assert_eq!(runtime.finalized_items()[0].accepted_item_index, 1_200);
+    assert_eq!(runtime.status().finalized_item_count, 1_201);
+    assert_eq!(runtime.status().next_unit_finalization_index, 10);
+}
+
+#[test]
 fn consensus_runtime_recovery_preserves_finalized_conflict_rejection() {
     let federation_id = federation_id(14);
     let first = mint_quote_envelope_with_amount(federation_id, "quote-conflict", 1);
