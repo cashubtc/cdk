@@ -3,9 +3,11 @@
 
   nixConfig = {
     extra-substituters = [
+      "https://cache.cashudevkit.org"
       "https://cashudevkit.cachix.org"
     ];
     extra-trusted-public-keys = [
+      "cashudevkit:Ukc9ltM4674fDHWWay+q4vdHDYKF48QIm6A+0z5/FqQ="
       "cashudevkit.cachix.org-1:zFKdvMiTllKWxIFNTjXgisZsOFufmaZXjWJNcmc8r+4="
     ];
   };
@@ -1367,10 +1369,25 @@
         ++ lib.optionals isDarwin [
           # Additional darwin specific native inputs can be set here
         ];
+
+        defaultPackage =
+          if muslTarget != null then
+            mkStaticPackage {
+              bin = "cdk-mintd";
+              name = "cdk-mintd";
+              cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+            }
+          else
+            mkDarwinPackage {
+              bin = "cdk-mintd";
+              name = "cdk-mintd";
+              cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
+            };
       in
       {
         # Expose deps for explicit cache warming
         packages = {
+          default = defaultPackage;
           deps = workspaceDeps;
           deps-msrv = workspaceDepsMsrv;
           # Language bindings (cached cdylib + uniffi codegen)
@@ -1384,11 +1401,7 @@
         }
         # Static binary packages (fully statically-linked, Linux only)
         // lib.optionalAttrs (muslTarget != null) {
-          cdk-mintd-static = mkStaticPackage {
-            bin = "cdk-mintd";
-            name = "cdk-mintd";
-            cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
-          };
+          cdk-mintd-static = defaultPackage;
 
           cdk-mintd-ldk-static = mkStaticPackage {
             bin = "cdk-mintd";
@@ -1404,11 +1417,7 @@
         }
         # macOS release binary packages (dynamically linked, Apple Silicon only)
         // lib.optionalAttrs isDarwin {
-          cdk-mintd-darwin = mkDarwinPackage {
-            bin = "cdk-mintd";
-            name = "cdk-mintd";
-            cargoExtraArgs = "--bin cdk-mintd --features postgres,prometheus,redis";
-          };
+          cdk-mintd-darwin = defaultPackage;
 
           cdk-mintd-ldk-darwin = mkDarwinPackage {
             bin = "cdk-mintd";

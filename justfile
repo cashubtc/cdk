@@ -73,6 +73,28 @@ build *ARGS="--workspace --all-targets":
   fi
   cargo build {{ARGS}}
 
+# Build the default Nix package.
+nix-build:
+  nix build --accept-flake-config
+
+# Build and push the default package and reusable Crane dependency artifacts to Attic.
+attic-push:
+  #!/usr/bin/env bash
+  set -euo pipefail
+  cd "{{justfile_directory()}}"
+  targets=(
+    '.#default'
+    '.#deps'
+    '.#deps-msrv'
+  )
+  system="$(nix eval --impure --raw --expr builtins.currentSystem)"
+  if [[ "$system" == *-linux ]]; then
+    targets+=('.#deps-static')
+  fi
+  nix build --accept-flake-config --json --no-link "${targets[@]}" \
+    | jq -r '.[].outputs | to_entries[].value' \
+    | attic push --stdin cashudevkit-cache:cashudevkit
+
 # Build a statically-linked binary by profile name (requires nix)
 # Profiles: cdk-mintd-static, cdk-mintd-ldk-static, cdk-cli-static
 build-static profile:
@@ -99,12 +121,12 @@ ci-cache-build:
   set -euo pipefail
   cd "{{justfile_directory()}}"
   nix build -L --no-link \
-    'path:.#deps' \
-    'path:.#deps-msrv' \
-    'path:.#checks.x86_64-linux.workspace-clippy-all-targets' \
-    'path:.#dart-bindings' \
-    'path:.#kotlin-bindings' \
-    'path:.#go-bindings'
+    '.#deps' \
+    '.#deps-msrv' \
+    '.#checks.x86_64-linux.workspace-clippy-all-targets' \
+    '.#dart-bindings' \
+    '.#kotlin-bindings' \
+    '.#go-bindings'
 
 # Push the locally built CI cache warmup targets to Cachix.
 ci-cache-push:
@@ -112,12 +134,12 @@ ci-cache-push:
   set -euo pipefail
   cd "{{justfile_directory()}}"
   nix build --json --no-link \
-    'path:.#deps' \
-    'path:.#deps-msrv' \
-    'path:.#checks.x86_64-linux.workspace-clippy-all-targets' \
-    'path:.#dart-bindings' \
-    'path:.#kotlin-bindings' \
-    'path:.#go-bindings' \
+    '.#deps' \
+    '.#deps-msrv' \
+    '.#checks.x86_64-linux.workspace-clippy-all-targets' \
+    '.#dart-bindings' \
+    '.#kotlin-bindings' \
+    '.#go-bindings' \
     | jq -r '.[].outputs | to_entries[].value' \
     | cachix push cashudevkit
 
