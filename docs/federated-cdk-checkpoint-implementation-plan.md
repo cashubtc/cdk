@@ -1,6 +1,6 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (milestone 1 complete; milestone 2 persistence and milestone 3 scheduled production/exchange in progress)
+Status: in progress (milestone 1 complete; milestone 2 persistence and milestone 3 scheduled/recovery production and exchange in progress)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -887,7 +887,7 @@ peer-sync tick.
 - [x] Add checkpoint routes under `/federation/v1` and matching peer-client
       methods with existing request admission, authentication, replay-window,
       timeout, and backoff rules.
-- [ ] Have peers return an already stored local signature when available. A peer
+- [x] Have peers return an already stored local signature when available. A peer
       may create one only when the exact checkpoint equals its own deterministic
       scheduled boundary or exact fully applied stable tip; never sign arbitrary
       caller data.
@@ -896,10 +896,10 @@ peer-sync tick.
       members.
 - [x] Serve a stored assembled quorum directly so a recovering member does not
       contact its historical signers or cause any new signing.
-- [ ] Add the recovery-checkpoint stable-tip path with quorum tip discovery,
+- [x] Add the recovery-checkpoint stable-tip path with quorum tip discovery,
       scheduled-anchor validation, debounce, checkpoint-ID deduplication, and no
       periodic work while the tip is unchanged.
-- [ ] Ensure a recovery checkpoint cannot alter the derivation of the next
+- [x] Ensure a recovery checkpoint cannot alter the derivation of the next
       scheduled checkpoint.
 - [x] Keep checkpoint traffic off AlephBFT and out of the operation journal.
 - [x] Ensure ordinary status polling transfers only scalar checkpoint summary
@@ -941,11 +941,26 @@ Unchanged rounds therefore perform no checkpoint signing, audit, quorum write,
 or full-proof transfer. The summary re-entry hook also closes the ordinary
 crash window between a durable eligible boundary and candidate capture.
 
-Recovery-checkpoint stable-tip orchestration remains open. The first-boundary
-selection and event-driven-frontier checklist items also remain intentionally
-unchecked until catch-up/restart paths prove that a member which missed the
-live hook selects the same earliest eligible complete-unit boundary rather than
-its later catch-up tip.
+Recovery checkpoints now reuse the same candidate, signature, quorum,
+promotion, fetch, and dissemination path. A member that is not healthy requests
+recovery through its authenticated scalar-summary request and reachable members
+relay that demand until a proof is formed. Stable-tip responses are themselves
+member-signed and commit to the exact terminal journal, finalized-item,
+application, session, finalized-unit, and per-member unit frontiers without
+performing a materialized-state audit. A member requires its local boundary to
+match a configured quorum of those signed summaries for two consecutive sync
+rounds, then reacquires the application lock, rejects a moved tip, validates the
+latest scheduled anchor, and performs the one full local audit/signature. A
+stored candidate suppresses repeat audits, a moving tip resets the debounce,
+and a promoted recovery quorum clears demand only when it still matches that
+member's current complete-unit boundary. If the tip moved while signatures were
+collected, demand remains active and the same bounded process targets the newer
+stable tip.
+
+The first-boundary selection and event-driven-frontier checklist items remain
+intentionally unchecked until catch-up/restart paths prove that a member which
+missed the live hook selects the same earliest eligible complete-unit boundary
+rather than its later catch-up tip.
 
 Verified with:
 
@@ -959,7 +974,14 @@ Verified with:
 - `cargo check -p cdk-axum --features federation`;
 - `cargo test -p cdk-common --features federation
   checkpoint_transport_messages_are_bound_and_bounded --lib`;
-- `cargo clippy -p cdk-axum --lib --features federation -- -D warnings`.
+- `cargo test -p cdk-common --features federation
+  transported_complete_boundary_requires_the_exact_roster --lib`;
+- `cargo test -p cdk-axum --features federation
+  recovery_checkpoint_observation_requires_two_identical_boundaries --lib`.
+
+The current `cdk-axum` clippy rerun remains blocked by existing federation
+warnings outside this checkpoint slice; the checkpoint changes are covered by
+the successful `cargo check` and targeted tests above.
 
 ### Files and references
 

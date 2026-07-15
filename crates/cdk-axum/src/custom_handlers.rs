@@ -2016,6 +2016,8 @@ mod tests {
                 operation_application: Arc::new(tokio::sync::Mutex::new(())),
                 catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
                 materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
+                recovery_checkpoint_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
                 #[cfg(test)]
                 catch_up_certificate_quorum_validation_count: Arc::new(
                     std::sync::atomic::AtomicUsize::new(0),
@@ -2867,6 +2869,8 @@ mod tests {
                 operation_application: Arc::new(tokio::sync::Mutex::new(())),
                 catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
                 materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
+                recovery_checkpoint_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
                 #[cfg(test)]
                 catch_up_certificate_quorum_validation_count: Arc::new(
                     std::sync::atomic::AtomicUsize::new(0),

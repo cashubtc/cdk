@@ -2,10 +2,10 @@ use std::collections::BTreeSet;
 
 use cdk::federation::{
     FederationCatchUpCertificate, FederationCatchUpOperation, FederationCheckpoint,
-    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSummary,
-    FederationCheckpointSummaryResponse, FederationError, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationPeerStatus, MemberConfigPublic, MemberId,
+    FederationCheckpointKind, FederationCheckpointSummary, FederationCheckpointSummaryResponse,
+    FederationError, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalEntry, FederationMaterializedStateDigest, FederationPeerStatus,
+    MemberConfigPublic, MemberId,
 };
 use cdk_http_client::{Async, Transport};
 use tokio::time::{self, Instant};
@@ -231,6 +231,19 @@ where
     if peers.is_empty() {
         return 0;
     }
+    let startup_recovery = !matches!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    );
+    if startup_recovery
+        && matches!(
+            state.federation.stable_checkpoint_boundary().await,
+            Ok(Some(_))
+        )
+    {
+        state.federation.request_recovery_checkpoint();
+    }
+    let request_recovery_checkpoint = state.federation.recovery_checkpoint_is_requested();
     if let Err(err) = state
         .federation
         .ensure_scheduled_checkpoint_candidate()
@@ -242,7 +255,10 @@ where
     let mut updates = 0;
     let mut peer_summaries = Vec::with_capacity(peers.len());
     for &peer in peers {
-        match client.checkpoint_summary(peer).await {
+        match client
+            .checkpoint_summary(peer, request_recovery_checkpoint)
+            .await
+        {
             Ok(summary) => peer_summaries.push((peer, summary)),
             Err(err) => tracing::warn!(
                 member_id = %peer.member_id,
@@ -250,6 +266,10 @@ where
                 err
             ),
         }
+    }
+
+    if let Err(err) = maybe_capture_recovery_checkpoint(state, &peer_summaries).await {
+        tracing::warn!("Could not capture recovery checkpoint: {}", err);
     }
 
     for (peer, summary) in &peer_summaries {
@@ -296,15 +316,34 @@ where
         }
     }
 
-    let Some(candidate) = local_pending_scheduled_checkpoint(state).await else {
-        disseminate_latest_checkpoint_quorums(state, client, &peer_summaries, &mut updates).await;
-        return updates;
+    for kind in [
+        FederationCheckpointKind::Scheduled,
+        FederationCheckpointKind::Recovery,
+    ] {
+        updates += exchange_checkpoint_candidate(state, client, &peer_summaries, kind).await;
+    }
+
+    disseminate_latest_checkpoint_quorums(state, client, &peer_summaries, &mut updates).await;
+    updates
+}
+
+async fn exchange_checkpoint_candidate<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peer_summaries: &[(&MemberConfigPublic, FederationCheckpointSummaryResponse)],
+    kind: FederationCheckpointKind,
+) -> usize
+where
+    T: Transport,
+{
+    let Some(candidate) = local_pending_checkpoint(state, kind).await else {
+        return 0;
     };
     let checkpoint_id = match candidate.id() {
         Ok(checkpoint_id) => checkpoint_id,
         Err(err) => {
             tracing::warn!("Could not identify local federation checkpoint: {}", err);
-            return updates;
+            return 0;
         }
     };
     let mut stored_signers = match state
@@ -323,15 +362,17 @@ where
                 "Could not load federation checkpoint signatures: {}",
                 err
             );
-            return updates;
+            return 0;
         }
     };
-
-    for (peer, summary) in &peer_summaries {
+    let mut updates = 0;
+    for (peer, summary) in peer_summaries {
+        let peer_candidate = match kind {
+            FederationCheckpointKind::Scheduled => summary.latest_scheduled_candidate.as_ref(),
+            FederationCheckpointKind::Recovery => summary.latest_recovery_candidate.as_ref(),
+        };
         if stored_signers.contains(&peer.member_id)
-            || summary
-                .latest_scheduled_candidate
-                .as_ref()
+            || peer_candidate
                 .is_none_or(|peer_candidate| peer_candidate.checkpoint_id != checkpoint_id)
         {
             continue;
@@ -369,8 +410,6 @@ where
             ),
         }
     }
-
-    disseminate_latest_checkpoint_quorums(state, client, &peer_summaries, &mut updates).await;
     updates
 }
 
@@ -378,9 +417,8 @@ async fn local_checkpoint_quorum_is_current(
     state: &MintState,
     peer_quorum: &FederationCheckpointSummary,
 ) -> bool {
-    match state
-        .mint
-        .localstore()
+    let db = state.mint.localstore();
+    let same_kind = match db
         .get_latest_federation_checkpoint_quorum(peer_quorum.kind)
         .await
     {
@@ -390,39 +428,106 @@ async fn local_checkpoint_quorum_is_current(
             else {
                 return false;
             };
-            local_summary.checkpoint_id == peer_quorum.checkpoint_id
-                || local_summary.scheduled_checkpoint_sequence
-                    > peer_quorum.scheduled_checkpoint_sequence
-                || (local_summary.scheduled_checkpoint_sequence
-                    == peer_quorum.scheduled_checkpoint_sequence
-                    && local_summary.finalized_next_item_index
-                        >= peer_quorum.finalized_next_item_index
-                    && local_summary.journal_next_index >= peer_quorum.journal_next_index)
+            checkpoint_summary_covers(&local_summary, peer_quorum)
         }
         Ok(None) => false,
         Err(err) => {
             tracing::warn!("Could not load local federation checkpoint quorum: {}", err);
             false
         }
+    };
+    if same_kind || peer_quorum.kind == FederationCheckpointKind::Scheduled {
+        return same_kind;
+    }
+    match db
+        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+        .await
+    {
+        Ok(Some(local_quorum)) => {
+            FederationCheckpointSummary::from_checkpoint(&local_quorum.checkpoint)
+                .is_ok_and(|local_summary| checkpoint_summary_covers(&local_summary, peer_quorum))
+        }
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!("Could not load local scheduled checkpoint quorum: {}", err);
+            false
+        }
     }
 }
 
-async fn local_pending_scheduled_checkpoint(state: &MintState) -> Option<FederationCheckpoint> {
-    let db = state.mint.localstore();
-    let candidate = match db
-        .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+fn checkpoint_summary_covers(
+    local: &FederationCheckpointSummary,
+    candidate: &FederationCheckpointSummary,
+) -> bool {
+    local.checkpoint_id == candidate.checkpoint_id
+        || local.scheduled_checkpoint_sequence > candidate.scheduled_checkpoint_sequence
+        || (local.scheduled_checkpoint_sequence == candidate.scheduled_checkpoint_sequence
+            && local.finalized_next_item_index >= candidate.finalized_next_item_index
+            && local.journal_next_index >= candidate.journal_next_index)
+}
+
+async fn maybe_capture_recovery_checkpoint(
+    state: &MintState,
+    peer_summaries: &[(&MemberConfigPublic, FederationCheckpointSummaryResponse)],
+) -> Result<(), cdk::Error> {
+    if !state.federation.recovery_checkpoint_is_requested() {
+        return Ok(());
+    }
+    let Some(local_boundary) = state.federation.stable_checkpoint_boundary().await? else {
+        state
+            .federation
+            .observe_recovery_checkpoint_boundary(None)
+            .await;
+        return Ok(());
+    };
+    let required = state
+        .mint
+        .federation_config()
+        .map(|config| usize::from(config.public_config().threshold_params.consensus_threshold))
+        .ok_or(FederationError::RuntimeUnavailable {
+            component: "mint configuration",
+        })?;
+    let matching_peers = peer_summaries
+        .iter()
+        .filter(|(_, summary)| summary.stable_tip.as_ref() == Some(&local_boundary))
+        .count();
+    if matching_peers.saturating_add(1) < required {
+        state
+            .federation
+            .observe_recovery_checkpoint_boundary(None)
+            .await;
+        return Ok(());
+    }
+    if !state
+        .federation
+        .observe_recovery_checkpoint_boundary(Some(&local_boundary))
         .await
     {
+        return Ok(());
+    }
+    state
+        .federation
+        .capture_recovery_checkpoint(&local_boundary)
+        .await?;
+    Ok(())
+}
+
+async fn local_pending_checkpoint(
+    state: &MintState,
+    kind: FederationCheckpointKind,
+) -> Option<FederationCheckpoint> {
+    let db = state.mint.localstore();
+    let candidate = match db.get_latest_federation_checkpoint(kind).await {
         Ok(candidate) => candidate?,
         Err(err) => {
-            tracing::warn!("Could not load local scheduled checkpoint: {}", err);
+            tracing::warn!("Could not load local checkpoint candidate: {}", err);
             return None;
         }
     };
     let checkpoint_id = match candidate.id() {
         Ok(checkpoint_id) => checkpoint_id,
         Err(err) => {
-            tracing::warn!("Could not identify local scheduled checkpoint: {}", err);
+            tracing::warn!("Could not identify local checkpoint candidate: {}", err);
             return None;
         }
     };
@@ -430,10 +535,7 @@ async fn local_pending_scheduled_checkpoint(state: &MintState) -> Option<Federat
         Ok(Some(_)) => None,
         Ok(None) => Some(candidate),
         Err(err) => {
-            tracing::warn!(
-                "Could not inspect local scheduled checkpoint quorum: {}",
-                err
-            );
+            tracing::warn!("Could not inspect local checkpoint quorum: {}", err);
             None
         }
     }

@@ -124,6 +124,44 @@ fn federation_peer_sync_disable_value_accepts_truthy_values() {
     }
 }
 
+#[tokio::test]
+async fn recovery_checkpoint_observation_requires_two_identical_boundaries() {
+    let runtime = FederationNodeRuntime::disabled();
+    assert!(!runtime.recovery_checkpoint_is_requested());
+    runtime.request_recovery_checkpoint();
+    assert!(runtime.recovery_checkpoint_is_requested());
+
+    let boundary = cdk::federation::FederationCheckpointBoundary {
+        journal_next_index: 2,
+        journal_order_digest: cdk::federation::FederationJournalDigest::from_bytes([1; 32]),
+        finalized_next_item_index: 3,
+        finalized_item_digest: cdk::federation::FederationFinalizedItemDigest::from_bytes([2; 32]),
+        application_digest: cdk::federation::FederationApplicationDigest::from_bytes([3; 32]),
+        aleph_bft_session: 1,
+        next_unit_finalization_index: 2,
+        next_unit_index_by_member: BTreeMap::from([(member_id(1), 2)]),
+    };
+    assert!(
+        !runtime
+            .observe_recovery_checkpoint_boundary(Some(&boundary))
+            .await
+    );
+    assert!(
+        runtime
+            .observe_recovery_checkpoint_boundary(Some(&boundary))
+            .await
+    );
+
+    let mut moved = boundary;
+    moved.next_unit_finalization_index += 1;
+    assert!(
+        !runtime
+            .observe_recovery_checkpoint_boundary(Some(&moved))
+            .await
+    );
+    assert!(!runtime.observe_recovery_checkpoint_boundary(None).await);
+}
+
 #[test]
 fn catch_up_certificate_quorum_prefix_stops_when_next_index_would_overflow() {
     let mut signers = BTreeSet::new();
@@ -2311,6 +2349,8 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             operation_application: Arc::new(tokio::sync::Mutex::new(())),
             catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
             materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
+            recovery_checkpoint_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
             catch_up_certificate_quorum_validation_count: Arc::new(AtomicUsize::new(0)),
             catch_up_certificate_journal_load_count: Arc::new(AtomicUsize::new(0)),
             materialized_state_digest_computation_count: Arc::new(AtomicUsize::new(0)),

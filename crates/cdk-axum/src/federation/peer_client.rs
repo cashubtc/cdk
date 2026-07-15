@@ -171,13 +171,20 @@ where
     pub(crate) async fn checkpoint_summary(
         &self,
         member: &MemberConfigPublic,
+        request_recovery_checkpoint: bool,
     ) -> anyhow::Result<FederationCheckpointSummaryResponse> {
+        let payload = if request_recovery_checkpoint {
+            FederationCheckpointSummaryRequest::new().with_recovery_checkpoint()
+        } else {
+            FederationCheckpointSummaryRequest::new()
+        };
         let request = self.signed_request(
             member,
             FederationRestMessageKind::CheckpointSummary,
-            FederationCheckpointSummaryRequest::new(),
+            payload,
         )?;
-        let response: FederationCheckpointSummaryResponse = self
+        let request_sequence = request.sequence;
+        let response: FederationSignedRequest<FederationCheckpointSummaryResponse> = self
             .http_post_with_timeout(
                 member,
                 "checkpoints/summary",
@@ -186,8 +193,22 @@ where
                 self.sync_config.peer_request_timeout,
             )
             .await?;
-        response.validate(self.federation_id, member.member_id)?;
-        Ok(response)
+        self.validate_signed_response(
+            &response,
+            member,
+            FederationRestMessageKind::CheckpointSummary,
+        )?;
+        if response.sequence != request_sequence {
+            anyhow::bail!(
+                "signed checkpoint summary response has sequence {}, expected {}",
+                response.sequence,
+                request_sequence
+            );
+        }
+        response
+            .payload
+            .validate(&self.public_config, member.member_id)?;
+        Ok(response.payload)
     }
 
     pub(crate) async fn fetch_checkpoint(
@@ -775,9 +796,17 @@ where
         P: Serialize,
     {
         response.verify(&self.public_config, self.private_config.member_id)?;
-        if response.sender != member.member_id || response.kind != kind {
-            return Err(FederationError::FrostSigningInvalid {
-                reason: "signed FROST response sender or kind mismatch".to_string(),
+        if response.sender != member.member_id {
+            anyhow::bail!(
+                "signed federation response came from member {}, expected {}",
+                response.sender,
+                member.member_id
+            );
+        }
+        if response.kind != kind {
+            return Err(FederationError::RestMessageKindMismatch {
+                expected: kind,
+                found: response.kind,
             }
             .into());
         }

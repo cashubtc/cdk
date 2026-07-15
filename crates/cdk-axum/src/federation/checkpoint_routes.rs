@@ -13,14 +13,14 @@ use crate::MintState;
 
 use super::{
     acquire_private_rest_admission, cdk_error_response, federation_error_response,
-    verify_federation_request,
+    federation_runtime_config, verify_federation_request,
 };
 
 #[instrument(skip_all)]
 pub(super) async fn post_checkpoint_summary(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationCheckpointSummaryRequest>>,
-) -> Result<Json<FederationCheckpointSummaryResponse>, Response> {
+) -> Result<Json<FederationSignedRequest<FederationCheckpointSummaryResponse>>, Response> {
     let kind = FederationRestMessageKind::CheckpointSummary;
     let _permit = acquire_private_rest_admission(&state, kind)?;
     let verified = verify_federation_request(&state, &payload, kind).await?;
@@ -31,12 +31,25 @@ pub(super) async fn post_checkpoint_summary(
     state
         .record_federation_sequence(kind, verified.sender, verified.sequence)
         .await;
-    state
+    if payload.payload.request_recovery_checkpoint {
+        state.federation.request_recovery_checkpoint();
+    }
+    let response = state
         .federation
         .checkpoint_summary()
         .await
-        .map(Json)
-        .map_err(cdk_error_response)
+        .map_err(cdk_error_response)?;
+    let runtime_config = federation_runtime_config(&state)?;
+    let response = FederationSignedRequest::new_signed(
+        runtime_config.federation_id(),
+        verified.sender,
+        verified.sequence,
+        kind,
+        response,
+        runtime_config.private_config(),
+    )
+    .map_err(federation_error_response)?;
+    Ok(Json(response))
 }
 
 #[instrument(skip_all)]

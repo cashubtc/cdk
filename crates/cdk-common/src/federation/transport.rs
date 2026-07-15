@@ -15,11 +15,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
     FederationAlephBftFinalizedItem, FederationApplicationState, FederationCheckpoint,
-    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationConfig, FederationConfigDigest,
-    FederationConsensusRuntimeStatus, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationCheckpointBoundary, FederationCheckpointId, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfig,
+    FederationConfigDigest, FederationConsensusRuntimeStatus, FederationDkgCeremonyId,
+    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
@@ -1223,6 +1224,8 @@ impl FederationPeerStatusRequest {
 pub struct FederationCheckpointSummaryRequest {
     /// Private REST payload version.
     pub version: u16,
+    /// Ask reachable members to form one recovery checkpoint at a stable converged tip.
+    pub request_recovery_checkpoint: bool,
 }
 
 impl FederationCheckpointSummaryRequest {
@@ -1231,7 +1234,15 @@ impl FederationCheckpointSummaryRequest {
     pub const fn new() -> Self {
         Self {
             version: FEDERATION_REST_API_VERSION,
+            request_recovery_checkpoint: false,
         }
+    }
+
+    /// Request on-demand recovery-checkpoint formation.
+    #[must_use]
+    pub const fn with_recovery_checkpoint(mut self) -> Self {
+        self.request_recovery_checkpoint = true;
+        self
     }
 
     /// Validate the private REST payload version.
@@ -1295,6 +1306,9 @@ pub struct FederationCheckpointSummaryResponse {
     pub federation_id: FederationId,
     /// Member serving this response.
     pub member_id: MemberId,
+    /// Exact current terminal complete-unit frontier, without a state-audit digest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stable_tip: Option<FederationCheckpointBoundary>,
     /// Newest locally stored scheduled candidate, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_scheduled_candidate: Option<FederationCheckpointSummary>,
@@ -1311,15 +1325,11 @@ pub struct FederationCheckpointSummaryResponse {
 
 impl FederationCheckpointSummaryResponse {
     /// Validate response bindings and summary kinds.
-    pub fn validate(
-        &self,
-        expected_federation_id: FederationId,
-        expected_member_id: MemberId,
-    ) -> Result<()> {
+    pub fn validate(&self, config: &FederationConfig, expected_member_id: MemberId) -> Result<()> {
         ensure_federation_rest_version(self.version)?;
-        if self.federation_id != expected_federation_id {
+        if self.federation_id != config.federation_id {
             return Err(FederationError::RestFederationMismatch {
-                expected: expected_federation_id,
+                expected: config.federation_id,
                 found: self.federation_id,
             });
         }
@@ -1327,6 +1337,9 @@ impl FederationCheckpointSummaryResponse {
             return Err(FederationError::CheckpointInvalid {
                 reason: "checkpoint summary response member mismatch".to_string(),
             });
+        }
+        if let Some(stable_tip) = self.stable_tip.as_ref() {
+            stable_tip.validate_against_config(config)?;
         }
         for (summary, expected_kind) in [
             (
@@ -4328,7 +4341,7 @@ mod tests {
 
     #[test]
     fn checkpoint_transport_messages_are_bound_and_bounded() {
-        let (config, first_private, _) = transport_config();
+        let (config, first_private, second_private) = transport_config();
         let receiver = roster_member_id(2);
         let checkpoint_id = FederationCheckpointId::from_bytes([41; 32]);
 
@@ -4348,6 +4361,20 @@ mod tests {
             .payload
             .validate()
             .expect("checkpoint summary payload validates");
+        assert!(!summary_request.payload.request_recovery_checkpoint);
+        let recovery_request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            4,
+            FederationRestMessageKind::CheckpointSummary,
+            FederationCheckpointSummaryRequest::new().with_recovery_checkpoint(),
+            &first_private,
+        )
+        .expect("signed recovery checkpoint request");
+        recovery_request
+            .verify(&config, receiver)
+            .expect("recovery checkpoint request verifies");
+        assert!(recovery_request.payload.request_recovery_checkpoint);
 
         let fetch_request = FederationSignedRequest::new_signed(
             config.federation_id,
@@ -4379,14 +4406,27 @@ mod tests {
             version: FEDERATION_REST_API_VERSION,
             federation_id: config.federation_id,
             member_id: receiver,
+            stable_tip: None,
             latest_scheduled_candidate: None,
             latest_recovery_candidate: None,
             latest_scheduled_quorum: None,
             latest_recovery_quorum: None,
         };
         summary_response
-            .validate(config.federation_id, receiver)
+            .validate(&config, receiver)
             .expect("checkpoint summary response validates");
+        let signed_summary_response = FederationSignedRequest::new_signed(
+            config.federation_id,
+            first_private.member_id,
+            summary_request.sequence,
+            FederationRestMessageKind::CheckpointSummary,
+            summary_response.clone(),
+            &second_private,
+        )
+        .expect("signed checkpoint summary response");
+        signed_summary_response
+            .verify(&config, first_private.member_id)
+            .expect("checkpoint summary response signature verifies");
         let encoded = serde_json::to_value(&summary_response).expect("checkpoint summary json");
         assert!(encoded.get("latest_scheduled_candidate").is_none());
         assert!(encoded.get("latest_recovery_candidate").is_none());

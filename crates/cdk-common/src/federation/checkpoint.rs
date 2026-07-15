@@ -366,7 +366,8 @@ impl FederationCheckpointFrontier {
 /// Callers construct this while holding the federation operation-application
 /// lock. Construction rejects a partial application frontier; the explicit
 /// unit cursors make the complete-unit boundary part of the derived checkpoint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationCheckpointBoundary {
     /// First accepted-operation index after this boundary.
     pub journal_next_index: u64,
@@ -430,6 +431,33 @@ impl FederationCheckpointBoundary {
             next_unit_finalization_index,
             next_unit_index_by_member,
         })
+    }
+
+    /// Validate a transported complete-unit boundary against the configured roster.
+    pub fn validate_against_config(&self, config: &FederationConfig) -> Result<()> {
+        config.validate()?;
+        if self.journal_next_index > self.finalized_next_item_index {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary journal is ahead of finalized items",
+            ));
+        }
+        if self.finalized_next_item_index == 0 || self.next_unit_finalization_index == 0 {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary does not contain a complete finalized unit",
+            ));
+        }
+        let expected_members = config.members.keys().copied().collect::<BTreeSet<_>>();
+        let found_members = self
+            .next_unit_index_by_member
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if found_members != expected_members {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary watermarks do not match the configured roster",
+            ));
+        }
+        Ok(())
     }
 
     /// Return whether this complete boundary has crossed either interval after the anchor.
@@ -1407,6 +1435,27 @@ mod tests {
         assert!(finalized_eligible
             .is_scheduled_eligible(config.checkpoint_policy, None)
             .expect("finalized eligibility"));
+    }
+
+    #[test]
+    fn transported_complete_boundary_requires_the_exact_roster() {
+        let (config, _) = configs();
+        let boundary = complete_boundary(&config, 4, 9);
+        boundary
+            .validate_against_config(&config)
+            .expect("boundary validates");
+        let encoded = serde_json::to_vec(&boundary).expect("serialize boundary");
+        let decoded: FederationCheckpointBoundary =
+            serde_json::from_slice(&encoded).expect("deserialize boundary");
+        assert_eq!(decoded, boundary);
+
+        let mut missing_member = boundary;
+        let member_id = *config.members.keys().next().expect("roster member");
+        missing_member.next_unit_index_by_member.remove(&member_id);
+        assert!(matches!(
+            missing_member.validate_against_config(&config),
+            Err(FederationError::CheckpointInvalid { .. })
+        ));
     }
 
     #[test]
