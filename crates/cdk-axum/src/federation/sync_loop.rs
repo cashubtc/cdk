@@ -2,10 +2,10 @@ use std::collections::BTreeSet;
 
 use cdk::federation::{
     FederationCatchUpCertificate, FederationCatchUpOperation, FederationCheckpoint,
-    FederationCheckpointKind, FederationCheckpointSummary, FederationCheckpointSummaryResponse,
-    FederationError, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalEntry, FederationMaterializedStateDigest, FederationPeerStatus,
-    MemberConfigPublic, MemberId,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSummary,
+    FederationCheckpointSummaryResponse, FederationError, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationPeerStatus, MemberConfigPublic, MemberId,
 };
 use cdk_http_client::{Async, Transport};
 use tokio::time::{self, Instant};
@@ -382,6 +382,53 @@ async fn local_checkpoint_quorum_is_stored(
             false
         }
     }
+}
+
+async fn next_local_checkpoint_catch_up_target(
+    state: &MintState,
+) -> anyhow::Result<Option<FederationCheckpointQuorum>> {
+    let runtime_config =
+        state
+            .mint
+            .federation_config()
+            .ok_or(FederationError::RuntimeUnavailable {
+                component: "mint configuration",
+            })?;
+    let public_config = runtime_config.public_config();
+    let db = state.mint.localstore();
+    let current = db.get_trusted_federation_checkpoint_quorum().await?;
+    if let Some(current) = current.as_ref() {
+        current.verify(public_config)?;
+    }
+    let scheduled_sequence = current
+        .as_ref()
+        .map_or(0, |quorum| quorum.checkpoint.scheduled_checkpoint_sequence);
+    if let Some(next) = db
+        .get_next_federation_scheduled_checkpoint_quorum(scheduled_sequence)
+        .await?
+    {
+        next.verify(public_config)?;
+        next.checkpoint
+            .validate_promotion_from(current.as_ref().map(|quorum| &quorum.checkpoint))?;
+        return Ok(Some(next));
+    }
+    let Some(recovery) = db
+        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
+        .await?
+    else {
+        return Ok(None);
+    };
+    recovery.verify(public_config)?;
+    recovery
+        .checkpoint
+        .validate_promotion_from(current.as_ref().map(|quorum| &quorum.checkpoint))?;
+    let frontier = db.get_federation_checkpoint_frontier().await?;
+    if recovery.checkpoint.journal_next_index <= frontier.journal_next_index
+        && recovery.checkpoint.finalized_next_item_index <= frontier.finalized_next_item_index
+    {
+        return Ok(None);
+    }
+    Ok(Some(recovery))
 }
 
 async fn exchange_checkpoint_candidate<T>(
@@ -1311,6 +1358,141 @@ where
         Ok((response, applied))
     }
 
+    pub(crate) async fn catch_up_state_to_checkpoint_from_member(
+        &self,
+        state: &MintState,
+        member: &MemberConfigPublic,
+        quorum: &FederationCheckpointQuorum,
+    ) -> anyhow::Result<(
+        FederationJournalCatchUpResponse,
+        Vec<FederationJournalEntry>,
+    )> {
+        let public_config = state
+            .mint
+            .federation_config()
+            .ok_or(FederationError::RuntimeUnavailable {
+                component: "mint configuration",
+            })?
+            .public_config();
+        quorum.verify(public_config)?;
+        let checkpoint = &quorum.checkpoint;
+        let checkpoint_id = checkpoint.id()?;
+        let consensus = state.federation.consensus.as_ref().ok_or_else(|| {
+            FederationError::RuntimeUnavailable {
+                component: "consensus",
+            }
+        })?;
+        let (initial_journal_index, initial_finalized_item_index, mut known_order_digest) = {
+            let consensus = consensus.lock().await;
+            let status = consensus.aleph_bft_status()?;
+            (
+                consensus.journal().next_index(),
+                status.next_item_index,
+                consensus.journal().latest_order_digest(),
+            )
+        };
+        if initial_journal_index > checkpoint.journal_next_index
+            || initial_finalized_item_index > checkpoint.finalized_next_item_index
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "local catch-up frontier is ahead of the selected target checkpoint"
+                    .to_string(),
+            }
+            .into());
+        }
+
+        let mut next_journal_index = initial_journal_index;
+        let mut next_finalized_item_index = initial_finalized_item_index;
+        let mut aggregate: Option<FederationJournalCatchUpResponse> = None;
+        while next_journal_index < checkpoint.journal_next_index
+            || next_finalized_item_index < checkpoint.finalized_next_item_index
+        {
+            let request = FederationJournalCatchUpRequest::new(next_journal_index)
+                .with_target_checkpoint(checkpoint_id)
+                .with_limit(self.sync_config.catch_up_limit)
+                .with_known_order_digest(known_order_digest)
+                .with_aleph_bft_next_item_index(next_finalized_item_index);
+            let mut page = self
+                .catch_up_to_checkpoint(member, &request, checkpoint)
+                .await?;
+            if page.from_index != next_journal_index
+                || page.aleph_bft_from_item_index != next_finalized_item_index
+            {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "checkpoint catch-up page does not start at the requested cursors"
+                        .to_string(),
+                }
+                .into());
+            }
+            if let Some(first) = page.entries.first() {
+                if first.previous_order_digest != known_order_digest {
+                    return Err(FederationError::CatchUpDigestMismatch {
+                        index: first.index,
+                        expected: known_order_digest,
+                        found: first.previous_order_digest,
+                    }
+                    .into());
+                }
+            }
+            let journal_progress = page.entries.len() as u64;
+            let finalized_progress = page.aleph_bft_finalized_items.len() as u64;
+            if journal_progress == 0 && finalized_progress == 0 {
+                return Err(FederationError::CatchUpNoProgress {
+                    index: next_journal_index,
+                }
+                .into());
+            }
+            next_journal_index = next_journal_index
+                .checked_add(journal_progress)
+                .ok_or_else(|| FederationError::CheckpointInvalid {
+                    reason: "checkpoint catch-up journal cursor overflow".to_string(),
+                })?;
+            next_finalized_item_index = next_finalized_item_index
+                .checked_add(finalized_progress)
+                .ok_or_else(|| FederationError::CheckpointInvalid {
+                reason: "checkpoint catch-up finalized cursor overflow".to_string(),
+            })?;
+            if let Some(last) = page.entries.last() {
+                known_order_digest = last.order_digest;
+            }
+            page.catch_up_certificate = None;
+            page.catch_up_certificates.clear();
+            match aggregate.as_mut() {
+                Some(aggregate) => {
+                    aggregate.entries.append(&mut page.entries);
+                    aggregate
+                        .aleph_bft_finalized_items
+                        .append(&mut page.aleph_bft_finalized_items);
+                    aggregate.complete = page.complete;
+                    aggregate.aleph_bft_finalized_items_complete =
+                        page.aleph_bft_finalized_items_complete;
+                }
+                None => aggregate = Some(page),
+            }
+        }
+
+        let response = aggregate.unwrap_or_else(|| {
+            FederationJournalCatchUpResponse::from_journal(
+                checkpoint.federation_id,
+                &cdk::federation::InMemoryFederationJournal::from_base(
+                    checkpoint.journal_next_index,
+                    checkpoint.journal_order_digest,
+                ),
+                checkpoint.materialized_state_digest,
+                &FederationJournalCatchUpRequest::new(checkpoint.journal_next_index)
+                    .with_target_checkpoint(checkpoint_id)
+                    .with_aleph_bft_next_item_index(checkpoint.finalized_next_item_index),
+                self.sync_config.catch_up_limit,
+                self.sync_config.catch_up_limit,
+            )
+        });
+        response.validate_checkpoint_binding(checkpoint)?;
+        let applied = state
+            .apply_federation_checkpoint_catch_up_response(&response, quorum)
+            .await?;
+        Ok((response, applied))
+    }
+
     pub(crate) async fn sync_once_from_member(
         &self,
         state: &MintState,
@@ -1341,8 +1523,22 @@ where
             state.mark_federation_catching_up(member.member_id).await;
 
             while peer_requires_catch_up(&local_status, &peer_status)? {
+                let Some(target) = next_local_checkpoint_catch_up_target(state).await? else {
+                    state.federation.request_recovery_checkpoint();
+                    state
+                        .mark_federation_lagging(
+                            member.member_id,
+                            local_status.operation_count,
+                            peer_status.operation_count,
+                        )
+                        .await;
+                    return Ok(peer_status);
+                };
                 let before_status = local_status.clone();
-                match self.catch_up_state_from_member(state, member).await {
+                match self
+                    .catch_up_state_to_checkpoint_from_member(state, member, &target)
+                    .await
+                {
                     Ok((response, _applied)) => {
                         latest_catch_up_materialized_state_digest =
                             Some(response.materialized_state_digest);
@@ -1426,17 +1622,6 @@ where
                 recovered_from_peer,
             )
             .await?;
-        }
-
-        if !peer_requires_catch_up(&local_status, &peer_status)? {
-            if recovered_from_peer && local_status.operation_count > 0 {
-                state
-                    .mark_federation_verifying_catch_up_certificate(
-                        member.member_id,
-                        local_status.operation_count,
-                    )
-                    .await;
-            }
         }
 
         Ok(peer_status)

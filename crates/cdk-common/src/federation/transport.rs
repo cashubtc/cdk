@@ -2776,6 +2776,9 @@ impl FederationAlephBftNetworkMessageResponse {
 pub struct FederationJournalCatchUpRequest {
     /// First missing zero-based journal index.
     pub next_index: u64,
+    /// Stored quorum checkpoint that bounds this catch-up page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_checkpoint_id: Option<FederationCheckpointId>,
     /// Optional maximum entries to return.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u16>,
@@ -2798,12 +2801,20 @@ impl FederationJournalCatchUpRequest {
     pub fn new(next_index: u64) -> Self {
         Self {
             next_index,
+            target_checkpoint_id: None,
             limit: None,
             known_order_digest: None,
             aleph_bft_next_item_index: 0,
             aleph_bft_backup: None,
             allow_historical_certificate_page: false,
         }
+    }
+
+    /// Bound the returned bodies to one already fetched quorum checkpoint.
+    #[must_use]
+    pub fn with_target_checkpoint(mut self, checkpoint_id: FederationCheckpointId) -> Self {
+        self.target_checkpoint_id = Some(checkpoint_id);
+        self
     }
 
     /// Set an optional entry limit.
@@ -3109,6 +3120,9 @@ pub struct FederationJournalCatchUpResponse {
     pub federation_id: FederationId,
     /// First requested index.
     pub from_index: u64,
+    /// Exact quorum checkpoint that bounded this page, when requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_checkpoint_id: Option<FederationCheckpointId>,
     /// Compact operation commitments returned in ascending order.
     pub entries: Vec<FederationCatchUpOperation>,
     /// Highest local operation index, if any.
@@ -3124,6 +3138,8 @@ pub struct FederationJournalCatchUpResponse {
     /// Persisted member signatures relayed for this exact historical range.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub catch_up_certificates: Vec<FederationCatchUpCertificate>,
+    /// First requested AlephBFT finalized-item index.
+    pub aleph_bft_from_item_index: u64,
     /// AlephBFT finalized items returned for exact adapter replay.
     pub aleph_bft_finalized_items: Vec<FederationAlephBftFinalizedItem>,
     /// Whether all requested AlephBFT finalized items were returned.
@@ -3196,17 +3212,99 @@ impl FederationJournalCatchUpResponse {
             version: FEDERATION_REST_API_VERSION,
             federation_id,
             from_index: request.next_index,
+            target_checkpoint_id: request.target_checkpoint_id,
             entries,
             latest_index: journal.next_index().checked_sub(1),
             latest_order_digest: journal.latest_order_digest(),
             materialized_state_digest,
             catch_up_certificate: None,
             catch_up_certificates: Vec::new(),
+            aleph_bft_from_item_index: request.aleph_bft_next_item_index,
             aleph_bft_finalized_items: Vec::new(),
             aleph_bft_finalized_items_complete: true,
             aleph_bft_backup: None,
             complete,
         }
+    }
+
+    /// Bind this response to an exact checkpoint and discard journal bodies beyond it.
+    pub fn bound_to_checkpoint(mut self, checkpoint: &FederationCheckpoint) -> Result<Self> {
+        let checkpoint_id = checkpoint.id()?;
+        if self.target_checkpoint_id != Some(checkpoint_id) {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "catch-up target checkpoint binding mismatch".to_string(),
+            });
+        }
+        let remaining = checkpoint
+            .journal_next_index
+            .checked_sub(self.from_index)
+            .ok_or_else(|| FederationError::CheckpointInvalid {
+                reason: "catch-up journal cursor is ahead of target checkpoint".to_string(),
+            })?;
+        let remaining =
+            usize::try_from(remaining).map_err(|_| FederationError::CheckpointInvalid {
+                reason: "catch-up checkpoint range does not fit in memory".to_string(),
+            })?;
+        self.entries.truncate(remaining);
+        self.latest_index = checkpoint.journal_next_index.checked_sub(1);
+        self.latest_order_digest = checkpoint.journal_order_digest;
+        self.materialized_state_digest = checkpoint.materialized_state_digest;
+        self.complete = self.entries.len() == remaining;
+        Ok(self)
+    }
+
+    /// Validate that this page is bounded by the supplied quorum checkpoint.
+    pub fn validate_checkpoint_binding(&self, checkpoint: &FederationCheckpoint) -> Result<()> {
+        self.validate_entries()?;
+        let checkpoint_id = checkpoint.id()?;
+        if self.target_checkpoint_id != Some(checkpoint_id)
+            || self.federation_id != checkpoint.federation_id
+            || self.latest_index != checkpoint.journal_next_index.checked_sub(1)
+            || self.latest_order_digest != checkpoint.journal_order_digest
+            || self.materialized_state_digest != checkpoint.materialized_state_digest
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "catch-up response does not match its target checkpoint".to_string(),
+            });
+        }
+        let returned_next_index = self
+            .from_index
+            .checked_add(self.entries.len() as u64)
+            .ok_or_else(|| FederationError::CheckpointInvalid {
+                reason: "catch-up journal cursor overflow".to_string(),
+            })?;
+        if returned_next_index > checkpoint.journal_next_index
+            || self.complete != (returned_next_index == checkpoint.journal_next_index)
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "catch-up response crosses or misstates its checkpoint boundary"
+                    .to_string(),
+            });
+        }
+        let mut expected_finalized_index = self.aleph_bft_from_item_index;
+        for item in &self.aleph_bft_finalized_items {
+            if item.accepted_item_index != expected_finalized_index {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "catch-up finalized items are not contiguous".to_string(),
+                });
+            }
+            expected_finalized_index =
+                expected_finalized_index.checked_add(1).ok_or_else(|| {
+                    FederationError::CheckpointInvalid {
+                        reason: "catch-up finalized-item cursor overflow".to_string(),
+                    }
+                })?;
+        }
+        if expected_finalized_index > checkpoint.finalized_next_item_index
+            || self.aleph_bft_finalized_items_complete
+                != (expected_finalized_index == checkpoint.finalized_next_item_index)
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "catch-up finalized page crosses or misstates its checkpoint boundary"
+                    .to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Attach AlephBFT finalized items for adapter replay catch-up.
@@ -3425,9 +3523,10 @@ mod tests {
     use std::str::FromStr;
 
     use super::super::{
-        FederationConfig, FederationDkgKeysetSpec, FederationError, MemberConfigPrivate,
-        MemberConfigPublic, ThresholdParams, FEDERATION_MAX_DKG_KEYSET_AMOUNTS,
-        FEDERATION_MAX_DKG_MEMBERS, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
+        FederationApplicationDigest, FederationConfig, FederationDkgKeysetSpec, FederationError,
+        FederationFinalizedItemDigest, MemberConfigPrivate, MemberConfigPublic, ThresholdParams,
+        FEDERATION_MAX_DKG_KEYSET_AMOUNTS, FEDERATION_MAX_DKG_MEMBERS,
+        FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
     };
     use super::*;
     use crate::{
@@ -3902,6 +4001,95 @@ mod tests {
         );
         assert!(response.aleph_bft_finalized_items.is_empty());
         assert!(response.aleph_bft_finalized_items_complete);
+    }
+
+    #[test]
+    fn catch_up_response_is_bounded_by_exact_checkpoint() {
+        let (config, _, _) = transport_config();
+        let mut journal = InMemoryFederationJournal::new();
+        journal.append(mint_quote_envelope()).expect("append quote");
+        journal
+            .append(mint_envelope(
+                "quote-1",
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            ))
+            .expect("append mint");
+        let target_order_digest = journal.latest_order_digest();
+        journal
+            .append(mint_envelope(
+                "quote-2",
+                "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+            ))
+            .expect("append later mint");
+        let boundary = FederationCheckpointBoundary {
+            journal_next_index: 2,
+            journal_order_digest: target_order_digest,
+            finalized_next_item_index: 2,
+            finalized_item_digest: FederationFinalizedItemDigest::genesis(),
+            application_digest: FederationApplicationDigest::genesis(),
+            aleph_bft_session: 0,
+            next_unit_finalization_index: 2,
+            next_unit_index_by_member: config
+                .members
+                .keys()
+                .copied()
+                .map(|member_id| (member_id, 1))
+                .collect(),
+        };
+        let checkpoint = boundary
+            .recovery_checkpoint(
+                &config,
+                None,
+                FederationMaterializedStateDigest::from_bytes([42; 32]),
+            )
+            .expect("recovery checkpoint");
+        let checkpoint_id = checkpoint.id().expect("checkpoint id");
+        let request = FederationJournalCatchUpRequest::new(0)
+            .with_target_checkpoint(checkpoint_id)
+            .with_aleph_bft_next_item_index(2);
+        let response = FederationJournalCatchUpResponse::from_journal(
+            config.federation_id,
+            &journal,
+            FederationMaterializedStateDigest::genesis(),
+            &request,
+            50,
+            100,
+        )
+        .bound_to_checkpoint(&checkpoint)
+        .expect("bounded checkpoint response");
+
+        assert_eq!(response.target_checkpoint_id, Some(checkpoint_id));
+        assert_eq!(response.entries.len(), 2);
+        assert!(response.complete);
+        assert_eq!(response.latest_index, Some(1));
+        assert_eq!(response.latest_order_digest, target_order_digest);
+        assert_eq!(
+            response.materialized_state_digest,
+            checkpoint.materialized_state_digest
+        );
+        response
+            .validate_checkpoint_binding(&checkpoint)
+            .expect("checkpoint binding validates");
+
+        let partial_request = FederationJournalCatchUpRequest::new(0)
+            .with_target_checkpoint(checkpoint_id)
+            .with_aleph_bft_next_item_index(2)
+            .with_limit(1);
+        let partial = FederationJournalCatchUpResponse::from_journal(
+            config.federation_id,
+            &journal,
+            FederationMaterializedStateDigest::genesis(),
+            &partial_request,
+            50,
+            100,
+        )
+        .bound_to_checkpoint(&checkpoint)
+        .expect("partial checkpoint response");
+        assert_eq!(partial.entries.len(), 1);
+        assert!(!partial.complete);
+        partial
+            .validate_checkpoint_binding(&checkpoint)
+            .expect("partial checkpoint binding validates");
     }
 
     #[test]

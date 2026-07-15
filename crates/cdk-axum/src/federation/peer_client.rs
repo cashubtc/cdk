@@ -790,6 +790,48 @@ where
         Ok(response)
     }
 
+    pub(crate) async fn catch_up_to_checkpoint(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationJournalCatchUpRequest,
+        checkpoint: &FederationCheckpoint,
+    ) -> anyhow::Result<FederationJournalCatchUpResponse> {
+        let checkpoint_id = checkpoint.id()?;
+        if request.target_checkpoint_id != Some(checkpoint_id) {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "catch-up request does not bind the supplied target checkpoint".to_string(),
+            }
+            .into());
+        }
+        let request =
+            self.signed_request(member, FederationRestMessageKind::CatchUp, request.clone())?;
+        let response: FederationJournalCatchUpResponse = self
+            .http_post_with_timeout(
+                member,
+                "journal",
+                "checkpoint catch-up request",
+                &request,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        if response.version != FEDERATION_REST_API_VERSION {
+            return Err(FederationError::RestVersionMismatch {
+                expected: FEDERATION_REST_API_VERSION,
+                found: response.version,
+            }
+            .into());
+        }
+        if response.federation_id != self.federation_id {
+            return Err(FederationError::CatchUpFederationMismatch {
+                expected: self.federation_id,
+                found: response.federation_id,
+            }
+            .into());
+        }
+        response.validate_checkpoint_binding(checkpoint)?;
+        Ok(response)
+    }
+
     fn signed_request<P>(
         &self,
         member: &MemberConfigPublic,

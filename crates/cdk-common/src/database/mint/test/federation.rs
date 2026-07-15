@@ -534,6 +534,17 @@ where
     assert_eq!(catch_up_entries.len(), 1);
     assert_eq!(catch_up_entries[0].operation_id, second.operation_id);
     assert_eq!(catch_up_entries[0].rejection(), Some(&rejection));
+    let bounded_entries = db
+        .get_federation_journal_entries_range(0, 2, 1)
+        .await
+        .expect("bounded catch-up entries");
+    assert_eq!(bounded_entries.len(), 1);
+    assert_eq!(bounded_entries[0].operation_id, first.operation_id);
+    assert!(db
+        .get_federation_journal_entries_range(1, 1, 10)
+        .await
+        .expect("empty bounded catch-up entries")
+        .is_empty());
 
     let sequences = db
         .get_federation_dkg_member_sequences()
@@ -733,6 +744,17 @@ where
         .expect("ranged AlephBFT finalized items");
     assert_eq!(ranged.len(), 1);
     assert_eq!(ranged[0].accepted_item_index, 1);
+    let bounded = db
+        .get_federation_aleph_bft_finalized_items_range(0, 2, 1)
+        .await
+        .expect("bounded AlephBFT finalized items");
+    assert_eq!(bounded.len(), 1);
+    assert_eq!(bounded[0].accepted_item_index, 0);
+    assert!(db
+        .get_federation_aleph_bft_finalized_items_range(1, 1, 10)
+        .await
+        .expect("empty bounded AlephBFT finalized items")
+        .is_empty());
 
     let recovered = FederationConsensusRuntime::recover_for_members_from_finalized_items(
         federation_id,

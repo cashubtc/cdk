@@ -1069,6 +1069,156 @@ impl FederationNodeRuntime {
         catch_up_certificates: &[&FederationCatchUpCertificate],
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
         let _application = self.operation_application.lock().await;
+        self.apply_verified_catch_up_response_under_application_lock(
+            response,
+            catch_up_certificates,
+            None,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn apply_checkpoint_catch_up_response(
+        &self,
+        response: &FederationJournalCatchUpResponse,
+        quorum: &FederationCheckpointQuorum,
+    ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
+        let _application = self.operation_application.lock().await;
+        let mint = self.active_mint()?;
+        let runtime_config = mint
+            .federation_config()
+            .cloned()
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
+        let public_config = runtime_config.public_config();
+        quorum.verify(public_config)?;
+        let checkpoint = &quorum.checkpoint;
+        response.validate_checkpoint_binding(checkpoint)?;
+        let db = mint.localstore();
+        let frontier = db.get_federation_checkpoint_frontier().await?;
+        let current = db.get_trusted_federation_checkpoint_quorum().await?;
+        if let Some(current) = current.as_ref() {
+            current.verify(public_config)?;
+        }
+        checkpoint.validate_promotion_from(current.as_ref().map(|quorum| &quorum.checkpoint))?;
+        Self::validate_checkpoint_catch_up_rolling_frontiers(&frontier, response, checkpoint)?;
+
+        let applied = self
+            .apply_verified_catch_up_response_under_application_lock(
+                response,
+                &[],
+                current.as_ref().map(|quorum| &quorum.checkpoint),
+                Some(checkpoint),
+            )
+            .await?;
+
+        let frontier = db.get_federation_checkpoint_frontier().await?;
+        if frontier.journal_next_index != checkpoint.journal_next_index
+            || frontier.journal_order_digest != checkpoint.journal_order_digest
+            || frontier.finalized_next_item_index != checkpoint.finalized_next_item_index
+            || frontier.finalized_item_digest != checkpoint.finalized_item_digest
+            || frontier.application_next_index != checkpoint.journal_next_index
+            || frontier.application_digest != checkpoint.application_digest
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "durable catch-up frontiers do not equal the target checkpoint".to_string(),
+            }
+            .into());
+        }
+        let materialized_state_digest = mint
+            .federation_materialized_state_snapshot()
+            .await?
+            .digest()?;
+        if materialized_state_digest != checkpoint.materialized_state_digest {
+            let mut tx = db.begin_transaction().await?;
+            tx.latch_federation_materialized_state_audit_mismatch()
+                .await?;
+            tx.commit().await?;
+            return Err(FederationError::CheckpointInvalid {
+                reason: "catch-up materialized-state audit does not equal the target checkpoint"
+                    .to_string(),
+            }
+            .into());
+        }
+        let checkpoint_runtime =
+            FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint(
+                public_config,
+                runtime_config.member_id(),
+                checkpoint,
+            )?;
+        let mut tx = db.begin_transaction().await?;
+        tx.promote_verified_federation_checkpoint(quorum).await?;
+        tx.commit().await?;
+        let consensus = self
+            .consensus
+            .as_ref()
+            .ok_or_else(|| runtime_unavailable("consensus"))?;
+        *consensus.lock().await = checkpoint_runtime;
+        Ok(applied)
+    }
+
+    fn validate_checkpoint_catch_up_rolling_frontiers(
+        frontier: &cdk::federation::FederationCheckpointFrontier,
+        response: &FederationJournalCatchUpResponse,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<(), cdk::Error> {
+        if frontier.materialized_state_audit_mismatch {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "materialized-state audit mismatch is latched".to_string(),
+            }
+            .into());
+        }
+        if frontier.journal_next_index != response.from_index
+            || frontier.application_next_index != response.from_index
+            || frontier.finalized_next_item_index != response.aleph_bft_from_item_index
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "catch-up response does not start at the durable local frontier"
+                    .to_string(),
+            }
+            .into());
+        }
+
+        let mut order_digest = frontier.journal_order_digest;
+        let mut application_digest = frontier.application_digest;
+        for entry in &response.entries {
+            if entry.previous_order_digest != order_digest {
+                return Err(FederationError::CatchUpDigestMismatch {
+                    index: entry.index,
+                    expected: order_digest,
+                    found: entry.previous_order_digest,
+                }
+                .into());
+            }
+            order_digest = entry.order_digest;
+            application_digest = application_digest.append_terminal(
+                entry.index,
+                entry.operation_id,
+                &entry.application,
+            )?;
+        }
+        let mut finalized_item_digest = frontier.finalized_item_digest;
+        for item in &response.aleph_bft_finalized_items {
+            finalized_item_digest = finalized_item_digest.append(item)?;
+        }
+        if order_digest != checkpoint.journal_order_digest
+            || application_digest != checkpoint.application_digest
+            || finalized_item_digest != checkpoint.finalized_item_digest
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "catch-up rolling digests do not equal the target checkpoint".to_string(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    async fn apply_verified_catch_up_response_under_application_lock(
+        &self,
+        response: &FederationJournalCatchUpResponse,
+        catch_up_certificates: &[&FederationCatchUpCertificate],
+        base_checkpoint: Option<&FederationCheckpoint>,
+        target_checkpoint: Option<&FederationCheckpoint>,
+    ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
         let runtime_config = self
             .active_mint()?
             .federation_config()
@@ -1080,10 +1230,32 @@ impl FederationNodeRuntime {
             .as_ref()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
-        let local_entries = consensus.journal().entries().to_vec();
-        let local_finalized_items = consensus.aleph_bft_finalized_items()?.to_vec();
-        let response_to_apply =
-            crate::catch_up_response_suffix_for_local_journal(&local_entries, response)?;
+        let local_entries = consensus
+            .journal()
+            .entries()
+            .iter()
+            .filter(|entry| {
+                base_checkpoint
+                    .is_none_or(|checkpoint| entry.index >= checkpoint.journal_next_index)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let local_finalized_items = consensus
+            .aleph_bft_finalized_items()?
+            .iter()
+            .filter(|item| {
+                base_checkpoint.is_none_or(|checkpoint| {
+                    item.accepted_item_index >= checkpoint.finalized_next_item_index
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let status = consensus.aleph_bft_status()?;
+        let response_to_apply = crate::catch_up_response_suffix_for_local_journal(
+            &local_entries,
+            consensus.journal().next_index(),
+            response,
+        )?;
         if let Some(response_to_apply) = response_to_apply.as_ref() {
             if response_to_apply.from_index != response.from_index
                 || response_to_apply.entries.len() != response.entries.len()
@@ -1096,8 +1268,11 @@ impl FederationNodeRuntime {
                 ));
             }
         }
-        let new_finalized_items =
-            crate::aleph_bft_finalized_item_suffix_for_local(&local_finalized_items, response)?;
+        let new_finalized_items = crate::aleph_bft_finalized_item_suffix_for_local(
+            &local_finalized_items,
+            status.next_item_index,
+            response,
+        )?;
         if new_finalized_items.is_empty()
             && response_to_apply
                 .as_ref()
@@ -1108,18 +1283,42 @@ impl FederationNodeRuntime {
             ));
         }
 
-        let status = consensus.aleph_bft_status()?;
         let mut retained_items = local_finalized_items;
         retained_items.extend(new_finalized_items.iter().cloned());
         let target_session =
             crate::latest_aleph_bft_finalized_session(&retained_items).max(status.session);
-        let mut next_consensus =
-            FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+        let mut next_consensus = match base_checkpoint {
+            Some(base_checkpoint) => {
+                FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint_and_finalized_items(
+                    &public_config,
+                    runtime_config.member_id(),
+                    target_session,
+                    base_checkpoint,
+                    retained_items,
+                )?
+            }
+            None => FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
                 &public_config,
                 runtime_config.member_id(),
                 target_session,
                 retained_items,
-            )?;
+            )?,
+        };
+        if let Some(checkpoint) = target_checkpoint {
+            let status = next_consensus.aleph_bft_status()?;
+            if status.session != checkpoint.aleph_bft_session
+                || status.next_item_index != checkpoint.finalized_next_item_index
+                || status.next_unit_finalization_index != checkpoint.next_unit_finalization_index
+                || next_consensus.next_unit_index_by_member()
+                    != &checkpoint.next_unit_index_by_member
+            {
+                return Err(FederationError::CheckpointInvalid {
+                    reason: "reconstructed AlephBFT cursors do not equal the target checkpoint"
+                        .to_string(),
+                }
+                .into());
+            }
+        }
         let recovered_entries_before_status_overlay = next_consensus.journal().entries().to_vec();
         let entries_to_retry_from_local_overlap = crate::stale_local_aleph_bft_entries_to_retry(
             &local_entries,

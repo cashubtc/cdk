@@ -1757,6 +1757,69 @@ impl FederationConsensusRuntime {
         })
     }
 
+    fn recover_authenticated_checkpoint_from_finalized_items(
+        public_config: FederationConfig,
+        local_member: MemberId,
+        session: u64,
+        checkpoint: &FederationCheckpoint,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    ) -> Result<Self> {
+        checkpoint.validate_against_config(&public_config)?;
+        let allowed_members = public_config
+            .members
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let finalization_handler =
+            FederationAlephBftFinalizationHandler::recover_from_finalized_items(
+                public_config.federation_id,
+                session,
+                FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+                Some(allowed_members),
+                Some(public_config.clone()),
+                Some(checkpoint),
+                &finalized_items,
+            )?;
+        let next_local_unit_index = finalization_handler
+            .next_unit_index_by_member()
+            .get(&local_member)
+            .copied()
+            .ok_or(FederationError::UnknownMember {
+                member_id: local_member,
+            })?;
+        let mut journal = InMemoryFederationJournal::from_base(
+            checkpoint.journal_next_index,
+            checkpoint.journal_order_digest,
+        );
+        for finalized_item in &finalized_items {
+            if finalized_item.status
+                != FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
+            {
+                if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
+                    journal.append_finalized_with_consensus_evidence(
+                        envelope.clone(),
+                        finalized_item.consensus_evidence(),
+                    )?;
+                }
+            }
+        }
+
+        Ok(Self {
+            data_provider: FederationAlephBftUnitDataProvider::new(
+                public_config.federation_id,
+                local_member,
+                session,
+            )
+            .with_next_unit_index(next_local_unit_index),
+            finalization_handler,
+            journal,
+            finalized_items,
+            pending_finalization_units: BTreeMap::new(),
+            pending_finalization_operation_ids: BTreeSet::new(),
+            pending_finalization_conflict_keys: HashMap::new(),
+        })
+    }
+
     fn recover_inner(
         federation_id: FederationId,
         local_member: MemberId,
@@ -2220,6 +2283,28 @@ impl FederationConsensusRuntime {
             session,
             checkpoint,
             journal_entries,
+            finalized_items,
+        )
+    }
+
+    /// Recover a checkpoint-rooted runtime by replaying only finalized suffix items.
+    pub fn authenticated_aleph_bft_from_checkpoint_and_finalized_items(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        session: u64,
+        checkpoint: &FederationCheckpoint,
+        finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    ) -> Result<Self> {
+        validate_runtime_roster(
+            public_config.members.keys().copied(),
+            public_config.threshold_params.consensus_threshold,
+            member_id,
+        )?;
+        Self::recover_authenticated_checkpoint_from_finalized_items(
+            public_config.clone(),
+            member_id,
+            session,
+            checkpoint,
             finalized_items,
         )
     }

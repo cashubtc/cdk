@@ -23,17 +23,18 @@ use cdk::federation::{
     FederationAddressKeychain, FederationAlephBftFinalizedItem,
     FederationAlephBftFinalizedItemStatus, FederationAlephBftUnitPayload,
     FederationApplicationDigest, FederationCatchUpCertificate, FederationChainObservation,
-    FederationCheckpoint, FederationCheckpointFrontier, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusItem, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
-    FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationFrostApplicationId, FederationFrostDkgContext,
-    FederationInvalidOperationAlertSummary, FederationJournalAppendOutcome,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOnchainWalletStatus,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId,
+    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointQuorum,
+    FederationConfig, FederationConfigSnapshot, FederationConsensusItem,
+    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
+    FederationDkgFinalizedMemberConfig, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationFrostApplicationId,
+    FederationFrostDkgContext, FederationInvalidOperationAlertSummary,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationOnchainWalletStatus, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationKind, FederationOperationStatus, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSubmitOperationResponse, InMemoryFederationJournal,
+    MemberId,
 };
 use cdk::mint::Mint;
 #[cfg(feature = "federation")]
@@ -755,19 +756,32 @@ impl FederationOperationNotifications {
 #[cfg(feature = "federation")]
 fn catch_up_response_suffix_for_local_journal(
     local_entries: &[FederationJournalEntry],
+    local_next_index: u64,
     response: &FederationJournalCatchUpResponse,
 ) -> Result<Option<FederationJournalCatchUpResponse>, cdk::Error> {
-    let local_next_index = local_entries.len() as u64;
     if response.from_index >= local_next_index {
         return Ok(Some(response.clone()));
     }
 
+    let local_base_index = local_entries
+        .first()
+        .map_or(local_next_index, |entry| entry.index);
     let mut suffix_start = 0usize;
     for entry in &response.entries {
         if entry.index >= local_next_index {
             break;
         }
-        let local_entry = local_entries.get(entry.index as usize).ok_or_else(|| {
+        let offset = entry
+            .index
+            .checked_sub(local_base_index)
+            .and_then(|offset| usize::try_from(offset).ok())
+            .ok_or_else(|| {
+                cdk::Error::Federation(FederationError::CatchUpIndexMismatch {
+                    expected: local_base_index,
+                    found: entry.index,
+                })
+            })?;
+        let local_entry = local_entries.get(offset).ok_or_else(|| {
             cdk::Error::Federation(FederationError::CatchUpIndexMismatch {
                 expected: entry.index,
                 found: local_next_index,
@@ -847,19 +861,25 @@ fn ensure_catch_up_overlap_matches(
 #[cfg(feature = "federation")]
 fn aleph_bft_finalized_item_suffix_for_local(
     local_items: &[FederationAlephBftFinalizedItem],
+    local_next_item_index: u64,
     response: &FederationJournalCatchUpResponse,
 ) -> Result<Vec<FederationAlephBftFinalizedItem>, cdk::Error> {
-    let local_next_item_index =
-        u64::try_from(local_items.len()).expect("finalized item count fits in u64");
+    let local_base_item_index = local_items
+        .first()
+        .map_or(local_next_item_index, |item| item.accepted_item_index);
     let mut suffix = Vec::new();
     for peer_item in &response.aleph_bft_finalized_items {
         if peer_item.accepted_item_index < local_next_item_index {
-            let local_index = usize::try_from(peer_item.accepted_item_index).map_err(|_| {
-                aleph_bft_catch_up_recovery_mismatch(format!(
-                    "finalized item index {} does not fit this platform",
-                    peer_item.accepted_item_index
-                ))
-            })?;
+            let local_index = peer_item
+                .accepted_item_index
+                .checked_sub(local_base_item_index)
+                .and_then(|index| usize::try_from(index).ok())
+                .ok_or_else(|| {
+                    aleph_bft_catch_up_recovery_mismatch(format!(
+                        "finalized item {} precedes retained base {}",
+                        peer_item.accepted_item_index, local_base_item_index
+                    ))
+                })?;
             let local_item = local_items.get(local_index).ok_or_else(|| {
                 aleph_bft_catch_up_recovery_mismatch(format!(
                     "missing local finalized item {} for catch-up overlap",
@@ -1989,6 +2009,16 @@ impl MintState {
                 response,
                 additional_certificates,
             )
+            .await
+    }
+
+    pub(crate) async fn apply_federation_checkpoint_catch_up_response(
+        &self,
+        response: &FederationJournalCatchUpResponse,
+        quorum: &FederationCheckpointQuorum,
+    ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
+        self.federation
+            .apply_checkpoint_catch_up_response(response, quorum)
             .await
     }
 

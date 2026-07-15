@@ -1,9 +1,9 @@
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationAlephBftBackupResponse, FederationAlephBftFinalizedItem, FederationError,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationRestMessageKind,
-    FederationSignedRequest,
+    FederationAlephBftBackupResponse, FederationAlephBftFinalizedItem, FederationCheckpoint,
+    FederationError, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationRestMessageKind, FederationSignedRequest, InMemoryFederationJournal,
 };
 use tracing::instrument;
 
@@ -35,16 +35,18 @@ pub(super) async fn post_journal(
             verified.sequence,
         )
         .await;
-    let private_config = federation_runtime_config(&state)?.private_config().clone();
     tracing::debug!(
         next_index = payload.payload.next_index,
         limit = ?payload.payload.limit,
         "Received federation journal catch-up request"
     );
     let response = durable_catch_up_response(&state, &payload.payload).await?;
-    let response = response
-        .with_signed_catch_up_certificate(&private_config)
-        .map_err(federation_error_response)?;
+    let response = match payload.payload.target_checkpoint_id {
+        Some(_) => response,
+        None => response
+            .with_signed_catch_up_certificate(federation_runtime_config(&state)?.private_config())
+            .map_err(federation_error_response)?,
+    };
     Ok(Json(response))
 }
 
@@ -53,9 +55,82 @@ async fn durable_catch_up_response(
     request: &FederationJournalCatchUpRequest,
 ) -> Result<FederationJournalCatchUpResponse, Response> {
     let runtime_config = federation_runtime_config(state)?;
-    let journal = durable_federation_journal(state)
-        .await
-        .map_err(anyhow_response)?;
+    let target_checkpoint = match request.target_checkpoint_id {
+        Some(checkpoint_id) => {
+            let checkpoint = state
+                .mint
+                .localstore()
+                .get_federation_checkpoint(checkpoint_id)
+                .await
+                .map_err(|err| anyhow_response(err.into()))?
+                .ok_or_else(|| {
+                    federation_error_response(FederationError::CheckpointInvalid {
+                        reason: "requested catch-up checkpoint is not stored".to_string(),
+                    })
+                })?;
+            checkpoint
+                .validate_against_config(runtime_config.public_config())
+                .map_err(federation_error_response)?;
+            if checkpoint.id().map_err(federation_error_response)? != checkpoint_id {
+                return Err(federation_error_response(
+                    FederationError::CheckpointInvalid {
+                        reason: "requested catch-up checkpoint lookup binding mismatch".to_string(),
+                    },
+                ));
+            }
+            Some(checkpoint)
+        }
+        None => None,
+    };
+    let journal = match target_checkpoint.as_ref() {
+        Some(checkpoint) => {
+            if request.next_index > checkpoint.journal_next_index {
+                return Err(federation_error_response(
+                    FederationError::CheckpointInvalid {
+                        reason: "catch-up journal cursor is ahead of target checkpoint".to_string(),
+                    },
+                ));
+            }
+            let limit = request.effective_limit(
+                DEFAULT_FEDERATION_CATCH_UP_LIMIT,
+                MAX_FEDERATION_CATCH_UP_LIMIT,
+            );
+            let entries = state
+                .mint
+                .localstore()
+                .get_federation_journal_entries_range(
+                    request.next_index,
+                    checkpoint.journal_next_index,
+                    limit,
+                )
+                .await
+                .map_err(|err| anyhow_response(err.into()))?;
+            let base_order_digest = match entries.first() {
+                Some(entry) => entry.previous_order_digest,
+                None if request.next_index == checkpoint.journal_next_index => {
+                    checkpoint.journal_order_digest
+                }
+                None => {
+                    return Err(federation_error_response(
+                        FederationError::CheckpointInvalid {
+                            reason:
+                                "checkpoint journal bodies are unavailable at the requested cursor"
+                                    .to_string(),
+                        },
+                    ));
+                }
+            };
+            InMemoryFederationJournal::from_base_and_entries(
+                request.next_index,
+                base_order_digest,
+                entries,
+            )
+            .map_err(federation_error_response)?
+        }
+        None => durable_federation_journal(state)
+            .await
+            .map_err(anyhow_response)?,
+    };
 
     if let Some(known_order_digest) = request.known_order_digest {
         if let Some(expected_digest) = journal.order_digest_before(request.next_index) {
@@ -72,10 +147,13 @@ async fn durable_catch_up_response(
     }
 
     let entries = journal.entries().to_vec();
-    let state_digest = materialized_state_digest(state, &entries)
-        .await
-        .map_err(anyhow_response)?;
-    let response = FederationJournalCatchUpResponse::from_journal(
+    let state_digest = match target_checkpoint.as_ref() {
+        Some(checkpoint) => checkpoint.materialized_state_digest,
+        None => materialized_state_digest(state, &entries)
+            .await
+            .map_err(anyhow_response)?,
+    };
+    let mut response = FederationJournalCatchUpResponse::from_journal(
         runtime_config.federation_id(),
         &journal,
         state_digest,
@@ -83,12 +161,31 @@ async fn durable_catch_up_response(
         DEFAULT_FEDERATION_CATCH_UP_LIMIT,
         MAX_FEDERATION_CATCH_UP_LIMIT,
     );
-    let response = maybe_attach_historical_catch_up_certificate_quorum(state, request, response)
-        .await
-        .map_err(anyhow_response)?;
-    let response = maybe_attach_aleph_bft_finalized_items(state, request, response)
-        .await
-        .map_err(anyhow_response)?;
+    if let Some(checkpoint) = target_checkpoint.as_ref() {
+        response = response
+            .bound_to_checkpoint(checkpoint)
+            .map_err(federation_error_response)?;
+    }
+    let response = if target_checkpoint.is_none() {
+        maybe_attach_historical_catch_up_certificate_quorum(state, request, response)
+            .await
+            .map_err(anyhow_response)?
+    } else {
+        response
+    };
+    let response = maybe_attach_aleph_bft_finalized_items(
+        state,
+        request,
+        target_checkpoint.as_ref(),
+        response,
+    )
+    .await
+    .map_err(anyhow_response)?;
+    if let Some(checkpoint) = target_checkpoint.as_ref() {
+        response
+            .validate_checkpoint_binding(checkpoint)
+            .map_err(federation_error_response)?;
+    }
     let response = maybe_attach_aleph_bft_backup(state, request, response)
         .await
         .map_err(anyhow_response)?;
@@ -218,17 +315,36 @@ async fn maybe_attach_aleph_bft_backup(
 async fn maybe_attach_aleph_bft_finalized_items(
     state: &MintState,
     request: &FederationJournalCatchUpRequest,
+    target_checkpoint: Option<&FederationCheckpoint>,
     response: FederationJournalCatchUpResponse,
 ) -> anyhow::Result<FederationJournalCatchUpResponse> {
-    let finalized_items = state
-        .mint
-        .localstore()
-        .get_federation_aleph_bft_finalized_items_from(request.aleph_bft_next_item_index)
-        .await?;
     let requested_limit = request.effective_limit(
         DEFAULT_FEDERATION_CATCH_UP_LIMIT,
         MAX_FEDERATION_CATCH_UP_LIMIT,
     );
+    let finalized_items = if let Some(checkpoint) = target_checkpoint {
+        if request.aleph_bft_next_item_index > checkpoint.finalized_next_item_index {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "catch-up finalized cursor is ahead of target checkpoint".to_string(),
+            }
+            .into());
+        }
+        state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_finalized_items_range(
+                request.aleph_bft_next_item_index,
+                checkpoint.finalized_next_item_index,
+                requested_limit.saturating_add(1),
+            )
+            .await?
+    } else {
+        state
+            .mint
+            .localstore()
+            .get_federation_aleph_bft_finalized_items_from(request.aleph_bft_next_item_index)
+            .await?
+    };
     let limit = if response.catch_up_certificates.is_empty() {
         requested_limit
     } else {

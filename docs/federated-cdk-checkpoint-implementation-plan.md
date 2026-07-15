@@ -1,7 +1,7 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (milestones 1-2 and 5 complete; milestone 3
-production/exchange and milestone 4 catch-up in progress)
+Status: in progress (milestones 1-3 and 5 complete; milestone 4 checkpoint
+catch-up complete except for cut-through removal of the legacy certificate path)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -772,7 +772,7 @@ checkpoint to move ahead of durable consensus or application state.
       materialized-state audit digest before releasing the boundary capture
       lock; later signature/quorum storage may occur after the database has
       advanced.
-- [ ] Ensure catch-up promotion persists the journal/finalized batch, business
+- [x] Ensure catch-up promotion persists the journal/finalized batch, business
       application changes, terminal application frontier/digest, and trusted
       checkpoint in one transaction, or leaves the checkpoint behind the data.
 - [x] Persist a durable materialized-state-audit mismatch latch that ordinary
@@ -1045,57 +1045,72 @@ frontier that becomes authoritative.
 
 ### Checklist
 
-- [ ] Extend catch-up discovery so the requester selects the next stored
+- [x] Extend catch-up discovery so the requester selects the next stored
       scheduled quorum checkpoint before downloading its batch.
-- [ ] Allow any peer holding the assembled scheduled quorum to serve it; do not
+- [x] Allow any peer holding the assembled scheduled quorum to serve it; do not
       contact or wake the original signers.
-- [ ] Request finalized items and compact journal entries strictly after the
+- [x] Request finalized items and compact journal entries strictly after the
       current trusted checkpoint and no farther than the target checkpoint.
-- [ ] Initialize rolling operation, finalized-item, and terminal-application
+- [x] Initialize rolling operation, finalized-item, and terminal-application
       digests from the trusted checkpoint and update them only across received
       suffix items.
-- [ ] Require exact equality with the target checkpoint's journal cursor/order
+- [x] Require exact equality with the target checkpoint's journal cursor/order
       digest, finalized cursor/finalized digest, session cursors, and projected
-      application digest. Apply the batch in an isolated transaction and require
-      its final authoritative materialized-state audit to equal the target
-      checkpoint before commit/promotion.
-- [ ] Apply and promote one checkpoint-bounded batch atomically; do not expose
-      public routes between an unverified batch write and promotion.
-- [ ] Resume interrupted catch-up from the last promoted checkpoint without
-      replaying earlier batches.
-- [ ] If one source serves invalid data, discard that batch, retain the trusted
+      application digest. Buffer and validate the complete batch before
+      mutation, serialize application under the operation-application lock, and
+      require its final authoritative materialized-state audit to equal the
+      target checkpoint before promotion.
+- [x] Apply each operation through its existing atomic business-state
+      transaction and promote only after the complete checkpoint-bounded batch
+      verifies. A crash may leave durable data ahead of the trusted checkpoint,
+      never the checkpoint ahead of data; public routes remain closed and retry
+      resumes from the scalar durable frontier.
+- [x] Resume interrupted catch-up from the last promoted checkpoint or a later
+      scalar durable frontier without replaying earlier batches.
+- [x] If one source serves invalid data, discard that batch, retain the trusted
       base, back off the source, and retry another peer.
-- [ ] Fetch journal/finalized bodies from one healthy source. Fetch only a stored
+- [x] Fetch journal/finalized bodies from one healthy source. Fetch only a stored
       bounded quorum proof from another source when the first source does not
       already carry it; never fetch the same historical bodies from every
       signer.
-- [ ] After the newest scheduled checkpoint, use live AlephBFT or discover an
+- [x] After the newest scheduled checkpoint, use live AlephBFT or discover an
       exact quorum-observed stable tip and form/fetch a recovery checkpoint
       anchored to that scheduled checkpoint.
-- [ ] Download the stable tail from one source, validate rolling commitments to
-      the recovery checkpoint, and promote it through the same atomic checkpoint
+- [x] Download the stable tail from one source, validate rolling commitments to
+      the recovery checkpoint, and promote it through the same checkpoint
       path; never trust a single REST peer's uncertified tail.
 - [ ] Remove all request-time range certificate creation and verification from
       journal responses.
 
 ### Progress and verification
 
-Checkpoint polling can now request the exact next scheduled quorum after the
-locally trusted scheduled sequence. The serving query is indexed and returns
-only sequence `N + 1`; gaps are not skipped. The signed summary binds that
-scalar result to the serving member, the requester rejects an unexpected
-sequence, and the existing exact-ID fetch transfers the stored checkpoint and
-assembled quorum from any holder without contacting its original signers.
-Fetched future quorums remain untrusted until the local durable frontiers reach
-their checkpoint. The catch-up body request is not yet checkpoint-bounded, so
-the discovery checklist item remains open until the body path consumes this
-proof before downloading data.
+Checkpoint polling requests the exact next scheduled quorum after the locally
+trusted scheduled sequence; gaps are not skipped. Exact-ID fetch transfers the
+stored checkpoint and assembled quorum from any holder without contacting its
+original signers. Once a target proof is stored, the sync loop requests journal
+and finalized-item pages carrying that exact checkpoint ID. A body source needs
+only the stored checkpoint payload, not its quorum, because the requester
+already holds and verifies the transferable proof.
 
-Coverage added for first/absent next-scheduled-quorum database lookup and
-checkpoint transport request/response serialization. Compilation and linting
-were verified with:
+Checkpoint pages use bounded indexed SQL ranges and never read beyond the
+target cursors. The requester buffers all pages, validates their continuity and
+rolling order/finalized/application commitments, reconstructs the checkpoint
+session cursors, applies through the existing deterministic business-state
+transactions, audits the final authoritative projection, and only then promotes
+the trusted checkpoint. Promotion immediately rebases the in-memory runtime at
+the new nonzero frontier, so a subsequent scheduled or recovery batch retains
+only its suffix. Targeted journal pages no longer create request-time range
+certificates. The remaining unbounded certificate response path is legacy-only
+and is removed by milestone 7.
+
+Coverage now includes exact next-checkpoint lookup, checkpoint transport
+serialization, bounded response validation, paged serving from a source that
+stores only the checkpoint payload, tamper rejection before mutation, catch-up
+from genesis, and a second checkpoint suffix after rebasing. Compilation and
+linting were verified with:
 
 - `cargo test -p cdk-axum --features federation --lib --no-run`;
+- `cargo test -p cdk-sqlite --features federation --lib --no-run`;
 - `cargo check -p cdk-axum --features federation`.
 - `cargo clippy -p cdk-common --lib --features federation -- -D warnings`.
 

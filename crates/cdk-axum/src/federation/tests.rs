@@ -20,14 +20,14 @@ use cdk::federation::{
     FederationAlephBftBackupResponse, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
-    FederationApplicationState, FederationCheckpointBoundary, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationConfigSnapshot, FederationConsensusItem,
-    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
-    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
-    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMeltQuoteMetadata,
+    FederationApplicationState, FederationCheckpoint, FederationCheckpointBoundary,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigSnapshot,
+    FederationConsensusItem, FederationConsensusRuntime, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
+    FederationDkgCommitmentRound, FederationDkgMemberKeysetShare, FederationDkgSetupMethod,
+    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignature,
+    FederationError, FederationJournalAppendOutcome, FederationJournalDigest,
+    FederationJournalEntry, FederationKeysetRotationOperation, FederationMeltQuoteMetadata,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
@@ -2197,6 +2197,62 @@ async fn federation_route_state_for_private(
         &mnemonic.to_seed_normalized(""),
     )
     .await
+}
+
+async fn recovery_checkpoint_quorum_for_state(
+    state: &MintState,
+    public_config: &FederationConfig,
+    scheduled_checkpoint: Option<&FederationCheckpoint>,
+    signers: &[&MemberConfigPrivate],
+) -> (FederationCheckpoint, FederationCheckpointQuorum) {
+    let frontier = state
+        .mint
+        .localstore()
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("checkpoint frontier");
+    let consensus = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await;
+    let status = consensus.status();
+    let boundary = FederationCheckpointBoundary::from_complete_unit(
+        &frontier,
+        status.session,
+        status.next_unit_finalization_index,
+        consensus.next_unit_index_by_member().clone(),
+    )
+    .expect("complete checkpoint boundary");
+    drop(consensus);
+    let materialized_state_digest = state
+        .mint
+        .federation_materialized_state_snapshot()
+        .await
+        .expect("materialized state snapshot")
+        .digest()
+        .expect("materialized state digest");
+    let checkpoint = boundary
+        .recovery_checkpoint(
+            public_config,
+            scheduled_checkpoint,
+            materialized_state_digest,
+        )
+        .expect("recovery checkpoint");
+    let signatures = signers
+        .iter()
+        .map(|signer| {
+            FederationCheckpointSignature::new_signed(&checkpoint, signer)
+                .expect("checkpoint signature")
+        })
+        .collect();
+    let quorum = FederationCheckpointQuorum::new(checkpoint.clone(), signatures);
+    quorum
+        .verify(public_config)
+        .expect("recovery checkpoint quorum");
+    (checkpoint, quorum)
 }
 
 async fn federation_route_state_for_private_with_db(
@@ -8358,52 +8414,20 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
         .await
         .expect("persist checkpointed operation");
 
-    let db = state.mint.localstore();
-    let frontier = db
-        .get_federation_checkpoint_frontier()
-        .await
-        .expect("checkpoint frontier");
-    let consensus = state
-        .federation
-        .consensus
-        .as_ref()
-        .expect("consensus")
-        .lock()
-        .await;
-    let status = consensus.status();
-    let boundary = FederationCheckpointBoundary::from_complete_unit(
-        &frontier,
-        status.session,
-        status.next_unit_finalization_index,
-        consensus.next_unit_index_by_member().clone(),
-    )
-    .expect("complete checkpoint boundary");
-    drop(consensus);
-    let materialized_state_digest = state
-        .mint
-        .federation_materialized_state_snapshot()
-        .await
-        .expect("materialized state snapshot")
-        .digest()
-        .expect("materialized state digest");
-    let checkpoint = boundary
-        .recovery_checkpoint(&public_config, None, materialized_state_digest)
-        .expect("recovery checkpoint");
     let local_private = state
         .mint
         .federation_config()
         .expect("federation config")
-        .private_config();
-    let quorum = FederationCheckpointQuorum::new(
-        checkpoint.clone(),
-        vec![
-            FederationCheckpointSignature::new_signed(&checkpoint, local_private)
-                .expect("local checkpoint signature"),
-            FederationCheckpointSignature::new_signed(&checkpoint, &peer_private)
-                .expect("peer checkpoint signature"),
-        ],
-    );
-    quorum.verify(&public_config).expect("checkpoint quorum");
+        .private_config()
+        .clone();
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        &state,
+        &public_config,
+        None,
+        &[&local_private, &peer_private],
+    )
+    .await;
+    let db = state.mint.localstore();
     let mut tx = db
         .begin_transaction()
         .await
@@ -8440,7 +8464,7 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     };
     response.request.push_str("-conflict");
     conflicting = conflicting
-        .authorize(local_private)
+        .authorize(&local_private)
         .expect("authorize conflicting operation");
     let conflict_payload = {
         let consensus = restarted_state
@@ -8531,6 +8555,238 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
         FederationAlephBftFinalizedItemStatus::DuplicateOperation
     );
     assert_eq!(consensus.finalized_items()[2].accepted_item_index, 3);
+}
+
+#[tokio::test]
+async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
+    let (public_config, source_private, target_private) = transport_config();
+    let seed = [57_u8; 64];
+    let source_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("source db"));
+    let target_db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("target db"));
+    let source = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        source_private.clone(),
+        Arc::clone(&source_db),
+        &seed,
+    )
+    .await;
+    let target = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        target_private.clone(),
+        Arc::clone(&target_db),
+        &seed,
+    )
+    .await;
+    let quote_id = QuoteId::new();
+    source
+        .submit_federation_envelope(mint_quote_envelope(&source, &quote_id))
+        .await
+        .expect("source accepted checkpointed operation");
+
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        &source,
+        &public_config,
+        None,
+        &[&source_private, &target_private],
+    )
+    .await;
+    let checkpoint_id = checkpoint.id().expect("checkpoint id");
+    let mut target_tx = target_db
+        .begin_transaction()
+        .await
+        .expect("begin target checkpoint transaction");
+    target_tx
+        .add_federation_checkpoint_quorum(&quorum)
+        .await
+        .expect("persist target checkpoint proof");
+    target_tx
+        .commit()
+        .await
+        .expect("commit target checkpoint proof");
+
+    let source_entries = source_db
+        .get_federation_journal_entries()
+        .await
+        .expect("source journal");
+    let source_journal =
+        InMemoryFederationJournal::from_entries(source_entries).expect("source journal");
+    let finalized_items = source_db
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("source finalized items");
+    let request = FederationJournalCatchUpRequest::new(0)
+        .with_target_checkpoint(checkpoint_id)
+        .with_aleph_bft_next_item_index(0);
+    let response = FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        &source_journal,
+        checkpoint.materialized_state_digest,
+        &request,
+        100,
+        100,
+    )
+    .bound_to_checkpoint(&checkpoint)
+    .expect("checkpoint-bounded response")
+    .with_aleph_bft_finalized_items(finalized_items, true);
+    response
+        .validate_checkpoint_binding(&checkpoint)
+        .expect("checkpoint response binding");
+
+    assert!(target_db
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+        .expect("target trusted checkpoint before catch-up")
+        .is_none());
+    let mut tampered = response.clone();
+    tampered.entries[0].operation_id = FederationOperationId::from_bytes([99; 32]);
+    target
+        .apply_federation_checkpoint_catch_up_response(&tampered, &quorum)
+        .await
+        .expect_err("tampered checkpoint batch must fail before application");
+    assert_eq!(
+        target_db
+            .get_federation_checkpoint_frontier()
+            .await
+            .expect("target frontier after rejected batch")
+            .journal_next_index,
+        0
+    );
+    assert!(target_db
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("target quote after rejected batch")
+        .is_none());
+    let applied = target
+        .apply_federation_checkpoint_catch_up_response(&response, &quorum)
+        .await
+        .expect("apply checkpoint catch-up");
+
+    assert_eq!(applied.len(), 1);
+    assert_eq!(applied[0].index, 0);
+    let trusted = target_db
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+        .expect("target trusted checkpoint after catch-up")
+        .expect("promoted target checkpoint");
+    assert_eq!(
+        trusted.checkpoint.id().expect("trusted checkpoint id"),
+        checkpoint_id
+    );
+    let target_frontier = target_db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("target checkpoint frontier");
+    assert_eq!(
+        target_frontier.journal_next_index,
+        checkpoint.journal_next_index
+    );
+    assert_eq!(
+        target_frontier.application_digest,
+        checkpoint.application_digest
+    );
+    assert_eq!(
+        target_frontier.finalized_item_digest,
+        checkpoint.finalized_item_digest
+    );
+    assert_eq!(
+        target
+            .mint
+            .federation_materialized_state_snapshot()
+            .await
+            .expect("target materialized state")
+            .digest()
+            .expect("target materialized-state digest"),
+        checkpoint.materialized_state_digest
+    );
+    assert!(target_db
+        .get_mint_quote(&quote_id)
+        .await
+        .expect("target quote lookup")
+        .is_some());
+
+    let second_quote_id = QuoteId::new();
+    source
+        .submit_federation_envelope(mint_quote_envelope(&source, &second_quote_id))
+        .await
+        .expect("source accepted checkpoint suffix operation");
+    let (second_checkpoint, second_quorum) = recovery_checkpoint_quorum_for_state(
+        &source,
+        &public_config,
+        None,
+        &[&source_private, &target_private],
+    )
+    .await;
+    let second_checkpoint_id = second_checkpoint.id().expect("second checkpoint id");
+    let mut target_tx = target_db
+        .begin_transaction()
+        .await
+        .expect("begin second checkpoint transaction");
+    target_tx
+        .add_federation_checkpoint_quorum(&second_quorum)
+        .await
+        .expect("persist second checkpoint proof");
+    target_tx
+        .commit()
+        .await
+        .expect("commit second checkpoint proof");
+    let source_entries = source_db
+        .get_federation_journal_entries()
+        .await
+        .expect("source journal with suffix");
+    let source_journal =
+        InMemoryFederationJournal::from_entries(source_entries).expect("source suffix journal");
+    let finalized_items = source_db
+        .get_federation_aleph_bft_finalized_items_from(checkpoint.finalized_next_item_index)
+        .await
+        .expect("source finalized suffix");
+    let request = FederationJournalCatchUpRequest::new(checkpoint.journal_next_index)
+        .with_target_checkpoint(second_checkpoint_id)
+        .with_aleph_bft_next_item_index(checkpoint.finalized_next_item_index);
+    let response = FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        &source_journal,
+        second_checkpoint.materialized_state_digest,
+        &request,
+        100,
+        100,
+    )
+    .bound_to_checkpoint(&second_checkpoint)
+    .expect("second checkpoint-bounded response")
+    .with_aleph_bft_finalized_items(finalized_items, true);
+    let second_applied = target
+        .apply_federation_checkpoint_catch_up_response(&response, &second_quorum)
+        .await
+        .expect("apply checkpoint suffix");
+
+    assert_eq!(second_applied.len(), 1);
+    assert_eq!(second_applied[0].index, checkpoint.journal_next_index);
+    let target_consensus = target
+        .federation
+        .consensus
+        .as_ref()
+        .expect("target consensus")
+        .lock()
+        .await;
+    assert_eq!(target_consensus.status().accepted_operation_count, 2);
+    assert!(target_consensus.journal().entries().is_empty());
+    assert!(target_consensus.finalized_items().is_empty());
+    drop(target_consensus);
+    assert_eq!(
+        target_db
+            .get_trusted_federation_checkpoint_quorum()
+            .await
+            .expect("second trusted checkpoint")
+            .expect("promoted second checkpoint")
+            .checkpoint
+            .id()
+            .expect("second trusted checkpoint id"),
+        second_checkpoint_id
+    );
+    assert!(target_db
+        .get_mint_quote(&second_quote_id)
+        .await
+        .expect("target suffix quote lookup")
+        .is_some());
 }
 
 #[tokio::test]
@@ -23608,6 +23864,95 @@ async fn private_journal_route_returns_signed_catch_up_certificate() {
         detail.contains("stale sequence"),
         "unexpected detail: {detail}"
     );
+}
+
+#[tokio::test]
+async fn private_journal_route_pages_to_checkpoint_without_range_signing() {
+    let (state, public_config, local_private, peer_private) =
+        federation_route_state_with_local_private().await;
+    let local_member = local_private.member_id;
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("first checkpoint operation");
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("second checkpoint operation");
+    let (checkpoint, _quorum) = recovery_checkpoint_quorum_for_state(
+        &state,
+        &public_config,
+        None,
+        &[&local_private, &peer_private],
+    )
+    .await;
+    let checkpoint_id = checkpoint.id().expect("checkpoint id");
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin checkpoint candidate transaction");
+    tx.add_federation_checkpoint_candidate(&checkpoint)
+        .await
+        .expect("persist checkpoint candidate");
+    tx.commit().await.expect("commit checkpoint candidate");
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_checkpoint_quorum(checkpoint_id)
+        .await
+        .expect("checkpoint quorum lookup")
+        .is_none());
+
+    let first_request = signed_catch_up_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        1,
+        FederationJournalCatchUpRequest::new(0)
+            .with_target_checkpoint(checkpoint_id)
+            .with_limit(1)
+            .with_aleph_bft_next_item_index(0),
+    );
+    let first = post_journal(State(state.clone()), Json(first_request))
+        .await
+        .expect("first checkpoint page")
+        .0;
+    first
+        .validate_checkpoint_binding(&checkpoint)
+        .expect("first checkpoint page binding");
+    assert_eq!(first.entries.len(), 1);
+    assert_eq!(first.aleph_bft_finalized_items.len(), 1);
+    assert!(!first.complete);
+    assert!(!first.aleph_bft_finalized_items_complete);
+    assert!(first.catch_up_certificate.is_none());
+    assert!(first.catch_up_certificates.is_empty());
+
+    let second_request = signed_catch_up_request(
+        &public_config,
+        &peer_private,
+        local_member,
+        2,
+        FederationJournalCatchUpRequest::new(1)
+            .with_target_checkpoint(checkpoint_id)
+            .with_limit(1)
+            .with_known_order_digest(first.entries[0].order_digest)
+            .with_aleph_bft_next_item_index(1),
+    );
+    let second = post_journal(State(state), Json(second_request))
+        .await
+        .expect("second checkpoint page")
+        .0;
+    second
+        .validate_checkpoint_binding(&checkpoint)
+        .expect("second checkpoint page binding");
+    assert_eq!(second.entries.len(), 1);
+    assert_eq!(second.aleph_bft_finalized_items.len(), 1);
+    assert!(second.complete);
+    assert!(second.aleph_bft_finalized_items_complete);
+    assert!(second.catch_up_certificate.is_none());
+    assert!(second.catch_up_certificates.is_empty());
 }
 
 #[tokio::test]

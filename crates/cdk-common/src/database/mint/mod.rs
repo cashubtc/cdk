@@ -1088,6 +1088,14 @@ pub trait FederationJournalDatabase {
         next_index: u64,
     ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
 
+    /// Get a bounded accepted-journal range in consensus order.
+    async fn get_federation_journal_entries_range(
+        &self,
+        next_index: u64,
+        end_index_exclusive: u64,
+        limit: usize,
+    ) -> Result<Vec<FederationJournalEntry>, Self::Err>;
+
     /// Get persisted effectful DKG sequence watermarks by member.
     async fn get_federation_dkg_member_sequences(
         &self,
@@ -1177,6 +1185,14 @@ pub trait FederationJournalDatabase {
     async fn get_federation_aleph_bft_finalized_items_from(
         &self,
         accepted_item_index: u64,
+    ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err>;
+
+    /// Get a bounded finalized-item range in accepted-item order.
+    async fn get_federation_aleph_bft_finalized_items_range(
+        &self,
+        accepted_item_index: u64,
+        end_item_index_exclusive: u64,
+        limit: usize,
     ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err>;
 
     /// Get raw AlephBFT backup bytes for one local session.

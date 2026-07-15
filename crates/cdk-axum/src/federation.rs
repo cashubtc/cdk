@@ -523,6 +523,7 @@ async fn catch_up_certificate_quorum_status(
             version: FEDERATION_REST_API_VERSION,
             federation_id: runtime_config.public_config().federation_id,
             from_index: range.from_index,
+            target_checkpoint_id: None,
             entries: entries
                 .iter()
                 .map(FederationCatchUpOperation::from)
@@ -532,6 +533,7 @@ async fn catch_up_certificate_quorum_status(
             materialized_state_digest: range.materialized_state_digest,
             catch_up_certificate: None,
             catch_up_certificates: Vec::new(),
+            aleph_bft_from_item_index: 0,
             aleph_bft_finalized_items: Vec::new(),
             aleph_bft_finalized_items_complete: true,
             aleph_bft_backup: None,

@@ -1518,6 +1518,33 @@ where
         .collect()
     }
 
+    async fn get_federation_journal_entries_range(
+        &self,
+        next_index: u64,
+        end_index_exclusive: u64,
+        limit: usize,
+    ) -> Result<Vec<FederationJournalEntry>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(federation_journal_entry_select!(
+            "WHERE operation_index >= :next_index
+             AND operation_index < :end_index_exclusive
+             ORDER BY operation_index ASC
+             LIMIT :limit"
+        ))?
+        .bind("next_index", next_index as i64)
+        .bind("end_index_exclusive", end_index_exclusive as i64)
+        .bind("limit", limit as i64)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_journal_entry)
+        .collect()
+    }
+
     async fn get_federation_dkg_member_sequences(
         &self,
     ) -> Result<std::collections::BTreeMap<MemberId, u64>, Self::Err> {
@@ -1935,6 +1962,33 @@ where
             "WHERE accepted_item_index >= :accepted_item_index ORDER BY accepted_item_index ASC"
         ))?
         .bind("accepted_item_index", accepted_item_index as i64)
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_federation_aleph_bft_finalized_item)
+        .collect()
+    }
+
+    async fn get_federation_aleph_bft_finalized_items_range(
+        &self,
+        accepted_item_index: u64,
+        end_item_index_exclusive: u64,
+        limit: usize,
+    ) -> Result<Vec<FederationAlephBftFinalizedItem>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(federation_aleph_bft_finalized_item_select!(
+            "WHERE accepted_item_index >= :accepted_item_index
+             AND accepted_item_index < :end_item_index_exclusive
+             ORDER BY accepted_item_index ASC
+             LIMIT :limit"
+        ))?
+        .bind("accepted_item_index", accepted_item_index as i64)
+        .bind("end_item_index_exclusive", end_item_index_exclusive as i64)
+        .bind("limit", limit as i64)
         .fetch_all(&*conn)
         .await?
         .into_iter()
