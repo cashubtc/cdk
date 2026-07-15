@@ -949,6 +949,12 @@ where
         Some(checkpoint.clone())
     );
     assert_eq!(
+        db.get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+            .await
+            .expect("latest scheduled candidate"),
+        Some(checkpoint.clone())
+    );
+    assert_eq!(
         db.get_federation_checkpoint_signatures(checkpoint_id)
             .await
             .expect("stored checkpoint signatures"),

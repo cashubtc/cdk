@@ -18,6 +18,7 @@ use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
     FederationApplicationState, FederationCatchUpCertificate, FederationCatchUpOperation,
+    FederationCheckpointBoundary, FederationCheckpointKind, FederationCheckpointSignature,
     FederationConfig, FederationConsensusItemAdmission, FederationConsensusRuntime,
     FederationConsensusRuntimeStatus, FederationDkgActivationRequest, FederationDkgCeremonyId,
     FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
@@ -1717,6 +1718,7 @@ impl FederationNodeRuntime {
                 .collect::<Vec<_>>();
             let entries_to_apply = crate::accepted_federation_journal_entries(&entries);
             self.apply_journal_entries(&entries_to_apply).await?;
+            self.capture_scheduled_checkpoint_if_eligible().await?;
             return self.publish_terminal_operation_responses(&responses).await;
         }
 
@@ -1739,7 +1741,83 @@ impl FederationNodeRuntime {
         drop(consensus);
 
         self.apply_journal_entries(&entries_to_apply).await?;
+        self.capture_scheduled_checkpoint_if_eligible().await?;
         self.publish_terminal_operation_responses(&responses).await
+    }
+
+    async fn capture_scheduled_checkpoint_if_eligible(&self) -> Result<(), cdk::Error> {
+        let mint = self.active_mint()?;
+        let runtime_config = mint
+            .federation_config()
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
+        let public_config = runtime_config.public_config();
+        let db = mint.localstore();
+
+        let latest_scheduled_quorum = db
+            .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+            .await?;
+        let latest_scheduled = match latest_scheduled_quorum.as_ref() {
+            Some(quorum) => {
+                quorum.verify(public_config)?;
+                Some(&quorum.checkpoint)
+            }
+            None => None,
+        };
+        let scheduled_sequence = latest_scheduled
+            .map(|checkpoint| checkpoint.scheduled_checkpoint_sequence)
+            .unwrap_or(0);
+        if let Some(candidate) = db
+            .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+            .await?
+        {
+            candidate.validate_against_config(public_config)?;
+            if candidate.scheduled_checkpoint_sequence > scheduled_sequence {
+                return Ok(());
+            }
+        }
+
+        let frontier = db.get_federation_checkpoint_frontier().await?;
+        let (session, next_unit_finalization_index, next_unit_index_by_member) = {
+            let consensus = self
+                .consensus
+                .as_ref()
+                .ok_or_else(|| runtime_unavailable("consensus"))?
+                .lock()
+                .await;
+            (
+                consensus.session(),
+                consensus.status().next_unit_finalization_index,
+                consensus.next_unit_index_by_member().clone(),
+            )
+        };
+        let boundary = FederationCheckpointBoundary::from_complete_unit(
+            &frontier,
+            session,
+            next_unit_finalization_index,
+            next_unit_index_by_member,
+        )?;
+        if !boundary.is_scheduled_eligible(public_config.checkpoint_policy, latest_scheduled)? {
+            return Ok(());
+        }
+
+        let materialized_state_digest = mint
+            .federation_materialized_state_snapshot()
+            .await?
+            .digest()?;
+        let checkpoint = boundary.scheduled_checkpoint(
+            public_config,
+            latest_scheduled,
+            materialized_state_digest,
+        )?;
+        let signature = FederationCheckpointSignature::new_signed(
+            &checkpoint,
+            runtime_config.private_config(),
+        )?;
+        let mut tx = db.begin_transaction().await?;
+        tx.add_federation_checkpoint_candidate(&checkpoint).await?;
+        tx.add_federation_checkpoint_signature(&signature).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     pub(crate) async fn apply_journal_entries(

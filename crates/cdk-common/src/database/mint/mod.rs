@@ -1082,6 +1082,12 @@ pub trait FederationJournalDatabase {
         checkpoint_id: FederationCheckpointId,
     ) -> Result<Option<FederationCheckpoint>, Self::Err>;
 
+    /// Get the newest persisted candidate of one checkpoint kind.
+    async fn get_latest_federation_checkpoint(
+        &self,
+        kind: FederationCheckpointKind,
+    ) -> Result<Option<FederationCheckpoint>, Self::Err>;
+
     /// Get persisted checkpoint payloads after a finalized-item cursor.
     async fn get_federation_checkpoints_after(
         &self,

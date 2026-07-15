@@ -1,6 +1,6 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (milestone 1 protocol complete and milestone 2 persistence core implemented)
+Status: in progress (milestone 1 complete; milestone 2 persistence and milestone 3 local capture in progress)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -767,7 +767,7 @@ checkpoint to move ahead of durable consensus or application state.
 - [x] Persist the rolling application digest and applied cursor in the same
       transaction as every successful or deterministically rejected federation
       operation's business-state writes and terminal journal application state.
-- [ ] Persist a locally derived checkpoint candidate and its full
+- [x] Persist a locally derived checkpoint candidate and its full
       materialized-state audit digest before releasing the boundary capture
       lock; later signature/quorum storage may occur after the database has
       advanced.
@@ -875,13 +875,13 @@ peer-sync tick.
 - [ ] Select the first terminal, fully materialized, complete finalized-unit
       boundary after eligibility and capture its exact boundary commitments
       before later finalization advances state.
-- [ ] Under the operation-application lock and a transactionally stable database
+- [x] Under the operation-application lock and a transactionally stable database
       view, compute the full authoritative materialized-state audit directly
       from database tables, persist it with the checkpoint candidate, and then
       release the lock before signature exchange.
-- [ ] Ensure checkpoint audit projection performs no historical journal read and
+- [x] Ensure checkpoint audit projection performs no historical journal read and
       excludes member-local, transient, and uncommitted state.
-- [ ] Derive, persist, and sign each scheduled local checkpoint exactly once.
+- [x] Derive, persist, and sign each scheduled local checkpoint exactly once.
 - [ ] Add authenticated private REST request/response types and message kinds for
       checkpoint summary, fetch, and signature request.
 - [ ] Add checkpoint routes under `/federation/v1` and matching peer-client
@@ -910,6 +910,36 @@ peer-sync tick.
 - [ ] Call the journal catch-up endpoint only during startup/recovery or after a
       peer summary proves that the local journal, finalized-item cursor, or
       trusted checkpoint frontier is behind a selected target checkpoint.
+
+### Progress and verification
+
+The live finalized-unit path now maintains per-member next-unit watermarks in
+the consensus finalization handler. While the existing operation-application
+mutex still excludes later finalization, it checks the bounded rolling
+frontiers against the latest scheduled quorum. An eligible member computes the
+direct full-state audit, derives the canonical scheduled checkpoint, and
+persists the candidate and its local identity signature in one transaction.
+A pending scheduled sequence suppresses later unit events, so the expensive
+audit and local signature are not repeated while quorum exchange is pending.
+Duplicate finalized-unit retry follows the same capture hook, which closes the
+ordinary post-commit retry window.
+
+The startup re-entry path for a crash before candidate capture, authenticated
+signature/quorum exchange, quorum dissemination, and recovery-checkpoint stable
+tip orchestration remain open. Until those are implemented, the first-boundary
+selection and event-driven-frontier checklist items remain intentionally
+unchecked.
+
+Verified with:
+
+- `cargo test -p cdk-common --features federation
+  aleph_bft_finalization_handler_emits_ordered_items_with_unit_metadata --lib`;
+- `cargo test -p cdk-common --features federation
+  consensus_runtime_recovers_from_finalized_items --lib`;
+- `cargo test -p cdk-sqlite --features federation federation_checkpoint_persistence`;
+- `cargo clippy -p cdk-common --lib --features federation -- -D warnings`;
+- `cargo clippy -p cdk-sql-common --lib --features federation -- -D warnings`;
+- `cargo check -p cdk-axum --features federation`.
 
 ### Files and references
 

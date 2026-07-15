@@ -1141,6 +1141,10 @@ fn aleph_bft_finalization_handler_emits_ordered_items_with_unit_metadata() {
     );
     assert_eq!(handler.next_unit_finalization_index(), 1);
     assert_eq!(handler.next_item_index(), 2);
+    assert_eq!(
+        handler.next_unit_index_by_member().get(&member_id_value(2)),
+        Some(&6)
+    );
 }
 
 #[test]
@@ -1758,6 +1762,14 @@ fn consensus_runtime_recovers_from_finalized_items() {
     assert_eq!(recovered.finalized_items().len(), 2);
     assert_eq!(recovered.next_item_index(), 2);
     assert_eq!(recovered.status().next_unit_finalization_index, 2);
+    assert_eq!(
+        recovered.next_unit_index_by_member(),
+        &BTreeMap::from([
+            (member_id_value(1), 0),
+            (member_id_value(2), 1),
+            (member_id_value(3), 1),
+        ])
+    );
     assert!(matches!(
         recovered.finalize_unit(duplicate_unit),
         Err(FederationError::DuplicateAlephBftUnit {

@@ -1549,6 +1549,35 @@ where
         .transpose()
     }
 
+    async fn get_latest_federation_checkpoint(
+        &self,
+        kind: FederationCheckpointKind,
+    ) -> Result<Option<FederationCheckpoint>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT checkpoint_id, checkpoint_json
+            FROM federation_checkpoints
+            WHERE checkpoint_kind = :checkpoint_kind
+            ORDER BY
+                scheduled_checkpoint_sequence DESC,
+                finalized_next_item_index DESC,
+                journal_next_index DESC,
+                checkpoint_id DESC
+            LIMIT 1
+            "#,
+        )?
+        .bind("checkpoint_kind", checkpoint_kind_to_str(kind))
+        .fetch_one(&*conn)
+        .await?
+        .map(sql_row_to_federation_checkpoint)
+        .transpose()
+    }
+
     async fn get_federation_checkpoints_after(
         &self,
         finalized_next_item_index: u64,

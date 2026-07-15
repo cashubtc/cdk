@@ -953,6 +953,7 @@ pub(crate) struct FederationAlephBftFinalizationHandler {
     operation_config: Option<FederationConfig>,
     finalized_units: BTreeSet<(u64, MemberId, u64)>,
     finalized_operation_ids: BTreeSet<FederationOperationId>,
+    next_unit_index_by_member: BTreeMap<MemberId, u64>,
 }
 
 impl FederationAlephBftFinalizationHandler {
@@ -987,6 +988,7 @@ impl FederationAlephBftFinalizationHandler {
             operation_config: None,
             finalized_units: BTreeSet::new(),
             finalized_operation_ids: BTreeSet::new(),
+            next_unit_index_by_member: BTreeMap::new(),
         })
     }
 
@@ -1007,7 +1009,13 @@ impl FederationAlephBftFinalizationHandler {
             next_item_index,
             max_unit_payload_bytes,
         )?;
-        handler.allowed_members = Some(allowed_members.into_iter().collect());
+        let allowed_members = allowed_members.into_iter().collect::<BTreeSet<_>>();
+        handler.next_unit_index_by_member = allowed_members
+            .iter()
+            .copied()
+            .map(|member_id| (member_id, 0))
+            .collect();
+        handler.allowed_members = Some(allowed_members);
         Ok(handler)
     }
 
@@ -1032,6 +1040,12 @@ impl FederationAlephBftFinalizationHandler {
         let mut next_unit_finalization_index = 0;
         let mut next_item_index = 0;
         let mut last_seen_session = None;
+        let mut next_unit_index_by_member = allowed_members
+            .iter()
+            .flatten()
+            .copied()
+            .map(|member_id| (member_id, 0))
+            .collect::<BTreeMap<_, _>>();
 
         for (expected_index, finalized_item) in finalized_items.iter().enumerate() {
             let expected_index =
@@ -1196,6 +1210,11 @@ impl FederationAlephBftFinalizationHandler {
             if finalized_item.session == session {
                 next_unit_finalization_index = next_unit_finalization_index
                     .max(finalized_item.unit_finalization_index.saturating_add(1));
+                let next_unit_index = finalized_item.unit_index.saturating_add(1);
+                next_unit_index_by_member
+                    .entry(finalized_item.unit_submitting_member)
+                    .and_modify(|current| *current = (*current).max(next_unit_index))
+                    .or_insert(next_unit_index);
             }
             next_item_index = finalized_item.accepted_item_index.saturating_add(1);
         }
@@ -1241,6 +1260,7 @@ impl FederationAlephBftFinalizationHandler {
             operation_config,
             finalized_units,
             finalized_operation_ids,
+            next_unit_index_by_member,
         })
     }
 
@@ -1255,6 +1275,12 @@ impl FederationAlephBftFinalizationHandler {
     #[must_use]
     pub fn next_unit_finalization_index(&self) -> u64 {
         self.next_unit_finalization_index
+    }
+
+    /// Return the next unit index expected from each member in the active session.
+    #[must_use]
+    pub fn next_unit_index_by_member(&self) -> &BTreeMap<MemberId, u64> {
+        &self.next_unit_index_by_member
     }
 
     /// Return the next global accepted item index.
@@ -1282,6 +1308,9 @@ impl FederationAlephBftFinalizationHandler {
 
         self.session = session;
         self.next_unit_finalization_index = 0;
+        for next_unit_index in self.next_unit_index_by_member.values_mut() {
+            *next_unit_index = 0;
+        }
         Ok(())
     }
 
@@ -1369,6 +1398,11 @@ impl FederationAlephBftFinalizationHandler {
             self.next_item_index = self.next_item_index.saturating_add(1);
         }
         self.next_unit_finalization_index = self.next_unit_finalization_index.saturating_add(1);
+        let next_unit_index = unit_index.saturating_add(1);
+        self.next_unit_index_by_member
+            .entry(unit_submitting_member)
+            .and_modify(|current| *current = (*current).max(next_unit_index))
+            .or_insert(next_unit_index);
 
         Ok(FederationAlephBftFinalizedUnitOutcome {
             session: self.session,
@@ -1630,6 +1664,12 @@ impl FederationConsensusRuntime {
     #[must_use]
     pub fn next_item_index(&self) -> u64 {
         self.finalization_handler.next_item_index()
+    }
+
+    /// Return the next unit index expected from each configured member.
+    #[must_use]
+    pub fn next_unit_index_by_member(&self) -> &BTreeMap<MemberId, u64> {
+        self.finalization_handler.next_unit_index_by_member()
     }
 
     /// Return accepted-operation journal state produced from finalized units.
