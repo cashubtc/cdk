@@ -22692,6 +22692,73 @@ async fn private_status_route_rejects_inbound_overflow_before_sequence_persisten
 }
 
 #[tokio::test]
+async fn cancelled_private_local_status_releases_inbound_admission() {
+    let (mut state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    state.federation.private_rest_admission = Some(Arc::new(tokio::sync::Semaphore::new(1)));
+    let admission = state
+        .federation
+        .private_rest_admission
+        .as_ref()
+        .expect("inbound admission")
+        .clone();
+
+    for sequence in 1..=3 {
+        let cache = Arc::clone(&state.federation.catch_up_certificate_quorum_cache);
+        let cache_guard = cache.lock().await;
+        let request = signed_status_request(
+            &public_config,
+            &peer_private,
+            local_member,
+            sequence,
+        );
+        let task_state = state.clone();
+        let task_request = request.clone();
+        let task = tokio::spawn(async move {
+            post_local_status(State(task_state), Json(task_request)).await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let sequence_recorded = state
+                    .federation
+                    .sequences
+                    .as_ref()
+                    .expect("sequence tracker")
+                    .lock()
+                    .await
+                    .verify_next(&request, &public_config, local_member)
+                    .is_err();
+                if sequence_recorded {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("status handler should record its sequence");
+
+        assert!(!task.is_finished(), "status should wait on the held cache");
+        assert_eq!(admission.available_permits(), 0);
+        task.abort();
+        assert!(task.await.expect_err("cancelled status task").is_cancelled());
+        assert_eq!(admission.available_permits(), 1);
+        drop(cache_guard);
+    }
+
+    let request = signed_status_request(&public_config, &peer_private, local_member, 4);
+    let response = post_local_status(State(state), Json(request))
+        .await
+        .expect("status response after repeated cancellation")
+        .0;
+    assert_eq!(response.peer_status.member_id, local_member);
+}
+
+#[tokio::test]
 async fn private_local_status_route_reports_lagging_sync_state() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state

@@ -123,10 +123,10 @@ result must prove; they are not additional independent tasks.
 | 2 | Cancellation-safe server application and bounded wallet completion | Complete | 3, 4, 5 |
 | 3 | Exactly-once melt completion under repetition and member faults | Complete | 6 |
 | 4 | AlephBFT cadence, network backpressure, and HTTP liveness | Complete | 8 |
-| 5 | Signed private-status liveness and bounded operator reporting | Confirmed; investigation pending | 7, 12 |
+| 5 | Signed private-status liveness and bounded operator reporting | Complete | 7, 12 |
 | 6 | Federation discovery and import completion | Confirmed historically; revalidation pending | 9 |
 | 7 | Wallet token-preparation and fragmentation scaling | Unconfirmed | 10 |
-| 8 | Controlled local and remote capacity characterization | Blocked by Milestones 1-5 | 11 and performance baselines |
+| 8 | Controlled local and remote capacity characterization | Pending | 11 and performance baselines |
 | 9 | Production release validation and operator readiness | Pending | Remaining release work |
 | U1 | Validate payment-report quote-age semantics | Unconfirmed | 13 |
 | U2 | Validate network-pump retry duplication | Unconfirmed | Secondary Issue 8 hypothesis |
@@ -137,6 +137,8 @@ result must prove; they are not additional independent tasks.
 | U7 | Validate BLS transaction-identifier persistence | Resolved and verified | Found during Milestone 2 cancellation recovery |
 | U8 | Validate finalized-item catch-up response-count mismatch | Unconfirmed | Found during Milestone 2 parallel receive verification |
 | U9 | Validate intermittent 60-second melt-quote creation latency | Unconfirmed | Found during Milestone 3 process verification |
+| U10 | Validate parallel quote-state observation failures | Unconfirmed | Found during Milestone 5 status-load verification |
+| U11 | Validate release-only status fixture quote failures | Unconfirmed | Found during Milestone 5 focused verification |
 
 ## Executive summary
 
@@ -853,7 +855,7 @@ standalone HTTP tests. Use the Nocean workload once for final validation.
 
 ### Milestone 5: Signed private-status liveness and bounded operator reporting
 
-**Status:** Confirmed; investigation pending
+**Status:** Complete
 
 **Covers:** Issues 7 and 12
 
@@ -874,18 +876,80 @@ control or masking application liveness failures.
   different live session, so correlation with application/consensus lag remains
   possible but unproven.
 
+#### Current-revision investigation result
+
+The historical hang did not reproduce on the current revision after Milestone
+4 restored AlephBFT's upstream active cadence. Code inspection also invalidated
+the suspected admission-queue mechanism: private REST admission uses
+`try_acquire_owned`, so saturation returns HTTP 429 immediately rather than
+waiting, and its owned permit is released by normal Rust cancellation.
+
+The already-loaded Nocean federation first completed 100 concurrent signed
+status requests with no failures, 255.1 ms mean latency, and 366 ms maximum
+latency while all five members were healthy and converged at operation 168. A
+higher-load remote rerun was not authorized, so no additional remote
+transactions were created for this milestone.
+
+A fresh local five-member, threshold-three production-path DKG federation then
+provided the causal process check:
+
+- At operation 9, 50 of 50 concurrent signed-status requests passed with 271.7
+  ms mean and 286 ms maximum latency, including CLI startup, config validation,
+  request signing, and response validation.
+- From operation 49 to 89, 20 parallelism-five quote/payment-observation pairs
+  completed successfully. All 85 signed-status samples passed with 284.1 ms
+  mean and 304 ms maximum latency; all 85 public samples returned HTTP 200 with
+  8.8 ms mean and 18.3 ms maximum latency.
+- A later parallelism-five batch advanced the federation from operation 109 to
+  the historical failure height of 149. All 20 quote pairs, 80 signed-status
+  samples, and 80 public samples passed; maximum latencies were 317 ms and 12
+  ms respectively. All members remained healthy, ready, in the compatible live
+  session, and exactly converged.
+- With member 5 offline, the active quorum advanced from operation 149 to 159.
+  All five quote pairs and all 20 status samples against the active members
+  passed, with 262 ms maximum status latency. Restarted member 5 caught up
+  before the first poll, returned healthy/ready signed status in 156 ms, and all
+  five members converged at operation 159.
+
+Status construction still performs database and cache reads, but the default
+request already returns summary reports and leaves materialized row
+fingerprints opt-in. No measured handler, lock, report, response-size, or
+event-loop boundary approached the five-second cancellation bound. Status lag
+was therefore neither a cause nor an effect in these current runs, and there is
+no hard evidence for a production locking, caching, admission, or report-detail
+fix.
+
+#### Chosen resolution and verification
+
+No production behavior changed. A narrow regression holds the certificate
+status cache after the authenticated local-status handler has recorded its
+sequence, cancels the handler three times, and verifies after every cancellation
+that the sole inbound admission permit is restored. A fourth signed request
+then completes. The release-profile regression passed in 0.03 seconds.
+
+The focused release-profile status filters also passed the admission overflow,
+non-persistent liveness sequence, consensus/sync reporting, lagging, catching
+up, certificate verification, redacted halted state, payment-conflict,
+completed-operation, alert, and materialized-row tests. Two unrelated fixtures
+failed deterministically with `Unknown quote` before exercising their status
+assertions; U11 records that release-only observation for independent debug and
+fixture validation. Temporary process state, identities, wallets, logs, and
+measurement files were removed, and all local listeners were stopped.
+
 #### Work checklist
 
-- [ ] Reproduce the smallest signed-status hang, instrument only the suspected
+- [x] Reproduce the smallest signed-status hang, instrument only the suspected
   permit/lock/task/report boundary, and record the blocking mechanism, owning
-  layer, and whether status lag is cause, effect, or merely correlated.
-- [ ] Implement the smallest existing admission, locking, snapshot, caching, or
-  bounded-detail fix. Preserve signed access control and privacy; do not use a
-  larger timeout or introduce an unbounded task/queue.
-- [ ] Add the narrow regression and verify bounded status under the causal load,
+  layer, and whether status lag is cause, effect, or merely correlated. The
+  current revision invalidated the hang and admission-wait hypothesis, so no
+  production fix is permitted.
+- [x] Implement the smallest existing admission, locking, snapshot, caching, or
+  bounded-detail fix only if confirmed. No fix was implemented because all
+  measured boundaries stayed bounded and default detail is already summarized.
+- [x] Add the narrow regression and verify bounded status under the causal load,
   cancellation cleanup, accurate readiness/session reporting, and continued
   public-route plus consensus/application liveness.
-- [ ] Remove temporary tracing, record sanitized latency/results and tests not
+- [x] Remove temporary tracing, record sanitized latency/results and tests not
   run, update the milestone/operator semantics, and commit conventionally.
 
 #### Acceptance
@@ -995,7 +1059,7 @@ shared storage/query code changed.
 
 ### Milestone 8: Controlled local and remote capacity characterization
 
-**Status:** Blocked by Milestones 1-5
+**Status:** Pending
 
 **Covers:** Issue 11 and the local/Nocean performance baselines
 
@@ -1506,6 +1570,104 @@ validation, or standalone regression.
 controlled slow/unreachable coordinator case, focused coverage of the proven
 boundary, interruption plus idempotent retry, and unchanged standalone quote
 behavior.
+
+### Milestone U10: Validate parallel quote-state observation failures
+
+**Status:** Unconfirmed
+
+**Found during:** Milestone 5 signed-status load verification
+
+**Observation:** A fresh local five-member federation completed two
+parallelism-five batches of 20 quote/payment-observation pairs with no failures.
+An intermediate 30-quote batch at parallelism ten reported only 10 pairs in the
+expected paid state and advanced the converged journal by exactly 20 operations.
+Signed status remained responsive for 25 of 25 samples with 318 ms maximum
+latency, every public probe passed, all five members remained healthy, and
+member 1 recorded an invalid-operation alert count of 20 from the benchmark
+client source.
+
+The temporary harness retained only the final pair result, not the create
+response, immediate quote-state response, HTTP status, or alert operation ID.
+It therefore cannot distinguish create rejection, a valid unpaid-to-paid
+observation race, identifier validation, overload admission, or a harness
+expectation that polled payment state too early. The following
+parallelism-five batch succeeded and reached operation 149. No quote,
+consensus, alert, timeout, or retry change is justified from this one lossy
+sample.
+
+#### Work checklist
+
+- [ ] Reproduce from fresh state at parallelism five and ten while retaining
+  bounded sanitized phase timing, HTTP status, typed error category, quote
+  state transitions, operation IDs, journal admission, and alert attribution.
+- [ ] Poll accepted quotes through a documented payment-state bound instead of
+  treating the first non-paid response as failure; compare valid identifier
+  generation and exact operation deltas.
+- [ ] If a product failure remains after the harness race is excluded, identify
+  its owning quote, observation, admission, consensus, or alert boundary before
+  changing code. Do not suppress alerts or add retries/timeouts speculatively.
+- [ ] Verify the proven boundary at adjacent parallelism, interruption/retry,
+  exact journal convergence, bounded status/public liveness, and standalone
+  quote behavior; remove artifacts, update the milestone, and commit.
+
+#### Acceptance
+
+**Success criteria:** Either the result is explained and closed as an immediate
+polling/harness artifact, or every accepted quote reaches a correct bounded
+state and every rejected quote produces an accurate typed result without false
+invalid-operation alerts or inconsistent journal application.
+
+**Minimum verification:** Two fresh retained-phase runs at parallelism five and
+ten, bounded quote-state polling, exact alert-to-operation correlation, focused
+coverage of the confirmed boundary, and standalone comparison.
+
+### Milestone U11: Validate release-only status fixture quote failures
+
+**Status:** Unconfirmed
+
+**Found during:** Milestone 5 focused authenticated-status verification
+
+**Observation:** The new cancellation regression and 12 adjacent status tests
+passed in the release profile. Two other existing tests failed deterministically
+before reaching their status assertions:
+`private_status_routes_read_persisted_journal_after_runtime_reset` and
+`private_local_status_route_reports_stale_payment_observations` both received
+`Unknown quote` while submitting their setup operation. Repeating each test in
+isolation produced the same result. The Milestone 5 change adds only a separate
+test and cannot alter either fixture.
+
+The debug federation test target entered a compiler/linker stall and was
+stopped after process inspection showed no active linker or CPU use, so this
+turn did not establish whether the failures are release-only, fixture-ordering
+defects, or real optimized-build behavior. They do not prove a status-liveness
+defect, but setup operations failing by profile merit independent scrutiny
+before either test is weakened or ignored.
+
+#### Work checklist
+
+- [ ] Run both tests on a clean current toolchain in debug and release with
+  retained setup-phase ordering, quote persistence, operation IDs, and
+  application errors; first resolve or bypass only the build-environment stall.
+- [ ] Determine whether quote fixtures omit durable quote state, depend on
+  debug timing/order, or expose a real release behavior. Do not change status
+  assertions or convert `Unknown quote` into an accepted setup result.
+- [ ] If a product or fixture defect is confirmed, apply the smallest existing
+  quote-setup/application correction and keep the tests faithful to production
+  ordering.
+- [ ] Verify both profiles, related quote/payment-observation tests, status
+  assertions, standalone behavior, and deterministic repetition; update the
+  milestone and commit separately.
+
+#### Acceptance
+
+**Success criteria:** Both fixtures either pass deterministically in debug and
+release with valid persisted quote setup or fail closed for an intentionally
+invalid fixture whose expectation has been corrected without masking product
+behavior.
+
+**Minimum verification:** Repeated clean debug/release runs, setup-state and
+operation-order evidence, the two focused tests, adjacent payment-observation
+tests, and standalone quote coverage if shared production code changes.
 
 ## Scope and evidence labels
 
@@ -2020,7 +2182,8 @@ removed selector.
 ### 7. Signed private status can become unresponsive under load
 
 **Severity:** High operationally  
-**Status:** Confirmed independently on two members in two local runs
+**Status:** Historical failure not reproduced on the current revision; closed
+without a production fix in Milestone 5
 
 After the concurrent standard-operation workload, member 1 continued to answer
 the public information endpoint in approximately 30 ms but did not answer signed
@@ -2062,6 +2225,17 @@ status responsiveness, journal application, and live-session membership remain
 coupled. Capture handler admission wait, lock wait/hold time, serialization
 time, response size, event-loop delay, and the operation/session state at every
 timeout.
+
+Milestone 5 revalidated the current revision with 100 remote and 260 local
+signed-status requests. No request failed, local latency remained below 318 ms
+including CLI overhead, the federation stayed converged at the historical
+144-operation region, and an offline member caught up to operation 159 before
+its first signed poll. Admission cannot create the historical silence because
+it is fail-fast, and the new cancellation regression proves that three blocked
+and cancelled handlers each restore the owned permit before a fourth request
+completes. The historical failure remains useful context, but there is no
+current causal evidence that permits, locks, report construction, or status
+handling require a production change.
 
 ### 8. Small receive load can amplify empty consensus units and starve HTTPS
 
@@ -2274,7 +2448,8 @@ as a consensus-engine capacity limit.
 
 ### 12. Status and recovery work can scale with journal and report size
 
-**Status:** Partly resolved; residual risk confirmed by the status hang
+**Status:** Partly resolved; residual status risk not reproduced on the current
+revision
 
 Status, digest, certificate, and startup paths previously reloaded or replayed
 unchanged journal state. Large payment-observation reports also make signed
@@ -2285,6 +2460,14 @@ latency still needs a process-level load test.
 Operator endpoints should expose summaries by default and retrieve detailed
 rows or reports only on demand. Cache invalidation must remain tied to journal,
 application, certificate, and observation mutation rather than polling.
+
+Current local status requests already omit materialized row fingerprints by
+default and return payment-observation summaries rather than underlying rows.
+At operation 149, with roughly the same journal scale as the historical hang,
+continuous signed status stayed below 318 ms including CLI overhead. This does
+not establish an unlimited scaling claim, but it invalidates Issue 12 as the
+cause of the current Milestone 5 workload; larger characterization belongs to
+Milestone 8 unless a controlled report-size curve proves a separate defect.
 
 ### 13. Payment-report quote age can be nonsensical
 
