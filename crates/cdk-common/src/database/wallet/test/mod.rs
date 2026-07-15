@@ -15,6 +15,7 @@ use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
 
 use super::*;
 use crate::mint_url::MintUrl;
+use crate::nuts::nut01::BlsG1PublicKey;
 use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, State};
 use crate::wallet::{
     MeltQuote, MintQuote, OperationData, ProofInfo, SwapOperationData, SwapSagaState, Transaction,
@@ -1008,6 +1009,21 @@ where
     assert_eq!(incoming.status, TransactionStatus::Completed);
 }
 
+/// Test adding and retrieving transactions containing federation proof identifiers.
+pub async fn add_and_get_bls_transaction<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mut transaction = test_transaction(test_mint_url(), TransactionDirection::Incoming);
+    transaction.ys = vec![BlsG1PublicKey::hash_to_curve(b"federation transaction proof").into()];
+    let tx_id = transaction.id();
+
+    db.add_transaction(transaction.clone()).await.unwrap();
+
+    let retrieved = db.get_transaction(tx_id).await.unwrap();
+    assert_eq!(retrieved, Some(transaction));
+}
+
 /// Test listing transactions
 pub async fn list_transactions<DB>(db: DB)
 where
@@ -1782,6 +1798,7 @@ macro_rules! wallet_db_test {
             add_and_get_transaction,
             update_transaction_status,
             same_proofs_in_different_sagas,
+            add_and_get_bls_transaction,
             list_transactions,
             filter_transactions_by_mint,
             remove_transaction,

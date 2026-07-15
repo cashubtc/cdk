@@ -120,7 +120,7 @@ result must prove; they are not additional independent tasks.
 | Order | Milestone | Current status | Detailed issues |
 | ---: | --- | --- | --- |
 | 1 | Fresh-member recovery, readiness, and live-session convergence | Complete | 1, 2 |
-| 2 | Cancellation-safe server application and bounded wallet completion | Confirmed; investigation pending | 3, 4, 5 |
+| 2 | Cancellation-safe server application and bounded wallet completion | Complete | 3, 4, 5 |
 | 3 | Exactly-once melt completion under repetition and member faults | Confirmed; investigation pending | 6 |
 | 4 | AlephBFT cadence, network backpressure, and HTTP liveness | Confirmed; investigation pending | 8 |
 | 5 | Signed private-status liveness and bounded operator reporting | Confirmed; investigation pending | 7, 12 |
@@ -134,6 +134,8 @@ result must prove; they are not additional independent tasks.
 | U4 | Validate catch-up certificate deadlock with two stale members | Resolved and verified | Found during Milestone 1 two-member-behind verification |
 | U5 | Validate paged catch-up full-tip digest mismatch | Closed; hypothesis not reproduced | Found during Milestone U4 certificate-boundary tracing |
 | U6 | Validate large-history catch-up page-cost scaling | Unconfirmed | Found during Milestone U5 scale verification |
+| U7 | Validate BLS transaction-identifier persistence | Resolved and verified | Found during Milestone 2 cancellation recovery |
+| U8 | Validate finalized-item catch-up response-count mismatch | Unconfirmed | Found during Milestone 2 parallel receive verification |
 
 ## Executive summary
 
@@ -146,6 +148,19 @@ local performance baseline remains: a five-member federation reached healthy
 state in 1.303 seconds, processed 100 parallel receives at 25.09 committed
 swaps per second, restarted all five members at a 316-operation height in 2.958
 seconds, and restarted one member with an intact database in 1.673 seconds.
+
+Milestone 2 established that current server application is already independent
+of HTTP request cancellation and that the centralized wallet connector already
+returns at threshold without waiting for slow surplus members. The reproducible
+defect was instead at wallet recovery: the CLI recovered a completed receive
+but recovery did not record its incoming transaction, so command dispatch then
+submitted the token again with a new saga identity and received `Token Already
+Spent`. Recovery now records the same input-proof transaction identity as the
+normal receive path, and receive retries return the persisted incoming result.
+A related shared-SQL assumption that every transaction identifier was a
+33-byte secp256k1 key was independently reproduced for 48-byte federation BLS
+identifiers and replaced by self-describing serialization with legacy 33- and
+48-byte read compatibility.
 
 Before the fix, a member whose database was erased did not recover. After
 approximately 155 seconds it held only 1 of 316 accepted operations while
@@ -375,7 +390,7 @@ or multi-member-behind cases only if the proven cause depends on those shapes.
 
 ### Milestone 2: Cancellation-safe server application and bounded wallet completion
 
-**Status:** Confirmed; investigation pending
+**Status:** Complete
 
 **Covers:** Issues 3, 4, and 5
 
@@ -398,19 +413,109 @@ bounded, semantically correct definitive or ambiguous result.
 - The exact earlier failure-after-commit client result was not reproduced in
   the focused local run; the adjacent post-success completion hang was.
 
+#### Root-cause evidence
+
+A current-revision five-member process reproduction separated the server and
+wallet lifecycles at the durable boundary. The receive client was killed only
+after a new row appeared in `federation_aleph_bft_pending_operations`. All five
+members then applied the operation, converged with no pending rows, and advanced
+the journal by exactly one. Code tracing agrees with the process result:
+`submit_envelope` persists pending work and an AlephBFT-owned task applies it;
+the HTTP handler owns only a bounded result waiter. Dropping the request future
+does not own or cancel accepted application. The earlier server-cancellation
+hypothesis is therefore invalidated on the current revision, and no server
+lifecycle change was justified.
+
+The first wallet retry recovered one receive saga and restored one sat, but
+then dispatched `receive` again and submitted a second federation operation,
+which terminated as `Token Already Spent`. The causal path was:
+
+1. CLI startup calls `recover_incomplete_sagas` before command dispatch.
+2. `resume_receive_saga` restored the output proofs and deleted the saga but,
+   unlike normal receive and the existing recovered-issue pattern, recorded no
+   incoming transaction for the original input proof identifiers.
+3. Command dispatch could not recognize the recovered result. `ReceiveSaga::new`
+   created a new operation ID and outputs and submitted the same spent inputs
+   again.
+
+The smallest fitting correction records a recovered incoming transaction using
+the original input proof identifiers, recovered amount, fee, and saga ID.
+`receive_proofs` checks that canonical transaction identity and returns the
+persisted incoming amount before creating another saga. It adds no retry loop,
+queue, schema, fanout path, or alternate application system.
+
+That correction exposed a separate shared-SQL defect before the retry could
+return: both a normal federation receive and a recovered receive persisted a
+48-byte BLS G1 identifier, while `sql_row_to_transaction` split every `ys` blob
+into 33-byte chunks. A focused SQLite conformance test failed with an invalid
+secp256k1 public key before the storage fix. New writes now serialize the key
+vector as JSON in the existing blob column; reads first decode that
+self-describing representation and then accept legacy homogeneous 33-byte
+secp256k1 or 48-byte BLS G1 rows. This is isolated as Milestone U7 below, with
+the independent evidence that allowed it to be fixed during M2.
+
+#### Verification results
+
+- With one member offline, a receive returned `Received: 1` and exited in two
+  seconds. Ten parallel receive processes under the same four-member quorum
+  all exited before a 60-second watchdog, all ten wallets held exactly one sat,
+  the active members shared the same 109-operation journal and state digests,
+  and the journal delta was exactly ten.
+- In the killed-client case, a durable pending row was observed before
+  termination. The operation converged with journal delta one and zero pending
+  rows. Wallet restart reported one recovered operation; retry returned
+  `Received: 1` in one to two seconds, retained a one-sat balance, and did not
+  advance the 67- or 93-operation journal in two independent runs.
+- Connector tests passed for return-after-threshold success, matching
+  threshold rejection without slow-member delay, disagreeing rejection
+  ambiguity, and timeout/invalid-share ambiguity.
+- The receive idempotence test, recovered-transaction identity test, and all
+  four existing `test_recover_receive` tests passed. The shared encoding test
+  passed new mixed-key serialization plus legacy 33- and 48-byte decoding; the
+  SQLite BLS transaction round trip passed after failing before the fix, the
+  complete SQLite `transaction` filter passed 18 tests, and the shared Redb BLS
+  transaction conformance test passed.
+- `startup_replays_accepted_but_unapplied_journal_entry_to_same_state_digest`
+  and
+  `aleph_bft_live_session_replays_pending_operation_when_restart_precedes_backup`
+  passed, covering both accepted-journal and pending-operation restart
+  boundaries. The ten-test standalone filter passed, and `cargo check -p cdk
+  --features federation -p cdk-sql-common -p cdk-sqlite` passed.
+- No temporary instrumentation was added. The git-ignored process wrapper and
+  generated wallets were removed after recording sanitized aggregate results.
+  A restarted offline member exposed the separate unconfirmed U8 catch-up
+  mismatch; M2's final regression intentionally held that member offline and
+  asserted the available quorum rather than hiding or fixing U8 in this
+  milestone.
+
+The focused commands were `cargo test -p cdk --features federation
+test_recover_receive`, the two new receive test-name filters, the four connector
+test-name filters recorded above, `cargo test -p cdk-sql-common
+transaction_ys_decode_new_and_legacy_encodings`, `cargo test -p cdk-sqlite
+transaction`, the two `cdk-axum` replay test-name filters, `cargo test -p cdk
+--features federation standalone`, `cargo check -p cdk --features federation
+-p cdk-sql-common -p cdk-sqlite`, and `cargo fmt --all -- --check`. The CLI used
+by the process regression was built with `cargo build -p cdk-cli
+--no-default-features --features federation`; `cargo test -p cdk-redb
+wallet_add_and_get_bls_transaction` also passed. A full workspace test, clippy,
+and live PostgreSQL conformance run were not repeated because this milestone
+changes only wallet receive and shared wallet-transaction persistence; the
+focused compile, database, recovery, connector, replay, and standalone coverage
+exercised every changed boundary without requiring an external database.
+
 #### Work checklist
 
-- [ ] Reproduce the smallest current client-exit and/or accepted-but-unapplied
+- [x] Reproduce the smallest current client-exit and/or accepted-but-unapplied
   failure, instrument only the boundary needed, and record the confirmed cause
   and owning wallet/server layer. Close any unreproduced shape without fixing it.
-- [ ] Implement the smallest existing connector, saga, journal/application, or
+- [x] Implement the smallest existing connector, saga, journal/application, or
   cancellation-lifecycle fix. Preserve stable operation IDs, idempotent replay,
   typed ambiguous outcomes, and request-independent accepted work; do not add
   per-flow fanout or application systems.
-- [ ] Add the narrow regression and verify bounded threshold completion,
+- [x] Add the narrow regression and verify bounded threshold completion,
   cancellation/restart recovery, minority-member faults, and no duplicate side
   effects or false definitive failures.
-- [ ] Remove temporary instrumentation, record sanitized commands/results and
+- [x] Remove temporary instrumentation, record sanitized commands/results and
   any tests not run, update the status/root cause/fix, and commit with a
   conventional commit.
 
@@ -1046,6 +1151,97 @@ state, and keeps every page, allocation, transaction, and retry bounded.
 sizes, page-level cost attribution, one five-member stale/restart regression,
 and focused malformed/certificate/digest boundary tests.
 
+### Milestone U7: Validate BLS transaction-identifier persistence
+
+**Status:** Resolved and verified during Milestone 2
+
+**Found during:** Milestone 2 killed-client receive recovery
+
+**Observation and independent confirmation:** The first fixed recovery run
+restored one sat and avoided a duplicate federation operation, but CLI retry
+failed with `malformed public key`. Both a normal receive wallet and the
+recovered wallet held an incoming transaction whose `ys` blob was 48 bytes.
+Code inspection showed that shared SQL concatenated variable-width public keys
+on write but always decoded 33-byte chunks on read. Before any storage change,
+a focused SQLite database conformance test persisted one BLS G1 transaction
+identifier and failed while decoding it as secp256k1. The normal and recovered
+rows plus the independent test established a shared storage defect rather than
+a recovery-only artifact.
+
+The smallest fix retains the existing blob column, writes the public-key vector
+in self-describing JSON, and reads both that format and legacy homogeneous
+33-byte secp256k1 or 48-byte BLS G1 rows. It adds no schema migration or
+federation-specific database path and preserves standalone wallet rows.
+
+#### Work checklist
+
+- [x] Independently reproduce normal and recovery BLS transaction reads before
+  changing storage behavior; identify the shared fixed-width decoder.
+- [x] Implement one shared self-describing encoding with bounded legacy reads;
+  do not add a federation transaction table or migration-only parallel path.
+- [x] Verify new mixed-key encoding, legacy secp256k1 and BLS reads, SQLite BLS
+  round trip, receive recovery, and standalone behavior.
+- [x] Record the finding and verification with Milestone 2 and commit it in the
+  same conventional milestone commit because it directly blocked M2 retry.
+
+#### Acceptance
+
+**Success criteria:** Transaction identifiers round-trip without assuming one
+cryptographic key width; existing secp256k1 and experimental BLS rows remain
+readable; malformed encodings fail closed.
+
+**Minimum verification:** Shared new/legacy decoder test, SQLite BLS database
+conformance test, the real recovered-receive retry, and standalone wallet/mint
+coverage. All passed as recorded in Milestone 2.
+
+### Milestone U8: Validate finalized-item catch-up response-count mismatch
+
+**Status:** Unconfirmed
+
+**Found during:** Milestone 2 parallel receive verification
+
+**Observation:** In one five-member run, member 5 was offline while ten
+parallel receives completed on the four-member quorum. After restart, its
+signed private status returned `503` throughout the 120-second bound. Its peer
+sync attempts against three different members each failed with the same
+message: finalized-item catch-up recovered 6 journal entries while the response
+carried 10 items. The ten wallet processes had already succeeded and the active
+four members were healthy, so M2 was rerun and passed with member 5 intentionally
+offline. No catch-up code was changed.
+
+The count mismatch could indicate an invalid equality check between finalized
+items and payload-bearing journal operations, a response construction error, a
+cursor/range boundary defect, or state left by the long-lived experimental
+fixture. One occurrence does not distinguish these explanations. This issue
+must receive more scrutiny than an ordinary regression failure because relaxing
+the check without proving the intended mapping could admit incomplete replay.
+
+#### Work checklist
+
+- [ ] Independently reproduce from fresh state with controlled offline suffixes
+  containing known payload and payload-free finalized items; record cursors,
+  item counts, operation counts, and response boundaries on both peers.
+- [ ] Trace the invariant from response construction through finalized-runtime
+  reconstruction and journal persistence. Confirm whether six-versus-ten is
+  valid compression or actual missing application before attempting a fix.
+- [ ] If confirmed, implement the smallest correction in the existing paged
+  finalized-item recovery path; do not suppress the mismatch, weaken digest or
+  certificate checks, or lengthen the reconnect delay as a workaround.
+- [ ] Verify exact journal/finalized-item/digest convergence, 99/100/101 paging,
+  interruption/restart, mixed empty/payload units, and standalone behavior;
+  update this milestone and commit separately.
+
+#### Acceptance
+
+**Success criteria:** A member offline across a mixed finalized-item suffix
+either recovers the exact quorum-authoritative journal and runtime state or
+fails closed for a proven malformed response. Valid payload-free finalized
+items never create a false count mismatch.
+
+**Minimum verification:** Two fresh independent reproductions with controlled
+item composition, a focused response-boundary unit test, one five-member
+offline/rejoin process test, and relevant malformed/digest/certificate tests.
+
 ## Scope and evidence labels
 
 This report consolidates:
@@ -1055,6 +1251,8 @@ This report consolidates:
 - the 2026-07-14 local five-member restart, recovery, and transaction benchmark;
 - the 2026-07-14 focused local confirmation of Issues 1, 2, 3, and 5, including
   the incidental revalidation of Issues 6 and 7;
+- the Milestone 2 current-revision cancellation, recovery retry, offline-member,
+  and ten-wallet parallel receive regressions;
 - the local CPU regression investigation already recorded in that stress-test
   document.
 
@@ -1360,8 +1558,8 @@ false-ready interval and ended with all five members healthy in session 0.
 ### 3. Wallet operations can commit while the client reports failure
 
 **Severity:** High  
-**Status:** Confirmed on Nocean; exact failure not reproduced locally after
-fanout changes, but post-success client completion still failed
+**Status:** Closed on the current revision; historical Nocean failure shape was
+not reproduced, and the reproducible recovery retry is fixed and verified
 
 In the Nocean concurrency-5 and concurrency-10 cases, every attempted swap
 advanced the converged journal even though 25 wallet processes exited without
@@ -1386,13 +1584,13 @@ success, wallet persistence, minority application, and client-process
 completion can still diverge. The local result must not be described as 43
 clean client successes merely because success text was printed.
 
-**Most likely cause:** the wallet previously cached only the first
+**Historical hypothesis:** the wallet previously cached only the first
 threshold-sized compatible member subset. One temporary catch-up/readiness error
 therefore reduced a nominal 3-of-5 operation to 2-of-3. Even after scheduling all
-members, returning after threshold success and dropping unfinished request
-futures can leave minority handlers accepted-but-unapplied. Catch-up errors were
-also treated too much like terminal request failures instead of retryable member
-readiness states.
+members, dropped unfinished requests were suspected of leaving minority
+handlers accepted-but-unapplied. Current tracing and cancellation reproduction
+invalidated that second mechanism; accepted server work has an independent
+owner. Catch-up errors remain availability rather than rejection evidence.
 
 **Required behavior:** all validated roster members remain eligible; retryable
 member states do not count as rejection votes; the identical deterministic
@@ -1407,10 +1605,25 @@ returning. Detachment must not cancel accepted server operations. Record
 separate timestamps for threshold decision, wallet commit, user-visible output,
 surplus-fanout completion, and process exit.
 
+Milestone 2 killed a current client only after its operation was durably
+pending. Server application still converged on every member, which invalidates
+request cancellation as the owner of accepted work. The reproducible wallet
+failure occurred on restart instead: recovery restored the value without
+recording the original incoming transaction, after which command dispatch
+submitted the spent token again. Recording the recovered transaction and
+returning an existing incoming result made two independent process retries
+return success without a second journal entry.
+
+The historical Nocean failure-after-commit result remains a useful remote
+regression, but no current code change is accepted for that unreproduced shape.
+Milestones 4 and 5 own the remaining backpressure and status-unresponsiveness
+conditions that can invalidate remote results.
+
 ### 4. Threshold completion can cancel minority member application
 
 **Severity:** High  
-**Status:** Confirmed state divergence; cancellation is the strongest hypothesis
+**Status:** Request-cancellation hypothesis invalidated on the current revision;
+durable application and restart replay verified
 
 A local full-fanout follow-up found four members with an applied operation while
 one member retained the same operation as accepted but unapplied. The client had
@@ -1423,21 +1636,29 @@ persisted their received balances. Restarting member 3 replayed the journal to
 144 applied entries, proving that the durable history was recoverable but live
 application had stopped.
 
-**Most likely cause:** pending HTTP request futures are dropped once the wallet
-has enough shares. Cancellation can occur after a minority handler has accepted
-the journal item but before local application and response publication finish.
+**Historical hypothesis, now invalidated on the current revision:** pending
+HTTP request futures are dropped once the wallet has enough shares, and this
+was suspected of cancelling local application after journal acceptance.
 
-The wallet may stop waiting for surplus responses, but it must not be the owner
-of whether an accepted mint operation finishes durably. The server submission
-path needs cancellation-safe completion after acceptance, and the wallet should
-drain or detach surplus requests in a bounded way that does not abandon server
-work.
+Current code tracing and a durable-boundary process test show that the wallet is
+not the owner of accepted application. The server persists pending work before
+the handler waits, and an AlephBFT-owned application task continues after the
+HTTP future is dropped. Killing the client after the pending row appeared led
+to one applied operation on all five members and no residual pending row.
+Accepted-but-unapplied and pending-before-backup restart tests also replayed to
+the expected terminal state.
+
+The historical minority divergence was real, but this causal hypothesis is
+closed without a server fix. Remaining ways for a member to stop applying under
+load belong to their independently evidenced startup/catch-up, consensus
+backpressure, or status-liveness milestones. U8 records the new catch-up
+mismatch found while testing member rejoin.
 
 ### 5. Wallet catch-up handling remains too brittle
 
 **Severity:** High  
-**Status:** Confirmed on Nocean; direct intact-member case passed locally, but
-load-induced member divergence still blocked client completion
+**Status:** Current threshold and ambiguity behavior verified; historical
+load-induced failures remain assigned to the owning backpressure/status work
 
 Wallet errors named members that were lagging, catching up, or verifying
 catch-up certificates. These are retryable availability states, not definitive
@@ -1465,10 +1686,20 @@ The focused local process run produced two materially different results:
   confirms that one non-completing member can still prevent bounded client
   completion despite a healthy signature and consensus quorum.
 
-The current evidence therefore narrows Issue 5: ordinary intact restart with
-four healthy spares works, while load-induced accepted/unapplied, status-
-unresponsive, or session-incompatible members remain unsafe for wallet
-completion.
+Milestone 2 confirmed that the centralized connector starts all configured
+member requests and returns as soon as threshold success or a matching
+threshold rejection is established. Focused tests passed for slow surplus
+members, agreeing definitive rejections, disagreeing rejection ambiguity, and
+timeouts mixed with invalid shares. A real four-of-five process test completed
+one receive in two seconds and ten parallel receives with zero process or
+balance failures and an exact ten-operation journal delta.
+
+No connector change was justified. The earlier ordinary intact-restart case
+and the current offline-minority case both pass. Load-induced HTTPS starvation,
+signed-status unresponsiveness, session incompatibility, and the newly observed
+finalized-item catch-up mismatch remain separate owning-layer defects in
+Milestones 4, 5, and U8; they must not be hidden with wallet retries or larger
+timeouts.
 
 ### 6. Repeated concurrent melts fail or stall
 
@@ -1965,6 +2196,9 @@ assertions.
 - Session rotation under load with continuous assertions that every member
   remains in a quorum-compatible session and continues applying journal rows.
 - Repeated 3-of-5 fanout with one and two slow/catching-up members.
+- Offline-member catch-up across controlled mixed payload and payload-free
+  finalized items, asserting response-item, recovered-operation, cursor, and
+  digest relationships before accepting any count-check change.
 - Repeated 3-of-5 fanout with one accepted-but-unapplied, status-unresponsive,
   or session-incompatible member. Threshold success must return within a
   bounded post-success interval without cancelling server application.

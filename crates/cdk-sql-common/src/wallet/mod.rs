@@ -902,11 +902,7 @@ where
         let unit = transaction.unit.to_string();
         let amount = u64::from(transaction.amount) as i64;
         let fee = u64::from(transaction.fee) as i64;
-        let ys = transaction
-            .ys
-            .iter()
-            .flat_map(|y| y.to_bytes().to_vec())
-            .collect::<Vec<_>>();
+        let ys = serde_json::to_vec(&transaction.ys)?;
 
         let id = transaction.id();
 
@@ -2327,6 +2323,7 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
 
     let amount: u64 = column_as_number!(amount);
     let fee: u64 = column_as_number!(fee);
+    let ys = deserialize_transaction_ys(&column_as_binary!(ys))?;
 
     let saga_id: Option<Uuid> = column_as_nullable_string!(saga_id)
         .map(|id| Uuid::from_str(&id).ok())
@@ -2338,10 +2335,7 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
         unit: column_as_string!(unit, CurrencyUnit::from_str),
         amount: Amount::from(amount),
         fee: Amount::from(fee),
-        ys: column_as_binary!(ys)
-            .chunks(33)
-            .map(PublicKey::from_slice)
-            .collect::<Result<Vec<_>, _>>()?,
+        ys,
         timestamp: column_as_number!(timestamp),
         memo: column_as_nullable_string!(memo),
         metadata: column_as_nullable_string!(metadata, |v| serde_json::from_str(&v).ok(), |v| {
@@ -2360,6 +2354,27 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
     })
 }
 
+fn deserialize_transaction_ys(bytes: &[u8]) -> Result<Vec<PublicKey>, Error> {
+    match serde_json::from_slice(bytes) {
+        Ok(ys) => Ok(ys),
+        Err(json_error) => {
+            for key_size in [33, 48] {
+                if bytes.len() % key_size == 0 {
+                    if let Ok(ys) = bytes
+                        .chunks(key_size)
+                        .map(PublicKey::from_slice)
+                        .collect::<Result<Vec<_>, _>>()
+                    {
+                        return Ok(ys);
+                    }
+                }
+            }
+
+            Err(Error::Serde(json_error))
+        }
+    }
+}
+
 fn sql_row_to_p2pk_signing_key(row: Vec<Column>) -> Result<wallet::P2PKSigningKey, Error> {
     unpack_into!(
         let (
@@ -2376,4 +2391,32 @@ fn sql_row_to_p2pk_signing_key(row: Vec<Column>) -> Result<wallet::P2PKSigningKe
         derivation_path: column_as_string!(derivation_path, DerivationPath::from_str),
         created_time: column_as_number!(created_time),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::nuts::nut01::BlsG1PublicKey;
+
+    use super::*;
+
+    #[test]
+    fn transaction_ys_decode_new_and_legacy_encodings() {
+        let secp = SecretKey::generate().public_key();
+        let bls = PublicKey::from(BlsG1PublicKey::hash_to_curve(b"federation transaction"));
+
+        let encoded = serde_json::to_vec(&vec![secp, bls]).expect("serialize public keys");
+        assert_eq!(
+            deserialize_transaction_ys(&encoded).expect("new encoding"),
+            vec![secp, bls]
+        );
+
+        assert_eq!(
+            deserialize_transaction_ys(&secp.to_bytes()).expect("legacy secp encoding"),
+            vec![secp]
+        );
+        assert_eq!(
+            deserialize_transaction_ys(&bls.to_bytes()).expect("legacy BLS encoding"),
+            vec![bls]
+        );
+    }
 }
