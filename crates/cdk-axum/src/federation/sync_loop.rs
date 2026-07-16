@@ -611,6 +611,23 @@ async fn local_pending_checkpoint(
     }
 }
 
+pub(crate) fn append_checkpoint_catch_up_page(
+    aggregate: &mut Option<FederationJournalCatchUpResponse>,
+    mut page: FederationJournalCatchUpResponse,
+) {
+    match aggregate.as_mut() {
+        Some(aggregate) => {
+            aggregate.entries.append(&mut page.entries);
+            aggregate
+                .aleph_bft_finalized_items
+                .append(&mut page.aleph_bft_finalized_items);
+            aggregate.complete = page.complete;
+            aggregate.aleph_bft_finalized_items_complete = page.aleph_bft_finalized_items_complete;
+        }
+        None => *aggregate = Some(page),
+    }
+}
+
 async fn disseminate_latest_checkpoint_quorums<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
@@ -907,7 +924,7 @@ where
                 .with_limit(self.sync_config.catch_up_limit)
                 .with_known_order_digest(known_order_digest)
                 .with_aleph_bft_next_item_index(next_finalized_item_index);
-            let mut page = self
+            let page = self
                 .catch_up_to_checkpoint(member, &request, checkpoint)
                 .await?;
             if page.from_index != next_journal_index
@@ -950,18 +967,7 @@ where
             if let Some(last) = page.entries.last() {
                 known_order_digest = last.order_digest;
             }
-            match aggregate.as_mut() {
-                Some(aggregate) => {
-                    aggregate.entries.append(&mut page.entries);
-                    aggregate
-                        .aleph_bft_finalized_items
-                        .append(&mut page.aleph_bft_finalized_items);
-                    aggregate.complete = page.complete;
-                    aggregate.aleph_bft_finalized_items_complete =
-                        page.aleph_bft_finalized_items_complete;
-                }
-                None => aggregate = Some(page),
-            }
+            append_checkpoint_catch_up_page(&mut aggregate, page);
         }
 
         let response = aggregate.unwrap_or_else(|| {
