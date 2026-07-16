@@ -14,7 +14,8 @@ pub mod process;
 // Re-exports for convenience
 pub use error::{PrometheusError, Result};
 pub use metrics::{
-    CdkMetrics, FederationCheckpointOperation, FederationCheckpointWork, MintMetricGuard, METRICS,
+    CdkMetrics, FederationCheckpointOperation, FederationCheckpointWork, FederationSyncTransition,
+    MintMetricGuard, METRICS,
 };
 #[cfg(feature = "system-metrics")]
 pub use process::SystemMetrics;

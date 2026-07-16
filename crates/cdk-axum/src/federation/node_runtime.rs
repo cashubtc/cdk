@@ -613,7 +613,9 @@ impl FederationNodeRuntime {
         self.update_sync_status(|sync| {
             sync.mark_lagging(peer, local_operation_count, peer_operation_count);
         })
-        .await
+        .await;
+        #[cfg(feature = "prometheus")]
+        self.record_sync_transition(cdk_prometheus::FederationSyncTransition::Lagging);
     }
 
     pub(crate) async fn mark_awaiting_quorum(&self, operation_count: u64) {
@@ -623,7 +625,19 @@ impl FederationNodeRuntime {
 
     pub(crate) async fn mark_catching_up(&self, peer: MemberId) {
         self.update_sync_status(|sync| sync.mark_catching_up(peer))
-            .await
+            .await;
+        #[cfg(feature = "prometheus")]
+        self.record_sync_transition(cdk_prometheus::FederationSyncTransition::CatchingUp);
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn record_sync_transition(&self, transition: cdk_prometheus::FederationSyncTransition) {
+        let Some(runtime_config) = self.mint.as_ref().and_then(|mint| mint.federation_config())
+        else {
+            return;
+        };
+        cdk_prometheus::METRICS
+            .record_federation_sync_transition(&runtime_config.member_id().to_string(), transition);
     }
 
     pub(crate) async fn mark_healthy(&self) {

@@ -37,6 +37,24 @@ pub enum FederationCheckpointWork {
     CatchUpBatchesApplied,
 }
 
+/// Fixed federation synchronization state entries used for transition counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FederationSyncTransition {
+    /// The local member observed a peer frontier ahead of its own.
+    Lagging,
+    /// The local member started applying checkpoint-bounded peer state.
+    CatchingUp,
+}
+
+impl FederationSyncTransition {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lagging => "lagging",
+            Self::CatchingUp => "catching_up",
+        }
+    }
+}
+
 impl FederationCheckpointWork {
     const fn as_str(self) -> &'static str {
         match self {
@@ -175,6 +193,7 @@ pub struct CdkMetrics {
     federation_consensus_operation_count: IntGaugeVec,
     federation_sync_ready: IntGaugeVec,
     federation_sync_state: IntGaugeVec,
+    federation_sync_transitions_total: IntCounterVec,
     federation_checkpoint_lag_operations: IntGaugeVec,
     federation_payment_observation_reports: IntGaugeVec,
     federation_peer_connected: IntGaugeVec,
@@ -203,6 +222,7 @@ struct FederationMetricCollectors {
     consensus_operation_count: IntGaugeVec,
     sync_ready: IntGaugeVec,
     sync_state: IntGaugeVec,
+    sync_transitions_total: IntCounterVec,
     checkpoint_lag_operations: IntGaugeVec,
     payment_observation_reports: IntGaugeVec,
     peer_connected: IntGaugeVec,
@@ -277,6 +297,7 @@ impl CdkMetrics {
             federation_consensus_operation_count: federation_metrics.consensus_operation_count,
             federation_sync_ready: federation_metrics.sync_ready,
             federation_sync_state: federation_metrics.sync_state,
+            federation_sync_transitions_total: federation_metrics.sync_transitions_total,
             federation_checkpoint_lag_operations: federation_metrics.checkpoint_lag_operations,
             federation_payment_observation_reports: federation_metrics.payment_observation_reports,
             federation_peer_connected: federation_metrics.peer_connected,
@@ -514,6 +535,15 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(federation_sync_state.clone()))?;
 
+        let federation_sync_transitions_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_sync_transitions_total",
+                "Cumulative entries into lagging or catch-up federation sync states",
+            ),
+            &["member", "transition"],
+        )?;
+        registry.register(Box::new(federation_sync_transitions_total.clone()))?;
+
         let federation_checkpoint_lag_operations = IntGaugeVec::new(
             prometheus::Opts::new(
                 "cdk_federation_checkpoint_lag_operations",
@@ -713,6 +743,7 @@ impl CdkMetrics {
             consensus_operation_count: federation_consensus_operation_count,
             sync_ready: federation_sync_ready,
             sync_state: federation_sync_state,
+            sync_transitions_total: federation_sync_transitions_total,
             checkpoint_lag_operations: federation_checkpoint_lag_operations,
             payment_observation_reports: federation_payment_observation_reports,
             peer_connected: federation_peer_connected,
@@ -879,6 +910,17 @@ impl CdkMetrics {
         self.federation_sync_state
             .with_label_values(&[member, state])
             .set(if active { 1 } else { 0 });
+    }
+
+    /// Record entry into a fixed federation synchronization state.
+    pub fn record_federation_sync_transition(
+        &self,
+        member: &str,
+        transition: FederationSyncTransition,
+    ) {
+        self.federation_sync_transitions_total
+            .with_label_values(&[member, transition.as_str()])
+            .inc();
     }
 
     /// Set the operation count after the locally trusted checkpoint.
@@ -1069,8 +1111,8 @@ mod tests {
     use prometheus::core::Collector;
 
     use super::{
-        CdkMetrics, FederationCheckpointOperation, FederationCheckpointWork, MintMetricGuard,
-        METRICS,
+        CdkMetrics, FederationCheckpointOperation, FederationCheckpointWork,
+        FederationSyncTransition, MintMetricGuard, METRICS,
     };
 
     static METRICS_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -1315,6 +1357,30 @@ mod tests {
             .with_label_values(&[member, "startup_tail"]);
         assert_eq!(duration.get_sample_count(), 1);
         assert_eq!(duration.get_sample_sum(), 0.25);
+    }
+
+    #[test]
+    fn federation_sync_transition_metrics_use_fixed_labels() {
+        let metrics = CdkMetrics::new().expect("metrics should be created");
+        let member = "2";
+
+        metrics.record_federation_sync_transition(member, FederationSyncTransition::Lagging);
+        metrics.record_federation_sync_transition(member, FederationSyncTransition::CatchingUp);
+
+        assert_eq!(
+            metrics
+                .federation_sync_transitions_total
+                .with_label_values(&[member, "lagging"])
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .federation_sync_transitions_total
+                .with_label_values(&[member, "catching_up"])
+                .get(),
+            1
+        );
     }
 
     #[test]
