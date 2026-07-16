@@ -18,6 +18,7 @@ nostr = ["dep:nostr-sdk"]
 bench = []
 
 [dependencies]
+aes-gcm.workspace = true
 uuid.workspace = true
 bitcoin.workspace = true
 cbor-diag.workspace = true
@@ -37,6 +38,8 @@ nostr-sdk = { workspace = true, optional = true }
 zeroize = "1"
 web-time.workspace = true
 unicode-normalization = "0.1.25"
+hkdf.workspace = true
+sha2.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"], optional = true }

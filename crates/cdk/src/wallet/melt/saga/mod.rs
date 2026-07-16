@@ -158,13 +158,18 @@ async fn finalize_melt_common<'a>(
     let change_proof_infos = match change_proofs.clone() {
         Some(change_proofs) => change_proofs
             .into_iter()
-            .map(|proof| {
-                ProofInfo::new(
+            .zip(&premint_secrets.secrets)
+            .map(|(proof, premint)| {
+                let proof_info = ProofInfo::new(
                     proof,
                     wallet.mint_url.clone(),
                     State::Unspent,
                     quote_info.unit.clone(),
-                )
+                )?;
+                Ok::<_, Error>(match premint.derivation_index {
+                    Some(index) => proof_info.with_derivation_index(index),
+                    None => proof_info,
+                })
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?,
         None => Vec::new(),
@@ -528,7 +533,12 @@ impl<'a> MeltSaga<'a, Initial> {
 
         // Since proofs may be external (not in our database), add them first
         // while preserving the operation link needed for recovery.
-        let proofs_info = proofs
+        let existing_proofs = self
+            .wallet
+            .localstore
+            .get_proofs_by_ys(proof_ys.clone())
+            .await?;
+        let mut proofs_info = proofs
             .clone()
             .into_iter()
             .map(|p| {
@@ -542,6 +552,12 @@ impl<'a> MeltSaga<'a, Initial> {
                 )
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
+        for proof_info in &mut proofs_info {
+            proof_info.derivation_index = existing_proofs
+                .iter()
+                .find(|existing| existing.y == proof_info.y)
+                .and_then(|existing| existing.derivation_index);
+        }
 
         self.wallet
             .localstore
@@ -766,7 +782,13 @@ impl<'a> MeltSaga<'a, Prepared> {
         }
 
         // Set proofs to Pending state before making melt request
-        let proofs_info = final_proofs
+        let final_proof_ys = final_proofs.ys()?;
+        let existing_proofs = self
+            .wallet
+            .localstore
+            .get_proofs_by_ys(final_proof_ys)
+            .await?;
+        let mut proofs_info = final_proofs
             .clone()
             .into_iter()
             .map(|p| {
@@ -780,6 +802,12 @@ impl<'a> MeltSaga<'a, Prepared> {
                 )
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
+        for proof_info in &mut proofs_info {
+            proof_info.derivation_index = existing_proofs
+                .iter()
+                .find(|existing| existing.y == proof_info.y)
+                .and_then(|existing| existing.derivation_index);
+        }
 
         self.wallet
             .localstore
@@ -800,7 +828,7 @@ impl<'a> MeltSaga<'a, Prepared> {
         // Calculate change accounting for input fees
         let change_amount = proofs_total - quote_info.amount - actual_input_fee;
 
-        let premint_secrets = if change_amount <= Amount::ZERO {
+        let mut premint_secrets = if change_amount <= Amount::ZERO {
             PreMintSecrets::new(active_keyset_id)
         } else {
             let num_secrets =
@@ -829,6 +857,9 @@ impl<'a> MeltSaga<'a, Prepared> {
             .increment_keyset_counter(&active_keyset_id, 0)
             .await?;
         let counter_start = counter_end.saturating_sub(premint_secrets.secrets.len() as u32);
+        self.wallet
+            .add_nut342_metadata(active_keyset_id, counter_start, &mut premint_secrets)
+            .await?;
 
         let change_blinded_messages = if change_amount > Amount::ZERO {
             Some(premint_secrets.blinded_messages())
@@ -1743,6 +1774,7 @@ mod tests {
             keyset_id,
             c: premint_secrets.blinded_messages()[0].blinded_secret,
             dleq: None,
+            metadata: None,
         }];
 
         let result = finalize_melt_common(
@@ -1780,6 +1812,7 @@ mod tests {
             keyset_id,
             c: premint_secrets.blinded_messages()[0].blinded_secret,
             dleq: None,
+            metadata: None,
         }];
 
         let result = finalize_melt_common(

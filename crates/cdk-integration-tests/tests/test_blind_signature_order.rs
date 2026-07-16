@@ -20,12 +20,14 @@ async fn test_blind_signature_order_in_db() -> Result<()> {
         keyset_id: Id::from_str("001711afb1de20cb").unwrap(),
         amount: Amount::from(10),
         witness: None,
+        metadata: None,
     };
     let msg2 = BlindedMessage {
         blinded_secret: SecretKey::generate().public_key(),
         keyset_id: Id::from_str("001711afb1de20cb").unwrap(),
         amount: Amount::from(20),
         witness: None,
+        metadata: None,
     };
 
     let messages = vec![msg1.clone(), msg2.clone()];

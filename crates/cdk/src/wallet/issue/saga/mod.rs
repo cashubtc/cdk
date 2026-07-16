@@ -381,14 +381,18 @@ impl<'a> MintSaga<'a, Initial> {
 
                 let count = new_counter - num_secrets;
 
-                PreMintSecrets::from_seed(
+                let mut premint_secrets = PreMintSecrets::from_seed(
                     active_keyset_id,
                     count,
                     &self.wallet.seed,
                     amount,
                     &split_target,
                     fee_and_amounts,
-                )?
+                )?;
+                self.wallet
+                    .add_nut342_metadata(active_keyset_id, count, &mut premint_secrets)
+                    .await?;
+                premint_secrets
             }
         };
 
@@ -673,14 +677,18 @@ impl<'a> MintSaga<'a, Initial> {
 
                 let count = new_counter - num_secrets;
 
-                PreMintSecrets::from_seed(
+                let mut premint_secrets = PreMintSecrets::from_seed(
                     active_keyset_id,
                     count,
                     &self.wallet.seed,
                     total_amount,
                     &split_target,
                     &fee_and_amounts,
-                )?
+                )?;
+                self.wallet
+                    .add_nut342_metadata(active_keyset_id, count, &mut premint_secrets)
+                    .await?;
+                premint_secrets
             }
         };
 
@@ -907,13 +915,18 @@ impl<'a> MintSaga<'a, Prepared> {
 
             let proof_infos = proofs
                 .iter()
-                .map(|proof| {
-                    ProofInfo::new(
+                .zip(&premint_secrets.secrets)
+                .map(|(proof, premint)| {
+                    let proof_info = ProofInfo::new(
                         proof.clone(),
                         wallet.mint_url.clone(),
                         State::Unspent,
                         wallet.unit.clone(),
-                    )
+                    )?;
+                    Ok::<_, Error>(match premint.derivation_index {
+                        Some(index) => proof_info.with_derivation_index(index),
+                        None => proof_info,
+                    })
                 })
                 .collect::<Result<Vec<ProofInfo>, _>>()?;
 
@@ -1236,6 +1249,7 @@ mod tests {
                 keyset_id: blinded_message.keyset_id,
                 c: blinded_message.blinded_secret,
                 dleq: None,
+                metadata: None,
             })
             .collect();
 

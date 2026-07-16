@@ -211,6 +211,7 @@ impl TryInto<cdk_common::BlindSignature> for BlindSignature {
             c: cdk_common::PublicKey::from_slice(&self.blinded_secret)?,
             keyset_id: Id::from_bytes(&self.keyset_id)?,
             dleq: self.dleq.map(|dleq| dleq.try_into()).transpose()?,
+            metadata: None,
         })
     }
 }
@@ -235,6 +236,7 @@ impl TryInto<cdk_common::BlindedMessage> for BlindedMessage {
             blinded_secret: cdk_common::PublicKey::from_slice(&self.blinded_secret)
                 .map_err(|e| Status::from_error(Box::new(e)))?,
             witness: None,
+            metadata: None,
         })
     }
 }

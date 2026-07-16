@@ -591,7 +591,8 @@ where
 {
     let mint_url = test_mint_url();
     let keyset_id = test_keyset_id();
-    let proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+    let mut proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
+    proof_info.derivation_index = Some(42);
 
     // Add proof
     db.update_proofs(vec![proof_info.clone()], vec![])
@@ -613,6 +614,7 @@ where
     let ys = vec![proof_info.y];
     let proofs = db.get_proofs_by_ys(ys).await.unwrap();
     assert!(!proofs.is_empty());
+    assert_eq!(proofs[0].derivation_index, Some(42));
 }
 
 /// Test getting proofs in transaction

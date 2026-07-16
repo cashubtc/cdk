@@ -489,6 +489,8 @@ pub struct ProofInfo {
     pub spending_condition: Option<SpendingConditions>,
     /// Currency unit
     pub unit: CurrencyUnit,
+    /// NUT-13 derivation index for deterministic proofs
+    pub derivation_index: Option<u32>,
     /// Operation ID that is using/spending this proof
     pub used_by_operation: Option<String>,
     /// Operation ID that created this proof
@@ -504,6 +506,7 @@ impl From<cdk::types::ProofInfo> for ProofInfo {
             state: info.state.into(),
             spending_condition: info.spending_condition.map(Into::into),
             unit: info.unit.into(),
+            derivation_index: info.derivation_index,
             used_by_operation: info.used_by_operation.map(|u| u.to_string()),
             created_by_operation: info.created_by_operation.map(|u| u.to_string()),
         }
@@ -529,6 +532,7 @@ pub fn encode_proof_info(info: ProofInfo) -> Result<String, FfiError> {
         state: info.state.into(),
         spending_condition: info.spending_condition.map(TryInto::try_into).transpose()?,
         unit: info.unit.into(),
+        derivation_index: info.derivation_index,
         used_by_operation: info
             .used_by_operation
             .map(|id| uuid::Uuid::from_str(&id))

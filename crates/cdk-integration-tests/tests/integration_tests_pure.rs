@@ -2314,6 +2314,80 @@ async fn test_restore_after_keyset_rotation() {
     );
 }
 
+/// Exercises NUT-342 recovery across mint, swap, send, receive, and proof-state checks.
+#[tokio::test]
+async fn test_nut342_dynamic_gap_wallet_recovery() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let seed = Mnemonic::generate(12).unwrap().to_seed_normalized("");
+    let wallet = create_test_wallet_for_mint_with_seed(mint.clone(), seed)
+        .await
+        .expect("Failed to create source wallet");
+    let recipient = create_test_wallet_for_mint(mint.clone())
+        .await
+        .expect("Failed to create recipient wallet");
+
+    assert!(wallet.load_mint_info().await.unwrap().nuts.nut342.supported);
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund source wallet");
+    assert!(wallet
+        .localstore
+        .get_proofs(
+            Some(wallet.mint_url.clone()),
+            Some(wallet.unit.clone()),
+            Some(vec![State::Unspent]),
+            None,
+        )
+        .await
+        .unwrap()
+        .iter()
+        .all(|proof| proof.derivation_index.is_some()));
+
+    let prepared = wallet
+        .prepare_send(Amount::from(40), SendOptions::default())
+        .await
+        .expect("Failed to prepare send");
+    let token = prepared
+        .confirm(None)
+        .await
+        .expect("Failed to confirm send");
+    recipient
+        .receive(&token.to_string(), ReceiveOptions::default())
+        .await
+        .expect("Failed to spend sent proofs at recipient");
+    assert_eq!(wallet.total_balance().await.unwrap(), Amount::from(24));
+
+    let restored_wallet = create_test_wallet_for_mint_with_seed(mint, seed)
+        .await
+        .expect("Failed to create restored wallet");
+    let restored = restored_wallet
+        .restore()
+        .await
+        .expect("NUT-342 restore failed");
+
+    assert_eq!(restored.unspent, Amount::from(24));
+    assert_eq!(
+        restored_wallet.total_balance().await.unwrap(),
+        Amount::from(24)
+    );
+    assert!(restored.spent > Amount::ZERO);
+    assert!(restored_wallet
+        .localstore
+        .get_proofs(
+            Some(restored_wallet.mint_url.clone()),
+            Some(restored_wallet.unit.clone()),
+            Some(vec![State::Unspent, State::Pending]),
+            None,
+        )
+        .await
+        .unwrap()
+        .iter()
+        .all(|proof| proof.derivation_index.is_some()));
+}
+
 #[derive(Debug, Default)]
 struct CustomPaymentProcessor {
     /// Captures the quote_id seen by `get_payment_quote` so tests can assert

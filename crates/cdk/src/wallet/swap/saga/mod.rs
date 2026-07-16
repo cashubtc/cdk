@@ -344,6 +344,16 @@ impl<'a> SwapSaga<'a, Prepared> {
             .map(|proof| ProofInfo::new(proof, mint_url.clone(), State::Unspent, unit.clone()))
             .collect::<Result<Vec<ProofInfo>, _>>()?;
         added_proofs.extend(keep_proofs);
+        for proof_info in &mut added_proofs {
+            proof_info.derivation_index = self
+                .state_data
+                .pre_swap
+                .pre_mint_secrets
+                .secrets
+                .iter()
+                .find(|premint| premint.secret == proof_info.proof.secret)
+                .and_then(|premint| premint.derivation_index);
+        }
 
         // Add new proofs and mark input proofs as Spent (don't delete them)
         self.wallet
@@ -603,6 +613,7 @@ mod tests {
                 keyset_id: blinded_message.keyset_id,
                 c: Nut01SecretKey::generate().public_key(),
                 dleq: None,
+                metadata: None,
             })
             .collect();
 

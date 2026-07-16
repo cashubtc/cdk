@@ -778,6 +778,7 @@ mod tests {
             blinded_secret: pubkey,
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
+            metadata: None,
         };
 
         // Sign once
@@ -808,6 +809,7 @@ mod tests {
             blinded_secret: pubkey,
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
+            metadata: None,
         };
 
         blinded_message.sign_p2pk(secret_key).unwrap();
@@ -830,6 +832,7 @@ mod tests {
             blinded_secret: pubkey,
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
+            metadata: None,
         };
 
         // Sign once
@@ -1049,6 +1052,7 @@ mod tests {
             blinded_secret: pubkey,
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             witness: None,
+            metadata: None,
         }
     }
 

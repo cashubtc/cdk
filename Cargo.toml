@@ -46,6 +46,7 @@ readme = "README.md"
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
+aes-gcm = "0.10"
 axum = { version = "0.8.1", features = ["ws"] }
 bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
 bip39 = { version = "2.0", features = ["rand"] }
@@ -117,6 +118,8 @@ web-time = "1.1.0"
 rand = "0.9.1"
 regex = "1"
 home = "0.5.5"
+hkdf = "0.12"
+sha2 = "0.10"
 tonic = { version = "0.14.2", default-features = false }
 tonic-prost = "0.14.2"
 tonic-prost-build = "0.14.2"

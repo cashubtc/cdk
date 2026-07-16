@@ -1116,10 +1116,12 @@ dependencies = [
 name = "cashu"
 version = "0.17.0"
 dependencies = [
+ "aes-gcm",
  "bip39",
  "bitcoin 0.32.101",
  "cbor-diag",
  "ciborium",
+ "hkdf",
  "lightning",
  "lightning-invoice",
  "nostr-sdk",
@@ -1127,6 +1129,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "sha2 0.10.9",
  "strum 0.27.2",
  "strum_macros 0.27.2",
  "thiserror 2.0.18",
