@@ -10,8 +10,6 @@ NETWORK="${NETWORK:-signet}"
 MINIMUM_CONFIRMATIONS="${MINIMUM_CONFIRMATIONS:-1}"
 FEE_POLICY_VERSION="${FEE_POLICY_VERSION:-1}"
 APPLICATION_KEY_EPOCH="${APPLICATION_KEY_EPOCH:-1}"
-ESPLORA_URL="${ESPLORA_URL:-https://mutinynet.com/api}"
-CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-mutinynet-public-esplora}"
 CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS:-20}"
 CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
 STATUS_TIMEOUT_SECS="${STATUS_TIMEOUT_SECS:-900}"
@@ -159,8 +157,23 @@ port = $prometheus_port
 [database]
 engine = "sqlite"
 
+[ln]
+ln_backend = "fakewallet"
+unit = "sat"
+min_mint = 1
+max_mint = 50000000
+min_melt = 1
+max_melt = 50000000
+
+[fake_wallet]
+supported_units = ["sat"]
+fee_percent = 0.0
+reserve_fee_min = 1
+min_delay_time = 0
+max_delay_time = 0
+
 [onchain]
-onchain_backend = "federated-bdk"
+onchain_backend = "fakewallet"
 min_mint = 1
 max_mint = 50000000
 min_melt = 1
@@ -170,20 +183,6 @@ max_melt = 50000000
 enabled = true
 public_config_path = "$(member_dir "$member")/dkg-final/federation-public.json"
 private_config_path = "$(private_final_config "$member")"
-
-[federation.onchain_wallet]
-enabled = true
-network = "$NETWORK"
-minimum_confirmations = $MINIMUM_CONFIRMATIONS
-fee_policy_version = $FEE_POLICY_VERSION
-chain_source_type = "esplora"
-chain_source_scope = "shared"
-chain_source_id = "$CHAIN_SOURCE_ID"
-esplora_url = "$ESPLORA_URL"
-esplora_parallel_requests = 1
-request_timeout_secs = 30
-esplora_max_retries = 3
-sync_interval_secs = 15
 EOF
 }
 

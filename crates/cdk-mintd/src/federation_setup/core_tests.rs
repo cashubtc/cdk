@@ -17,6 +17,10 @@ fn generator_args(output_dir: PathBuf) -> FederationTrustedDealerArgs {
         amounts: vec![1, 2, 4],
         input_fee_ppk: 0,
         final_expiry: None,
+        checkpoint_interval_journal_operations:
+            cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS,
+        checkpoint_interval_finalized_items:
+            cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
         host: "127.0.0.1".to_string(),
         port_start: 18_085,
         database_engine: FederationTrustedDealerDatabaseEngine::Sqlite,

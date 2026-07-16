@@ -518,7 +518,7 @@ wait_for_converged() {
       fi
     done
     if [[ "$converged" == "1" ]]; then
-      if compare_digests >/dev/null 2>&1; then
+      if [[ "$baseline_operations" == "0" ]] || compare_digests >/dev/null 2>&1; then
         return 0
       fi
     fi

@@ -676,13 +676,13 @@ async fn reconcile_federation_startup_with_quorum(
     evidence_observed_at: Instant,
     peer_statuses: &[FederationPeerStatus],
 ) {
-    if matches!(
-        state.federation_sync_status().await,
-        Some(crate::FederationSyncStatus::Halted { .. })
-    ) {
+    let Some(sync_status) = state.federation_sync_status().await else {
+        return;
+    };
+    let live_session_active = state.federation.live_session_active().await;
+    if !quorum_reconciliation_is_required(&sync_status, live_session_active) {
         return;
     }
-    let live_session_active = state.federation.live_session_active().await;
     let Some(runtime_config) = state.mint.federation_config() else {
         return;
     };
@@ -752,6 +752,20 @@ async fn reconcile_federation_startup_with_quorum(
         Err(err) => {
             tracing::warn!("Could not start quorum-validated AlephBFT session: {}", err);
         }
+    }
+}
+
+pub(super) fn quorum_reconciliation_is_required(
+    sync_status: &crate::FederationSyncStatus,
+    live_session_active: bool,
+) -> bool {
+    match sync_status {
+        crate::FederationSyncStatus::Healthy if live_session_active => false,
+        crate::FederationSyncStatus::Halted { .. } => false,
+        crate::FederationSyncStatus::Healthy
+        | crate::FederationSyncStatus::AwaitingQuorum { .. }
+        | crate::FederationSyncStatus::Lagging { .. }
+        | crate::FederationSyncStatus::CatchingUp { .. } => true,
     }
 }
 

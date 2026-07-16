@@ -1745,6 +1745,7 @@ impl FederationConsensusRuntime {
         local_member: MemberId,
         session: u64,
         checkpoint: &FederationCheckpoint,
+        historical_entries: Vec<FederationJournalEntry>,
         finalized_items: Vec<FederationAlephBftFinalizedItem>,
     ) -> Result<Self> {
         checkpoint.validate_against_config(&public_config)?;
@@ -1753,7 +1754,7 @@ impl FederationConsensusRuntime {
             .keys()
             .copied()
             .collect::<BTreeSet<_>>();
-        let finalization_handler =
+        let mut finalization_handler =
             FederationAlephBftFinalizationHandler::recover_from_finalized_items(
                 public_config.federation_id,
                 session,
@@ -1774,6 +1775,11 @@ impl FederationConsensusRuntime {
             checkpoint.journal_next_index,
             checkpoint.journal_order_digest,
         );
+        for entry in historical_entries {
+            let operation_id = entry.operation_id;
+            journal.register_historical_entry(entry)?;
+            finalization_handler.register_finalized_operation_id(operation_id);
+        }
         for finalized_item in &finalized_items {
             if finalized_item.status
                 != FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
@@ -2261,12 +2267,14 @@ impl FederationConsensusRuntime {
         )
     }
 
-    /// Recover a checkpoint-rooted runtime by replaying only finalized suffix items.
+    /// Recover a checkpoint-rooted runtime from bounded historical references and
+    /// finalized suffix items.
     pub fn authenticated_aleph_bft_from_checkpoint_and_finalized_items(
         public_config: &FederationConfig,
         member_id: MemberId,
         session: u64,
         checkpoint: &FederationCheckpoint,
+        historical_entries: Vec<FederationJournalEntry>,
         finalized_items: Vec<FederationAlephBftFinalizedItem>,
     ) -> Result<Self> {
         validate_runtime_roster(
@@ -2279,6 +2287,7 @@ impl FederationConsensusRuntime {
             member_id,
             session,
             checkpoint,
+            historical_entries,
             finalized_items,
         )
     }

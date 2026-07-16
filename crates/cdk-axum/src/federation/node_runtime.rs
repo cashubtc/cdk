@@ -1134,11 +1134,18 @@ impl FederationNodeRuntime {
             crate::latest_aleph_bft_finalized_session(&retained_items).max(status.session);
         let mut next_consensus = match base_checkpoint {
             Some(base_checkpoint) => {
+                let historical_entries = self
+                    .historical_entries_referenced_by_finalized_items(
+                        &retained_items,
+                        base_checkpoint.journal_next_index,
+                    )
+                    .await?;
                 FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint_and_finalized_items(
                     &public_config,
                     runtime_config.member_id(),
                     target_session,
                     base_checkpoint,
+                    historical_entries,
                     retained_items,
                 )?
             }
@@ -1220,6 +1227,43 @@ impl FederationNodeRuntime {
                 .await?;
         }
         Ok(applied)
+    }
+
+    async fn historical_entries_referenced_by_finalized_items(
+        &self,
+        finalized_items: &[FederationAlephBftFinalizedItem],
+        checkpoint_journal_next_index: u64,
+    ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
+        let db = self.active_mint()?.localstore();
+        let mut historical_entries = BTreeMap::new();
+        for finalized_item in finalized_items {
+            if finalized_item.status
+                == FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
+            {
+                continue;
+            }
+            let FederationConsensusItem::Operation(envelope) = &finalized_item.item else {
+                continue;
+            };
+            let operation_id = envelope.operation_id()?;
+            if let Some(entry) = db
+                .get_federation_journal_entry_by_operation_id(operation_id)
+                .await?
+                .filter(|entry| entry.index < checkpoint_journal_next_index)
+            {
+                historical_entries.insert(entry.index, entry);
+            }
+            for conflict_key in envelope.operation.conflict_keys() {
+                if let Some(entry) = db
+                    .get_federation_journal_entry_by_conflict_key(&conflict_key)
+                    .await?
+                    .filter(|entry| entry.index < checkpoint_journal_next_index)
+                {
+                    historical_entries.insert(entry.index, entry);
+                }
+            }
+        }
+        Ok(historical_entries.into_values().collect())
     }
 
     pub(crate) async fn persist_dkg_sequence(
@@ -1779,6 +1823,15 @@ impl FederationNodeRuntime {
             .as_ref()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
+        for entry in durable_entries.into_values() {
+            if consensus
+                .journal()
+                .entry_by_operation_id(entry.operation_id)
+                .is_none()
+            {
+                consensus.register_historical_journal_entry(entry)?;
+            }
+        }
         if let Some(responses) = Self::duplicate_finalized_unit_responses(&consensus, &payload)? {
             drop(consensus);
             let entries = responses
@@ -1793,9 +1846,6 @@ impl FederationNodeRuntime {
         }
 
         let mut next_consensus = consensus.clone();
-        for entry in durable_entries.into_values() {
-            next_consensus.register_historical_journal_entry(entry)?;
-        }
         let finalized_item_start = next_consensus.aleph_bft_finalized_items()?.len();
         let responses = next_consensus.finalize_aleph_bft_unit(payload)?;
         let finalized_items =

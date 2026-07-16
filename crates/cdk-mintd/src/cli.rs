@@ -653,6 +653,15 @@ pub struct FederationTrustedDealerArgs {
     /// Optional final expiry timestamp for the aggregate keyset.
     #[arg(long)]
     pub final_expiry: Option<u64>,
+    /// Accepted-operation interval between scheduled checkpoint candidates.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS
+    )]
+    pub checkpoint_interval_journal_operations: u64,
+    /// Finalized-item interval between scheduled checkpoint candidates.
+    #[arg(long, default_value_t = DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS)]
+    pub checkpoint_interval_finalized_items: u64,
     /// Host used in generated member URLs and listen addresses.
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,

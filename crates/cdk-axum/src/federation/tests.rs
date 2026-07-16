@@ -1825,6 +1825,28 @@ fn quorum_startup_rejects_stale_round_evidence() {
     ));
 }
 
+#[test]
+fn live_healthy_member_does_not_reenter_startup_quorum_reconciliation() {
+    assert!(!sync_loop::quorum_reconciliation_is_required(
+        &crate::FederationSyncStatus::Healthy,
+        true,
+    ));
+    assert!(sync_loop::quorum_reconciliation_is_required(
+        &crate::FederationSyncStatus::Healthy,
+        false,
+    ));
+    assert!(sync_loop::quorum_reconciliation_is_required(
+        &crate::FederationSyncStatus::AwaitingQuorum { operation_count: 7 },
+        true,
+    ));
+    assert!(!sync_loop::quorum_reconciliation_is_required(
+        &crate::FederationSyncStatus::Halted {
+            reason: "test halt".to_string(),
+        },
+        false,
+    ));
+}
+
 async fn response_error_detail(response: axum::response::Response) -> String {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -7541,7 +7563,7 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     };
     let duplicate = restarted_state
         .federation
-        .apply_finalized_unit(duplicate_payload)
+        .apply_finalized_unit(duplicate_payload.clone())
         .await
         .expect("finalize pre-checkpoint duplicate")
         .pop()
@@ -7558,7 +7580,23 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     let (consensus, _) = crate::create_federation_runtime_state(&state.mint)
         .await
         .expect("checkpoint suffix startup");
-    let consensus = consensus.expect("suffix consensus");
+    restarted_state.federation.consensus = consensus;
+    let replayed_duplicate = restarted_state
+        .federation
+        .apply_finalized_unit(duplicate_payload)
+        .await
+        .expect("replay checkpoint suffix duplicate")
+        .pop()
+        .expect("replayed duplicate response");
+    assert!(matches!(
+        replayed_duplicate.outcome,
+        FederationJournalAppendOutcome::Duplicate(ref entry) if entry.index == 0
+    ));
+    let consensus = restarted_state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("suffix consensus");
     let consensus = consensus.lock().await;
     assert_eq!(consensus.status().accepted_operation_count, 3);
     assert_eq!(consensus.status().finalized_item_count, 4);
@@ -8357,6 +8395,38 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .expect("target quote lookup")
         .is_some());
 
+    let duplicate_payload = {
+        let consensus = source
+            .federation
+            .consensus
+            .as_ref()
+            .expect("source consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            vec![FederationConsensusItem::operation(mint_quote_envelope(
+                &source, &quote_id,
+            ))],
+        )
+        .expect("post-checkpoint duplicate payload")
+    };
+    let duplicate = source
+        .federation
+        .apply_finalized_unit(duplicate_payload)
+        .await
+        .expect("finalize post-checkpoint duplicate")
+        .pop()
+        .expect("duplicate response");
+    assert!(matches!(
+        duplicate.outcome,
+        FederationJournalAppendOutcome::Duplicate(ref entry) if entry.index == 0
+    ));
+
     let second_quote_id = QuoteId::new();
     source
         .submit_federation_envelope(mint_quote_envelope(&source, &second_quote_id))
@@ -8392,6 +8462,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .get_federation_aleph_bft_finalized_items_from(checkpoint.finalized_next_item_index)
         .await
         .expect("source finalized suffix");
+    assert_eq!(finalized_items.len(), 2);
     let request = FederationJournalCatchUpRequest::new(checkpoint.journal_next_index)
         .with_target_checkpoint(second_checkpoint_id)
         .with_aleph_bft_next_item_index(checkpoint.finalized_next_item_index);

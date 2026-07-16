@@ -11,9 +11,9 @@ use crate::nuts::nut01::{trusted_dealer_keygen, BlsSecretKey};
 use crate::{mint_url::MintUrl, Amount, CurrencyUnit, SecretKey};
 
 use super::{
-    FederatedKeyset, FederationConfig, FederationDkgTranscript, FederationError,
-    FederationPaymentObservationPolicy, MemberConfigPrivate, MemberConfigPublic, MemberId, Result,
-    ThresholdParams,
+    FederatedKeyset, FederationCheckpointPolicy, FederationConfig, FederationDkgTranscript,
+    FederationError, FederationPaymentObservationPolicy, MemberConfigPrivate, MemberConfigPublic,
+    MemberId, Result, ThresholdParams,
 };
 
 /// Member input for trusted-dealer config generation.
@@ -109,6 +109,8 @@ pub struct TrustedDealerConfigBundle {
 pub struct TrustedDealerGenerationOptions {
     /// Use no-aux-rand Schnorr signatures for reproducible fixture output.
     pub no_aux_rand_signatures: bool,
+    /// Scheduled-checkpoint cadence embedded in the generated public config.
+    pub checkpoint_policy: FederationCheckpointPolicy,
 }
 
 /// Generate a federation config bundle with locally computed threshold shares.
@@ -246,6 +248,7 @@ pub fn generate_trusted_dealer_configs_with_options(
 
     let mut public_config =
         FederationConfig::new(threshold_params, public_members, federated_keysets)?;
+    public_config.checkpoint_policy = options.checkpoint_policy;
     public_config.payment_observation_policy =
         FederationPaymentObservationPolicy::development_single_observation_for_testing();
     let federation_id = public_config.federation_id;

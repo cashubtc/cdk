@@ -20,6 +20,10 @@ fn generator_args(output_dir: PathBuf) -> FederationTrustedDealerArgs {
         amounts: vec![1, 2, 4],
         input_fee_ppk: 0,
         final_expiry: None,
+        checkpoint_interval_journal_operations:
+            cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS,
+        checkpoint_interval_finalized_items:
+            cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
         host: "127.0.0.1".to_string(),
         port_start: 8085,
         database_engine: FederationTrustedDealerDatabaseEngine::Sqlite,
@@ -62,6 +66,8 @@ fn trusted_dealer_command_generates_local_fakewallet_files_only_when_requested()
     let _ = std::fs::remove_dir_all(&output_dir);
     let mut args = generator_args(output_dir.clone());
     args.local_fakewallet_configs = true;
+    args.checkpoint_interval_journal_operations = 2;
+    args.checkpoint_interval_finalized_items = 3;
 
     run_trusted_dealer_command(&args).expect("trusted dealer command");
 
@@ -69,6 +75,22 @@ fn trusted_dealer_command_generates_local_fakewallet_files_only_when_requested()
     assert!(output_dir.join(DKG_SETUP_PUBLIC_CONFIG_FILE).exists());
     assert!(output_dir.join(SMOKE_SCRIPT_FILE).exists());
     assert!(output_dir.join(LIVE_DKG_SMOKE_SCRIPT_FILE).exists());
+    let public_config: FederationConfig =
+        crate::read_federation_json(&output_dir.join(PUBLIC_CONFIG_FILE), "test public config")
+            .expect("read test public config");
+    assert_eq!(
+        public_config.checkpoint_policy,
+        FederationCheckpointPolicy::new(2, 3).expect("test checkpoint policy")
+    );
+    let setup_public_config: FederationConfig = crate::read_federation_json(
+        &output_dir.join(DKG_SETUP_PUBLIC_CONFIG_FILE),
+        "test setup public config",
+    )
+    .expect("read test setup public config");
+    assert_eq!(
+        setup_public_config.checkpoint_policy,
+        public_config.checkpoint_policy
+    );
     for member_id in 1..=args.members {
         let member_dir = output_dir.join(format!("member-{member_id}"));
         assert!(member_dir.join(PRIVATE_CONFIG_FILE).exists());
@@ -266,7 +288,8 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("local signer=\"${MEMBERS[0]}\""));
     assert!(smoke_script.contains("private_config=\"$(member_private_config \"$signer\")\""));
     assert!(smoke_script.contains("federation compare-digests"));
-    assert!(smoke_script.contains("compare_digests >/dev/null 2>&1"));
+    assert!(smoke_script
+        .contains("[[ \"$baseline_operations\" == \"0\" ]] || compare_digests >/dev/null 2>&1"));
     assert!(smoke_script.contains("compare_digests >&2 || true"));
     assert!(smoke_script
         .contains("--work-dir \"$work_dir\" --config \"$config\" federation dkg-status"));
@@ -319,7 +342,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("--transcript-signature <transcript-signature.json>"));
     assert!(smoke_script.contains("setup_records with collected commitment"));
     assert!(smoke_script.contains("Combine --from-database"));
-    assert!(smoke_script.contains("member_quorum_status_line()"));
+    assert!(smoke_script.contains("member_checkpoint_status_line()"));
     assert!(smoke_script.contains("--require-checkpoint-quorum"));
     assert!(smoke_script.contains("--require-no-digest-alerts"));
     assert!(smoke_script.contains("--require-no-invalid-operation-alerts"));

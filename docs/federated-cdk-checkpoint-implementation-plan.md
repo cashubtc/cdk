@@ -1674,10 +1674,10 @@ weakening catch-up, restart, or Byzantine fault handling.
 - [x] Measure cold start at multiple history sizes with suffix zero and a fixed
       suffix and fixed active-session backup size; fit/report whether work
       scales with history, suffix, or current-session backup.
-- [ ] Repeat the federation receive stress matrix and compare confirmed TPS,
+- [x] Repeat the federation receive stress matrix and compare confirmed TPS,
       journal TPS, latency, CPU, log rate, catch-up transitions, and checkpoint
       traffic with milestone 0.
-- [ ] Redeploy a fresh development federation and exercise member restart from
+- [x] Redeploy a fresh development federation and exercise member restart from
       scheduled and recovery checkpoints after creating several batches.
 - [x] Recover a long-offline member using checkpoint quorums fetched from one
       peer and assert that historical signers perform zero new signature or
@@ -1685,7 +1685,7 @@ weakening catch-up, restart, or Byzantine fault handling.
 - [x] Run the explicit operator materialized-state audit against matching and
       altered members; confirm that it is never invoked by normal startup,
       status, or peer sync.
-- [ ] Record aggregate findings without credentials, private URLs, machine
+- [x] Record aggregate findings without credentials, private URLs, machine
       identifiers, private keys, database copies, or bearer tokens.
 
 ### Local performance evidence
@@ -1881,11 +1881,12 @@ invoke the full-state operator audit.
 
 The DKG roster command now accepts journal-operation and finalized-item
 checkpoint intervals and constructs the shared `FederationCheckpointPolicy`
-through the existing domain validator. Its production defaults remain 10,000;
-the fresh Nocean development setup requests 20 for both intervals so the
-receive matrix creates several real scheduled checkpoint batches instead of
-finishing below the first boundary. Zero is rejected by the shared policy
-constructor.
+through the existing domain validator. Its production defaults remain 10,000.
+The generated local harness uses 20 journal operations and 100 finalized items:
+ordinary operation load crosses several scheduled boundaries, while duplicate
+finalization alone does not make the small functional smoke checkpoint too
+early. The Nocean development helper retains its independently configurable
+20/20 defaults. Zero is rejected by the shared policy constructor.
 
 The Nocean runtime exposes each member's Prometheus endpoint only on loopback.
 One deployment-control command returns an aggregate-only CSV row per member
@@ -1899,35 +1900,79 @@ post-load convergence. It rejects missing members, process replacement, and
 counter regression, retains per-member deltas, and appends aggregate CPU, RSS,
 log-rate, sync-transition, scheduled/recovery checkpoint, quorum-transfer,
 promotion, catch-up-batch, and signature-verification fields to each throughput
-result. A local fixture self-test proves the delta and rate calculation. Shell
-syntax/help checks and a `cdk-mintd` check with the exact deployment feature set
-pass.
+result. Its local mode reuses generated public/private config, PID, log, and
+loopback Prometheus files without SSH or SCP and keeps the same result schema as
+the remote mode. A local fixture self-test proves the delta and rate
+calculation. Shell syntax checks and a release `cdk-mintd` build with the exact
+federation/SQLite/Prometheus feature set pass.
 
-The fresh development deployment regenerated all five databases and configs,
-completed independent BLS/FROST DKG, and started five finalized runtimes. Its
-signed status guard reported all five members ready and converged at genesis,
-the federated wallet reported ready, every public info/config route returned
-success, and the loopback telemetry command returned exactly one aggregate row
-per member.
+The fresh local development deployment used five SQLite members with a
+three-member consensus threshold and the fake-wallet payment backend. The
+release smoke passed mint, swap, successful and failed melt, restore,
+check-state, crash restart, a four-batch long-offline interval, checkpoint
+catch-up, and keyset rotation. Signed status then proved a member restart after
+137 operations with all five members healthy, converged, checkpoint-covered,
+and running the live AlephBFT session. The run exercised a scheduled checkpoint
+as the restart base and the same canonical recovery checkpoint path at the
+stable post-restart tip.
 
-That fresh genesis exposed one validation-script mismatch: the explicit
-`compare-digests` operator command intentionally treats an absent audited
-materialized-state digest as an alert, while a zero-operation federation
-correctly has no checkpoint audit yet. Deployment and benchmark readiness now
-reuse the existing signed `federation status` guards for readiness, exact
-height/application/order convergence, and digest/payment/invalid-operation
-alerts. The strict digest comparator remains unchanged for post-checkpoint
-diagnostics. The restart exercise and comparative result capture remain
-unchecked until their live runs complete.
+The live run exposed three bounded-path edge cases that are now regression
+tested. Genesis readiness no longer requires an operator materialized-state
+audit that does not yet exist. A healthy member with a live AlephBFT session no
+longer re-enters startup quorum reconciliation because sequential peer status
+snapshots observe a moving tip. Finally, checkpoint suffix reconstruction and
+current-session backup replay recognize pre-checkpoint duplicates through
+indexed operation-ID/conflict-key lookups for only the retained suffix or
+finalized unit. Neither fix scans or replays the checkpointed prefix.
+
+### Local receive-matrix evidence
+
+The release benchmark repeated the milestone-0 `2:1`, `4:2`, `10:1`, `20:5`,
+`40:10`, and `20:20` cases. All 96 receives succeeded and every timed journal
+delta exactly matched successful wallet confirmations. The small smoke cases
+produced 0.430 and 0.776 confirmed/journal TPS with p95 latency of 2.107 and
+2.522 seconds, respectively. The measured stress cases were:
+
+| N | Parallelism | Success | Confirmed/journal TPS | p95 | Aggregate member CPU | New warning/error logs | Sync transitions | Scheduled candidates |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 | 1 | 10/10 | 0.400 / 0.400 | 2.540 s | 45.74 s | 0 | 0 | 5 |
+| 20 | 5 | 20/20 | 1.389 / 1.389 | 4.665 s | 63.36 s | 0 | 0 | 5 |
+| 40 | 10 | 40/40 | 2.620 / 2.620 | 4.043 s | 78.64 s | 0 | 0 | 10 |
+| 20 | 20 | 20/20 | 4.944 / 4.944 | 4.028 s | 15.04 s | 0 | 0 | 5 |
+
+Across the 90 measured stress receives, the timed windows observed 25 member
+candidate creations, representing five complete scheduled boundaries, with no
+recovery checkpoint, catch-up batch, readiness transition, or new warning/error
+log during load. Quorum transfer and promotion counters advanced during the
+multi-wave cases, and signed post-run status confirmed the latest scheduled
+quorum on every member. A later stable-tip recovery quorum also assembled
+without disturbing readiness.
+
+The exact milestone-0 matrix had 10:1, 20:5, 40:10, and 20:20 confirmed TPS of
+0.119, 0.275, 0.270, and 0.566, with 20:5 and 40:10 client failure rates of 30%
+and 47.5%. The local checkpoint run therefore shows no throughput regression,
+removes the confirmed-versus-committed gap, and sharply reduces p95 latency for
+the same workload shapes. Because milestone 0 ran on a remote deployment while
+this repetition intentionally used faster localhost transport, the magnitude
+of the improvement is not attributed to checkpoints alone. CPU/checkpoint
+counters also have no like-for-like milestone-0 telemetry baseline; their
+value here is that checkpoint work is explicit and no catch-up or log storm
+appears during the measured windows. Raw wallet databases, tokens, logs, and
+per-request artifacts remain outside the repository.
 
 ### Files and references
 
 - `crates/cdk-axum/src/federation/tests.rs`
 - `crates/cdk-axum/src/federation/tests/aleph_bft_routes.rs`
+- `crates/cdk-axum/src/federation/node_runtime.rs`
+- `crates/cdk-axum/src/federation/sync_loop.rs`
+- `crates/cdk-common/src/federation/consensus.rs`
+- `crates/cdk-common/src/federation/trusted_dealer.rs`
 - `crates/cdk-mintd/dev/federation/smoke-local-federation.sh.in`
 - `crates/cdk-mintd/src/cli.rs`
 - `crates/cdk-mintd/src/federation_dkg_setup.rs`
 - `crates/cdk-mintd/src/federation_setup/tests.rs`
+- `justfile`
 - `scripts/benchmark_nocean_federation.sh`
 - `scripts/nocean_federation_control.sh`
 - `scripts/reproduce_nocean_federation_stress_test.sh`

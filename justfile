@@ -772,7 +772,7 @@ regtest db="sqlite" host="127.0.0.1":
   bash ./misc/interactive_regtest_mprocs.sh {{db}} "{{host}}"
 
 # Generate local fake-wallet federation configs for process smoke testing
-fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885" dkg_setup_route_probes="0":
+fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885" dkg_setup_route_probes="0" checkpoint_interval_journal_operations="20" checkpoint_interval_finalized_items="100":
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
@@ -790,6 +790,8 @@ fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port
     --members "{{members}}" \
     --threshold "{{threshold}}" \
     --port-start "{{port_start}}" \
+    --checkpoint-interval-journal-operations "{{checkpoint_interval_journal_operations}}" \
+    --checkpoint-interval-finalized-items "{{checkpoint_interval_finalized_items}}" \
     ${dkg_probe_arg:+$dkg_probe_arg}
 
 # Run fast federation regtest and smoke unit checks without starting member processes
@@ -932,7 +934,7 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
         "${status_args[@]}" \
         --require-ready \
         --require-converged \
-        --require-catch-up-certificate-quorum \
+        --require-checkpoint-quorum \
         --require-no-digest-alerts \
         --require-no-invalid-operation-alerts >/dev/null 2>&1; then
         return 0
@@ -956,7 +958,7 @@ fed-regtest-cli-smoke-slow-member dir="target/cdk-fed-regtest-cli-slow" wallet_d
         --private-config "{{dir}}/member-1/federation-private.json" \
         --require-ready \
         --require-converged \
-        --require-catch-up-certificate-quorum \
+        --require-checkpoint-quorum \
         --require-no-digest-alerts \
         --require-no-invalid-operation-alerts 2>/dev/null)"; then
         expected_lines="$(grep -Ec 'operations=10 latest_index=9 ' <<<"$status_output" || true)"
@@ -1171,7 +1173,7 @@ fed-regtest-cli-smoke-mismatched-member dir="target/cdk-fed-regtest-cli-mismatch
         --member 5 \
         --require-ready \
         --require-converged \
-        --require-catch-up-certificate-quorum \
+        --require-checkpoint-quorum \
         --require-no-digest-alerts \
         --require-no-invalid-operation-alerts >/dev/null 2>&1; then
         return 0
@@ -1725,7 +1727,7 @@ fed-regtest-postgres-status dir="target/cdk-fed-regtest-postgres" signer="1":
     --private-config "{{dir}}/member-{{signer}}/federation-private.json" \
     --require-ready \
     --require-converged \
-    --require-catch-up-certificate-quorum \
+    --require-checkpoint-quorum \
     --require-no-digest-alerts \
     --require-no-invalid-operation-alerts
 
@@ -1761,9 +1763,10 @@ fed-regtest-start dir="target/cdk-fed-regtest" members="5" threshold="3" port_st
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
+  mintd_bin="${CDK_MINTD_BIN:-target/debug/cdk-mintd}"
   if [ ! -f "{{dir}}/federation-public.json" ]; then
     just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
-  else
+  elif [[ "$mintd_bin" == "target/debug/cdk-mintd" ]]; then
     cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   fi
   for member in $(seq 1 "{{members}}"); do
@@ -1775,7 +1778,7 @@ fed-regtest-start dir="target/cdk-fed-regtest" members="5" threshold="3" port_st
       continue
     fi
     mkdir -p "$work_dir"
-    nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+    nohup "$mintd_bin" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
     echo "$!" > "$pid_file"
     echo "started member ${member} with pid $(cat "$pid_file")"
   done
@@ -1787,6 +1790,7 @@ fed-regtest-start-member member dir="target/cdk-fed-regtest" build="1":
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
+  mintd_bin="${CDK_MINTD_BIN:-target/debug/cdk-mintd}"
   work_dir="{{dir}}/member-{{member}}/work"
   config="{{dir}}/member-{{member}}/config.toml"
   pid_file="${work_dir}/mintd.pid"
@@ -1800,10 +1804,10 @@ fed-regtest-start-member member dir="target/cdk-fed-regtest" build="1":
     exit 0
   fi
   mkdir -p "$work_dir"
-  if [[ "{{build}}" == "1" ]]; then
+  if [[ "{{build}}" == "1" && "$mintd_bin" == "target/debug/cdk-mintd" ]]; then
     cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   fi
-  nohup target/debug/cdk-mintd --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
+  nohup "$mintd_bin" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 < /dev/null &
   echo "$!" > "$pid_file"
   echo "started member {{member}} with pid $(cat "$pid_file")"
   mint_url="$(awk -F' = ' '/^url = / { gsub("\"", "", $2); print $2; exit }' "$config")"
@@ -1875,7 +1879,7 @@ fed-regtest-status dir="target/cdk-fed-regtest" signer="1":
     --private-config "{{dir}}/member-{{signer}}/federation-private.json" \
     --require-ready \
     --require-converged \
-    --require-catch-up-certificate-quorum \
+    --require-checkpoint-quorum \
     --require-no-digest-alerts \
     --require-no-invalid-operation-alerts
 

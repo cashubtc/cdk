@@ -19,9 +19,9 @@ use bip39::Mnemonic;
 use bitcoin::hashes::{sha256, Hash};
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
-    generate_trusted_dealer_configs_with_options, FederatedKeyset, FederationConfig,
-    FederationDkgCeremonyId, FederationDkgCommitmentRequest, FederationDkgCommitmentRound,
-    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
+    generate_trusted_dealer_configs_with_options, FederatedKeyset, FederationCheckpointPolicy,
+    FederationConfig, FederationDkgCeremonyId, FederationDkgCommitmentRequest,
+    FederationDkgCommitmentRound, FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgPublicCeremony,
     FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
     FederationDkgTranscript, FederationDkgTranscriptSignature,
@@ -282,6 +282,11 @@ fn generate_trusted_dealer_core_generation(
         vec![keyset_spec, rotation_keyset_spec],
         TrustedDealerGenerationOptions {
             no_aux_rand_signatures: deterministic_test_seed.is_some(),
+            checkpoint_policy: FederationCheckpointPolicy::new(
+                args.checkpoint_interval_journal_operations,
+                args.checkpoint_interval_finalized_items,
+            )
+            .context("invalid federation checkpoint policy")?,
         },
     )
     .context("failed to generate trusted-dealer federation configs")?;
@@ -931,6 +936,7 @@ fn write_dkg_setup_route_probe_requests(
     .context("generated DKG route-probe final public config is invalid")?;
     final_public_config.payment_observation_policy =
         public_config.payment_observation_policy.clone();
+    final_public_config.checkpoint_policy = public_config.checkpoint_policy;
     final_public_config
         .validate()
         .context("generated DKG route-probe payment policy is invalid")?;

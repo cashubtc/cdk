@@ -5,9 +5,10 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-MINT_URL="${MINT_URL:-https://cdk-1.nocean.xyz}"
+MINT_URL="${MINT_URL:-}"
 SSH_HOST="${SSH_HOST:-nocean}"
 REMOTE_DIR="${REMOTE_DIR:-cdk-federation}"
+LOCAL_FEDERATION_DIR="${LOCAL_FEDERATION_DIR:-}"
 EXPECTED_MEMBERS="${EXPECTED_MEMBERS:-5}"
 CASES="${CASES:-10:1 20:5 20:10 20:20}"
 TOKEN_AMOUNT="${TOKEN_AMOUNT:-1}"
@@ -18,6 +19,7 @@ CONVERGENCE_ATTEMPTS="${CONVERGENCE_ATTEMPTS:-90}"
 CONVERGENCE_DELAY_SECONDS="${CONVERGENCE_DELAY_SECONDS:-2}"
 BUILD_CLI="${BUILD_CLI:-1}"
 CLI="${CLI:-$REPO_ROOT/target/release/cdk-cli}"
+MINTD="${MINTD:-$REPO_ROOT/target/debug/cdk-mintd}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="${RUN_DIR:-$REPO_ROOT/target/federation-load-tests/$RUN_ID}"
 RUNTIME_SNAPSHOT_HEADER='member,pid,cpu_seconds,rss_kb,log_lines,sync_transitions,scheduled_checkpoints,recovery_checkpoints,quorums_transferred,checkpoints_promoted,catch_up_batches_applied,signatures_verified'
@@ -30,6 +32,9 @@ controlled parallelism, and report end-to-end federation throughput.
 Usage:
   scripts/benchmark_nocean_federation.sh
   scripts/benchmark_nocean_federation.sh --self-test
+
+Set LOCAL_FEDERATION_DIR to a running generated federation directory to use
+local member files, PID files, and loopback Prometheus instead of SSH/SCP.
 
 Default benchmark matrix:
   CASES="10:1 20:5 20:10 20:20"
@@ -58,6 +63,7 @@ Environment overrides:
   MINT_URL                    Wallet-facing URL for the federation
   SSH_HOST                    SSH alias used for config and signed status checks
   REMOTE_DIR                  Remote deployment directory below $HOME
+  LOCAL_FEDERATION_DIR        Generated local federation directory; disables SSH/SCP
   EXPECTED_MEMBERS            Members required in each metrics snapshot (default: 5)
   RUN_DIR                     Output directory
 
@@ -211,11 +217,20 @@ esac
 
 require_command awk
 require_command find
-require_command scp
 require_command seq
 require_command sort
-require_command ssh
 require_command xargs
+
+if [[ -z "$LOCAL_FEDERATION_DIR" ]]; then
+    require_command scp
+    require_command ssh
+else
+    require_command curl
+    require_command ps
+    [[ -d "$LOCAL_FEDERATION_DIR" ]] \
+        || die "LOCAL_FEDERATION_DIR does not exist: $LOCAL_FEDERATION_DIR"
+    [[ -x "$MINTD" ]] || die "local federation mint daemon is not executable: $MINTD"
+fi
 
 if [[ "$BUILD_CLI" == "1" ]]; then
     require_command cargo
@@ -230,9 +245,17 @@ is_positive_integer "$CONVERGENCE_ATTEMPTS" || die "CONVERGENCE_ATTEMPTS must be
 is_positive_integer "$CONVERGENCE_DELAY_SECONDS" \
     || die "CONVERGENCE_DELAY_SECONDS must be positive"
 [[ "$BUILD_CLI" == "0" || "$BUILD_CLI" == "1" ]] || die "BUILD_CLI must be 0 or 1"
-[[ "$REMOTE_DIR" =~ ^[A-Za-z0-9._/-]+$ ]] || die "REMOTE_DIR contains unsupported characters"
-[[ "$REMOTE_DIR" != /* ]] || die "REMOTE_DIR must be relative to the remote home"
-[[ "/$REMOTE_DIR/" != *"/../"* ]] || die "REMOTE_DIR must not contain '..' path segments"
+if [[ -z "$LOCAL_FEDERATION_DIR" ]]; then
+    [[ "$REMOTE_DIR" =~ ^[A-Za-z0-9._/-]+$ ]] \
+        || die "REMOTE_DIR contains unsupported characters"
+    [[ "$REMOTE_DIR" != /* ]] || die "REMOTE_DIR must be relative to the remote home"
+    [[ "/$REMOTE_DIR/" != *"/../"* ]] \
+        || die "REMOTE_DIR must not contain '..' path segments"
+    MINT_URL="${MINT_URL:-https://cdk-1.nocean.xyz}"
+else
+    MINT_URL="${MINT_URL:-$(awk -F' = ' '/^url = / { gsub("\"", "", $2); print $2; exit }' "$LOCAL_FEDERATION_DIR/member-1/config.toml")}"
+    [[ -n "$MINT_URL" ]] || die "could not read the local member-1 mint URL"
+fi
 
 total_tokens=0
 case_count=0
@@ -269,9 +292,13 @@ mkdir -p "$FUNDING_DIR"
 chmod 700 "$FUNDING_DIR"
 
 echo "Copying an immutable public federation config snapshot..."
-scp \
-    "$SSH_HOST:$REMOTE_DIR/member-1/dkg-final/federation-public.json" \
-    "$PUBLIC_CONFIG"
+if [[ -n "$LOCAL_FEDERATION_DIR" ]]; then
+    cp "$LOCAL_FEDERATION_DIR/federation-public.json" "$PUBLIC_CONFIG"
+else
+    scp \
+        "$SSH_HOST:$REMOTE_DIR/member-1/dkg-final/federation-public.json" \
+        "$PUBLIC_CONFIG"
+fi
 chmod 600 "$PUBLIC_CONFIG"
 
 printf '%s\n' \
@@ -298,11 +325,7 @@ wait_for_convergence() {
     local attempt output=""
 
     for attempt in $(seq 1 "$CONVERGENCE_ATTEMPTS"); do
-        if output="$(
-            ssh "$SSH_HOST" \
-                "cd ~/$REMOTE_DIR && timeout 30 bin/cdk-mintd federation status --public-config member-1/dkg-final/federation-public.json --private-config member-1/dkg-final/federation-private.json --require-ready --require-converged --max-operation-lag 0 --require-no-digest-alerts --require-no-payment-observation-alerts --require-no-invalid-operation-alerts" \
-                2>&1
-        )" \
+        if output="$(query_converged_status 2>&1)" \
             && [[ "$(grep -c '^member ' <<<"$output")" == "$EXPECTED_MEMBERS" ]]
         then
             printf '%s\n' "$output"
@@ -319,15 +342,126 @@ wait_for_convergence() {
     return 1
 }
 
+query_converged_status() {
+    local status_args=(
+        federation status
+        --require-ready
+        --require-converged
+        --max-operation-lag 0
+        --require-no-digest-alerts
+        --require-no-payment-observation-alerts
+        --require-no-invalid-operation-alerts
+    )
+    if [[ -n "$LOCAL_FEDERATION_DIR" ]]; then
+        "$MINTD" "${status_args[@]}" \
+            --public-config "$LOCAL_FEDERATION_DIR/federation-public.json" \
+            --private-config "$LOCAL_FEDERATION_DIR/member-1/federation-private.json"
+        return
+    fi
+    ssh "$SSH_HOST" \
+        "cd ~/$REMOTE_DIR && timeout 30 bin/cdk-mintd federation status --public-config member-1/dkg-final/federation-public.json --private-config member-1/dkg-final/federation-private.json --require-ready --require-converged --max-operation-lag 0 --require-no-digest-alerts --require-no-payment-observation-alerts --require-no-invalid-operation-alerts"
+}
+
 capture_runtime_snapshot() {
     local output="$1"
 
-    ssh "$SSH_HOST" \
-        "cd ~/$REMOTE_DIR && bash scripts/nocean_federation_control.sh runtime-metrics" \
-        >"$output"
+    if [[ -n "$LOCAL_FEDERATION_DIR" ]]; then
+        capture_local_runtime_snapshot >"$output"
+    else
+        ssh "$SSH_HOST" \
+            "cd ~/$REMOTE_DIR && bash scripts/nocean_federation_control.sh runtime-metrics" \
+            >"$output"
+    fi
     [[ "$(sed -n '1p' "$output")" == "$RUNTIME_SNAPSHOT_HEADER" ]] \
-        || die "remote runtime metrics returned an unexpected schema"
+        || die "runtime metrics returned an unexpected schema"
     date +%s >"$output.epoch"
+}
+
+local_runtime_process_sample() {
+    local pid="$1"
+    ps -p "$pid" -o time= -o rss= 2>/dev/null | awk '
+        function cpu_seconds(raw, parts, count, day_parts, days) {
+            days = 0
+            if (index(raw, "-") > 0) {
+                split(raw, day_parts, "-")
+                days = day_parts[1] + 0
+                raw = day_parts[2]
+            }
+            count = split(raw, parts, ":")
+            if (count == 2) return (days * 86400) + (parts[1] * 60) + parts[2]
+            if (count == 3) {
+                return (days * 86400) + (parts[1] * 3600) + (parts[2] * 60) + parts[3]
+            }
+            return (days * 86400) + raw
+        }
+        NF { printf "%.2f,%d\n", cpu_seconds($1), $2; exit }
+    '
+}
+
+local_runtime_log_lines() {
+    local member="$1"
+    local -a log_files=()
+    shopt -s nullglob
+    log_files=("$LOCAL_FEDERATION_DIR/member-$member/work/logs"/cdk-mintd.log*)
+    shopt -u nullglob
+    if ((${#log_files[@]} == 0)); then
+        printf '0\n'
+        return
+    fi
+    awk 'END { print NR }' "${log_files[@]}"
+}
+
+local_runtime_prometheus_port() {
+    local member="$1"
+    awk '
+        /^\[prometheus\]$/ { in_prometheus = 1; next }
+        /^\[/ { in_prometheus = 0 }
+        in_prometheus && $1 == "port" && $2 == "=" { print $3; exit }
+    ' "$LOCAL_FEDERATION_DIR/member-$member/config.toml"
+}
+
+local_runtime_federation_metrics() {
+    local member="$1"
+    local port metrics
+    port="$(local_runtime_prometheus_port "$member")"
+    [[ "$port" =~ ^[1-9][0-9]*$ ]] \
+        || die "local member $member config has no Prometheus port"
+    metrics="$(curl --max-time 10 -fsS "http://127.0.0.1:$port/metrics")" \
+        || die "local member $member Prometheus metrics are unavailable"
+    printf '%s\n' "$metrics" | awk '
+        /^cdk_federation_sync_transitions_total\{/ {
+            sync_transitions += $NF
+        }
+        /^cdk_federation_checkpoint_work_total\{/ {
+            if ($0 ~ /work="scheduled_checkpoints_created"/) scheduled += $NF
+            if ($0 ~ /work="recovery_checkpoints_created"/) recovery += $NF
+            if ($0 ~ /work="quorums_transferred"/) quorums += $NF
+            if ($0 ~ /work="checkpoints_promoted"/) promoted += $NF
+            if ($0 ~ /work="catch_up_batches_applied"/) catch_up += $NF
+            if ($0 ~ /work="signatures_verified"/) signatures += $NF
+        }
+        END {
+            printf "%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f\n",
+                sync_transitions, scheduled, recovery, quorums, promoted,
+                catch_up, signatures
+        }
+    '
+}
+
+capture_local_runtime_snapshot() {
+    printf '%s\n' "$RUNTIME_SNAPSHOT_HEADER"
+    local member pid process_sample log_lines federation_metrics
+    for member in $(seq 1 "$EXPECTED_MEMBERS"); do
+        read -r pid <"$LOCAL_FEDERATION_DIR/member-$member/work/mintd.pid"
+        kill -0 "$pid" 2>/dev/null || die "local member $member is not running"
+        process_sample="$(local_runtime_process_sample "$pid")"
+        [[ -n "$process_sample" ]] \
+            || die "local member $member process metrics are unavailable"
+        log_lines="$(local_runtime_log_lines "$member")"
+        federation_metrics="$(local_runtime_federation_metrics "$member")"
+        printf '%s,%s,%s,%s,%s\n' \
+            "$member" "$pid" "$process_sample" "$log_lines" "$federation_metrics"
+    done
 }
 
 echo "Importing the federation into the funding wallet..."
