@@ -1380,9 +1380,18 @@ where
             r#"
             DELETE FROM federation_aleph_bft_backups
             WHERE session < :session
+              AND session < COALESCE(
+                    (
+                        SELECT active_session
+                        FROM federation_aleph_bft_session_state
+                        WHERE session_key = :session_key
+                    ),
+                    :session
+                  )
             "#,
         )?
         .bind("session", session as i64)
+        .bind("session_key", FEDERATION_ALEPH_BFT_ACTIVE_SESSION_KEY)
         .execute(&self.inner)
         .await?;
         Ok(())

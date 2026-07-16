@@ -2442,6 +2442,28 @@ pub struct FederationCheckpointQuorumSummary {
     pub signers: Vec<MemberId>,
 }
 
+/// Oldest durable history retained for local bootstrap and backup recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationRecoveryRetentionStatus {
+    /// First journal index retained durably for bootstrap.
+    pub journal_from_index: u64,
+    /// First finalized-item index retained durably for bootstrap.
+    pub finalized_item_from_index: u64,
+}
+
+/// Redacted scalar status for the active local AlephBFT backup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationAlephBftBackupStatus {
+    /// Active AlephBFT session represented by this backup.
+    pub session: u64,
+    /// Number of persisted backup chunks.
+    pub chunk_count: u64,
+    /// Total persisted backup bytes.
+    pub total_bytes: u64,
+}
+
 impl FederationCheckpointQuorumSummary {
     /// Build bounded status metadata from a quorum verified before persistence.
     pub fn from_stored_quorum(quorum: &FederationCheckpointQuorum) -> Result<Self> {
@@ -2479,6 +2501,12 @@ pub struct FederationCheckpointStatus {
     pub trusted_checkpoint: Option<FederationCheckpointQuorumSummary>,
     /// Accepted operations after the locally trusted checkpoint.
     pub lag_from_trusted_checkpoint: u64,
+    /// Oldest durable body indexes retained for supported recovery.
+    #[serde(default)]
+    pub retained_recovery_floor: FederationRecoveryRetentionStatus,
+    /// Active-session backup size without backup contents or local paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_session_backup: Option<FederationAlephBftBackupStatus>,
 }
 
 impl Default for FederationCheckpointStatus {
@@ -2490,6 +2518,8 @@ impl Default for FederationCheckpointStatus {
             latest_recovery_quorum: None,
             trusted_checkpoint: None,
             lag_from_trusted_checkpoint: 0,
+            retained_recovery_floor: FederationRecoveryRetentionStatus::default(),
+            active_session_backup: None,
         }
     }
 }
@@ -3587,6 +3617,11 @@ mod tests {
                 pending_finalization_item_count: 6,
                 finalized_item_count: 7,
                 accepted_operation_count: 4,
+                retained_finalized_item_from_index: 0,
+                retained_finalized_item_count: 4,
+                retained_finalized_canonical_bytes: 256,
+                retained_operation_from_index: 0,
+                retained_operation_count: 4,
                 latest_accepted_operation_index: Some(3),
                 allowed_member_count: Some(3),
             }),

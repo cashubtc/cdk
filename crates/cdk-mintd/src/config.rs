@@ -1227,6 +1227,10 @@ pub struct Federation {
     pub public_config_path: Option<PathBuf>,
     /// Path to this member's private federation config JSON file.
     pub private_config_path: Option<PathBuf>,
+    /// Checkpoint-bound backup manifest required when starting a restored database.
+    ///
+    /// Leave unset for ordinary startup and empty-database genesis bootstrap.
+    pub restore_manifest_path: Option<PathBuf>,
     /// Private REST peer synchronization and retry policy.
     #[serde(default)]
     pub peer_sync: FederationPeerSync,

@@ -7,6 +7,7 @@
 use thiserror::Error;
 
 mod address_allocation;
+mod backup;
 mod chain_observation;
 mod checkpoint;
 mod config;
@@ -51,6 +52,10 @@ pub use self::address_allocation::{
     FederationAddressAllocationOutcome, FederationAddressAllocationScope,
     FederationAddressAllocationState, FederationAddressKeychain, FederationAddressWalletState,
     FEDERATION_MAX_DERIVATION_INDEX,
+};
+pub use self::backup::{
+    FederationDatabaseBackupManifest, FEDERATION_DATABASE_BACKUP_MANIFEST_VERSION,
+    FEDERATION_DATABASE_BACKUP_SCHEMA_VERSION,
 };
 pub use self::chain_observation::{
     FederationAllocatedAddressRef, FederationChainObservation, FederationChainObservationEvidence,
@@ -181,28 +186,28 @@ pub use self::transaction_proposal::{
 pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
-    FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationCatchUpOperation, FederationCheckpointAuditRequest,
-    FederationCheckpointAuditResponse, FederationCheckpointFetchRequest,
-    FederationCheckpointFetchResponse, FederationCheckpointQuorumRequest,
-    FederationCheckpointQuorumResponse, FederationCheckpointQuorumSummary,
-    FederationCheckpointSignatureRequest, FederationCheckpointSignatureResponse,
-    FederationCheckpointStatus, FederationCheckpointSummary, FederationCheckpointSummaryRequest,
-    FederationCheckpointSummaryResponse, FederationDkgActivationRequest,
-    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
-    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationAlephBftBackupStatus, FederationAlephBftNetworkMessageRequest,
+    FederationAlephBftNetworkMessageResponse, FederationCatchUpOperation,
+    FederationCheckpointAuditRequest, FederationCheckpointAuditResponse,
+    FederationCheckpointFetchRequest, FederationCheckpointFetchResponse,
+    FederationCheckpointQuorumRequest, FederationCheckpointQuorumResponse,
+    FederationCheckpointQuorumSummary, FederationCheckpointSignatureRequest,
+    FederationCheckpointSignatureResponse, FederationCheckpointStatus, FederationCheckpointSummary,
+    FederationCheckpointSummaryRequest, FederationCheckpointSummaryResponse,
+    FederationDkgActivationRequest, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
+    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationFrostAggregateResultNotification,
     FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
     FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
     FederationFrostSigningAck, FederationFrostSigningPackageRequest,
     FederationInvalidOperationAlertSummary, FederationJournalCatchUpRequest,
     FederationJournalCatchUpResponse, FederationLocalStatusResponse, FederationOnchainWalletStatus,
-    FederationPeerStatus, FederationPeerStatusRequest, FederationRestBodyHash,
-    FederationRestMessageKind, FederationRestSequenceTracker, FederationRestSignature,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FederationWalletRebroadcastResponse, FederationWalletTransactionRequest,
-    FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
-    FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRecoveryRetentionStatus,
+    FederationRestBodyHash, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationRestSignature, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, FederationWalletRebroadcastResponse,
+    FederationWalletTransactionRequest, FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES, FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE,
     FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
 pub use self::trusted_dealer::{
@@ -554,6 +559,12 @@ pub enum FederationError {
     #[error("Federation checkpoint is invalid: {reason}")]
     CheckpointInvalid {
         /// Stable validation reason without operation payloads.
+        reason: String,
+    },
+    /// A checkpoint-bound database backup manifest failed validation.
+    #[error("Federation database backup manifest is invalid: {reason}")]
+    BackupManifestInvalid {
+        /// Stable validation reason without secrets or local paths.
         reason: String,
     },
     /// Durable history after a trusted checkpoint does not form one valid ordered suffix.

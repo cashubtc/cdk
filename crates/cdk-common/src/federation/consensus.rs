@@ -11,15 +11,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use super::journal::PreparedFederationJournalFinalization;
 use super::{
-    FederationAlephBftRecoveryCursor, FederationApplicationState, FederationCheckpoint,
-    FederationCheckpointId, FederationConfig, FederationError, FederationId,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPeerStatus, FederationRestMessageKind,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    InMemoryFederationJournal, MemberId, Result, ThresholdParams,
-    VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
+    federation_checkpoint_batch_canonical_bytes, FederationAlephBftRecoveryCursor,
+    FederationApplicationState, FederationCheckpoint, FederationCheckpointId, FederationConfig,
+    FederationError, FederationId, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
+    FederationMaterializedStateDigest, FederationOperationConflictKey, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationPeerStatus,
+    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
+    ThresholdParams, VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -320,6 +320,7 @@ pub struct FederationPreparedAlephBftFinalization {
     outcome: FederationAlephBftFinalizedUnitOutcome,
     journal: PreparedFederationJournalFinalization,
     responses: Vec<FederationSubmitOperationResponse>,
+    retained_finalized_canonical_bytes: u64,
 }
 
 impl FederationPreparedAlephBftFinalization {
@@ -403,10 +404,20 @@ pub struct FederationConsensusRuntimeStatus {
     pub queued_item_count: u64,
     /// Number of drained local consensus items waiting for finality.
     pub pending_finalization_item_count: u64,
-    /// Number of finalized consensus items retained by the runtime.
+    /// Total number of finalized consensus items including the trusted base.
     pub finalized_item_count: u64,
     /// Number of accepted operation entries in the runtime journal.
     pub accepted_operation_count: u64,
+    /// First finalized-item index retained after the trusted recovery base.
+    pub retained_finalized_item_from_index: u64,
+    /// Number of finalized items retained in the current in-memory suffix.
+    pub retained_finalized_item_count: u64,
+    /// Canonical bytes retained for finalized items in the current suffix.
+    pub retained_finalized_canonical_bytes: u64,
+    /// First accepted-operation index retained after the trusted recovery base.
+    pub retained_operation_from_index: u64,
+    /// Number of accepted operations retained in the current in-memory suffix.
+    pub retained_operation_count: u64,
     /// Highest accepted operation index, if any operation has been accepted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_accepted_operation_index: Option<u64>,
@@ -1932,6 +1943,7 @@ pub struct FederationConsensusRuntime {
     finalization_handler: FederationAlephBftFinalizationHandler,
     journal: InMemoryFederationJournal,
     finalized_items: Vec<FederationAlephBftFinalizedItem>,
+    retained_finalized_canonical_bytes: u64,
     pending_finalization_units:
         BTreeMap<FederationAlephBftPendingUnitKey, Vec<FederationConsensusItem>>,
     pending_finalization_operation_ids: BTreeSet<FederationOperationId>,
@@ -1964,6 +1976,7 @@ impl FederationConsensusRuntime {
             .expect("default AlephBFT finalization limits are non-zero"),
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
+            retained_finalized_canonical_bytes: 0,
             pending_finalization_units: BTreeMap::new(),
             pending_finalization_operation_ids: BTreeSet::new(),
             pending_finalization_conflict_keys: HashMap::new(),
@@ -1995,6 +2008,7 @@ impl FederationConsensusRuntime {
             )?,
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
+            retained_finalized_canonical_bytes: 0,
             pending_finalization_units: BTreeMap::new(),
             pending_finalization_operation_ids: BTreeSet::new(),
             pending_finalization_conflict_keys: HashMap::new(),
@@ -2028,6 +2042,7 @@ impl FederationConsensusRuntime {
             )?,
             journal: InMemoryFederationJournal::new(),
             finalized_items: Vec::new(),
+            retained_finalized_canonical_bytes: 0,
             pending_finalization_units: BTreeMap::new(),
             pending_finalization_operation_ids: BTreeSet::new(),
             pending_finalization_conflict_keys: HashMap::new(),
@@ -2100,6 +2115,7 @@ impl FederationConsensusRuntime {
                 checkpoint.journal_order_digest,
             ),
             finalized_items: Vec::new(),
+            retained_finalized_canonical_bytes: 0,
             pending_finalization_units: BTreeMap::new(),
             pending_finalization_operation_ids: BTreeSet::new(),
             pending_finalization_conflict_keys: HashMap::new(),
@@ -2152,6 +2168,9 @@ impl FederationConsensusRuntime {
             .with_next_unit_index(next_local_unit_index),
             finalization_handler,
             journal,
+            retained_finalized_canonical_bytes: federation_checkpoint_batch_canonical_bytes(
+                &finalized_items,
+            )?,
             finalized_items,
             pending_finalization_units: BTreeMap::new(),
             pending_finalization_operation_ids: BTreeSet::new(),
@@ -2204,6 +2223,9 @@ impl FederationConsensusRuntime {
             )),
             finalization_handler,
             journal,
+            retained_finalized_canonical_bytes: federation_checkpoint_batch_canonical_bytes(
+                &finalized_items,
+            )?,
             finalized_items,
             pending_finalization_units: BTreeMap::new(),
             pending_finalization_operation_ids: BTreeSet::new(),
@@ -2289,6 +2311,10 @@ impl FederationConsensusRuntime {
     /// Panics if an in-memory item count cannot be represented as `u64`.
     #[must_use]
     pub fn status(&self) -> FederationConsensusRuntimeStatus {
+        let retained_finalized_item_count = u64::try_from(self.finalized_items.len())
+            .expect("retained finalized item count fits in u64");
+        let retained_operation_count =
+            u64::try_from(self.journal.len()).expect("retained operation count fits in u64");
         FederationConsensusRuntimeStatus {
             federation_id: self.data_provider.federation_id,
             local_member: self.data_provider.submitting_member,
@@ -2301,6 +2327,16 @@ impl FederationConsensusRuntime {
                 .expect("pending finalization item count fits in u64"),
             finalized_item_count: self.next_item_index(),
             accepted_operation_count: self.journal.operation_count(),
+            retained_finalized_item_from_index: self
+                .next_item_index()
+                .saturating_sub(retained_finalized_item_count),
+            retained_finalized_item_count,
+            retained_finalized_canonical_bytes: self.retained_finalized_canonical_bytes,
+            retained_operation_from_index: self
+                .journal
+                .operation_count()
+                .saturating_sub(retained_operation_count),
+            retained_operation_count,
             latest_accepted_operation_index: self.journal.next_index().checked_sub(1),
             allowed_member_count: self.finalization_handler.allowed_member_count(),
         }
@@ -2469,12 +2505,15 @@ impl FederationConsensusRuntime {
             .cloned()
             .map(FederationSubmitOperationResponse::from_outcome)
             .collect();
+        let retained_finalized_canonical_bytes =
+            federation_checkpoint_batch_canonical_bytes(&outcome.items)?;
 
         Ok(FederationPreparedAlephBftFinalization {
             payload,
             outcome,
             journal,
             responses,
+            retained_finalized_canonical_bytes,
         })
     }
 
@@ -2487,12 +2526,16 @@ impl FederationConsensusRuntime {
             outcome,
             journal,
             responses,
+            retained_finalized_canonical_bytes,
         } = prepared;
         self.finalization_handler.commit_prepared_unit(&outcome);
         self.data_provider
             .advance_next_unit_index_after_finalized_local_unit(&payload);
         self.journal.commit_prepared_finalized_appends(journal);
         self.finalized_items.extend(outcome.items);
+        self.retained_finalized_canonical_bytes = self
+            .retained_finalized_canonical_bytes
+            .saturating_add(retained_finalized_canonical_bytes);
         self.release_pending_finalization_unit(&payload);
         self.release_pending_finalization_decisions(&payload.items);
 
@@ -2707,6 +2750,7 @@ impl FederationConsensusRuntime {
                     finalization_handler,
                     journal: InMemoryFederationJournal::new(),
                     finalized_items: Vec::new(),
+                    retained_finalized_canonical_bytes: 0,
                     pending_finalization_units: BTreeMap::new(),
                     pending_finalization_operation_ids: BTreeSet::new(),
                     pending_finalization_conflict_keys: HashMap::new(),

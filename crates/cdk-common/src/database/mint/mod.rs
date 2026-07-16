@@ -866,6 +866,9 @@ pub trait FederationJournalTransaction {
     ) -> Result<(), Self::Err>;
 
     /// Delete local AlephBFT backup chunks for sessions older than `session`.
+    ///
+    /// The active session backup is always retained even if the requested
+    /// pruning boundary is newer.
     async fn prune_federation_aleph_bft_backups_before(
         &mut self,
         session: u64,

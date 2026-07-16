@@ -1,6 +1,6 @@
 # Federated Cashu checkpoint and catch-up consolidation plan
 
-Status: in progress (milestones 0-9 complete; milestone 10 next)
+Status: in progress (milestones 0-10 complete; milestone 11 next)
 Scope: federation-only checkpoint, catch-up, startup recovery, and related
 AlephBFT runtime consolidation
 Primary goal: simplify the checkpoint and catch-up implementation without
@@ -363,7 +363,7 @@ Update this table whenever a milestone changes state.
 | 7 | AlephBFT-ordered recovery barrier | Complete | `feat: order recovery checkpoint barriers` | A versioned barrier is ordered and persisted as an ordinary AlephBFT item; its complete-unit terminal boundary deterministically creates the existing recovery-checkpoint candidate, while a local lease and fixed one-unit tail bound suppress duplicate work. |
 | 8 | Transport and request-state consolidation | Complete | `refactor: separate federation recovery transport` | Checkpoint-history and AlephBFT-backup traffic use distinct signed message kinds, wire types, routes, clients, size limits, and mutation paths; recovery demand and its proposal lease are one explicit state machine. |
 | 9 | Remove whole-runtime cloning | Complete | `refactor: replace federation runtime clones with deltas` | Submission and finalization prepare bounded non-mutating deltas, persist first, and commit under the existing serialized runtime lock; injected persistence failures leave published state unchanged and clone-path growth is removed from both production hot paths. |
-| 10 | Bootstrap, backup, operator, and retention contract | Not started | — | — |
+| 10 | Bootstrap, backup, operator, and retention contract | Complete | `feat: define federation backup recovery contract` | A versioned checkpoint-bound backup manifest gates restore before runtime startup; v1 retains recovery bodies from genesis, protects the active backup, exposes bounded redacted status, and documents operator-only audit recovery and deferred peer snapshots. |
 | 11 | Adversarial integration, performance, and final cleanup | Not started | — | — |
 
 ## Milestone 0: Baseline, invariants, and fault reproduction
@@ -1437,7 +1437,7 @@ paths.
 
 ## Milestone 10: Bootstrap, backup, operator, and retention contract
 
-Status: not started
+Status: complete
 
 ### Objective
 
@@ -1447,48 +1447,78 @@ a coherent recovery story.
 
 ### Checklist
 
-- [ ] Document that empty-database bootstrap requires genesis replay and valid
+- [x] Document that empty-database bootstrap requires genesis replay and valid
       pre-existing member identity, BLS, and FROST secret material.
-- [ ] Document the minimum journal, finalized-item, scheduled-checkpoint, and
+- [x] Document the minimum journal, finalized-item, scheduled-checkpoint, and
       active-session backup retention needed to support the oldest advertised
       recovery point.
-- [ ] Define a database-backup manifest bound to federation ID, config digest,
+- [x] Define a database-backup manifest bound to federation ID, config digest,
       trusted checkpoint ID, durable frontier, schema version, and required
       secret-storage generation.
-- [ ] Add operator validation that a restored database and trusted checkpoint
+- [x] Add operator validation that a restored database and trusted checkpoint
       match before startup.
-- [ ] Specify how operators recover from the durable materialized-state audit
+- [x] Specify how operators recover from the durable materialized-state audit
       mismatch latch; do not add an automatic clear path.
-- [ ] Specify pruning rules that never delete bodies required by the oldest
+- [x] Specify pruning rules that never delete bodies required by the oldest
       supported bootstrap or backup recovery point.
-- [ ] Ensure status and inspection commands expose the trusted base, retained
+- [x] Ensure status and inspection commands expose the trusted base, retained
       recovery floor, current suffix size/bytes, active session backup status,
       and audit state without exposing secrets or local paths.
-- [ ] Decide in a reviewed follow-up document whether peer-to-peer state
+- [x] Decide in a reviewed follow-up document whether peer-to-peer state
       snapshots are needed; keep them outside this implementation unless scope
       is deliberately amended.
 
 ### Exit tests
 
-- [ ] Empty-database genesis catch-up succeeds through multiple scheduled
+- [x] Empty-database genesis catch-up succeeds through multiple scheduled
       checkpoints and a recovery checkpoint with bounded memory.
-- [ ] Database backup plus matching secrets and checkpoint restarts at the exact
+- [x] Database backup plus matching secrets and checkpoint restarts at the exact
       fast path without prefix reads.
-- [ ] Database backup paired with the wrong federation, config, checkpoint,
+- [x] Database backup paired with the wrong federation, config, checkpoint,
       schema, or secret generation fails before routes open.
-- [ ] Retention tests prove required bodies and the active backup cannot be
+- [x] Retention tests prove required bodies and the active backup cannot be
       pruned below the advertised recovery floor.
-- [ ] Operator audit success and durable mismatch-latch behavior are covered by
+- [x] Operator audit success and durable mismatch-latch behavior are covered by
       CLI or route integration tests.
 
 ### Progress notes
 
-Record the backup manifest, retention policy, operator commands, and deferred
-snapshot decision here.
+Version 1 advertises one simple recovery floor: genesis. Journal bodies,
+finalized-item bodies, and scheduled checkpoint quorums remain available from
+that floor; redundant recovery proofs may be pruned, and active-session backup
+pruning is transactionally protected. This avoids a second retention watermark
+or peer snapshot protocol while preserving deterministic empty-database replay.
+
+`FederationDatabaseBackupManifest` binds a quiesced database snapshot to the
+federation and public-config digests, member ID, trusted checkpoint, exact
+durable frontier, schema contract, active AlephBFT session/backup size, and a
+domain-separated generation of the external member identity/BLS secret file.
+`cdk-mintd federation backup-manifest` creates the private manifest. Configured
+restore validation reconstructs it from the opened database and supplied
+member configuration, compares every field, and runs before DKG reconciliation,
+mint construction, or route startup. FROST state remains part of the database
+snapshot and must be restored with it.
+
+The operator guide records normal restart, checkpoint-bound backup creation,
+restore, genesis bootstrap, and the one-way materialized-state audit mismatch
+latch. Version 1 has neither a background audit nor an automatic latch-clear
+path. The separate snapshot decision records peer-to-peer materialized-state
+snapshots as deliberately deferred until retained history or measured replay
+cost justifies their protocol and operational complexity.
+
+Local verification used SQLite and the fake wallet. Focused common manifest,
+consensus, transport, mintd restore/config/status, Axum checkpoint/status, and
+shared SQLite checkpoint/backup persistence tests pass. The Axum checkpoint
+suite includes empty-database replay through two scheduled checkpoints and a
+recovery checkpoint, plus exact-checkpoint restart with zero prefix reads.
+PostgreSQL federation code compiles; no live PostgreSQL service was used.
+Changed common and SQL crates pass strict Clippy. Broader strict Clippy remains
+blocked by unrelated existing warnings in core `cdk` and mintd smoke/setup code;
+no warning reported a milestone-10 changed path.
 
 ### Commit gate
 
-- [ ] Commit bootstrap/backup/retention behavior, tests, and operator
+- [x] Commit bootstrap/backup/retention behavior, tests, and operator
       documentation before starting milestone 11.
 
 ## Milestone 11: Adversarial integration, performance, and final cleanup

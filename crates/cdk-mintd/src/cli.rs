@@ -342,6 +342,8 @@ pub struct FederationArgs {
 pub enum FederationCommand {
     /// Explicitly audit one member's full state against its trusted checkpoint.
     AuditCheckpoint(FederationCheckpointAuditArgs),
+    /// Bind a quiesced database backup to its checkpoint and member secrets.
+    BackupManifest(FederationBackupManifestArgs),
     /// Compare signed order and materialized-state digests across federation members.
     CompareDigests(FederationCompareDigestsArgs),
     /// Generate one member's independent DKG identity enrollment.
@@ -373,6 +375,23 @@ pub enum FederationCommand {
     TransactionStatus(FederationWalletTransactionArgs),
     /// Immediately retry one exact durably signed transaction.
     Rebroadcast(FederationWalletRebroadcastArgs),
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationBackupManifestArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path for the backed-up database.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Destination for the checkpoint-bound backup manifest.
+    #[arg(long)]
+    pub output: PathBuf,
+    /// Overwrite an existing manifest file.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub force: bool,
 }
 
 #[cfg(feature = "federation")]
@@ -1502,6 +1521,43 @@ mod tests {
             Some(PathBuf::from("member-1/federation-private.json"))
         );
         assert_eq!(audit.member, 2);
+    }
+
+    #[test]
+    fn parses_federation_backup_manifest_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "backup-manifest",
+            "--public-config",
+            "federation-public.json",
+            "--private-config",
+            "member-1/federation-private.json",
+            "--output",
+            "member-1/database-backup-manifest.json",
+            "--force",
+        ])
+        .expect("backup manifest command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::BackupManifest(backup) = federation.command else {
+            panic!("expected federation backup manifest command");
+        };
+        assert_eq!(
+            backup.public_config,
+            Some(PathBuf::from("federation-public.json"))
+        );
+        assert_eq!(
+            backup.private_config,
+            Some(PathBuf::from("member-1/federation-private.json"))
+        );
+        assert_eq!(
+            backup.output,
+            PathBuf::from("member-1/database-backup-manifest.json")
+        );
+        assert!(backup.force);
     }
 
     #[test]

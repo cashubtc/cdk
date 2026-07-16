@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationCheckpointKind, FederationCheckpointQuorumSummary, FederationCheckpointStatus,
-    FederationCheckpointSummary, FederationConsensusRuntimeStatus,
+    FederationAlephBftBackupStatus, FederationCheckpointKind, FederationCheckpointQuorumSummary,
+    FederationCheckpointStatus, FederationCheckpointSummary, FederationConsensusRuntimeStatus,
     FederationInvalidOperationAlertSummary, FederationLocalStatusResponse,
     FederationMaterializedStateRowFingerprint, FederationPaymentObservationReportSummary,
     FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
@@ -212,6 +212,17 @@ async fn federation_checkpoint_status(
     let trusted_journal_next_index = trusted_checkpoint
         .as_ref()
         .map_or(0, |trusted| trusted.checkpoint.frontier.journal.next_index);
+    let active_session_backup = match db.get_federation_aleph_bft_active_session().await? {
+        Some(session) => {
+            let metadata = db.get_federation_aleph_bft_backup_metadata(session).await?;
+            Some(FederationAlephBftBackupStatus {
+                session,
+                chunk_count: metadata.chunk_count,
+                total_bytes: metadata.total_bytes,
+            })
+        }
+        None => None,
+    };
 
     Ok(FederationCheckpointStatus {
         lag_from_trusted_checkpoint: frontier
@@ -222,6 +233,8 @@ async fn federation_checkpoint_status(
         latest_scheduled_quorum,
         latest_recovery_quorum,
         trusted_checkpoint,
+        retained_recovery_floor: Default::default(),
+        active_session_backup,
     })
 }
 

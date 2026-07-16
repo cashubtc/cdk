@@ -23,18 +23,18 @@ use cdk::federation::{
     FederationAlephBftFinalizedItemStatus, FederationAlephBftNetworkMessageRequest,
     FederationAlephBftNetworkMessageResponse, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitPayload, FederationApplicationState, FederationCheckpoint,
-    FederationCheckpointBoundary, FederationCheckpointPolicy, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationCheckpointSummaryRequest,
+    FederationCheckpointBoundary, FederationCheckpointKind, FederationCheckpointPolicy,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationCheckpointSummaryRequest,
     FederationCheckpointSummaryResponse, FederationConfigSnapshot, FederationConsensusItem,
-    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
-    FederationDkgCommitmentRound, FederationDkgMemberKeysetShare, FederationDkgSetupMethod,
-    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignature,
-    FederationError, FederationJournalAppendOutcome, FederationJournalDigest,
-    FederationJournalEntry, FederationKeysetRotationOperation, FederationMeltQuoteMetadata,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDatabaseBackupManifest,
+    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
+    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgMemberKeysetShare,
+    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
+    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMeltQuoteMetadata, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationRecord,
     FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
     FederationRecoveryBarrier, FederationRestMessageKind, FederationSignedRequest,
@@ -7912,6 +7912,26 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     .await
     .expect("promote checkpoint");
     tx.commit().await.expect("commit checkpoint promotion");
+    let frontier = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("backup frontier");
+    let verified = quorum
+        .verify(&public_config)
+        .expect("verified backup checkpoint");
+    let manifest = FederationDatabaseBackupManifest::new(
+        &public_config,
+        &local_private,
+        &verified,
+        frontier,
+        checkpoint.aleph_bft_session,
+        0,
+        0,
+    )
+    .expect("checkpoint-bound backup manifest");
+    manifest
+        .ensure_matches_current(&manifest)
+        .expect("matching backup generation");
 
     let (checkpoint_consensus, _) = crate::create_federation_runtime_state(&state.mint)
         .await
@@ -7919,8 +7939,14 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     let checkpoint_consensus = checkpoint_consensus.expect("consensus");
     {
         let consensus = checkpoint_consensus.lock().await;
-        assert_eq!(consensus.status().accepted_operation_count, 1);
-        assert_eq!(consensus.status().finalized_item_count, 1);
+        let status = consensus.status();
+        assert_eq!(status.accepted_operation_count, 1);
+        assert_eq!(status.finalized_item_count, 1);
+        assert_eq!(status.retained_operation_from_index, 1);
+        assert_eq!(status.retained_operation_count, 0);
+        assert_eq!(status.retained_finalized_item_from_index, 1);
+        assert_eq!(status.retained_finalized_item_count, 0);
+        assert_eq!(status.retained_finalized_canonical_bytes, 0);
         assert!(consensus.journal().entries().is_empty());
         assert!(consensus.finalized_items().is_empty());
         assert_eq!(
@@ -9591,6 +9617,148 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .is_some());
     eprintln!(
         "checkpoint_catch_up_baseline targets=2 first_journal_items=1 first_finalized_items=1 second_journal_items=1 second_finalized_items=2 promotions=2"
+    );
+}
+
+#[tokio::test]
+async fn empty_database_bootstrap_crosses_scheduled_checkpoints_and_recovery() {
+    let (public_config, source_private, target_private) = transport_config();
+    let source =
+        federation_route_state_for_private(public_config.clone(), source_private.clone()).await;
+    let target =
+        federation_route_state_for_private(public_config.clone(), target_private.clone()).await;
+    let signers = [&source_private, &target_private];
+
+    source
+        .submit_federation_envelope(mint_quote_envelope(&source, &QuoteId::new()))
+        .await
+        .expect("first scheduled operation");
+    let mut first_scheduled = recovery_checkpoint_for_state(&source, &public_config, None).await;
+    first_scheduled.kind = FederationCheckpointKind::Scheduled;
+    first_scheduled.scheduled_checkpoint_sequence = 1;
+    let first_signatures = signers
+        .iter()
+        .map(|signer| {
+            FederationCheckpointSignature::new_signed_no_aux_rand(&first_scheduled, signer)
+                .expect("first scheduled signature")
+        })
+        .collect();
+    let first_quorum = FederationCheckpointQuorum::new(first_scheduled.clone(), first_signatures);
+    first_quorum
+        .verify(&public_config)
+        .expect("first scheduled quorum");
+
+    source
+        .submit_federation_envelope(mint_quote_envelope(&source, &QuoteId::new()))
+        .await
+        .expect("second scheduled operation");
+    let mut second_scheduled =
+        recovery_checkpoint_for_state(&source, &public_config, Some(&first_scheduled)).await;
+    second_scheduled.kind = FederationCheckpointKind::Scheduled;
+    second_scheduled.scheduled_checkpoint_sequence = 2;
+    second_scheduled
+        .validate_promotion_from(Some(&first_scheduled))
+        .expect("second scheduled lineage");
+    let second_signatures = signers
+        .iter()
+        .map(|signer| {
+            FederationCheckpointSignature::new_signed_no_aux_rand(&second_scheduled, signer)
+                .expect("second scheduled signature")
+        })
+        .collect();
+    let second_quorum =
+        FederationCheckpointQuorum::new(second_scheduled.clone(), second_signatures);
+    second_quorum
+        .verify(&public_config)
+        .expect("second scheduled quorum");
+
+    source
+        .submit_federation_envelope(mint_quote_envelope(&source, &QuoteId::new()))
+        .await
+        .expect("recovery operation");
+    let (recovery, recovery_quorum) = recovery_checkpoint_quorum_for_state(
+        &source,
+        &public_config,
+        Some(&second_scheduled),
+        &signers,
+    )
+    .await;
+
+    let source_entries = source
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("source journal");
+    let source_journal =
+        InMemoryFederationJournal::from_entries(source_entries).expect("source journal chain");
+    let source_finalized = source
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("source finalized items");
+    let checkpoints = [
+        (&first_scheduled, &first_quorum),
+        (&second_scheduled, &second_quorum),
+        (&recovery, &recovery_quorum),
+    ];
+    let mut journal_from = 0_u64;
+    let mut finalized_from = 0_u64;
+    for (checkpoint, quorum) in checkpoints {
+        let checkpoint_id = checkpoint.id().expect("checkpoint id");
+        let request = FederationJournalCatchUpRequest::new(journal_from)
+            .with_target_checkpoint(checkpoint_id)
+            .with_aleph_bft_next_item_index(finalized_from);
+        let finalized_start = usize::try_from(finalized_from).expect("finalized start");
+        let finalized_end =
+            usize::try_from(checkpoint.finalized_next_item_index).expect("finalized end");
+        let response = FederationJournalCatchUpResponse::from_journal(
+            public_config.federation_id,
+            &source_journal,
+            checkpoint.materialized_state_digest,
+            &request,
+            1,
+            1,
+        )
+        .bound_to_checkpoint(checkpoint)
+        .expect("checkpoint-bound bootstrap page")
+        .with_aleph_bft_finalized_items(
+            source_finalized[finalized_start..finalized_end].to_vec(),
+            true,
+        );
+        target
+            .apply_federation_checkpoint_catch_up_response(&response, quorum)
+            .await
+            .expect("apply bootstrap checkpoint");
+        let consensus = target
+            .federation
+            .consensus
+            .as_ref()
+            .expect("target consensus")
+            .lock()
+            .await;
+        assert!(consensus.journal().entries().is_empty());
+        assert!(consensus.finalized_items().is_empty());
+        drop(consensus);
+        journal_from = checkpoint.journal_next_index;
+        finalized_from = checkpoint.finalized_next_item_index;
+    }
+
+    assert_eq!(journal_from, 3);
+    assert_eq!(finalized_from, 3);
+    assert_eq!(
+        target
+            .mint
+            .localstore()
+            .get_trusted_federation_checkpoint_quorum()
+            .await
+            .expect("trusted checkpoint")
+            .expect("trusted recovery checkpoint")
+            .checkpoint
+            .id()
+            .expect("trusted checkpoint id"),
+        recovery.id().expect("recovery id")
     );
 }
 
@@ -24096,6 +24264,19 @@ async fn private_local_status_route_returns_consensus_and_sync_state() {
         .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
         .await
         .expect("submit mint quote");
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin active backup status");
+    tx.set_federation_aleph_bft_active_session(0)
+        .await
+        .expect("set active backup session");
+    tx.replace_federation_aleph_bft_backup_chunks(0, &[vec![1, 2, 3]])
+        .await
+        .expect("persist active backup chunk");
+    tx.commit().await.expect("commit active backup status");
 
     let request = signed_status_request(&public_config, &peer_private, local_member, 1);
     let response = post_local_status(State(state.clone()), Json(request))
@@ -24112,6 +24293,36 @@ async fn private_local_status_route_returns_consensus_and_sync_state() {
     assert_eq!(response.checkpoint.frontier.journal_next_index, 1);
     assert_eq!(response.checkpoint.frontier.application_next_index, 1);
     assert!(response.checkpoint.trusted_checkpoint.is_none());
+    assert_eq!(
+        response
+            .checkpoint
+            .retained_recovery_floor
+            .journal_from_index,
+        0
+    );
+    assert_eq!(
+        response
+            .checkpoint
+            .retained_recovery_floor
+            .finalized_item_from_index,
+        0
+    );
+    let active_backup = response
+        .checkpoint
+        .active_session_backup
+        .expect("active-session backup status");
+    assert_eq!(active_backup.session, 0);
+    assert_eq!(active_backup.chunk_count, 1);
+    assert_eq!(active_backup.total_bytes, 3);
+    let aleph_bft = response
+        .aleph_bft_status
+        .as_ref()
+        .expect("AlephBFT runtime status");
+    assert_eq!(aleph_bft.retained_operation_from_index, 0);
+    assert_eq!(aleph_bft.retained_operation_count, 1);
+    assert_eq!(aleph_bft.retained_finalized_item_from_index, 0);
+    assert_eq!(aleph_bft.retained_finalized_item_count, 1);
+    assert!(aleph_bft.retained_finalized_canonical_bytes > 0);
     assert!(response.payment_observation_reports.is_empty());
     assert!(response.materialized_state_rows.is_empty());
     assert!(response.invalid_operation_alerts.is_empty());

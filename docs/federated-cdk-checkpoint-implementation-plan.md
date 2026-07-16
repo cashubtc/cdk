@@ -4,7 +4,8 @@ Status: in progress (checkpoint protocol, persistence, exchange, bounded
 page-streamed catch-up, nonzero startup, certificate cut-through,
 checkpoint-native operator tooling, crash-safe checkpoint retention, ordered
 recovery barriers, separated recovery transport, and bounded work
-instrumentation are implemented;
+instrumentation, checkpoint-bound database-backup validation, genesis recovery
+retention, and redacted recovery observability are implemented;
 checkpoint production is event-driven and stable checkpoint polls are work/log
 silent; consolidation and final validation remain)
 Scope: federation-only, cut-through replacement of catch-up certificates  
@@ -419,10 +420,29 @@ threshold. Serving a stored checkpoint performs no history scan, digest
 reconstruction, or new signature operation.
 
 A checkpoint is an attestation of a state already stored in the mint database;
-it is not a physical database snapshot. Backups must include the mint database
-and a matching trusted checkpoint. Restoring an empty member from an arbitrary
-checkpoint would require a separate state-snapshot transfer protocol and is not
-part of this plan.
+it is not a physical database snapshot. Version 1 retains journal and finalized
+bodies from genesis, retains every scheduled quorum, prunes only redundant
+recovery proofs, and protects the active AlephBFT session backup. Genesis is
+therefore the advertised oldest empty-database recovery floor. There is no
+journal/finalized-body pruning API in version 1.
+
+An operator-created database backup is paired with a versioned manifest that
+binds the federation ID, complete public-config digest, member ID, trusted
+checkpoint ID, exact durable frontier, active-session backup size, federation
+database schema contract, and domain-separated external member-secret
+generation. `cdk-mintd federation backup-manifest` creates the private manifest
+against a stopped, quiesced database. A configured `restore_manifest_path`
+causes startup to validate the restored database and matching member secrets
+immediately after opening the database and before DKG reconciliation, mint
+construction, or route creation. Federation, config, checkpoint, frontier,
+schema, backup, member, and secret-generation mismatches fail closed.
+
+An empty member cannot use the manifest or an arbitrary checkpoint as a state
+snapshot. It must replay authenticated ordered bodies from genesis in bounded
+pages and must already have its valid member identity, BLS shares, and any
+required FROST private-root material. The reviewed decision in
+`docs/federated-cashu-state-snapshot-decision.md` keeps peer-to-peer physical
+state snapshots outside version 1.
 
 The startup fast path assumes the mint database preserves committed
 transactions. It detects partial writes by requiring the journal, finalized,
@@ -430,7 +450,10 @@ terminal-application, cumulative-digest, and checkpoint-frontier metadata to be
 atomically consistent. Arbitrary out-of-band row modification is handled by an
 explicit operator materialized-state audit, not by normal startup. An audit
 mismatch durably latches the member fail-closed and cannot be cleared by an
-ordinary restart or peer agreement.
+ordinary restart or peer agreement. There is no clear command and no background
+audit. Recovery preserves the failed database for investigation, then restores
+a known-good checkpoint-bound backup or performs fresh genesis replay with the
+same valid member secrets before the operator reruns the explicit audit.
 
 ### AlephBFT live-session backup policy
 
@@ -454,8 +477,9 @@ limits must bound current-session rounds, backup chunks, and total recovered
 backup bytes independently of federation lifetime. Once a newer session is
 durably active and a retained checkpoint/finalized frontier covers older
 sessions, obsolete backup sessions may be pruned according to a crash-safe
-retention rule. A single recovering member must never force a session rotation
-as a checkpoint shortcut.
+retention rule. The database pruning primitive itself preserves the active
+session even if a caller requests a newer boundary. A single recovering member
+must never force a session rotation as a checkpoint shortcut.
 
 ### Transport policy
 
@@ -1979,6 +2003,35 @@ verification, catch-up requests, and emitted logs. The normal startup, status,
 and peer-sync paths therefore validate bounded checkpoint metadata but never
 invoke the full-state operator audit.
 
+### Local backup, bootstrap, and retention evidence
+
+The checkpoint-bound backup manifest is implemented in `cdk-common` and used by
+one mintd creation/restore path. Focused manifest tests accept an exact match
+and reject changes to federation, public-config digest, trusted checkpoint,
+schema contract, and member secret generation. A SQLite mintd test constructs a
+real trusted checkpoint and active-session backup, builds a manifest from the
+database, validates the configured restore gate, and proves all five mismatch
+classes fail before runtime startup. The pre-route ordering is fixed in
+`run_mintd_with_shutdown`: restore validation runs immediately after database
+open and before DKG reconciliation or mint/router construction.
+
+An empty SQLite target now catches up through two scheduled checkpoint
+boundaries and a final recovery checkpoint from genesis. Every transfer is
+checkpoint bounded, and every promotion rebases the retained journal/finalized
+runtime suffix to zero. The existing exact-checkpoint startup test also builds
+and validates the matching backup generation, then records zero prefix journal
+and finalized-item reads.
+
+Shared SQLite retention tests prove scheduled checkpoint pruning leaves all
+journal and finalized bodies at the advertised genesis floor. The AlephBFT
+backup test requests pruning past the active session and proves the active
+backup remains. Signed local status and the mintd status formatter expose the
+trusted base, genesis recovery floor, in-memory suffix start/count/canonical
+bytes, active backup session/chunks/bytes, and durable audit latch without
+backup contents, secrets, credentials, or local paths. Operator procedures are
+recorded in `docs/federated-cashu-backup-recovery.md`; the separate snapshot
+decision keeps peer materialized-state snapshots outside version 1.
+
 ### Development stress instrumentation
 
 The DKG roster command now accepts journal-operation and finalized-item
@@ -2066,6 +2119,10 @@ per-request artifacts remain outside the repository.
 
 ### Files and references
 
+- `crates/cdk-common/src/federation/backup.rs`
+- `crates/cdk-mintd/src/federation_backup.rs`
+- `docs/federated-cashu-backup-recovery.md`
+- `docs/federated-cashu-state-snapshot-decision.md`
 - `crates/cdk-axum/src/federation/tests.rs`
 - `crates/cdk-axum/src/federation/tests/aleph_bft_routes.rs`
 - `crates/cdk-axum/src/federation/node_runtime.rs`

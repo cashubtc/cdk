@@ -4,14 +4,15 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederationAlephBftRecoveryCursor, FederationApplicationDigest,
-    FederationApplicationFrontier, FederationCheckpointId, FederationCheckpointKind,
-    FederationCheckpointQuorumSummary, FederationCheckpointStatus, FederationCheckpointSummary,
-    FederationCommittedFrontier, FederationConsensusRuntimeStatus, FederationFinalizedFrontier,
-    FederationFinalizedItemDigest, FederationInvalidOperationAlertSummary, FederationJournalDigest,
-    FederationJournalFrontier, FederationMaterializedStateDigest,
-    FederationPaymentObservationContext, FederationPaymentObservationEvidenceGroupSummary,
-    FederationPeerStatus, FederationWalletBroadcastHealth, FederationWalletOperationPhase,
+    generate_trusted_dealer_configs, FederationAlephBftBackupStatus,
+    FederationAlephBftRecoveryCursor, FederationApplicationDigest, FederationApplicationFrontier,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorumSummary,
+    FederationCheckpointStatus, FederationCheckpointSummary, FederationCommittedFrontier,
+    FederationConsensusRuntimeStatus, FederationFinalizedFrontier, FederationFinalizedItemDigest,
+    FederationInvalidOperationAlertSummary, FederationJournalDigest, FederationJournalFrontier,
+    FederationMaterializedStateDigest, FederationPaymentObservationContext,
+    FederationPaymentObservationEvidenceGroupSummary, FederationPeerStatus,
+    FederationWalletBroadcastHealth, FederationWalletOperationPhase,
     FederationWalletOperationPhaseCount, FederationWalletOperatorStatus, FederationWalletUtxoState,
     FederationWalletUtxoStatusCount, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
@@ -533,6 +534,11 @@ fn status_line_includes_consensus_runtime_counters_when_present() {
         pending_finalization_item_count: 4,
         finalized_item_count: 3,
         accepted_operation_count: 1,
+        retained_finalized_item_from_index: 6,
+        retained_finalized_item_count: 3,
+        retained_finalized_canonical_bytes: 512,
+        retained_operation_from_index: 0,
+        retained_operation_count: 1,
         latest_accepted_operation_index: Some(0),
         allowed_member_count: Some(2),
     });
@@ -542,7 +548,7 @@ fn status_line_includes_consensus_runtime_counters_when_present() {
     assert!(line.contains("aleph_bft_live_session=true"));
     assert!(line.contains("aleph_bft_network_inbound=true"));
     assert!(line.contains(
-        "aleph_bft=local_member:1 session:4 queued:2 pending_finalization:4 finalized:3 accepted:1 next_unit:7 next_finalization_unit:8 next_item:9 latest_accepted:0 members:2"
+        "aleph_bft=local_member:1 session:4 queued:2 pending_finalization:4 finalized:3 accepted:1 retained_finalized_from:6 retained_finalized:3 retained_finalized_bytes:512 retained_operations_from:0 retained_operations:1 next_unit:7 next_finalization_unit:8 next_item:9 latest_accepted:0 members:2"
     ));
 }
 
@@ -708,6 +714,11 @@ fn status_line_includes_checkpoint_quorum_evidence() {
         MemberId::new(1).expect("member one"),
         MemberId::new(2).expect("member two"),
     ]));
+    status.checkpoint.active_session_backup = Some(FederationAlephBftBackupStatus {
+        session: 4,
+        chunk_count: 2,
+        total_bytes: 512,
+    });
 
     let member_line = member_status_line(&status);
 
@@ -715,6 +726,9 @@ fn status_line_includes_checkpoint_quorum_evidence() {
         "trusted_checkpoint=0707070707070707070707070707070707070707070707070707070707070707"
     ));
     assert!(member_line.contains("trusted_checkpoint_signers=1,2"));
+    assert!(member_line.contains("retained_journal_from=0"));
+    assert!(member_line.contains("retained_finalized_from=0"));
+    assert!(member_line.contains("active_session_backup=session:4 chunks:2 bytes:512"));
 }
 
 #[test]
@@ -800,17 +814,13 @@ fn status_convergence_guard_rejects_session_mismatch_at_equal_height() {
 }
 
 #[test]
-fn status_convergence_guard_rejects_missing_materialized_state_digest() {
+fn status_convergence_guard_accepts_missing_materialized_state_digest() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 2);
     status.peer_status.materialized_state_digest = None;
 
-    let err = ensure_statuses_converged(&[status])
-        .expect_err("missing materialized state digest should fail");
-
-    assert!(err
-        .to_string()
-        .contains("omitted its materialized state digest"));
+    ensure_statuses_converged(&[status])
+        .expect("operator-audit materialized state digest is optional");
 }
 
 #[test]

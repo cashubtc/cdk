@@ -359,8 +359,18 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         .latest_audited_checkpoint_id
         .map(|checkpoint_id| checkpoint_id.to_string())
         .unwrap_or_else(|| "none".to_string());
+    let active_session_backup = status
+        .checkpoint
+        .active_session_backup
+        .map(|backup| {
+            format!(
+                "session:{} chunks:{} bytes:{}",
+                backup.session, backup.chunk_count, backup.total_bytes
+            )
+        })
+        .unwrap_or_else(|| "none".to_string());
     format!(
-        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} application_digest={} audited_checkpoint={} materialized_state_digest={} materialized_rows={} latest_scheduled_checkpoint={} latest_scheduled_quorum={} latest_recovery_quorum={} trusted_checkpoint={} trusted_checkpoint_signers={} checkpoint_lag_operations={} audit_mismatch={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
+        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} application_digest={} audited_checkpoint={} materialized_state_digest={} materialized_rows={} latest_scheduled_checkpoint={} latest_scheduled_quorum={} latest_recovery_quorum={} trusted_checkpoint={} trusted_checkpoint_signers={} checkpoint_lag_operations={} retained_journal_from={} retained_finalized_from={} active_session_backup={} audit_mismatch={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
         peer.member_id,
         status.sync_state,
         status.sync_ready,
@@ -381,6 +391,12 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         trusted_checkpoint,
         trusted_checkpoint_signers,
         status.checkpoint.lag_from_trusted_checkpoint,
+        status.checkpoint.retained_recovery_floor.journal_from_index,
+        status
+            .checkpoint
+            .retained_recovery_floor
+            .finalized_item_from_index,
+        active_session_backup,
         status.checkpoint.frontier.materialized_state_audit_mismatch,
         status.pending_mempool_items,
         status.pending_response_waiters,
@@ -411,13 +427,18 @@ fn option_u64(value: Option<u64>) -> String {
 fn aleph_bft_status_fields(status: &FederationLocalStatusResponse) -> String {
     match &status.aleph_bft_status {
         Some(aleph) => format!(
-            "local_member:{} session:{} queued:{} pending_finalization:{} finalized:{} accepted:{} next_unit:{} next_finalization_unit:{} next_item:{} latest_accepted:{} members:{}",
+            "local_member:{} session:{} queued:{} pending_finalization:{} finalized:{} accepted:{} retained_finalized_from:{} retained_finalized:{} retained_finalized_bytes:{} retained_operations_from:{} retained_operations:{} next_unit:{} next_finalization_unit:{} next_item:{} latest_accepted:{} members:{}",
             aleph.local_member,
             aleph.session,
             aleph.queued_item_count,
             aleph.pending_finalization_item_count,
             aleph.finalized_item_count,
             aleph.accepted_operation_count,
+            aleph.retained_finalized_item_from_index,
+            aleph.retained_finalized_item_count,
+            aleph.retained_finalized_canonical_bytes,
+            aleph.retained_operation_from_index,
+            aleph.retained_operation_count,
             aleph.next_unit_index,
             aleph.next_unit_finalization_index,
             aleph.next_item_index,
@@ -588,7 +609,7 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
             .has_same_committed_state(&first.peer_status)
         {
             bail!(
-                "federation status is not converged: member {} differs from member {} in operation height, AlephBFT session, order digest, application digest, or audited checkpoint state",
+                "federation status is not converged: member {} differs from member {} in operation height, AlephBFT session, order digest, application digest, materialized state digest, or audited checkpoint state",
                 status.peer_status.member_id,
                 first.peer_status.member_id,
             );

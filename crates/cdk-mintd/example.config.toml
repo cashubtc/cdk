@@ -390,6 +390,9 @@ max_delay_time = 3
 # allow_development_payment_observation_policy = false
 # public_config_path = "/path/to/federation-public.json"
 # private_config_path = "/path/to/member-private.json"
+# Set only when starting a restored database; ordinary restart and empty-database
+# genesis bootstrap leave this unset.
+# restore_manifest_path = "/path/to/database-backup-manifest.json"
 # Optional private REST peer synchronization policy. Defaults shown.
 # [federation.peer_sync]
 # peer_sync_interval_secs = 5

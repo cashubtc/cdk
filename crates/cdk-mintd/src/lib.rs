@@ -86,6 +86,8 @@ pub mod env_vars;
 #[cfg(feature = "federation")]
 mod federated_bdk_backend;
 #[cfg(feature = "federation")]
+mod federation_backup;
+#[cfg(feature = "federation")]
 mod federation_checkpoint_audit;
 #[cfg(feature = "federation")]
 mod federation_digest_compare;
@@ -151,6 +153,9 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
             cli::Commands::Federation(federation) => match &federation.command {
                 cli::FederationCommand::AuditCheckpoint(audit) => {
                     federation_checkpoint_audit::run_checkpoint_audit_command(args, audit).await?;
+                }
+                cli::FederationCommand::BackupManifest(backup) => {
+                    federation_backup::run_backup_manifest_command(args, backup).await?;
                 }
                 cli::FederationCommand::CompareDigests(compare) => {
                     federation_digest_compare::run_compare_digests_command(args, compare).await?;
@@ -3493,6 +3498,9 @@ async fn run_mintd_with_database_and_shutdown(
     validated_signing_source: Option<ValidatedSigningSource>,
 ) -> Result<()> {
     #[cfg(feature = "federation")]
+    federation_backup::validate_configured_restore(settings, &localstore).await?;
+
+    #[cfg(feature = "federation")]
     reconcile_federation_dkg_ceremony(settings, &localstore).await?;
 
     let mint_builder = MintBuilder::new(localstore);
@@ -4548,6 +4556,7 @@ engine = "sqlite"
                 allow_development_payment_observation_policy: false,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
+                restore_manifest_path: None,
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
@@ -4599,6 +4608,7 @@ engine = "sqlite"
                 allow_development_payment_observation_policy: true,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
+                restore_manifest_path: None,
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
@@ -4629,6 +4639,7 @@ engine = "sqlite"
                 allow_development_payment_observation_policy: false,
                 public_config_path: None,
                 private_config_path: None,
+                restore_manifest_path: None,
                 peer_sync: config::FederationPeerSync {
                     peer_sync_interval_secs: 7,
                     peer_request_timeout_secs: 11,
@@ -4894,6 +4905,7 @@ engine = "sqlite"
                 allow_development_payment_observation_policy: false,
                 public_config_path: None,
                 private_config_path: None,
+                restore_manifest_path: None,
                 peer_sync: config::FederationPeerSync {
                     reconnect_initial_backoff_secs: 10,
                     reconnect_max_backoff_secs: 5,
@@ -5292,6 +5304,7 @@ engine = "sqlite"
                 allow_development_payment_observation_policy: false,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
+                restore_manifest_path: None,
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
@@ -5339,6 +5352,7 @@ engine = "sqlite"
                 allow_development_payment_observation_policy: false,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
+                restore_manifest_path: None,
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
@@ -5362,6 +5376,7 @@ engine = "sqlite"
                 allow_development_payment_observation_policy: true,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
+                restore_manifest_path: None,
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
@@ -5408,6 +5423,7 @@ engine = "sqlite"
                 allow_development_payment_observation_policy: true,
                 public_config_path: Some(public_config_path.clone()),
                 private_config_path: Some(private_config_path.clone()),
+                restore_manifest_path: None,
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
@@ -5441,6 +5457,7 @@ engine = "sqlite"
                 allow_development_payment_observation_policy: false,
                 public_config_path: None,
                 private_config_path: None,
+                restore_manifest_path: None,
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
@@ -5535,6 +5552,7 @@ engine = "sqlite"
                     allow_development_payment_observation_policy: true,
                     public_config_path: Some(public_config_path.clone()),
                     private_config_path: Some(private_config_path.clone()),
+                    restore_manifest_path: None,
                     peer_sync: config::FederationPeerSync::default(),
                     dkg: config::FederationDkg::default(),
                     onchain_wallet: config::FederationOnchainWallet::default(),

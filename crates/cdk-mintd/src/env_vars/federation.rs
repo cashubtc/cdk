@@ -8,6 +8,7 @@ use crate::config::Federation;
 pub const ENV_FEDERATION_ENABLED: &str = "CDK_MINTD_FEDERATION_ENABLED";
 pub const ENV_FEDERATION_PUBLIC_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PUBLIC_CONFIG_PATH";
 pub const ENV_FEDERATION_PRIVATE_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PRIVATE_CONFIG_PATH";
+pub const ENV_FEDERATION_RESTORE_MANIFEST_PATH: &str = "CDK_MINTD_FEDERATION_RESTORE_MANIFEST_PATH";
 pub const ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS: &str =
     "CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS";
 pub const ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND: &str =
@@ -59,6 +60,10 @@ impl Federation {
 
         if let Ok(path) = env::var(ENV_FEDERATION_PRIVATE_CONFIG_PATH) {
             self.private_config_path = Some(PathBuf::from(path));
+        }
+
+        if let Ok(path) = env::var(ENV_FEDERATION_RESTORE_MANIFEST_PATH) {
+            self.restore_manifest_path = Some(PathBuf::from(path));
         }
 
         if let Ok(timeout) = env::var(ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS) {
@@ -193,6 +198,7 @@ mod tests {
         env::remove_var(ENV_FEDERATION_ENABLED);
         env::remove_var(ENV_FEDERATION_PUBLIC_CONFIG_PATH);
         env::remove_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH);
+        env::remove_var(ENV_FEDERATION_RESTORE_MANIFEST_PATH);
         env::remove_var(ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS);
         env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND);
         env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT);
@@ -221,6 +227,10 @@ mod tests {
         env::set_var(ENV_FEDERATION_ENABLED, "true");
         env::set_var(ENV_FEDERATION_PUBLIC_CONFIG_PATH, "/tmp/public-fed.json");
         env::set_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH, "/tmp/private-fed.json");
+        env::set_var(
+            ENV_FEDERATION_RESTORE_MANIFEST_PATH,
+            "/tmp/restore-manifest.json",
+        );
 
         let config = Federation::default()
             .from_env()
@@ -234,6 +244,10 @@ mod tests {
         assert_eq!(
             config.private_config_path,
             Some(PathBuf::from("/tmp/private-fed.json"))
+        );
+        assert_eq!(
+            config.restore_manifest_path,
+            Some(PathBuf::from("/tmp/restore-manifest.json"))
         );
         clear_federation_env();
     }

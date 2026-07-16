@@ -1191,6 +1191,23 @@ where
             .expect("covering scheduled checkpoint trusted"),
         Some(second_scheduled_quorum)
     );
+    let retained_entries = db
+        .get_federation_journal_entries()
+        .await
+        .expect("journal bodies retained from recovery floor");
+    assert_eq!(retained_entries.len(), entries.len());
+    assert!(retained_entries
+        .iter()
+        .zip(&entries)
+        .all(|(retained, expected)| retained.index == expected.index
+            && retained.operation_id == expected.operation_id));
+    assert_eq!(
+        db.get_federation_aleph_bft_finalized_items()
+            .await
+            .expect("finalized bodies retained from recovery floor")
+            .len(),
+        finalized_items.len()
+    );
     assert_eq!(
         db.get_federation_checkpoint_frontier()
             .await
@@ -1377,6 +1394,22 @@ where
         db.get_federation_aleph_bft_backup_bytes(8)
             .await
             .expect("retained session 8"),
+        Some(b"other-session".to_vec())
+    );
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin active backup retention");
+    tx.set_federation_aleph_bft_active_session(8)
+        .await
+        .expect("set active backup session");
+    tx.prune_federation_aleph_bft_backups_before(9)
+        .await
+        .expect("prune beyond active backup");
+    tx.commit().await.expect("commit active backup retention");
+    assert_eq!(
+        db.get_federation_aleph_bft_backup_bytes(8)
+            .await
+            .expect("active session backup retained"),
         Some(b"other-session".to_vec())
     );
 }
