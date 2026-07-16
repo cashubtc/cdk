@@ -9,6 +9,7 @@ use core::fmt;
 use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
+use super::journal::PreparedFederationJournalFinalization;
 use super::{
     FederationAlephBftRecoveryCursor, FederationApplicationState, FederationCheckpoint,
     FederationCheckpointId, FederationConfig, FederationError, FederationId,
@@ -308,6 +309,36 @@ impl FederationAlephBftFinalizedUnitOutcome {
                 }
             })
             .collect()
+    }
+}
+
+/// Non-mutating finalized-unit delta ready for durable persistence and commit.
+#[derive(Debug)]
+#[must_use = "prepared finalization must be persisted and committed or explicitly discarded"]
+pub struct FederationPreparedAlephBftFinalization {
+    payload: FederationAlephBftUnitPayload,
+    outcome: FederationAlephBftFinalizedUnitOutcome,
+    journal: PreparedFederationJournalFinalization,
+    responses: Vec<FederationSubmitOperationResponse>,
+}
+
+impl FederationPreparedAlephBftFinalization {
+    /// Return finalized items that must be persisted atomically.
+    #[must_use]
+    pub fn finalized_items(&self) -> &[FederationAlephBftFinalizedItem] {
+        &self.outcome.items
+    }
+
+    /// Return newly appended journal entries that must be persisted atomically.
+    #[must_use]
+    pub fn appended_entries(&self) -> &[FederationJournalEntry] {
+        &self.journal.appended_entries
+    }
+
+    /// Return deterministic operation responses produced by this unit.
+    #[must_use]
+    pub fn responses(&self) -> &[FederationSubmitOperationResponse] {
+        &self.responses
     }
 }
 
@@ -874,6 +905,28 @@ pub enum FederationConsensusItemAdmission {
     DuplicateOperation,
 }
 
+#[derive(Debug)]
+struct PreparedFederationConsensusItem {
+    item: FederationConsensusItem,
+    metadata: Option<(FederationOperationId, Vec<FederationOperationConflictKey>)>,
+    admission: FederationConsensusItemAdmission,
+}
+
+/// Non-mutating admission decision ready for persistence and commit.
+#[derive(Debug)]
+#[must_use = "prepared submission must be persisted and committed or explicitly discarded"]
+pub struct FederationPreparedAlephBftSubmission {
+    item: PreparedFederationConsensusItem,
+}
+
+impl FederationPreparedAlephBftSubmission {
+    /// Return the deterministic admission decision.
+    #[must_use]
+    pub fn admission(&self) -> FederationConsensusItemAdmission {
+        self.item.admission
+    }
+}
+
 /// Bounded pending-item queue for consensus data providers.
 #[derive(Debug, Clone)]
 pub(crate) struct FederationConsensusItemQueue {
@@ -933,11 +986,20 @@ impl FederationConsensusItemQueue {
         &mut self,
         item: FederationConsensusItem,
     ) -> Result<FederationConsensusItemAdmission> {
+        let prepared = self.prepare(item)?;
+        Ok(self.commit(prepared))
+    }
+
+    fn prepare(&self, item: FederationConsensusItem) -> Result<PreparedFederationConsensusItem> {
         item.ensure_within_size_limit(self.max_item_bytes)?;
         let metadata = pending_consensus_item_operation_metadata(&item)?;
         if let Some((operation_id, conflict_keys)) = &metadata {
             if self.pending_operation_ids.contains(operation_id) {
-                return Ok(FederationConsensusItemAdmission::DuplicateOperation);
+                return Ok(PreparedFederationConsensusItem {
+                    item,
+                    metadata,
+                    admission: FederationConsensusItemAdmission::DuplicateOperation,
+                });
             }
             for conflict_key in conflict_keys {
                 if let Some(existing_operation_id) = self.pending_conflict_keys.get(conflict_key) {
@@ -948,15 +1010,32 @@ impl FederationConsensusItemQueue {
                     });
                 }
             }
-            self.pending_operation_ids.insert(*operation_id);
+        }
+
+        Ok(PreparedFederationConsensusItem {
+            item,
+            metadata,
+            admission: FederationConsensusItemAdmission::Accepted,
+        })
+    }
+
+    fn commit(
+        &mut self,
+        prepared: PreparedFederationConsensusItem,
+    ) -> FederationConsensusItemAdmission {
+        if prepared.admission == FederationConsensusItemAdmission::DuplicateOperation {
+            return prepared.admission;
+        }
+        if let Some((operation_id, conflict_keys)) = prepared.metadata {
+            self.pending_operation_ids.insert(operation_id);
             for conflict_key in conflict_keys {
                 self.pending_conflict_keys
-                    .insert(conflict_key.clone(), *operation_id);
+                    .insert(conflict_key, operation_id);
             }
         }
 
-        self.pending.push_back(item);
-        Ok(FederationConsensusItemAdmission::Accepted)
+        self.pending.push_back(prepared.item);
+        prepared.admission
     }
 
     /// Drain up to `limit` items in FIFO order.
@@ -1163,11 +1242,28 @@ impl FederationAlephBftUnitDataProvider {
     }
 
     /// Queue an operation envelope for the next unit payload.
+    #[cfg(test)]
     pub fn submit_operation(
         &mut self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationConsensusItemAdmission> {
-        self.submit_item(FederationConsensusItem::operation(envelope))
+        let prepared = self.prepare_operation(envelope)?;
+        Ok(self.commit_operation(prepared))
+    }
+
+    fn prepare_operation(
+        &self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<PreparedFederationConsensusItem> {
+        self.queue
+            .prepare(FederationConsensusItem::operation(envelope))
+    }
+
+    fn commit_operation(
+        &mut self,
+        prepared: PreparedFederationConsensusItem,
+    ) -> FederationConsensusItemAdmission {
+        self.queue.commit(prepared)
     }
 
     /// Return the next non-empty unit payload, or `None` when no item is ready.
@@ -1660,9 +1756,19 @@ impl FederationAlephBftFinalizationHandler {
     }
 
     /// Convert one finalized AlephBFT unit into accepted consensus items.
+    #[cfg(test)]
     pub fn finalize_next_unit(
         &mut self,
         payload: FederationAlephBftUnitPayload,
+    ) -> Result<FederationAlephBftFinalizedUnitOutcome> {
+        let outcome = self.prepare_next_unit(&payload)?;
+        self.commit_prepared_unit(&outcome);
+        Ok(outcome)
+    }
+
+    fn prepare_next_unit(
+        &self,
+        payload: &FederationAlephBftUnitPayload,
     ) -> Result<FederationAlephBftFinalizedUnitOutcome> {
         payload.ensure_within_size_limit(self.max_unit_payload_bytes)?;
         if payload.federation_id != self.federation_id {
@@ -1704,7 +1810,7 @@ impl FederationAlephBftFinalizationHandler {
             payload.submitting_member,
             payload.unit_index,
         );
-        if !self.finalized_units.insert(unit_key) {
+        if self.finalized_units.contains(&unit_key) {
             return Err(FederationError::DuplicateAlephBftUnit {
                 session: payload.session,
                 member_id: payload.submitting_member,
@@ -1717,12 +1823,14 @@ impl FederationAlephBftFinalizationHandler {
         let unit_index = payload.unit_index;
         let unit_body_hash = payload.body_hash;
         let mut items = Vec::with_capacity(payload.items.len());
+        let mut next_item_index = self.next_item_index;
+        let mut prepared_operation_ids = BTreeSet::new();
 
-        for (item_index_in_unit, item) in payload.items.into_iter().enumerate() {
+        for (item_index_in_unit, item) in payload.items.iter().cloned().enumerate() {
             let operation_id = item.operation_id()?;
             let status = match (&item, operation_id) {
                 (FederationConsensusItem::RecoveryBarrier(barrier), None)
-                    if barrier.requested_after_finalized_item_index > self.next_item_index =>
+                    if barrier.requested_after_finalized_item_index > next_item_index =>
                 {
                     FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier
                 }
@@ -1735,16 +1843,18 @@ impl FederationAlephBftFinalizationHandler {
                     FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
                 }
                 (_, Some(operation_id)) => {
-                    if self.finalized_operation_ids.insert(operation_id) {
-                        FederationAlephBftFinalizedItemStatus::Accepted
-                    } else {
+                    if self.finalized_operation_ids.contains(&operation_id)
+                        || !prepared_operation_ids.insert(operation_id)
+                    {
                         FederationAlephBftFinalizedItemStatus::DuplicateOperation
+                    } else {
+                        FederationAlephBftFinalizedItemStatus::Accepted
                     }
                 }
                 (_, None) => FederationAlephBftFinalizedItemStatus::Accepted,
             };
             items.push(FederationAlephBftFinalizedItem {
-                accepted_item_index: self.next_item_index,
+                accepted_item_index: next_item_index,
                 session: self.session,
                 unit_finalization_index,
                 unit_submitting_member,
@@ -1756,14 +1866,8 @@ impl FederationAlephBftFinalizationHandler {
                 unit_body_hash,
                 item,
             });
-            self.next_item_index = self.next_item_index.saturating_add(1);
+            next_item_index = next_item_index.saturating_add(1);
         }
-        self.next_unit_finalization_index = self.next_unit_finalization_index.saturating_add(1);
-        let next_unit_index = unit_index.saturating_add(1);
-        self.next_unit_index_by_member
-            .entry(unit_submitting_member)
-            .and_modify(|current| *current = (*current).max(next_unit_index))
-            .or_insert(next_unit_index);
 
         Ok(FederationAlephBftFinalizedUnitOutcome {
             session: self.session,
@@ -1773,6 +1877,37 @@ impl FederationAlephBftFinalizationHandler {
             unit_body_hash,
             items,
         })
+    }
+
+    fn commit_prepared_unit(&mut self, outcome: &FederationAlephBftFinalizedUnitOutcome) {
+        let unit_key = (
+            outcome.session,
+            outcome.unit_submitting_member,
+            outcome.unit_index,
+        );
+        debug_assert_eq!(outcome.session, self.session);
+        debug_assert_eq!(
+            outcome.unit_finalization_index,
+            self.next_unit_finalization_index
+        );
+        debug_assert!(!self.finalized_units.contains(&unit_key));
+        self.finalized_units.insert(unit_key);
+        for finalized_item in &outcome.items {
+            if finalized_item.status == FederationAlephBftFinalizedItemStatus::Accepted {
+                if let Some(operation_id) = finalized_item.operation_id {
+                    self.finalized_operation_ids.insert(operation_id);
+                }
+            }
+        }
+        self.next_item_index = self.next_item_index.saturating_add(
+            u64::try_from(outcome.items.len()).expect("finalized item count fits in u64"),
+        );
+        self.next_unit_finalization_index = self.next_unit_finalization_index.saturating_add(1);
+        let next_unit_index = outcome.unit_index.saturating_add(1);
+        self.next_unit_index_by_member
+            .entry(outcome.unit_submitting_member)
+            .and_modify(|current| *current = (*current).max(next_unit_index))
+            .or_insert(next_unit_index);
     }
 }
 
@@ -2229,12 +2364,26 @@ impl FederationConsensusRuntime {
         &mut self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationConsensusItemAdmission> {
+        let prepared = self.prepare_operation(envelope)?;
+        Ok(self.commit_prepared_operation(prepared))
+    }
+
+    fn prepare_operation(
+        &self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationPreparedAlephBftSubmission> {
         let (operation_id, conflict_keys) = pending_operation_metadata_from_envelope(&envelope)?;
         if self
             .pending_finalization_operation_ids
             .contains(&operation_id)
         {
-            return Ok(FederationConsensusItemAdmission::DuplicateOperation);
+            return Ok(FederationPreparedAlephBftSubmission {
+                item: PreparedFederationConsensusItem {
+                    item: FederationConsensusItem::operation(envelope),
+                    metadata: Some((operation_id, conflict_keys)),
+                    admission: FederationConsensusItemAdmission::DuplicateOperation,
+                },
+            });
         }
         for conflict_key in &conflict_keys {
             if let Some(existing_operation_id) =
@@ -2248,7 +2397,16 @@ impl FederationConsensusRuntime {
             }
         }
 
-        self.data_provider.submit_operation(envelope)
+        Ok(FederationPreparedAlephBftSubmission {
+            item: self.data_provider.prepare_operation(envelope)?,
+        })
+    }
+
+    fn commit_prepared_operation(
+        &mut self,
+        prepared: FederationPreparedAlephBftSubmission,
+    ) -> FederationConsensusItemAdmission {
+        self.data_provider.commit_operation(prepared.item)
     }
 
     /// Queue one recovery barrier when none is already queued or awaiting finality.
@@ -2283,32 +2441,62 @@ impl FederationConsensusRuntime {
         &mut self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>> {
-        let pending_payload = payload.clone();
-        let outcome = self.finalization_handler.finalize_next_unit(payload)?;
-        self.data_provider
-            .advance_next_unit_index_after_finalized_local_unit(&pending_payload);
-        let mut responses = Vec::new();
+        let prepared = self.prepare_finalized_unit(payload)?;
+        Ok(self.commit_prepared_finalized_unit(prepared))
+    }
 
-        for finalized_item in outcome.items {
-            if finalized_item.status
-                != FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
-            {
-                if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
-                    let response = FederationSubmitOperationResponse::from_outcome(
-                        self.journal.append_finalized_with_consensus_evidence(
-                            envelope.clone(),
-                            finalized_item.consensus_evidence(),
-                        )?,
-                    );
-                    responses.push(response);
+    fn prepare_finalized_unit(
+        &self,
+        payload: FederationAlephBftUnitPayload,
+    ) -> Result<FederationPreparedAlephBftFinalization> {
+        let outcome = self.finalization_handler.prepare_next_unit(&payload)?;
+        let journal = self
+            .journal
+            .prepare_finalized_appends(outcome.items.iter().filter_map(|finalized_item| {
+                if finalized_item.status
+                    == FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
+                {
+                    return None;
                 }
-            }
-            self.finalized_items.push(finalized_item);
-        }
-        self.release_pending_finalization_unit(&pending_payload);
-        self.release_pending_finalization_decisions(&pending_payload.items);
+                let FederationConsensusItem::Operation(envelope) = &finalized_item.item else {
+                    return None;
+                };
+                Some((envelope.clone(), finalized_item.consensus_evidence()))
+            }))?;
+        let responses = journal
+            .outcomes
+            .iter()
+            .cloned()
+            .map(FederationSubmitOperationResponse::from_outcome)
+            .collect();
 
-        Ok(responses)
+        Ok(FederationPreparedAlephBftFinalization {
+            payload,
+            outcome,
+            journal,
+            responses,
+        })
+    }
+
+    fn commit_prepared_finalized_unit(
+        &mut self,
+        prepared: FederationPreparedAlephBftFinalization,
+    ) -> Vec<FederationSubmitOperationResponse> {
+        let FederationPreparedAlephBftFinalization {
+            payload,
+            outcome,
+            journal,
+            responses,
+        } = prepared;
+        self.finalization_handler.commit_prepared_unit(&outcome);
+        self.data_provider
+            .advance_next_unit_index_after_finalized_local_unit(&payload);
+        self.journal.commit_prepared_finalized_appends(journal);
+        self.finalized_items.extend(outcome.items);
+        self.release_pending_finalization_unit(&payload);
+        self.release_pending_finalization_decisions(&payload.items);
+
+        responses
     }
 
     fn remember_pending_finalization_unit(
@@ -2637,6 +2825,25 @@ impl FederationConsensusRuntime {
         self.submit_operation(envelope)
     }
 
+    /// Validate one operation admission without mutating the runtime.
+    pub fn prepare_aleph_bft_envelope(
+        &self,
+        envelope: FederationOperationEnvelope,
+    ) -> Result<FederationPreparedAlephBftSubmission> {
+        self.prepare_operation(envelope)
+    }
+
+    /// Commit one prepared operation admission after durable persistence.
+    ///
+    /// The delta must come from this runtime with no intervening mutation. The
+    /// caller enforces that by holding the serialized consensus mutation lock.
+    pub fn commit_prepared_aleph_bft_envelope(
+        &mut self,
+        prepared: FederationPreparedAlephBftSubmission,
+    ) -> FederationConsensusItemAdmission {
+        self.commit_prepared_operation(prepared)
+    }
+
     /// Queue one bounded recovery barrier for AlephBFT ordering.
     pub fn submit_aleph_bft_recovery_barrier(
         &mut self,
@@ -2662,6 +2869,25 @@ impl FederationConsensusRuntime {
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>> {
         self.finalize_unit(payload)
+    }
+
+    /// Validate one finalized unit and build its bounded delta without mutation.
+    pub fn prepare_aleph_bft_finalization(
+        &self,
+        payload: FederationAlephBftUnitPayload,
+    ) -> Result<FederationPreparedAlephBftFinalization> {
+        self.prepare_finalized_unit(payload)
+    }
+
+    /// Commit one prepared finalized-unit delta after durable persistence.
+    ///
+    /// The delta must come from this runtime with no intervening mutation. The
+    /// caller enforces that by holding the serialized consensus mutation lock.
+    pub fn commit_prepared_aleph_bft_finalization(
+        &mut self,
+        prepared: FederationPreparedAlephBftFinalization,
+    ) -> Vec<FederationSubmitOperationResponse> {
+        self.commit_prepared_finalized_unit(prepared)
     }
 
     /// Return finalized AlephBFT items held by this runtime.

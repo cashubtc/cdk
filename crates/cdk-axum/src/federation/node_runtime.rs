@@ -378,6 +378,14 @@ impl FederationNodeRuntime {
             .store(true, Ordering::Release);
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_next_finalization_persistence_for_test(&self) {
+        self.components
+            .faults
+            .fail_next_finalization_persistence
+            .store(true, Ordering::Release);
+    }
+
     pub(crate) async fn sync_status(&self) -> Option<FederationSyncStatus> {
         self.components.readiness.status().await
     }

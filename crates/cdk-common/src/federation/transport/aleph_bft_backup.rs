@@ -138,7 +138,7 @@ impl FederationAlephBftBackupResponse {
                     reason: "AlephBFT backup response contains an empty chunk".to_string(),
                 });
             }
-            raw_bytes = raw_bytes.checked_add(chunk.len()).ok_or_else(|| {
+            raw_bytes = raw_bytes.checked_add(chunk.len()).ok_or({
                 FederationError::CheckpointCatchUpTooLarge {
                     resource: "AlephBFT backup raw bytes",
                     actual: u64::MAX,

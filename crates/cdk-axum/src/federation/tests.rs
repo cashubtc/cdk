@@ -26,12 +26,12 @@ use cdk::federation::{
     FederationCheckpointBoundary, FederationCheckpointPolicy, FederationCheckpointQuorum,
     FederationCheckpointSignature, FederationCheckpointSummaryRequest,
     FederationCheckpointSummaryResponse, FederationConfigSnapshot, FederationConsensusItem,
-    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
-    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
-    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
-    FederationKeysetRotationOperation, FederationMeltQuoteMetadata,
+    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
+    FederationDkgCommitmentRound, FederationDkgMemberKeysetShare, FederationDkgSetupMethod,
+    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignature,
+    FederationError, FederationJournalAppendOutcome, FederationJournalDigest,
+    FederationJournalEntry, FederationKeysetRotationOperation, FederationMeltQuoteMetadata,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
@@ -10658,10 +10658,11 @@ async fn rest_peer_client_rejects_oversized_backup_before_validation() {
 }
 
 #[tokio::test]
-async fn consensus_runtime_clone_baseline_scales_with_retained_suffix() {
+async fn consensus_prepared_delta_is_bounded_by_new_work() {
     let (state, public_config, local_private, _, _) =
         federation_route_state_three_with_local_private().await;
     let mut prior_bytes = 0_usize;
+    let mut prepared_bytes = Vec::new();
     for operation_count in [1_usize, 64, 256] {
         let mut runtime = FederationConsensusRuntime::for_members(
             public_config.federation_id,
@@ -10669,7 +10670,7 @@ async fn consensus_runtime_clone_baseline_scales_with_retained_suffix() {
             0,
             public_config.members.keys().copied(),
         )
-        .expect("clone baseline runtime");
+        .expect("prepared delta runtime");
         for unit_index in 0..operation_count as u64 {
             let unit = FederationAlephBftUnitPayload::new(
                 public_config.federation_id,
@@ -10684,24 +10685,72 @@ async fn consensus_runtime_clone_baseline_scales_with_retained_suffix() {
             .expect("clone baseline unit");
             runtime
                 .finalize_unit(unit)
-                .expect("finalize clone baseline unit");
+                .expect("finalize prepared delta baseline unit");
         }
         let retained_bytes =
             serde_json::to_vec(&(runtime.journal().entries(), runtime.finalized_items()))
-                .expect("encode retained clone payload")
+                .expect("encode retained payload")
                 .len();
-        let started = std::time::Instant::now();
-        let cloned = std::hint::black_box(runtime.clone());
-        let elapsed = started.elapsed();
-        assert_eq!(cloned.journal().entries().len(), operation_count);
-        assert_eq!(cloned.finalized_items().len(), operation_count);
+        let before = runtime.status();
+        let envelope = mint_quote_envelope(&state, &QuoteId::new());
+        let submission_started = std::time::Instant::now();
+        let submission = runtime
+            .prepare_aleph_bft_envelope(envelope.clone())
+            .expect("prepare submission delta");
+        let submission_elapsed = submission_started.elapsed();
+        assert_eq!(
+            submission.admission(),
+            FederationConsensusItemAdmission::Accepted
+        );
+        let unit = FederationAlephBftUnitPayload::new(
+            public_config.federation_id,
+            local_private.member_id,
+            0,
+            runtime.next_unit_index(),
+            vec![FederationConsensusItem::operation(envelope.clone())],
+        )
+        .expect("prepared finalization unit");
+        let clone_started = std::time::Instant::now();
+        let mut cloned_submission_runtime = runtime.clone();
+        cloned_submission_runtime
+            .submit_aleph_bft_envelope(envelope.clone())
+            .expect("clone-path submission");
+        let mut cloned_finalization_runtime = runtime.clone();
+        cloned_finalization_runtime
+            .finalize_aleph_bft_unit(unit.clone())
+            .expect("clone-path finalization");
+        let clone_elapsed = clone_started.elapsed();
+        let finalization_started = std::time::Instant::now();
+        let finalization = std::hint::black_box(
+            runtime
+                .prepare_aleph_bft_finalization(unit)
+                .expect("prepare finalized delta"),
+        );
+        let elapsed = submission_elapsed.saturating_add(finalization_started.elapsed());
+        assert_eq!(runtime.status(), before);
+        assert_eq!(finalization.finalized_items().len(), 1);
+        assert_eq!(finalization.appended_entries().len(), 1);
+        assert_eq!(finalization.responses().len(), 1);
+        let delta_bytes = serde_json::to_vec(&(
+            finalization.finalized_items(),
+            finalization.appended_entries(),
+            finalization.responses(),
+        ))
+        .expect("encode prepared delta")
+        .len();
+        prepared_bytes.push(delta_bytes);
+        assert!(delta_bytes < retained_bytes.saturating_mul(2));
         assert!(retained_bytes > prior_bytes);
         prior_bytes = retained_bytes;
         eprintln!(
-            "consensus_runtime_clone operations={operation_count} retained_canonical_bytes={retained_bytes} elapsed_ns={}",
-            elapsed.as_nanos()
+            "consensus_prepared_delta operations={operation_count} retained_canonical_bytes={retained_bytes} delta_canonical_bytes={delta_bytes} prepared_elapsed_ns={} clone_path_elapsed_ns={}",
+            elapsed.as_nanos(),
+            clone_elapsed.as_nanos(),
         );
     }
+    let min_delta = prepared_bytes.iter().copied().min().expect("minimum delta");
+    let max_delta = prepared_bytes.iter().copied().max().expect("maximum delta");
+    assert!(max_delta.saturating_sub(min_delta) < 32);
 }
 
 #[tokio::test]
@@ -21030,6 +21079,82 @@ async fn aleph_bft_pending_persistence_failure_releases_waiter_and_allows_retry(
         .expect("pending operations after retry");
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].operation_id, operation_id);
+}
+
+#[tokio::test]
+async fn aleph_bft_finalization_persistence_failure_leaves_runtime_unchanged() {
+    let (public_config, local_private, _) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let payload = {
+        let consensus = state.federation.consensus.as_ref().expect("consensus");
+        let consensus = consensus.lock().await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            status.next_unit_index,
+            vec![FederationConsensusItem::operation(mint_quote_envelope(
+                &state,
+                &QuoteId::new(),
+            ))],
+        )
+        .expect("finalized unit")
+    };
+    let before = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .status();
+    state
+        .federation
+        .fail_next_finalization_persistence_for_test();
+
+    state
+        .apply_federation_aleph_bft_finalized_unit(payload.clone())
+        .await
+        .expect_err("injected finalization persistence failure");
+
+    let after = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .status();
+    assert_eq!(after, before);
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("finalized items after failed persistence")
+        .is_empty());
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_journal_entries_from(0)
+        .await
+        .expect("journal entries after failed persistence")
+        .is_empty());
+
+    let responses = state
+        .apply_federation_aleph_bft_finalized_unit(payload)
+        .await
+        .expect("retry finalized unit after persistence recovers");
+    assert_eq!(responses.len(), 1);
 }
 
 #[tokio::test]

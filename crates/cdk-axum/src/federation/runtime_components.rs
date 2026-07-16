@@ -222,6 +222,7 @@ impl FederationRuntimeComponents {
 #[derive(Debug, Clone, Default)]
 pub(super) struct FederationRuntimeFaultHarness {
     pub(super) fail_next_pending_operation_persistence: Arc<AtomicBool>,
+    pub(super) fail_next_finalization_persistence: Arc<AtomicBool>,
     pub(super) suppress_next_terminal_response_publication: Arc<AtomicBool>,
     pub(super) suppress_next_scheduled_checkpoint_capture: Arc<AtomicBool>,
     pub(super) suppress_next_recovery_checkpoint_capture: Arc<AtomicBool>,

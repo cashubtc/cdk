@@ -374,15 +374,15 @@ impl FederationNodeRuntime {
         }
 
         let queued_before = consensus.pending_mempool_len();
-        let mut next_consensus = consensus.clone();
-        let admission = match next_consensus.submit_aleph_bft_envelope(envelope.clone()) {
-            Ok(admission) => admission,
+        let prepared = match consensus.prepare_aleph_bft_envelope(envelope.clone()) {
+            Ok(prepared) => prepared,
             Err(err) => {
                 #[cfg(feature = "prometheus")]
                 self.record_rejected_operation_metric(&operation_label, "consensus");
                 return Err(cdk::Error::from(err));
             }
         };
+        let admission = prepared.admission();
         let accepted_admission = matches!(admission, FederationConsensusItemAdmission::Accepted);
         if accepted_admission {
             let limit = sync_config.pending_mempool_item_limit;
@@ -409,7 +409,7 @@ impl FederationNodeRuntime {
         let wait_registration =
             notifications.register_waiter(operation_id, sync_config.response_waiter_limit)?;
         if accepted_admission {
-            let session_id = next_consensus.aleph_bft_status()?.session;
+            let session_id = consensus.aleph_bft_status()?.session;
             self.persist_pending_operation(FederationAlephBftPendingOperationRecord {
                 operation_id,
                 session_id,
@@ -418,7 +418,7 @@ impl FederationNodeRuntime {
             .await?;
         }
 
-        *consensus = next_consensus;
+        consensus.commit_prepared_aleph_bft_envelope(prepared);
         drop(consensus);
         self.mark_consensus_activity(operation_id, true).await;
         if accepted_admission {
@@ -511,6 +511,17 @@ impl FederationNodeRuntime {
         finalized_items: &[FederationAlephBftFinalizedItem],
         entries: &[FederationJournalEntry],
     ) -> Result<(), cdk::Error> {
+        #[cfg(test)]
+        if self
+            .components
+            .faults
+            .fail_next_finalization_persistence
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(cdk::Error::Custom(
+                "injected finalization persistence failure".to_string(),
+            ));
+        }
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_aleph_bft_finalized_items(finalized_items)
@@ -632,22 +643,13 @@ impl FederationNodeRuntime {
             return self.publish_terminal_operation_responses(&responses).await;
         }
 
-        let mut next_consensus = consensus.clone();
-        let finalized_item_start = next_consensus.aleph_bft_finalized_items()?.len();
-        let responses = next_consensus.finalize_aleph_bft_unit(payload)?;
-        let finalized_items =
-            next_consensus.aleph_bft_finalized_items()?[finalized_item_start..].to_vec();
-        let entries = responses
-            .iter()
-            .filter_map(|response| match &response.outcome {
-                FederationJournalAppendOutcome::Appended(entry) => Some(entry.clone()),
-                FederationJournalAppendOutcome::Duplicate(_) => None,
-            })
-            .collect::<Vec<_>>();
+        let prepared = consensus.prepare_aleph_bft_finalization(payload)?;
+        let finalized_items = prepared.finalized_items().to_vec();
+        let entries = prepared.appended_entries().to_vec();
         let entries_to_apply = crate::accepted_federation_journal_entries(&entries);
         self.persist_finalization(&finalized_items, &entries)
             .await?;
-        *consensus = next_consensus;
+        let responses = consensus.commit_prepared_aleph_bft_finalization(prepared);
         drop(consensus);
 
         self.apply_journal_entries(&entries_to_apply).await?;

@@ -1,6 +1,6 @@
 # Federated Cashu checkpoint and catch-up consolidation plan
 
-Status: in progress (milestones 0-8 complete; milestone 9 next)
+Status: in progress (milestones 0-9 complete; milestone 10 next)
 Scope: federation-only checkpoint, catch-up, startup recovery, and related
 AlephBFT runtime consolidation
 Primary goal: simplify the checkpoint and catch-up implementation without
@@ -362,7 +362,7 @@ Update this table whenever a milestone changes state.
 | 6 | Focused runtime component split | Complete | `refactor: split federation runtime components` | Checkpoint, catch-up, operation, readiness, DKG, wallet/FROST, and test-fault ownership is explicit; structured-concurrency and blocked-network regressions freeze the lock boundary. |
 | 7 | AlephBFT-ordered recovery barrier | Complete | `feat: order recovery checkpoint barriers` | A versioned barrier is ordered and persisted as an ordinary AlephBFT item; its complete-unit terminal boundary deterministically creates the existing recovery-checkpoint candidate, while a local lease and fixed one-unit tail bound suppress duplicate work. |
 | 8 | Transport and request-state consolidation | Complete | `refactor: separate federation recovery transport` | Checkpoint-history and AlephBFT-backup traffic use distinct signed message kinds, wire types, routes, clients, size limits, and mutation paths; recovery demand and its proposal lease are one explicit state machine. |
-| 9 | Remove whole-runtime cloning | Not started | — | — |
+| 9 | Remove whole-runtime cloning | Complete | `refactor: replace federation runtime clones with deltas` | Submission and finalization prepare bounded non-mutating deltas, persist first, and commit under the existing serialized runtime lock; injected persistence failures leave published state unchanged and clone-path growth is removed from both production hot paths. |
 | 10 | Bootstrap, backup, operator, and retention contract | Not started | — | — |
 | 11 | Adversarial integration, performance, and final cleanup | Not started | — | — |
 
@@ -1348,7 +1348,7 @@ Local verification completed with:
 
 ## Milestone 9: Remove whole-runtime cloning
 
-Status: not started
+Status: complete
 
 ### Objective
 
@@ -1358,38 +1358,81 @@ atomicity.
 
 ### Checklist
 
-- [ ] Measure the remaining clone sites after prior consolidation.
-- [ ] Introduce prepared submission and finalized-unit deltas, or an equivalent
+- [x] Measure the remaining clone sites after prior consolidation.
+- [x] Introduce prepared submission and finalized-unit deltas, or an equivalent
       validate/persist/commit API.
-- [ ] Ensure preparation does not mutate the published runtime.
-- [ ] Persist pending/finalized/journal data before committing the in-memory
+- [x] Ensure preparation does not mutate the published runtime.
+- [x] Persist pending/finalized/journal data before committing the in-memory
       delta where required by the existing durability contract.
-- [ ] Make failed persistence discard the prepared delta without manual
+- [x] Make failed persistence discard the prepared delta without manual
       rollback of unrelated state.
-- [ ] Store immutable retained history behind shared ownership where it must
+- [x] Store immutable retained history behind shared ownership where it must
       remain available in memory.
-- [ ] Keep duplicate/conflict detection deterministic across concurrent
+- [x] Keep duplicate/conflict detection deterministic across concurrent
       submissions and finalized units.
-- [ ] Remove `FederationConsensusRuntime::clone()` from production hot paths.
+- [x] Remove `FederationConsensusRuntime::clone()` from production hot paths.
 
 ### Exit tests
 
-- [ ] Injected pending and finalization persistence failures leave the published
+- [x] Injected pending and finalization persistence failures leave the published
       runtime unchanged.
-- [ ] Concurrent duplicate/conflicting submissions retain existing behavior.
-- [ ] Submission and finalization allocation/time do not grow linearly with the
+- [x] Concurrent duplicate/conflicting submissions retain existing behavior.
+- [x] Submission and finalization allocation/time do not grow linearly with the
       retained suffix merely because of rollback protection.
-- [ ] Checkpoint rebasing, catch-up replacement, session rotation, and duplicate
+- [x] Checkpoint rebasing, catch-up replacement, session rotation, and duplicate
       finalized-unit response recovery still work.
-- [ ] Benchmarks show the expected reduction relative to milestone 0.
+- [x] Benchmarks show the expected reduction relative to milestone 0.
 
 ### Progress notes
 
-Record selected delta/ownership design and before/after measurements here.
+The two remaining live clone sites were the submission and finalized-unit paths
+in `FederationNodeRuntime`. Both now use opaque prepared deltas. Preparation
+performs all size, duplicate, conflict, authorization, unit, finalized-index,
+journal-index, digest, and response derivation without mutating the runtime.
+The existing consensus mutex remains held across the database transaction, so
+after persistence succeeds commit is a short, non-fallible application of the
+already validated queue, finalization-handler, journal, and pending-unit
+changes. A failed transaction simply drops the prepared value; no rollback or
+replacement runtime exists.
+
+The simplest ownership model needed no second retained-history owner. The
+published runtime keeps its journal, finalized items, and indexes single-owned;
+preparation borrows them and allocates only per-unit sets/maps, duplicate rows
+actually referenced by the delta, and new finalized/journal/response objects.
+The bounded recovery suffix verifier still uses its fail-closed clone outside
+the ordinary submission/finalization hot paths, where milestone 5 already caps
+the retained suffix and one in-flight page.
+
+The milestone-0 clone baseline retained 2,372, 151,871, and 608,771 canonical
+bytes at 1, 64, and 256 operations. The replacement benchmark prepared one
+submission plus one finalized operation at those same sizes. Its encoded delta
+was 3,768, 3,779, and 3,790 bytes, while diagnostic debug preparation times
+were 0.376, 0.393, and 0.384 ms. A test-only simulation of the former two-clone
+path took 0.510, 0.549, and 0.918 ms. Timing is diagnostic; the deterministic
+result is that retained bytes grow by more than 250x while prepared bytes stay
+within 22 bytes and ordinary production work copies none of the retained
+suffix.
+
+Focused local verification completed with:
+
+- all 48 `cdk-common` federation consensus tests and strict `cdk-common`
+  Clippy;
+- all 28 Axum checkpoint tests and 26 catch-up tests, with the existing
+  process-level stress test ignored;
+- prepared-delta sizing/timing, pending and finalization persistence-failure,
+  duplicate pending submission, finalized conflict, duplicate-response
+  recovery, and session-rotation tests;
+- `cargo check -p cdk-axum --all-targets --features federation`; and
+- `cargo fmt --all -- --check` and `git diff --check`.
+
+Workspace/Axum `-D warnings` Clippy is not recorded as passing under the current
+stable toolchain because unrelated existing lints outside this milestone are
+reported; no milestone-9 diagnostic identified a new warning in the changed
+paths.
 
 ### Commit gate
 
-- [ ] Commit runtime clone removal and performance/failure tests before starting
+- [x] Commit runtime clone removal and performance/failure tests before starting
       milestone 10.
 
 ## Milestone 10: Bootstrap, backup, operator, and retention contract

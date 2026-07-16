@@ -799,6 +799,16 @@ pub enum FederationJournalAppendOutcome {
     Duplicate(FederationJournalEntry),
 }
 
+/// Journal changes prepared from one finalized consensus delta.
+///
+/// The retained journal remains unchanged until this value is committed after
+/// durable persistence succeeds.
+#[derive(Debug)]
+pub(crate) struct PreparedFederationJournalFinalization {
+    pub(crate) outcomes: Vec<FederationJournalAppendOutcome>,
+    pub(crate) appended_entries: Vec<FederationJournalEntry>,
+}
+
 impl FederationJournalAppendOutcome {
     /// Return the journal entry for either outcome.
     #[must_use]
@@ -1119,6 +1129,107 @@ impl InMemoryFederationJournal {
         evidence: FederationJournalConsensusEvidence,
     ) -> Result<FederationJournalAppendOutcome> {
         self.append_finalized_inner(envelope, evidence)
+    }
+
+    /// Validate a finalized operation delta without mutating retained history.
+    pub(crate) fn prepare_finalized_appends<I>(
+        &self,
+        operations: I,
+    ) -> Result<PreparedFederationJournalFinalization>
+    where
+        I: IntoIterator<
+            Item = (
+                FederationOperationEnvelope,
+                FederationJournalConsensusEvidence,
+            ),
+        >,
+    {
+        let mut outcomes = Vec::new();
+        let mut appended_entries = Vec::new();
+        let mut prepared_entries = BTreeMap::new();
+        let mut prepared_conflict_keys = HashMap::new();
+        let mut latest_order_digest = self.latest_order_digest;
+
+        for (envelope, consensus_evidence) in operations {
+            let operation_id = envelope.operation_id()?;
+            if let Some(entry) = self
+                .entry_by_operation_id(operation_id)
+                .or_else(|| prepared_entries.get(&operation_id))
+                .cloned()
+            {
+                outcomes.push(FederationJournalAppendOutcome::Duplicate(entry));
+                continue;
+            }
+
+            envelope.operation.balance_audit()?;
+            let conflict_keys = envelope.operation.conflict_keys();
+            let has_conflict = conflict_keys.iter().any(|conflict_key| {
+                self.conflict_keys.contains_key(conflict_key)
+                    || prepared_conflict_keys.contains_key(conflict_key)
+            });
+            let mint_operation = matches!(&envelope.operation, FederationOperation::Mint(_));
+            let status = if has_conflict && !mint_operation {
+                FederationOperationStatus::Rejected
+            } else {
+                FederationOperationStatus::Accepted
+            };
+            let index = self.next_index().saturating_add(
+                u64::try_from(appended_entries.len()).expect("journal delta length fits in u64"),
+            );
+            let previous_order_digest = latest_order_digest;
+            let order_digest = previous_order_digest.append(index, operation_id);
+            let application = FederationApplicationState::from_status(status);
+            let entry = FederationJournalEntry {
+                index,
+                operation_id,
+                envelope,
+                conflict_keys: conflict_keys.clone(),
+                previous_order_digest,
+                order_digest,
+                consensus_evidence: Some(consensus_evidence),
+                application: application.clone(),
+            };
+
+            if application_reserves_conflict_keys(&application) {
+                for conflict_key in conflict_keys {
+                    prepared_conflict_keys
+                        .entry(conflict_key)
+                        .or_insert(operation_id);
+                }
+            }
+            latest_order_digest = order_digest;
+            prepared_entries.insert(operation_id, entry.clone());
+            appended_entries.push(entry.clone());
+            outcomes.push(FederationJournalAppendOutcome::Appended(entry));
+        }
+
+        Ok(PreparedFederationJournalFinalization {
+            outcomes,
+            appended_entries,
+        })
+    }
+
+    /// Commit a previously validated finalized-operation delta.
+    pub(crate) fn commit_prepared_finalized_appends(
+        &mut self,
+        prepared: PreparedFederationJournalFinalization,
+    ) {
+        for entry in prepared.appended_entries {
+            debug_assert_eq!(entry.index, self.next_index());
+            debug_assert_eq!(entry.previous_order_digest, self.latest_order_digest);
+            let retained_index = self.entries.len();
+            if application_reserves_conflict_keys(&entry.application) {
+                for conflict_key in &entry.conflict_keys {
+                    self.conflict_keys
+                        .entry(conflict_key.clone())
+                        .or_insert(entry.operation_id);
+                }
+            }
+            self.operation_indices
+                .insert(entry.operation_id, retained_index);
+            self.latest_order_digest = entry.order_digest;
+            self.entries.push(entry);
+        }
     }
 
     fn append_inner(

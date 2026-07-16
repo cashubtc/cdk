@@ -1864,6 +1864,39 @@ intervening recovery. The shared database persistence test proves that
 promoting a covering scheduled quorum removes its superseded recovery
 checkpoint, quorum, and signatures while retaining scheduled history.
 
+### Local bounded runtime-mutation evidence
+
+Ordinary operation submission and finalized-unit application no longer clone
+`FederationConsensusRuntime` for rollback protection. Both paths now prepare a
+small immutable delta while borrowing the retained journal/finalized indexes,
+persist the pending or finalized/journal rows through the existing transaction,
+and commit only that delta while the existing consensus lock is still held.
+Preparation does not publish queue, finalization-cursor, journal-digest, or
+pending-unit changes. An injected pending-operation or finalization persistence
+failure therefore drops the prepared value and leaves both the durable store
+and published runtime unchanged; retry then follows the normal path.
+
+No persistent/shared-history overlay was needed. Retained history remains
+single-owned by the runtime, and preparation allocates only objects proportional
+to the incoming operation or complete unit. The bounded catch-up verifier keeps
+its separate fail-closed clone because that recovery-only suffix is already
+capped independently of federation lifetime.
+
+At retained histories of 1, 64, and 256 operations, canonical retained state
+was 2,372, 151,871, and 608,771 bytes while a prepared submission plus one-item
+finalization encoded to 3,768, 3,779, and 3,790 bytes. One diagnostic debug run
+measured preparation at 0.376, 0.393, and 0.384 ms; a test-only simulation of
+the former two-clone submission/finalization path measured 0.510, 0.549, and
+0.918 ms. Timing samples are not correctness assertions. The deterministic
+regression asserts that the prepared delta stays bounded while retained state
+grows, and production searches show no complete runtime clone in either live
+hot path.
+
+The focused failure, duplicate, conflict, session-rotation, checkpoint,
+catch-up, and duplicate-response recovery tests pass locally. The fake wallet
+continues to cover both payment directions in these local fixtures; no remote
+deployment is needed for this mutation-boundary regression.
+
 ### Local restart and partition evidence
 
 The existing five-member live AlephBFT harness now retains each member's test
