@@ -5,6 +5,63 @@ use serde::{Deserialize, Serialize};
 /// Default average Bitcoin block interval used for delayed batch deadlines.
 pub const DEFAULT_TARGET_BLOCK_TIME_SECS: u64 = 600;
 
+/// Default Payjoin v2 session expiry in seconds.
+pub const DEFAULT_PAYJOIN_EXPIRY_SECS: u64 = 86_400;
+
+/// Payjoin v2 directory/OHTTP configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PayjoinConfig {
+    /// Payjoin directory URL.
+    pub directory_url: String,
+    /// OHTTP relay URL.
+    pub ohttp_relay_url: String,
+    /// Receiver session expiry in seconds.
+    pub expiry_secs: u64,
+    /// DER-encoded localhost TLS certificate for regtest-only Payjoin services.
+    #[cfg(feature = "payjoin-local-https")]
+    pub local_tls_cert_der: Option<Vec<u8>>,
+}
+
+impl PayjoinConfig {
+    /// Create and validate a Payjoin config.
+    pub fn new(
+        directory_url: String,
+        ohttp_relay_url: String,
+        expiry_secs: Option<u64>,
+    ) -> Result<Self, String> {
+        let expiry_secs = expiry_secs.unwrap_or(DEFAULT_PAYJOIN_EXPIRY_SECS);
+        if expiry_secs == 0 {
+            return Err("payjoin_expiry_secs must be greater than zero".to_string());
+        }
+
+        validate_http_url("payjoin_directory_url", &directory_url)?;
+        validate_http_url("payjoin_ohttp_relay_url", &ohttp_relay_url)?;
+
+        Ok(Self {
+            directory_url,
+            ohttp_relay_url,
+            expiry_secs,
+            #[cfg(feature = "payjoin-local-https")]
+            local_tls_cert_der: None,
+        })
+    }
+
+    /// Configure a DER-encoded localhost TLS certificate for regtest-only Payjoin services.
+    #[cfg(feature = "payjoin-local-https")]
+    pub fn with_local_tls_cert_der(mut self, cert_der: Vec<u8>) -> Self {
+        self.local_tls_cert_der = Some(cert_der);
+        self
+    }
+}
+
+fn validate_http_url(field: &str, value: &str) -> Result<(), String> {
+    let url = url::Url::parse(value).map_err(|err| format!("{field} is not a valid URL: {err}"))?;
+    match url.scheme() {
+        "http" | "https" => Ok(()),
+        scheme => Err(format!("{field} must use http or https, got {scheme}")),
+    }
+}
+
 /// Configuration for BDK fee estimation.
 ///
 /// Fee rates are cached per payment tier. Melt quote fees use a conservative
@@ -261,5 +318,46 @@ impl PaymentMetadata {
             return Self { entries };
         }
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod payjoin_tests {
+    use super::*;
+
+    #[test]
+    fn payjoin_config_requires_positive_expiry() {
+        let err = PayjoinConfig::new(
+            "https://directory.example".to_string(),
+            "https://relay.example".to_string(),
+            Some(0),
+        )
+        .expect_err("zero expiry should fail");
+
+        assert!(err.contains("payjoin_expiry_secs"));
+    }
+
+    #[test]
+    fn payjoin_config_rejects_non_http_urls() {
+        let err = PayjoinConfig::new(
+            "ftp://directory.example".to_string(),
+            "https://relay.example".to_string(),
+            Some(DEFAULT_PAYJOIN_EXPIRY_SECS),
+        )
+        .expect_err("non-http directory URL should fail");
+
+        assert!(err.contains("payjoin_directory_url"));
+    }
+
+    #[test]
+    fn payjoin_config_defaults_expiry() {
+        let config = PayjoinConfig::new(
+            "https://directory.example".to_string(),
+            "https://relay.example".to_string(),
+            None,
+        )
+        .expect("valid config");
+
+        assert_eq!(config.expiry_secs, DEFAULT_PAYJOIN_EXPIRY_SECS);
     }
 }

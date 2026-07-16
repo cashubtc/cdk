@@ -16,7 +16,8 @@ use cdk_common::database::wallet::Database;
 use cdk_common::database::{Error as DatabaseError, KVStoreDatabase};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::{
-    CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PublicKey, SpendingConditions, State,
+    CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PayjoinV2, PublicKey, SpendingConditions,
+    State,
 };
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
@@ -2570,6 +2571,8 @@ struct MintQuoteTable {
     #[serde(default)]
     updated_at: i64,
     #[serde(default)]
+    payjoin: Option<PayjoinV2>,
+    #[serde(default)]
     used_by_operation: Option<String>,
     #[serde(default)]
     version: Option<i32>,
@@ -2605,6 +2608,7 @@ impl TryInto<MintQuote> for MintQuoteTable {
             amount_paid: cdk_common::Amount::from(self.amount_paid as u64),
             updated_at: self.updated_at as u64,
             estimated_blocks: None,
+            payjoin: self.payjoin,
             used_by_operation: self.used_by_operation,
             version: self.version.unwrap_or(0) as u32,
         })
@@ -2627,6 +2631,7 @@ impl TryFrom<MintQuote> for MintQuoteTable {
             amount_issued: q.amount_issued.to_u64() as i64,
             amount_paid: q.amount_paid.to_u64() as i64,
             updated_at: q.updated_at as i64,
+            payjoin: q.payjoin,
             used_by_operation: q.used_by_operation,
             version: Some(q.version as i32),
             _extra: Default::default(),
@@ -2649,6 +2654,8 @@ struct MeltQuoteTable {
     estimated_blocks: Option<i64>,
     #[serde(default)]
     fee_index: Option<i64>,
+    #[serde(default)]
+    payjoin: Option<PayjoinV2>,
     #[serde(default)]
     mint_url: Option<String>,
     #[serde(default)]
@@ -2692,6 +2699,7 @@ impl TryInto<wallet::MeltQuote> for MeltQuoteTable {
                 .map(u32::try_from)
                 .transpose()
                 .map_err(|_| DatabaseError::Internal("Invalid fee_index".into()))?,
+            payjoin: self.payjoin,
             used_by_operation: self.used_by_operation,
             version: self.version.unwrap_or(0) as u32,
         })
@@ -2714,6 +2722,7 @@ impl TryFrom<wallet::MeltQuote> for MeltQuoteTable {
             payment_method: q.payment_method.to_string(),
             estimated_blocks: q.estimated_blocks.map(i64::from),
             fee_index: q.fee_index.map(i64::from),
+            payjoin: q.payjoin,
             used_by_operation: q.used_by_operation,
             version: Some(q.version as i32),
             _extra: Default::default(),

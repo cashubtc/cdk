@@ -12,7 +12,10 @@ pub(crate) mod state;
 use uuid::Uuid;
 
 use self::record::{SendIntentRecord, SendIntentState};
-use self::state::{AwaitingConfirmation, Batched, Failed, Pending};
+use self::state::{
+    AwaitingConfirmation, BatchClaimed, Batched, CutThroughExposed, CutThroughReserved, Failed,
+    PayjoinNegotiating, Pending,
+};
 use crate::error::Error;
 use crate::storage::{BdkStorage, FailedSendAttemptRecord, FinalizedSendIntentRecord};
 use crate::types::{PaymentMetadata, PaymentTier};
@@ -41,6 +44,38 @@ pub(crate) struct SendIntent<S> {
     pub created_at: u64,
     /// Current typestate
     pub state: S,
+}
+
+impl<S> SendIntent<S> {
+    /// Rebuild this intent with a new typestate, carrying the identity fields.
+    fn with_state<T>(self, state: T) -> SendIntent<T> {
+        SendIntent {
+            intent_id: self.intent_id,
+            quote_id: self.quote_id,
+            address: self.address,
+            amount: self.amount,
+            max_fee_amount: self.max_fee_amount,
+            tier: self.tier,
+            metadata: self.metadata,
+            created_at: self.created_at,
+            state,
+        }
+    }
+}
+
+/// Build an intent in the given typestate from a durable record's identity fields.
+fn intent_from_record<S>(record: &SendIntentRecord, created_at: u64, state: S) -> SendIntent<S> {
+    SendIntent {
+        intent_id: record.intent_id,
+        quote_id: record.quote_id.clone(),
+        address: record.address.clone(),
+        amount: record.amount_sat,
+        max_fee_amount: record.max_fee_amount_sat,
+        tier: record.tier,
+        metadata: record.metadata.clone(),
+        created_at,
+        state,
+    }
 }
 
 impl SendIntent<Pending> {
@@ -80,17 +115,7 @@ impl SendIntent<Pending> {
             }
         };
 
-        Ok(Self {
-            intent_id: record.intent_id,
-            quote_id: record.quote_id,
-            address: record.address,
-            amount: record.amount_sat,
-            max_fee_amount: record.max_fee_amount_sat,
-            tier: record.tier,
-            metadata: record.metadata,
-            created_at,
-            state: Pending,
-        })
+        Ok(intent_from_record(&record, created_at, Pending))
     }
 
     /// Transition to Batched state
@@ -109,20 +134,11 @@ impl SendIntent<Pending> {
             )
             .await?;
 
-        Ok(SendIntent {
-            intent_id: self.intent_id,
-            quote_id: self.quote_id,
-            address: self.address,
-            amount: self.amount,
-            max_fee_amount: self.max_fee_amount,
-            tier: self.tier,
-            metadata: self.metadata,
-            created_at: self.created_at,
-            state: Batched { batch_id },
-        })
+        Ok(self.with_state(Batched { batch_id }))
     }
 
     /// Mark a pending intent as failed before a signed transaction was committed.
+    #[cfg(test)]
     pub async fn fail(
         self,
         storage: &BdkStorage,
@@ -149,17 +165,166 @@ impl SendIntent<Pending> {
             })
             .await?;
 
-        Ok(SendIntent {
-            intent_id: self.intent_id,
-            quote_id: self.quote_id,
-            address: self.address,
-            amount: self.amount,
-            max_fee_amount: self.max_fee_amount,
-            tier: self.tier,
-            metadata: self.metadata,
-            created_at: self.created_at,
-            state: Failed,
+        Ok(self.with_state(Failed))
+    }
+}
+
+impl SendIntent<BatchClaimed> {
+    /// Transition a claimed intent to Batched state.
+    pub async fn assign_to_batch(self, storage: &BdkStorage) -> Result<SendIntent<Batched>, Error> {
+        let batch_id = self.state.batch_id;
+        storage
+            .update_send_intent(
+                &self.intent_id,
+                &SendIntentState::Batched {
+                    batch_id,
+                    created_at: self.created_at,
+                },
+            )
+            .await?;
+
+        Ok(self.with_state(Batched { batch_id }))
+    }
+
+    /// Revert to Pending state (compensation).
+    pub async fn revert_to_pending(
+        self,
+        storage: &BdkStorage,
+    ) -> Result<SendIntent<Pending>, Error> {
+        storage
+            .update_send_intent(
+                &self.intent_id,
+                &SendIntentState::Pending {
+                    created_at: self.created_at,
+                },
+            )
+            .await?;
+
+        Ok(self.with_state(Pending))
+    }
+}
+
+impl SendIntent<PayjoinNegotiating> {
+    /// Create a new Payjoin-negotiating send intent and persist it immediately.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_payjoin(
+        storage: &BdkStorage,
+        quote_id: String,
+        address: String,
+        amount: u64,
+        max_fee_amount: u64,
+        tier: PaymentTier,
+        metadata: PaymentMetadata,
+        original_tx_bytes: Vec<u8>,
+        original_fee_sat: u64,
+        events: Vec<payjoin::send::v2::SessionEvent>,
+    ) -> Result<Self, Error> {
+        let intent_id = Uuid::new_v4();
+        let created_at = crate::util::unix_now();
+
+        let record = SendIntentRecord {
+            intent_id,
+            quote_id: quote_id.clone(),
+            address: address.clone(),
+            amount_sat: amount,
+            max_fee_amount_sat: max_fee_amount,
+            tier,
+            metadata: metadata.clone(),
+            state: SendIntentState::PayjoinNegotiating {
+                original_tx_bytes: original_tx_bytes.clone(),
+                original_fee_sat,
+                events: events.clone(),
+                created_at,
+            },
+        };
+
+        storage.create_send_intent_if_absent(&record).await?;
+
+        Ok(Self {
+            intent_id,
+            quote_id,
+            address,
+            amount,
+            max_fee_amount,
+            tier,
+            metadata,
+            created_at,
+            state: PayjoinNegotiating {
+                original_tx_bytes,
+                original_fee_sat,
+                events,
+            },
         })
+    }
+
+    /// Persist updated Payjoin sender events while staying in negotiation.
+    pub async fn update_payjoin_events(
+        &mut self,
+        storage: &BdkStorage,
+        events: Vec<payjoin::send::v2::SessionEvent>,
+    ) -> Result<(), Error> {
+        storage
+            .update_send_intent(
+                &self.intent_id,
+                &SendIntentState::PayjoinNegotiating {
+                    original_tx_bytes: self.state.original_tx_bytes.clone(),
+                    original_fee_sat: self.state.original_fee_sat,
+                    events: events.clone(),
+                    created_at: self.created_at,
+                },
+            )
+            .await?;
+        self.state.events = events;
+        Ok(())
+    }
+
+    /// Transition a Payjoin-negotiating intent into a one-intent batch.
+    pub async fn assign_to_batch(
+        self,
+        storage: &BdkStorage,
+        batch_id: Uuid,
+    ) -> Result<SendIntent<Batched>, Error> {
+        storage
+            .update_send_intent(
+                &self.intent_id,
+                &SendIntentState::Batched {
+                    batch_id,
+                    created_at: self.created_at,
+                },
+            )
+            .await?;
+
+        Ok(self.with_state(Batched { batch_id }))
+    }
+
+    /// Mark a Payjoin negotiation as failed before any PSBT is shared.
+    pub async fn fail(
+        self,
+        storage: &BdkStorage,
+        reason: String,
+    ) -> Result<SendIntent<Failed>, Error> {
+        let failed_at = crate::util::unix_now();
+        storage
+            .update_send_intent(
+                &self.intent_id,
+                &SendIntentState::Failed {
+                    reason: reason.clone(),
+                    created_at: self.created_at,
+                    failed_at,
+                },
+            )
+            .await?;
+        storage
+            .add_failed_send_attempt(&FailedSendAttemptRecord {
+                attempt_id: Uuid::new_v4(),
+                intent_id: self.intent_id,
+                quote_id: self.quote_id.clone(),
+                reason: reason.clone(),
+                failed_at,
+            })
+            .await?;
+
+        Ok(self.with_state(Failed))
     }
 }
 
@@ -172,11 +337,12 @@ impl SendIntent<Batched> {
         outpoint: String,
         fee_contribution_sat: u64,
     ) -> Result<SendIntent<AwaitingConfirmation>, Error> {
+        let batch_id = self.state.batch_id;
         storage
             .update_send_intent(
                 &self.intent_id,
                 &SendIntentState::AwaitingConfirmation {
-                    batch_id: self.state.batch_id,
+                    batch_id,
                     txid: txid.clone(),
                     outpoint: outpoint.clone(),
                     fee_contribution_sat,
@@ -185,22 +351,12 @@ impl SendIntent<Batched> {
             )
             .await?;
 
-        Ok(SendIntent {
-            intent_id: self.intent_id,
-            quote_id: self.quote_id,
-            address: self.address,
-            amount: self.amount,
-            max_fee_amount: self.max_fee_amount,
-            tier: self.tier,
-            metadata: self.metadata,
-            created_at: self.created_at,
-            state: AwaitingConfirmation {
-                batch_id: self.state.batch_id,
-                txid,
-                outpoint,
-                fee_contribution_sat,
-            },
-        })
+        Ok(self.with_state(AwaitingConfirmation {
+            batch_id,
+            txid,
+            outpoint,
+            fee_contribution_sat,
+        }))
     }
 
     /// Revert to Pending state (compensation)
@@ -217,17 +373,7 @@ impl SendIntent<Batched> {
             )
             .await?;
 
-        Ok(SendIntent {
-            intent_id: self.intent_id,
-            quote_id: self.quote_id,
-            address: self.address,
-            amount: self.amount,
-            max_fee_amount: self.max_fee_amount,
-            tier: self.tier,
-            metadata: self.metadata,
-            created_at: self.created_at,
-            state: Pending,
-        })
+        Ok(self.with_state(Pending))
     }
 }
 
@@ -258,63 +404,82 @@ impl SendIntent<AwaitingConfirmation> {
 /// Reconstruct a `SendIntent` from a durable record for recovery
 pub(crate) fn from_record(record: &SendIntentRecord) -> SendIntentAny {
     match &record.state {
-        SendIntentState::Pending { created_at } => SendIntentAny::Pending(SendIntent {
-            intent_id: record.intent_id,
-            quote_id: record.quote_id.clone(),
-            address: record.address.clone(),
-            amount: record.amount_sat,
-            max_fee_amount: record.max_fee_amount_sat,
-            tier: record.tier,
-            metadata: record.metadata.clone(),
-            created_at: *created_at,
-            state: Pending,
-        }),
+        SendIntentState::Pending { created_at } => {
+            SendIntentAny::Pending(intent_from_record(record, *created_at, Pending))
+        }
+        SendIntentState::BatchClaimed {
+            batch_id,
+            created_at,
+        } => SendIntentAny::BatchClaimed(intent_from_record(
+            record,
+            *created_at,
+            BatchClaimed {
+                batch_id: *batch_id,
+            },
+        )),
+        SendIntentState::CutThroughReserved {
+            reservation_id,
+            created_at,
+            ..
+        } => SendIntentAny::CutThroughReserved(intent_from_record(
+            record,
+            *created_at,
+            CutThroughReserved {
+                reservation_id: *reservation_id,
+            },
+        )),
+        SendIntentState::CutThroughExposed {
+            reservation_id,
+            created_at,
+            ..
+        } => SendIntentAny::CutThroughExposed(intent_from_record(
+            record,
+            *created_at,
+            CutThroughExposed {
+                reservation_id: *reservation_id,
+            },
+        )),
         SendIntentState::Batched {
             batch_id,
             created_at,
-        } => SendIntentAny::Batched(SendIntent {
-            intent_id: record.intent_id,
-            quote_id: record.quote_id.clone(),
-            address: record.address.clone(),
-            amount: record.amount_sat,
-            max_fee_amount: record.max_fee_amount_sat,
-            tier: record.tier,
-            metadata: record.metadata.clone(),
-            created_at: *created_at,
-            state: Batched {
+        } => SendIntentAny::Batched(intent_from_record(
+            record,
+            *created_at,
+            Batched {
                 batch_id: *batch_id,
             },
-        }),
+        )),
+        SendIntentState::PayjoinNegotiating {
+            original_tx_bytes,
+            original_fee_sat,
+            events,
+            created_at,
+        } => SendIntentAny::PayjoinNegotiating(intent_from_record(
+            record,
+            *created_at,
+            PayjoinNegotiating {
+                original_tx_bytes: original_tx_bytes.clone(),
+                original_fee_sat: *original_fee_sat,
+                events: events.clone(),
+            },
+        )),
         SendIntentState::AwaitingConfirmation {
             batch_id,
             txid,
             outpoint,
             fee_contribution_sat,
             created_at,
-        } => SendIntentAny::AwaitingConfirmation(SendIntent {
-            intent_id: record.intent_id,
-            quote_id: record.quote_id.clone(),
-            address: record.address.clone(),
-            amount: record.amount_sat,
-            max_fee_amount: record.max_fee_amount_sat,
-            tier: record.tier,
-            metadata: record.metadata.clone(),
-            created_at: *created_at,
-            state: AwaitingConfirmation {
+        } => SendIntentAny::AwaitingConfirmation(intent_from_record(
+            record,
+            *created_at,
+            AwaitingConfirmation {
                 batch_id: *batch_id,
                 txid: txid.clone(),
                 outpoint: outpoint.clone(),
                 fee_contribution_sat: *fee_contribution_sat,
             },
-        }),
-        SendIntentState::Failed {
-            reason,
-            created_at,
-            failed_at,
-        } => {
-            let _ = (reason, created_at, failed_at);
-            SendIntentAny::Failed
-        }
+        )),
+        SendIntentState::Failed { .. } => SendIntentAny::Failed,
     }
 }
 
@@ -322,6 +487,14 @@ pub(crate) fn from_record(record: &SendIntentRecord) -> SendIntentAny {
 pub(crate) enum SendIntentAny {
     /// Intent in Pending state
     Pending(SendIntent<Pending>),
+    /// Intent claimed by the normal batch builder
+    BatchClaimed(SendIntent<BatchClaimed>),
+    /// Intent reserved by a Payjoin cut-through settlement
+    CutThroughReserved(SendIntent<CutThroughReserved>),
+    /// Intent committed to an exposed Payjoin cut-through proposal.
+    CutThroughExposed(SendIntent<CutThroughExposed>),
+    /// Intent in Payjoin negotiation state
+    PayjoinNegotiating(SendIntent<PayjoinNegotiating>),
     /// Intent in Batched state
     Batched(SendIntent<Batched>),
     /// Intent in AwaitingConfirmation state

@@ -457,7 +457,7 @@ impl Wallet {
 
         let mint_request = PreparedMintRequest::Single {
             quote_id: data.primary_quote_id().to_string(),
-            quote_info: quote.clone(),
+            quote_info: Box::new(quote.clone()),
             request: mint_request,
         };
 

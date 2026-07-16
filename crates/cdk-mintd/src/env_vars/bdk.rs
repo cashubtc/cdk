@@ -32,6 +32,11 @@ pub const BDK_FEE_CACHE_TTL_SECS_ENV_VAR: &str = "CDK_MINTD_BDK_FEE_CACHE_TTL_SE
 pub const BDK_QUOTE_MAX_INPUT_COUNT_ENV_VAR: &str = "CDK_MINTD_BDK_QUOTE_MAX_INPUT_COUNT";
 pub const BDK_QUOTE_FIXED_SAFETY_SAT_ENV_VAR: &str = "CDK_MINTD_BDK_QUOTE_FIXED_SAFETY_SAT";
 pub const BDK_QUOTE_SAFETY_MULTIPLIER_ENV_VAR: &str = "CDK_MINTD_BDK_QUOTE_SAFETY_MULTIPLIER";
+pub const BDK_PAYJOIN_DIRECTORY_URL_ENV_VAR: &str = "CDK_MINTD_BDK_PAYJOIN_DIRECTORY_URL";
+pub const BDK_PAYJOIN_OHTTP_RELAY_URL_ENV_VAR: &str = "CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL";
+pub const BDK_PAYJOIN_EXPIRY_SECS_ENV_VAR: &str = "CDK_MINTD_BDK_PAYJOIN_EXPIRY_SECS";
+pub const BDK_PAYJOIN_LOCAL_TLS_CERT_PATH_ENV_VAR: &str =
+    "CDK_MINTD_BDK_PAYJOIN_LOCAL_TLS_CERT_PATH";
 
 impl Bdk {
     pub fn from_env(mut self) -> Self {
@@ -176,6 +181,31 @@ impl Bdk {
             if let Ok(safety_multiplier) = safety_multiplier.parse::<f64>() {
                 self.batch_config.quote_safety_multiplier = safety_multiplier;
             }
+        }
+
+        if let Ok(directory_url) = env::var(BDK_PAYJOIN_DIRECTORY_URL_ENV_VAR) {
+            self.payjoin_directory_url = Some(directory_url);
+        }
+
+        if let Ok(relay_url) = env::var(BDK_PAYJOIN_OHTTP_RELAY_URL_ENV_VAR) {
+            self.payjoin_ohttp_relay_url = Some(relay_url);
+        }
+
+        if let Ok(expiry_secs) = env::var(BDK_PAYJOIN_EXPIRY_SECS_ENV_VAR) {
+            match expiry_secs.parse::<u64>() {
+                Ok(expiry_secs) => {
+                    self.payjoin_expiry_secs = expiry_secs;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "{BDK_PAYJOIN_EXPIRY_SECS_ENV_VAR} has invalid value '{expiry_secs}': {err}"
+                    );
+                }
+            }
+        }
+
+        if let Ok(cert_path) = env::var(BDK_PAYJOIN_LOCAL_TLS_CERT_PATH_ENV_VAR) {
+            self.payjoin_local_tls_cert_path = Some(cert_path);
         }
 
         self

@@ -30,7 +30,7 @@ pub enum PreparedMintRequest {
         /// Quote ID being minted
         quote_id: String,
         /// Quote information
-        quote_info: MintQuote,
+        quote_info: Box<MintQuote>,
         /// Mint request ready to send
         request: MintRequestString,
     },
