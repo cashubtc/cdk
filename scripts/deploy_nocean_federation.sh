@@ -189,9 +189,9 @@ bin/cdk-cli --version
 bash scripts/nocean_federation_control.sh "$DEPLOY_MODE"
 
 deadline=$((SECONDS + STATUS_TIMEOUT_SECS))
-digest_output="$(mktemp)"
+status_output="$(mktemp)"
 wallet_output="$(mktemp)"
-trap 'rm -f "$digest_output" "$wallet_output"' EXIT
+trap 'rm -f "$status_output" "$wallet_output"' EXIT
 
 tmux_is_healthy() {
     tmux has-session -t cdk-federation 2>/dev/null || return 1
@@ -222,11 +222,16 @@ private_state_is_healthy() {
          and .frost_wallet.cdk_onchain_application.network == $network
          and .frost_wallet.cdk_onchain_application.confirmation_policy.minimum_confirmations == $confirmations' \
         "$public_config" >/dev/null || return 1
-    timeout 45 bin/cdk-mintd federation compare-digests \
+    timeout 45 bin/cdk-mintd federation status \
         --public-config "$public_config" \
-        --private-config "$private_config" >"$digest_output" 2>&1 || return 1
-    grep -q 'converged=true' "$digest_output" || return 1
-    grep -q 'ready=5/5 sync_states=healthy' "$digest_output" || return 1
+        --private-config "$private_config" \
+        --require-ready \
+        --require-converged \
+        --max-operation-lag 0 \
+        --require-no-digest-alerts \
+        --require-no-payment-observation-alerts \
+        --require-no-invalid-operation-alerts >"$status_output" 2>&1 || return 1
+    [[ "$(grep -c '^member ' "$status_output")" == "5" ]] || return 1
     timeout 45 bin/cdk-mintd federation wallet-status \
         --public-config "$public_config" \
         --private-config "$private_config" \
@@ -241,7 +246,7 @@ while ((SECONDS < deadline)); do
         echo "Federation deployment is healthy."
         tmux list-panes -t cdk-federation \
             -F '#{pane_index} #{pane_title} #{pane_current_command} dead=#{pane_dead}'
-        cat "$digest_output"
+        cat "$status_output"
         cat "$wallet_output"
         sha256sum bin/cdk-mintd bin/cdk-cli
         exit 0
@@ -256,7 +261,7 @@ echo "error: federation did not become healthy before the timeout" >&2
 tmux list-panes -t cdk-federation \
     -F '#{pane_index} #{pane_title} #{pane_current_command} dead=#{pane_dead}' >&2 || true
 tmux capture-pane -p -J -t cdk-federation:0 -S -120 >&2 || true
-cat "$digest_output" "$wallet_output" >&2 || true
+cat "$status_output" "$wallet_output" >&2 || true
 exit 1
 REMOTE_SCRIPT
 

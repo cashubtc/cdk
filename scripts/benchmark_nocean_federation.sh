@@ -79,6 +79,11 @@ is_positive_integer() {
     [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
+operation_count_from_status() {
+    sed -n 's/^member [0-9][0-9]*:.* operations=\([0-9][0-9]*\).*/\1/p' \
+        | head -n 1
+}
+
 aggregate_runtime_window() {
     local start_snapshot="$1"
     local end_snapshot="$2"
@@ -177,6 +182,10 @@ run_self_test() {
         || die "runtime metrics aggregation self-test produced an unexpected summary"
     grep -qx '1,1.50,110,5,1,1,0,1,1,1,2' "$member_output" \
         || die "runtime metrics aggregation self-test produced an unexpected member row"
+    [[ "$(printf '%s\n' \
+        'member 1: sync=healthy sync_local_operations=none operations=7 checkpoint_lag_operations=0' \
+        | operation_count_from_status)" == "7" ]] \
+        || die "signed status operation parser self-test failed"
     rm -rf "$temp_dir"
     echo "Runtime metrics aggregation self-test passed."
 }
@@ -291,11 +300,10 @@ wait_for_convergence() {
     for attempt in $(seq 1 "$CONVERGENCE_ATTEMPTS"); do
         if output="$(
             ssh "$SSH_HOST" \
-                "cd ~/$REMOTE_DIR && timeout 30 bin/cdk-mintd federation compare-digests --public-config member-1/dkg-final/federation-public.json --private-config member-1/dkg-final/federation-private.json" \
+                "cd ~/$REMOTE_DIR && timeout 30 bin/cdk-mintd federation status --public-config member-1/dkg-final/federation-public.json --private-config member-1/dkg-final/federation-private.json --require-ready --require-converged --max-operation-lag 0 --require-no-digest-alerts --require-no-payment-observation-alerts --require-no-invalid-operation-alerts" \
                 2>&1
         )" \
-            && grep -q 'converged=true' <<<"$output" \
-            && grep -q 'members=1,2,3,4,5 ready=5/5 sync_states=healthy' <<<"$output"
+            && [[ "$(grep -c '^member ' <<<"$output")" == "$EXPECTED_MEMBERS" ]]
         then
             printf '%s\n' "$output"
             return 0
@@ -309,11 +317,6 @@ wait_for_convergence() {
 
     printf '%s\n' "$output" >&2
     return 1
-}
-
-operation_count_from_status() {
-    sed -n 's/.*digest_group operations=\([0-9][0-9]*\).*/\1/p' \
-        | head -n 1
 }
 
 capture_runtime_snapshot() {

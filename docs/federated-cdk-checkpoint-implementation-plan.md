@@ -1584,7 +1584,7 @@ configuration behavior.
 - [x] Squash the checkpoint schema into the existing initial federation
       migrations; no existing federation database or upgrade bridge is
       supported after the cut-through change.
-- [ ] Regenerate federation development databases/configs before deployment.
+- [x] Regenerate federation development databases/configs before deployment.
 - [x] Use `rg` to prove no production references to catch-up certificates remain;
       historical review text may retain clearly marked provenance only.
 
@@ -1901,9 +1901,24 @@ log-rate, sync-transition, scheduled/recovery checkpoint, quorum-transfer,
 promotion, catch-up-batch, and signature-verification fields to each throughput
 result. A local fixture self-test proves the delta and rate calculation. Shell
 syntax/help checks and a `cdk-mintd` check with the exact deployment feature set
-pass. The fresh deployment, restart exercise, and comparative result capture
-remain intentionally unchecked until they run against the development
-federation.
+pass.
+
+The fresh development deployment regenerated all five databases and configs,
+completed independent BLS/FROST DKG, and started five finalized runtimes. Its
+signed status guard reported all five members ready and converged at genesis,
+the federated wallet reported ready, every public info/config route returned
+success, and the loopback telemetry command returned exactly one aggregate row
+per member.
+
+That fresh genesis exposed one validation-script mismatch: the explicit
+`compare-digests` operator command intentionally treats an absent audited
+materialized-state digest as an alert, while a zero-operation federation
+correctly has no checkpoint audit yet. Deployment and benchmark readiness now
+reuse the existing signed `federation status` guards for readiness, exact
+height/application/order convergence, and digest/payment/invalid-operation
+alerts. The strict digest comparator remains unchanged for post-checkpoint
+diagnostics. The restart exercise and comparative result capture remain
+unchecked until their live runs complete.
 
 ### Files and references
 
