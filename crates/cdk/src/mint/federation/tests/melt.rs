@@ -1435,7 +1435,7 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_change_ou
 }
 
 #[tokio::test]
-async fn apply_federation_melt_replays_failed_local_zero_change_paid_quote() {
+async fn apply_federation_melt_keeps_terminal_zero_change_paid_quote_immutable() {
     let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore, make_payment_calls) =
@@ -1502,13 +1502,15 @@ async fn apply_federation_melt_replays_failed_local_zero_change_paid_quote() {
         &FederationApplicationState::Failed {},
     )
     .await
-    .expect("mark original melt failed");
-    tx.commit().await.expect("commit failed-status transaction");
+    .expect_err("terminal application state must be immutable");
+    tx.rollback()
+        .await
+        .expect("roll back failed-status transaction");
 
-    assert!(mint
+    assert!(!mint
         .apply_accepted_federation_operation(&original_entry)
         .await
-        .expect("terminal paid zero-change replay should be idempotent"));
+        .expect("terminal paid zero-change replay should be a no-op"));
     assert_eq!(
         localstore
             .get_federation_journal_entry_by_operation_id(original_entry.operation_id)

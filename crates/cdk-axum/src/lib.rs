@@ -2721,13 +2721,7 @@ fn validate_checkpoint_startup_suffix(
     frontier: &FederationCheckpointFrontier,
     journal_entries: &[FederationJournalEntry],
     finalized_items: &[FederationAlephBftFinalizedItem],
-) -> std::result::Result<(), cdk::Error> {
-    if frontier.application_next_index != frontier.journal_next_index {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "checkpoint startup suffix is not terminally applied".to_string(),
-        }
-        .into());
-    }
+) -> std::result::Result<usize, cdk::Error> {
     let journal = InMemoryFederationJournal::from_base_and_entries(
         checkpoint.journal_next_index,
         checkpoint.journal_order_digest,
@@ -2736,20 +2730,49 @@ fn validate_checkpoint_startup_suffix(
     if journal.next_index() != frontier.journal_next_index
         || journal.latest_order_digest() != frontier.journal_order_digest
     {
-        return Err(FederationError::CheckpointInvalid {
+        return Err(FederationError::CheckpointStartupSuffixMismatch {
             reason: "retained journal suffix does not reach the durable frontier".to_string(),
         }
         .into());
     }
 
-    let application_digest = journal_entries.iter().try_fold(
+    let terminal_prefix_len = frontier
+        .application_next_index
+        .checked_sub(checkpoint.journal_next_index)
+        .ok_or_else(|| FederationError::CheckpointStartupSuffixMismatch {
+            reason: "durable application cursor precedes the trusted checkpoint".to_string(),
+        })?;
+    let terminal_prefix_len = usize::try_from(terminal_prefix_len).map_err(|_| {
+        FederationError::CheckpointStartupSuffixMismatch {
+            reason: "durable application suffix length exceeds local address space".to_string(),
+        }
+    })?;
+    if terminal_prefix_len > journal_entries.len() {
+        return Err(FederationError::CheckpointStartupSuffixMismatch {
+            reason: "durable application cursor exceeds the retained journal suffix".to_string(),
+        }
+        .into());
+    }
+    if let Some(entry) = journal_entries[..terminal_prefix_len]
+        .iter()
+        .find(|entry| !entry.application.is_terminal())
+    {
+        return Err(FederationError::CheckpointStartupSuffixMismatch {
+            reason: format!(
+                "durable application prefix contains non-terminal journal index {}",
+                entry.index
+            ),
+        }
+        .into());
+    }
+    let application_digest = journal_entries[..terminal_prefix_len].iter().try_fold(
         checkpoint.application_digest,
         |digest: FederationApplicationDigest, entry| {
             digest.append_terminal(entry.index, entry.operation_id, &entry.application)
         },
     )?;
     if application_digest != frontier.application_digest {
-        return Err(FederationError::CheckpointInvalid {
+        return Err(FederationError::CheckpointStartupSuffixMismatch {
             reason: "retained application suffix digest does not reach the durable frontier"
                 .to_string(),
         }
@@ -2774,7 +2797,7 @@ fn validate_checkpoint_startup_suffix(
     if expected_item_index != frontier.finalized_next_item_index
         || finalized_digest != frontier.finalized_item_digest
     {
-        return Err(FederationError::CheckpointInvalid {
+        return Err(FederationError::CheckpointStartupSuffixMismatch {
             reason: "retained finalized-item suffix does not reach the durable frontier"
                 .to_string(),
         }
@@ -2817,7 +2840,73 @@ fn validate_checkpoint_startup_suffix(
             .into());
         }
     }
-    Ok(())
+    Ok(terminal_prefix_len)
+}
+
+#[cfg(feature = "federation")]
+async fn repair_checkpoint_startup_application_suffix(
+    mint: &Mint,
+    checkpoint: &FederationCheckpoint,
+    initial_frontier: &FederationCheckpointFrontier,
+    initial_journal_entries: &[FederationJournalEntry],
+    finalized_items: &[FederationAlephBftFinalizedItem],
+    terminal_prefix_len: usize,
+    consensus: &mut FederationConsensusRuntime,
+) -> std::result::Result<usize, cdk::Error> {
+    let entries_to_replay = &initial_journal_entries[terminal_prefix_len..];
+    if !entries_to_replay.is_empty() {
+        tracing::info!(
+            trusted_checkpoint_journal_index = checkpoint.journal_next_index,
+            application_next_index = initial_frontier.application_next_index,
+            journal_next_index = initial_frontier.journal_next_index,
+            replay_entries = entries_to_replay.len(),
+            "Repairing terminal application after trusted checkpoint startup"
+        );
+    } else {
+        return Ok(0);
+    }
+    for entry in entries_to_replay {
+        federation::apply_federation_journal_entry_for_replay(mint, entry).await?;
+    }
+
+    let db = mint.localstore();
+    let repaired_frontier = db.get_federation_checkpoint_frontier().await?;
+    if repaired_frontier.trusted_checkpoint_id != initial_frontier.trusted_checkpoint_id
+        || repaired_frontier.journal_next_index != initial_frontier.journal_next_index
+        || repaired_frontier.journal_order_digest != initial_frontier.journal_order_digest
+        || repaired_frontier.finalized_next_item_index != initial_frontier.finalized_next_item_index
+        || repaired_frontier.finalized_item_digest != initial_frontier.finalized_item_digest
+    {
+        return Err(FederationError::CheckpointStartupSuffixMismatch {
+            reason: "durable ordered frontier changed during startup application replay"
+                .to_string(),
+        }
+        .into());
+    }
+    let repaired_journal_entries = db
+        .get_federation_journal_entries_from(checkpoint.journal_next_index)
+        .await?;
+    let repaired_terminal_prefix_len = validate_checkpoint_startup_suffix(
+        checkpoint,
+        &repaired_frontier,
+        &repaired_journal_entries,
+        finalized_items,
+    )?;
+    if repaired_frontier.application_next_index != repaired_frontier.journal_next_index
+        || repaired_terminal_prefix_len != repaired_journal_entries.len()
+    {
+        return Err(
+            FederationError::CheckpointStartupApplicationReplayIncomplete {
+                expected: repaired_frontier.journal_next_index,
+                found: repaired_frontier.application_next_index,
+            }
+            .into(),
+        );
+    }
+    for entry in repaired_journal_entries {
+        consensus.update_application_state(entry.operation_id, entry.application)?;
+    }
+    Ok(entries_to_replay.len())
 }
 
 #[cfg(feature = "federation")]
@@ -2944,7 +3033,7 @@ async fn create_federation_runtime_state_with_wallet(
                         finalized_rows,
                     );
                 }
-                validate_checkpoint_startup_suffix(
+                let terminal_prefix_len = validate_checkpoint_startup_suffix(
                     &quorum.checkpoint,
                     &frontier,
                     &journal_entries,
@@ -2953,15 +3042,33 @@ async fn create_federation_runtime_state_with_wallet(
                 let recovered_session = latest_aleph_bft_finalized_session(&finalized_items)
                     .max(active_session)
                     .max(quorum.checkpoint.aleph_bft_session);
-                let consensus =
+                let mut consensus =
                     FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint_suffix(
                         config.public_config(),
                         config.member_id(),
                         recovered_session,
                         &quorum.checkpoint,
-                        journal_entries,
-                        finalized_items,
+                        journal_entries.clone(),
+                        finalized_items.clone(),
                     )?;
+                let replayed_entries = repair_checkpoint_startup_application_suffix(
+                    mint,
+                    &quorum.checkpoint,
+                    &frontier,
+                    &journal_entries,
+                    &finalized_items,
+                    terminal_prefix_len,
+                    &mut consensus,
+                )
+                .await?;
+                #[cfg(feature = "prometheus")]
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &config.member_id().to_string(),
+                    cdk_prometheus::FederationCheckpointWork::StartupEntriesReplayed,
+                    u64::try_from(replayed_entries).unwrap_or(u64::MAX),
+                );
+                #[cfg(not(feature = "prometheus"))]
+                let _ = replayed_entries;
                 #[cfg(feature = "prometheus")]
                 cdk_prometheus::METRICS.record_federation_checkpoint_duration(
                     &config.member_id().to_string(),

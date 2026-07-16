@@ -100,6 +100,106 @@ async fn materialized_state_digest_with_metrics(
     Ok(digest)
 }
 
+async fn persist_federation_operation_apply_failure(
+    mint: &Mint,
+    operation_id: FederationOperationId,
+    rejection: Option<&cdk::error::ErrorResponse>,
+) -> Result<FederationOperationStatus, cdk::Error> {
+    let application = match rejection {
+        Some(rejection) => FederationApplicationState::Rejected {
+            response: rejection.clone(),
+        },
+        None => FederationApplicationState::Failed {},
+    };
+    let status = application.status();
+    let db = mint.localstore();
+    let mut tx = db.begin_transaction().await?;
+    let outcome = tx
+        .set_federation_operation_application_state(operation_id, &application)
+        .await;
+    match outcome {
+        Ok(()) => tx.commit().await?,
+        Err(error) => {
+            tx.rollback().await?;
+            return Err(error.into());
+        }
+    }
+    Ok(status)
+}
+
+async fn mark_federation_operation_apply_failure(
+    mint: &Mint,
+    operation_id: FederationOperationId,
+    error: cdk::Error,
+) -> Result<(FederationOperationStatus, cdk::Error), cdk::Error> {
+    if !error.is_definitive_failure() {
+        let status = persist_federation_operation_apply_failure(mint, operation_id, None).await?;
+        return Ok((status, error));
+    }
+
+    let rejection = cdk::error::ErrorResponse::from(error);
+    let status =
+        persist_federation_operation_apply_failure(mint, operation_id, Some(&rejection)).await?;
+    Ok((status, cdk::Error::from(rejection)))
+}
+
+pub(crate) async fn apply_federation_journal_entry_for_replay(
+    mint: &Mint,
+    entry: &FederationJournalEntry,
+) -> Result<Option<FederationOperationId>, cdk::Error> {
+    if entry.application.is_terminal() {
+        return Ok(None);
+    }
+    let mut replay_entry = entry.clone();
+    if replay_entry.status() == FederationOperationStatus::Failed {
+        replay_entry.application = FederationApplicationState::Accepted {};
+    }
+    let mut attempts = 0usize;
+    let mut retry_delay = crate::FEDERATION_APPLY_RETRY_INITIAL_DELAY;
+
+    loop {
+        match mint
+            .apply_accepted_federation_operation(&replay_entry)
+            .await
+        {
+            Ok(true) => {
+                if attempts > 0 {
+                    tracing::info!(
+                        operation_id = %entry.operation_id,
+                        retry_attempts = attempts,
+                        "Federation journal replay apply recovered after transient storage contention"
+                    );
+                }
+                return Ok(Some(entry.operation_id));
+            }
+            Ok(false) => return Ok(None),
+            Err(err) if crate::is_retryable_federation_apply_error(&err) => {
+                attempts = attempts.saturating_add(1);
+                if attempts == 1 || attempts % 10 == 0 {
+                    tracing::warn!(
+                        operation_id = %entry.operation_id,
+                        retry_attempts = attempts,
+                        retry_delay_ms = retry_delay.as_millis(),
+                        "Federation journal replay apply hit transient storage contention; retrying"
+                    );
+                }
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = retry_delay
+                    .saturating_mul(2)
+                    .min(crate::FEDERATION_APPLY_RETRY_MAX_DELAY);
+            }
+            Err(err) => {
+                let (status, err) =
+                    mark_federation_operation_apply_failure(mint, entry.operation_id, err).await?;
+                if status == FederationOperationStatus::Rejected {
+                    return Ok(None);
+                }
+                return Err(err);
+            }
+        }
+    }
+}
+
 fn verify_checkpoint_signature_with_metrics(
     signature: &FederationCheckpointSignature,
     checkpoint: &FederationCheckpoint,
@@ -2615,52 +2715,22 @@ impl FederationNodeRuntime {
         &self,
         entry: &FederationJournalEntry,
     ) -> Result<Option<FederationOperationId>, cdk::Error> {
-        let mut attempts = 0usize;
-        let mut retry_delay = crate::FEDERATION_APPLY_RETRY_INITIAL_DELAY;
-
-        loop {
-            match self
-                .active_mint()?
-                .apply_accepted_federation_operation(entry)
-                .await
-            {
-                Ok(true) => {
-                    if attempts > 0 {
-                        tracing::info!(
-                            operation_id = %entry.operation_id,
-                            retry_attempts = attempts,
-                            "Federation journal replay apply recovered after transient storage contention"
-                        );
-                    }
-                    return Ok(Some(entry.operation_id));
-                }
-                Ok(false) => return Ok(None),
-                Err(err) if crate::is_retryable_federation_apply_error(&err) => {
-                    attempts = attempts.saturating_add(1);
-                    if attempts == 1 || attempts % 10 == 0 {
-                        tracing::warn!(
-                            operation_id = %entry.operation_id,
-                            retry_attempts = attempts,
-                            retry_delay_ms = retry_delay.as_millis(),
-                            "Federation journal replay apply hit transient storage contention; retrying"
-                        );
-                    }
-                    tokio::time::sleep(retry_delay).await;
-                    retry_delay = retry_delay
-                        .saturating_mul(2)
-                        .min(crate::FEDERATION_APPLY_RETRY_MAX_DELAY);
-                }
-                Err(err) => {
-                    let (status, err) = self
-                        .mark_operation_apply_failure(entry.operation_id, err)
-                        .await?;
-                    if status == FederationOperationStatus::Rejected {
-                        return Ok(None);
-                    }
-                    return Err(err);
-                }
-            }
+        let mint = self.active_mint()?;
+        let outcome = apply_federation_journal_entry_for_replay(mint, entry).await;
+        if outcome.is_err() {
+            let persisted = mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(entry.operation_id)
+                .await?
+                .ok_or_else(|| {
+                    cdk::Error::Federation(FederationError::UnknownOperation {
+                        operation_id: entry.operation_id.to_string(),
+                    })
+                })?;
+            self.mark_operation_applications(&[(entry.operation_id, persisted.application)])
+                .await?;
         }
+        outcome
     }
 
     async fn mark_operation_applications(
@@ -2675,59 +2745,5 @@ impl FederationNodeRuntime {
             consensus.update_application_state(*operation_id, application.clone())?;
         }
         Ok(())
-    }
-
-    async fn persist_operation_apply_failure(
-        &self,
-        operation_id: FederationOperationId,
-        rejection: Option<&cdk::error::ErrorResponse>,
-    ) -> Result<FederationOperationStatus, cdk::Error> {
-        let application = match rejection {
-            Some(rejection) => FederationApplicationState::Rejected {
-                response: rejection.clone(),
-            },
-            None => FederationApplicationState::Failed {},
-        };
-        let status = application.status();
-        let db = self.active_mint()?.localstore();
-        let mut tx = db.begin_transaction().await?;
-        let outcome = tx
-            .set_federation_operation_application_state(operation_id, &application)
-            .await;
-        match outcome {
-            Ok(()) => tx.commit().await?,
-            Err(error) => {
-                tx.rollback().await?;
-                return Err(error.into());
-            }
-        }
-
-        if let Some(consensus) = &self.consensus {
-            consensus
-                .lock()
-                .await
-                .update_application_state(operation_id, application)?;
-        }
-        Ok(status)
-    }
-
-    async fn mark_operation_apply_failure(
-        &self,
-        operation_id: FederationOperationId,
-        error: cdk::Error,
-    ) -> Result<(FederationOperationStatus, cdk::Error), cdk::Error> {
-        if !error.is_definitive_failure() {
-            let status = self
-                .persist_operation_apply_failure(operation_id, None)
-                .await?;
-            return Ok((status, error));
-        }
-
-        let rejection = cdk::error::ErrorResponse::from(error);
-        let status = self
-            .persist_operation_apply_failure(operation_id, Some(&rejection))
-            .await?;
-
-        Ok((status, cdk::Error::from(rejection)))
     }
 }

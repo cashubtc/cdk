@@ -541,6 +541,22 @@ pub enum FederationError {
         /// Stable validation reason without operation payloads.
         reason: String,
     },
+    /// Durable history after a trusted checkpoint does not form one valid ordered suffix.
+    #[error("Federation checkpoint startup suffix is invalid: {reason}")]
+    CheckpointStartupSuffixMismatch {
+        /// Stable validation reason without operation payloads.
+        reason: String,
+    },
+    /// Startup replay did not advance terminal application through the durable journal frontier.
+    #[error(
+        "Federation checkpoint startup application replay is incomplete: expected={expected}, found={found}"
+    )]
+    CheckpointStartupApplicationReplayIncomplete {
+        /// Durable journal cursor startup replay had to reach.
+        expected: u64,
+        /// Durable application cursor reached after replay.
+        found: u64,
+    },
     /// An explicit full-state audit disagreed with the trusted checkpoint.
     #[error(
         "Federation materialized-state audit mismatch for checkpoint {checkpoint_id}: expected={expected}, found={found}"

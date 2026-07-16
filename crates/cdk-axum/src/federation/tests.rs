@@ -7672,7 +7672,10 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
     assert_eq!(consensus.finalized_items()[2].accepted_item_index, 3);
 }
 
-async fn assert_trusted_checkpoint_partial_tail_restart_is_rejected(terminal_suffix_prefix: usize) {
+async fn assert_trusted_checkpoint_partial_tail_restart_recovers(
+    terminal_suffix_prefix: usize,
+    mark_first_entry_failed: bool,
+) {
     let (state, public_config, peer_private) = federation_route_state().await;
     state
         .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
@@ -7701,6 +7704,7 @@ async fn assert_trusted_checkpoint_partial_tail_restart_is_rejected(terminal_suf
         .expect("promote trusted checkpoint");
     tx.commit().await.expect("commit trusted checkpoint");
 
+    let suffix_quote_ids = [QuoteId::new(), QuoteId::new()];
     let payload = {
         let consensus = state
             .federation
@@ -7715,9 +7719,10 @@ async fn assert_trusted_checkpoint_partial_tail_restart_is_rejected(terminal_suf
             status.local_member,
             status.session,
             consensus.next_unit_index(),
-            (0..2)
-                .map(|_| {
-                    FederationConsensusItem::operation(mint_quote_envelope(&state, &QuoteId::new()))
+            suffix_quote_ids
+                .iter()
+                .map(|quote_id| {
+                    FederationConsensusItem::operation(mint_quote_envelope(&state, quote_id))
                 })
                 .collect(),
         )
@@ -7770,6 +7775,20 @@ async fn assert_trusted_checkpoint_partial_tail_restart_is_rejected(terminal_suf
         .apply_journal_entries(&entries[..terminal_suffix_prefix])
         .await
         .expect("apply checkpoint crash terminal prefix");
+    if mark_first_entry_failed {
+        assert_eq!(terminal_suffix_prefix, 0);
+        let mut tx = db
+            .begin_transaction()
+            .await
+            .expect("begin failed checkpoint suffix transaction");
+        tx.set_federation_operation_application_state(
+            entries[0].operation_id,
+            &cdk::federation::FederationApplicationState::Failed {},
+        )
+        .await
+        .expect("mark checkpoint suffix operation failed");
+        tx.commit().await.expect("commit failed checkpoint suffix");
+    }
 
     let frontier = db
         .get_federation_checkpoint_frontier()
@@ -7788,27 +7807,434 @@ async fn assert_trusted_checkpoint_partial_tail_restart_is_rejected(terminal_suf
         checkpoint.journal_next_index + terminal_suffix_prefix as u64
     );
 
-    let err = crate::create_federation_runtime_state(&state.mint)
+    let (restarted, _) = crate::create_federation_runtime_state(&state.mint)
         .await
-        .expect_err("current trusted-checkpoint startup must expose the replay hole");
-    assert!(
-        matches!(
-            err.downcast_ref::<cdk::Error>(),
-            Some(cdk::Error::Federation(FederationError::CheckpointInvalid { reason }))
-                if reason == "checkpoint startup suffix is not terminally applied"
-        ),
-        "unexpected checkpoint crash baseline error: {err}"
+        .expect("trusted-checkpoint startup repairs terminal application");
+    let repaired_frontier = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("repaired checkpoint frontier");
+    assert_eq!(
+        repaired_frontier.application_next_index,
+        repaired_frontier.journal_next_index
+    );
+    let repaired_entries = db
+        .get_federation_journal_entries_from(checkpoint.journal_next_index)
+        .await
+        .expect("repaired checkpoint journal suffix");
+    assert_eq!(repaired_entries.len(), suffix_quote_ids.len());
+    assert!(repaired_entries.iter().all(|entry| {
+        entry.application == cdk::federation::FederationApplicationState::Applied {}
+    }));
+    let expected_application_digest = repaired_entries
+        .iter()
+        .try_fold(checkpoint.application_digest, |digest, entry| {
+            digest.append_terminal(entry.index, entry.operation_id, &entry.application)
+        })
+        .expect("repaired application digest");
+    assert_eq!(
+        repaired_frontier.application_digest,
+        expected_application_digest
+    );
+    for quote_id in &suffix_quote_ids {
+        assert!(db
+            .get_mint_quote(quote_id)
+            .await
+            .expect("repaired suffix quote lookup")
+            .is_some());
+    }
+    let restarted = restarted.expect("repaired checkpoint consensus");
+    let restarted = restarted.lock().await;
+    assert_eq!(restarted.journal().entries().len(), suffix_quote_ids.len());
+    assert!(restarted.journal().entries().iter().all(|entry| {
+        entry.application == cdk::federation::FederationApplicationState::Applied {}
+    }));
+    drop(restarted);
+
+    let snapshot_after_repair = materialized_state_snapshot(&state)
+        .await
+        .expect("materialized state after checkpoint repair");
+    crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("second startup uses terminal checkpoint tail");
+    assert_eq!(
+        materialized_state_snapshot(&state)
+            .await
+            .expect("materialized state after second startup"),
+        snapshot_after_repair
     );
 }
 
 #[tokio::test]
-async fn trusted_checkpoint_restart_rejects_suffix_before_first_application() {
-    assert_trusted_checkpoint_partial_tail_restart_is_rejected(0).await;
+async fn trusted_checkpoint_restart_recovers_suffix_before_first_application() {
+    assert_trusted_checkpoint_partial_tail_restart_recovers(0, false).await;
 }
 
 #[tokio::test]
-async fn trusted_checkpoint_restart_rejects_partially_applied_suffix() {
-    assert_trusted_checkpoint_partial_tail_restart_is_rejected(1).await;
+async fn trusted_checkpoint_restart_recovers_partially_applied_suffix() {
+    assert_trusted_checkpoint_partial_tail_restart_recovers(1, false).await;
+}
+
+#[tokio::test]
+async fn trusted_checkpoint_restart_retries_failed_suffix_application() {
+    assert_trusted_checkpoint_partial_tail_restart_recovers(0, true).await;
+}
+
+async fn assert_trusted_checkpoint_suffix_rejects_corruption(alter_consensus_evidence: bool) {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("apply corruption checkpoint base");
+    let local_private = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .private_config()
+        .clone();
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        &state,
+        &public_config,
+        None,
+        &[&local_private, &peer_private],
+    )
+    .await;
+    let db = state.mint.localstore();
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin corruption checkpoint promotion");
+    tx.promote_verified_federation_checkpoint(&quorum)
+        .await
+        .expect("promote corruption checkpoint");
+    tx.commit().await.expect("commit corruption checkpoint");
+
+    let (journal_entry, finalized_items) = {
+        let consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("corruption checkpoint consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        let accepted_envelope = mint_quote_envelope(&state, &QuoteId::new());
+        let accepted_payload = FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            vec![FederationConsensusItem::operation(accepted_envelope)],
+        )
+        .expect("accepted corruption payload");
+        let mut accepted_runtime = consensus.clone();
+        let finalized_start = accepted_runtime.finalized_items().len();
+        let accepted_response = accepted_runtime
+            .finalize_unit(accepted_payload)
+            .expect("finalize accepted corruption payload")
+            .into_iter()
+            .next()
+            .expect("accepted corruption response");
+        let finalized_items = accepted_runtime.finalized_items()[finalized_start..].to_vec();
+        let mut journal_entry = accepted_response.outcome.entry().clone();
+        if alter_consensus_evidence {
+            let evidence = journal_entry
+                .consensus_evidence
+                .as_mut()
+                .expect("accepted consensus evidence");
+            evidence.unit_index = evidence.unit_index.saturating_add(1);
+        } else {
+            let changed_payload = FederationAlephBftUnitPayload::new(
+                status.federation_id,
+                status.local_member,
+                status.session,
+                consensus.next_unit_index(),
+                vec![FederationConsensusItem::operation(mint_quote_envelope(
+                    &state,
+                    &QuoteId::new(),
+                ))],
+            )
+            .expect("changed corruption payload");
+            let mut changed_runtime = consensus.clone();
+            journal_entry = changed_runtime
+                .finalize_unit(changed_payload)
+                .expect("finalize changed corruption payload")
+                .into_iter()
+                .next()
+                .expect("changed corruption response")
+                .outcome
+                .entry()
+                .clone();
+        }
+        (journal_entry, finalized_items)
+    };
+    let corrupted_operation_id = journal_entry.operation_id;
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin corrupted checkpoint suffix transaction");
+    tx.add_federation_aleph_bft_finalized_items(&finalized_items)
+        .await
+        .expect("persist corrupted checkpoint finalized suffix");
+    tx.add_federation_journal_entry(&journal_entry)
+        .await
+        .expect("persist corrupted checkpoint journal suffix");
+    tx.commit()
+        .await
+        .expect("commit corrupted checkpoint suffix");
+
+    let error = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect_err("corrupted trusted-checkpoint suffix must fail closed");
+    assert!(matches!(
+        error.downcast_ref::<cdk::Error>(),
+        Some(cdk::Error::Federation(
+            FederationError::AlephBftFinalizedItemRecoveryMismatch { .. }
+        ))
+    ));
+    assert!(db
+        .get_federation_journal_entry_by_operation_id(corrupted_operation_id)
+        .await
+        .expect("corrupted operation lookup")
+        .is_some());
+    assert_eq!(
+        db.get_federation_checkpoint_frontier()
+            .await
+            .expect("corrupted checkpoint frontier")
+            .application_next_index,
+        checkpoint.journal_next_index
+    );
+}
+
+#[tokio::test]
+async fn trusted_checkpoint_restart_rejects_changed_suffix_envelope() {
+    assert_trusted_checkpoint_suffix_rejects_corruption(false).await;
+}
+
+#[tokio::test]
+async fn trusted_checkpoint_restart_rejects_changed_suffix_consensus_evidence() {
+    assert_trusted_checkpoint_suffix_rejects_corruption(true).await;
+}
+
+#[tokio::test]
+async fn trusted_checkpoint_startup_rejects_changed_terminal_result() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("apply terminal-result checkpoint base");
+    let local_private = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .private_config()
+        .clone();
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        &state,
+        &public_config,
+        None,
+        &[&local_private, &peer_private],
+    )
+    .await;
+    let db = state.mint.localstore();
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin terminal-result checkpoint promotion");
+    tx.promote_verified_federation_checkpoint(&quorum)
+        .await
+        .expect("promote terminal-result checkpoint");
+    tx.commit()
+        .await
+        .expect("commit terminal-result checkpoint");
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("apply terminal-result checkpoint suffix");
+
+    let frontier = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("terminal-result checkpoint frontier");
+    let mut journal_entries = db
+        .get_federation_journal_entries_from(checkpoint.journal_next_index)
+        .await
+        .expect("terminal-result checkpoint journal suffix");
+    let finalized_items = db
+        .get_federation_aleph_bft_finalized_items_from(checkpoint.finalized_next_item_index)
+        .await
+        .expect("terminal-result checkpoint finalized suffix");
+    assert_eq!(journal_entries.len(), 1);
+    journal_entries[0].application = cdk::federation::FederationApplicationState::Rejected {
+        response: cdk::error::ErrorResponse::from(cdk::Error::TokenAlreadySpent),
+    };
+
+    let error = crate::validate_checkpoint_startup_suffix(
+        &checkpoint,
+        &frontier,
+        &journal_entries,
+        &finalized_items,
+    )
+    .expect_err("changed terminal result must fail suffix verification");
+    assert!(matches!(
+        error,
+        cdk::Error::Federation(FederationError::CheckpointStartupSuffixMismatch { .. })
+    ));
+}
+
+#[tokio::test]
+async fn trusted_checkpoint_restart_replays_rejection_and_later_operation() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let config = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    let spent_input = proof_for_amount(&state, 1, "checkpoint-replay-conflict");
+    let first_request = cdk::nuts::SwapRequest::new(
+        vec![spent_input.clone()],
+        vec![swap_output(&state, "checkpoint-replay-first")],
+    );
+    state
+        .submit_federation_envelope(
+            config
+                .swap_operation(first_request)
+                .expect("first swap envelope"),
+        )
+        .await
+        .expect("apply checkpoint base swap");
+
+    let local_private = config.private_config().clone();
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        &state,
+        &public_config,
+        None,
+        &[&local_private, &peer_private],
+    )
+    .await;
+    let db = state.mint.localstore();
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin rejection checkpoint promotion");
+    tx.promote_verified_federation_checkpoint(&quorum)
+        .await
+        .expect("promote rejection checkpoint");
+    tx.commit().await.expect("commit rejection checkpoint");
+
+    let conflicting_envelope = config
+        .swap_operation(cdk::nuts::SwapRequest::new(
+            vec![spent_input],
+            vec![swap_output(&state, "checkpoint-replay-conflicting")],
+        ))
+        .expect("conflicting swap envelope");
+    let conflicting_operation_id = conflicting_envelope
+        .operation_id()
+        .expect("conflicting operation id");
+    let later_input = proof_for_amount(&state, 1, "checkpoint-replay-later");
+    let later_input_y = later_input.y().expect("later input y");
+    let later_envelope = config
+        .swap_operation(cdk::nuts::SwapRequest::new(
+            vec![later_input],
+            vec![swap_output(&state, "checkpoint-replay-later")],
+        ))
+        .expect("later swap envelope");
+    let later_operation_id = later_envelope.operation_id().expect("later operation id");
+    let payload = {
+        let consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("rejection checkpoint consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            vec![
+                FederationConsensusItem::operation(conflicting_envelope),
+                FederationConsensusItem::operation(later_envelope),
+            ],
+        )
+        .expect("rejection checkpoint suffix payload")
+    };
+    let (finalized_items, entries) = {
+        let consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("rejection checkpoint consensus")
+            .lock()
+            .await;
+        let mut next_consensus = consensus.clone();
+        let finalized_start = next_consensus.finalized_items().len();
+        let responses = next_consensus
+            .finalize_unit(payload)
+            .expect("finalize rejection checkpoint suffix");
+        let finalized_items = next_consensus.finalized_items()[finalized_start..].to_vec();
+        let entries = responses
+            .into_iter()
+            .filter_map(|response| match response.outcome {
+                FederationJournalAppendOutcome::Appended(entry) => Some(entry),
+                FederationJournalAppendOutcome::Duplicate(_) => None,
+            })
+            .collect::<Vec<_>>();
+        (finalized_items, entries)
+    };
+    state
+        .federation
+        .persist_finalization(&finalized_items, &entries)
+        .await
+        .expect("persist rejection checkpoint suffix before application");
+
+    crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("startup replays rejection checkpoint suffix");
+    let repaired = db
+        .get_federation_journal_entries_from(checkpoint.journal_next_index)
+        .await
+        .expect("repaired rejection checkpoint suffix");
+    assert_eq!(repaired.len(), 2);
+    assert_eq!(repaired[0].operation_id, conflicting_operation_id);
+    assert_eq!(repaired[0].status(), FederationOperationStatus::Rejected);
+    let rejection = repaired[0]
+        .rejection()
+        .expect("standard deterministic rejection response")
+        .clone();
+    assert_eq!(repaired[1].operation_id, later_operation_id);
+    assert_eq!(repaired[1].status(), FederationOperationStatus::Applied);
+    assert_eq!(
+        db.get_proofs_states(&[later_input_y])
+            .await
+            .expect("later proof state"),
+        vec![Some(cdk::nuts::State::Spent)]
+    );
+    let frontier = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("rejection checkpoint frontier");
+    assert_eq!(frontier.application_next_index, frontier.journal_next_index);
+    let application_digest = frontier.application_digest;
+
+    crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("second rejection checkpoint startup");
+    let stable_rejection = db
+        .get_federation_journal_entry_by_operation_id(conflicting_operation_id)
+        .await
+        .expect("stable rejection lookup")
+        .expect("stable rejected operation");
+    assert_eq!(stable_rejection.rejection(), Some(&rejection));
+    assert_eq!(
+        db.get_federation_checkpoint_frontier()
+            .await
+            .expect("stable rejection checkpoint frontier")
+            .application_digest,
+        application_digest
+    );
 }
 
 #[tokio::test]

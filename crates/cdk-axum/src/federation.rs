@@ -90,7 +90,9 @@ use self::frost_signing::{
     post_frost_aggregate_result, post_frost_signing_abort, post_frost_signing_commitment,
     post_frost_signing_package,
 };
-pub(crate) use self::node_runtime::FederationNodeRuntime;
+pub(crate) use self::node_runtime::{
+    apply_federation_journal_entry_for_replay, FederationNodeRuntime,
+};
 use self::operator_routes::{post_wallet_rebroadcast, post_wallet_transaction_status};
 use self::payment_observation::payment_observation_report_summaries;
 pub(crate) use self::payment_observation::FederationPaymentObserver;

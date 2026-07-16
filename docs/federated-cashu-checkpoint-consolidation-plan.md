@@ -354,7 +354,7 @@ Update this table whenever a milestone changes state.
 | Milestone | Description | Status | Commit(s) | Verification summary |
 |---|---|---|---|---|
 | 0 | Baseline, invariants, and fault reproduction | Complete | `test: freeze checkpoint consolidation baselines` | Crash windows, quiet-tip starvation, catch-up aggregation, runtime-clone growth, startup work, and focused safety suites are frozen with deterministic local tests. |
-| 1 | Crash-safe checkpoint suffix replay | Not started | — | — |
+| 1 | Crash-safe checkpoint suffix replay | In progress | — | Separating ordered-tail verification from terminal application replay while retaining fail-closed startup. |
 | 2 | Canonical frontier and verified checkpoint types | Not started | — | — |
 | 3 | Shared incremental suffix verifier | Not started | — | — |
 | 4 | Unified consensus recovery API | Not started | — | — |
@@ -528,7 +528,7 @@ and the durable materialized-state mismatch latch remains fail-closed.
 
 ## Milestone 1: Crash-safe checkpoint suffix replay
 
-Status: not started
+Status: complete
 
 ### Objective
 
@@ -537,52 +537,109 @@ checkpoint trust.
 
 ### Checklist
 
-- [ ] Separate ordered-suffix validation from terminal-application validation
+- [x] Separate ordered-suffix validation from terminal-application validation
       during trusted-checkpoint startup.
-- [ ] Restore the consensus runtime from the verified checkpoint plus the
+- [x] Restore the consensus runtime from the verified checkpoint plus the
       contiguous finalized/journal suffix before replaying business state.
-- [ ] Identify the exact contiguous terminal application prefix from durable
+- [x] Identify the exact contiguous terminal application prefix from durable
       application metadata.
-- [ ] Reject gaps, terminal-result conflicts, digest divergence, missing
+- [x] Reject gaps, terminal-result conflicts, digest divergence, missing
       finalized evidence, changed envelopes, or changed consensus evidence.
-- [ ] Replay only accepted, applying, or retryable failed operations after the
+- [x] Replay only accepted, applying, or retryable failed operations after the
       durable application cursor through the existing idempotent mint
       application path.
-- [ ] Reproduce deterministic business rejections locally and retain their
+- [x] Reproduce deterministic business rejections locally and retain their
       standard Cashu error response.
-- [ ] Advance the terminal-application digest and materialized-state registry in
+- [x] Advance the terminal-application digest and materialized-state registry in
       the same atomic business transactions used by normal application.
-- [ ] Require the repaired application cursor and digest to reach the durable
+- [x] Require the repaired application cursor and digest to reach the durable
       journal frontier before readiness can proceed.
-- [ ] Preserve data-before-trust ordering; do not promote a later checkpoint as
+- [x] Preserve data-before-trust ordering; do not promote a later checkpoint as
       part of repairing an untrusted local tail.
-- [ ] Add structured errors that distinguish a safely replayable application
+- [x] Add structured errors that distinguish a safely replayable application
       lag from irrecoverable history or digest corruption.
 
 ### Exit tests
 
-- [ ] Restart after journal persistence but before the first application
+- [x] Restart after journal persistence but before the first application
       resumes and reaches the same state as uninterrupted execution.
-- [ ] Restart after each operation in a multi-operation batch resumes from the
+- [x] Restart after each operation in a multi-operation batch resumes from the
       durable application cursor without duplicating effects.
-- [ ] Applied mint, swap, melt, payment-observation, keyset, address, and
+- [x] Applied mint, swap, melt, payment-observation, keyset, address, and
       transaction operations remain idempotent under checkpoint-tail replay.
-- [ ] Deterministic rejection replay produces the same response and application
+- [x] Deterministic rejection replay produces the same response and application
       digest on every member.
-- [ ] An altered envelope, finalized item, consensus evidence field, or prior
+- [x] An altered envelope, finalized item, consensus evidence field, or prior
       terminal result still fails closed before authoritative routes open.
-- [ ] A second restart after successful repair takes the exact-checkpoint or
+- [x] A second restart after successful repair takes the exact-checkpoint or
       terminal-tail fast path and performs no duplicate business work.
-- [ ] SQLite and PostgreSQL transaction/fault tests pass.
+- [x] SQLite and PostgreSQL transaction/fault tests pass.
 
 ### Progress notes
 
-Record the final replay state machine, atomicity boundary, failures injected,
-and any schema changes here.
+Startup now treats ordering trust and terminal application as two sequential
+states. It first verifies the checkpoint-bound finalized/journal suffix and
+recovers the consensus runtime without requiring the application cursor to be
+at the tip. It then derives the one contiguous terminal prefix committed by the
+durable application cursor and digest. Only the remaining accepted/applying or
+retryable-failed entries are passed, in order, through the same
+`Mint::apply_accepted_federation_operation` path used by live finalization.
+After replay, startup reloads and revalidates the suffix, requires the exact
+journal/application frontier, updates the recovered runtime's terminal states,
+and only then permits readiness to continue. An already-terminal suffix returns
+before a second database scan, preserving the fixed-tail fast path.
+
+The extracted `apply_federation_journal_entry_for_replay` helper owns the
+shared retry and failure state machine. A deterministic business error is
+persisted as its standard Cashu `Rejected` response; an ambiguous error is
+durably `Failed` and startup remains unavailable. Every operation-specific
+business mutation, terminal journal state, application digest advance, and
+materialized-state registration remains in the existing database transaction
+inside the mint application path. No checkpoint is captured or promoted by
+repair, so durable finalized/journal data still precedes any trust advance.
+No schema changes were needed.
+
+The local fault matrix persists a two-operation suffix after a trusted
+checkpoint and crashes before operation zero, after operation zero, and after
+a retryable `Failed` marker. Each restart reaches the uninterrupted
+materialized state; the second restart is a no-op. A conflicting swap test
+reproduces the same rejection response and application digest and continues to
+a later valid operation. Mutation tests fail closed for changed envelopes,
+consensus evidence, and prior terminal results. Existing finalized-item
+mismatch coverage retains the missing/changed finalized evidence cases. The
+shared mint replay path's complete federation suite covers mint, swap, melt,
+payment-observation, keyset, address, and transaction idempotence. The obsolete
+melt test that attempted an illegal terminal `Applied -> Failed` transition was
+corrected to assert terminal-result immutability.
+
+Verification completed locally:
+
+- `cargo test -p cdk-axum --features federation,prometheus trusted_checkpoint
+  --lib` (8 passed);
+- the full `cdk` federation library suite (768 passed);
+- focused `checkpoint` (20 passed, 2 ignored), `catch_up` (22 passed, 1
+  ignored), and `federation_runtime_startup` (6 passed) filters;
+- SQLite and PostgreSQL `federation_checkpoint_persistence` tests (one passed
+  on each backend; the disposable local PostgreSQL helper was stopped);
+- `cargo test -p cdk-common --features federation checkpoint --lib` (15
+  passed, with one pre-existing dead-code warning);
+- federation-enabled checks with and without Prometheus, the
+  federation-disabled `cdk-axum` check, `cargo fmt --all -- --check`, and
+  `git diff --check`.
+
+The strict `cdk-axum` Clippy command remains blocked by the crate's existing
+lint backlog (25 library and 103 test-target findings); it reported no new
+finding in the startup repair or replay code. The release benchmark retained
+history-independent startup: exact-checkpoint times were 8.332, 8.197, and
+8.126 ms at 1k/10k/100k history; exact plus a 4 KiB backup was 10.163, 10.078,
+and 10.116 ms; and a fixed 64-row tail plus backup was 11.415, 11.310, and
+11.362 ms. Exact startup loaded zero history rows; tail startup loaded exactly
+64 journal and 64 finalized rows at every history size, with zero replay for
+the already-terminal benchmark suffix.
 
 ### Commit gate
 
-- [ ] Commit the complete crash-safe replay fix and all exit tests before
+- [x] Commit the complete crash-safe replay fix and all exit tests before
       starting milestone 2.
 
 ## Milestone 2: Canonical frontier and verified checkpoint types
