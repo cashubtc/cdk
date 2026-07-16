@@ -22,12 +22,13 @@ use cdk::federation::{
     FederationCheckpointQuorum, FederationCheckpointQuorumResponse, FederationCheckpointSignature,
     FederationCheckpointSignatureResponse, FederationCheckpointSummary,
     FederationCheckpointSummaryResponse, FederationConfig, FederationConsensusItem,
-    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgSetupState, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
-    FederationError, FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
+    FederationConsensusItemAdmission, FederationConsensusRecoveryBase, FederationConsensusRuntime,
+    FederationConsensusRuntimeStatus, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record, FederationFrostRootRecord,
     FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationOperationEnvelope, FederationOperationId,
@@ -989,7 +990,7 @@ impl FederationNodeRuntime {
         response: &FederationJournalCatchUpResponse,
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
         let _application = self.operation_application.lock().await;
-        self.apply_verified_catch_up_response_under_application_lock(response, None, None)
+        self.apply_verified_catch_up_response_under_application_lock(response)
             .await
     }
 
@@ -1052,12 +1053,15 @@ impl FederationNodeRuntime {
             }
             .into());
         }
-        let checkpoint_runtime =
-            FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint(
+        let checkpoint_runtime = FederationConsensusRuntime::recover_verified_suffix(
+            FederationSuffixVerifier::new(
                 public_config,
                 runtime_config.member_id(),
-                checkpoint,
-            )?;
+                checkpoint.aleph_bft_session,
+                FederationConsensusRecoveryBase::Checkpoint(&verified_quorum),
+            )?
+            .finish_for_checkpoint(&verified_quorum)?,
+        );
         #[cfg(feature = "prometheus")]
         let promotion_started_at = std::time::Instant::now();
         let mut tx = db.begin_transaction().await?;
@@ -1156,16 +1160,17 @@ impl FederationNodeRuntime {
         .await?;
         let target_session = target_checkpoint.checkpoint().aleph_bft_session;
         let mut verifier = match base_checkpoint {
-            Some(base_checkpoint) => FederationSuffixVerifier::from_checkpoint(
+            Some(base_checkpoint) => FederationSuffixVerifier::new(
                 public_config,
                 runtime_config.member_id(),
                 target_session,
-                base_checkpoint,
+                FederationConsensusRecoveryBase::Checkpoint(base_checkpoint),
             )?,
-            None => FederationSuffixVerifier::from_genesis(
+            None => FederationSuffixVerifier::new(
                 public_config,
                 runtime_config.member_id(),
                 target_session,
+                FederationConsensusRecoveryBase::Genesis,
             )?,
         };
         verifier.register_historical_entries(historical_entries)?;
@@ -1187,7 +1192,7 @@ impl FederationNodeRuntime {
             &recovered_entries[..local_entries.len()],
         );
         let applied = recovered_entries[local_entries.len()..].to_vec();
-        let next_consensus = verified_suffix.into_runtime();
+        let next_consensus = FederationConsensusRuntime::recover_verified_suffix(verified_suffix);
 
         let mut entries_to_apply = entries_to_retry_from_local_overlap;
         entries_to_apply.extend(crate::accepted_federation_journal_entries(&applied));
@@ -1208,8 +1213,6 @@ impl FederationNodeRuntime {
     async fn apply_verified_catch_up_response_under_application_lock(
         &self,
         response: &FederationJournalCatchUpResponse,
-        base_checkpoint: Option<&FederationCheckpoint>,
-        target_checkpoint: Option<&FederationCheckpoint>,
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
         let runtime_config = self
             .active_mint()?
@@ -1226,22 +1229,9 @@ impl FederationNodeRuntime {
             .journal()
             .entries()
             .iter()
-            .filter(|entry| {
-                base_checkpoint
-                    .is_none_or(|checkpoint| entry.index >= checkpoint.journal_next_index)
-            })
             .cloned()
             .collect::<Vec<_>>();
-        let local_finalized_items = consensus
-            .aleph_bft_finalized_items()?
-            .iter()
-            .filter(|item| {
-                base_checkpoint.is_none_or(|checkpoint| {
-                    item.accepted_item_index >= checkpoint.finalized_next_item_index
-                })
-            })
-            .cloned()
-            .collect::<Vec<_>>();
+        let local_finalized_items = consensus.aleph_bft_finalized_items()?.to_vec();
         let status = consensus.aleph_bft_status()?;
         let response_to_apply = crate::catch_up_response_suffix_for_local_journal(
             &local_entries,
@@ -1276,45 +1266,12 @@ impl FederationNodeRuntime {
         retained_items.extend(new_finalized_items.iter().cloned());
         let target_session =
             crate::latest_aleph_bft_finalized_session(&retained_items).max(status.session);
-        let mut next_consensus = match base_checkpoint {
-            Some(base_checkpoint) => {
-                let historical_entries = crate::historical_entries_referenced_by_finalized_items(
-                    self.active_mint()?,
-                    &retained_items,
-                    base_checkpoint.journal_next_index,
-                )
-                .await?;
-                FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint_and_finalized_items(
-                    &public_config,
-                    runtime_config.member_id(),
-                    target_session,
-                    base_checkpoint,
-                    historical_entries,
-                    retained_items,
-                )?
-            }
-            None => FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
-                &public_config,
-                runtime_config.member_id(),
-                target_session,
-                retained_items,
-            )?,
-        };
-        if let Some(checkpoint) = target_checkpoint {
-            let status = next_consensus.aleph_bft_status()?;
-            if status.session != checkpoint.aleph_bft_session
-                || status.next_item_index != checkpoint.finalized_next_item_index
-                || status.next_unit_finalization_index != checkpoint.next_unit_finalization_index
-                || next_consensus.next_unit_index_by_member()
-                    != &checkpoint.next_unit_index_by_member
-            {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "reconstructed AlephBFT cursors do not equal the target checkpoint"
-                        .to_string(),
-                }
-                .into());
-            }
-        }
+        let mut next_consensus = FederationConsensusRuntime::recover_finalized_items_for_test(
+            &public_config,
+            runtime_config.member_id(),
+            target_session,
+            retained_items,
+        )?;
         let recovered_entries_before_status_overlay = next_consensus.journal().entries().to_vec();
         let entries_to_retry_from_local_overlap = crate::stale_local_aleph_bft_entries_to_retry(
             &local_entries,

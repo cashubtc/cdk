@@ -126,13 +126,8 @@ fn authorization_binds_the_original_member_and_payload() {
 fn authenticated_consensus_rejects_observer_impersonation_without_poisoning_the_operation_id() {
     let bundle = config_bundle();
     let config = &bundle.public_config;
-    let mut runtime = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
-        config,
-        member_id(1),
-        0,
-        Vec::new(),
-    )
-    .expect("authenticated runtime");
+    let mut runtime = FederationConsensusRuntime::authenticated_aleph_bft(config, member_id(1), 0)
+        .expect("authenticated runtime");
     let impersonation =
         FederationOperationEnvelope::new(config.federation_id, payment_observation(member_id(2)))
             .authorize(
@@ -168,7 +163,7 @@ fn authenticated_consensus_rejects_observer_impersonation_without_poisoning_the_
         runtime.finalized_items()[0].status,
         FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
     );
-    runtime = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+    runtime = FederationConsensusRuntime::recover_finalized_items_for_test(
         config,
         member_id(1),
         0,

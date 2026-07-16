@@ -79,7 +79,7 @@ pub use self::consensus::{
     FederationAlephBftFinalizedUnitOutcome, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConsensusDefaultItem,
     FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusModuleFact,
-    FederationConsensusRuntime, FederationConsensusRuntimeStatus,
+    FederationConsensusRecoveryBase, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
     FederationVerifiedOperationAdmission, FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
     FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
     FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,

@@ -6,9 +6,10 @@ use super::{
     FederationAlephBftFinalizedItem, FederationAlephBftRecoveryCursor,
     FederationAlephBftUnitPayload, FederationApplicationDigest, FederationApplicationFrontier,
     FederationApplicationState, FederationCatchUpOperation, FederationCheckpointFrontier,
-    FederationCommittedFrontier, FederationConfig, FederationConsensusRuntime, FederationError,
-    FederationFinalizedFrontier, FederationFinalizedItemDigest, FederationJournalEntry,
-    FederationJournalFrontier, MemberId, Result, VerifiedFederationCheckpointQuorum,
+    FederationCommittedFrontier, FederationConfig, FederationConsensusRecoveryBase,
+    FederationConsensusRuntime, FederationError, FederationFinalizedFrontier,
+    FederationFinalizedItemDigest, FederationJournalEntry, FederationJournalFrontier, MemberId,
+    Result, VerifiedFederationCheckpointQuorum,
 };
 
 #[derive(Debug, Clone)]
@@ -98,75 +99,62 @@ pub struct FederationSuffixVerifier {
 }
 
 impl FederationSuffixVerifier {
-    /// Start verification at empty federation history.
-    pub fn from_genesis(
+    /// Start verification from an explicit authenticated recovery base.
+    pub fn new(
         config: &FederationConfig,
         member_id: MemberId,
         active_session: u64,
+        base: FederationConsensusRecoveryBase<'_>,
     ) -> Result<Self> {
-        let runtime = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+        let runtime = FederationConsensusRuntime::from_recovery_base(
             config,
             member_id,
             active_session,
-            Vec::new(),
+            base,
         )?;
+        let (base_journal_next_index, journal_frontier, finalized_frontier, application_frontier) =
+            match base {
+                FederationConsensusRecoveryBase::Genesis => (
+                    0,
+                    FederationJournalFrontier {
+                        next_index: 0,
+                        order_digest: super::FederationJournalDigest::genesis(),
+                    },
+                    FederationFinalizedFrontier {
+                        next_item_index: 0,
+                        item_digest: FederationFinalizedItemDigest::genesis(),
+                    },
+                    FederationApplicationFrontier {
+                        next_index: 0,
+                        digest: FederationApplicationDigest::genesis(),
+                    },
+                ),
+                FederationConsensusRecoveryBase::Checkpoint(checkpoint) => {
+                    let checkpoint = checkpoint.checkpoint();
+                    (
+                        checkpoint.journal_next_index,
+                        FederationJournalFrontier {
+                            next_index: checkpoint.journal_next_index,
+                            order_digest: checkpoint.journal_order_digest,
+                        },
+                        FederationFinalizedFrontier {
+                            next_item_index: checkpoint.finalized_next_item_index,
+                            item_digest: checkpoint.finalized_item_digest,
+                        },
+                        FederationApplicationFrontier {
+                            next_index: checkpoint.journal_next_index,
+                            digest: checkpoint.application_digest,
+                        },
+                    )
+                }
+            };
         Ok(Self {
             runtime,
             active_session,
-            base_journal_next_index: 0,
-            journal_frontier: FederationJournalFrontier {
-                next_index: 0,
-                order_digest: super::FederationJournalDigest::genesis(),
-            },
-            finalized_frontier: FederationFinalizedFrontier {
-                next_item_index: 0,
-                item_digest: FederationFinalizedItemDigest::genesis(),
-            },
-            application_frontier: FederationApplicationFrontier {
-                next_index: 0,
-                digest: FederationApplicationDigest::genesis(),
-            },
-            application_gap_seen: false,
-            pending_unit: Vec::new(),
-            claims: VecDeque::new(),
-            matched_claims: 0,
-            finalized_input_started: false,
-        })
-    }
-
-    /// Start verification after a quorum-verified checkpoint.
-    pub fn from_checkpoint(
-        config: &FederationConfig,
-        member_id: MemberId,
-        active_session: u64,
-        checkpoint: &VerifiedFederationCheckpointQuorum,
-    ) -> Result<Self> {
-        let checkpoint = checkpoint.checkpoint();
-        if active_session < checkpoint.aleph_bft_session {
-            return Err(FederationError::AlephBftUnitSessionMismatch {
-                expected: checkpoint.aleph_bft_session,
-                found: active_session,
-            });
-        }
-        let runtime = FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint(
-            config, member_id, checkpoint,
-        )?;
-        Ok(Self {
-            runtime,
-            active_session,
-            base_journal_next_index: checkpoint.journal_next_index,
-            journal_frontier: FederationJournalFrontier {
-                next_index: checkpoint.journal_next_index,
-                order_digest: checkpoint.journal_order_digest,
-            },
-            finalized_frontier: FederationFinalizedFrontier {
-                next_item_index: checkpoint.finalized_next_item_index,
-                item_digest: checkpoint.finalized_item_digest,
-            },
-            application_frontier: FederationApplicationFrontier {
-                next_index: checkpoint.journal_next_index,
-                digest: checkpoint.application_digest,
-            },
+            base_journal_next_index,
+            journal_frontier,
+            finalized_frontier,
+            application_frontier,
             application_gap_seen: false,
             pending_unit: Vec::new(),
             claims: VecDeque::new(),
@@ -478,9 +466,7 @@ impl VerifiedFederationSuffix {
         self.runtime.aleph_bft_finalized_items()
     }
 
-    /// Consume the proof and recover the runtime it verified incrementally.
-    #[must_use]
-    pub fn into_runtime(self) -> FederationConsensusRuntime {
+    pub(crate) fn into_runtime(self) -> FederationConsensusRuntime {
         self.runtime
     }
 }
@@ -511,6 +497,15 @@ mod tests {
 
     fn member_id(value: u16) -> MemberId {
         MemberId::new(value).expect("member id")
+    }
+
+    fn genesis_verifier(config: &FederationConfig) -> Result<FederationSuffixVerifier> {
+        FederationSuffixVerifier::new(
+            config,
+            member_id(1),
+            0,
+            FederationConsensusRecoveryBase::Genesis,
+        )
     }
 
     fn test_config() -> (FederationConfig, MemberConfigPrivate) {
@@ -594,13 +589,9 @@ mod tests {
 
     fn fixture() -> Fixture {
         let (config, private) = test_config();
-        let mut runtime = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
-            &config,
-            member_id(1),
-            0,
-            Vec::new(),
-        )
-        .expect("runtime");
+        let mut runtime =
+            FederationConsensusRuntime::authenticated_aleph_bft(&config, member_id(1), 0)
+                .expect("runtime");
         for (unit_index, quote) in [(0, "first"), (1, "second")] {
             let payload = FederationAlephBftUnitPayload::new(
                 config.federation_id,
@@ -671,8 +662,7 @@ mod tests {
     }
 
     fn verify_full(fixture: &Fixture, chunks: &[usize]) -> Result<VerifiedFederationSuffix> {
-        let mut verifier =
-            FederationSuffixVerifier::from_genesis(&fixture.config, member_id(1), 0)?;
+        let mut verifier = genesis_verifier(&fixture.config)?;
         let mut start = 0;
         for end in chunks {
             verifier.push_finalized_items(&fixture.finalized[start..*end])?;
@@ -687,8 +677,7 @@ mod tests {
     fn full_and_compact_paths_verify_the_same_frontier() {
         let fixture = fixture();
         let full = verify_full(&fixture, &[]).expect("full suffix");
-        let mut compact = FederationSuffixVerifier::from_genesis(&fixture.config, member_id(1), 0)
-            .expect("compact verifier");
+        let mut compact = genesis_verifier(&fixture.config).expect("compact verifier");
         compact
             .push_finalized_items(&fixture.finalized)
             .expect("compact finalized items");
@@ -706,6 +695,38 @@ mod tests {
             .expect("compact suffix");
 
         assert_eq!(full.frontier(), compact.frontier());
+        let full = FederationConsensusRuntime::recover_verified_suffix(full);
+        let compact = FederationConsensusRuntime::recover_verified_suffix(compact);
+        assert_eq!(
+            full.aleph_bft_status().expect("full status"),
+            compact.aleph_bft_status().expect("compact status")
+        );
+        assert_eq!(
+            full.journal()
+                .entries()
+                .iter()
+                .map(|entry| (entry.index, entry.operation_id, entry.order_digest))
+                .collect::<Vec<_>>(),
+            compact
+                .journal()
+                .entries()
+                .iter()
+                .map(|entry| (entry.index, entry.operation_id, entry.order_digest))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            serde_json::to_vec(
+                full.aleph_bft_finalized_items()
+                    .expect("full finalized items")
+            )
+            .expect("full finalized JSON"),
+            serde_json::to_vec(
+                compact
+                    .aleph_bft_finalized_items()
+                    .expect("compact finalized items")
+            )
+            .expect("compact finalized JSON")
+        );
     }
 
     #[test]
@@ -716,9 +737,7 @@ mod tests {
             let chunked = verify_full(&fixture, &boundaries).expect("chunked suffix");
             assert_eq!(whole.frontier(), chunked.frontier());
         }
-        let mut paged =
-            FederationSuffixVerifier::from_genesis(&fixture.config, member_id(1), 0)
-                .expect("paged verifier");
+        let mut paged = genesis_verifier(&fixture.config).expect("paged verifier");
         for finalized_page in fixture.finalized.chunks(1) {
             paged
                 .push_finalized_items(finalized_page)
@@ -738,8 +757,7 @@ mod tests {
     #[test]
     fn partial_unit_is_rejected_without_a_verified_result() {
         let fixture = fixture();
-        let mut verifier = FederationSuffixVerifier::from_genesis(&fixture.config, member_id(1), 0)
-            .expect("verifier");
+        let mut verifier = genesis_verifier(&fixture.config).expect("verifier");
         verifier
             .push_finalized_items(&fixture.finalized[..1])
             .expect("buffer partial unit");
@@ -785,8 +803,7 @@ mod tests {
         mutations.push(item);
 
         for mutation in mutations {
-            let mut full = FederationSuffixVerifier::from_genesis(&fixture.config, member_id(1), 0)
-                .expect("full verifier");
+            let mut full = genesis_verifier(&fixture.config).expect("full verifier");
             let full_error = full
                 .push_finalized_items(&mutation)
                 .and_then(|()| full.push_journal_entries(&fixture.journal))
@@ -796,9 +813,7 @@ mod tests {
                 })
                 .expect_err("full mutation must fail");
 
-            let mut compact =
-                FederationSuffixVerifier::from_genesis(&fixture.config, member_id(1), 0)
-                    .expect("compact verifier");
+            let mut compact = genesis_verifier(&fixture.config).expect("compact verifier");
             let compact_error = compact
                 .push_finalized_items(&mutation)
                 .and_then(|()| {
@@ -852,8 +867,7 @@ mod tests {
             full_journal[0].previous_order_digest = mutation.previous_order_digest;
             full_journal[0].order_digest = mutation.order_digest;
             full_journal[0].application = mutation.application.clone();
-            let mut full = FederationSuffixVerifier::from_genesis(&fixture.config, member_id(1), 0)
-                .expect("full verifier");
+            let mut full = genesis_verifier(&fixture.config).expect("full verifier");
             let full_error = full
                 .push_finalized_items(&fixture.finalized)
                 .and_then(|()| full.push_journal_entries(&full_journal))
@@ -869,9 +883,7 @@ mod tests {
                 .map(FederationCatchUpOperation::from)
                 .collect::<Vec<_>>();
             compact_entries[0] = mutation;
-            let mut compact =
-                FederationSuffixVerifier::from_genesis(&fixture.config, member_id(1), 0)
-                    .expect("compact verifier");
+            let mut compact = genesis_verifier(&fixture.config).expect("compact verifier");
             let compact_error = compact
                 .push_finalized_items(&fixture.finalized)
                 .and_then(|()| compact.push_catch_up_operations(&compact_entries))
@@ -894,8 +906,7 @@ mod tests {
         fixture.journal[0].application = FederationApplicationState::Accepted {};
         fixture.target.application_next_index = 0;
         fixture.target.application_digest = FederationApplicationDigest::genesis();
-        let mut verifier = FederationSuffixVerifier::from_genesis(&fixture.config, member_id(1), 0)
-            .expect("verifier");
+        let mut verifier = genesis_verifier(&fixture.config).expect("verifier");
         verifier
             .push_finalized_items(&fixture.finalized)
             .expect("finalized items");
@@ -926,13 +937,9 @@ mod tests {
             ],
         )
         .expect("payload");
-        let mut live = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
-            &config,
-            member_id(1),
-            0,
-            Vec::new(),
-        )
-        .expect("live runtime");
+        let mut live =
+            FederationConsensusRuntime::authenticated_aleph_bft(&config, member_id(1), 0)
+                .expect("live runtime");
         live.finalize_aleph_bft_unit(payload)
             .expect("live finalization");
         let finalized = live
@@ -962,8 +969,7 @@ mod tests {
             latest_materialized_state_digest: None,
             materialized_state_audit_mismatch: false,
         };
-        let mut verifier =
-            FederationSuffixVerifier::from_genesis(&config, member_id(1), 0).expect("verifier");
+        let mut verifier = genesis_verifier(&config).expect("verifier");
         verifier
             .push_finalized_items(&finalized)
             .expect("finalized suffix");

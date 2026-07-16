@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use serde_json::json;
@@ -25,6 +25,61 @@ fn member_id() -> MemberId {
 
 fn member_id_value(id: u16) -> MemberId {
     MemberId::new(id).expect("member id")
+}
+
+fn recover_raw_for_test(
+    federation_id: FederationId,
+    local_member: MemberId,
+    session: u64,
+    finalized_items: Vec<FederationAlephBftFinalizedItem>,
+) -> Result<FederationConsensusRuntime> {
+    FederationConsensusRuntime::recover_raw_for_test(
+        federation_id,
+        local_member,
+        session,
+        None,
+        finalized_items,
+    )
+}
+
+fn recover_for_members_for_test<I>(
+    federation_id: FederationId,
+    local_member: MemberId,
+    session: u64,
+    allowed_members: I,
+    finalized_items: Vec<FederationAlephBftFinalizedItem>,
+) -> Result<FederationConsensusRuntime>
+where
+    I: IntoIterator<Item = MemberId>,
+{
+    FederationConsensusRuntime::recover_raw_for_test(
+        federation_id,
+        local_member,
+        session,
+        Some(allowed_members.into_iter().collect::<BTreeSet<_>>()),
+        finalized_items,
+    )
+}
+
+fn recover_with_roster_for_test<I>(
+    federation_id: FederationId,
+    local_member: MemberId,
+    session: u64,
+    member_ids: I,
+    consensus_threshold: u16,
+    finalized_items: Vec<FederationAlephBftFinalizedItem>,
+) -> Result<FederationConsensusRuntime>
+where
+    I: IntoIterator<Item = MemberId>,
+{
+    let allowed_members = validate_runtime_roster(member_ids, consensus_threshold, local_member)?;
+    FederationConsensusRuntime::recover_raw_for_test(
+        federation_id,
+        local_member,
+        session,
+        Some(allowed_members),
+        finalized_items,
+    )
 }
 
 fn keyset_id() -> Id {
@@ -1724,7 +1779,7 @@ fn consensus_runtime_recovers_from_finalized_items() {
         .finalize_unit(duplicate_unit.clone())
         .expect("duplicate finalized");
     let finalized_items = adapter.finalized_items().to_vec();
-    let recovered_runtime = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+    let recovered_runtime = recover_with_roster_for_test(
         federation_id,
         member_id_value(1),
         0,
@@ -1748,7 +1803,7 @@ fn consensus_runtime_recovers_from_finalized_items() {
         2
     );
 
-    let mut recovered = FederationConsensusRuntime::recover_for_members_from_finalized_items(
+    let mut recovered = recover_for_members_for_test(
         federation_id,
         member_id_value(1),
         0,
@@ -1816,7 +1871,7 @@ fn consensus_runtime_starts_at_a_trusted_checkpoint_without_prefix_rows() {
             super::super::FederationMaterializedStateDigest::from_bytes([34; 32]),
         )
         .expect("recovery checkpoint");
-    let mut runtime = FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint(
+    let mut runtime = FederationConsensusRuntime::checkpoint_base_for_test(
         &config,
         member_id_value(1),
         &checkpoint,
@@ -1868,7 +1923,7 @@ fn consensus_runtime_starts_at_a_trusted_checkpoint_without_prefix_rows() {
     assert_eq!(runtime.status().finalized_item_count, 1_201);
     assert_eq!(runtime.status().next_unit_finalization_index, 10);
 
-    let recovered = FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint_suffix(
+    let recovered = FederationConsensusRuntime::recover_checkpoint_suffix_for_test(
         &config,
         member_id_value(1),
         7,
@@ -1913,7 +1968,7 @@ fn consensus_runtime_recovery_preserves_finalized_conflict_rejection() {
         FederationOperationStatus::Rejected
     );
 
-    let recovered = FederationConsensusRuntime::aleph_bft_from_finalized_items(
+    let recovered = recover_with_roster_for_test(
         federation_id,
         member_id_value(1),
         0,
@@ -1955,7 +2010,7 @@ fn consensus_runtime_recovers_next_local_unit_index_from_finalized_items() {
         .finalize_unit(first_unit)
         .expect("finalize first local unit");
 
-    let mut recovered = FederationConsensusRuntime::recover_for_members_from_finalized_items(
+    let mut recovered = recover_for_members_for_test(
         federation_id,
         members[0],
         0,
@@ -2071,7 +2126,7 @@ fn consensus_runtime_recovers_next_local_unit_index_per_rotated_session() {
         .finalize_unit(session_one_unit)
         .expect("finalize session one unit");
 
-    let mut recovered = FederationConsensusRuntime::recover_for_members_from_finalized_items(
+    let mut recovered = recover_for_members_for_test(
         federation_id,
         members[0],
         1,
@@ -2214,7 +2269,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
     let mut gap = finalized_items.clone();
     gap[0].accepted_item_index = 7;
     assert!(matches!(
-        FederationConsensusRuntime::recover_from_finalized_items(
+        recover_raw_for_test(
             federation_id,
             member_id_value(1),
             0,
@@ -2228,7 +2283,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
     mismatched_operation_id[0].operation_id =
         Some(other_envelope.operation_id().expect("other operation id"));
     assert!(matches!(
-        FederationConsensusRuntime::recover_from_finalized_items(
+        recover_raw_for_test(
             federation_id,
             member_id_value(1),
             0,
@@ -2241,7 +2296,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
     let mut mismatched_body_hash = finalized_items.clone();
     mismatched_body_hash[0].unit_body_hash = FederationAlephBftUnitBodyHash::from_bytes([9; 32]);
     assert!(matches!(
-        FederationConsensusRuntime::recover_from_finalized_items(
+        recover_raw_for_test(
             federation_id,
             member_id_value(1),
             0,
@@ -2254,7 +2309,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
     let mut non_contiguous_item_index = finalized_items.clone();
     non_contiguous_item_index[0].item_index_in_unit = 1;
     assert!(matches!(
-        FederationConsensusRuntime::recover_from_finalized_items(
+        recover_raw_for_test(
             federation_id,
             member_id_value(1),
             0,
@@ -2269,7 +2324,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
     out_of_order_unit_items[0].accepted_item_index = 0;
     out_of_order_unit_items[1].accepted_item_index = 1;
     assert!(matches!(
-        FederationConsensusRuntime::recover_from_finalized_items(
+        recover_raw_for_test(
             federation_id,
             member_id_value(1),
             0,
@@ -2284,7 +2339,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
     interleaved_unit_items[1].accepted_item_index = 1;
     interleaved_unit_items[2].accepted_item_index = 2;
     assert!(matches!(
-        FederationConsensusRuntime::recover_from_finalized_items(
+        recover_raw_for_test(
             federation_id,
             member_id_value(1),
             0,
@@ -2297,7 +2352,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
     let mut non_advancing_unit_finalization = ordered_finalized_items.clone();
     non_advancing_unit_finalization[2].unit_finalization_index = 0;
     assert!(matches!(
-        FederationConsensusRuntime::recover_from_finalized_items(
+        recover_raw_for_test(
             federation_id,
             member_id_value(1),
             0,
@@ -2310,7 +2365,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
     let mut skipped_unit_finalization = ordered_finalized_items.clone();
     skipped_unit_finalization[2].unit_finalization_index = 7;
     assert!(matches!(
-        FederationConsensusRuntime::recover_from_finalized_items(
+        recover_raw_for_test(
             federation_id,
             member_id_value(1),
             0,
@@ -2323,7 +2378,7 @@ fn consensus_runtime_recovery_rejects_corrupted_finalized_items() {
     let mut impossible_duplicate = finalized_items;
     impossible_duplicate[0].status = FederationAlephBftFinalizedItemStatus::DuplicateOperation;
     assert!(matches!(
-        FederationConsensusRuntime::recover_from_finalized_items(
+        recover_raw_for_test(
             federation_id,
             member_id_value(1),
             0,
@@ -2372,7 +2427,7 @@ fn consensus_runtime_recovery_rejects_out_of_order_sessions() {
         vec![0, 1]
     );
 
-    FederationConsensusRuntime::recover_from_finalized_items(
+    recover_raw_for_test(
         federation_id,
         member_id_value(1),
         1,
@@ -2386,7 +2441,7 @@ fn consensus_runtime_recovery_rejects_out_of_order_sessions() {
     backwards_sessions[1].accepted_item_index = 1;
 
     assert!(matches!(
-        FederationConsensusRuntime::recover_from_finalized_items(
+        recover_raw_for_test(
             federation_id,
             member_id_value(1),
             1,

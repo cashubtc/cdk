@@ -24,17 +24,17 @@ use cdk::federation::{
     FederationAlephBftFinalizedItemStatus, FederationAlephBftUnitPayload,
     FederationChainObservation, FederationCheckpoint, FederationCheckpointFrontier,
     FederationCheckpointQuorum, FederationConfig, FederationConfigSnapshot,
-    FederationConsensusItem, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
-    FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
-    FederationFrostApplicationId, FederationFrostDkgContext,
-    FederationInvalidOperationAlertSummary, FederationJournalAppendOutcome,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOnchainWalletStatus,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationSubmitOperationResponse, FederationSuffixVerifier, MemberId,
-    VerifiedFederationCheckpointQuorum,
+    FederationConsensusItem, FederationConsensusRecoveryBase, FederationConsensusRuntime,
+    FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
+    FederationDkgFinalizedMemberConfig, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
+    FederationDkgTranscriptSignatureRequest, FederationError, FederationFrostApplicationId,
+    FederationFrostDkgContext, FederationInvalidOperationAlertSummary,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationOnchainWalletStatus, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationKind, FederationOperationStatus, FederationRestMessageKind,
+    FederationRestSequenceTracker, FederationSubmitOperationResponse, FederationSuffixVerifier,
+    MemberId, VerifiedFederationCheckpointQuorum,
 };
 use cdk::mint::Mint;
 #[cfg(feature = "federation")]
@@ -2648,11 +2648,11 @@ impl FederationCheckpointStartupVerifier<'_> {
             checkpoint_payload.journal_next_index,
         )
         .await?;
-        let mut verifier = FederationSuffixVerifier::from_checkpoint(
+        let mut verifier = FederationSuffixVerifier::new(
             self.config,
             self.member_id,
             self.active_session,
-            self.checkpoint,
+            FederationConsensusRecoveryBase::Checkpoint(self.checkpoint),
         )?;
         verifier.register_historical_entries(historical_entries)?;
         verifier.push_finalized_items(finalized_items)?;
@@ -2722,7 +2722,7 @@ impl FederationCheckpointStartupVerifier<'_> {
                 .into(),
             );
         }
-        *consensus = repaired_suffix.into_runtime();
+        *consensus = FederationConsensusRuntime::recover_verified_suffix(repaired_suffix);
         Ok(entries_to_replay.len())
     }
 }
@@ -2861,7 +2861,8 @@ async fn create_federation_runtime_state_with_wallet(
                     reason: "terminal application suffix length exceeds local address space"
                         .to_string(),
                 })?;
-            let mut consensus = verified_suffix.into_runtime();
+            let mut consensus =
+                FederationConsensusRuntime::recover_verified_suffix(verified_suffix);
             if !exact_checkpoint {
                 let replayed_entries = startup_verifier
                     .repair_application(
@@ -2917,16 +2918,17 @@ async fn create_federation_runtime_state_with_wallet(
             }
             let recovered_session =
                 latest_aleph_bft_finalized_session(&finalized_items).max(active_session);
-            let mut verifier = FederationSuffixVerifier::from_genesis(
+            let mut verifier = FederationSuffixVerifier::new(
                 config.public_config(),
                 config.member_id(),
                 recovered_session,
+                FederationConsensusRecoveryBase::Genesis,
             )?;
             verifier.push_finalized_items(&finalized_items)?;
             verifier.push_journal_entries(&persisted_entries)?;
-            verifier
-                .finish_for_durable_frontier(&frontier)?
-                .into_runtime()
+            FederationConsensusRuntime::recover_verified_suffix(
+                verifier.finish_for_durable_frontier(&frontier)?,
+            )
         }
     };
     let session_id = consensus.aleph_bft_status()?.session;

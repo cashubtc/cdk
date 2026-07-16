@@ -2518,11 +2518,10 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
         .await
         .expect("payment processor");
     let mint = builder.build_with_seed(db, seed).await.expect("mint");
-    let consensus = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+    let consensus = FederationConsensusRuntime::authenticated_aleph_bft(
         runtime_config.public_config(),
         runtime_config.member_id(),
         0,
-        Vec::new(),
     )
     .expect("AlephBFT consensus runtime");
     let mint = Arc::new(mint);
@@ -3284,11 +3283,10 @@ async fn persist_test_journal_entry(state: &MintState, entry: &FederationJournal
         .get_federation_aleph_bft_finalized_items()
         .await
         .expect("load test AlephBFT finalized items");
-    let mut adapter = FederationConsensusRuntime::recover_for_members_from_finalized_items(
-        runtime_config.federation_id(),
+    let mut adapter = FederationConsensusRuntime::recover_finalized_items_for_test(
+        runtime_config.public_config(),
         runtime_config.member_id(),
         0,
-        runtime_config.public_config().members.keys().copied(),
         retained_items.clone(),
     )
     .expect("recover test AlephBFT history");
@@ -22402,7 +22400,7 @@ async fn reset_synthetic_history_consensus(
             FederationMaterializedStateDigest::genesis(),
         )
         .expect("synthetic history transient checkpoint");
-    let mut consensus = FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint(
+    let mut consensus = FederationConsensusRuntime::checkpoint_base_for_test(
         public_config,
         status.local_member,
         &checkpoint,

@@ -357,7 +357,7 @@ Update this table whenever a milestone changes state.
 | 1 | Crash-safe checkpoint suffix replay | Complete | `fix: repair checkpoint startup application tails` | Trusted-checkpoint startup verifies ordered tails, repairs only the unapplied suffix through the existing idempotent application path, and revalidates the exact durable frontier before readiness. |
 | 2 | Canonical frontier and verified checkpoint types | Complete | `refactor: unify federation checkpoint frontiers` | Canonical component/frontier types own equality and coverage rules; quorum verification returns an unforgeable authority wrapper required by promotion and trusted recovery boundaries. |
 | 3 | Shared incremental suffix verifier | Complete | `refactor: unify federation suffix verification` | Startup, genesis reconstruction, and signed catch-up share one unit-buffered verifier, canonical overlap comparisons, live finalization semantics, rolling digests, and exact target proof. |
-| 4 | Unified consensus recovery API | Not started | — | — |
+| 4 | Unified consensus recovery API | Complete | `refactor: unify federation consensus recovery` | Production startup, checkpoint rebasing, and signed catch-up recover only through an opaque verified suffix rooted at an explicit authenticated genesis/checkpoint base; raw reconstruction remains test-fixture-only. |
 | 5 | Bounded streaming checkpoint catch-up | Not started | — | — |
 | 6 | Focused runtime component split | Not started | — | — |
 | 7 | AlephBFT-ordered recovery barrier | Not started | — | — |
@@ -856,7 +856,7 @@ Milestone 3 finding.
 
 ## Milestone 4: Unified consensus recovery API
 
-Status: not started
+Status: complete
 
 ### Objective
 
@@ -865,43 +865,81 @@ path based on a recovery base and a verified suffix.
 
 ### Checklist
 
-- [ ] Introduce the genesis/checkpoint recovery-base enum or equivalent.
-- [ ] Make the unified recovery function consume only a verified suffix result,
+- [x] Introduce the genesis/checkpoint recovery-base enum or equivalent.
+- [x] Make the unified recovery function consume only a verified suffix result,
       not unrelated raw journal and finalized vectors.
-- [ ] Reconstruct journal base, finalized cursors, duplicate guards, conflict
+- [x] Reconstruct journal base, finalized cursors, duplicate guards, conflict
       guards, session, finalization index, and per-member watermarks in one
       implementation.
-- [ ] Retain explicit roster/authentication validation for all production
+- [x] Retain explicit roster/authentication validation for all production
       recovery calls.
-- [ ] Provide a narrow test builder for unit tests that do not need production
+- [x] Provide a narrow test builder for unit tests that do not need production
       authentication plumbing.
-- [ ] Migrate startup, checkpoint promotion rebasing, catch-up, and test callers.
-- [ ] Remove obsolete `from_checkpoint`, `from_checkpoint_suffix`,
+- [x] Migrate startup, checkpoint promotion rebasing, catch-up, and test callers.
+- [x] Remove obsolete `from_checkpoint`, `from_checkpoint_suffix`,
       `from_checkpoint_and_finalized_items`, and parallel authenticated variants
       once no longer needed.
-- [ ] Ensure pending local operation requeue remains separate from authoritative
+- [x] Ensure pending local operation requeue remains separate from authoritative
       recovered history.
 
 ### Exit tests
 
-- [ ] Genesis, exact checkpoint, checkpoint plus local tail, checkpoint plus
+- [x] Genesis, exact checkpoint, checkpoint plus local tail, checkpoint plus
       remote tail, later session, duplicate finalized unit, and pending-operation
       restart scenarios use the same recovery entry point.
-- [ ] Invalid roster, authorization, session rollback, replayed pre-checkpoint
+- [x] Invalid roster, authorization, session rollback, replayed pre-checkpoint
       unit, and watermark mismatch tests remain fail-closed.
-- [ ] Recovered runtime status and journal are byte-for-byte or semantically
+- [x] Recovered runtime status and journal are byte-for-byte or semantically
       identical to uninterrupted live finalization.
-- [ ] Public production recovery API surface is smaller than before this
+- [x] Public production recovery API surface is smaller than before this
       milestone.
 
 ### Progress notes
 
-Record the removed constructors, remaining test-only entry points, and recovery
-API rationale here.
+`FederationConsensusRecoveryBase` now makes the authenticated root explicit:
+`Genesis`, or `Checkpoint(&VerifiedFederationCheckpointQuorum)`. The shared
+suffix verifier has one constructor taking that base, and the only production
+history-recovery boundary is
+`FederationConsensusRuntime::recover_verified_suffix(VerifiedFederationSuffix)`.
+The runtime cannot be recovered from independently supplied journal/finalized
+vectors. Empty live construction remains the separate
+`authenticated_aleph_bft` API and therefore cannot be mistaken for history
+recovery.
+
+The base initializer validates the complete configuration and local roster,
+and a checkpoint base additionally requires the unforgeable verified-quorum
+wrapper. The verifier then reconstructs the journal base, duplicate/conflict
+guards, session transitions, finalization cursor, finalized-item cursor, and
+per-member unit watermarks by driving the same live finalization path. Exact
+checkpoint rebasing also creates an empty verified suffix at the target before
+discarding the retained tail. Pending local operations are loaded and requeued
+only after authoritative recovery completes, so they never become recovered
+history.
+
+Removed public production constructors include
+`authenticated_aleph_bft_from_checkpoint`,
+`authenticated_aleph_bft_from_checkpoint_suffix`,
+`authenticated_aleph_bft_from_checkpoint_and_finalized_items`,
+`authenticated_aleph_bft_from_finalized_items`, and
+`aleph_bft_from_finalized_items`, together with their combinatorial internal
+variants. Explicitly named `*_for_test` helpers remain only for raw malformed
+history fault injection and cross-crate fixture utilities that are compiled as
+library support; none is called by startup, checkpoint promotion, or signed
+catch-up.
+
+Verification completed locally:
+
+- the full `cdk-common` federation library suite (405 passed, 1 ignored) and
+  strict `cdk-common` Clippy;
+- the Axum checkpoint suite (19 passed), catch-up suite (22 passed, 1 ignored),
+  and pending-operation restart recovery test;
+- focused shared-suffix (8 passed), raw recovery (6 passed), and exact
+  checkpoint-base tests;
+- `cargo check --workspace --all-targets` and `git diff --check`.
 
 ### Commit gate
 
-- [ ] Commit the unified recovery API and caller migration before starting
+- [x] Commit the unified recovery API and caller migration before starting
       milestone 5.
 
 ## Milestone 5: Bounded streaming checkpoint catch-up

@@ -1974,11 +1974,10 @@ mod tests {
             .unwrap();
         mint.start().await.unwrap();
 
-        let consensus = FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
+        let consensus = FederationConsensusRuntime::authenticated_aleph_bft(
             runtime_config.public_config(),
             runtime_config.member_id(),
             0,
-            Vec::new(),
         )
         .expect("AlephBFT consensus runtime");
         let mint = Arc::new(mint);
@@ -3308,11 +3307,10 @@ mod tests {
             .get_federation_aleph_bft_finalized_items()
             .await
             .expect("load finalized AlephBFT history");
-        let mut adapter = FederationConsensusRuntime::recover_for_members_from_finalized_items(
-            runtime_config.federation_id(),
+        let mut adapter = FederationConsensusRuntime::recover_finalized_items_for_test(
+            runtime_config.public_config(),
             runtime_config.member_id(),
             0,
-            runtime_config.public_config().members.keys().copied(),
             retained_items.clone(),
         )
         .expect("recover finalized AlephBFT history");

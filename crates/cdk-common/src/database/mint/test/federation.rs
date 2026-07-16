@@ -683,11 +683,11 @@ where
         .expect("empty bounded AlephBFT finalized items")
         .is_empty());
 
-    let recovered = FederationConsensusRuntime::recover_for_members_from_finalized_items(
+    let recovered = FederationConsensusRuntime::recover_raw_for_test(
         federation_id,
         member_one,
         0,
-        [member_one, member_two, member_three],
+        Some([member_one, member_two, member_three].into_iter().collect()),
         persisted,
     )
     .expect("recover adapter from persisted finalized items");

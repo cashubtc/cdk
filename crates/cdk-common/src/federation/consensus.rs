@@ -17,6 +17,7 @@ use super::{
     FederationOperationStatus, FederationPeerStatus, FederationRestMessageKind,
     FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
     InMemoryFederationJournal, MemberId, Result, ThresholdParams,
+    VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -1029,7 +1030,7 @@ impl FederationAlephBftFinalizationHandler {
         Ok(handler)
     }
 
-    fn from_checkpoint(
+    fn at_checkpoint_base(
         config: &FederationConfig,
         checkpoint: &FederationCheckpoint,
     ) -> Result<Self> {
@@ -1050,7 +1051,7 @@ impl FederationAlephBftFinalizationHandler {
         })
     }
 
-    fn recover_from_finalized_items(
+    fn reconstruct_retained_items(
         federation_id: FederationId,
         session: u64,
         max_unit_payload_bytes: usize,
@@ -1506,6 +1507,15 @@ impl FederationAlephBftFinalizationHandler {
     }
 }
 
+/// Authenticated root from which a verified consensus suffix is reconstructed.
+#[derive(Debug, Clone, Copy)]
+pub enum FederationConsensusRecoveryBase<'a> {
+    /// Recover from empty federation history.
+    Genesis,
+    /// Recover after a quorum-authenticated checkpoint.
+    Checkpoint(&'a VerifiedFederationCheckpointQuorum),
+}
+
 /// AlephBFT consensus runtime for operation submission and finalization.
 ///
 /// This does not run AlephBFT networking. It owns the CDK side of the boundary:
@@ -1620,45 +1630,26 @@ impl FederationConsensusRuntime {
         })
     }
 
-    /// Recover an AlephBFT runtime from retained finalized items.
-    pub fn recover_from_finalized_items(
+    /// Raw-history reconstruction used only by crate-local fault-injection tests.
+    #[doc(hidden)]
+    pub fn recover_raw_for_test(
         federation_id: FederationId,
         local_member: MemberId,
         session: u64,
+        allowed_members: Option<BTreeSet<MemberId>>,
         finalized_items: Vec<FederationAlephBftFinalizedItem>,
     ) -> Result<Self> {
-        Self::recover_inner(
+        Self::reconstruct_raw_test_history(
             federation_id,
             local_member,
             session,
-            None,
+            allowed_members,
             None,
             finalized_items,
         )
     }
 
-    /// Recover a runtime with a roster-bound finalization guard.
-    pub fn recover_for_members_from_finalized_items<I>(
-        federation_id: FederationId,
-        local_member: MemberId,
-        session: u64,
-        allowed_members: I,
-        finalized_items: Vec<FederationAlephBftFinalizedItem>,
-    ) -> Result<Self>
-    where
-        I: IntoIterator<Item = MemberId>,
-    {
-        Self::recover_inner(
-            federation_id,
-            local_member,
-            session,
-            Some(allowed_members.into_iter().collect()),
-            None,
-            finalized_items,
-        )
-    }
-
-    fn recover_authenticated_from_finalized_items(
+    fn reconstruct_authenticated_test_history(
         public_config: FederationConfig,
         local_member: MemberId,
         session: u64,
@@ -1666,7 +1657,7 @@ impl FederationConsensusRuntime {
     ) -> Result<Self> {
         public_config.validate()?;
         let allowed_members = public_config.members.keys().copied().collect();
-        Self::recover_inner(
+        Self::reconstruct_raw_test_history(
             public_config.federation_id,
             local_member,
             session,
@@ -1676,7 +1667,7 @@ impl FederationConsensusRuntime {
         )
     }
 
-    fn from_authenticated_checkpoint(
+    fn from_verified_checkpoint_base(
         public_config: FederationConfig,
         local_member: MemberId,
         checkpoint: &FederationCheckpoint,
@@ -1696,7 +1687,7 @@ impl FederationConsensusRuntime {
                 checkpoint.aleph_bft_session,
             )
             .with_next_unit_index(next_local_unit_index),
-            finalization_handler: FederationAlephBftFinalizationHandler::from_checkpoint(
+            finalization_handler: FederationAlephBftFinalizationHandler::at_checkpoint_base(
                 &public_config,
                 checkpoint,
             )?,
@@ -1711,7 +1702,8 @@ impl FederationConsensusRuntime {
         })
     }
 
-    fn recover_authenticated_checkpoint_suffix(
+    #[cfg(test)]
+    fn recover_checkpoint_suffix_for_test_inner(
         public_config: FederationConfig,
         local_member: MemberId,
         session: u64,
@@ -1726,7 +1718,7 @@ impl FederationConsensusRuntime {
             .copied()
             .collect::<BTreeSet<_>>();
         let finalization_handler =
-            FederationAlephBftFinalizationHandler::recover_from_finalized_items(
+            FederationAlephBftFinalizationHandler::reconstruct_retained_items(
                 public_config.federation_id,
                 session,
                 FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
@@ -1763,76 +1755,7 @@ impl FederationConsensusRuntime {
         })
     }
 
-    fn recover_authenticated_checkpoint_from_finalized_items(
-        public_config: FederationConfig,
-        local_member: MemberId,
-        session: u64,
-        checkpoint: &FederationCheckpoint,
-        historical_entries: Vec<FederationJournalEntry>,
-        finalized_items: Vec<FederationAlephBftFinalizedItem>,
-    ) -> Result<Self> {
-        checkpoint.validate_against_config(&public_config)?;
-        let allowed_members = public_config
-            .members
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let mut finalization_handler =
-            FederationAlephBftFinalizationHandler::recover_from_finalized_items(
-                public_config.federation_id,
-                session,
-                FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
-                Some(allowed_members),
-                Some(public_config.clone()),
-                Some(checkpoint),
-                &finalized_items,
-            )?;
-        let next_local_unit_index = finalization_handler
-            .next_unit_index_by_member()
-            .get(&local_member)
-            .copied()
-            .ok_or(FederationError::UnknownMember {
-                member_id: local_member,
-            })?;
-        let mut journal = InMemoryFederationJournal::from_base(
-            checkpoint.journal_next_index,
-            checkpoint.journal_order_digest,
-        );
-        for entry in historical_entries {
-            let operation_id = entry.operation_id;
-            journal.register_historical_entry(entry)?;
-            finalization_handler.register_finalized_operation_id(operation_id);
-        }
-        for finalized_item in &finalized_items {
-            if finalized_item.status
-                != FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
-            {
-                if let FederationConsensusItem::Operation(envelope) = &finalized_item.item {
-                    journal.append_finalized_with_consensus_evidence(
-                        envelope.clone(),
-                        finalized_item.consensus_evidence(),
-                    )?;
-                }
-            }
-        }
-
-        Ok(Self {
-            data_provider: FederationAlephBftUnitDataProvider::new(
-                public_config.federation_id,
-                local_member,
-                session,
-            )
-            .with_next_unit_index(next_local_unit_index),
-            finalization_handler,
-            journal,
-            finalized_items,
-            pending_finalization_units: BTreeMap::new(),
-            pending_finalization_operation_ids: BTreeSet::new(),
-            pending_finalization_conflict_keys: HashMap::new(),
-        })
-    }
-
-    fn recover_inner(
+    fn reconstruct_raw_test_history(
         federation_id: FederationId,
         local_member: MemberId,
         session: u64,
@@ -1841,7 +1764,7 @@ impl FederationConsensusRuntime {
         finalized_items: Vec<FederationAlephBftFinalizedItem>,
     ) -> Result<Self> {
         let finalization_handler =
-            FederationAlephBftFinalizationHandler::recover_from_finalized_items(
+            FederationAlephBftFinalizationHandler::reconstruct_retained_items(
                 federation_id,
                 session,
                 FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
@@ -2252,8 +2175,81 @@ fn ensure_non_zero_consensus_limit(field: &'static str, value: usize) -> Result<
 }
 
 impl FederationConsensusRuntime {
-    /// Start an authenticated runtime at an already verified checkpoint frontier.
-    pub fn authenticated_aleph_bft_from_checkpoint(
+    /// Create an authenticated live runtime at empty history.
+    pub fn authenticated_aleph_bft(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        session: u64,
+    ) -> Result<Self> {
+        Self::from_recovery_base(
+            public_config,
+            member_id,
+            session,
+            FederationConsensusRecoveryBase::Genesis,
+        )
+    }
+
+    pub(crate) fn from_recovery_base(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        active_session: u64,
+        base: FederationConsensusRecoveryBase<'_>,
+    ) -> Result<Self> {
+        public_config.validate()?;
+        let allowed_members = validate_runtime_roster(
+            public_config.members.keys().copied(),
+            public_config.threshold_params.consensus_threshold,
+            member_id,
+        )?;
+        match base {
+            FederationConsensusRecoveryBase::Genesis => {
+                let mut finalization_handler =
+                    FederationAlephBftFinalizationHandler::with_allowed_members(
+                        public_config.federation_id,
+                        active_session,
+                        0,
+                        FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+                        allowed_members,
+                    )?;
+                finalization_handler.operation_config = Some(public_config.clone());
+                Ok(Self {
+                    data_provider: FederationAlephBftUnitDataProvider::new(
+                        public_config.federation_id,
+                        member_id,
+                        active_session,
+                    ),
+                    finalization_handler,
+                    journal: InMemoryFederationJournal::new(),
+                    finalized_items: Vec::new(),
+                    pending_finalization_units: BTreeMap::new(),
+                    pending_finalization_operation_ids: BTreeSet::new(),
+                    pending_finalization_conflict_keys: HashMap::new(),
+                })
+            }
+            FederationConsensusRecoveryBase::Checkpoint(checkpoint) => {
+                let checkpoint = checkpoint.checkpoint();
+                if active_session < checkpoint.aleph_bft_session {
+                    return Err(FederationError::AlephBftUnitSessionMismatch {
+                        expected: checkpoint.aleph_bft_session,
+                        found: active_session,
+                    });
+                }
+                Self::from_verified_checkpoint_base(public_config.clone(), member_id, checkpoint)
+            }
+        }
+    }
+
+    /// Recover a runtime from an exact suffix proof returned by the shared verifier.
+    #[must_use]
+    pub fn recover_verified_suffix(verified_suffix: VerifiedFederationSuffix) -> Self {
+        verified_suffix.into_runtime()
+    }
+
+    /// Construct an unverified checkpoint base for cross-crate test fixtures.
+    ///
+    /// Production recovery must use [`Self::recover_verified_suffix`].
+    #[doc(hidden)]
+    pub fn checkpoint_base_for_test(
         public_config: &FederationConfig,
         member_id: MemberId,
         checkpoint: &FederationCheckpoint,
@@ -2263,11 +2259,12 @@ impl FederationConsensusRuntime {
             public_config.threshold_params.consensus_threshold,
             member_id,
         )?;
-        Self::from_authenticated_checkpoint(public_config.clone(), member_id, checkpoint)
+        Self::from_verified_checkpoint_base(public_config.clone(), member_id, checkpoint)
     }
 
-    /// Recover an authenticated retained suffix rooted at a verified checkpoint.
-    pub fn authenticated_aleph_bft_from_checkpoint_suffix(
+    /// Reconstruct an unverified checkpoint suffix for crate-local tests.
+    #[cfg(test)]
+    pub(crate) fn recover_checkpoint_suffix_for_test(
         public_config: &FederationConfig,
         member_id: MemberId,
         session: u64,
@@ -2280,7 +2277,7 @@ impl FederationConsensusRuntime {
             public_config.threshold_params.consensus_threshold,
             member_id,
         )?;
-        Self::recover_authenticated_checkpoint_suffix(
+        Self::recover_checkpoint_suffix_for_test_inner(
             public_config.clone(),
             member_id,
             session,
@@ -2290,33 +2287,11 @@ impl FederationConsensusRuntime {
         )
     }
 
-    /// Recover a checkpoint-rooted runtime from bounded historical references and
-    /// finalized suffix items.
-    pub fn authenticated_aleph_bft_from_checkpoint_and_finalized_items(
-        public_config: &FederationConfig,
-        member_id: MemberId,
-        session: u64,
-        checkpoint: &FederationCheckpoint,
-        historical_entries: Vec<FederationJournalEntry>,
-        finalized_items: Vec<FederationAlephBftFinalizedItem>,
-    ) -> Result<Self> {
-        validate_runtime_roster(
-            public_config.members.keys().copied(),
-            public_config.threshold_params.consensus_threshold,
-            member_id,
-        )?;
-        Self::recover_authenticated_checkpoint_from_finalized_items(
-            public_config.clone(),
-            member_id,
-            session,
-            checkpoint,
-            historical_entries,
-            finalized_items,
-        )
-    }
-
-    /// Recover an authenticated AlephBFT runtime from retained finalized items.
-    pub fn authenticated_aleph_bft_from_finalized_items(
+    /// Reconstruct raw genesis history for cross-crate test fixtures.
+    ///
+    /// Production recovery must use [`Self::recover_verified_suffix`].
+    #[doc(hidden)]
+    pub fn recover_finalized_items_for_test(
         public_config: &FederationConfig,
         member_id: MemberId,
         session: u64,
@@ -2327,32 +2302,10 @@ impl FederationConsensusRuntime {
             public_config.threshold_params.consensus_threshold,
             member_id,
         )?;
-        Self::recover_authenticated_from_finalized_items(
+        Self::reconstruct_authenticated_test_history(
             public_config.clone(),
             member_id,
             session,
-            finalized_items,
-        )
-    }
-
-    /// Recover an AlephBFT runtime from retained finalized items.
-    pub fn aleph_bft_from_finalized_items<I>(
-        federation_id: FederationId,
-        member_id: MemberId,
-        session: u64,
-        member_ids: I,
-        consensus_threshold: u16,
-        finalized_items: Vec<FederationAlephBftFinalizedItem>,
-    ) -> Result<Self>
-    where
-        I: IntoIterator<Item = MemberId>,
-    {
-        let allowed_members = validate_runtime_roster(member_ids, consensus_threshold, member_id)?;
-        Self::recover_for_members_from_finalized_items(
-            federation_id,
-            member_id,
-            session,
-            allowed_members,
             finalized_items,
         )
     }
