@@ -2,10 +2,10 @@
 
 Status: in progress (checkpoint protocol, persistence, exchange, bounded
 page-streamed catch-up, nonzero startup, certificate cut-through,
-checkpoint-native operator tooling, crash-safe checkpoint retention, and
-bounded work instrumentation are implemented; checkpoint production is
-event-driven and stable checkpoint polls are work/log silent; synthetic
-baselines and milestone-8 validation remain)
+checkpoint-native operator tooling, crash-safe checkpoint retention, ordered
+recovery barriers, and bounded work instrumentation are implemented;
+checkpoint production is event-driven and stable checkpoint polls are work/log
+silent; consolidation and final validation remain)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -51,8 +51,9 @@ two creation policies:
 
 - **scheduled checkpoints** at deterministic, consensus-configured history
   intervals, retained as reusable certificates for historical batches; and
-- **recovery checkpoints** created on demand at an exact converged stable tip
-  to authenticate the finalized but not-yet-scheduled tail.
+- **recovery checkpoints** created on demand at the complete terminal boundary
+  of an AlephBFT-ordered recovery barrier to authenticate the finalized but
+  not-yet-scheduled tail even while valid traffic continues.
 
 Each checkpoint commits to the cumulative accepted-operation order, the
 cumulative finalized-item stream, a cumulative terminal-application digest, a
@@ -232,8 +233,9 @@ hold:
   durable state at that checkpoint boundary.
 - Scheduled checkpoint eligibility and boundary selection are deterministic
   consensus configuration. A checkpoint never cuts through an AlephBFT unit.
-- Recovery checkpoints cover only an exact, quorum-observed converged stable
-  tip and never a moving or caller-selected arbitrary range.
+- Recovery checkpoints cover only the complete terminal boundary selected by a
+  durably ordered recovery barrier and never a caller-selected boundary,
+  digest, materialized-state claim, or arbitrary historical range.
 - A stored checkpoint quorum is transferable: any member may serve the bounded
   payload and signature set, and the receiver verifies the configured signers
   without contacting them again.
@@ -379,16 +381,19 @@ At an eligible boundary each member:
 - performs no checkpoint work while neither interval has crossed a boundary.
 
 After the latest scheduled checkpoint, catch-up may require a recovery
-checkpoint for the smaller finalized tail. The requester first discovers an
-exact converged stable frontier from quorum peer summaries. A member signs the
-recovery checkpoint only when that complete payload equals its own fully
-applied durable tip and its scheduled anchor is the member's latest scheduled
-quorum. It never signs a caller-provided digest blindly, a lower arbitrary
-historical state for which it has no stored state commitment, or a moving tip.
+checkpoint for the smaller finalized tail. The requester signals demand in an
+authenticated summary request. A healthy peer proposes a bounded recovery
+barrier through ordinary AlephBFT ordering; after its entire unit is terminally
+applied, every member derives the checkpoint boundary and payload from local
+durable state. A member signs only that locally derived payload with its latest
+scheduled quorum as anchor. It never signs a caller-provided digest, a lower
+arbitrary historical state, or a caller-selected boundary.
 
-Recovery checkpoints are debounced and deduplicated by checkpoint ID. They are
-persisted and reusable until a later scheduled quorum covers their frontier.
-They replace, rather than coexist with, the old arbitrary range certificate.
+Recovery barriers use stable generation IDs, one-pending admission, a local
+proposal lease, and a deterministic bounded-tail suppression rule. Recovery
+checkpoint candidates remain deduplicated by checkpoint ID and reusable until
+a later scheduled quorum covers their frontier. They replace, rather than
+coexist with, the old arbitrary range certificate.
 
 ### Persistence and retention
 
@@ -958,7 +963,7 @@ Verified with:
 
 Make scheduled checkpoint work event-driven, with one explicit full
 authoritative-state audit only at an eligible boundary, make recovery
-checkpoints on-demand at a converged stable tip, and do no
+checkpoints on demand at an AlephBFT-ordered complete-unit boundary, and do no
 certificate/checkpoint computation or journal catch-up request on an unchanged
 peer-sync tick.
 
@@ -988,19 +993,21 @@ peer-sync tick.
       timeout, and backoff rules.
 - [x] Have peers return an already stored local signature when available. A peer
       may create one only when the exact checkpoint equals its own deterministic
-      scheduled boundary or exact fully applied stable tip; never sign arbitrary
-      caller data.
+      scheduled boundary or fully applied ordered-barrier boundary; never sign
+      arbitrary caller data.
 - [x] Collect stored signatures until threshold, promote the quorum once, persist
       the assembled transferable proof, and disseminate it to reachable honest
       members.
 - [x] Serve a stored assembled quorum directly so a recovering member does not
       contact its historical signers or cause any new signing.
-- [x] Add the recovery-checkpoint stable-tip path with quorum tip discovery,
-      scheduled-anchor validation, debounce, checkpoint-ID deduplication, and no
-      periodic work while the tip is unchanged.
+- [x] Add the recovery-checkpoint ordered-barrier path with stable generation
+      IDs, scheduled-anchor validation, proposal leasing, checkpoint-ID
+      deduplication, and no periodic work while recovery is not requested.
 - [x] Ensure a recovery checkpoint cannot alter the derivation of the next
       scheduled checkpoint.
-- [x] Keep checkpoint traffic off AlephBFT and out of the operation journal.
+- [x] Keep checkpoint signatures, quorums, and body transfer off AlephBFT and
+      out of the operation journal; order only the bounded recovery barrier as
+      an ordinary durable AlephBFT item.
 - [x] Ensure ordinary status polling transfers only scalar checkpoint summary
       fields, not full signature sets.
 - [x] When the local journal and finalized-item cursors already match the peer,
@@ -1043,19 +1050,25 @@ full-proof transfer, or stored-proof verification.
 
 Recovery checkpoints now reuse the same candidate, signature, quorum,
 promotion, fetch, and dissemination path. A member that is not healthy requests
-recovery through its authenticated scalar-summary request and reachable members
-relay that demand until a proof is formed. Stable-tip responses are themselves
-member-signed and commit to the exact terminal journal, finalized-item,
-application, session, finalized-unit, and per-member unit frontiers without
-performing a materialized-state audit. A member requires its local boundary to
-match a configured quorum of those signed summaries for two consecutive sync
-rounds, then reacquires the application lock, rejects a moved tip, validates the
-latest scheduled anchor, and performs the one full local audit/signature. A
-stored candidate suppresses repeat audits, a moving tip resets the debounce,
-and a promoted recovery quorum clears demand only when it still matches that
-member's current complete-unit boundary. If the tip moved while signatures were
-collected, demand remains active and the same bounded process targets the newer
-stable tip.
+recovery through its authenticated scalar-summary request. A reachable healthy
+member with a live session may propose a versioned `FederationRecoveryBarrier`
+bound to the federation, latest scheduled anchor, and its current finalized
+cursor. The barrier carries no caller-provided boundary, rolling digest,
+application result, or materialized-state claim. AlephBFT orders and durably
+persists it like any other consensus item; only after every operation in the
+complete unit reaches a terminal application state does each member derive the
+same boundary locally and perform the existing audit/candidate/signature work.
+
+Admission permits at most one queued or awaiting-finality barrier per runtime.
+A 30-second local proposal lease limits request amplification, while a
+deterministic 64-finalized-item minimum advance reuses a recent checkpoint and
+keeps the uncovered live tail bounded by one maximum-sized unit. Concurrent
+proposals therefore converge to one effective candidate boundary or harmless
+duplicates. A stale scheduled anchor requests a replacement barrier. Startup
+replays an accepted barrier from the last complete durable unit if candidate
+persistence was interrupted. The former two-observation quiet-tip latch and
+peer-summary boundary matching are deleted, so sustained finalization no longer
+starves recovery.
 
 Focused runtime regressions now prove that the interval-crossing unit is the
 captured scheduled boundary, later finalization cannot move a pending
@@ -1078,8 +1091,11 @@ Verified with:
   checkpoint_transport_messages_are_bound_and_bounded --lib`;
 - `cargo test -p cdk-common --features federation
   transported_complete_boundary_requires_the_exact_roster --lib`;
+- `cargo test -p cdk-axum --features federation recovery_barrier --lib`;
 - `cargo test -p cdk-axum --features federation
-  recovery_checkpoint_observation_requires_two_identical_boundaries --lib`;
+  concurrent_recovery_requests_queue_one_effective_barrier --lib`;
+- `cargo test -p cdk-axum --features federation
+  restart_retries_last_ordered_barrier_with_the_same_checkpoint_id --lib`;
 - `cargo test -p cdk-axum --features federation
   scheduled_checkpoint_captures_first_complete_eligible_boundary --lib`;
 - `cargo test -p cdk-axum --features federation
@@ -1118,12 +1134,13 @@ the successful `cargo check` and targeted tests above.
   available honest members.
 - One member can transfer a stored assembled quorum to another member with zero
   new signatures and zero journal reads by the original signers.
-- A moving tip cannot change the contents of an already identified scheduled
-  checkpoint.
+- Continued finalization cannot change the contents of an already identified
+  scheduled checkpoint.
 - One eligible boundary performs at most one local full materialized-state audit
   per member and that audit does not load historical journal entries.
-- A recovery checkpoint forms only for an exact converged stable tip and is
-  superseded by a later scheduled quorum that covers it.
+- A recovery checkpoint forms only for the locally derived complete-unit
+  terminal boundary of a durably ordered barrier and is superseded by a later
+  scheduled quorum that covers it.
 - Checkpoint production does not change readiness of a healthy live member.
 
 ### Test conditions
@@ -1139,8 +1156,9 @@ the successful `cargo check` and targeted tests above.
 - Boundary-capture tests that pause later application until the audited
   checkpoint candidate is durable, then allow signature collection without
   holding the application lock.
-- Recovery-checkpoint tests for quiet tip, moving tip, disagreement, repeated
-  identical requests, stored-quorum transfer, and next-scheduled derivation.
+- Recovery-checkpoint tests for sustained traffic, concurrent requests,
+  invalid future cursors, one unavailable member, restart replay,
+  stored-quorum transfer, and next-scheduled derivation.
 
 ## Milestone 4: Replace range-certified catch-up with scheduled-batch and stable-tail catch-up
 
@@ -1183,10 +1201,10 @@ frontier that becomes authoritative.
       bounded quorum proof from another source when the first source does not
       already carry it; never fetch the same historical bodies from every
       signer.
-- [x] After the newest scheduled checkpoint, use live AlephBFT or discover an
-      exact quorum-observed stable tip and form/fetch a recovery checkpoint
+- [x] After the newest scheduled checkpoint, use live AlephBFT or request an
+      AlephBFT-ordered recovery barrier and form/fetch a recovery checkpoint
       anchored to that scheduled checkpoint.
-- [x] Download the stable tail from one source, validate rolling commitments to
+- [x] Download the ordered recovery tail from one source, validate rolling commitments to
       the recovery checkpoint, and promote it through the same checkpoint
       path; never trust a single REST peer's uncertified tail.
 - [x] Remove all request-time range certificate creation and verification from
@@ -1809,29 +1827,30 @@ The two agreement tests, the existing first-eligible-boundary retention test,
 and the one-shot startup recovery test for an interrupted eligible capture pass
 with federation and Prometheus enabled.
 
-### Local stable-tail recovery evidence
+### Local ordered-tail recovery evidence
 
-Two independent member runtimes now apply the same complete finalized unit and
-derive a byte-identical recovery checkpoint at the quiet tip. Distinct member
-signatures assemble into a valid quorum, both databases produce the checkpoint's
-materialized-state digest, and the candidate commits to the complete
-`journal=2, finalized=2` unit boundary. The shared finalized-unit fixture is
-also used by scheduled-boundary agreement tests instead of maintaining a
-second application path.
+Two independent member runtimes apply the same complete finalized unit
+containing normal traffic and a recovery barrier, derive a byte-identical
+recovery checkpoint, and assemble distinct member signatures into a valid
+quorum. The candidate commits to the terminal boundary after the entire unit,
+not the barrier's position inside it. A separate traffic test places operations
+on both sides of the barrier, proves both reach terminal state in order, and
+then finalizes another operation successfully.
 
-The recovery observation test proves that a boundary is eligible only after two
-identical observations, that movement resets the observation, and that the new
-tip must stabilize independently. The previously verified monotonic-lineage
-test rejects a stale recovery frontier and accepts the next scheduled
-checkpoint with or without an intervening recovery. The shared database
-persistence test then proves the storage consequence: promoting the covering
-scheduled quorum removes its superseded recovery checkpoint, quorum, and
-signatures while retaining scheduled history.
+The barrier generation is domain-separated, federation-bound, and tamper
+evident. A future requested cursor is durably rejected without rejecting the
+rest of the unit. Concurrent local requests queue one effective barrier; a
+30-second proposal lease and deterministic one-unit uncovered-tail bound
+suppress repeated work. A one-unavailable-member test still forms a threshold
+quorum, while a minority candidate never advances the trusted frontier. An
+interrupted post-finality capture reconstructs consensus from durable state on
+restart and derives the same checkpoint ID. Idle state proposes no barrier.
 
-The two focused Axum recovery tests pass with federation enabled. The stale
-frontier and scheduled-supersession assertions remain centralized in the
-existing protocol and shared database tests rather than duplicated in the HTTP
-harness.
+The previously verified monotonic-lineage test rejects a stale recovery
+frontier and accepts the next scheduled checkpoint with or without an
+intervening recovery. The shared database persistence test proves that
+promoting a covering scheduled quorum removes its superseded recovery
+checkpoint, quorum, and signatures while retaining scheduled history.
 
 ### Local restart and partition evidence
 
@@ -1983,8 +2002,10 @@ candidate creations, representing five complete scheduled boundaries, with no
 recovery checkpoint, catch-up batch, readiness transition, or new warning/error
 log during load. Quorum transfer and promotion counters advanced during the
 multi-wave cases, and signed post-run status confirmed the latest scheduled
-quorum on every member. A later stable-tip recovery quorum also assembled
-without disturbing readiness.
+quorum on every member. Before the ordered-barrier cut-through, a later
+stable-tip recovery quorum also assembled without disturbing readiness; the
+ordered replacement is covered by the focused sustained-traffic evidence
+above and still needs a repeated full local smoke in final validation.
 
 The exact milestone-0 matrix had 10:1, 20:5, 40:10, and 20:20 confirmed TPS of
 0.119, 0.275, 0.270, and 0.566, with 20:5 and 40:10 client failure rates of 30%
@@ -2033,7 +2054,7 @@ per-request artifacts remain outside the repository.
   authenticate each with a previously assembled transferable quorum; the
   original signers do no recovery-time work.
 - A post-scheduled tail becomes authoritative only through live AlephBFT or one
-  exact stable-tip recovery checkpoint quorum.
+  recovery checkpoint quorum derived from an ordered complete-unit barrier.
 - Current-session backup loading remains bounded independently of federation
   lifetime; startup never loads historical-session backups.
 - CPU returns to an idle baseline after load; there is no recurring five-second
@@ -2080,8 +2101,9 @@ The journal endpoint is used only when startup/recovery or a newer peer summary
 shows that the local journal, finalized-item cursor, or trusted checkpoint is
 behind. REST catch-up transfers each scheduled batch from one selected peer and
 verifies a previously assembled bounded quorum separately. The post-scheduled
-tail is handled by live AlephBFT or the same checkpoint proof created once at an
-exact converged stable tip. All old catch-up range-certificate types, tables,
+tail is handled by live AlephBFT or the same checkpoint proof created once at
+the complete terminal boundary of an AlephBFT-ordered recovery barrier. All old
+catch-up range-certificate types, tables,
 routes, status fields, metrics, configuration, and compatibility behavior have
 been removed.
 

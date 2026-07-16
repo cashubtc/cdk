@@ -2475,6 +2475,10 @@ async fn create_mint_router_with_custom_cache_inner(
             .federation
             .recover_scheduled_checkpoint_candidate_at_startup()
             .await?;
+        state
+            .federation
+            .recover_recovery_checkpoint_candidate_at_startup()
+            .await?;
     }
     #[cfg(feature = "federation")]
     if spawn_federation_peer_sync {

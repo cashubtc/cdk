@@ -87,10 +87,11 @@ pub use self::consensus::{
     FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConsensusDefaultItem,
     FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusModuleFact,
     FederationConsensusRecoveryBase, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
-    FederationVerifiedOperationAdmission, FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
-    FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
-    FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+    FederationRecoveryBarrier, FederationRecoveryBarrierId, FederationVerifiedOperationAdmission,
+    FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION, FEDERATION_CONSENSUS_ITEM_VERSION,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CONSENSUS_ITEM_BYTES,
+    FEDERATION_RECOVERY_BARRIER_VERSION,
 };
 pub use self::dkg::{
     FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,

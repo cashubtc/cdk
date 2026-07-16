@@ -262,8 +262,12 @@ where
         }
     }
 
-    if let Err(err) = maybe_capture_recovery_checkpoint(state, &peer_summaries).await {
-        tracing::warn!("Could not capture recovery checkpoint: {}", err);
+    if let Err(err) = state
+        .federation
+        .propose_recovery_barrier_if_requested()
+        .await
+    {
+        tracing::warn!("Could not propose recovery checkpoint barrier: {}", err);
     }
 
     for (peer, summary) in &peer_summaries {
@@ -535,52 +539,6 @@ async fn local_checkpoint_quorum_is_current(
             false
         }
     }
-}
-
-async fn maybe_capture_recovery_checkpoint(
-    state: &MintState,
-    peer_summaries: &[(&MemberConfigPublic, FederationCheckpointSummaryResponse)],
-) -> Result<(), cdk::Error> {
-    if !state.federation.recovery_checkpoint_is_requested() {
-        return Ok(());
-    }
-    let Some(local_boundary) = state.federation.stable_checkpoint_boundary().await? else {
-        state
-            .federation
-            .observe_recovery_checkpoint_boundary(None)
-            .await;
-        return Ok(());
-    };
-    let required = state
-        .mint
-        .federation_config()
-        .map(|config| usize::from(config.public_config().threshold_params.consensus_threshold))
-        .ok_or(FederationError::RuntimeUnavailable {
-            component: "mint configuration",
-        })?;
-    let matching_peers = peer_summaries
-        .iter()
-        .filter(|(_, summary)| summary.stable_tip.as_ref() == Some(&local_boundary))
-        .count();
-    if matching_peers.saturating_add(1) < required {
-        state
-            .federation
-            .observe_recovery_checkpoint_boundary(None)
-            .await;
-        return Ok(());
-    }
-    if !state
-        .federation
-        .observe_recovery_checkpoint_boundary(Some(&local_boundary))
-        .await
-    {
-        return Ok(());
-    }
-    state
-        .federation
-        .capture_recovery_checkpoint(&local_boundary)
-        .await?;
-    Ok(())
 }
 
 async fn local_pending_checkpoint(

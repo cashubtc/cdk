@@ -443,7 +443,7 @@ impl FederationNodeRuntime {
     }
 
     #[cfg(test)]
-    async fn finalize_unit_locally_for_test(&self) -> Result<(), cdk::Error> {
+    pub(super) async fn finalize_unit_locally_for_test(&self) -> Result<(), cdk::Error> {
         if !self.local_finality_test {
             return Ok(());
         }
@@ -605,6 +605,17 @@ impl FederationNodeRuntime {
             }
         }
         if let Some(responses) = Self::duplicate_finalized_unit_responses(&consensus, &payload)? {
+            let finalized_items = consensus
+                .aleph_bft_finalized_items()?
+                .iter()
+                .filter(|item| {
+                    item.session == payload.session
+                        && item.unit_submitting_member == payload.submitting_member
+                        && item.unit_index == payload.unit_index
+                        && item.unit_body_hash == payload.body_hash
+                })
+                .cloned()
+                .collect::<Vec<_>>();
             drop(consensus);
             let entries = responses
                 .iter()
@@ -614,6 +625,10 @@ impl FederationNodeRuntime {
             self.apply_journal_entries(&entries_to_apply).await?;
             self.capture_scheduled_checkpoint_if_eligible_under_application_lock()
                 .await?;
+            self.capture_recovery_checkpoint_for_finalized_items_under_application_lock(
+                &finalized_items,
+            )
+            .await?;
             return self.publish_terminal_operation_responses(&responses).await;
         }
 
@@ -638,6 +653,10 @@ impl FederationNodeRuntime {
         self.apply_journal_entries(&entries_to_apply).await?;
         self.capture_scheduled_checkpoint_if_eligible_under_application_lock()
             .await?;
+        self.capture_recovery_checkpoint_for_finalized_items_under_application_lock(
+            &finalized_items,
+        )
+        .await?;
         self.publish_terminal_operation_responses(&responses).await
     }
 

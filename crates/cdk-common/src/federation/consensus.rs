@@ -11,13 +11,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use super::{
     FederationAlephBftRecoveryCursor, FederationApplicationState, FederationCheckpoint,
-    FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationMaterializedStateDigest, FederationOperationConflictKey, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPeerStatus,
-    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
-    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
-    ThresholdParams, VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
+    FederationCheckpointId, FederationConfig, FederationError, FederationId,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationPeerStatus, FederationRestMessageKind,
+    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    InMemoryFederationJournal, MemberId, Result, ThresholdParams,
+    VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -35,9 +36,13 @@ pub const FEDERATION_MAX_CONSENSUS_ITEM_BYTES: usize =
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES + 4096;
 
 const FEDERATION_ALEPH_BFT_UNIT_BODY_HASH_VERSION: &[u8] = b"cdk-federation-aleph-bft-unit-body-v1";
+const FEDERATION_RECOVERY_BARRIER_ID_VERSION: &[u8] = b"cdk-federation-recovery-barrier-id-v1";
 
 /// Version of AlephBFT unit payloads carrying CDK consensus items.
 pub const FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION: u16 = 1;
+
+/// Version of ordered recovery-barrier consensus items.
+pub const FEDERATION_RECOVERY_BARRIER_VERSION: u16 = 1;
 
 /// Default maximum number of consensus items in one AlephBFT unit payload.
 pub const FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS: usize = 64;
@@ -212,6 +217,7 @@ impl FederationAlephBftUnitPayload {
         }
         for item in &self.items {
             item.ensure_supported_version()?;
+            item.ensure_federation_id(self.federation_id)?;
         }
 
         let expected_operation_ids = collect_operation_ids(&self.items)?;
@@ -241,6 +247,8 @@ pub enum FederationAlephBftFinalizedItemStatus {
     DuplicateOperation,
     /// The operation failed durable member-authentication checks.
     RejectedInvalidOperation,
+    /// The recovery barrier requested a cursor beyond its own finalized position.
+    RejectedInvalidRecoveryBarrier,
 }
 
 /// One consensus item after AlephBFT finalized its containing unit.
@@ -388,6 +396,163 @@ pub struct FederationAlephBftPendingOperationRecord {
     pub envelope: FederationOperationEnvelope,
 }
 
+/// Stable generation identifier for one ordered recovery-barrier request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FederationRecoveryBarrierId([u8; 32]);
+
+impl FederationRecoveryBarrierId {
+    /// Create a barrier ID from raw bytes.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Parse a barrier ID from a byte slice.
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| FederationError::CheckpointInvalid {
+                reason: format!(
+                    "recovery barrier id must be 32 bytes, found {}",
+                    bytes.len()
+                ),
+            })?;
+        Ok(Self(bytes))
+    }
+
+    /// Parse a barrier ID from hex.
+    pub fn from_hex<S>(hex: S) -> Result<Self>
+    where
+        S: AsRef<str>,
+    {
+        let bytes = crate::util::hex::decode(hex.as_ref())?;
+        Self::from_slice(&bytes)
+    }
+
+    /// Return the raw barrier ID bytes.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0
+    }
+
+    /// Return the barrier ID as hex.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+}
+
+impl fmt::Display for FederationRecoveryBarrierId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+impl FromStr for FederationRecoveryBarrierId {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        Self::from_hex(value)
+    }
+}
+
+impl Serialize for FederationRecoveryBarrierId {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationRecoveryBarrierId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Bounded request to select a recovery checkpoint through AlephBFT order.
+///
+/// The request commits only to the latest scheduled anchor known by the
+/// proposer and the finalized cursor that needed coverage. It never carries a
+/// checkpoint boundary, rolling digest, or materialized-state claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationRecoveryBarrier {
+    /// Barrier format version.
+    pub version: u16,
+    /// Federation whose ordered log must select the checkpoint boundary.
+    pub federation_id: FederationId,
+    /// Latest scheduled checkpoint sequence known by the proposer.
+    pub scheduled_checkpoint_sequence: u64,
+    /// Latest scheduled checkpoint ID, absent before the first scheduled checkpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduled_anchor_id: Option<FederationCheckpointId>,
+    /// Finalized cursor that the resulting checkpoint must move beyond.
+    pub requested_after_finalized_item_index: u64,
+    /// Stable generation derived from the other fields and federation ID.
+    pub generation: FederationRecoveryBarrierId,
+}
+
+impl FederationRecoveryBarrier {
+    /// Construct a canonical recovery-barrier request.
+    pub fn new(
+        federation_id: FederationId,
+        scheduled_checkpoint_sequence: u64,
+        scheduled_anchor_id: Option<FederationCheckpointId>,
+        requested_after_finalized_item_index: u64,
+    ) -> Result<Self> {
+        let generation = recovery_barrier_id(
+            federation_id,
+            scheduled_checkpoint_sequence,
+            scheduled_anchor_id,
+            requested_after_finalized_item_index,
+        )?;
+        let barrier = Self {
+            version: FEDERATION_RECOVERY_BARRIER_VERSION,
+            federation_id,
+            scheduled_checkpoint_sequence,
+            scheduled_anchor_id,
+            requested_after_finalized_item_index,
+            generation,
+        };
+        barrier.ensure_supported_version()?;
+        Ok(barrier)
+    }
+
+    /// Validate version, anchor shape, and generation binding.
+    pub fn ensure_supported_version(&self) -> Result<()> {
+        if self.version != FEDERATION_RECOVERY_BARRIER_VERSION {
+            return Err(FederationError::ProtocolVersionMismatch {
+                component: "recovery_barrier",
+                expected: FEDERATION_RECOVERY_BARRIER_VERSION,
+                found: self.version,
+            });
+        }
+        if (self.scheduled_checkpoint_sequence == 0) != self.scheduled_anchor_id.is_none() {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "recovery barrier scheduled anchor shape is invalid".to_string(),
+            });
+        }
+        let expected = recovery_barrier_id(
+            self.federation_id,
+            self.scheduled_checkpoint_sequence,
+            self.scheduled_anchor_id,
+            self.requested_after_finalized_item_index,
+        )?;
+        if self.generation != expected {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "recovery barrier generation does not match its request".to_string(),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// One item that can enter the federation consensus pipeline.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,6 +565,8 @@ pub struct FederationAlephBftPendingOperationRecord {
 pub enum FederationConsensusItem {
     /// A canonical Cashu mint operation envelope.
     Operation(FederationOperationEnvelope),
+    /// A bounded request to select a recovery checkpoint after this ordered unit.
+    RecoveryBarrier(FederationRecoveryBarrier),
     /// A module-defined fact that must be ordered with operations.
     ModuleFact(FederationConsensusModuleFact),
     /// A generic consensus item for future compatibility tests.
@@ -411,6 +578,12 @@ impl FederationConsensusItem {
     #[must_use]
     pub fn operation(envelope: FederationOperationEnvelope) -> Self {
         Self::Operation(envelope)
+    }
+
+    /// Wrap a recovery barrier as a consensus item.
+    #[must_use]
+    pub fn recovery_barrier(barrier: FederationRecoveryBarrier) -> Self {
+        Self::RecoveryBarrier(barrier)
     }
 
     /// Return canonical JSON bytes with all object keys sorted.
@@ -451,7 +624,7 @@ impl FederationConsensusItem {
     pub fn operation_id(&self) -> Result<Option<FederationOperationId>> {
         match self {
             Self::Operation(envelope) => Ok(Some(envelope.operation_id()?)),
-            Self::ModuleFact(_) | Self::Default(_) => Ok(None),
+            Self::RecoveryBarrier(_) | Self::ModuleFact(_) | Self::Default(_) => Ok(None),
         }
     }
 
@@ -459,8 +632,24 @@ impl FederationConsensusItem {
     pub fn ensure_supported_version(&self) -> Result<()> {
         match self {
             Self::Operation(envelope) => envelope.ensure_supported_version(),
+            Self::RecoveryBarrier(barrier) => barrier.ensure_supported_version(),
             Self::ModuleFact(item) => item.ensure_supported_version(),
             Self::Default(item) => item.ensure_supported_version(),
+        }
+    }
+
+    fn ensure_federation_id(&self, federation_id: FederationId) -> Result<()> {
+        match self {
+            Self::RecoveryBarrier(barrier) if barrier.federation_id != federation_id => {
+                Err(FederationError::CheckpointInvalid {
+                    reason: "recovery barrier federation does not match its AlephBFT unit"
+                        .to_string(),
+                })
+            }
+            Self::Operation(_)
+            | Self::RecoveryBarrier(_)
+            | Self::ModuleFact(_)
+            | Self::Default(_) => Ok(()),
         }
     }
 }
@@ -511,7 +700,9 @@ impl FederationVerifiedOperationAdmission {
     pub fn operation_envelope(&self) -> &FederationOperationEnvelope {
         match &self.item {
             FederationConsensusItem::Operation(envelope) => envelope,
-            FederationConsensusItem::ModuleFact(_) | FederationConsensusItem::Default(_) => {
+            FederationConsensusItem::RecoveryBarrier(_)
+            | FederationConsensusItem::ModuleFact(_)
+            | FederationConsensusItem::Default(_) => {
                 unreachable!("verified operation admissions always carry operation items")
             }
         }
@@ -603,6 +794,36 @@ fn ensure_consensus_item_version(version: u16) -> Result<()> {
     Ok(())
 }
 
+fn recovery_barrier_id(
+    federation_id: FederationId,
+    scheduled_checkpoint_sequence: u64,
+    scheduled_anchor_id: Option<FederationCheckpointId>,
+    requested_after_finalized_item_index: u64,
+) -> Result<FederationRecoveryBarrierId> {
+    if (scheduled_checkpoint_sequence == 0) != scheduled_anchor_id.is_none() {
+        return Err(FederationError::CheckpointInvalid {
+            reason: "recovery barrier scheduled anchor shape is invalid".to_string(),
+        });
+    }
+
+    let mut transcript = Vec::new();
+    append_len_prefixed_bytes(&mut transcript, FEDERATION_RECOVERY_BARRIER_ID_VERSION);
+    transcript.extend_from_slice(&FEDERATION_RECOVERY_BARRIER_VERSION.to_be_bytes());
+    append_len_prefixed_bytes(&mut transcript, &federation_id.to_bytes());
+    transcript.extend_from_slice(&scheduled_checkpoint_sequence.to_be_bytes());
+    match scheduled_anchor_id {
+        Some(anchor_id) => {
+            transcript.push(1);
+            append_len_prefixed_bytes(&mut transcript, &anchor_id.to_bytes());
+        }
+        None => transcript.push(0),
+    }
+    transcript.extend_from_slice(&requested_after_finalized_item_index.to_be_bytes());
+    Ok(FederationRecoveryBarrierId::from_bytes(
+        Sha256Hash::hash(&transcript).to_byte_array(),
+    ))
+}
+
 fn collect_operation_ids(items: &[FederationConsensusItem]) -> Result<Vec<FederationOperationId>> {
     let mut operation_ids = Vec::new();
     for item in items {
@@ -690,6 +911,14 @@ impl FederationConsensusItemQueue {
     #[must_use]
     pub fn len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Return whether a recovery barrier is waiting for unit construction.
+    #[must_use]
+    pub fn has_recovery_barrier(&self) -> bool {
+        self.pending
+            .iter()
+            .any(|item| matches!(item, FederationConsensusItem::RecoveryBarrier(_)))
     }
 
     /// Return true when the queue has no pending items.
@@ -808,7 +1037,9 @@ fn pending_consensus_item_operation_metadata(
         FederationConsensusItem::Operation(envelope) => {
             Ok(Some(pending_operation_metadata_from_envelope(envelope)?))
         }
-        FederationConsensusItem::ModuleFact(_) | FederationConsensusItem::Default(_) => Ok(None),
+        FederationConsensusItem::RecoveryBarrier(_)
+        | FederationConsensusItem::ModuleFact(_)
+        | FederationConsensusItem::Default(_) => Ok(None),
     }
 }
 
@@ -886,6 +1117,12 @@ impl FederationAlephBftUnitDataProvider {
     #[must_use]
     pub fn queued_len(&self) -> usize {
         self.queue.len()
+    }
+
+    /// Return whether a recovery barrier is waiting for unit construction.
+    #[must_use]
+    pub fn has_recovery_barrier(&self) -> bool {
+        self.queue.has_recovery_barrier()
     }
 
     /// Return true when the provider has no queued consensus items.
@@ -1142,6 +1379,8 @@ impl FederationAlephBftFinalizationHandler {
                     });
                 }
             }
+            finalized_item.item.ensure_supported_version()?;
+            finalized_item.item.ensure_federation_id(federation_id)?;
 
             let computed_operation_id = finalized_item.item.operation_id()?;
             if computed_operation_id != finalized_item.operation_id {
@@ -1160,6 +1399,17 @@ impl FederationAlephBftFinalizationHandler {
                     return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
                         reason: "finalized operation authentication does not match its status"
                             .to_string(),
+                    });
+                }
+            }
+            if let FederationConsensusItem::RecoveryBarrier(barrier) = &finalized_item.item {
+                let barrier_valid = barrier.requested_after_finalized_item_index
+                    <= finalized_item.accepted_item_index;
+                let marked_rejected = finalized_item.status
+                    == FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier;
+                if barrier_valid == marked_rejected {
+                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                        reason: "recovery barrier cursor does not match its status".to_string(),
                     });
                 }
             }
@@ -1191,6 +1441,15 @@ impl FederationAlephBftFinalizationHandler {
                     return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
                         reason: "non-operation finalized item cannot be an invalid operation"
                             .to_string(),
+                    });
+                }
+                (FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier, None) => {}
+                (
+                    FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier,
+                    Some(_),
+                ) => {
+                    return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                        reason: "operation item cannot be an invalid recovery barrier".to_string(),
                     });
                 }
                 (FederationAlephBftFinalizedItemStatus::Accepted, None) => {}
@@ -1462,6 +1721,11 @@ impl FederationAlephBftFinalizationHandler {
         for (item_index_in_unit, item) in payload.items.into_iter().enumerate() {
             let operation_id = item.operation_id()?;
             let status = match (&item, operation_id) {
+                (FederationConsensusItem::RecoveryBarrier(barrier), None)
+                    if barrier.requested_after_finalized_item_index > self.next_item_index =>
+                {
+                    FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier
+                }
                 (FederationConsensusItem::Operation(envelope), Some(_))
                     if self
                         .operation_config
@@ -1830,6 +2094,17 @@ impl FederationConsensusRuntime {
         self.pending_finalization_units.values().map(Vec::len).sum()
     }
 
+    /// Return whether a recovery barrier is queued or awaiting finality.
+    #[must_use]
+    pub fn has_pending_recovery_barrier(&self) -> bool {
+        self.data_provider.has_recovery_barrier()
+            || self.pending_finalization_units.values().any(|items| {
+                items
+                    .iter()
+                    .any(|item| matches!(item, FederationConsensusItem::RecoveryBarrier(_)))
+            })
+    }
+
     /// Return the next unit index that the local data provider will use.
     #[must_use]
     pub fn next_unit_index(&self) -> u64 {
@@ -1974,6 +2249,24 @@ impl FederationConsensusRuntime {
         }
 
         self.data_provider.submit_operation(envelope)
+    }
+
+    /// Queue one recovery barrier when none is already queued or awaiting finality.
+    pub fn submit_recovery_barrier(&mut self, barrier: FederationRecoveryBarrier) -> Result<bool> {
+        barrier.ensure_supported_version()?;
+        if barrier.federation_id != self.data_provider.federation_id {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "recovery barrier federation does not match consensus runtime".to_string(),
+            });
+        }
+        if self.has_pending_recovery_barrier() {
+            return Ok(false);
+        }
+
+        let admission = self
+            .data_provider
+            .submit_item(FederationConsensusItem::recovery_barrier(barrier))?;
+        Ok(admission == FederationConsensusItemAdmission::Accepted)
     }
 
     /// Pull the next local unit payload for the AlephBFT data provider.
@@ -2342,6 +2635,20 @@ impl FederationConsensusRuntime {
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationConsensusItemAdmission> {
         self.submit_operation(envelope)
+    }
+
+    /// Queue one bounded recovery barrier for AlephBFT ordering.
+    pub fn submit_aleph_bft_recovery_barrier(
+        &mut self,
+        barrier: FederationRecoveryBarrier,
+    ) -> Result<bool> {
+        self.submit_recovery_barrier(barrier)
+    }
+
+    /// Return whether a recovery barrier is queued or awaiting finality.
+    #[must_use]
+    pub fn has_pending_aleph_bft_recovery_barrier(&self) -> bool {
+        self.has_pending_recovery_barrier()
     }
 
     /// Pull the next local AlephBFT unit payload from the runtime.

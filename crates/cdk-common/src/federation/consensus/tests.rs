@@ -168,6 +168,14 @@ fn module_fact_item(kind: &str) -> FederationConsensusItem {
     FederationConsensusItem::ModuleFact(FederationConsensusModuleFact::new("test", kind, json!({})))
 }
 
+fn recovery_barrier(
+    federation_id: FederationId,
+    requested_after: u64,
+) -> FederationRecoveryBarrier {
+    FederationRecoveryBarrier::new(federation_id, 0, None, requested_after)
+        .expect("recovery barrier")
+}
+
 fn identity_secret(id: u8) -> SecretKey {
     SecretKey::from_slice(&[id; 32]).expect("identity secret")
 }
@@ -555,6 +563,114 @@ fn consensus_item_queue_batches_and_deduplicates_operations() {
     let second_batch = queue.drain_batch(10);
     assert_eq!(second_batch.len(), 2);
     assert!(queue.is_empty());
+}
+
+#[test]
+fn recovery_barrier_generation_is_canonical_and_tamper_evident() {
+    let federation_id = federation_id(31);
+    let anchor_id = FederationCheckpointId::from_bytes([41; 32]);
+    let barrier = FederationRecoveryBarrier::new(federation_id, 7, Some(anchor_id), 53)
+        .expect("recovery barrier");
+    let repeated = FederationRecoveryBarrier::new(federation_id, 7, Some(anchor_id), 53)
+        .expect("same recovery barrier");
+
+    assert_eq!(barrier.generation, repeated.generation);
+    assert_eq!(
+        barrier.generation.to_hex(),
+        "6e7c905c157249097614bf915f18d0d7861c1de8da1de4db85ccc1489aa02887"
+    );
+    let encoded = serde_json::to_vec(&barrier).expect("serialize barrier");
+    let decoded: FederationRecoveryBarrier =
+        serde_json::from_slice(&encoded).expect("deserialize barrier");
+    assert_eq!(decoded, barrier);
+    decoded.ensure_supported_version().expect("valid barrier");
+
+    let mut tampered = barrier.clone();
+    tampered.requested_after_finalized_item_index = 54;
+    assert!(matches!(
+        tampered.ensure_supported_version(),
+        Err(FederationError::CheckpointInvalid { reason })
+            if reason.contains("generation does not match")
+    ));
+}
+
+#[test]
+fn recovery_barrier_is_bound_to_its_aleph_bft_federation() {
+    let expected_federation = federation_id(32);
+    let other_federation = federation_id(33);
+    let item = FederationConsensusItem::recovery_barrier(recovery_barrier(other_federation, 0));
+
+    assert!(matches!(
+        FederationAlephBftUnitPayload::new(
+            expected_federation,
+            member_id(),
+            0,
+            0,
+            vec![item],
+        ),
+        Err(FederationError::CheckpointInvalid { reason })
+            if reason.contains("does not match its AlephBFT unit")
+    ));
+}
+
+#[test]
+fn consensus_runtime_allows_only_one_pending_recovery_barrier() {
+    let federation_id = federation_id(34);
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
+
+    assert!(runtime
+        .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 0))
+        .expect("submit first barrier"));
+    assert!(!runtime
+        .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 1))
+        .expect("deduplicate queued barrier"));
+    assert!(runtime.has_pending_aleph_bft_recovery_barrier());
+
+    let unit = runtime
+        .next_aleph_bft_unit_payload()
+        .expect("next unit")
+        .expect("barrier unit");
+    assert!(!runtime
+        .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 1))
+        .expect("deduplicate barrier awaiting finality"));
+    runtime
+        .finalize_aleph_bft_unit(unit)
+        .expect("finalize barrier unit");
+    assert!(!runtime.has_pending_aleph_bft_recovery_barrier());
+    assert!(runtime
+        .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 1))
+        .expect("submit after finality"));
+}
+
+#[test]
+fn future_recovery_cursor_is_rejected_without_rejecting_its_unit() {
+    let federation_id = federation_id(35);
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
+    let unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id(),
+        0,
+        0,
+        vec![
+            FederationConsensusItem::recovery_barrier(recovery_barrier(federation_id, 1)),
+            module_fact_item("after-invalid-barrier"),
+        ],
+    )
+    .expect("unit with invalid barrier cursor");
+
+    runtime
+        .finalize_unit(unit)
+        .expect("unit remains finalizable");
+    let finalized = runtime.finalized_items();
+    assert_eq!(finalized.len(), 2);
+    assert_eq!(
+        finalized[0].status,
+        FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier
+    );
+    assert_eq!(
+        finalized[1].status,
+        FederationAlephBftFinalizedItemStatus::Accepted
+    );
 }
 
 #[test]

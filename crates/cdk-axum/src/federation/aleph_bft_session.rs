@@ -440,6 +440,10 @@ impl AlephBftSessionSupervisor {
         }
     }
 
+    pub(crate) fn mark_local_activity(&self) {
+        self.activity_hint.mark_local_pending();
+    }
+
     pub(crate) fn mark_peer_activity(&self, operation_id: FederationOperationId) {
         self.activity_hint
             .mark_network_activity([operation_id.to_bytes()]);

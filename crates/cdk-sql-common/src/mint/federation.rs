@@ -145,6 +145,9 @@ fn aleph_bft_finalized_item_status_to_str(
         FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation => {
             "rejected_invalid_operation"
         }
+        FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier => {
+            "rejected_invalid_recovery_barrier"
+        }
     }
 }
 

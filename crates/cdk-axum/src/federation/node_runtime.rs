@@ -533,6 +533,13 @@ impl FederationNodeRuntime {
         handle.mark_activity(operation_id, broadcast);
     }
 
+    pub(crate) async fn mark_local_consensus_activity(&self) {
+        let Some(handle) = self.aleph_bft_live_session.read().await.clone() else {
+            return;
+        };
+        handle.mark_local_activity();
+    }
+
     pub(crate) async fn mark_peer_activity(
         &self,
         session_id: u64,

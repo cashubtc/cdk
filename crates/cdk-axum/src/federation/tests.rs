@@ -36,9 +36,9 @@ use cdk::federation::{
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationRecord,
     FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
-    FederationRestMessageKind, FederationSignedRequest, InMemoryFederationJournal,
-    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
-    TrustedDealerMember,
+    FederationRecoveryBarrier, FederationRestMessageKind, FederationSignedRequest,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;
@@ -186,82 +186,54 @@ fn federation_peer_sync_disable_value_accepts_truthy_values() {
 }
 
 #[tokio::test]
-async fn recovery_checkpoint_observation_requires_two_identical_boundaries() {
+async fn recovery_checkpoint_demand_uses_a_bounded_local_proposal_lease() {
     let runtime = FederationNodeRuntime::disabled();
     assert!(!runtime.recovery_checkpoint_is_requested());
     runtime.request_recovery_checkpoint();
     assert!(runtime.recovery_checkpoint_is_requested());
-
-    let boundary = cdk::federation::FederationCheckpointBoundary {
-        journal_next_index: 2,
-        journal_order_digest: cdk::federation::FederationJournalDigest::from_bytes([1; 32]),
-        finalized_next_item_index: 3,
-        finalized_item_digest: cdk::federation::FederationFinalizedItemDigest::from_bytes([2; 32]),
-        application_digest: cdk::federation::FederationApplicationDigest::from_bytes([3; 32]),
-        aleph_bft_session: 1,
-        next_unit_finalization_index: 2,
-        next_unit_index_by_member: BTreeMap::from([(member_id(1), 2)]),
-    };
+    let now = std::time::Instant::now();
+    assert!(
+        runtime
+            .components
+            .checkpoint
+            .reserve_recovery_proposal(now, Duration::from_secs(30))
+            .await
+    );
     assert!(
         !runtime
-            .observe_recovery_checkpoint_boundary(Some(&boundary))
+            .components
+            .checkpoint
+            .reserve_recovery_proposal(now + Duration::from_secs(29), Duration::from_secs(30))
             .await
     );
     assert!(
         runtime
-            .observe_recovery_checkpoint_boundary(Some(&boundary))
+            .components
+            .checkpoint
+            .reserve_recovery_proposal(now + Duration::from_secs(30), Duration::from_secs(30))
             .await
     );
-
-    let mut moved = boundary;
-    moved.next_unit_finalization_index += 1;
-    assert!(
-        !runtime
-            .observe_recovery_checkpoint_boundary(Some(&moved))
-            .await
-    );
-    assert!(
-        runtime
-            .observe_recovery_checkpoint_boundary(Some(&moved))
-            .await
-    );
-    moved.next_unit_finalization_index += 1;
-    assert!(
-        !runtime
-            .observe_recovery_checkpoint_boundary(Some(&moved))
-            .await
-    );
-    assert!(!runtime.observe_recovery_checkpoint_boundary(None).await);
 }
 
 #[tokio::test]
-async fn moving_recovery_tip_never_satisfies_quiet_tip_debounce() {
-    let runtime = FederationNodeRuntime::disabled();
-    runtime.request_recovery_checkpoint();
-    let mut boundary = FederationCheckpointBoundary {
-        journal_next_index: 1,
-        journal_order_digest: FederationJournalDigest::from_bytes([1; 32]),
-        finalized_next_item_index: 1,
-        finalized_item_digest: cdk::federation::FederationFinalizedItemDigest::from_bytes([2; 32]),
-        application_digest: cdk::federation::FederationApplicationDigest::from_bytes([3; 32]),
-        aleph_bft_session: 0,
-        next_unit_finalization_index: 1,
-        next_unit_index_by_member: BTreeMap::from([(member_id(1), 1)]),
-    };
+async fn idle_member_does_not_propose_recovery_barrier_work() {
+    let (public_config, first_private, _) = transport_config();
+    let state = federation_route_state_for_private(public_config, first_private).await;
 
-    for generation in 1_u64..=32 {
-        boundary.journal_next_index = generation;
-        boundary.finalized_next_item_index = generation;
-        boundary.next_unit_finalization_index = generation;
-        assert!(
-            !runtime
-                .observe_recovery_checkpoint_boundary(Some(&boundary))
-                .await,
-            "a continuously moving tip must never satisfy the two-observation debounce"
-        );
-    }
-
-    assert!(runtime.recovery_checkpoint_is_requested());
+    assert!(!state.federation.recovery_checkpoint_is_requested());
+    assert!(!state
+        .federation
+        .propose_recovery_barrier_if_requested()
+        .await
+        .expect("idle recovery proposal"));
+    assert!(!state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .has_pending_aleph_bft_recovery_barrier());
 }
 
 #[tokio::test]
@@ -329,6 +301,267 @@ async fn independent_members_derive_identical_recovery_checkpoint_at_stable_tip(
             .digest()
             .expect("second stable-tip materialized digest")
     );
+}
+
+#[tokio::test]
+async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffic() {
+    let (public_config, first_private, _) = transport_config();
+    let state = federation_route_state_for_private(public_config.clone(), first_private).await;
+    let first_quote = QuoteId::new();
+    let second_quote = QuoteId::new();
+    let payload = {
+        let consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            vec![
+                FederationConsensusItem::operation(mint_quote_envelope(&state, &first_quote)),
+                FederationConsensusItem::recovery_barrier(
+                    FederationRecoveryBarrier::new(public_config.federation_id, 0, None, 0)
+                        .expect("recovery barrier"),
+                ),
+                FederationConsensusItem::operation(mint_quote_envelope(&state, &second_quote)),
+            ],
+        )
+        .expect("barrier unit")
+    };
+
+    let responses = state
+        .federation
+        .apply_finalized_unit(payload)
+        .await
+        .expect("finalize barrier unit");
+    assert_eq!(responses.len(), 2);
+    assert!(responses.iter().all(|response| matches!(
+        response.outcome.entry().status(),
+        FederationOperationStatus::Applied | FederationOperationStatus::Rejected
+    )));
+    let checkpoint = state
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .await
+        .expect("recovery checkpoint lookup")
+        .expect("recovery checkpoint candidate");
+    assert_eq!(checkpoint.journal_next_index, 2);
+    assert_eq!(checkpoint.finalized_next_item_index, 3);
+    assert_eq!(checkpoint.next_unit_finalization_index, 1);
+    let checkpoint_id = checkpoint.id().expect("recovery checkpoint id");
+    assert!(state
+        .mint
+        .localstore()
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+        .expect("trusted checkpoint lookup")
+        .is_none());
+
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("operation after recovery barrier");
+    assert_eq!(consensus_operation_count(&state).await, 3);
+
+    let repeated_barrier = {
+        let consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            vec![FederationConsensusItem::recovery_barrier(
+                FederationRecoveryBarrier::new(
+                    public_config.federation_id,
+                    0,
+                    None,
+                    status.next_item_index,
+                )
+                .expect("repeated recovery barrier"),
+            )],
+        )
+        .expect("repeated barrier unit")
+    };
+    state
+        .federation
+        .apply_finalized_unit(repeated_barrier)
+        .await
+        .expect("finalize repeated barrier");
+    assert_eq!(
+        state
+            .mint
+            .localstore()
+            .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+            .await
+            .expect("retained recovery checkpoint lookup")
+            .expect("retained recovery checkpoint")
+            .id()
+            .expect("retained recovery checkpoint id"),
+        checkpoint_id
+    );
+}
+
+#[tokio::test]
+async fn recovery_barrier_reaches_quorum_with_one_member_unavailable() {
+    let (public_config, first_private, second_private, _unavailable_private) =
+        transport_config_three();
+    let first =
+        federation_route_state_for_private(public_config.clone(), first_private.clone()).await;
+    let second =
+        federation_route_state_for_private(public_config.clone(), second_private.clone()).await;
+    let items = vec![
+        FederationConsensusItem::operation(mint_quote_envelope(&first, &QuoteId::new())),
+        FederationConsensusItem::recovery_barrier(
+            FederationRecoveryBarrier::new(public_config.federation_id, 0, None, 0)
+                .expect("recovery barrier"),
+        ),
+        FederationConsensusItem::operation(mint_quote_envelope(&first, &QuoteId::new())),
+    ];
+    apply_identical_finalized_unit(&first, &second, items).await;
+
+    let first_checkpoint = first
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .await
+        .expect("first checkpoint lookup")
+        .expect("first checkpoint");
+    let second_checkpoint = second
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .await
+        .expect("second checkpoint lookup")
+        .expect("second checkpoint");
+    assert_eq!(
+        first_checkpoint.id().expect("first checkpoint id"),
+        second_checkpoint.id().expect("second checkpoint id")
+    );
+    FederationCheckpointQuorum::new(
+        first_checkpoint.clone(),
+        vec![
+            FederationCheckpointSignature::new_signed(&first_checkpoint, &first_private)
+                .expect("first signature"),
+            FederationCheckpointSignature::new_signed(&second_checkpoint, &second_private)
+                .expect("second signature"),
+        ],
+    )
+    .verify(&public_config)
+    .expect("two-of-three recovery checkpoint quorum");
+}
+
+#[tokio::test]
+async fn concurrent_recovery_requests_queue_one_effective_barrier() {
+    let (public_config, first_private, _) = transport_config();
+    let state = federation_route_state_for_private(public_config, first_private).await;
+    state.federation.request_recovery_checkpoint();
+
+    let (first, second) = tokio::join!(
+        state.federation.propose_recovery_barrier_if_requested(),
+        state.federation.propose_recovery_barrier_if_requested(),
+    );
+    assert_eq!(
+        usize::from(first.expect("first proposal")) + usize::from(second.expect("second proposal")),
+        1
+    );
+    let consensus = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await;
+    assert_eq!(
+        consensus
+            .aleph_bft_finalized_items()
+            .expect("finalized items")
+            .iter()
+            .filter(|item| matches!(item.item, FederationConsensusItem::RecoveryBarrier(_)))
+            .count(),
+        1
+    );
+    drop(consensus);
+    assert!(state
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .await
+        .expect("recovery checkpoint lookup")
+        .is_some());
+}
+
+#[tokio::test]
+async fn restart_retries_last_ordered_barrier_with_the_same_checkpoint_id() {
+    let (public_config, first_private, _) = transport_config();
+    let mut state = federation_route_state_for_private(public_config.clone(), first_private).await;
+    state.federation.suppress_next_recovery_checkpoint_capture();
+    state.federation.request_recovery_checkpoint();
+    assert!(state
+        .federation
+        .propose_recovery_barrier_if_requested()
+        .await
+        .expect("barrier proposal"));
+    assert!(state
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .await
+        .expect("suppressed checkpoint lookup")
+        .is_none());
+    let expected_id = recovery_checkpoint_for_state(&state, &public_config, None)
+        .await
+        .id()
+        .expect("expected recovery checkpoint id");
+
+    let (restarted_consensus, _) = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("restart consensus from durable finalized barrier");
+    state.federation.consensus = restarted_consensus;
+
+    state
+        .federation
+        .recover_recovery_checkpoint_candidate_at_startup()
+        .await
+        .expect("startup recovery checkpoint retry");
+    let first_id = state
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .await
+        .expect("recovered checkpoint lookup")
+        .expect("recovered checkpoint")
+        .id()
+        .expect("recovered checkpoint id");
+    assert_eq!(first_id, expected_id);
+    state
+        .federation
+        .recover_recovery_checkpoint_candidate_at_startup()
+        .await
+        .expect("idempotent startup retry");
+    let repeated_id = state
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .await
+        .expect("repeated checkpoint lookup")
+        .expect("repeated checkpoint")
+        .id()
+        .expect("repeated checkpoint id");
+    assert_eq!(first_id, repeated_id);
 }
 
 #[test]

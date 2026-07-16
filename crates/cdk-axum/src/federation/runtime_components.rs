@@ -3,15 +3,15 @@
 //! Authority is deliberately split by workflow:
 //!
 //! - [`FederationOperationPipeline`] owns the application serialization lock;
-//! - [`FederationCheckpointManager`] owns recovery-checkpoint demand and stable
-//!   boundary observation;
+//! - [`FederationCheckpointManager`] owns recovery-checkpoint demand and the
+//!   local proposal lease;
 //! - [`FederationReadinessCoordinator`] owns mutable readiness state;
 //! - [`FederationDkgCoordinator`] owns DKG ceremony configuration and admission;
 //! - [`FederationWalletReconciler`] owns on-chain/FROST reconciliation handles.
 //!
 //! None of these components owns networking or may make peer requests. Network
 //! work completes before runtime mutation begins. The mutation lock order is:
-//! short readiness/recovery-observation locks independently, then operation
+//! short readiness/recovery-proposal locks independently, then operation
 //! application, then consensus, then a database transaction. A component must
 //! not acquire an earlier lock while holding a later one. Database reads used
 //! to build a deterministic plan may occur under the consensus lock; no peer
@@ -20,7 +20,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use cdk::federation::{FederationCheckpointBoundary, MemberId};
+use cdk::federation::MemberId;
 use cdk::mint::Mint;
 
 use super::frost_signing::FederationFrostSigningRuntime;
@@ -43,11 +43,11 @@ impl FederationOperationPipeline {
     }
 }
 
-/// Owns checkpoint demand and the two-observation stable-boundary latch.
+/// Owns checkpoint demand and the bounded local barrier-proposal lease.
 #[derive(Debug, Clone, Default)]
 pub(super) struct FederationCheckpointManager {
     pub(super) recovery_requested: Arc<AtomicBool>,
-    pub(super) recovery_observation: Arc<tokio::sync::Mutex<Option<FederationCheckpointBoundary>>>,
+    pub(super) next_recovery_proposal_at: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 impl FederationCheckpointManager {
@@ -59,34 +59,21 @@ impl FederationCheckpointManager {
         self.recovery_requested.load(Ordering::Acquire)
     }
 
-    pub(super) async fn observe_stable_boundary(
+    pub(super) async fn reserve_recovery_proposal(
         &self,
-        boundary: Option<&FederationCheckpointBoundary>,
+        now: std::time::Instant,
+        lease: std::time::Duration,
     ) -> bool {
-        let mut observation = self.recovery_observation.lock().await;
-        let Some(boundary) = boundary else {
-            *observation = None;
+        let mut next_proposal_at = self.next_recovery_proposal_at.lock().await;
+        if next_proposal_at.is_some_and(|deadline| deadline > now) {
             return false;
-        };
-        if observation.as_ref() == Some(boundary) {
-            true
-        } else {
-            *observation = Some(boundary.clone());
-            false
         }
+        *next_proposal_at = Some(now + lease);
+        true
     }
 
-    pub(super) async fn clear_recovery(&self) {
+    pub(super) fn clear_recovery(&self) {
         self.recovery_requested.store(false, Ordering::Release);
-        *self.recovery_observation.lock().await = None;
-    }
-
-    pub(super) async fn clear_recovery_if_current(&self, cleared: &FederationCheckpointBoundary) {
-        let mut observation = self.recovery_observation.lock().await;
-        if observation.as_ref() == Some(cleared) {
-            self.recovery_requested.store(false, Ordering::Release);
-            *observation = None;
-        }
     }
 }
 
@@ -216,5 +203,6 @@ pub(super) struct FederationRuntimeFaultHarness {
     pub(super) fail_next_pending_operation_persistence: Arc<AtomicBool>,
     pub(super) suppress_next_terminal_response_publication: Arc<AtomicBool>,
     pub(super) suppress_next_scheduled_checkpoint_capture: Arc<AtomicBool>,
+    pub(super) suppress_next_recovery_checkpoint_capture: Arc<AtomicBool>,
     pub(super) fail_next_checkpoint_promotion: Arc<AtomicBool>,
 }

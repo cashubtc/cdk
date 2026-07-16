@@ -1,6 +1,6 @@
 # Federated Cashu checkpoint and catch-up consolidation plan
 
-Status: in progress (milestones 0-5 complete; milestone 6 next)
+Status: in progress (milestones 0-7 complete; milestone 8 next)
 Scope: federation-only checkpoint, catch-up, startup recovery, and related
 AlephBFT runtime consolidation
 Primary goal: simplify the checkpoint and catch-up implementation without
@@ -360,7 +360,7 @@ Update this table whenever a milestone changes state.
 | 4 | Unified consensus recovery API | Complete | `refactor: unify federation consensus recovery` | Production startup, checkpoint rebasing, and signed catch-up recover only through an opaque verified suffix rooted at an explicit authenticated genesis/checkpoint base; raw reconstruction remains test-fixture-only. |
 | 5 | Bounded streaming checkpoint catch-up | Complete | `feat: stream bounded checkpoint catch-up` | Catch-up verifies, stages, applies, and resumes one bounded complete-unit page at a time; exact-frontier promotion and native predecode HTTP limits keep memory and authority bounded. |
 | 6 | Focused runtime component split | Complete | `refactor: split federation runtime components` | Checkpoint, catch-up, operation, readiness, DKG, wallet/FROST, and test-fault ownership is explicit; structured-concurrency and blocked-network regressions freeze the lock boundary. |
-| 7 | AlephBFT-ordered recovery barrier | Not started | — | — |
+| 7 | AlephBFT-ordered recovery barrier | Complete | `feat: order recovery checkpoint barriers` | A versioned barrier is ordered and persisted as an ordinary AlephBFT item; its complete-unit terminal boundary deterministically creates the existing recovery-checkpoint candidate, while a local lease and fixed one-unit tail bound suppress duplicate work. |
 | 8 | Transport and request-state consolidation | Not started | — | — |
 | 9 | Remove whole-runtime cloning | Not started | — | — |
 | 10 | Bootstrap, backup, operator, and retention contract | Not started | — | — |
@@ -1155,7 +1155,7 @@ modules themselves compile without warnings.
 
 ## Milestone 7: AlephBFT-ordered recovery barrier
 
-Status: not started
+Status: complete
 
 ### Objective
 
@@ -1164,50 +1164,93 @@ select a quorum-signable boundary during sustained valid traffic.
 
 ### Checklist
 
-- [ ] Define a versioned, bounded recovery-barrier consensus item with a stable
+- [x] Define a versioned, bounded recovery-barrier consensus item with a stable
       generation/request ID.
-- [ ] Define who may request or propose a barrier and how duplicate concurrent
+- [x] Define who may request or propose a barrier and how duplicate concurrent
       requests converge.
-- [ ] Rate-limit or lease barrier generation so a lagging or malicious member
+- [x] Rate-limit or lease barrier generation so a lagging or malicious member
       cannot create unbounded consensus traffic.
-- [ ] Finalize the barrier through ordinary AlephBFT ordering and durable
+- [x] Finalize the barrier through ordinary AlephBFT ordering and durable
       finalized-item persistence.
-- [ ] Define the exact complete-unit, terminal-application boundary selected by
+- [x] Define the exact complete-unit, terminal-application boundary selected by
       the finalized barrier.
-- [ ] Derive the existing recovery checkpoint payload at that boundary without
+- [x] Derive the existing recovery checkpoint payload at that boundary without
       accepting any caller-provided digest or materialized-state claim.
-- [ ] Preserve the latest scheduled checkpoint as the recovery checkpoint's
+- [x] Preserve the latest scheduled checkpoint as the recovery checkpoint's
       anchor and do not increment the scheduled sequence.
-- [ ] Reuse ordinary checkpoint candidate, signature, quorum, dissemination,
+- [x] Reuse ordinary checkpoint candidate, signature, quorum, dissemination,
       catch-up, and promotion logic after boundary selection.
-- [ ] Remove quiet-tip two-observation request state and peer-summary coupling
+- [x] Remove quiet-tip two-observation request state and peer-summary coupling
       once the barrier path is proven.
-- [ ] Ensure a barrier does not block normal mint operations beyond the bounded
+- [x] Ensure a barrier does not block normal mint operations beyond the bounded
       serialization needed to capture its terminal boundary.
 
 ### Exit tests
 
-- [ ] A member starting far behind catches up and becomes healthy while other
+- [x] A member starting far behind catches up and becomes healthy while other
       members continuously finalize operations.
-- [ ] Concurrent barrier requests from multiple members produce one effective
+- [x] Concurrent barrier requests from multiple members produce one effective
       checkpoint generation or harmless deterministic duplicates.
-- [ ] Minority-only requests cannot forge or promote a checkpoint.
-- [ ] Traffic continues before and after the barrier without reordered or lost
+- [x] Minority-only requests cannot forge or promote a checkpoint.
+- [x] Traffic continues before and after the barrier without reordered or lost
       operations.
-- [ ] Barrier replay after restart derives the same checkpoint ID.
-- [ ] Recovery checkpoint formation remains possible with one unavailable
+- [x] Barrier replay after restart derives the same checkpoint ID.
+- [x] Recovery checkpoint formation remains possible with one unavailable
       member as long as consensus and signature thresholds are satisfied.
-- [ ] Idle steady state emits no barrier traffic, signatures, catch-up requests,
+- [x] Idle steady state emits no barrier traffic, signatures, catch-up requests,
       or repeated checkpoint work.
 
 ### Progress notes
 
-Record the barrier protocol, rate limit, sustained-load results, and removal of
-quiet-tip state here.
+`FederationRecoveryBarrier` is a versioned consensus item bound to the
+federation ID, latest scheduled sequence/anchor, and the proposer's finalized
+cursor. Its stable generation ID is a domain-separated hash of only those
+fields. The item contains no checkpoint boundary, rolling digest, application
+outcome, or materialized-state claim. Any authenticated member may request
+recovery through the existing private summary request, but only a locally
+healthy member with a live AlephBFT session may propose the item.
+
+Each member admits at most one queued or awaiting-finality barrier and reserves
+a 30-second local proposal lease before constructing it. A deterministic
+64-finalized-item minimum advance reuses a recent checkpoint while the
+uncovered live tail remains bounded by one maximum-sized AlephBFT unit. This
+prevents repeated requests from turning into unbounded audit/signature work
+without making restart cost depend on federation age. Concurrent proposers may
+still order harmless barriers, but one complete finalized unit produces at
+most one effective candidate boundary.
+
+Finalization durably records the barrier through the ordinary item pipeline.
+A cursor beyond the barrier's own ordered position is terminally rejected
+without rejecting the rest of its unit. After every operation in the complete
+unit has reached terminal application, checkpoint capture derives the boundary
+locally, retains the latest verified scheduled anchor and sequence, and enters
+the existing candidate/signature/quorum/exchange/promotion path. A stale-anchor
+barrier requests a replacement instead of producing a forked lineage. Startup
+replays the last complete finalized unit's accepted barrier so a crash between
+durable finality and candidate persistence derives the same checkpoint ID.
+
+The former two-identical-observation latch and quorum matching of peer
+`stable_tip` summaries have been removed. Traffic-before/barrier/traffic-after
+tests prove the entire unit is captured without reordering or loss; concurrent
+proposal, replay, minority non-promotion, one-unavailable-member quorum, local
+lease, recent-checkpoint suppression, and idle-no-work tests cover the bounded
+protocol. The pre-existing long-offline checkpoint catch-up and live-tail tests
+continue to cover promotion and readiness from the ordered recovery proof.
+
+Local verification completed with:
+
+- `cargo test -p cdk-common --features federation recovery_barrier --
+  --nocapture` plus the invalid-future-cursor test;
+- focused Axum concurrent-request, complete-unit traffic, restart replay,
+  one-unavailable-member, proposal-lease, and idle tests;
+- `cargo test -p cdk-axum --features federation checkpoint -- --nocapture`
+  (28 passed);
+- `cargo check -p cdk-axum --all-targets --features federation`; and
+- `cargo fmt --all -- --check` and `git diff --check`.
 
 ### Commit gate
 
-- [ ] Commit the ordered recovery barrier, removal of quiet-tip logic, and
+- [x] Commit the ordered recovery barrier, removal of quiet-tip logic, and
       sustained-load tests before starting milestone 8.
 
 ## Milestone 8: Transport and request-state consolidation
