@@ -622,12 +622,17 @@ startup verifies the configured two-signature quorum and does not read or
 replay history as the retained database grows.
 
 `benchmark_unchanged_checkpoint_idle_rounds` reuses the ordinary fast idle
-regression at the configured five-second cadence. A warmed release run covered
-twelve rounds in 60.196 seconds inside the test and 60.50 seconds end to end,
-using 0.31 seconds of user CPU and 0.09 seconds of system CPU. Checkpoint work,
-signature verification, journal catch-up requests, and emitted debug logs all
-remained zero. Raw benchmark and timing output was kept only in untracked
-temporary storage.
+regression at the configured five-second cadence. Its Milestone 8 form creates
+100,000 finalized operations, promotes their exact checkpoint, restarts with no
+prefix rows, and runs 120 ordinary status/fetch/peer-exchange rounds. Two
+release runs covered 601.924 and 602.498 seconds inside the idle loop. The
+checkpoint-work, signature-verification, materialized-state-audit, catch-up,
+and emitted-log deltas all remained zero. The OS-timed run used 27.46 seconds
+of user CPU and 0.16 seconds of system CPU over 628.19 seconds end to end; those
+conservative totals include construction of the 100,000-operation fixture. The
+earlier warmed one-operation run used 0.31 seconds of user CPU and 0.09 seconds
+of system CPU over 60.50 seconds. Raw benchmark and timing output was kept only
+in untracked temporary storage.
 
 The pre-checkpoint five-member receive-stress baseline remains the run recorded
 in `federated-cashu-nocean-stress-test.md`: its best 20-request burst confirmed
@@ -1664,7 +1669,7 @@ weakening catch-up, restart, or Byzantine fault handling.
       supersedes it.
 - [x] Run malicious source/checkpoint-signature tests from milestone 4 in the
       real multi-member harness.
-- [ ] Measure idle CPU and work counters for at least ten minutes with a long
+- [x] Measure idle CPU and work counters for at least ten minutes with a long
       synthetic history.
 - [x] Measure cold start at multiple history sizes with suffix zero and a fixed
       suffix and fixed active-session backup size; fit/report whether work
@@ -1725,6 +1730,29 @@ cargo test --release -p cdk-axum --features federation,prometheus \
 
 Raw compiler and test output remains outside the repository; only these
 payload-free aggregates are retained here.
+
+### Local ten-minute idle evidence
+
+The ignored release idle benchmark now reuses the same synthetic-history
+builder as the cold-start benchmark. It creates and retains 100,000 genuine
+finalized operations, promotes an exact two-signature recovery checkpoint,
+restarts with zero journal or finalized prefix rows in memory, and performs 120
+ordinary checkpoint-summary, checkpoint-fetch, and peer-exchange rounds at the
+configured five-second cadence.
+
+Two runs measured idle windows of 601.924 and 602.498 seconds. Both reported
+zero checkpoint-work growth, zero signature verification, zero
+materialized-state audits, zero catch-up requests, and zero emitted debug-or-
+higher logs. The OS-timed run completed end to end in 628.19 seconds with 27.46
+seconds of user CPU and 0.16 seconds of system CPU. These CPU totals include the
+one-time 100,000-operation fixture construction and are therefore a
+conservative upper bound for the idle window; the counter and log deltas isolate
+the idle window itself. The benchmark is reproducible with:
+
+```bash
+cargo test --release -p cdk-axum --features federation,prometheus \
+  benchmark_unchanged_checkpoint_idle_rounds -- --ignored --nocapture
+```
 
 ### Local scheduled-boundary evidence
 

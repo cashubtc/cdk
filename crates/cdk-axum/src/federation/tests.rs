@@ -7854,7 +7854,9 @@ async fn startup_recovers_an_interrupted_eligible_checkpoint_capture_once() {
 
 #[cfg(feature = "prometheus")]
 async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
+    rounds: usize,
     round_delay: Duration,
+    synthetic_operation_count: Option<u64>,
 ) {
     let local_member = member_id(61_001);
     let peer_member = member_id(61_002);
@@ -7866,28 +7868,63 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
                 .expect("local federation api url"),
             MintUrl::from_str("http://checkpoint-idle-peer.test").expect("peer federation api url"),
         );
-    let state =
+    let mut state =
         federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
-    state
-        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+    let checkpoint = match synthetic_operation_count {
+        Some(operation_count) => {
+            build_synthetic_checkpoint_history(
+                &mut state,
+                &public_config,
+                &local_private,
+                &peer_private,
+                operation_count,
+            )
+            .await
+        }
+        None => {
+            state
+                .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+                .await
+                .expect("persist checkpointed operation");
+            let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+                &state,
+                &public_config,
+                None,
+                &[&local_private, &peer_private],
+            )
+            .await;
+            let db = state.mint.localstore();
+            let mut tx = db
+                .begin_transaction()
+                .await
+                .expect("begin trusted checkpoint promotion");
+            tx.promote_verified_federation_checkpoint(&quorum)
+                .await
+                .expect("promote trusted checkpoint");
+            tx.commit().await.expect("commit trusted checkpoint");
+            checkpoint
+        }
+    };
+    let (consensus, sequences) = crate::create_federation_runtime_state(&state.mint)
         .await
-        .expect("persist checkpointed operation");
-    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
-        &state,
-        &public_config,
-        None,
-        &[&local_private, &peer_private],
-    )
-    .await;
-    let db = state.mint.localstore();
-    let mut tx = db
-        .begin_transaction()
-        .await
-        .expect("begin trusted checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote trusted checkpoint");
-    tx.commit().await.expect("commit trusted checkpoint");
+        .expect("restart idle checkpoint member");
+    state.federation.consensus = consensus;
+    state.federation.sequences = sequences;
+    {
+        let consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("restarted idle checkpoint consensus")
+            .lock()
+            .await;
+        assert_eq!(
+            consensus.status().accepted_operation_count,
+            synthetic_operation_count.unwrap_or(1)
+        );
+        assert!(consensus.journal().entries().is_empty());
+        assert!(consensus.finalized_items().is_empty());
+    }
 
     let mut peer_summary = state
         .federation
@@ -7927,7 +7964,7 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
         .finish();
     let rounds_started_at = std::time::Instant::now();
     async {
-        for _ in 0..12 {
+        for _ in 0..rounds {
             if !round_delay.is_zero() {
                 time::sleep(round_delay).await;
             }
@@ -7970,7 +8007,7 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
         ),
         audits_before
     );
-    assert_eq!(transport.checkpoint_summary_requests().len(), 12);
+    assert_eq!(transport.checkpoint_summary_requests().len(), rounds);
     assert!(transport.catch_up_requests().is_empty());
     let captured_logs =
         String::from_utf8(captured_logs.0.lock().expect("captured log lock").clone())
@@ -7981,7 +8018,9 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
     );
     if !round_delay.is_zero() {
         eprintln!(
-            "checkpoint_idle rounds=12 interval_ms={} elapsed_ms={} checkpoint_work_delta=0 signatures_verified_delta=0 catch_up_requests=0 emitted_logs=0",
+            "checkpoint_idle history_operations={} rounds={} interval_ms={} elapsed_ms={} checkpoint_work_delta=0 signatures_verified_delta=0 materialized_state_audits_delta=0 catch_up_requests=0 emitted_logs=0",
+            synthetic_operation_count.unwrap_or(1),
+            rounds,
             round_delay.as_millis(),
             rounds_started_at.elapsed().as_millis()
         );
@@ -7991,15 +8030,24 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
 #[cfg(feature = "prometheus")]
 #[tokio::test]
 async fn unchanged_checkpoint_polls_do_not_repeat_signature_verification() {
-    assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(Duration::ZERO).await;
+    assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
+        12,
+        Duration::ZERO,
+        None,
+    )
+    .await;
 }
 
 #[cfg(feature = "prometheus")]
 #[tokio::test]
-#[ignore = "manual release-mode twelve-round idle checkpoint benchmark"]
+#[ignore = "manual release-mode ten-minute long-history idle checkpoint benchmark"]
 async fn benchmark_unchanged_checkpoint_idle_rounds() {
-    assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(Duration::from_secs(5))
-        .await;
+    assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
+        120,
+        Duration::from_secs(5),
+        Some(100_000),
+    )
+    .await;
 }
 
 #[tokio::test]
