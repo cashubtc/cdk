@@ -328,13 +328,15 @@ impl<'a> MeltSaga<'a, Initial> {
             .await?;
 
         let available_proofs = self.wallet.get_unspent_proofs().await?;
+        let derivation_indices = self.wallet.unspent_proof_derivation_indices().await?;
 
-        let exact_input_proofs = Wallet::select_proofs(
+        let exact_input_proofs = Wallet::select_proofs_with_derivation_indices(
             inputs_needed_amount,
             available_proofs.clone(),
             &active_keyset_ids,
             &keyset_fees_and_amounts,
             true,
+            &derivation_indices,
         )?;
         let proofs_total = exact_input_proofs.total_amount()?;
 
@@ -421,12 +423,13 @@ impl<'a> MeltSaga<'a, Initial> {
             .checked_add(estimated_melt_fee)
             .ok_or(Error::AmountOverflow)?;
 
-        let input_proofs = Wallet::select_proofs(
+        let input_proofs = Wallet::select_proofs_with_derivation_indices(
             selection_amount,
             available_proofs,
             &active_keyset_ids,
             &keyset_fees_and_amounts,
             true,
+            &derivation_indices,
         )?;
 
         let input_fee = estimated_melt_fee;
