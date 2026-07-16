@@ -1656,7 +1656,7 @@ weakening catch-up, restart, or Byzantine fault handling.
       clean shutdown, crash before checkpoint, crash during promotion, and long
       offline interval.
 - [ ] Run partition tests below and above consensus threshold and heal them.
-- [ ] Run scheduled-boundary agreement tests where the journal interval is
+- [x] Run scheduled-boundary agreement tests where the journal interval is
       crossed mid-unit and where only finalized-item progress triggers the
       checkpoint.
 - [ ] Run stable-tail recovery checkpoint tests with exact agreement, a moving
@@ -1725,6 +1725,23 @@ cargo test --release -p cdk-axum --features federation,prometheus \
 
 Raw compiler and test output remains outside the repository; only these
 payload-free aggregates are retained here.
+
+### Local scheduled-boundary evidence
+
+Two independent member runtimes now apply the same complete finalized unit and
+prove that they derive byte-identical scheduled candidates, matching full-state
+audit digests, distinct stored member signatures, and a valid assembled quorum.
+The journal-triggered case uses a three-operation unit with a journal interval
+of two: eligibility is crossed inside the unit, but both members checkpoint the
+complete `journal=3, finalized=3` boundary. The finalized-triggered case uses
+one operation twice with a journal interval of 100 and finalized-item interval
+of two: the duplicate advances only finalized order, and both members derive
+the same `journal=1, finalized=2` checkpoint. In both cases the next unit
+finalization cursor is one, so no checkpoint can expose a partial unit.
+
+The two agreement tests, the existing first-eligible-boundary retention test,
+and the one-shot startup recovery test for an interrupted eligible capture pass
+with federation and Prometheus enabled.
 
 ### Files and references
 

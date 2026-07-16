@@ -7542,6 +7542,147 @@ async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
     );
 }
 
+async fn scheduled_checkpoint_agreement_for_payload<F>(
+    checkpoint_policy: FederationCheckpointPolicy,
+    make_items: F,
+) -> FederationCheckpoint
+where
+    F: FnOnce(&MintState) -> Vec<FederationConsensusItem>,
+{
+    let (mut public_config, first_private, second_private) = transport_config();
+    public_config.checkpoint_policy = checkpoint_policy;
+    let first =
+        federation_route_state_for_private(public_config.clone(), first_private.clone()).await;
+    let second =
+        federation_route_state_for_private(public_config.clone(), second_private.clone()).await;
+    let items = make_items(&first);
+    let payload = {
+        let consensus = first
+            .federation
+            .consensus
+            .as_ref()
+            .expect("first scheduled-boundary consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            items,
+        )
+        .expect("scheduled-boundary payload")
+    };
+
+    first
+        .federation
+        .apply_finalized_unit(payload.clone())
+        .await
+        .expect("apply first scheduled-boundary unit");
+    second
+        .federation
+        .apply_finalized_unit(payload)
+        .await
+        .expect("apply second scheduled-boundary unit");
+
+    let first_candidate = first
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .await
+        .expect("first scheduled-boundary lookup")
+        .expect("first scheduled-boundary candidate");
+    let second_candidate = second
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .await
+        .expect("second scheduled-boundary lookup")
+        .expect("second scheduled-boundary candidate");
+    assert_eq!(first_candidate, second_candidate);
+    let checkpoint_id = first_candidate.id().expect("scheduled-boundary id");
+    let mut signatures = first
+        .mint
+        .localstore()
+        .get_federation_checkpoint_signatures(checkpoint_id)
+        .await
+        .expect("first scheduled-boundary signature");
+    signatures.extend(
+        second
+            .mint
+            .localstore()
+            .get_federation_checkpoint_signatures(checkpoint_id)
+            .await
+            .expect("second scheduled-boundary signature"),
+    );
+    assert_eq!(signatures.len(), 2);
+    assert_eq!(signatures[0].signer, first_private.member_id);
+    assert_eq!(signatures[1].signer, second_private.member_id);
+    FederationCheckpointQuorum::new(first_candidate.clone(), signatures)
+        .verify(&public_config)
+        .expect("scheduled-boundary quorum");
+    assert_eq!(
+        first_candidate.materialized_state_digest,
+        first
+            .mint
+            .federation_materialized_state_snapshot()
+            .await
+            .expect("first scheduled-boundary materialized state")
+            .digest()
+            .expect("first scheduled-boundary materialized digest")
+    );
+    assert_eq!(
+        first_candidate.materialized_state_digest,
+        second
+            .mint
+            .federation_materialized_state_snapshot()
+            .await
+            .expect("second scheduled-boundary materialized state")
+            .digest()
+            .expect("second scheduled-boundary materialized digest")
+    );
+    first_candidate
+}
+
+#[tokio::test]
+async fn scheduled_checkpoint_agrees_after_journal_interval_crossed_mid_unit() {
+    let candidate = scheduled_checkpoint_agreement_for_payload(
+        FederationCheckpointPolicy::new(2, 100).expect("checkpoint policy"),
+        |state| {
+            (0..3)
+                .map(|_| {
+                    FederationConsensusItem::operation(mint_quote_envelope(state, &QuoteId::new()))
+                })
+                .collect()
+        },
+    )
+    .await;
+
+    assert_eq!(candidate.journal_next_index, 3);
+    assert_eq!(candidate.finalized_next_item_index, 3);
+    assert_eq!(candidate.next_unit_finalization_index, 1);
+}
+
+#[tokio::test]
+async fn scheduled_checkpoint_agrees_when_only_finalized_interval_is_crossed() {
+    let candidate = scheduled_checkpoint_agreement_for_payload(
+        FederationCheckpointPolicy::new(100, 2).expect("checkpoint policy"),
+        |state| {
+            let envelope = mint_quote_envelope(state, &QuoteId::new());
+            vec![
+                FederationConsensusItem::operation(envelope.clone()),
+                FederationConsensusItem::operation(envelope),
+            ]
+        },
+    )
+    .await;
+
+    assert_eq!(candidate.journal_next_index, 1);
+    assert_eq!(candidate.finalized_next_item_index, 2);
+    assert_eq!(candidate.next_unit_finalization_index, 1);
+}
+
 #[tokio::test]
 async fn startup_recovers_an_interrupted_eligible_checkpoint_capture_once() {
     let (mut public_config, local_private, _) = transport_config();
@@ -20784,7 +20925,10 @@ async fn reset_synthetic_history_consensus(
             .expect("synthetic history consensus")
             .lock()
             .await;
-        (consensus.status(), consensus.next_unit_index_by_member().clone())
+        (
+            consensus.status(),
+            consensus.next_unit_index_by_member().clone(),
+        )
     };
     let boundary = FederationCheckpointBoundary::from_complete_unit(
         &frontier,
@@ -20887,9 +21031,8 @@ async fn append_synthetic_history_conflicts(
             .persist_finalization(&finalized_items, &entries)
             .await
             .expect("persist synthetic history batch");
-        next_operation_index = next_operation_index.saturating_add(
-            u64::try_from(batch_len).expect("synthetic batch length fits in u64"),
-        );
+        next_operation_index = next_operation_index
+            .saturating_add(u64::try_from(batch_len).expect("synthetic batch length fits in u64"));
         reset_synthetic_history_consensus(state, public_config, base_entry).await;
     }
 }
@@ -21062,7 +21205,9 @@ async fn seed_synthetic_active_session_backup(
     bytes_per_chunk: usize,
 ) {
     let chunks = (0..chunk_count)
-        .map(|index| vec![u8::try_from(index.saturating_add(1)).unwrap_or(u8::MAX); bytes_per_chunk])
+        .map(|index| {
+            vec![u8::try_from(index.saturating_add(1)).unwrap_or(u8::MAX); bytes_per_chunk]
+        })
         .collect::<Vec<_>>();
     let mut tx = state
         .mint
@@ -21165,19 +21310,12 @@ async fn benchmark_checkpoint_startup_is_history_length_independent() {
             &seed,
         )
         .await;
-        let exact = measure_synthetic_checkpoint_startup(
-            &restarted,
-            &public_config,
-            &local_private,
-            false,
-        )
-        .await;
+        let exact =
+            measure_synthetic_checkpoint_startup(&restarted, &public_config, &local_private, false)
+                .await;
         {
             let consensus = exact.consensus.lock().await;
-            assert_eq!(
-                consensus.status().accepted_operation_count,
-                operation_count
-            );
+            assert_eq!(consensus.status().accepted_operation_count, operation_count);
             assert_eq!(consensus.status().finalized_item_count, operation_count);
             assert!(consensus.journal().entries().is_empty());
             assert!(consensus.finalized_items().is_empty());
@@ -21211,10 +21349,7 @@ async fn benchmark_checkpoint_startup_is_history_length_independent() {
         .await;
         {
             let consensus = exact_with_backup.consensus.lock().await;
-            assert_eq!(
-                consensus.status().accepted_operation_count,
-                operation_count
-            );
+            assert_eq!(consensus.status().accepted_operation_count, operation_count);
             assert_eq!(consensus.status().finalized_item_count, operation_count);
             assert!(consensus.journal().entries().is_empty());
             assert!(consensus.finalized_items().is_empty());
@@ -21269,13 +21404,9 @@ async fn benchmark_checkpoint_startup_is_history_length_independent() {
             &seed,
         )
         .await;
-        let tail_with_backup = measure_synthetic_checkpoint_startup(
-            &tail_state,
-            &public_config,
-            &local_private,
-            true,
-        )
-        .await;
+        let tail_with_backup =
+            measure_synthetic_checkpoint_startup(&tail_state, &public_config, &local_private, true)
+                .await;
         {
             let consensus = tail_with_backup.consensus.lock().await;
             assert_eq!(consensus.status().accepted_operation_count, suffix_tip);
