@@ -1,5 +1,9 @@
 use std::path::PathBuf;
 
+#[cfg(feature = "federation")]
+use cdk_common::federation::{
+    DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS, DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS,
+};
 use clap::{Args, Parser, Subcommand};
 #[cfg(feature = "federation")]
 use clap::ValueEnum;
@@ -432,6 +436,15 @@ pub struct FederationDkgRosterArgs {
     /// Optional final expiry timestamp for the first DKG keyset.
     #[arg(long)]
     pub final_expiry: Option<u64>,
+    /// Accepted-operation interval between scheduled checkpoint candidates.
+    #[arg(
+        long,
+        default_value_t = DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS
+    )]
+    pub checkpoint_interval_journal_operations: u64,
+    /// Finalized-item interval between scheduled checkpoint candidates.
+    #[arg(long, default_value_t = DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS)]
+    pub checkpoint_interval_finalized_items: u64,
     /// Destination for the shared setup-only public federation config.
     #[arg(long)]
     pub public_output: PathBuf,

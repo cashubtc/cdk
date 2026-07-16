@@ -4,7 +4,7 @@ use std::str::FromStr;
 use anyhow::{anyhow, bail, Context, Result};
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::federation::{
-    FederationConfig, FederationDkgCeremonyId, FederationDkgKeysetSpec,
+    FederationCheckpointPolicy, FederationConfig, FederationDkgCeremonyId, FederationDkgKeysetSpec,
     FederationPaymentObservationPolicy, MemberConfigPrivate, MemberConfigPublic, MemberId,
     ThresholdParams, FEDERATION_MAX_DKG_MEMBERS,
 };
@@ -84,9 +84,14 @@ pub(crate) fn run_dkg_roster_command(args: &FederationDkgRosterArgs) -> Result<(
         public_config.payment_observation_policy =
             FederationPaymentObservationPolicy::member_quorum(payment_threshold);
     }
+    public_config.checkpoint_policy = FederationCheckpointPolicy::new(
+        args.checkpoint_interval_journal_operations,
+        args.checkpoint_interval_finalized_items,
+    )
+    .context("invalid federation checkpoint policy")?;
     public_config
         .validate()
-        .context("invalid production payment-observation policy")?;
+        .context("invalid federation roster policy")?;
 
     let unit = CurrencyUnit::from_str(&args.unit)
         .with_context(|| format!("invalid federation DKG unit {}", args.unit))?;

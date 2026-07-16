@@ -11,6 +11,8 @@ FEE_POLICY_VERSION="${FEE_POLICY_VERSION:-1}"
 APPLICATION_KEY_EPOCH="${APPLICATION_KEY_EPOCH:-1}"
 ESPLORA_URL="${ESPLORA_URL:-https://mutinynet.com/api}"
 CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-mutinynet-public-esplora}"
+CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS:-20}"
+CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
 STATUS_TIMEOUT_SECS="${STATUS_TIMEOUT_SECS:-900}"
 STATUS_POLL_SECS="${STATUS_POLL_SECS:-2}"
 SESSION="cdk-federation"
@@ -59,6 +61,11 @@ require_commands() {
         command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
     done
     [[ -x "$MINTD" ]] || die "missing executable $MINTD"
+    for value in "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
+        "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS"; do
+        [[ "$value" =~ ^[1-9][0-9]*$ ]] \
+            || die "checkpoint intervals must be positive integers"
+    done
 }
 
 generate_member() {
@@ -192,6 +199,10 @@ initialize() {
         --threshold "$THRESHOLD" \
         --unit sat \
         --amounts 1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536 \
+        --checkpoint-interval-journal-operations \
+            "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
+        --checkpoint-interval-finalized-items \
+            "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" \
         --public-output "$SETUP_PUBLIC" \
         --ceremony-config-output "$CEREMONY_CONFIG" \
         --force

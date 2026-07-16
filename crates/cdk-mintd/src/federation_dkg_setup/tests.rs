@@ -29,6 +29,10 @@ fn roster_args(root: &Path, members: Vec<PathBuf>) -> FederationDkgRosterArgs {
         amounts: vec![1, 2, 4],
         input_fee_ppk: 0,
         final_expiry: None,
+        checkpoint_interval_journal_operations:
+            cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS,
+        checkpoint_interval_finalized_items:
+            cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
         public_output: root.join("dkg-setup-public.json"),
         ceremony_config_output: root.join("dkg-ceremony.toml"),
         force: false,
@@ -72,6 +76,18 @@ fn independent_member_enrollments_assemble_and_bind() {
     assert_eq!(public_config.members.len(), 3);
     assert!(public_config.keysets.is_empty());
     assert!(public_config.setup_transcript.is_none());
+    assert_eq!(
+        public_config
+            .checkpoint_policy
+            .checkpoint_interval_journal_operations,
+        cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS
+    );
+    assert_eq!(
+        public_config
+            .checkpoint_policy
+            .checkpoint_interval_finalized_items,
+        cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS
+    );
     assert!(matches!(
         public_config.payment_observation_policy.mint_quotes,
         cdk_common::federation::FederationPaymentVerificationPolicy::MemberQuorum {
@@ -132,6 +148,33 @@ fn roster_rejects_duplicate_member_enrollment() {
     );
     let err = run_dkg_roster_command(&args).expect_err("duplicate member must fail");
     assert!(err.to_string().contains("duplicate public DKG enrollment"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn roster_rejects_zero_checkpoint_interval() {
+    let root = temp_dir("zero_checkpoint_interval");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("create test directory");
+    let member_args = (1..=3)
+        .map(|member_id| member_args(&root, member_id))
+        .collect::<Vec<_>>();
+    for args in &member_args {
+        run_dkg_member_command(args).expect("generate independent member enrollment");
+    }
+    let mut args = roster_args(
+        &root,
+        member_args
+            .iter()
+            .map(|args| args.public_output.clone())
+            .collect(),
+    );
+    args.checkpoint_interval_journal_operations = 0;
+
+    let err = run_dkg_roster_command(&args).expect_err("zero checkpoint interval must fail");
+    assert!(err
+        .to_string()
+        .contains("invalid federation checkpoint policy"));
     let _ = std::fs::remove_dir_all(root);
 }
 
