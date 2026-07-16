@@ -818,6 +818,13 @@ pub trait FederationJournalTransaction {
         quorum: &FederationCheckpointQuorum,
     ) -> Result<(), Self::Err>;
 
+    /// Prune superseded checkpoint candidates and covered recovery proofs.
+    ///
+    /// Scheduled quorums and checkpoints referenced by scalar frontier state
+    /// are always retained. The pruning decision and deletions run in the
+    /// caller's transaction.
+    async fn prune_federation_checkpoints(&mut self) -> Result<u64, Self::Err>;
+
     /// Durably latch a materialized-state audit mismatch.
     ///
     /// This operation is intentionally one-way. Ordinary startup, peer

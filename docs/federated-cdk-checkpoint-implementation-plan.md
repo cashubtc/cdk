@@ -1,9 +1,9 @@
 # Federated CDK signed-checkpoint implementation plan
 
 Status: in progress (checkpoint protocol, persistence, exchange, bounded catch-up,
-and nonzero startup are implemented; the certificate cut-through and
-checkpoint-native operator surface are implemented and under verification;
-retention policy and milestone-8 performance validation remain)
+nonzero startup, certificate cut-through, checkpoint-native operator tooling,
+and crash-safe checkpoint retention are implemented; performance
+instrumentation, bounded-log verification, and milestone-8 validation remain)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -779,7 +779,7 @@ checkpoint to move ahead of durable consensus or application state.
       checkpoint in one transaction, or leaves the checkpoint behind the data.
 - [x] Persist a durable materialized-state-audit mismatch latch that ordinary
       startup, peer agreement, and retry cannot clear.
-- [ ] Define crash-safe retention: keep all scheduled quorum checkpoints; prune
+- [x] Define crash-safe retention: keep all scheduled quorum checkpoints; prune
       superseded non-quorum proposals and prune recovery quorums only after a
       scheduled quorum covers them and no trusted frontier depends on them.
 - [x] Preserve the cut-through policy: edit the existing fresh federation
@@ -801,10 +801,22 @@ payload, signature, quorum, scalar-frontier, and supporting checkpoint indexes.
 The former certificate table and codecs have been removed in place; there is no
 upgrade migration, compatibility table, or dual-read/write bridge.
 
+Retention runs inside the same database transactions that store checkpoint
+candidates, quorums, and trusted-frontier promotions. All scheduled quorums are
+retained. A superseded candidate is removed only when it has no quorum and is
+not referenced by either the trusted frontier or latest operator-audit record.
+A recovery checkpoint and its signatures/quorum are removed only after a newer
+scheduled quorum covers both of its durable cursors and neither scalar record
+still references it. The indexed retention query loads only the newest
+scheduled quorum and recovery checkpoints eligible for deletion; it does not
+scan scheduled checkpoint history and requires no background worker.
+
 Verified with:
 
 - shared SQLite checkpoint persistence, rollback, idempotency, scheduled and
-  recovery lookup/promotion, conflicting-signature, and audit-latch tests;
+  recovery lookup/promotion, conflicting-signature, audit-latch, superseded
+  candidate pruning, scheduled-checkpoint preservation, and covered-recovery
+  pruning tests;
 - existing SQLite journal persistence, concurrent writes/metadata updates,
   finalized-item persistence, application-state persistence, hot-index, and
   fresh-migration tests;
@@ -814,6 +826,7 @@ Verified with:
 - `cargo clippy -p cdk-sql-common --lib --features federation -- -D warnings`;
 - `cargo clippy -p cdk-sqlite --tests --features federation -- -D warnings`;
 - `cargo check -p cdk-axum --features federation`;
+- `cargo check -p cdk-mintd --features federation,sqlite`;
 - `cargo fmt --all -- --check`.
 
 ### Files and references
@@ -1386,15 +1399,10 @@ Current cut-through verification completed:
 - production and fresh-schema searches proving that no certificate type,
   field, table, metric, CLI flag, or configuration name remains.
 
-Earlier passes completed `cargo check` for `cdk-common`, `cdk-axum`, and
-`cdk-mintd` with federation enabled, plus a `cdk-axum --lib --no-run` test
-build after the certificate tests were removed. A subsequent mintd test build
-found four stale certificate-era digest-retry fixture fields; those fixtures
-were removed. The final post-cleanup type-check rerun advanced through a cold
-dependency rebuild but repeatedly paused in the local compiler's dynamic
-loader and was cancelled without reaching project code. Do not treat the
-formatting/search gates as a replacement for that pending final compiler
-rerun.
+Final post-cut-through type checks now pass for `cdk-common` and `cdk-axum`
+with federation enabled and for `cdk-mintd` with `federation,sqlite` enabled.
+The earlier stale certificate-era digest-retry fixture fields have been
+removed; no compiler rerun remains pending for those changes.
 
 ### Files and references
 

@@ -563,6 +563,186 @@ where
     Ok(frontier)
 }
 
+async fn latest_federation_checkpoint_id_for_kind<RM>(
+    transaction: &SQLTransaction<RM>,
+    kind: FederationCheckpointKind,
+) -> Result<Option<FederationCheckpointId>, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    query(
+        r#"
+        SELECT checkpoint_id
+        FROM federation_checkpoints
+        WHERE checkpoint_kind = :checkpoint_kind
+        ORDER BY
+            scheduled_checkpoint_sequence DESC,
+            finalized_next_item_index DESC,
+            journal_next_index DESC,
+            checkpoint_id DESC
+        LIMIT 1
+        "#,
+    )?
+    .bind("checkpoint_kind", checkpoint_kind_to_str(kind))
+    .fetch_one(&transaction.inner)
+    .await?
+    .map(|row| {
+        unpack_into!(let (checkpoint_id) = row);
+        FederationCheckpointId::from_hex(column_as_string!(&checkpoint_id))
+            .map_err(|e| Error::Internal(format!("Invalid federation checkpoint ID: {e}")))
+    })
+    .transpose()
+}
+
+async fn delete_federation_checkpoint<RM>(
+    transaction: &SQLTransaction<RM>,
+    checkpoint_id: FederationCheckpointId,
+) -> Result<u64, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    query(
+        r#"
+        DELETE FROM federation_checkpoint_signatures
+        WHERE checkpoint_id = :checkpoint_id
+        "#,
+    )?
+    .bind("checkpoint_id", checkpoint_id.to_string())
+    .execute(&transaction.inner)
+    .await?;
+    query(
+        r#"
+        DELETE FROM federation_checkpoint_quorums
+        WHERE checkpoint_id = :checkpoint_id
+        "#,
+    )?
+    .bind("checkpoint_id", checkpoint_id.to_string())
+    .execute(&transaction.inner)
+    .await?;
+    let deleted = query(
+        r#"
+        DELETE FROM federation_checkpoints
+        WHERE checkpoint_id = :checkpoint_id
+        "#,
+    )?
+    .bind("checkpoint_id", checkpoint_id.to_string())
+    .execute(&transaction.inner)
+    .await?;
+    Ok(u64::try_from(deleted).unwrap_or(u64::MAX))
+}
+
+async fn prune_unreferenced_nonquorum_checkpoint<RM>(
+    transaction: &SQLTransaction<RM>,
+    checkpoint_id: FederationCheckpointId,
+) -> Result<u64, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    let frontier = federation_checkpoint_frontier_for_update(transaction).await?;
+    if frontier.trusted_checkpoint_id == Some(checkpoint_id)
+        || frontier.latest_audited_checkpoint_id == Some(checkpoint_id)
+    {
+        return Ok(0);
+    }
+    let has_quorum = query(
+        r#"
+        SELECT checkpoint_id
+        FROM federation_checkpoint_quorums
+        WHERE checkpoint_id = :checkpoint_id
+        "#,
+    )?
+    .bind("checkpoint_id", checkpoint_id.to_string())
+    .fetch_one(&transaction.inner)
+    .await?
+    .is_some();
+    if has_quorum {
+        return Ok(0);
+    }
+    delete_federation_checkpoint(transaction, checkpoint_id).await
+}
+
+async fn prune_federation_checkpoint_retention<RM>(
+    transaction: &SQLTransaction<RM>,
+) -> Result<u64, Error>
+where
+    RM: DatabasePool + 'static,
+{
+    let frontier = federation_checkpoint_frontier_for_update(transaction).await?;
+    let Some(latest_scheduled) = query(
+        r#"
+        SELECT checkpoints.checkpoint_id, checkpoints.checkpoint_json
+        FROM federation_checkpoints AS checkpoints
+        INNER JOIN federation_checkpoint_quorums AS quorums
+            ON quorums.checkpoint_id = checkpoints.checkpoint_id
+        WHERE checkpoints.checkpoint_kind = :checkpoint_kind
+        ORDER BY
+            checkpoints.scheduled_checkpoint_sequence DESC,
+            checkpoints.finalized_next_item_index DESC,
+            checkpoints.journal_next_index DESC,
+            checkpoints.checkpoint_id DESC
+        LIMIT 1
+        "#,
+    )?
+    .bind(
+        "checkpoint_kind",
+        checkpoint_kind_to_str(FederationCheckpointKind::Scheduled),
+    )
+    .fetch_one(&transaction.inner)
+    .await?
+    .map(sql_row_to_federation_checkpoint)
+    .transpose()?
+    else {
+        return Ok(0);
+    };
+    let rows = query(
+        r#"
+        SELECT checkpoint_id
+        FROM federation_checkpoints
+        WHERE checkpoint_kind = :checkpoint_kind
+          AND scheduled_checkpoint_sequence < :scheduled_checkpoint_sequence
+          AND finalized_next_item_index <= :finalized_next_item_index
+          AND journal_next_index <= :journal_next_index
+        ORDER BY
+            scheduled_checkpoint_sequence ASC,
+            finalized_next_item_index ASC,
+            journal_next_index ASC,
+            checkpoint_id ASC
+        "#,
+    )?
+    .bind(
+        "checkpoint_kind",
+        checkpoint_kind_to_str(FederationCheckpointKind::Recovery),
+    )
+    .bind(
+        "scheduled_checkpoint_sequence",
+        latest_scheduled.scheduled_checkpoint_sequence as i64,
+    )
+    .bind(
+        "finalized_next_item_index",
+        latest_scheduled.finalized_next_item_index as i64,
+    )
+    .bind(
+        "journal_next_index",
+        latest_scheduled.journal_next_index as i64,
+    )
+    .fetch_all(&transaction.inner)
+    .await?;
+
+    let mut pruned = 0_u64;
+    for row in rows {
+        unpack_into!(let (checkpoint_id) = row);
+        let checkpoint_id = FederationCheckpointId::from_hex(column_as_string!(&checkpoint_id))
+            .map_err(|e| Error::Internal(format!("Invalid federation checkpoint ID: {e}")))?;
+        if frontier.trusted_checkpoint_id != Some(checkpoint_id)
+            && frontier.latest_audited_checkpoint_id != Some(checkpoint_id)
+        {
+            pruned = pruned
+                .saturating_add(delete_federation_checkpoint(transaction, checkpoint_id).await?);
+        }
+    }
+    Ok(pruned)
+}
+
 #[async_trait]
 impl<RM> FederationJournalTransaction for SQLTransaction<RM>
 where
@@ -823,6 +1003,8 @@ where
                     .to_string(),
             ));
         }
+        let previous_checkpoint_id =
+            latest_federation_checkpoint_id_for_kind(self, checkpoint.kind).await?;
         let checkpoint_id = insert_federation_checkpoint(self, checkpoint).await?;
         query(
             r#"
@@ -841,6 +1023,12 @@ where
         .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
         .execute(&self.inner)
         .await?;
+        if let Some(previous_checkpoint_id) = previous_checkpoint_id {
+            if previous_checkpoint_id != checkpoint_id {
+                prune_unreferenced_nonquorum_checkpoint(self, previous_checkpoint_id).await?;
+            }
+        }
+        self.prune_federation_checkpoints().await?;
         Ok(())
     }
 
@@ -935,6 +1123,7 @@ where
         .bind("quorum_json", serde_json::to_string(&stored_quorum)?)
         .execute(&self.inner)
         .await?;
+        self.prune_federation_checkpoints().await?;
         Ok(())
     }
 
@@ -990,6 +1179,7 @@ where
                 .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
                 .execute(&self.inner)
                 .await?;
+                self.prune_federation_checkpoints().await?;
                 return Ok(());
             }
         };
@@ -1022,7 +1212,12 @@ where
         .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
         .execute(&self.inner)
         .await?;
+        self.prune_federation_checkpoints().await?;
         Ok(())
+    }
+
+    async fn prune_federation_checkpoints(&mut self) -> Result<u64, Self::Err> {
+        prune_federation_checkpoint_retention(self).await
     }
 
     async fn latch_federation_materialized_state_audit_mismatch(

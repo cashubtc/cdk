@@ -890,6 +890,64 @@ where
         vec![first_signature, second_signature],
     );
     quorum.verify(&config).expect("checkpoint quorum");
+    let pre_scheduled_recovery = FederationCheckpoint {
+        kind: FederationCheckpointKind::Recovery,
+        scheduled_checkpoint_sequence: 0,
+        scheduled_anchor_id: None,
+        ..checkpoint.clone()
+    };
+    pre_scheduled_recovery
+        .validate_against_config(&config)
+        .expect("pre-scheduled recovery checkpoint");
+    let pre_scheduled_recovery_id = pre_scheduled_recovery
+        .id()
+        .expect("pre-scheduled recovery checkpoint id");
+    let pre_scheduled_recovery_signature = FederationCheckpointSignature::new_signed_no_aux_rand(
+        &pre_scheduled_recovery,
+        &private_member(1),
+    )
+    .expect("pre-scheduled recovery signature");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin superseded recovery candidate");
+    tx.add_federation_checkpoint_candidate(&pre_scheduled_recovery)
+        .await
+        .expect("persist superseded recovery candidate");
+    tx.add_federation_checkpoint_signature(&pre_scheduled_recovery_signature)
+        .await
+        .expect("persist superseded recovery signature");
+    tx.commit()
+        .await
+        .expect("commit superseded recovery candidate");
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin rolled-back checkpoint retention");
+    tx.add_federation_checkpoint_candidate(&checkpoint)
+        .await
+        .expect("persist rolled-back checkpoint candidate");
+    tx.add_federation_checkpoint_quorum(&quorum)
+        .await
+        .expect("persist rolled-back checkpoint quorum");
+    tx.rollback().await.expect("rollback checkpoint retention");
+    assert_eq!(
+        db.get_federation_checkpoint(pre_scheduled_recovery_id)
+            .await
+            .expect("recovery candidate after retention rollback"),
+        Some(pre_scheduled_recovery)
+    );
+    assert_eq!(
+        db.get_federation_checkpoint_signatures(pre_scheduled_recovery_id)
+            .await
+            .expect("recovery signatures after retention rollback"),
+        vec![pre_scheduled_recovery_signature]
+    );
+    assert!(db
+        .get_federation_checkpoint(checkpoint_id)
+        .await
+        .expect("scheduled checkpoint after retention rollback")
+        .is_none());
 
     let mut tx = Database::begin_transaction(&db)
         .await
@@ -910,6 +968,17 @@ where
         .await
         .expect("promote checkpoint quorum");
     tx.commit().await.expect("commit checkpoint candidate");
+
+    assert!(db
+        .get_federation_checkpoint(pre_scheduled_recovery_id)
+        .await
+        .expect("superseded recovery candidate lookup")
+        .is_none());
+    assert!(db
+        .get_federation_checkpoint_signatures(pre_scheduled_recovery_id)
+        .await
+        .expect("superseded recovery signatures")
+        .is_empty());
 
     assert_eq!(
         db.get_federation_checkpoint(checkpoint_id)
@@ -1025,7 +1094,7 @@ where
         db.get_federation_checkpoints_after(1)
             .await
             .expect("ordered checkpoints after cursor"),
-        vec![checkpoint, recovery]
+        vec![checkpoint.clone(), recovery.clone()]
     );
     assert_eq!(
         db.get_federation_checkpoint_frontier()
@@ -1033,6 +1102,101 @@ where
             .expect("recovery checkpoint frontier")
             .trusted_checkpoint_id,
         Some(recovery_id)
+    );
+
+    let second_scheduled = FederationCheckpoint {
+        kind: FederationCheckpointKind::Scheduled,
+        scheduled_checkpoint_sequence: 2,
+        scheduled_anchor_id: Some(checkpoint_id),
+        ..recovery.clone()
+    };
+    second_scheduled
+        .validate_against_config(&config)
+        .expect("second scheduled checkpoint");
+    second_scheduled
+        .validate_promotion_from(Some(&recovery))
+        .expect("second scheduled promotion lineage");
+    let second_scheduled_quorum = FederationCheckpointQuorum::new(
+        second_scheduled.clone(),
+        vec![
+            FederationCheckpointSignature::new_signed_no_aux_rand(
+                &second_scheduled,
+                &private_member(1),
+            )
+            .expect("first second-scheduled signature"),
+            FederationCheckpointSignature::new_signed_no_aux_rand(
+                &second_scheduled,
+                &private_member(2),
+            )
+            .expect("second second-scheduled signature"),
+        ],
+    );
+    second_scheduled_quorum
+        .verify(&config)
+        .expect("second scheduled quorum");
+    let second_scheduled_id = second_scheduled.id().expect("second scheduled id");
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin covered recovery retention");
+    tx.add_federation_checkpoint_quorum(&second_scheduled_quorum)
+        .await
+        .expect("persist covering scheduled quorum");
+    tx.commit().await.expect("commit covering scheduled quorum");
+    assert_eq!(
+        db.get_federation_checkpoint(recovery_id)
+            .await
+            .expect("trusted recovery retained before promotion"),
+        Some(recovery.clone())
+    );
+
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin covering scheduled promotion");
+    tx.promote_verified_federation_checkpoint(&second_scheduled_quorum)
+        .await
+        .expect("promote covering scheduled checkpoint");
+    tx.commit()
+        .await
+        .expect("commit covering scheduled promotion");
+    assert!(db
+        .get_federation_checkpoint(recovery_id)
+        .await
+        .expect("covered recovery checkpoint lookup")
+        .is_none());
+    assert!(db
+        .get_federation_checkpoint_quorum(recovery_id)
+        .await
+        .expect("covered recovery quorum lookup")
+        .is_none());
+    assert!(db
+        .get_federation_checkpoint_signatures(recovery_id)
+        .await
+        .expect("covered recovery signatures")
+        .is_empty());
+    assert_eq!(
+        db.get_federation_checkpoint(checkpoint_id)
+            .await
+            .expect("first scheduled checkpoint retained"),
+        Some(checkpoint)
+    );
+    assert_eq!(
+        db.get_federation_checkpoint_quorum(checkpoint_id)
+            .await
+            .expect("first scheduled quorum retained"),
+        Some(quorum)
+    );
+    assert_eq!(
+        db.get_trusted_federation_checkpoint_quorum()
+            .await
+            .expect("covering scheduled checkpoint trusted"),
+        Some(second_scheduled_quorum)
+    );
+    assert_eq!(
+        db.get_federation_checkpoint_frontier()
+            .await
+            .expect("covering scheduled frontier")
+            .trusted_checkpoint_id,
+        Some(second_scheduled_id)
     );
 
     let mut tx = Database::begin_transaction(&db)
