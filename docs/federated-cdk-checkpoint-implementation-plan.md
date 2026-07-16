@@ -554,14 +554,14 @@ the existing safety regressions as checkpoint requirements.
       materialized-state digest duration, AlephBFT backup bytes/chunks loaded,
       and readiness duration.
 - [x] Keep instrumentation bounded and free of operation payloads or secrets.
-- [ ] Add synthetic histories at 1,000, 10,000, and at least 100,000 operations
+- [x] Add synthetic histories at 1,000, 10,000, and at least 100,000 operations
       without requiring public networking.
-- [ ] Record idle CPU/work-counter behavior across at least twelve five-second
+- [x] Record idle CPU/work-counter behavior across at least twelve five-second
       peer-sync rounds with unchanged history.
-- [ ] Record cold-start time and rows/signatures processed at each history size.
-- [ ] Run the existing receive stress benchmark and preserve its raw output
+- [x] Record cold-start time and rows/signatures processed at each history size.
+- [x] Run the existing receive stress benchmark and preserve its raw output
       outside the repository; record only aggregate results.
-- [ ] Preserve the materialized-state mismatch regression as an explicit
+- [x] Preserve the materialized-state mismatch regression as an explicit
       operator-audit gate, and preserve partial evidence and restart catch-up
       regressions as startup/recovery gates.
 
@@ -593,6 +593,55 @@ checkpoint-bounded catch-up/promotion, and persisted live-session backup
 replay. Strict `cdk-prometheus` clippy passes. Strict workspace/Axum clippy
 still encounters pre-existing unrelated warnings before it can serve as a
 repository-wide gate.
+
+The ignored release benchmark
+`benchmark_checkpoint_startup_is_history_length_independent` now creates
+file-backed SQLite histories of 1,000, 10,000, and 100,000 genuine finalized
+operations without networking. Its fixture uses one normally applied mint
+quote followed by uniquely authorized deterministic conflicts. This keeps the
+authoritative materialized state bounded while exercising the existing
+consensus, journal, finalized-item, transaction, rolling-frontier, checkpoint,
+and restart code. It periodically reconstructs its fixture runtime at a
+transient checkpoint boundary so fixture memory is bounded; those transient
+checkpoints are never trusted or measured.
+
+One release run recorded the following restart aggregates. The timed section
+begins after closing and reopening the SQLite database and covers
+`create_federation_runtime_state`; fixture construction is excluded.
+
+| Finalized operations | Startup | Journal rows | Finalized rows | Signatures | Replay/tail/backup work |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 8.597 ms | 0 | 0 | 2 | 0 |
+| 10,000 | 8.329 ms | 0 | 0 | 2 | 0 |
+| 100,000 | 8.058 ms | 0 | 0 | 2 | 0 |
+
+The corresponding test asserts that the recovered runtime reports the full
+operation and finalized-item cursors while retaining no prefix rows. The
+measurements demonstrate the intended bounded behavior: exact-checkpoint
+startup verifies the configured two-signature quorum and does not read or
+replay history as the retained database grows.
+
+`benchmark_unchanged_checkpoint_idle_rounds` reuses the ordinary fast idle
+regression at the configured five-second cadence. A warmed release run covered
+twelve rounds in 60.196 seconds inside the test and 60.50 seconds end to end,
+using 0.31 seconds of user CPU and 0.09 seconds of system CPU. Checkpoint work,
+signature verification, journal catch-up requests, and emitted debug logs all
+remained zero. Raw benchmark and timing output was kept only in untracked
+temporary storage.
+
+The pre-checkpoint five-member receive-stress baseline remains the run recorded
+in `federated-cashu-nocean-stress-test.md`: its best 20-request burst confirmed
+20/20 at 0.566 transactions per second, while multi-wave confirmed throughput
+plateaued near 0.27 transactions per second. The linked document contains only
+aggregate evidence; bearer-token and per-request raw artifacts were kept
+outside the repository. This is the Milestone 0 comparison point for the
+post-checkpoint repetition in Milestone 8.
+
+The explicit operator-audit match/mismatch tests, tampered checkpoint-batch
+atomicity test, and both SQLite paid/failed restart-catch-up tests pass with
+Prometheus enabled. They preserve the former startup mismatch invariant in the
+operator-only audit path and retain fail-closed partial-evidence and restart
+recovery gates without adding a background full-state scan.
 
 ### Files and references
 

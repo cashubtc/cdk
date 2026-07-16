@@ -7615,8 +7615,9 @@ async fn startup_recovers_an_interrupted_eligible_checkpoint_capture_once() {
 }
 
 #[cfg(feature = "prometheus")]
-#[tokio::test]
-async fn unchanged_checkpoint_polls_do_not_repeat_signature_verification() {
+async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
+    round_delay: Duration,
+) {
     let local_member = member_id(61_001);
     let peer_member = member_id(61_002);
     let (public_config, local_private, peer_private) =
@@ -7678,8 +7679,12 @@ async fn unchanged_checkpoint_polls_do_not_repeat_signature_verification() {
         .with_ansi(false)
         .with_writer(captured_logs.clone())
         .finish();
+    let rounds_started_at = std::time::Instant::now();
     async {
         for _ in 0..12 {
+            if !round_delay.is_zero() {
+                time::sleep(round_delay).await;
+            }
             let summary = state
                 .federation
                 .checkpoint_summary(Some(0))
@@ -7721,6 +7726,27 @@ async fn unchanged_checkpoint_polls_do_not_repeat_signature_verification() {
         captured_logs.is_empty(),
         "unchanged checkpoint polls emitted logs: {captured_logs}"
     );
+    if !round_delay.is_zero() {
+        eprintln!(
+            "checkpoint_idle rounds=12 interval_ms={} elapsed_ms={} checkpoint_work_delta=0 signatures_verified_delta=0 catch_up_requests=0 emitted_logs=0",
+            round_delay.as_millis(),
+            rounds_started_at.elapsed().as_millis()
+        );
+    }
+}
+
+#[cfg(feature = "prometheus")]
+#[tokio::test]
+async fn unchanged_checkpoint_polls_do_not_repeat_signature_verification() {
+    assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(Duration::ZERO).await;
+}
+
+#[cfg(feature = "prometheus")]
+#[tokio::test]
+#[ignore = "manual release-mode twelve-round idle checkpoint benchmark"]
+async fn benchmark_unchanged_checkpoint_idle_rounds() {
+    assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(Duration::from_secs(5))
+        .await;
 }
 
 #[tokio::test]
@@ -20712,6 +20738,341 @@ async fn benchmark_materialized_state_snapshot_growth() {
             "materialized_state_snapshot operations={operation_count} elapsed_us={} rows={}",
             elapsed.as_micros(),
             snapshot.rows().len()
+        );
+    }
+}
+
+#[cfg(feature = "prometheus")]
+fn synthetic_conflicting_mint_quote_envelope(
+    base: &FederationOperationEnvelope,
+    private_config: &MemberConfigPrivate,
+    operation_index: u64,
+) -> FederationOperationEnvelope {
+    let mut envelope = base.clone();
+    let FederationOperation::MintQuote(operation) = &mut envelope.operation else {
+        panic!("synthetic history base must be a mint quote");
+    };
+    let cdk::mint::MintQuoteResponse::Bolt11(response) = &mut operation.response else {
+        panic!("synthetic history base must use a bolt11 mint quote");
+    };
+    response
+        .request
+        .push_str(&format!("-synthetic-conflict-{operation_index}"));
+    envelope
+        .authorize(private_config)
+        .expect("authorize synthetic conflicting operation")
+}
+
+#[cfg(feature = "prometheus")]
+async fn reset_synthetic_history_consensus(
+    state: &mut MintState,
+    public_config: &FederationConfig,
+    base_entry: &FederationJournalEntry,
+) {
+    let frontier = state
+        .mint
+        .localstore()
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("synthetic history checkpoint frontier");
+    let (status, next_unit_index_by_member) = {
+        let consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("synthetic history consensus")
+            .lock()
+            .await;
+        (consensus.status(), consensus.next_unit_index_by_member().clone())
+    };
+    let boundary = FederationCheckpointBoundary::from_complete_unit(
+        &frontier,
+        status.session,
+        status.next_unit_finalization_index,
+        next_unit_index_by_member,
+    )
+    .expect("synthetic history complete-unit boundary");
+    let checkpoint = boundary
+        .recovery_checkpoint(
+            public_config,
+            None,
+            FederationMaterializedStateDigest::genesis(),
+        )
+        .expect("synthetic history transient checkpoint");
+    let mut consensus = FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint(
+        public_config,
+        status.local_member,
+        &checkpoint,
+    )
+    .expect("reset synthetic history consensus");
+    consensus
+        .register_historical_journal_entry(base_entry.clone())
+        .expect("register synthetic history conflict anchor");
+    state.federation.consensus = Some(Arc::new(tokio::sync::Mutex::new(consensus)));
+}
+
+#[cfg(feature = "prometheus")]
+async fn build_synthetic_checkpoint_history(
+    state: &mut MintState,
+    public_config: &FederationConfig,
+    local_private: &MemberConfigPrivate,
+    peer_private: &MemberConfigPrivate,
+    operation_count: u64,
+) -> FederationCheckpoint {
+    assert!(operation_count > 0, "synthetic history must be non-empty");
+    let quote_id = QuoteId::new();
+    let base_envelope = mint_quote_envelope(state, &quote_id);
+    state
+        .submit_federation_envelope(base_envelope.clone())
+        .await
+        .expect("apply synthetic history conflict anchor");
+    let base_entry = state
+        .mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(
+            base_envelope.operation_id().expect("base operation id"),
+        )
+        .await
+        .expect("load synthetic history conflict anchor")
+        .expect("synthetic history conflict anchor exists");
+
+    let mut next_operation_index = 1_u64;
+    while next_operation_index < operation_count {
+        let batch_len = usize::try_from(
+            operation_count
+                .saturating_sub(next_operation_index)
+                .min(cdk::federation::FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS as u64),
+        )
+        .expect("synthetic batch length fits in usize");
+        let items = (0..batch_len)
+            .map(|offset| {
+                let operation_index = next_operation_index.saturating_add(
+                    u64::try_from(offset).expect("synthetic batch offset fits in u64"),
+                );
+                FederationConsensusItem::operation(synthetic_conflicting_mint_quote_envelope(
+                    &base_envelope,
+                    local_private,
+                    operation_index,
+                ))
+            })
+            .collect::<Vec<_>>();
+        let (finalized_items, entries) = {
+            let mut consensus = state
+                .federation
+                .consensus
+                .as_ref()
+                .expect("synthetic history consensus")
+                .lock()
+                .await;
+            let status = consensus.status();
+            let payload = FederationAlephBftUnitPayload::new(
+                status.federation_id,
+                status.local_member,
+                status.session,
+                consensus.next_unit_index(),
+                items,
+            )
+            .expect("synthetic history finalized payload");
+            let finalized_start = consensus.finalized_items().len();
+            let responses = consensus
+                .finalize_aleph_bft_unit(payload)
+                .expect("finalize synthetic history batch");
+            let finalized_items = consensus.finalized_items()[finalized_start..].to_vec();
+            let entries = responses
+                .into_iter()
+                .map(|response| match response.outcome {
+                    FederationJournalAppendOutcome::Appended(entry) => entry,
+                    FederationJournalAppendOutcome::Duplicate(_) => {
+                        panic!("synthetic history operation must be unique")
+                    }
+                })
+                .collect::<Vec<_>>();
+            (finalized_items, entries)
+        };
+        assert_eq!(finalized_items.len(), batch_len);
+        assert_eq!(entries.len(), batch_len);
+        assert!(entries.iter().all(|entry| {
+            matches!(
+                entry.application,
+                FederationApplicationState::ConsensusRejected {}
+            )
+        }));
+        state
+            .federation
+            .persist_finalization(&finalized_items, &entries)
+            .await
+            .expect("persist synthetic history batch");
+        next_operation_index = next_operation_index.saturating_add(
+            u64::try_from(batch_len).expect("synthetic batch length fits in u64"),
+        );
+        reset_synthetic_history_consensus(state, public_config, &base_entry).await;
+    }
+
+    let frontier = state
+        .mint
+        .localstore()
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("completed synthetic history frontier");
+    assert_eq!(frontier.journal_next_index, operation_count);
+    assert_eq!(frontier.application_next_index, operation_count);
+    assert_eq!(frontier.finalized_next_item_index, operation_count);
+
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        state,
+        public_config,
+        None,
+        &[local_private, peer_private],
+    )
+    .await;
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin synthetic checkpoint promotion");
+    tx.promote_verified_federation_checkpoint(&quorum)
+        .await
+        .expect("promote synthetic checkpoint");
+    tx.commit()
+        .await
+        .expect("commit synthetic checkpoint promotion");
+    checkpoint
+}
+
+#[cfg(feature = "prometheus")]
+fn checkpoint_work_delta(member: &str, work: &str, before: f64) -> f64 {
+    prometheus_metric_value(
+        "cdk_federation_checkpoint_work_total",
+        &[("member", member), ("work", work)],
+    ) - before
+}
+
+#[cfg(feature = "prometheus")]
+#[tokio::test]
+#[ignore = "manual release-mode synthetic checkpoint startup benchmark"]
+async fn benchmark_checkpoint_startup_is_history_length_independent() {
+    for (operation_count, local_member_value, peer_member_value) in [
+        (1_000_u64, 62_001_u16, 62_002_u16),
+        (10_000_u64, 62_003_u16, 62_004_u16),
+        (100_000_u64, 62_005_u16, 62_006_u16),
+    ] {
+        let local_member = member_id(local_member_value);
+        let peer_member = member_id(peer_member_value);
+        let (public_config, local_private, peer_private) =
+            transport_config_with_members_and_federation_api_urls(
+                local_member,
+                peer_member,
+                MintUrl::from_str(&format!(
+                    "http://synthetic-checkpoint-{local_member_value}.test"
+                ))
+                .expect("synthetic local federation api url"),
+                MintUrl::from_str(&format!(
+                    "http://synthetic-checkpoint-{peer_member_value}.test"
+                ))
+                .expect("synthetic peer federation api url"),
+            );
+        let db_file = TempMintDbFile::new("cdk-axum-synthetic-checkpoint-startup");
+        let mnemonic = Mnemonic::generate(12).expect("synthetic history mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
+        let checkpoint = {
+            let db = Arc::new(
+                cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                    .await
+                    .expect("synthetic history sqlite database"),
+            );
+            let mut state = federation_route_state_for_private_with_db(
+                public_config.clone(),
+                local_private.clone(),
+                db,
+                &seed,
+            )
+            .await;
+            build_synthetic_checkpoint_history(
+                &mut state,
+                &public_config,
+                &local_private,
+                &peer_private,
+                operation_count,
+            )
+            .await
+        };
+        assert_eq!(checkpoint.journal_next_index, operation_count);
+        assert_eq!(checkpoint.finalized_next_item_index, operation_count);
+
+        let reopened_db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("reopen synthetic history sqlite database"),
+        );
+        let restarted = federation_route_state_for_private_with_db(
+            public_config,
+            local_private,
+            reopened_db,
+            &seed,
+        )
+        .await;
+        let member_label = local_member.to_string();
+        let work_names = [
+            "journal_rows_loaded",
+            "finalized_items_loaded",
+            "signatures_verified",
+            "startup_entries_replayed",
+            "startup_tail_journal_rows_loaded",
+            "startup_tail_finalized_items_loaded",
+            "backup_bytes_loaded",
+            "backup_chunks_loaded",
+        ];
+        let before = work_names
+            .iter()
+            .map(|work| {
+                prometheus_metric_value(
+                    "cdk_federation_checkpoint_work_total",
+                    &[("member", member_label.as_str()), ("work", work)],
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let started = std::time::Instant::now();
+        let (consensus, _) = crate::create_federation_runtime_state(&restarted.mint)
+            .await
+            .expect("restart from synthetic checkpoint");
+        let elapsed = started.elapsed();
+        let consensus = consensus.expect("synthetic checkpoint consensus");
+        let consensus = consensus.lock().await;
+        assert_eq!(
+            consensus.status().accepted_operation_count,
+            operation_count
+        );
+        assert_eq!(consensus.status().finalized_item_count, operation_count);
+        assert!(consensus.journal().entries().is_empty());
+        assert!(consensus.finalized_items().is_empty());
+        drop(consensus);
+
+        let deltas = work_names
+            .iter()
+            .zip(before)
+            .map(|(work, before)| checkpoint_work_delta(&member_label, work, before))
+            .collect::<Vec<_>>();
+        assert_eq!(deltas[0], 0.0, "checkpoint startup loaded journal prefix");
+        assert_eq!(deltas[1], 0.0, "checkpoint startup loaded finalized prefix");
+        assert_eq!(deltas[2], 2.0, "checkpoint startup quorum verification");
+        assert_eq!(deltas[3], 0.0, "checkpoint startup replayed journal prefix");
+        assert_eq!(deltas[4], 0.0, "checkpoint startup loaded journal suffix");
+        assert_eq!(deltas[5], 0.0, "checkpoint startup loaded finalized suffix");
+        assert_eq!(deltas[6], 0.0, "checkpoint startup loaded backup bytes");
+        assert_eq!(deltas[7], 0.0, "checkpoint startup loaded backup chunks");
+        eprintln!(
+            "checkpoint_startup operations={operation_count} elapsed_us={} journal_rows_loaded={:.0} finalized_items_loaded={:.0} signatures_verified={:.0} startup_entries_replayed={:.0} startup_tail_journal_rows_loaded={:.0} startup_tail_finalized_items_loaded={:.0} backup_bytes_loaded={:.0} backup_chunks_loaded={:.0}",
+            elapsed.as_micros(),
+            deltas[0],
+            deltas[1],
+            deltas[2],
+            deltas[3],
+            deltas[4],
+            deltas[5],
+            deltas[6],
+            deltas[7]
         );
     }
 }
