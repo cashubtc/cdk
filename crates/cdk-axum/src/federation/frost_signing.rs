@@ -724,7 +724,7 @@ fn frost_invalid(reason: impl ToString) -> cdk::federation::FederationError {
 }
 
 fn signing_runtime(state: &MintState) -> Option<&FederationFrostSigningRuntime> {
-    state.federation.frost_signing.as_ref()
+    state.federation.frost_signing()
 }
 
 fn signing_unavailable_response() -> Response {

@@ -51,8 +51,8 @@ fn active_dkg_config(
 ) -> Result<std::sync::Arc<super::FederationDkgAutoStartConfig>, Response> {
     state
         .federation
-        .dkg_auto_start_config
-        .clone()
+        .dkg_auto_start_config()
+        .cloned()
         .ok_or_else(|| {
             (
                 axum::http::StatusCode::CONFLICT,

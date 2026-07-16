@@ -191,7 +191,7 @@ async fn run_live_signing_case(
         );
         let mut state =
             federation_route_state_for_private(public_config.clone(), private.clone()).await;
-        state.federation.frost_signing = Some(runtime);
+        state.federation.set_frost_signing_for_test(Some(runtime));
         let router = Router::new()
             .nest("/api/federation/v1", create_federation_router())
             .with_state(state);
@@ -352,7 +352,7 @@ async fn catching_up_member_refuses_frost_commitments_before_nonce_creation() {
         [(context, authorization, derivation)],
     );
     let mut state = federation_route_state_for_private(public.clone(), first.clone()).await;
-    state.federation.frost_signing = Some(runtime);
+    state.federation.set_frost_signing_for_test(Some(runtime));
     state.mark_federation_catching_up(second.member_id).await;
 
     let transport = RouterFederationTransportRegistry::default();
@@ -439,6 +439,7 @@ async fn frost_private_rest_times_out_and_enforces_outbound_backpressure() {
     let client = FederationRestPeerClient::new_with_config(
         DelayTransport {
             delay: Duration::from_millis(50),
+            request_started: None,
         },
         &public,
         first,

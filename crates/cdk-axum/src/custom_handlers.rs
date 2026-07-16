@@ -1988,21 +1988,14 @@ mod tests {
                 mint: Some(mint),
                 consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
                 peer_sync_config: Some(crate::FederationPeerSyncConfig::default()),
-                dkg_auto_start_config: None,
                 sequences: Some(Arc::new(tokio::sync::Mutex::new(
                     cdk::federation::FederationRestSequenceTracker::new(),
                 ))),
-                sync: Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
-                    crate::FederationSyncState::default()
-                } else {
-                    crate::FederationSyncState::for_aleph_bft()
-                }))),
                 notifications: Some(Arc::new(crate::FederationOperationNotifications::default())),
                 private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
                     crate::FederationPeerSyncConfig::default()
                         .private_rest_inbound_concurrency_limit,
                 ))),
-                dkg_member_admission: None,
                 invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
                     crate::FederationInvalidOperationAlertTracker::default(),
                 ))),
@@ -2010,23 +2003,17 @@ mod tests {
                 transaction_broadcaster:
                     crate::federation::FederationTransactionBroadcaster::default(),
                 wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
-                onchain_wallets: Vec::new(),
-                frost_signing: None,
-                operation_application: Arc::new(tokio::sync::Mutex::new(())),
-                recovery_checkpoint_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
-                #[cfg(test)]
-                fail_next_pending_operation_persistence: Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
+                components: crate::federation::runtime_components::FederationRuntimeComponents::new(
+                    Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
+                        crate::FederationSyncState::default()
+                    } else {
+                        crate::FederationSyncState::for_aleph_bft()
+                    }))),
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
                 ),
-                suppress_next_terminal_response_publication: Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
-                suppress_next_scheduled_checkpoint_capture: Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
-                #[cfg(test)]
-                fail_next_checkpoint_promotion: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -2829,13 +2816,7 @@ mod tests {
                 mint: is_federated.then(|| Arc::clone(&mint)),
                 consensus: federation_consensus,
                 peer_sync_config: is_federated.then(crate::FederationPeerSyncConfig::default),
-                dkg_auto_start_config: None,
                 sequences: federation_sequences,
-                sync: is_federated.then(|| {
-                    Arc::new(tokio::sync::Mutex::new(
-                        crate::FederationSyncState::default(),
-                    ))
-                }),
                 notifications: is_federated
                     .then(|| Arc::new(crate::FederationOperationNotifications::default())),
                 private_rest_admission: is_federated.then(|| {
@@ -2844,7 +2825,6 @@ mod tests {
                             .private_rest_inbound_concurrency_limit,
                     ))
                 }),
-                dkg_member_admission: None,
                 invalid_operation_alerts: is_federated.then(|| {
                     Arc::new(tokio::sync::Mutex::new(
                         crate::FederationInvalidOperationAlertTracker::default(),
@@ -2854,23 +2834,17 @@ mod tests {
                 transaction_broadcaster:
                     crate::federation::FederationTransactionBroadcaster::default(),
                 wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
-                onchain_wallets: Vec::new(),
-                frost_signing: None,
-                operation_application: Arc::new(tokio::sync::Mutex::new(())),
-                recovery_checkpoint_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
-                #[cfg(test)]
-                fail_next_pending_operation_persistence: Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
+                components: crate::federation::runtime_components::FederationRuntimeComponents::new(
+                    is_federated.then(|| {
+                        Arc::new(tokio::sync::Mutex::new(
+                            crate::FederationSyncState::default(),
+                        ))
+                    }),
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
                 ),
-                suppress_next_terminal_response_publication: Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
-                suppress_next_scheduled_checkpoint_capture: Arc::new(
-                    std::sync::atomic::AtomicBool::new(false),
-                ),
-                #[cfg(test)]
-                fail_next_checkpoint_promotion: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),

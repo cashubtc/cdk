@@ -186,7 +186,8 @@ impl FederationTransactionBroadcaster {
     }
 
     pub(crate) fn spawn(self, state: MintState) {
-        if state.mint.federation_config().is_none() || state.federation.onchain_wallets.is_empty() {
+        if state.mint.federation_config().is_none() || state.federation.onchain_wallets().is_empty()
+        {
             return;
         }
         tokio::spawn(async move {
@@ -214,7 +215,7 @@ fn wallet_for_transaction<'a>(
     state: &'a MintState,
     accepted: &FederationAcceptedTransaction,
 ) -> Option<&'a cdk_bdk::FederatedBdkWallet> {
-    state.federation.onchain_wallets.iter().find(|wallet| {
+    state.federation.onchain_wallets().iter().find(|wallet| {
         let scope = wallet.scope();
         scope.root_key_epoch() == accepted.proposal.scope.root_key_epoch
             && scope.application_id() == accepted.proposal.scope.application_id.to_bytes()

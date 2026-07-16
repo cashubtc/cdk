@@ -35,14 +35,19 @@ mod aleph_bft_runtime;
 mod aleph_bft_session;
 mod broadcast;
 mod catch_up_routes;
+mod checkpoint_catch_up;
+mod checkpoint_manager;
 mod checkpoint_routes;
 mod dkg_driver;
+mod dkg_persistence;
 mod dkg_routes;
 pub(crate) mod frost_signing;
 mod node_runtime;
+mod operation_pipeline;
 mod operator_routes;
 mod payment_observation;
 mod peer_client;
+pub(crate) mod runtime_components;
 mod status_routes;
 mod sync_config;
 mod sync_loop;
@@ -296,8 +301,8 @@ fn acquire_private_dkg_member_admission(
     sender: cdk::federation::MemberId,
     kind: FederationRestMessageKind,
 ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, Response> {
-    let Some(admissions) = state.federation.dkg_member_admission.as_ref() else {
-        if state.federation.dkg_auto_start_config.is_none() {
+    let Some(admissions) = state.federation.dkg_member_admission() else {
+        if state.federation.dkg_auto_start_config().is_none() {
             return Ok(None);
         }
         tracing::error!(

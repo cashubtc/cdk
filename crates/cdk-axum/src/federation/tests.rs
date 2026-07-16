@@ -541,6 +541,15 @@ struct MockFederationTransport {
 #[derive(Debug, Clone)]
 struct DelayTransport {
     delay: Duration,
+    request_started: Option<Arc<tokio::sync::Notify>>,
+}
+
+impl DelayTransport {
+    fn signal_request_started(&self) {
+        if let Some(request_started) = &self.request_started {
+            request_started.notify_one();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -961,6 +970,7 @@ impl Default for DelayTransport {
     fn default() -> Self {
         Self {
             delay: Duration::from_secs(60),
+            request_started: None,
         }
     }
 }
@@ -1203,6 +1213,7 @@ impl Transport for DelayTransport {
     where
         R: DeserializeOwned,
     {
+        self.signal_request_started();
         time::sleep(self.delay).await;
         Err(HttpError::Other("delayed GET completed".to_string()))
     }
@@ -1212,6 +1223,7 @@ impl Transport for DelayTransport {
         _url: url::Url,
         _auth: Option<AuthToken>,
     ) -> Result<RawResponse, HttpError> {
+        self.signal_request_started();
         time::sleep(self.delay).await;
         Err(HttpError::Other("delayed raw GET completed".to_string()))
     }
@@ -1226,6 +1238,7 @@ impl Transport for DelayTransport {
         P: Serialize + Send + Sync,
         R: DeserializeOwned,
     {
+        self.signal_request_started();
         time::sleep(self.delay).await;
         Err(HttpError::Other("delayed POST completed".to_string()))
     }
@@ -1239,6 +1252,7 @@ impl Transport for DelayTransport {
     where
         P: Serialize + Send + Sync,
     {
+        self.signal_request_started();
         time::sleep(self.delay).await;
         Err(HttpError::Other(
             "delayed raw form POST completed".to_string(),
@@ -2571,57 +2585,46 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             mint: Some(mint),
             consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
             peer_sync_config: Some(FederationPeerSyncConfig::default()),
-            dkg_auto_start_config: Some(Arc::new(FederationDkgAutoStartConfig {
-                ceremony_id: FederationDkgCeremonyId::from_bytes([55; 32]),
-                root_key_epoch: 1,
-                keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
-                    CurrencyUnit::Sat,
-                    true,
-                    0,
-                    None,
-                    [Amount::from(1)].into_iter().collect(),
-                )
-                .expect("test DKG keyset spec"),
-                driver: FederationDkgDriverRunConfig::default(),
-            })),
             sequences: Some(Arc::new(tokio::sync::Mutex::new(
                 FederationRestSequenceTracker::new(),
             ))),
-            sync: Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
-                crate::FederationSyncState::default()
-            } else {
-                crate::FederationSyncState::for_aleph_bft()
-            }))),
             notifications: Some(Arc::new(crate::FederationOperationNotifications::default())),
             private_rest_admission: Some(Arc::new(tokio::sync::Semaphore::new(
                 FederationPeerSyncConfig::default().private_rest_inbound_concurrency_limit,
             ))),
-            dkg_member_admission: Some(crate::federation_dkg_member_admission(
-                &public_config,
-                FederationDkgDriverRunConfig::default().member_request_burst,
-                FederationDkgDriverRunConfig::default().member_request_refill_interval,
-            )),
             invalid_operation_alerts: Some(Arc::new(tokio::sync::Mutex::new(
                 crate::FederationInvalidOperationAlertTracker::default(),
             ))),
             payment_observer: crate::federation::FederationPaymentObserver::default(),
             transaction_broadcaster: crate::federation::FederationTransactionBroadcaster::default(),
             wallet_liveness: crate::federation::FederationWalletLivenessWorker::default(),
-            onchain_wallets: Vec::new(),
-            frost_signing: None,
-            operation_application: Arc::new(tokio::sync::Mutex::new(())),
-            recovery_checkpoint_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
-            fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
-            suppress_next_terminal_response_publication: Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
+            components: crate::federation::runtime_components::FederationRuntimeComponents::new(
+                Some(Arc::new(tokio::sync::Mutex::new(if local_finality_test {
+                    crate::FederationSyncState::default()
+                } else {
+                    crate::FederationSyncState::for_aleph_bft()
+                }))),
+                Some(Arc::new(FederationDkgAutoStartConfig {
+                    ceremony_id: FederationDkgCeremonyId::from_bytes([55; 32]),
+                    root_key_epoch: 1,
+                    keyset_spec: cdk::federation::FederationDkgKeysetSpec::new(
+                        CurrencyUnit::Sat,
+                        true,
+                        0,
+                        None,
+                        [Amount::from(1)].into_iter().collect(),
+                    )
+                    .expect("test DKG keyset spec"),
+                    driver: FederationDkgDriverRunConfig::default(),
+                })),
+                Some(crate::federation_dkg_member_admission(
+                    &public_config,
+                    FederationDkgDriverRunConfig::default().member_request_burst,
+                    FederationDkgDriverRunConfig::default().member_request_refill_interval,
+                )),
+                Vec::new(),
+                None,
             ),
-            suppress_next_scheduled_checkpoint_capture: Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
-            fail_next_checkpoint_promotion: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -3904,6 +3907,7 @@ async fn rest_peer_client_applies_configured_peer_request_timeout() {
     let client = FederationRestPeerClient::new_with_config(
         DelayTransport {
             delay: timeout + Duration::from_secs(60),
+            request_started: None,
         },
         &public_config,
         local_private,
@@ -3951,6 +3955,7 @@ async fn rest_peer_client_applies_configured_operation_submission_timeout() {
     let client = FederationRestPeerClient::new_with_config(
         DelayTransport {
             delay: timeout + Duration::from_secs(60),
+            request_started: None,
         },
         &public_config,
         local_private,
@@ -4623,7 +4628,8 @@ async fn catch_up_application_precedes_dependent_live_finality() {
     )
     .expect("dependent live unit");
 
-    let application_guard = state.federation.operation_application.lock().await;
+    let application_lock = state.federation.operation_application_lock_for_test();
+    let application_guard = application_lock.lock().await;
     let catch_up_state = state.clone();
     let mut catch_up = tokio::spawn(async move {
         catch_up_state
@@ -9264,6 +9270,209 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
     );
 }
 
+#[tokio::test]
+async fn runtime_components_complete_concurrent_checkpoint_and_finality_work_without_deadlock() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("apply component concurrency checkpoint base");
+    let local_private = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .private_config()
+        .clone();
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        &state,
+        &public_config,
+        None,
+        &[&local_private, &peer_private],
+    )
+    .await;
+    let checkpoint_id = checkpoint.id().expect("component checkpoint id");
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin component checkpoint candidate transaction");
+    tx.add_federation_checkpoint_candidate(&checkpoint)
+        .await
+        .expect("store component checkpoint candidate");
+    tx.commit()
+        .await
+        .expect("commit component checkpoint candidate");
+    let empty_response = FederationJournalCatchUpResponse::from_journal(
+        checkpoint.federation_id,
+        &InMemoryFederationJournal::from_base(
+            checkpoint.journal_next_index,
+            checkpoint.journal_order_digest,
+        ),
+        checkpoint.materialized_state_digest,
+        &FederationJournalCatchUpRequest::new(checkpoint.journal_next_index)
+            .with_target_checkpoint(checkpoint_id)
+            .with_aleph_bft_next_item_index(checkpoint.finalized_next_item_index),
+        1,
+        1,
+    )
+    .bound_to_checkpoint(&checkpoint)
+    .expect("bind empty component checkpoint response")
+    .with_aleph_bft_finalized_items(Vec::new(), true);
+
+    let start = Arc::new(tokio::sync::Barrier::new(6));
+    let finality = {
+        let state = state.clone();
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            state
+                .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+                .await
+        })
+    };
+    let catch_up = {
+        let state = state.clone();
+        let quorum = quorum.clone();
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            state
+                .apply_federation_checkpoint_catch_up_response(&empty_response, &quorum)
+                .await
+        })
+    };
+    let quorum_exchange = {
+        let state = state.clone();
+        let quorum = quorum.clone();
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            state.federation.persist_checkpoint_quorum(&quorum).await
+        })
+    };
+    let signature_exchange = {
+        let state = state.clone();
+        let signature = quorum.signatures[0];
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            state
+                .federation
+                .persist_checkpoint_signature(checkpoint_id, &signature)
+                .await
+        })
+    };
+    let status = {
+        let state = state.clone();
+        let start = Arc::clone(&start);
+        tokio::spawn(async move {
+            start.wait().await;
+            state.federation.checkpoint_summary(None).await
+        })
+    };
+    let shutdown = {
+        let state = state.clone();
+        tokio::spawn(async move {
+            start.wait().await;
+            super::halt_current_federation_aleph_bft_session(
+                &state,
+                "runtime component concurrency test shutdown",
+            )
+            .await;
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (finality, catch_up, quorum_exchange, signature_exchange, status, shutdown) =
+            tokio::join!(
+                finality,
+                catch_up,
+                quorum_exchange,
+                signature_exchange,
+                status,
+                shutdown
+            );
+        let _ = finality.expect("finality task completed");
+        let _ = catch_up.expect("catch-up task completed");
+        let _ = quorum_exchange.expect("quorum exchange task completed");
+        let _ = signature_exchange.expect("signature exchange task completed");
+        let _ = status.expect("status task completed");
+        shutdown.expect("shutdown task completed");
+    })
+    .await
+    .expect("concurrent runtime component work completed without deadlock");
+}
+
+#[tokio::test]
+async fn checkpoint_peer_request_does_not_hold_runtime_mutation_locks() {
+    let (public_config, target_private, source_private) = transport_config();
+    let source =
+        federation_route_state_for_private(public_config.clone(), source_private.clone()).await;
+    let target =
+        federation_route_state_for_private(public_config.clone(), target_private.clone()).await;
+    source
+        .submit_federation_envelope(mint_quote_envelope(&source, &QuoteId::new()))
+        .await
+        .expect("source accepted lock-boundary operation");
+    let (_, quorum) = recovery_checkpoint_quorum_for_state(
+        &source,
+        &public_config,
+        None,
+        &[&target_private, &source_private],
+    )
+    .await;
+    let source_member = public_config
+        .member(source_private.member_id)
+        .expect("source member")
+        .clone();
+    let request_started = Arc::new(tokio::sync::Notify::new());
+    let client = FederationRestPeerClient::new(
+        DelayTransport {
+            delay: Duration::from_secs(30),
+            request_started: Some(Arc::clone(&request_started)),
+        },
+        &public_config,
+        target_private,
+    )
+    .expect("delayed checkpoint client");
+
+    let catch_up_target = target.clone();
+    let catch_up = tokio::spawn(async move {
+        client
+            .catch_up_state_to_checkpoint_from_member(&catch_up_target, &source_member, &quorum)
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), request_started.notified())
+        .await
+        .expect("checkpoint peer request started");
+    assert!(
+        !catch_up.is_finished(),
+        "checkpoint catch-up should still be waiting on the peer"
+    );
+
+    let application = target.federation.operation_application_lock_for_test();
+    let application_guard = tokio::time::timeout(Duration::from_secs(1), application.lock())
+        .await
+        .expect("peer request left the application lock available");
+    let consensus = target
+        .federation
+        .consensus
+        .as_ref()
+        .expect("target consensus");
+    let consensus_guard = tokio::time::timeout(Duration::from_secs(1), consensus.lock())
+        .await
+        .expect("peer request left the consensus lock available");
+    drop(consensus_guard);
+    drop(application_guard);
+
+    catch_up.abort();
+    let cancellation = catch_up
+        .await
+        .expect_err("blocked checkpoint request was cancelled");
+    assert!(cancellation.is_cancelled());
+}
+
 #[cfg(feature = "prometheus")]
 #[tokio::test]
 async fn long_offline_member_recovers_from_one_quorum_holder_without_signer_work() {
@@ -11030,8 +11239,7 @@ async fn duplicate_finalized_unit_recovers_lost_applied_response_publication() {
         .await;
     state
         .federation
-        .suppress_next_terminal_response_publication
-        .store(true, Ordering::SeqCst);
+        .suppress_next_terminal_response_publication_for_test();
 
     let first_responses = state
         .apply_federation_aleph_bft_finalized_unit(unit.clone())
@@ -11151,8 +11359,7 @@ async fn duplicate_finalized_unit_recovers_lost_rejected_response_publication() 
         .await;
     state
         .federation
-        .suppress_next_terminal_response_publication
-        .store(true, Ordering::SeqCst);
+        .suppress_next_terminal_response_publication_for_test();
 
     let first_responses = state
         .apply_federation_aleph_bft_finalized_unit(unit.clone())
@@ -20521,8 +20728,7 @@ async fn aleph_bft_pending_persistence_failure_releases_waiter_and_allows_retry(
     let operation_id = envelope.operation_id().expect("operation id");
     state
         .federation
-        .fail_next_pending_operation_persistence
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+        .fail_next_pending_operation_persistence_for_test();
 
     state
         .submit_federation_envelope_to_consensus(envelope.clone())
@@ -24057,9 +24263,11 @@ async fn startup_discards_transient_federation_sync_status() {
     state.mark_federation_lagging(peer_member, 2, 5).await;
 
     let mut restarted = state.clone();
-    restarted.federation.sync = Some(Arc::new(tokio::sync::Mutex::new(
-        crate::FederationSyncState::for_aleph_bft(),
-    )));
+    restarted
+        .federation
+        .set_sync_handle(Some(Arc::new(tokio::sync::Mutex::new(
+            crate::FederationSyncState::for_aleph_bft(),
+        ))));
     restarted.restore_federation_startup_readiness().await;
 
     assert_eq!(

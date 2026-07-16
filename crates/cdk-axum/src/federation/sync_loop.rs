@@ -881,7 +881,21 @@ fn record_federation_peer_sync_metrics(
 ) {
 }
 
-impl<T> FederationRestPeerClient<T>
+/// Owns checkpoint target application and bounded page acquisition from one source.
+///
+/// It may perform peer requests only before calling the runtime application path;
+/// it never holds the operation-application or consensus lock across network I/O.
+struct FederationCheckpointCatchUpManager<'a, T> {
+    client: &'a FederationRestPeerClient<T>,
+}
+
+impl<'a, T> FederationCheckpointCatchUpManager<'a, T> {
+    fn new(client: &'a FederationRestPeerClient<T>) -> Self {
+        Self { client }
+    }
+}
+
+impl<T> FederationCheckpointCatchUpManager<'_, T>
 where
     T: Transport,
 {
@@ -954,7 +968,7 @@ where
         {
             let request = FederationJournalCatchUpRequest::new(next_journal_index)
                 .with_target_checkpoint(checkpoint_id)
-                .with_limit(self.sync_config.catch_up_limit)
+                .with_limit(self.client.sync_config.catch_up_limit)
                 .with_known_order_digest(known_order_digest)
                 .with_aleph_bft_next_item_index(next_finalized_item_index);
             let request_bytes = serde_json::to_vec(&request)?.len();
@@ -967,6 +981,7 @@ where
                 .into());
             }
             let page = self
+                .client
                 .catch_up_to_checkpoint(member, &request, checkpoint)
                 .await?;
             let page_bytes =
@@ -1050,8 +1065,8 @@ where
                 &FederationJournalCatchUpRequest::new(checkpoint.journal_next_index)
                     .with_target_checkpoint(checkpoint_id)
                     .with_aleph_bft_next_item_index(checkpoint.finalized_next_item_index),
-                self.sync_config.catch_up_limit,
-                self.sync_config.catch_up_limit,
+                self.client.sync_config.catch_up_limit,
+                self.client.sync_config.catch_up_limit,
             );
             response.validate_checkpoint_binding(checkpoint)?;
             state
@@ -1059,6 +1074,22 @@ where
                 .await?;
         }
         Ok(())
+    }
+}
+
+impl<T> FederationRestPeerClient<T>
+where
+    T: Transport,
+{
+    pub(crate) async fn catch_up_state_to_checkpoint_from_member(
+        &self,
+        state: &MintState,
+        member: &MemberConfigPublic,
+        quorum: &FederationCheckpointQuorum,
+    ) -> anyhow::Result<()> {
+        FederationCheckpointCatchUpManager::new(self)
+            .catch_up_state_to_checkpoint_from_member(state, member, quorum)
+            .await
     }
 
     pub(crate) async fn sync_once_from_member(

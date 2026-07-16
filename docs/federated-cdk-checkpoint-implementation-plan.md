@@ -1399,7 +1399,11 @@ Verified with:
 - `crates/cdk-sql-common/src/mint/migrations/{sqlite,postgres}/20260712000000_create_federation_schema.sql`
 - `crates/cdk-axum/src/lib.rs` (`create_federation_runtime_state`)
 - `crates/cdk-axum/src/federation/node_runtime.rs`
-- `crates/cdk-axum/src/federation/node_runtime.rs`
+- `crates/cdk-axum/src/federation/checkpoint_manager.rs`
+- `crates/cdk-axum/src/federation/checkpoint_catch_up.rs`
+- `crates/cdk-axum/src/federation/operation_pipeline.rs`
+- `crates/cdk-axum/src/federation/runtime_components.rs`
+- `crates/cdk-axum/src/federation/dkg_persistence.rs`
 - `crates/cdk-axum/src/federation/aleph_bft_runtime.rs`
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs`
 - `crates/cdk-axum/src/federation/catch_up_routes.rs`
@@ -1522,6 +1526,18 @@ candidate recovery runs once at startup and otherwise only from durable
 finalized-unit application. The unconditional successful-round debug message
 was removed. Twelve unchanged checkpoint summary/fetch/exchange rounds are
 covered by a scoped log-capture and work-counter regression.
+
+The post-implementation consolidation now makes these ownership boundaries
+structural. `FederationNodeRuntime` fell from 2,834 to 562 lines and primarily
+composes lifecycle handles. Checkpoint capture/proof/promotion/audit, bounded
+catch-up verification/application, operation ordering/application/publication,
+readiness/recovery state, DKG persistence, and wallet/FROST reconciliation live
+behind focused modules and interfaces. Network page acquisition and peer
+failover complete outside the application and consensus mutation locks; a
+blocked-transport test proves both locks remain available while a peer request
+is in flight. The acquisition order and forbidden responsibilities are recorded
+in the module documentation, and the audit route delegates its fail-closed
+decision instead of implementing business state in the handler.
 
 Current cut-through verification completed:
 

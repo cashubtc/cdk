@@ -150,7 +150,7 @@ async fn private_dkg_setup_route_rejects_when_no_ceremony_is_active() {
         .federation_config()
         .expect("federation config")
         .member_id();
-    state.federation.dkg_auto_start_config = None;
+    state.federation.set_dkg_auto_start_config_for_test(None);
     let request = signed_dkg_commitment_request(
         &public_config,
         &peer_private,
@@ -270,8 +270,7 @@ async fn saturated_dkg_member_admission_does_not_block_another_member() {
         federation_route_state_three_with_local_private().await;
     let admissions = state
         .federation
-        .dkg_member_admission
-        .as_ref()
+        .dkg_member_admission()
         .expect("DKG member admission");
     let held_permit = admissions
         .get(&first_peer.member_id)
@@ -340,10 +339,12 @@ async fn saturated_dkg_member_admission_does_not_block_another_member() {
 async fn sustained_dkg_member_rate_limit_preserves_fairness_and_retry() {
     let (mut state, public_config, local_private, first_peer, second_peer) =
         federation_route_state_three_with_local_private().await;
-    state.federation.dkg_member_admission = Some(crate::federation_dkg_member_admission(
-        &public_config,
-        1,
-        std::time::Duration::from_millis(10),
+    state.federation.set_dkg_member_admission_for_test(Some(
+        crate::federation_dkg_member_admission(
+            &public_config,
+            1,
+            std::time::Duration::from_millis(10),
+        ),
     ));
     let first_commitment = dkg_commitment_request(&public_config, first_peer.member_id, 21);
     let first_request = signed_dkg_commitment_request(
@@ -419,7 +420,7 @@ async fn active_dkg_route_fails_closed_without_member_admission() {
         .federation_config()
         .expect("federation config")
         .member_id();
-    state.federation.dkg_member_admission = None;
+    state.federation.set_dkg_member_admission_for_test(None);
     let request = signed_dkg_commitment_request(
         &public_config,
         &peer_private,

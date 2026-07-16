@@ -945,8 +945,7 @@ where
     let ceremony_id = participant.participant_state().ceremony_id();
     let root_key_epoch = state
         .federation
-        .dkg_auto_start_config
-        .as_ref()
+        .dkg_auto_start_config()
         .ok_or_else(|| cdk::Error::Custom("FROST DKG configuration is missing".to_string()))?
         .root_key_epoch;
     let records = load_federation_dkg_driver_records(state, ceremony_id).await?;
@@ -1440,8 +1439,7 @@ pub(crate) async fn complete_federation_dkg_ceremony(
     let local_member = runtime_config.member_id();
     let root_key_epoch = state
         .federation
-        .dkg_auto_start_config
-        .as_ref()
+        .dkg_auto_start_config()
         .filter(|config| config.ceremony_id == ceremony_id)
         .ok_or_else(|| {
             cdk::Error::Custom(

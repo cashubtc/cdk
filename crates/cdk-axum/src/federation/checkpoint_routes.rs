@@ -142,21 +142,9 @@ pub(super) async fn post_checkpoint_audit(
     state
         .record_federation_sequence(kind, verified.sender, verified.sequence)
         .await;
-    let audit = state
-        .federation
-        .audit_trusted_checkpoint_materialized_state()
-        .await;
-    if matches!(
-        &audit,
-        Err(cdk::Error::Federation(
-            cdk::federation::FederationError::MaterializedStateAuditMismatch { .. }
-        ))
-    ) {
-        super::halt_current_federation_aleph_bft_session(
-            &state,
-            "failed an operator-requested trusted-checkpoint materialized-state audit",
-        )
-        .await;
-    }
-    audit.map(Json).map_err(cdk_error_response)
+    state
+        .audit_trusted_federation_checkpoint()
+        .await
+        .map(Json)
+        .map_err(cdk_error_response)
 }

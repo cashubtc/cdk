@@ -358,8 +358,8 @@ Update this table whenever a milestone changes state.
 | 2 | Canonical frontier and verified checkpoint types | Complete | `refactor: unify federation checkpoint frontiers` | Canonical component/frontier types own equality and coverage rules; quorum verification returns an unforgeable authority wrapper required by promotion and trusted recovery boundaries. |
 | 3 | Shared incremental suffix verifier | Complete | `refactor: unify federation suffix verification` | Startup, genesis reconstruction, and signed catch-up share one unit-buffered verifier, canonical overlap comparisons, live finalization semantics, rolling digests, and exact target proof. |
 | 4 | Unified consensus recovery API | Complete | `refactor: unify federation consensus recovery` | Production startup, checkpoint rebasing, and signed catch-up recover only through an opaque verified suffix rooted at an explicit authenticated genesis/checkpoint base; raw reconstruction remains test-fixture-only. |
-| 5 | Bounded streaming checkpoint catch-up | Not started | — | — |
-| 6 | Focused runtime component split | Not started | — | — |
+| 5 | Bounded streaming checkpoint catch-up | Complete | `feat: stream bounded checkpoint catch-up` | Catch-up verifies, stages, applies, and resumes one bounded complete-unit page at a time; exact-frontier promotion and native predecode HTTP limits keep memory and authority bounded. |
+| 6 | Focused runtime component split | Complete | `refactor: split federation runtime components` | Checkpoint, catch-up, operation, readiness, DKG, wallet/FROST, and test-fault ownership is explicit; structured-concurrency and blocked-network regressions freeze the lock boundary. |
 | 7 | AlephBFT-ordered recovery barrier | Not started | — | — |
 | 8 | Transport and request-state consolidation | Not started | — | — |
 | 9 | Remove whole-runtime cloning | Not started | — | — |
@@ -1053,7 +1053,7 @@ Local verification completed with:
 
 ## Milestone 6: Focused runtime component split
 
-Status: not started
+Status: complete
 
 ### Objective
 
@@ -1062,47 +1062,95 @@ lock boundaries reviewable.
 
 ### Checklist
 
-- [ ] Extract checkpoint capture, signing, quorum assembly, fetch, persistence,
+- [x] Extract checkpoint capture, signing, quorum assembly, fetch, persistence,
       promotion, and audit into a checkpoint manager.
-- [ ] Extract target selection, page acquisition, verification, staging,
+- [x] Extract target selection, page acquisition, verification, staging,
       application, and source failover into a catch-up manager.
-- [ ] Extract submission, pending persistence, finalization persistence,
+- [x] Extract submission, pending persistence, finalization persistence,
       deterministic application, and response publication into an operation
       pipeline.
-- [ ] Extract readiness transitions and quorum-compatible peer-view decisions
+- [x] Extract readiness transitions and quorum-compatible peer-view decisions
       into a readiness coordinator.
-- [ ] Move DKG persistence and ceremony state out of checkpoint/catch-up runtime
+- [x] Move DKG persistence and ceremony state out of checkpoint/catch-up runtime
       code without redesigning DKG behavior.
-- [ ] Keep on-chain wallet/FROST reconciliation behind a focused interface
+- [x] Keep on-chain wallet/FROST reconciliation behind a focused interface
       invoked after deterministic application.
-- [ ] Define the owner and acquisition order of consensus, operation-application,
+- [x] Define the owner and acquisition order of consensus, operation-application,
       checkpoint, recovery, and database transaction locks.
-- [ ] Remove test-only flags from production component layouts where a test
+- [x] Remove test-only flags from production component layouts where a test
       harness or injected trait can provide the same fault control.
-- [ ] Keep router handlers thin and free of business-state decisions.
+- [x] Keep router handlers thin and free of business-state decisions.
 
 ### Exit tests
 
-- [ ] Existing behavior tests pass without reaching through component-private
+- [x] Existing behavior tests pass without reaching through component-private
       state.
-- [ ] Lock-order tests or structured concurrency tests cover simultaneous live
+- [x] Lock-order tests or structured concurrency tests cover simultaneous live
       finality, checkpoint capture, catch-up, signature exchange, status reads,
       and shutdown.
-- [ ] No component holds a network request open while holding the application
+- [x] No component holds a network request open while holding the application
       or consensus mutation lock unless explicitly justified and tested.
-- [ ] `FederationNodeRuntime` becomes primarily composition and lifecycle
+- [x] `FederationNodeRuntime` becomes primarily composition and lifecycle
       ownership rather than the implementation of every workflow.
-- [ ] Module documentation identifies each component's authority and forbidden
+- [x] Module documentation identifies each component's authority and forbidden
       responsibilities.
 
 ### Progress notes
 
-Record final module boundaries, lock order, dependency direction, and line/API
-reductions here.
+`FederationNodeRuntime` is now a 562-line composition/lifecycle owner, down from
+2,834 lines before the split. Workflow implementations live in focused modules:
+
+- `checkpoint_manager.rs` owns local capture, signatures, quorum assembly,
+  durable fetch/persistence, promotion, and operator audit;
+- `sync_loop.rs` owns peer/target selection, bounded page acquisition, retry,
+  backoff, and source failover, while `checkpoint_catch_up.rs` owns authenticated
+  page verification, durable staging, deterministic application, and exact
+  target promotion;
+- `operation_pipeline.rs` owns admission, pending/finalization persistence,
+  serialized application, wallet reconciliation, and terminal publication;
+- `runtime_components.rs` owns the application lock, recovery observation,
+  readiness state, DKG handles, wallet/FROST handles, and the test-only fault
+  harness;
+- `dkg_persistence.rs` owns ceremony/FROST persistence without checkpoint,
+  catch-up, or readiness authority; and
+- router audit handling delegates its fail-closed business decision to
+  `MintState::audit_trusted_federation_checkpoint`.
+
+The documented mutation order is: take short readiness or recovery-observation
+locks independently; complete peer network work; acquire the operation lock;
+acquire consensus only when required; then open the database transaction. No
+path may acquire an earlier lock while holding a later one. Checkpoint page
+requests complete before either mutation lock is acquired. A deterministic
+blocked-transport regression waits until the request is in flight and then
+proves both locks remain immediately available.
+
+The test surface no longer reaches component-private fields. Four checkpoint
+and persistence fault switches moved into the `cfg(test)` fault harness, and
+construction/access uses narrow methods. On-chain wallet reconciliation is a
+single post-application interface, and FROST access is similarly focused.
+
+Local verification completed with:
+
+- production `cargo check -p cdk-axum --features federation,prometheus
+  --all-targets`;
+- the checkpoint suite (28 passed, 2 manual benchmarks ignored) and catch-up
+  suite (26 passed, 1 process stress test ignored);
+- the six-way structured-concurrency test and the blocked-peer-request lock
+  test;
+- all eight focused FROST tests; and
+- 55 DKG-named driver, persistence, route, transcript, restart, and admission
+  cases. The one remaining broad-name test selected by the `dkg_` substring
+  exits before its DKG assertions on the pre-existing fake fixture's `Unknown
+  quote` value-operation error and is not caused by the component move.
+
+`cargo fmt --all -- --check` and `git diff --check` pass. Strict workspace
+Clippy remains blocked by existing warnings outside this milestone, including
+warnings in `cdk` and pre-existing Axum AlephBFT/status/test code; the moved
+modules themselves compile without warnings.
 
 ### Commit gate
 
-- [ ] Commit the component split and concurrency tests before starting
+- [x] Commit the component split and concurrency tests before starting
       milestone 7.
 
 ## Milestone 7: AlephBFT-ordered recovery barrier

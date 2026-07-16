@@ -1452,7 +1452,7 @@ impl MintState {
             }
             let local_wallet = self
                 .federation
-                .onchain_wallets
+                .onchain_wallets()
                 .iter()
                 .find(|wallet| {
                     let scope = wallet.scope();
@@ -1558,7 +1558,7 @@ impl MintState {
         };
         let wallet = self
             .federation
-            .onchain_wallets
+            .onchain_wallets()
             .iter()
             .find(|wallet| {
                 let wallet_scope = wallet.scope();
@@ -1590,8 +1590,8 @@ impl MintState {
     pub(crate) async fn federation_onchain_wallet_statuses(
         &self,
     ) -> Vec<FederationOnchainWalletStatus> {
-        let mut statuses = Vec::with_capacity(self.federation.onchain_wallets.len());
-        for wallet in &self.federation.onchain_wallets {
+        let mut statuses = Vec::with_capacity(self.federation.onchain_wallets().len());
+        for wallet in self.federation.onchain_wallets() {
             let status = wallet.sync_status().await;
             let observation_source = wallet.observation_source();
             let correlated_source_warning = matches!(
@@ -1964,7 +1964,7 @@ impl MintState {
     pub(crate) async fn federation_sync_transition_stats(
         &self,
     ) -> Option<FederationSyncTransitionStats> {
-        let sync = self.federation.sync.as_ref()?;
+        let sync = self.federation.sync_handle()?;
         Some(sync.lock().await.transition_stats())
     }
 
@@ -2007,6 +2007,28 @@ impl MintState {
     ) -> Result<(), cdk::Error> {
         self.federation.ensure_ready_for_authoritative_read().await
     }
+
+    pub(crate) async fn audit_trusted_federation_checkpoint(
+        &self,
+    ) -> Result<cdk::federation::FederationCheckpointAuditResponse, cdk::Error> {
+        let audit = self
+            .federation
+            .audit_trusted_checkpoint_materialized_state()
+            .await;
+        if matches!(
+            &audit,
+            Err(cdk::Error::Federation(
+                cdk::federation::FederationError::MaterializedStateAuditMismatch { .. }
+            ))
+        ) {
+            federation::halt_current_federation_aleph_bft_session(
+                self,
+                "failed an operator-requested trusted-checkpoint materialized-state audit",
+            )
+            .await;
+        }
+        audit
+    }
 }
 
 #[cfg(feature = "federation")]
@@ -2034,6 +2056,7 @@ fn should_overlay_local_status_after_aleph_bft_recovery(status: FederationOperat
 }
 
 #[cfg(feature = "federation")]
+#[cfg(test)]
 fn stale_local_aleph_bft_entries_to_retry(
     local_entries: &[FederationJournalEntry],
     recovered_entries: &[FederationJournalEntry],
@@ -2358,9 +2381,7 @@ async fn create_mint_router_with_custom_cache_inner(
             peer_sync_config: federation_consensus
                 .as_ref()
                 .map(|_| federation_peer_sync_config),
-            dkg_auto_start_config: None,
             sequences: federation_sequences,
-            sync: federation_sync,
             notifications: federation_consensus
                 .as_ref()
                 .map(|_| Arc::new(FederationOperationNotifications::default())),
@@ -2369,7 +2390,6 @@ async fn create_mint_router_with_custom_cache_inner(
                     federation_peer_sync_config.private_rest_inbound_concurrency_limit,
                 ))
             }),
-            dkg_member_admission: None,
             invalid_operation_alerts: federation_consensus.as_ref().map(|_| {
                 Arc::new(tokio::sync::Mutex::new(
                     FederationInvalidOperationAlertTracker::default(),
@@ -2378,25 +2398,13 @@ async fn create_mint_router_with_custom_cache_inner(
             payment_observer: federation::FederationPaymentObserver::default(),
             transaction_broadcaster: federation::FederationTransactionBroadcaster::default(),
             wallet_liveness: federation::FederationWalletLivenessWorker::default(),
-            onchain_wallets: federation_onchain_wallets,
-            frost_signing: federation_frost_signing,
-            operation_application: Arc::new(tokio::sync::Mutex::new(())),
-            recovery_checkpoint_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
-            #[cfg(test)]
-            fail_next_pending_operation_persistence: Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
-            #[cfg(test)]
-            suppress_next_terminal_response_publication: Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
+            components: federation::runtime_components::FederationRuntimeComponents::new(
+                federation_sync,
+                None,
+                None,
+                federation_onchain_wallets,
+                federation_frost_signing,
             ),
-            #[cfg(test)]
-            suppress_next_scheduled_checkpoint_capture: Arc::new(
-                std::sync::atomic::AtomicBool::new(false),
-            ),
-            #[cfg(test)]
-            fail_next_checkpoint_promotion: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -2408,11 +2416,13 @@ async fn create_mint_router_with_custom_cache_inner(
     };
     #[cfg(all(test, feature = "federation"))]
     if state.federation.local_finality_test {
-        state.federation.sync = state
-            .federation
-            .consensus
-            .as_ref()
-            .map(|_| Arc::new(tokio::sync::Mutex::new(FederationSyncState::default())));
+        state.federation.set_sync_handle(
+            state
+                .federation
+                .consensus
+                .as_ref()
+                .map(|_| Arc::new(tokio::sync::Mutex::new(FederationSyncState::default()))),
+        );
     }
     #[cfg(feature = "federation")]
     let (federation_dkg_config, spawn_federation_dkg_driver) = match federation_dkg_config {
@@ -2439,8 +2449,7 @@ async fn create_mint_router_with_custom_cache_inner(
     };
     #[cfg(feature = "federation")]
     {
-        state.federation.dkg_auto_start_config = federation_dkg_config.clone().map(Arc::new);
-        state.federation.dkg_member_admission = match federation_dkg_config.as_ref() {
+        let dkg_member_admission = match federation_dkg_config.as_ref() {
             Some(config) => state.mint.federation_config().map(|runtime_config| {
                 federation_dkg_member_admission(
                     runtime_config.public_config(),
@@ -2450,6 +2459,10 @@ async fn create_mint_router_with_custom_cache_inner(
             }),
             None => None,
         };
+        state.federation.set_dkg_components(
+            federation_dkg_config.clone().map(Arc::new),
+            dkg_member_admission,
+        );
     }
     #[cfg(feature = "federation")]
     let federation_application_ready = state

@@ -144,7 +144,9 @@ impl FederationWalletLivenessWorker {
         let Some(wallet_config) = runtime.public_config().frost_wallet.as_ref() else {
             return Ok(0);
         };
-        if state.federation.onchain_wallets.is_empty() || state.federation.frost_signing.is_none() {
+        if state.federation.onchain_wallets().is_empty()
+            || state.federation.frost_signing().is_none()
+        {
             return Ok(0);
         }
         state
@@ -781,8 +783,8 @@ impl FederationWalletLivenessWorker {
             return;
         };
         if runtime.public_config().frost_wallet.is_none()
-            || state.federation.onchain_wallets.is_empty()
-            || state.federation.frost_signing.is_none()
+            || state.federation.onchain_wallets().is_empty()
+            || state.federation.frost_signing().is_none()
         {
             return;
         }
@@ -829,7 +831,7 @@ fn wallet_for_scope(
     state: &MintState,
     scope: FederationTransactionScope,
 ) -> Option<&cdk_bdk::FederatedBdkWallet> {
-    state.federation.onchain_wallets.iter().find(|wallet| {
+    state.federation.onchain_wallets().iter().find(|wallet| {
         let wallet_scope = wallet.scope();
         wallet_scope.root_key_epoch() == scope.root_key_epoch
             && wallet_scope.application_id() == scope.application_id.to_bytes()

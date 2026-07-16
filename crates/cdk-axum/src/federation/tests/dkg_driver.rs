@@ -67,12 +67,14 @@ impl DkgDriverTestFederation {
                 &seed,
             )
             .await;
-            state.federation.dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
-                ceremony_id,
-                root_key_epoch: 1,
-                keyset_spec: keyset_spec.clone(),
-                driver: FederationDkgDriverRunConfig::default(),
-            }));
+            state
+                .federation
+                .set_dkg_auto_start_config_for_test(Some(Arc::new(FederationDkgAutoStartConfig {
+                    ceremony_id,
+                    root_key_epoch: 1,
+                    keyset_spec: keyset_spec.clone(),
+                    driver: FederationDkgDriverRunConfig::default(),
+                })));
             let member = public_config
                 .member(private_config.member_id)
                 .expect("configured member");
@@ -166,12 +168,14 @@ impl DkgDriverTestFederation {
             &member.seed,
         )
         .await;
-        state.federation.dkg_auto_start_config = Some(Arc::new(FederationDkgAutoStartConfig {
-            ceremony_id: self.ceremony_id,
-            root_key_epoch: 1,
-            keyset_spec: self.keyset_spec.clone(),
-            driver: FederationDkgDriverRunConfig::default(),
-        }));
+        state
+            .federation
+            .set_dkg_auto_start_config_for_test(Some(Arc::new(FederationDkgAutoStartConfig {
+                ceremony_id: self.ceremony_id,
+                root_key_epoch: 1,
+                keyset_spec: self.keyset_spec.clone(),
+                driver: FederationDkgDriverRunConfig::default(),
+            })));
         let participant = prepare_federation_dkg_participant_state(
             &state,
             self.ceremony_id,

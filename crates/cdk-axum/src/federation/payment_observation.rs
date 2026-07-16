@@ -39,7 +39,7 @@ impl FederationPaymentObserver {
         let observer = runtime.member_id();
         let mut submitted = 0_usize;
 
-        for wallet in &state.federation.onchain_wallets {
+        for wallet in state.federation.onchain_wallets() {
             if wallet.ensure_ready(0).await.is_err() {
                 continue;
             }
