@@ -1659,7 +1659,7 @@ weakening catch-up, restart, or Byzantine fault handling.
 - [x] Run scheduled-boundary agreement tests where the journal interval is
       crossed mid-unit and where only finalized-item progress triggers the
       checkpoint.
-- [ ] Run stable-tail recovery checkpoint tests with exact agreement, a moving
+- [x] Run stable-tail recovery checkpoint tests with exact agreement, a moving
       tip, a stale recovery frontier, and a later scheduled checkpoint that
       supersedes it.
 - [ ] Run malicious source/checkpoint-signature tests from milestone 4 in the
@@ -1742,6 +1742,30 @@ finalization cursor is one, so no checkpoint can expose a partial unit.
 The two agreement tests, the existing first-eligible-boundary retention test,
 and the one-shot startup recovery test for an interrupted eligible capture pass
 with federation and Prometheus enabled.
+
+### Local stable-tail recovery evidence
+
+Two independent member runtimes now apply the same complete finalized unit and
+derive a byte-identical recovery checkpoint at the quiet tip. Distinct member
+signatures assemble into a valid quorum, both databases produce the checkpoint's
+materialized-state digest, and the candidate commits to the complete
+`journal=2, finalized=2` unit boundary. The shared finalized-unit fixture is
+also used by scheduled-boundary agreement tests instead of maintaining a
+second application path.
+
+The recovery observation test proves that a boundary is eligible only after two
+identical observations, that movement resets the observation, and that the new
+tip must stabilize independently. The previously verified monotonic-lineage
+test rejects a stale recovery frontier and accepts the next scheduled
+checkpoint with or without an intervening recovery. The shared database
+persistence test then proves the storage consequence: promoting the covering
+scheduled quorum removes its superseded recovery checkpoint, quorum, and
+signatures while retaining scheduled history.
+
+The two focused Axum recovery tests pass with federation enabled. The stale
+frontier and scheduled-supersession assertions remain centralized in the
+existing protocol and shared database tests rather than duplicated in the HTTP
+harness.
 
 ### Files and references
 

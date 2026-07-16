@@ -219,7 +219,85 @@ async fn recovery_checkpoint_observation_requires_two_identical_boundaries() {
             .observe_recovery_checkpoint_boundary(Some(&moved))
             .await
     );
+    assert!(
+        runtime
+            .observe_recovery_checkpoint_boundary(Some(&moved))
+            .await
+    );
+    moved.next_unit_finalization_index += 1;
+    assert!(
+        !runtime
+            .observe_recovery_checkpoint_boundary(Some(&moved))
+            .await
+    );
     assert!(!runtime.observe_recovery_checkpoint_boundary(None).await);
+}
+
+#[tokio::test]
+async fn independent_members_derive_identical_recovery_checkpoint_at_stable_tip() {
+    let (public_config, first_private, second_private) = transport_config();
+    let first =
+        federation_route_state_for_private(public_config.clone(), first_private.clone()).await;
+    let second =
+        federation_route_state_for_private(public_config.clone(), second_private.clone()).await;
+    let items = (0..2)
+        .map(|_| FederationConsensusItem::operation(mint_quote_envelope(&first, &QuoteId::new())))
+        .collect();
+    time::timeout(
+        Duration::from_secs(15),
+        apply_identical_finalized_unit(&first, &second, items),
+    )
+    .await
+    .expect("stable-tip unit application timeout");
+
+    let first_checkpoint = time::timeout(
+        Duration::from_secs(15),
+        recovery_checkpoint_for_state(&first, &public_config, None),
+    )
+    .await
+    .expect("first recovery-checkpoint timeout");
+    let second_checkpoint = time::timeout(
+        Duration::from_secs(15),
+        recovery_checkpoint_for_state(&second, &public_config, None),
+    )
+    .await
+    .expect("second recovery-checkpoint timeout");
+    assert_eq!(first_checkpoint, second_checkpoint);
+    let quorum = FederationCheckpointQuorum::new(
+        first_checkpoint.clone(),
+        vec![
+            FederationCheckpointSignature::new_signed(&first_checkpoint, &first_private)
+                .expect("first recovery-checkpoint signature"),
+            FederationCheckpointSignature::new_signed(&second_checkpoint, &second_private)
+                .expect("second recovery-checkpoint signature"),
+        ],
+    );
+    quorum
+        .verify(&public_config)
+        .expect("stable-tip recovery-checkpoint quorum");
+    assert_eq!(first_checkpoint.journal_next_index, 2);
+    assert_eq!(first_checkpoint.finalized_next_item_index, 2);
+    assert_eq!(first_checkpoint.next_unit_finalization_index, 1);
+    assert_eq!(
+        first_checkpoint.materialized_state_digest,
+        first
+            .mint
+            .federation_materialized_state_snapshot()
+            .await
+            .expect("first stable-tip materialized state")
+            .digest()
+            .expect("first stable-tip materialized digest")
+    );
+    assert_eq!(
+        first_checkpoint.materialized_state_digest,
+        second
+            .mint
+            .federation_materialized_state_snapshot()
+            .await
+            .expect("second stable-tip materialized state")
+            .digest()
+            .expect("second stable-tip materialized digest")
+    );
 }
 
 #[test]
@@ -2216,6 +2294,27 @@ async fn recovery_checkpoint_quorum_for_state(
     scheduled_checkpoint: Option<&FederationCheckpoint>,
     signers: &[&MemberConfigPrivate],
 ) -> (FederationCheckpoint, FederationCheckpointQuorum) {
+    let checkpoint =
+        recovery_checkpoint_for_state(state, public_config, scheduled_checkpoint).await;
+    let signatures = signers
+        .iter()
+        .map(|signer| {
+            FederationCheckpointSignature::new_signed(&checkpoint, signer)
+                .expect("checkpoint signature")
+        })
+        .collect();
+    let quorum = FederationCheckpointQuorum::new(checkpoint.clone(), signatures);
+    quorum
+        .verify(public_config)
+        .expect("recovery checkpoint quorum");
+    (checkpoint, quorum)
+}
+
+async fn recovery_checkpoint_for_state(
+    state: &MintState,
+    public_config: &FederationConfig,
+    scheduled_checkpoint: Option<&FederationCheckpoint>,
+) -> FederationCheckpoint {
     let frontier = state
         .mint
         .localstore()
@@ -2252,18 +2351,7 @@ async fn recovery_checkpoint_quorum_for_state(
             materialized_state_digest,
         )
         .expect("recovery checkpoint");
-    let signatures = signers
-        .iter()
-        .map(|signer| {
-            FederationCheckpointSignature::new_signed(&checkpoint, signer)
-                .expect("checkpoint signature")
-        })
-        .collect();
-    let quorum = FederationCheckpointQuorum::new(checkpoint.clone(), signatures);
-    quorum
-        .verify(public_config)
-        .expect("recovery checkpoint quorum");
-    (checkpoint, quorum)
+    checkpoint
 }
 
 async fn federation_route_state_for_private_with_db(
@@ -7542,6 +7630,42 @@ async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
     );
 }
 
+async fn apply_identical_finalized_unit(
+    first: &MintState,
+    second: &MintState,
+    items: Vec<FederationConsensusItem>,
+) {
+    let payload = {
+        let consensus = first
+            .federation
+            .consensus
+            .as_ref()
+            .expect("first agreement consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            items,
+        )
+        .expect("agreement payload")
+    };
+
+    first
+        .federation
+        .apply_finalized_unit(payload.clone())
+        .await
+        .expect("apply first agreement unit");
+    second
+        .federation
+        .apply_finalized_unit(payload)
+        .await
+        .expect("apply second agreement unit");
+}
+
 async fn scheduled_checkpoint_agreement_for_payload<F>(
     checkpoint_policy: FederationCheckpointPolicy,
     make_items: F,
@@ -7556,35 +7680,7 @@ where
     let second =
         federation_route_state_for_private(public_config.clone(), second_private.clone()).await;
     let items = make_items(&first);
-    let payload = {
-        let consensus = first
-            .federation
-            .consensus
-            .as_ref()
-            .expect("first scheduled-boundary consensus")
-            .lock()
-            .await;
-        let status = consensus.status();
-        FederationAlephBftUnitPayload::new(
-            status.federation_id,
-            status.local_member,
-            status.session,
-            consensus.next_unit_index(),
-            items,
-        )
-        .expect("scheduled-boundary payload")
-    };
-
-    first
-        .federation
-        .apply_finalized_unit(payload.clone())
-        .await
-        .expect("apply first scheduled-boundary unit");
-    second
-        .federation
-        .apply_finalized_unit(payload)
-        .await
-        .expect("apply second scheduled-boundary unit");
+    apply_identical_finalized_unit(&first, &second, items).await;
 
     let first_candidate = first
         .mint
