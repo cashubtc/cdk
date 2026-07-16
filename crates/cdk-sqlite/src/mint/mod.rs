@@ -595,7 +595,6 @@ mod test {
             "completed_operations",
             "federation_journal_entries",
             "federation_dkg_member_sequences",
-            "federation_catch_up_certificates",
             "federation_checkpoints",
             "federation_checkpoint_signatures",
             "federation_checkpoint_quorums",
@@ -781,7 +780,6 @@ mod test {
             WHERE type = 'index'
               AND tbl_name IN (
                   'federation_journal_entries',
-                  'federation_catch_up_certificates',
                   'federation_checkpoints',
                   'federation_checkpoint_signatures',
                   'federation_materialized_state_keys',
@@ -810,10 +808,6 @@ mod test {
         assert!(
             index_names.contains("idx_federation_journal_operation_id"),
             "missing federation operation-id index"
-        );
-        assert!(
-            index_names.contains("idx_federation_catch_up_certificates_from_index"),
-            "missing federation catch-up certificate range index"
         );
         assert!(
             index_names.contains("idx_federation_checkpoints_kind_sequence"),
@@ -941,26 +935,6 @@ mod test {
             .expect("operation lookup query plan"),
         );
         assert_uses_indexed_search(&operation_lookup_plan, "federation_journal_entries");
-
-        let catch_up_certificate_plan = explain_details(
-            query(
-                r#"
-                EXPLAIN QUERY PLAN
-                SELECT certificate_json
-                FROM federation_catch_up_certificates
-                WHERE from_index >= 1
-                ORDER BY from_index ASC, signer_member_id ASC
-                "#,
-            )
-            .expect("catch-up certificate plan query")
-            .fetch_all(&*conn)
-            .await
-            .expect("catch-up certificate query plan"),
-        );
-        assert_uses_indexed_search(
-            &catch_up_certificate_plan,
-            "federation_catch_up_certificates",
-        );
 
         let payment_observation_plan = explain_details(
             query(

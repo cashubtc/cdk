@@ -2014,22 +2014,8 @@ mod tests {
                 onchain_wallets: Vec::new(),
                 frost_signing: None,
                 operation_application: Arc::new(tokio::sync::Mutex::new(())),
-                catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
-                materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
                 recovery_checkpoint_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
-                #[cfg(test)]
-                catch_up_certificate_quorum_validation_count: Arc::new(
-                    std::sync::atomic::AtomicUsize::new(0),
-                ),
-                #[cfg(test)]
-                catch_up_certificate_journal_load_count: Arc::new(
-                    std::sync::atomic::AtomicUsize::new(0),
-                ),
-                #[cfg(test)]
-                materialized_state_digest_computation_count: Arc::new(
-                    std::sync::atomic::AtomicUsize::new(0),
-                ),
                 #[cfg(test)]
                 fail_next_pending_operation_persistence: Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
@@ -2867,22 +2853,8 @@ mod tests {
                 onchain_wallets: Vec::new(),
                 frost_signing: None,
                 operation_application: Arc::new(tokio::sync::Mutex::new(())),
-                catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
-                materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
                 recovery_checkpoint_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
-                #[cfg(test)]
-                catch_up_certificate_quorum_validation_count: Arc::new(
-                    std::sync::atomic::AtomicUsize::new(0),
-                ),
-                #[cfg(test)]
-                catch_up_certificate_journal_load_count: Arc::new(
-                    std::sync::atomic::AtomicUsize::new(0),
-                ),
-                #[cfg(test)]
-                materialized_state_digest_computation_count: Arc::new(
-                    std::sync::atomic::AtomicUsize::new(0),
-                ),
                 #[cfg(test)]
                 fail_next_pending_operation_persistence: Arc::new(
                     std::sync::atomic::AtomicBool::new(false),
@@ -4576,9 +4548,7 @@ mod tests {
     async fn post_batch_check_mint_quote_records_observation_while_sync_not_ready() {
         let state = create_federated_test_state().await;
         let quote_id = create_paid_bolt11_quote(&state).await;
-        state
-            .mark_federation_verifying_catch_up_certificate(MemberId::new(2).unwrap(), 1)
-            .await;
+        state.mark_federation_awaiting_quorum(1).await;
 
         let result = post_batch_check_mint_quote(
             AuthHeader::None,
@@ -4633,9 +4603,7 @@ mod tests {
         let state = create_federated_test_state().await;
         let quote_id =
             reserve_federated_melt_for_observer(&state, "sync-not-ready observation").await;
-        state
-            .mark_federation_verifying_catch_up_certificate(MemberId::new(2).expect("member id"), 1)
-            .await;
+        state.mark_federation_awaiting_quorum(1).await;
 
         let result = get_check_melt_custom_quote(
             AuthHeader::None,

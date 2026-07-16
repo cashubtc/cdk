@@ -883,15 +883,13 @@ has_certified_convergence() {
       healthy += ($0 ~ /sync=healthy ready=true/)
       member_id = $2
       sub(/:$/, "", member_id)
-      latest = ""
-      certified = ""
+      checkpoint_lag = ""
       for (field = 1; field <= NF; field += 1) {
         split($field, value, "=")
-        if (value[1] == "latest_index") latest = value[2]
-        if (value[1] == "catch_up_certificate_quorum_latest") certified = value[2]
+        if (value[1] == "checkpoint_lag_operations") checkpoint_lag = value[2]
       }
-      requires_certificate = index(recovered_members, " " member_id " ") > 0
-      covered += (!requires_certificate || (latest != "" && latest == certified))
+      requires_checkpoint = index(recovered_members, " " member_id " ") > 0
+      covered += (!requires_checkpoint || checkpoint_lag == "0")
     }
     END {
       exit !(members == expected && healthy == expected && covered == expected)

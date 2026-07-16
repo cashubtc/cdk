@@ -1,7 +1,5 @@
 //! Federation REST routes.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use axum::extract::{DefaultBodyLimit, Json, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -10,17 +8,17 @@ use axum::Router;
 #[cfg(test)]
 use cdk::federation::FederationLocalStatusResponse;
 use cdk::federation::{
-    redact_federation_operator_message, FederationCatchUpCertificate,
-    FederationCatchUpCertificateQuorum, FederationCatchUpOperation, FederationError,
-    FederationJournalCatchUpResponse, FederationJournalDigest, FederationJournalEntry,
-    FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
-    FederationMaterializedStateSnapshot, FederationOperationId, FederationOperationStatus,
-    FederationPeerStatus, FederationRestMessageKind, FederationRestSequenceTracker,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FederationVerifiedOperationAdmission, InMemoryFederationJournal,
-    FEDERATION_MAX_DKG_REQUEST_BODY_BYTES, FEDERATION_REST_API_VERSION,
+    redact_federation_operator_message, FederationError, FederationMaterializedStateRowFingerprint,
+    FederationMaterializedStateSnapshot, FederationOperationStatus, FederationPeerStatus,
+    FederationRestMessageKind, FederationRestSequenceTracker, FederationSignedRequest,
+    FederationSubmitOperationRequest, FederationSubmitOperationResponse,
+    FederationVerifiedOperationAdmission, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
 };
-use cdk::mint::Mint;
+#[cfg(test)]
+use cdk::federation::{
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationOperationId, FEDERATION_REST_API_VERSION,
+};
 use serde::Serialize;
 use tracing::instrument;
 #[cfg(test)]
@@ -67,8 +65,8 @@ pub(crate) use self::aleph_bft_session::{
 pub(crate) use self::broadcast::FederationTransactionBroadcaster;
 use self::catch_up_routes::post_journal;
 use self::checkpoint_routes::{
-    post_checkpoint_fetch, post_checkpoint_quorum, post_checkpoint_signature,
-    post_checkpoint_summary,
+    post_checkpoint_audit, post_checkpoint_fetch, post_checkpoint_quorum,
+    post_checkpoint_signature, post_checkpoint_summary,
 };
 #[cfg(test)]
 use self::dkg_driver::{
@@ -109,8 +107,7 @@ use self::sync_config::{
 pub(crate) use self::sync_loop::spawn_federation_peer_sync_loop_with_config;
 #[cfg(test)]
 use self::sync_loop::{
-    persist_local_catch_up_certificate_chunks, run_federation_peer_sync_round,
-    run_federation_peer_sync_round_with_backoff,
+    run_federation_peer_sync_round, run_federation_peer_sync_round_with_backoff,
 };
 pub(crate) use self::wallet_liveness::FederationWalletLivenessWorker;
 #[cfg(test)]
@@ -168,6 +165,7 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/checkpoints/fetch", post(post_checkpoint_fetch))
         .route("/checkpoints/signature", post(post_checkpoint_signature))
         .route("/checkpoints/quorum", post(post_checkpoint_quorum))
+        .route("/checkpoints/audit", post(post_checkpoint_audit))
         .route("/local-status", post(post_local_status))
         .route(
             "/wallet/transactions/status",
@@ -423,190 +421,6 @@ fn u64_to_i64_saturating(value: u64) -> i64 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CatchUpCertificateQuorumStatus {
-    signers: BTreeSet<cdk::federation::MemberId>,
-    from_index: u64,
-    latest_index: u64,
-    operation_count: u64,
-    materialized_state_digest: FederationMaterializedStateDigest,
-}
-
-impl From<FederationCatchUpCertificateQuorum> for CatchUpCertificateQuorumStatus {
-    fn from(quorum: FederationCatchUpCertificateQuorum) -> Self {
-        Self {
-            signers: quorum.signers,
-            from_index: quorum.from_index,
-            latest_index: quorum.latest_index,
-            operation_count: quorum.operation_count,
-            materialized_state_digest: quorum.materialized_state_digest,
-        }
-    }
-}
-
-impl CatchUpCertificateQuorumStatus {
-    fn append(&mut self, quorum: &FederationCatchUpCertificateQuorum) {
-        self.signers.extend(quorum.signers.iter().copied());
-        self.latest_index = quorum.latest_index;
-        self.operation_count = self
-            .latest_index
-            .checked_sub(self.from_index)
-            .and_then(|span| span.checked_add(1))
-            .unwrap_or(u64::MAX);
-        self.materialized_state_digest = quorum.materialized_state_digest;
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct CatchUpCertificateRangeKey {
-    from_index: u64,
-    operation_count: u64,
-    latest_index: u64,
-    previous_order_digest: FederationJournalDigest,
-    range_order_digest: FederationJournalDigest,
-    latest_order_digest: FederationJournalDigest,
-    materialized_state_digest: FederationMaterializedStateDigest,
-    operation_ids: Vec<FederationOperationId>,
-}
-
-impl From<&FederationCatchUpCertificate> for CatchUpCertificateRangeKey {
-    fn from(certificate: &FederationCatchUpCertificate) -> Self {
-        Self {
-            from_index: certificate.from_index,
-            operation_count: certificate.operation_count(),
-            latest_index: certificate.latest_index(),
-            previous_order_digest: certificate.previous_order_digest,
-            range_order_digest: certificate.range_order_digest(),
-            latest_order_digest: certificate.latest_order_digest,
-            materialized_state_digest: certificate.materialized_state_digest,
-            operation_ids: certificate.operation_ids.clone(),
-        }
-    }
-}
-
-async fn catch_up_certificate_quorum_status(
-    mint: &Mint,
-) -> Result<Option<CatchUpCertificateQuorumStatus>, cdk::Error> {
-    let Some(runtime_config) = mint.federation_config() else {
-        return Ok(None);
-    };
-    let db = mint.localstore();
-    let entries = db.get_federation_journal_entries().await?;
-    let certificates = db.get_federation_catch_up_certificates().await?;
-    if entries.is_empty() || certificates.is_empty() {
-        return Ok(None);
-    }
-
-    let entries_by_index = entries
-        .into_iter()
-        .map(|entry| (entry.index, entry))
-        .collect::<BTreeMap<_, _>>();
-    let mut grouped_outcomes: BTreeMap<
-        CatchUpCertificateRangeKey,
-        Vec<FederationCatchUpCertificate>,
-    > = BTreeMap::new();
-    for certificate in certificates {
-        grouped_outcomes
-            .entry(CatchUpCertificateRangeKey::from(&certificate))
-            .or_default()
-            .push(certificate);
-    }
-
-    let mut quorums_by_start: BTreeMap<u64, Vec<FederationCatchUpCertificateQuorum>> =
-        BTreeMap::new();
-    for (range, certificates) in grouped_outcomes {
-        let Some(entries) = entries_for_catch_up_certificate_range(&entries_by_index, &range)
-        else {
-            continue;
-        };
-        let response = FederationJournalCatchUpResponse {
-            version: FEDERATION_REST_API_VERSION,
-            federation_id: runtime_config.public_config().federation_id,
-            from_index: range.from_index,
-            target_checkpoint_id: None,
-            entries: entries
-                .iter()
-                .map(FederationCatchUpOperation::from)
-                .collect(),
-            latest_index: Some(range.latest_index),
-            latest_order_digest: range.latest_order_digest,
-            materialized_state_digest: range.materialized_state_digest,
-            catch_up_certificate: None,
-            catch_up_certificates: Vec::new(),
-            aleph_bft_from_item_index: 0,
-            aleph_bft_finalized_items: Vec::new(),
-            aleph_bft_finalized_items_complete: true,
-            aleph_bft_backup: None,
-            complete: true,
-        };
-
-        let quorum = match response
-            .verify_catch_up_certificate_quorum(runtime_config.public_config(), &certificates)
-        {
-            Ok(quorum) => quorum,
-            Err(FederationError::CatchUpCertificateQuorumNotReached { .. }) => continue,
-            Err(_) => continue,
-        };
-        quorums_by_start
-            .entry(quorum.from_index)
-            .or_default()
-            .push(quorum);
-    }
-
-    Ok(contiguous_catch_up_certificate_quorum_prefix(
-        &quorums_by_start,
-    ))
-}
-
-fn contiguous_catch_up_certificate_quorum_prefix(
-    quorums_by_start: &BTreeMap<u64, Vec<FederationCatchUpCertificateQuorum>>,
-) -> Option<CatchUpCertificateQuorumStatus> {
-    let mut next_index = 0;
-    let mut status: Option<CatchUpCertificateQuorumStatus> = None;
-    while let Some(quorums) = quorums_by_start.get(&next_index) {
-        let Some(best) = quorums.iter().max_by_key(|quorum| quorum.latest_index) else {
-            break;
-        };
-        match &mut status {
-            Some(status) => status.append(best),
-            None => status = Some(best.clone().into()),
-        }
-        if best.latest_index < next_index {
-            break;
-        }
-        let Some(after_best) = best.latest_index.checked_add(1) else {
-            break;
-        };
-        next_index = after_best;
-    }
-
-    status
-}
-
-fn entries_for_catch_up_certificate_range(
-    entries_by_index: &BTreeMap<u64, FederationJournalEntry>,
-    range: &CatchUpCertificateRangeKey,
-) -> Option<Vec<FederationJournalEntry>> {
-    let range_span = range
-        .latest_index
-        .checked_sub(range.from_index)
-        .and_then(|span| span.checked_add(1))?;
-    if range.operation_count == 0
-        || range.operation_count != range_span
-        || usize::try_from(range.operation_count).ok()? > entries_by_index.len()
-    {
-        return None;
-    }
-
-    let count = usize::try_from(range.operation_count).ok()?;
-    let mut entries = Vec::with_capacity(count);
-    for offset in 0..range.operation_count {
-        let index = range.from_index.checked_add(offset)?;
-        entries.push(entries_by_index.get(&index)?.clone());
-    }
-    Some(entries)
-}
-
 fn federation_runtime_config(
     state: &MintState,
 ) -> Result<&cdk::mint::FederationRuntimeConfig, Response> {
@@ -656,8 +470,6 @@ fn federation_error_status(err: &FederationError) -> StatusCode {
         | FederationError::NodeAwaitingQuorum { .. }
         | FederationError::NodeLagging { .. }
         | FederationError::NodeCatchingUp { .. }
-        | FederationError::NodeVerifyingCatchUpCertificate { .. }
-        | FederationError::NodeMaterializedStateMismatch { .. }
         | FederationError::NodeHalted { .. }
         | FederationError::OperationPendingFinalization { .. }
         | FederationError::PendingAlephBftFinalization { .. }
@@ -695,38 +507,15 @@ fn anyhow_response(err: anyhow::Error) -> Response {
 }
 
 async fn local_peer_status(state: &MintState) -> anyhow::Result<FederationPeerStatus> {
-    let (order_status, latest_operation_status) =
-        local_peer_order_status_with_latest_operation_status(state).await?;
-    let mut cache = state
-        .federation
-        .materialized_state_digest_cache
-        .lock()
-        .await;
-    if let Some(cached) = cache.as_ref() {
-        if cached.operation_count == order_status.operation_count
-            && cached.latest_order_digest == order_status.latest_order_digest
-            && cached.latest_operation_status == latest_operation_status
-        {
-            let mut status = order_status;
-            status.materialized_state_digest = Some(cached.materialized_state_digest);
-            return Ok(status);
-        }
-    }
-
-    #[cfg(test)]
-    state
-        .federation
-        .materialized_state_digest_computation_count
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let (mut status, entries) = local_peer_status_and_entries(state).await?;
-    let materialized_state_digest = materialized_state_digest(state, &entries).await?;
-    *cache = Some(node_runtime::MaterializedStateDigestCache {
-        operation_count: status.operation_count,
-        latest_order_digest: status.latest_order_digest,
-        latest_operation_status,
-        materialized_state_digest,
-    });
-    status.materialized_state_digest = Some(materialized_state_digest);
+    let mut status = local_peer_order_status(state).await?;
+    let frontier = state
+        .mint
+        .localstore()
+        .get_federation_checkpoint_frontier()
+        .await?;
+    status.application_digest = Some(frontier.application_digest);
+    status.latest_audited_checkpoint_id = frontier.latest_audited_checkpoint_id;
+    status.materialized_state_digest = frontier.latest_materialized_state_digest;
     Ok(status)
 }
 
@@ -795,33 +584,11 @@ async fn local_peer_status_with_materialized_rows(
     FederationPeerStatus,
     Vec<FederationMaterializedStateRowFingerprint>,
 )> {
-    let (mut status, entries) = local_peer_status_and_entries(state).await?;
-    let snapshot = materialized_state_snapshot(state, &entries).await?;
+    let mut status = local_peer_status(state).await?;
+    let snapshot = materialized_state_snapshot(state).await?;
     status.materialized_state_digest = Some(snapshot.digest()?);
     let materialized_state_rows = snapshot.row_fingerprints()?;
     Ok((status, materialized_state_rows))
-}
-
-async fn local_peer_status_and_entries(
-    state: &MintState,
-) -> anyhow::Result<(FederationPeerStatus, Vec<FederationJournalEntry>)> {
-    let runtime_config =
-        state
-            .mint
-            .federation_config()
-            .ok_or(FederationError::RuntimeUnavailable {
-                component: "mint configuration",
-            })?;
-    let journal = durable_federation_journal(state).await?;
-    let mut status = FederationPeerStatus::from_journal(
-        runtime_config.federation_id(),
-        runtime_config.member_id(),
-        &journal,
-    );
-    let next_item_index = local_finalized_item_cursor(state).await?;
-    status = status.with_aleph_bft_next_item_index(next_item_index);
-    let entries = journal.entries().to_vec();
-    Ok((status, entries))
 }
 
 async fn local_finalized_item_cursor(state: &MintState) -> anyhow::Result<u64> {
@@ -839,29 +606,16 @@ async fn local_finalized_item_cursor(state: &MintState) -> anyhow::Result<u64> {
     .into());
 }
 
-async fn durable_federation_journal(
-    state: &MintState,
-) -> anyhow::Result<InMemoryFederationJournal> {
-    let entries = state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await?;
-    Ok(InMemoryFederationJournal::from_entries(entries)?)
-}
-
+#[cfg(test)]
 pub(crate) async fn materialized_state_digest(
     state: &MintState,
-    entries: &[FederationJournalEntry],
+    _entries: &[FederationJournalEntry],
 ) -> anyhow::Result<FederationMaterializedStateDigest> {
-    Ok(materialized_state_snapshot(state, entries)
-        .await?
-        .digest()?)
+    Ok(materialized_state_snapshot(state).await?.digest()?)
 }
 
 async fn materialized_state_snapshot(
     state: &MintState,
-    _entries: &[FederationJournalEntry],
 ) -> anyhow::Result<FederationMaterializedStateSnapshot> {
     Ok(state.mint.federation_materialized_state_snapshot().await?)
 }
@@ -872,63 +626,6 @@ fn federation_completed_operation_uuid(operation_id: FederationOperationId) -> U
     let mut uuid = [0_u8; 16];
     uuid.copy_from_slice(&bytes[..16]);
     Uuid::from_bytes(uuid)
-}
-
-fn verify_catch_up_certificate_entries(
-    local_entries: &[FederationJournalEntry],
-    response: &FederationJournalCatchUpResponse,
-) -> anyhow::Result<()> {
-    let expected = local_entries
-        .iter()
-        .map(FederationCatchUpOperation::from)
-        .collect::<Vec<_>>();
-    verify_catch_up_operation_evidence(&expected, response)
-}
-
-fn verify_catch_up_operation_evidence(
-    expected: &[FederationCatchUpOperation],
-    response: &FederationJournalCatchUpResponse,
-) -> anyhow::Result<()> {
-    let first = expected
-        .first()
-        .ok_or_else(|| FederationError::CatchUpCertificateMismatch {
-            reason: "missing local entries for evidence response".to_string(),
-        })?;
-    if response.from_index != first.index {
-        return Err(FederationError::CatchUpIndexMismatch {
-            expected: first.index,
-            found: response.from_index,
-        }
-        .into());
-    }
-    if response.entries.len() != expected.len() {
-        return Err(FederationError::CatchUpCertificateMismatch {
-            reason: format!(
-                "evidence response entry count mismatch: expected={}, found={}",
-                expected.len(),
-                response.entries.len()
-            ),
-        }
-        .into());
-    }
-
-    for (local, peer) in expected.iter().zip(&response.entries) {
-        if peer.index != local.index
-            || peer.operation_id != local.operation_id
-            || peer.previous_order_digest != local.previous_order_digest
-            || peer.order_digest != local.order_digest
-        {
-            return Err(FederationError::CatchUpCertificateMismatch {
-                reason: format!(
-                    "evidence entry mismatch at local index {} and peer index {}",
-                    local.index, peer.index
-                ),
-            }
-            .into());
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

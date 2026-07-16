@@ -864,7 +864,6 @@ mod test {
             "completed_operations",
             "federation_journal_entries",
             "federation_dkg_member_sequences",
-            "federation_catch_up_certificates",
             "federation_checkpoints",
             "federation_checkpoint_signatures",
             "federation_checkpoint_quorums",
@@ -915,7 +914,6 @@ mod test {
 
         for index in [
             "idx_federation_journal_operation_id",
-            "idx_federation_catch_up_certificates_from_index",
             "idx_federation_checkpoints_kind_sequence",
             "idx_federation_checkpoints_finalized_cursor",
             "idx_federation_checkpoint_signatures_checkpoint",

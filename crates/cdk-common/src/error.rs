@@ -1007,9 +1007,7 @@ impl Error {
             Self::Federation(
                 crate::federation::FederationError::NodeAwaitingQuorum { .. }
                 | crate::federation::FederationError::NodeLagging { .. }
-                | crate::federation::FederationError::NodeCatchingUp { .. }
-                | crate::federation::FederationError::NodeVerifyingCatchUpCertificate { .. }
-                | crate::federation::FederationError::NodeMaterializedStateMismatch { .. },
+                | crate::federation::FederationError::NodeCatchingUp { .. },
             ) => true,
             _ => false,
         }
@@ -1149,9 +1147,7 @@ impl From<Error> for ErrorResponse {
             Error::Federation(
                 federation_error @ (crate::federation::FederationError::NodeAwaitingQuorum { .. }
                 | crate::federation::FederationError::NodeLagging { .. }
-                | crate::federation::FederationError::NodeCatchingUp { .. }
-                | crate::federation::FederationError::NodeVerifyingCatchUpCertificate { .. }
-                | crate::federation::FederationError::NodeMaterializedStateMismatch { .. }),
+                | crate::federation::FederationError::NodeCatchingUp { .. })
             ) => ErrorResponse {
                 code: ErrorCode::FederationCatchUp,
                 detail: federation_error.to_string(),

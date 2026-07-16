@@ -4,11 +4,12 @@ use std::collections::BTreeMap;
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationConsensusRuntimeStatus, FederationInvalidOperationAlertSummary,
-    FederationLocalStatusResponse, FederationMaterializedStateRowFingerprint,
-    FederationPaymentObservationReportSummary, FederationPeerStatus, FederationPeerStatusRequest,
-    FederationRestMessageKind, FederationSignedRequest, FederationWalletRecoveryStatus,
-    FEDERATION_REST_API_VERSION,
+    FederationCheckpointKind, FederationCheckpointQuorumSummary, FederationCheckpointStatus,
+    FederationCheckpointSummary, FederationConsensusRuntimeStatus,
+    FederationInvalidOperationAlertSummary, FederationLocalStatusResponse,
+    FederationMaterializedStateRowFingerprint, FederationPaymentObservationReportSummary,
+    FederationPeerStatus, FederationPeerStatusRequest, FederationRestMessageKind,
+    FederationSignedRequest, FederationWalletRecoveryStatus, FEDERATION_REST_API_VERSION,
 };
 use tracing::instrument;
 
@@ -17,7 +18,7 @@ use crate::MintState;
 use super::{
     acquire_private_rest_admission, anyhow_response, cdk_error_response, local_peer_status,
     local_peer_status_with_materialized_rows, payment_observation_report_summaries,
-    verify_federation_request, CatchUpCertificateQuorumStatus,
+    verify_federation_request,
 };
 
 #[instrument(skip_all)]
@@ -65,9 +66,7 @@ pub(super) async fn post_local_status(
         )
     };
     let sync_status = state.federation_sync_status().await.unwrap_or_default();
-    let catch_up_certificate_quorum = state
-        .federation
-        .catch_up_certificate_quorum_status(&state.mint)
+    let checkpoint = federation_checkpoint_status(&state)
         .await
         .map_err(cdk_error_response)?;
     let payment_observation_reports = payment_observation_report_summaries(&state)
@@ -100,7 +99,7 @@ pub(super) async fn post_local_status(
     let response = federation_local_status_response(
         peer_status,
         sync_status,
-        catch_up_certificate_quorum,
+        checkpoint,
         payment_observation_reports,
         materialized_state_rows,
         usize_to_u64_saturating(pending_mempool_items),
@@ -127,7 +126,7 @@ pub(super) async fn post_local_status(
 fn federation_local_status_response(
     peer_status: FederationPeerStatus,
     sync_status: crate::FederationSyncStatus,
-    catch_up_certificate_quorum: Option<CatchUpCertificateQuorumStatus>,
+    checkpoint: FederationCheckpointStatus,
     payment_observation_reports: Vec<FederationPaymentObservationReportSummary>,
     materialized_state_rows: Vec<FederationMaterializedStateRowFingerprint>,
     pending_mempool_items: u64,
@@ -146,20 +145,6 @@ fn federation_local_status_response(
     wallet_liveness: Option<cdk::federation::FederationWalletLivenessStatus>,
     wallet_operator: Option<cdk::federation::FederationWalletOperatorStatus>,
 ) -> FederationLocalStatusResponse {
-    let (
-        catch_up_certificate_quorum_operation_count,
-        catch_up_certificate_quorum_from_index,
-        catch_up_certificate_quorum_latest_index,
-        catch_up_certificate_quorum_signers,
-    ) = match catch_up_certificate_quorum {
-        Some(quorum) => (
-            Some(quorum.operation_count),
-            Some(quorum.from_index),
-            Some(quorum.latest_index),
-            quorum.signers.into_iter().collect(),
-        ),
-        None => (None, None, None, Vec::new()),
-    };
     FederationLocalStatusResponse {
         version: FEDERATION_REST_API_VERSION,
         peer_status,
@@ -181,10 +166,7 @@ fn federation_local_status_response(
         ),
         duplicate_submissions,
         duplicate_pending_waiter_joins,
-        catch_up_certificate_quorum_operation_count,
-        catch_up_certificate_quorum_from_index,
-        catch_up_certificate_quorum_latest_index,
-        catch_up_certificate_quorum_signers,
+        checkpoint,
         payment_observation_reports,
         aleph_bft_status,
         aleph_bft_live_session_active,
@@ -196,6 +178,51 @@ fn federation_local_status_response(
         wallet_liveness,
         wallet_operator,
     }
+}
+
+async fn federation_checkpoint_status(
+    state: &MintState,
+) -> Result<FederationCheckpointStatus, cdk::Error> {
+    let db = state.mint.localstore();
+    let frontier = db.get_federation_checkpoint_frontier().await?;
+    let latest_scheduled_checkpoint = db
+        .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+        .await?
+        .as_ref()
+        .map(FederationCheckpointSummary::from_checkpoint)
+        .transpose()?;
+    let latest_scheduled_quorum = db
+        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
+        .await?
+        .as_ref()
+        .map(FederationCheckpointQuorumSummary::from_stored_quorum)
+        .transpose()?;
+    let latest_recovery_quorum = db
+        .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
+        .await?
+        .as_ref()
+        .map(FederationCheckpointQuorumSummary::from_stored_quorum)
+        .transpose()?;
+    let trusted_checkpoint = db
+        .get_trusted_federation_checkpoint_quorum()
+        .await?
+        .as_ref()
+        .map(FederationCheckpointQuorumSummary::from_stored_quorum)
+        .transpose()?;
+    let trusted_journal_next_index = trusted_checkpoint
+        .as_ref()
+        .map_or(0, |trusted| trusted.checkpoint.journal_next_index);
+
+    Ok(FederationCheckpointStatus {
+        lag_from_trusted_checkpoint: frontier
+            .journal_next_index
+            .saturating_sub(trusted_journal_next_index),
+        frontier,
+        latest_scheduled_checkpoint,
+        latest_scheduled_quorum,
+        latest_recovery_quorum,
+        trusted_checkpoint,
+    })
 }
 
 async fn federation_wallet_operator_status(
@@ -262,8 +289,6 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
         "awaiting_quorum",
         "lagging",
         "catching_up",
-        "verifying_catch_up_certificate",
-        "materialized_state_mismatch",
         "halted",
     ];
     const PAYMENT_REPORT_STATUSES: &[&str] =
@@ -294,14 +319,10 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
             *state == response.sync_state,
         );
     }
-    cdk_prometheus::METRICS.set_federation_catch_up_certificate_quorum_operation_count(
+    cdk_prometheus::METRICS.set_federation_checkpoint_lag_operations(
         &member,
-        response
-            .catch_up_certificate_quorum_operation_count
-            .map(super::u64_to_i64_saturating)
-            .unwrap_or(0),
+        super::u64_to_i64_saturating(response.checkpoint.lag_from_trusted_checkpoint),
     );
-
     for status in PAYMENT_REPORT_STATUSES {
         for action in PAYMENT_REPORT_ACTIONS {
             cdk_prometheus::METRICS

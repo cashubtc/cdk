@@ -966,7 +966,10 @@ where
                 query(
                     r#"
                     UPDATE federation_checkpoint_state
-                    SET trusted_checkpoint_id = :trusted_checkpoint_id
+                    SET
+                        trusted_checkpoint_id = :trusted_checkpoint_id,
+                        latest_audited_checkpoint_id = :trusted_checkpoint_id,
+                        latest_materialized_state_digest = :materialized_state_digest
                     WHERE state_key = :state_key
                     "#,
                 )?
@@ -979,6 +982,10 @@ where
                             Error::Internal(format!("Invalid federation checkpoint: {e}"))
                         })?
                         .to_string(),
+                )
+                .bind(
+                    "materialized_state_digest",
+                    quorum.checkpoint.materialized_state_digest.to_string(),
                 )
                 .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
                 .execute(&self.inner)
@@ -993,7 +1000,10 @@ where
         query(
             r#"
             UPDATE federation_checkpoint_state
-            SET trusted_checkpoint_id = :trusted_checkpoint_id
+            SET
+                trusted_checkpoint_id = :trusted_checkpoint_id,
+                latest_audited_checkpoint_id = :trusted_checkpoint_id,
+                latest_materialized_state_digest = :materialized_state_digest
             WHERE state_key = :state_key
             "#,
         )?
@@ -1004,6 +1014,10 @@ where
                 .id()
                 .map_err(|e| Error::Internal(format!("Invalid federation checkpoint: {e}")))?
                 .to_string(),
+        )
+        .bind(
+            "materialized_state_digest",
+            quorum.checkpoint.materialized_state_digest.to_string(),
         )
         .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
         .execute(&self.inner)
@@ -1025,30 +1039,6 @@ where
         .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
         .execute(&self.inner)
         .await?;
-        Ok(())
-    }
-
-    async fn add_federation_catch_up_certificate(
-        &mut self,
-        certificate: &FederationCatchUpCertificate,
-    ) -> Result<(), Self::Err> {
-        query(
-            r#"
-            INSERT INTO federation_catch_up_certificates
-            (from_index, signer_member_id, certificate_json)
-            VALUES
-            (:from_index, :signer_member_id, :certificate_json)
-            ON CONFLICT (from_index, signer_member_id)
-            DO UPDATE SET
-                certificate_json = EXCLUDED.certificate_json
-            "#,
-        )?
-        .bind("from_index", certificate.from_index as i64)
-        .bind("signer_member_id", i64::from(certificate.signer.get()))
-        .bind("certificate_json", serde_json::to_string(certificate)?)
-        .execute(&self.inner)
-        .await?;
-
         Ok(())
     }
 
@@ -1857,78 +1847,6 @@ where
         .await?
         .map(sql_row_to_federation_checkpoint_quorum)
         .transpose()
-    }
-
-    async fn get_federation_catch_up_certificates(
-        &self,
-    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT certificate_json
-            FROM federation_catch_up_certificates
-            ORDER BY from_index ASC, signer_member_id ASC
-            "#,
-        )?
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_catch_up_certificate)
-        .collect()
-    }
-
-    async fn get_federation_catch_up_certificates_from(
-        &self,
-        from_index: u64,
-    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT certificate_json
-            FROM federation_catch_up_certificates
-            WHERE from_index >= :from_index
-            ORDER BY from_index ASC, signer_member_id ASC
-            "#,
-        )?
-        .bind("from_index", from_index as i64)
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_catch_up_certificate)
-        .collect()
-    }
-
-    async fn get_federation_catch_up_certificates_at(
-        &self,
-        from_index: u64,
-    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        query(
-            r#"
-            SELECT certificate_json
-            FROM federation_catch_up_certificates
-            WHERE from_index = :from_index
-            ORDER BY signer_member_id ASC
-            "#,
-        )?
-        .bind("from_index", from_index as i64)
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_federation_catch_up_certificate)
-        .collect()
     }
 
     async fn get_federation_aleph_bft_finalized_items(

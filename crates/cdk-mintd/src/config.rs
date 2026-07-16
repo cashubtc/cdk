@@ -1449,15 +1449,6 @@ pub struct FederationPeerSync {
     /// Maximum number of accepted journal entries requested per catch-up page.
     #[serde(default = "default_federation_catch_up_limit")]
     pub catch_up_limit: u16,
-    /// Number of materialized-state digest rechecks after journal catch-up.
-    #[serde(default = "default_federation_digest_recheck_attempts")]
-    pub digest_recheck_attempts: usize,
-    /// Delay between materialized-state digest rechecks, in milliseconds.
-    #[serde(default = "default_federation_digest_recheck_delay_ms")]
-    pub digest_recheck_delay_ms: u64,
-    /// Number of journal entries covered by each catch-up certificates chunk.
-    #[serde(default = "default_federation_catch_up_certificate_chunk_size")]
-    pub catch_up_certificate_chunk_size: usize,
     /// Initial reconnect backoff after a peer sync failure.
     #[serde(default = "default_federation_reconnect_initial_backoff_secs")]
     pub reconnect_initial_backoff_secs: u64,
@@ -1497,9 +1488,6 @@ impl Default for FederationPeerSync {
             peer_request_timeout_secs: default_federation_peer_request_timeout_secs(),
             operation_submission_timeout_secs,
             catch_up_limit: default_federation_catch_up_limit(),
-            digest_recheck_attempts: default_federation_digest_recheck_attempts(),
-            digest_recheck_delay_ms: default_federation_digest_recheck_delay_ms(),
-            catch_up_certificate_chunk_size: default_federation_catch_up_certificate_chunk_size(),
             reconnect_initial_backoff_secs: default_federation_reconnect_initial_backoff_secs(),
             reconnect_max_backoff_secs: default_federation_reconnect_max_backoff_secs(),
             private_rest_inbound_concurrency_limit:
@@ -1533,21 +1521,6 @@ fn default_federation_operation_submission_timeout_secs() -> u64 {
 #[cfg(feature = "federation")]
 fn default_federation_catch_up_limit() -> u16 {
     100
-}
-
-#[cfg(feature = "federation")]
-fn default_federation_digest_recheck_attempts() -> usize {
-    20
-}
-
-#[cfg(feature = "federation")]
-fn default_federation_digest_recheck_delay_ms() -> u64 {
-    100
-}
-
-#[cfg(feature = "federation")]
-fn default_federation_catch_up_certificate_chunk_size() -> usize {
-    1000
 }
 
 #[cfg(feature = "federation")]

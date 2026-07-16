@@ -76,7 +76,7 @@ pub use self::consensus::{
     FederationAlephBftFinalizedUnitOutcome, FederationAlephBftPendingOperationRecord,
     FederationAlephBftUnitBodyHash, FederationAlephBftUnitPayload, FederationConsensusDefaultItem,
     FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusModuleFact,
-    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationQuorumVerifiedCatchUp,
+    FederationConsensusRuntime, FederationConsensusRuntimeStatus,
     FederationVerifiedOperationAdmission, FEDERATION_ALEPH_BFT_UNIT_PAYLOAD_VERSION,
     FEDERATION_CONSENSUS_ITEM_VERSION, FEDERATION_MAX_ALEPH_BFT_UNIT_BODY_BYTES,
     FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS, FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
@@ -169,11 +169,12 @@ pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationCatchUpCertificate, FederationCatchUpCertificateQuorum, FederationCatchUpOperation,
-    FederationCheckpointFetchRequest, FederationCheckpointFetchResponse,
-    FederationCheckpointQuorumRequest, FederationCheckpointQuorumResponse,
+    FederationCatchUpOperation, FederationCheckpointAuditRequest,
+    FederationCheckpointAuditResponse, FederationCheckpointFetchRequest,
+    FederationCheckpointFetchResponse, FederationCheckpointQuorumRequest,
+    FederationCheckpointQuorumResponse, FederationCheckpointQuorumSummary,
     FederationCheckpointSignatureRequest, FederationCheckpointSignatureResponse,
-    FederationCheckpointSummary, FederationCheckpointSummaryRequest,
+    FederationCheckpointStatus, FederationCheckpointSummary, FederationCheckpointSummaryRequest,
     FederationCheckpointSummaryResponse, FederationDkgActivationRequest,
     FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
     FederationDkgSecretShareRequest, FederationDkgSetupResponse,
@@ -187,7 +188,7 @@ pub use self::transport::{
     FederationRestMessageKind, FederationRestSequenceTracker, FederationRestSignature,
     FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
     FederationWalletRebroadcastResponse, FederationWalletTransactionRequest,
-    FEDERATION_CATCH_UP_CERTIFICATE_VERSION, FEDERATION_REST_API_VERSION,
+    FEDERATION_REST_API_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, generate_trusted_dealer_configs_with_options,
@@ -540,6 +541,18 @@ pub enum FederationError {
         /// Stable validation reason without operation payloads.
         reason: String,
     },
+    /// An explicit full-state audit disagreed with the trusted checkpoint.
+    #[error(
+        "Federation materialized-state audit mismatch for checkpoint {checkpoint_id}: expected={expected}, found={found}"
+    )]
+    MaterializedStateAuditMismatch {
+        /// Trusted checkpoint used as the audit baseline.
+        checkpoint_id: FederationCheckpointId,
+        /// Materialized-state digest committed by the trusted checkpoint.
+        expected: FederationMaterializedStateDigest,
+        /// Materialized-state digest recomputed from the local database.
+        found: FederationMaterializedStateDigest,
+    },
     /// One member signature does not verify for the checkpoint ID.
     #[error("Federation checkpoint signature verification failed for member {member_id}")]
     CheckpointSignatureVerificationFailed {
@@ -650,26 +663,6 @@ pub enum FederationError {
     NodeCatchingUp {
         /// Peer supplying catch-up history.
         peer: MemberId,
-    },
-    /// The member is waiting for quorum-certified catch-up evidence.
-    #[error(
-        "Federation member is verifying quorum catch-up certificates after catch-up from peer {peer}: operation_count={operation_count}"
-    )]
-    NodeVerifyingCatchUpCertificate {
-        /// Peer that supplied the candidate history.
-        peer: MemberId,
-        /// Candidate durable operation count.
-        operation_count: u64,
-    },
-    /// The member's materialized state has not converged with its ordered history.
-    #[error(
-        "Federation member is waiting for materialized state digest convergence with peer {peer}: operation_count={operation_count}"
-    )]
-    NodeMaterializedStateMismatch {
-        /// Peer whose materialized digest differs.
-        peer: MemberId,
-        /// Durable operation count at which the mismatch was observed.
-        operation_count: u64,
     },
     /// The member is halted and cannot serve authoritative requests.
     #[error("Federation member is halted: {reason}")]
@@ -1418,40 +1411,6 @@ pub enum FederationError {
     RestSignatureVerificationFailed {
         /// Sender whose signature was checked.
         member_id: MemberId,
-    },
-    /// Signed catch-up certificate used an unsupported payload version.
-    #[error(
-        "Federation catch-up certificate version mismatch: expected={expected}, found={found}"
-    )]
-    CatchUpCertificateVersionMismatch {
-        /// Expected catch-up certificate version.
-        expected: u16,
-        /// Found catch-up certificate version.
-        found: u16,
-    },
-    /// Signed catch-up certificate did not match the catch-up response it accompanied.
-    #[error("Federation catch-up certificate mismatch: {reason}")]
-    CatchUpCertificateMismatch {
-        /// Human-readable mismatch reason.
-        reason: String,
-    },
-    /// Signed catch-up certificate had an invalid member identity signature.
-    #[error(
-        "Federation catch-up certificate signature verification failed for member {member_id}"
-    )]
-    CatchUpCertificateSignatureVerificationFailed {
-        /// Member whose signature was checked.
-        member_id: MemberId,
-    },
-    /// Not enough distinct members signed matching catch-up certificates.
-    #[error(
-        "Federation catch-up certificate quorum not reached: required={required}, found={found}"
-    )]
-    CatchUpCertificateQuorumNotReached {
-        /// Required distinct member signatures.
-        required: u16,
-        /// Valid distinct member signatures found.
-        found: u16,
     },
     /// Signed REST request was sent to an endpoint for a different message kind.
     #[error("Federation REST message kind mismatch: expected={expected:?}, found={found:?}")]

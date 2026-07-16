@@ -86,6 +86,8 @@ pub mod env_vars;
 #[cfg(feature = "federation")]
 mod federated_bdk_backend;
 #[cfg(feature = "federation")]
+mod federation_checkpoint_audit;
+#[cfg(feature = "federation")]
 mod federation_digest_compare;
 #[cfg(feature = "federation")]
 mod federation_dkg_setup;
@@ -147,6 +149,9 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
     if let Some(command) = &args.command {
         match command {
             cli::Commands::Federation(federation) => match &federation.command {
+                cli::FederationCommand::AuditCheckpoint(audit) => {
+                    federation_checkpoint_audit::run_checkpoint_audit_command(args, audit).await?;
+                }
                 cli::FederationCommand::CompareDigests(compare) => {
                     federation_digest_compare::run_compare_digests_command(args, compare).await?;
                 }
@@ -1554,9 +1559,6 @@ fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::Federat
             peer_sync.operation_submission_timeout_secs,
         ),
         catch_up_limit: peer_sync.catch_up_limit,
-        digest_recheck_attempts: peer_sync.digest_recheck_attempts,
-        digest_recheck_delay: std::time::Duration::from_millis(peer_sync.digest_recheck_delay_ms),
-        catch_up_certificate_chunk_size: peer_sync.catch_up_certificate_chunk_size,
         reconnect_initial_backoff: std::time::Duration::from_secs(
             peer_sync.reconnect_initial_backoff_secs,
         ),
@@ -4632,9 +4634,6 @@ engine = "sqlite"
                     peer_request_timeout_secs: 11,
                     operation_submission_timeout_secs: 13,
                     catch_up_limit: 17,
-                    digest_recheck_attempts: 19,
-                    digest_recheck_delay_ms: 23,
-                    catch_up_certificate_chunk_size: 29,
                     reconnect_initial_backoff_secs: 31,
                     reconnect_max_backoff_secs: 37,
                     private_rest_inbound_concurrency_limit: 41,
@@ -4666,12 +4665,6 @@ engine = "sqlite"
             std::time::Duration::from_secs(13)
         );
         assert_eq!(sync_config.catch_up_limit, 17);
-        assert_eq!(sync_config.digest_recheck_attempts, 19);
-        assert_eq!(
-            sync_config.digest_recheck_delay,
-            std::time::Duration::from_millis(23)
-        );
-        assert_eq!(sync_config.catch_up_certificate_chunk_size, 29);
         assert_eq!(
             sync_config.reconnect_initial_backoff,
             std::time::Duration::from_secs(31)

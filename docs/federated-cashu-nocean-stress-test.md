@@ -2,6 +2,11 @@
 
 Date: 2026-07-13
 
+Historical protocol note: this measurement predates the signed-checkpoint
+cut-through. Catch-up-certificate behavior below is baseline evidence for the
+pathology, not a description of the current recovery implementation. See
+`docs/federated-cdk-checkpoint-implementation-plan.md`.
+
 ## Executive summary
 
 This test measured end-to-end wallet receipt of independent Cashu tokens against

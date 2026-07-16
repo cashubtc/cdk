@@ -29,16 +29,6 @@ CREATE TABLE federation_dkg_member_sequences (
     last_sequence INTEGER NOT NULL
 );
 
-CREATE TABLE federation_catch_up_certificates (
-    from_index INTEGER NOT NULL,
-    signer_member_id INTEGER NOT NULL,
-    certificate_json TEXT NOT NULL,
-    PRIMARY KEY (from_index, signer_member_id)
-);
-
-CREATE INDEX idx_federation_catch_up_certificates_from_index
-ON federation_catch_up_certificates (from_index);
-
 CREATE TABLE federation_checkpoints (
     checkpoint_id TEXT PRIMARY KEY NOT NULL,
     checkpoint_kind TEXT NOT NULL CHECK (

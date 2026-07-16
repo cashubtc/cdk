@@ -336,6 +336,8 @@ pub struct FederationArgs {
 #[cfg(feature = "federation")]
 #[derive(Debug, Subcommand)]
 pub enum FederationCommand {
+    /// Explicitly audit one member's full state against its trusted checkpoint.
+    AuditCheckpoint(FederationCheckpointAuditArgs),
     /// Compare signed order and materialized-state digests across federation members.
     CompareDigests(FederationCompareDigestsArgs),
     /// Generate one member's independent DKG identity enrollment.
@@ -367,6 +369,20 @@ pub enum FederationCommand {
     TransactionStatus(FederationWalletTransactionArgs),
     /// Immediately retry one exact durably signed transaction.
     Rebroadcast(FederationWalletRebroadcastArgs),
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationCheckpointAuditArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign the audit request.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Member ID whose local database should be audited.
+    #[arg(long)]
+    pub member: u16,
 }
 
 #[cfg(feature = "federation")]
@@ -734,9 +750,9 @@ pub struct FederationStatusArgs {
     /// Fail if any queried member is more than this many accepted operations behind the highest queried member.
     #[arg(long)]
     pub max_operation_lag: Option<u64>,
-    /// Fail if queried members with accepted operations lack quorum-backed catch-up certificates.
+    /// Fail if queried members with accepted operations lack a trusted checkpoint quorum.
     #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub require_catch_up_certificate_quorum: bool,
+    pub require_checkpoint_quorum: bool,
     /// Fail if queried members report or reveal equal-height digest mismatches.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub require_no_digest_alerts: bool,
@@ -1403,7 +1419,7 @@ mod tests {
             "--require-converged",
             "--max-operation-lag",
             "2",
-            "--require-catch-up-certificate-quorum",
+            "--require-checkpoint-quorum",
             "--require-no-digest-alerts",
             "--require-no-payment-observation-alerts",
             "--require-no-invalid-operation-alerts",
@@ -1428,10 +1444,42 @@ mod tests {
         assert!(status.require_ready);
         assert!(status.require_converged);
         assert_eq!(status.max_operation_lag, Some(2));
-        assert!(status.require_catch_up_certificate_quorum);
+        assert!(status.require_checkpoint_quorum);
         assert!(status.require_no_digest_alerts);
         assert!(status.require_no_payment_observation_alerts);
         assert!(status.require_no_invalid_operation_alerts);
+    }
+
+    #[test]
+    fn parses_federation_checkpoint_audit_subcommand() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "audit-checkpoint",
+            "--public-config",
+            "federation-public.json",
+            "--private-config",
+            "member-1/federation-private.json",
+            "--member",
+            "2",
+        ])
+        .expect("checkpoint audit command parses");
+
+        let Some(CliCommand::Federation(federation)) = args.command else {
+            panic!("expected federation command");
+        };
+        let FederationCommand::AuditCheckpoint(audit) = federation.command else {
+            panic!("expected federation checkpoint audit command");
+        };
+        assert_eq!(
+            audit.public_config,
+            Some(PathBuf::from("federation-public.json"))
+        );
+        assert_eq!(
+            audit.private_config,
+            Some(PathBuf::from("member-1/federation-private.json"))
+        );
+        assert_eq!(audit.member, 2);
     }
 
     #[test]

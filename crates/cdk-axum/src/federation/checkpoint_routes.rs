@@ -1,6 +1,7 @@
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
+    FederationCheckpointAuditRequest, FederationCheckpointAuditResponse,
     FederationCheckpointFetchRequest, FederationCheckpointFetchResponse,
     FederationCheckpointQuorumRequest, FederationCheckpointQuorumResponse,
     FederationCheckpointSignatureRequest, FederationCheckpointSignatureResponse,
@@ -124,4 +125,38 @@ pub(super) async fn post_checkpoint_quorum(
         .await
         .map(Json)
         .map_err(cdk_error_response)
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_checkpoint_audit(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationCheckpointAuditRequest>>,
+) -> Result<Json<FederationCheckpointAuditResponse>, Response> {
+    let kind = FederationRestMessageKind::CheckpointAudit;
+    let _permit = acquire_private_rest_admission(&state, kind)?;
+    let verified = verify_federation_request(&state, &payload, kind).await?;
+    payload
+        .payload
+        .validate()
+        .map_err(federation_error_response)?;
+    state
+        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .await;
+    let audit = state
+        .federation
+        .audit_trusted_checkpoint_materialized_state()
+        .await;
+    if matches!(
+        &audit,
+        Err(cdk::Error::Federation(
+            cdk::federation::FederationError::MaterializedStateAuditMismatch { .. }
+        ))
+    ) {
+        super::halt_current_federation_aleph_bft_session(
+            &state,
+            "failed an operator-requested trusted-checkpoint materialized-state audit",
+        )
+        .await;
+    }
+    audit.map(Json).map_err(cdk_error_response)
 }

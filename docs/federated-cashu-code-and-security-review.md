@@ -2,6 +2,12 @@
 
 Date: 2026-07-12
 
+Checkpoint cut-through note: findings that mention catch-up certificates record
+the superseded experimental recovery protocol. Current recovery and startup
+requirements are tracked in
+`docs/federated-cdk-checkpoint-implementation-plan.md`; no certificate
+compatibility path remains.
+
 This document records actionable findings from a committed-code comparison of
 `bls-federation-cleanup` against `bls-federation`. It is a work queue for
 correctness, restart-safety, and operational-hardening fixes. Findings should

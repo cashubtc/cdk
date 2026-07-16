@@ -1,7 +1,7 @@
 use cdk_common::federation::{
-    FederationId, FederationJournalDigest, FederationMaterializedStateDigest,
-    FederationMaterializedStateRow, FederationMaterializedStateRowFingerprint,
-    FederationPeerStatus, FEDERATION_REST_API_VERSION,
+    FederationCheckpointStatus, FederationId, FederationJournalDigest,
+    FederationMaterializedStateDigest, FederationMaterializedStateRow,
+    FederationMaterializedStateRowFingerprint, FederationPeerStatus, FEDERATION_REST_API_VERSION,
 };
 
 use super::*;
@@ -37,10 +37,7 @@ fn local_status(
         response_cache_hit_rate_bps: 0,
         duplicate_submissions: 0,
         duplicate_pending_waiter_joins: 0,
-        catch_up_certificate_quorum_operation_count: None,
-        catch_up_certificate_quorum_from_index: None,
-        catch_up_certificate_quorum_latest_index: None,
-        catch_up_certificate_quorum_signers: Vec::new(),
+        checkpoint: FederationCheckpointStatus::default(),
         payment_observation_reports: Vec::new(),
         aleph_bft_status: None,
         aleph_bft_live_session_active: false,

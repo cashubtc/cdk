@@ -8,10 +8,7 @@ use super::FEDERATION_DISABLE_PEER_SYNC_ENV_VAR;
 const DEFAULT_FEDERATION_PEER_SYNC_INTERVAL: Duration = Duration::from_secs(5);
 const DEFAULT_FEDERATION_PEER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_FEDERATION_OPERATION_SUBMISSION_TIMEOUT: Duration = Duration::from_secs(30);
-const DEFAULT_FEDERATION_CATCH_UP_CERTIFICATE_EVIDENCE_CHUNK_SIZE: usize = 1000;
 const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
-const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS: usize = 20;
-const DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_DELAY: Duration = Duration::from_millis(100);
 const DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(60);
 const DEFAULT_FEDERATION_PRIVATE_REST_INBOUND_CONCURRENCY_LIMIT: usize = 128;
@@ -31,12 +28,6 @@ pub struct FederationPeerSyncConfig {
     pub operation_submission_timeout: Duration,
     /// Maximum number of accepted journal entries requested per catch-up page.
     pub catch_up_limit: u16,
-    /// Number of materialized-state digest rechecks after journal catch-up.
-    pub digest_recheck_attempts: usize,
-    /// Delay between materialized-state digest rechecks.
-    pub digest_recheck_delay: Duration,
-    /// Number of journal entries covered by each catch-up certificates chunk.
-    pub catch_up_certificate_chunk_size: usize,
     /// Initial reconnect backoff after a peer sync failure.
     pub reconnect_initial_backoff: Duration,
     /// Maximum reconnect backoff after repeated peer sync failures.
@@ -64,10 +55,6 @@ impl Default for FederationPeerSyncConfig {
             peer_request_timeout: DEFAULT_FEDERATION_PEER_REQUEST_TIMEOUT,
             operation_submission_timeout: DEFAULT_FEDERATION_OPERATION_SUBMISSION_TIMEOUT,
             catch_up_limit: DEFAULT_FEDERATION_CATCH_UP_LIMIT,
-            digest_recheck_attempts: DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_ATTEMPTS,
-            digest_recheck_delay: DEFAULT_FEDERATION_STATE_DIGEST_RECHECK_DELAY,
-            catch_up_certificate_chunk_size:
-                DEFAULT_FEDERATION_CATCH_UP_CERTIFICATE_EVIDENCE_CHUNK_SIZE,
             reconnect_initial_backoff: DEFAULT_FEDERATION_RECONNECT_INITIAL_BACKOFF,
             reconnect_max_backoff: DEFAULT_FEDERATION_RECONNECT_MAX_BACKOFF,
             private_rest_inbound_concurrency_limit:
@@ -97,20 +84,6 @@ impl FederationPeerSyncConfig {
         }
         if self.catch_up_limit == 0 {
             anyhow::bail!("federation catch-up limit must be greater than zero");
-        }
-        if self.digest_recheck_attempts == 0 {
-            anyhow::bail!("federation digest recheck attempts must be greater than zero");
-        }
-        if self.digest_recheck_delay.is_zero() {
-            anyhow::bail!("federation digest recheck delay must be greater than zero");
-        }
-        if self.catch_up_certificate_chunk_size == 0 {
-            anyhow::bail!("federation catch-up certificates chunk size must be greater than zero");
-        }
-        if self.catch_up_certificate_chunk_size > usize::from(u16::MAX) {
-            anyhow::bail!(
-                "federation catch-up certificates chunk size must fit in a catch-up request limit"
-            );
         }
         if self.reconnect_initial_backoff.is_zero() {
             anyhow::bail!("federation reconnect initial backoff must be greater than zero");

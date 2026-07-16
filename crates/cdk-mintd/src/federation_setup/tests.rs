@@ -320,7 +320,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("setup_records with collected commitment"));
     assert!(smoke_script.contains("Combine --from-database"));
     assert!(smoke_script.contains("member_quorum_status_line()"));
-    assert!(smoke_script.contains("--require-catch-up-certificate-quorum"));
+    assert!(smoke_script.contains("--require-checkpoint-quorum"));
     assert!(smoke_script.contains("--require-no-digest-alerts"));
     assert!(smoke_script.contains("--require-no-invalid-operation-alerts"));
     assert!(smoke_script.contains("private_config=\"$(member_private_config \"$member\")\""));
@@ -502,8 +502,8 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("cdk_federation_sync_state"));
     assert!(smoke_script.contains("cdk_federation_payment_observation_reports"));
     assert!(smoke_script.contains("federation Prometheus metrics include a sensitive label"));
-    assert!(smoke_script.contains("wait_for_catch_up_certificate_quorum()"));
-    assert!(smoke_script.contains("member %s did not report quorum-backed catch-up certificates"));
+    assert!(smoke_script.contains("wait_for_checkpoint_quorum()"));
+    assert!(smoke_script.contains("member %s did not report a trusted checkpoint quorum"));
     assert!(smoke_script.contains("--quote-retries \"$SMOKE_QUOTE_RETRIES\""));
     assert!(smoke_script.contains("--quote-sleep-ms \"$SMOKE_QUOTE_SLEEP_MS\""));
     assert!(smoke_script.contains("\"${timeout_args[@]}\""));
@@ -514,7 +514,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("stop_member \"$CRASH_WINDOW_MEMBER\""));
     assert!(smoke_script.contains("start_member \"$CRASH_WINDOW_MEMBER\""));
     assert!(smoke_script.contains("wait_for_status \"$CRASH_WINDOW_MEMBER\""));
-    assert!(smoke_script.contains("wait_for_catch_up_certificate_quorum \"$CRASH_WINDOW_MEMBER\""));
+    assert!(smoke_script.contains("wait_for_checkpoint_quorum \"$CRASH_WINDOW_MEMBER\""));
     assert!(smoke_script.contains("--seed-offset \"$POST_CRASH_SEED_OFFSET\""));
     assert!(smoke_script.contains("--operation-batches \"$POST_CRASH_OPERATION_BATCHES\""));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
@@ -524,9 +524,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains("--operation-batches \"$LONG_PARTITION_OPERATION_BATCHES\""));
     assert!(smoke_script.contains("start_member \"$LONG_PARTITION_MEMBER\""));
     assert!(smoke_script.contains("wait_for_status \"$LONG_PARTITION_MEMBER\""));
-    assert!(
-        smoke_script.contains("wait_for_catch_up_certificate_quorum \"$LONG_PARTITION_MEMBER\"")
-    );
+    assert!(smoke_script.contains("wait_for_checkpoint_quorum \"$LONG_PARTITION_MEMBER\""));
     assert!(smoke_script.contains("--scenario pending-melt-start"));
     assert!(smoke_script.contains("--scenario pending-melt-finish"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-start"));
@@ -552,7 +550,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
     assert!(smoke_script.contains(
             "federation payment-observations --public-config \"$PUBLIC_CONFIG\" --private-config \"$private_config\" --member \"$member\" --context mint-quote"
         ));
-    assert!(smoke_script.contains("wait_for_catch_up_certificate_quorum \"$RESTART_MEMBER\""));
+    assert!(smoke_script.contains("wait_for_checkpoint_quorum \"$RESTART_MEMBER\""));
     assert!(smoke_script.contains(
             "run_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario offline-member-keyset-rotation"
         ));
@@ -560,7 +558,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
             "stop_member \"$RESTART_MEMBER\"\nrun_smoke_operations --private-config \"$(member_private_config \"$PRIMARY_MEMBER\")\" --scenario offline-member-keyset-rotation"
         ));
     assert!(smoke_script.contains(
-            "wait_for_status \"$RESTART_MEMBER\"\nwait_for_converged\nwait_for_catch_up_certificate_quorum \"$RESTART_MEMBER\""
+            "wait_for_status \"$RESTART_MEMBER\"\nwait_for_converged\nwait_for_checkpoint_quorum \"$RESTART_MEMBER\""
         ));
     assert!(smoke_script.contains("local federation smoke test passed"));
     assert!(smoke_script.contains(&artifacts.public_config_path.to_string_lossy().to_string()));
@@ -1179,7 +1177,7 @@ fn trusted_dealer_smoke_script_supports_four_member_bft_matrix() {
     assert!(smoke_script.contains("MEMBERS=(1 2 3 4)"));
     assert!(smoke_script.contains("for member in \"${MEMBERS[@]}\"; do"));
     assert!(smoke_script.contains("wait_for_converged"));
-    assert!(smoke_script.contains("wait_for_catch_up_certificate_quorum"));
+    assert!(smoke_script.contains("wait_for_checkpoint_quorum"));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
     assert!(smoke_script.contains("--scenario pending-melt-start"));
     assert!(smoke_script.contains("--scenario pending-melt-finish"));
@@ -1293,7 +1291,7 @@ fn trusted_dealer_smoke_script_supports_five_member_matrix() {
     assert!(smoke_script.contains("wait_for_aleph_bft_session_at_least"));
     assert!(smoke_script.contains("wait_for_configured_aleph_bft_auto_rotation"));
     assert!(smoke_script.contains("run_configured_aleph_bft_auto_rotation_warmup"));
-    assert!(smoke_script.contains("wait_for_catch_up_certificate_quorum"));
+    assert!(smoke_script.contains("wait_for_checkpoint_quorum"));
     assert!(smoke_script.contains("--seed-offset \"$STANDARD_SEED_OFFSET\""));
     assert!(smoke_script.contains("--scenario offline-member-operations"));
     assert!(smoke_script.contains("--scenario pending-melt-fail-finish"));

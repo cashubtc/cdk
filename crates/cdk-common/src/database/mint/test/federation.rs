@@ -26,7 +26,6 @@ use crate::federation::{
     FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationFrostSealedStorageMetadata, FederationId, FederationJournalAppendOutcome,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
     FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
     FederationOnchainConfirmationPolicy, FederationOperation, FederationOperationEnvelope,
@@ -383,32 +382,6 @@ where
             .expect("append second"),
     );
 
-    let second_private = private_member(2);
-    let first_catch_up_certificate = FederationJournalCatchUpResponse::from_journal(
-        federation_id(),
-        &journal,
-        FederationMaterializedStateDigest::genesis(),
-        &FederationJournalCatchUpRequest::new(0),
-        50,
-        100,
-    )
-    .with_signed_catch_up_certificate(&second_private)
-    .expect("first catch-up certificate")
-    .catch_up_certificate
-    .expect("first catch-up certificate");
-    let second_catch_up_certificate = FederationJournalCatchUpResponse::from_journal(
-        federation_id(),
-        &journal,
-        FederationMaterializedStateDigest::genesis(),
-        &FederationJournalCatchUpRequest::new(1),
-        50,
-        100,
-    )
-    .with_signed_catch_up_certificate(&second_private)
-    .expect("second catch-up certificate")
-    .catch_up_certificate
-    .expect("second catch-up certificate");
-
     let mut tx = Database::begin_transaction(&db).await.expect("begin");
     tx.add_federation_journal_entry(&first)
         .await
@@ -443,12 +416,6 @@ where
     tx.set_federation_dkg_member_sequence(member_one, 5)
         .await
         .expect("sequence one stale update");
-    tx.add_federation_catch_up_certificate(&first_catch_up_certificate)
-        .await
-        .expect("persist first catch-up certificate");
-    tx.add_federation_catch_up_certificate(&second_catch_up_certificate)
-        .await
-        .expect("persist second catch-up certificate");
     tx.commit().await.expect("commit");
 
     let entries = db
@@ -552,46 +519,6 @@ where
         .expect("sequences");
     assert_eq!(sequences.get(&member_one), Some(&9));
     assert_eq!(sequences.get(&member_two), Some(&11));
-
-    let catch_up_certificates = db
-        .get_federation_catch_up_certificates()
-        .await
-        .expect("catch-up certificates");
-    assert_eq!(catch_up_certificates.len(), 2);
-    assert_eq!(catch_up_certificates[0].from_index, 0);
-    assert_eq!(catch_up_certificates[0].signer, member_two);
-    assert_eq!(
-        catch_up_certificates[0].operation_ids,
-        first_catch_up_certificate.operation_ids
-    );
-    assert_eq!(catch_up_certificates[1].from_index, 1);
-    assert_eq!(
-        catch_up_certificates[1].signature,
-        second_catch_up_certificate.signature
-    );
-
-    let catch_up_certificates_from = db
-        .get_federation_catch_up_certificates_from(1)
-        .await
-        .expect("catch-up certificates from");
-    assert_eq!(catch_up_certificates_from.len(), 1);
-    assert_eq!(catch_up_certificates_from[0].from_index, 1);
-
-    let catch_up_certificates_at = db
-        .get_federation_catch_up_certificates_at(1)
-        .await
-        .expect("catch-up certificates at exact range start");
-    assert_eq!(catch_up_certificates_at.len(), 1);
-    assert_eq!(catch_up_certificates_at[0].from_index, 1);
-    assert_eq!(
-        catch_up_certificates_at[0].signature,
-        catch_up_certificates_from[0].signature
-    );
-    assert!(db
-        .get_federation_catch_up_certificates_at(2)
-        .await
-        .expect("missing exact catch-up certificate range")
-        .is_empty());
 }
 
 /// Assert every legal journal application state survives database round trips.
@@ -2894,77 +2821,6 @@ where
         task.await.expect("sequence writer task");
     }
 
-    let member_two_private = private_member(2);
-    let member_three_private = private_member(3);
-    let catch_up_certificates = [
-        FederationJournalCatchUpResponse::from_journal(
-            federation_id(),
-            &journal,
-            FederationMaterializedStateDigest::genesis(),
-            &FederationJournalCatchUpRequest::new(0),
-            50,
-            100,
-        )
-        .with_signed_catch_up_certificate(&member_two_private)
-        .expect("member two certificate from zero")
-        .catch_up_certificate
-        .expect("member two certificate from zero"),
-        FederationJournalCatchUpResponse::from_journal(
-            federation_id(),
-            &journal,
-            FederationMaterializedStateDigest::genesis(),
-            &FederationJournalCatchUpRequest::new(0),
-            50,
-            100,
-        )
-        .with_signed_catch_up_certificate(&member_three_private)
-        .expect("member three certificate from zero")
-        .catch_up_certificate
-        .expect("member three certificate from zero"),
-        FederationJournalCatchUpResponse::from_journal(
-            federation_id(),
-            &journal,
-            FederationMaterializedStateDigest::genesis(),
-            &FederationJournalCatchUpRequest::new(1),
-            50,
-            100,
-        )
-        .with_signed_catch_up_certificate(&member_two_private)
-        .expect("member two certificate from one")
-        .catch_up_certificate
-        .expect("member two certificate from one"),
-        FederationJournalCatchUpResponse::from_journal(
-            federation_id(),
-            &journal,
-            FederationMaterializedStateDigest::genesis(),
-            &FederationJournalCatchUpRequest::new(2),
-            50,
-            100,
-        )
-        .with_signed_catch_up_certificate(&member_three_private)
-        .expect("member three certificate from two")
-        .catch_up_certificate
-        .expect("member three certificate from two"),
-    ];
-
-    let mut certificate_tasks = Vec::new();
-    for certificate in catch_up_certificates.clone() {
-        let db = Arc::clone(&db);
-        certificate_tasks.push(tokio::spawn(async move {
-            let mut tx = Database::begin_transaction(db.as_ref())
-                .await
-                .expect("begin certificate transaction");
-            tx.add_federation_catch_up_certificate(&certificate)
-                .await
-                .expect("persist catch-up certificate");
-            tx.commit().await.expect("commit certificate transaction");
-        }));
-    }
-
-    for task in certificate_tasks {
-        task.await.expect("certificate writer task");
-    }
-
     let sequences = db
         .as_ref()
         .get_federation_dkg_member_sequences()
@@ -2973,38 +2829,4 @@ where
     assert_eq!(sequences.get(&member_one), Some(&5));
     assert_eq!(sequences.get(&member_two), Some(&7));
     assert_eq!(sequences.get(&member_three), Some(&4));
-
-    let stored_certificates = db
-        .as_ref()
-        .get_federation_catch_up_certificates()
-        .await
-        .expect("metadata catch-up certificates");
-    assert_eq!(stored_certificates.len(), catch_up_certificates.len());
-    assert_eq!(stored_certificates[0].from_index, 0);
-    assert_eq!(stored_certificates[0].signer, member_two);
-    assert_eq!(stored_certificates[1].from_index, 0);
-    assert_eq!(stored_certificates[1].signer, member_three);
-    assert_eq!(stored_certificates[2].from_index, 1);
-    assert_eq!(stored_certificates[2].signer, member_two);
-    assert_eq!(stored_certificates[3].from_index, 2);
-    assert_eq!(stored_certificates[3].signer, member_three);
-
-    let ranged_certificates = db
-        .as_ref()
-        .get_federation_catch_up_certificates_from(1)
-        .await
-        .expect("metadata ranged certificates");
-    assert_eq!(ranged_certificates.len(), 2);
-    assert_eq!(ranged_certificates[0].from_index, 1);
-    assert_eq!(ranged_certificates[1].from_index, 2);
-
-    let exact_certificates = db
-        .as_ref()
-        .get_federation_catch_up_certificates_at(0)
-        .await
-        .expect("metadata exact-range certificates");
-    assert_eq!(exact_certificates.len(), 2);
-    assert!(exact_certificates
-        .iter()
-        .all(|certificate| certificate.from_index == 0));
 }

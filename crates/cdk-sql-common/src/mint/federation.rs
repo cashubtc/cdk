@@ -59,13 +59,13 @@ use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftPendingOperationRecord, FederationApplicationDigest,
-    FederationApplicationState, FederationCatchUpCertificate, FederationCheckpoint,
-    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
-    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigDigest,
-    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
+    FederationApplicationState, FederationCheckpoint, FederationCheckpointFrontier,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationConfigDigest, FederationConfigSnapshot,
+    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationFinalizedItemDigest,
     FederationFrostApplicationConfig, FederationFrostDkgConfirmationRequest,
     FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
@@ -752,14 +752,6 @@ fn federation_dkg_activation_conflict_error(activation: &FederationDkgActivation
         "Conflicting federation DKG activation for member {} ceremony {}",
         activation.signer, activation.ceremony_id
     ))
-}
-
-fn sql_row_to_federation_catch_up_certificate(
-    row: Vec<Column>,
-) -> Result<FederationCatchUpCertificate, Error> {
-    unpack_into!(let (certificate_json) = row);
-    serde_json::from_str(&column_as_string!(&certificate_json))
-        .map_err(|e| Error::Internal(format!("Invalid federation catch-up certificate JSON: {e}")))
 }
 
 fn sql_row_to_federation_checkpoint(row: Vec<Column>) -> Result<FederationCheckpoint, Error> {

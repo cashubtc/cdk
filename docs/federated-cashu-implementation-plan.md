@@ -20,7 +20,11 @@ Every safety-critical operation must be ordered, durably journaled, replayable, 
 ## Current implementation state
 
 - Federation setup uses a real dealer-free DKG ceremony with enrollment, roster agreement, identity binding, restartable rounds, transcript signatures, activation, and identical final public configuration export.
-- Members run AlephBFT over authenticated private REST. Operations are durably journaled, deterministically replayed, covered by signed catch-up certificates, and checked for order and materialized-state convergence.
+- Members run AlephBFT over authenticated private REST. Operations are durably
+  journaled and deterministically applied. Sparse scheduled/recovery checkpoint
+  quorums authenticate recovery frontiers; normal restart validates only the
+  suffix after the trusted checkpoint. See
+  `docs/federated-cdk-checkpoint-implementation-plan.md`.
 - Mint, swap, and melt flows are serialized before signing or payment side effects. Payment observations require quorum evidence and deterministic journal-time materialization.
 - Federation-aware wallets require threshold-consistent views, reject invalid shares, aggregate BLS shares, and preserve ambiguous or unavailable outcomes in existing recoverable wallet flows.
 - Keyset and session rotation, pending-operation recovery, restart/catch-up, member fault handling, and fail-closed readiness gates are implemented.

@@ -13,10 +13,10 @@ use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
-    FederationApplicationState, FederationCatchUpCertificate, FederationCheckpoint,
-    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
-    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigSnapshot,
-    FederationDkgActivationRequest, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    FederationApplicationState, FederationCheckpoint, FederationCheckpointFrontier,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationConfigSnapshot, FederationDkgActivationRequest,
+    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgParticipantState, FederationDkgSecretShareRequest,
     FederationDkgTranscriptSignatureRequest, FederationFrostApplicationConfig,
@@ -825,12 +825,6 @@ pub trait FederationJournalTransaction {
     async fn latch_federation_materialized_state_audit_mismatch(&mut self)
         -> Result<(), Self::Err>;
 
-    /// Persist one signed federation catch-up certificate.
-    async fn add_federation_catch_up_certificate(
-        &mut self,
-        outcome: &FederationCatchUpCertificate,
-    ) -> Result<(), Self::Err>;
-
     /// Persist one finalized AlephBFT consensus item.
     async fn add_federation_aleph_bft_finalized_item(
         &mut self,
@@ -1158,23 +1152,6 @@ pub trait FederationJournalDatabase {
     async fn get_trusted_federation_checkpoint_quorum(
         &self,
     ) -> Result<Option<FederationCheckpointQuorum>, Self::Err>;
-
-    /// Get all persisted signed federation catch-up certificates.
-    async fn get_federation_catch_up_certificates(
-        &self,
-    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err>;
-
-    /// Get persisted signed federation catch-up certificates starting at `from_index`.
-    async fn get_federation_catch_up_certificates_from(
-        &self,
-        from_index: u64,
-    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err>;
-
-    /// Get persisted signed federation catch-up certificates at one exact range start.
-    async fn get_federation_catch_up_certificates_at(
-        &self,
-        from_index: u64,
-    ) -> Result<Vec<FederationCatchUpCertificate>, Self::Err>;
 
     /// Get all persisted AlephBFT finalized items in accepted item order.
     async fn get_federation_aleph_bft_finalized_items(

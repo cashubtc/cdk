@@ -1,10 +1,9 @@
 use std::collections::BTreeSet;
 
 use cdk::federation::{
-    FederationCatchUpCertificate, FederationCatchUpOperation, FederationCheckpoint,
-    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSummary,
-    FederationCheckpointSummaryResponse, FederationError, FederationJournalCatchUpRequest,
-    FederationJournalCatchUpResponse, FederationJournalEntry, FederationMaterializedStateDigest,
+    FederationCheckpoint, FederationCheckpointKind, FederationCheckpointQuorum,
+    FederationCheckpointSummary, FederationCheckpointSummaryResponse, FederationError,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
     FederationPeerStatus, MemberConfigPublic, MemberId,
 };
 use cdk_http_client::{Async, Transport};
@@ -22,10 +21,7 @@ use super::sync_config::{
 };
 #[cfg(feature = "prometheus")]
 use super::u64_to_i64_saturating;
-use super::{
-    local_peer_order_status, local_peer_status, verify_catch_up_certificate_entries,
-    CatchUpCertificateQuorumStatus,
-};
+use super::{local_peer_order_status, local_peer_status};
 
 pub(crate) fn spawn_federation_peer_sync_loop_with_config(
     state: MintState,
@@ -198,17 +194,6 @@ where
         tracing::debug!(
             checkpoint_updates,
             "Federation peer sync exchanged checkpoint evidence"
-        );
-    }
-    let collected = if evidence_peers.is_empty() {
-        0
-    } else {
-        collect_catch_up_certificate_round(state, client, &evidence_peers, backoff).await
-    };
-    if collected > 0 {
-        tracing::debug!(
-            catch_up_certificates = collected,
-            "Federation peer sync collected catch-up certificates"
         );
     }
     reconcile_federation_startup_with_quorum(
@@ -753,21 +738,6 @@ async fn reconcile_federation_startup_with_quorum(
         return;
     };
 
-    if local_status.operation_count > 0 {
-        let certificate_verified = matches!(
-            state
-                .federation
-                .catch_up_certificate_quorum_status(&state.mint)
-                .await,
-            Ok(Some(quorum))
-                if quorum.from_index == 0
-                    && quorum.operation_count >= local_status.operation_count
-        );
-        if !certificate_verified {
-            return;
-        }
-    }
-
     if live_session_active {
         if target_session == local_status.aleph_bft_session {
             state.mark_federation_healthy().await;
@@ -843,6 +813,8 @@ fn peer_status_has_same_state(local: &FederationPeerStatus, peer: &FederationPee
         && local.operation_count == peer.operation_count
         && local.latest_index == peer.latest_index
         && local.latest_order_digest == peer.latest_order_digest
+        && local.application_digest == peer.application_digest
+        && local.latest_audited_checkpoint_id == peer.latest_audited_checkpoint_id
         && local.materialized_state_digest == peer.materialized_state_digest
 }
 
@@ -877,487 +849,10 @@ fn record_federation_peer_sync_metrics(
 ) {
 }
 
-async fn collect_catch_up_certificate_round<T>(
-    state: &MintState,
-    client: &FederationRestPeerClient<T>,
-    peers: &[&MemberConfigPublic],
-    mut backoff: Option<&mut FederationPeerReconnectBackoff>,
-) -> usize
-where
-    T: Transport,
-{
-    let Some(runtime_config) = state.mint.federation_config() else {
-        return 0;
-    };
-    let operation_count = match state.mint.localstore().get_federation_journal_tip().await {
-        Ok(Some(tip)) => match tip.index.checked_add(1) {
-            Some(operation_count) => operation_count,
-            None => {
-                tracing::warn!("Could not inspect federation journal tip: index overflow");
-                return 0;
-            }
-        },
-        Ok(None) => return 0,
-        Err(err) => {
-            tracing::warn!(
-                "Could not inspect federation journal tip for evidence: {}",
-                err
-            );
-            return 0;
-        }
-    };
-    let mut quorum_status = match state
-        .federation
-        .catch_up_certificate_quorum_status(&state.mint)
-        .await
-    {
-        Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
-            return 0;
-        }
-        Ok(quorum) => quorum,
-        Err(err) => {
-            tracing::warn!(
-                "Could not inspect federation catch-up certificate quorum: {}",
-                err
-            );
-            None
-        }
-    };
-
-    #[cfg(test)]
-    state
-        .federation
-        .catch_up_certificate_journal_load_count
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let entries = match state
-        .mint
-        .localstore()
-        .get_federation_journal_entries()
-        .await
-    {
-        Ok(entries) => entries,
-        Err(err) => {
-            tracing::warn!(
-                "Could not load local federation journal for evidence: {}",
-                err
-            );
-            return 0;
-        }
-    };
-    if entries.is_empty() {
-        return 0;
-    }
-
-    let operation_count = entries.len() as u64;
-    let entries_to_collect =
-        unverified_catch_up_certificate_entries(&entries, quorum_status.as_ref());
-    if entries_to_collect.is_empty() {
-        return 0;
-    }
-
-    let mut collected = match local_peer_status(state).await {
-        Ok(peer_status) => match peer_status.materialized_state_digest {
-            Some(materialized_state_digest) => {
-                persist_local_catch_up_certificate_chunks(
-                    state,
-                    runtime_config,
-                    entries_to_collect,
-                    peer_status.latest_order_digest,
-                    materialized_state_digest,
-                    client.sync_config.catch_up_certificate_chunk_size,
-                )
-                .await
-            }
-            None => {
-                tracing::warn!(
-                    "Local federation status omitted its materialized-state digest for catch-up certificates"
-                );
-                0
-            }
-        },
-        Err(err) => {
-            tracing::warn!(
-                "Could not read local federation status for catch-up certificates: {}",
-                err
-            );
-            0
-        }
-    };
-
-    quorum_status = match state
-        .federation
-        .catch_up_certificate_quorum_status(&state.mint)
-        .await
-    {
-        Ok(Some(quorum)) if quorum.from_index == 0 && quorum.operation_count >= operation_count => {
-            return 0;
-        }
-        Ok(quorum) => quorum,
-        Err(err) => {
-            tracing::warn!(
-                "Could not inspect federation catch-up certificate quorum: {}",
-                err
-            );
-            None
-        }
-    };
-
-    for &peer in peers {
-        let now = Instant::now();
-        if let Some(backoff) = backoff.as_ref() {
-            if !backoff.should_attempt(peer.member_id, now) {
-                tracing::debug!(
-                    member_id = %peer.member_id,
-                    "Federation catch-up certificates skipped until reconnect backoff expires"
-                );
-                continue;
-            }
-        }
-        let entries_to_collect =
-            unverified_catch_up_certificate_entries(&entries, quorum_status.as_ref());
-        if entries_to_collect.is_empty() {
-            break;
-        }
-        let evidence = collect_catch_up_certificate_from_peer(
-            state,
-            client,
-            peer,
-            entries_to_collect,
-            client.sync_config.catch_up_certificate_chunk_size,
-        )
-        .await;
-        collected += evidence.collected;
-        if evidence.peer_failed {
-            if let Some(backoff) = backoff.as_mut() {
-                backoff.record_failure(peer.member_id, client.sync_config, Instant::now());
-            }
-        }
-        quorum_status = match state
-            .federation
-            .catch_up_certificate_quorum_status(&state.mint)
-            .await
-        {
-            Ok(Some(quorum)) if quorum.from_index == 0 => Some(quorum),
-            Ok(_) => None,
-            Err(err) => {
-                tracing::warn!(
-                    "Could not inspect federation catch-up certificate quorum after peer collection: {}",
-                    err
-                );
-                None
-            }
-        };
-    }
-
-    collected
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct CatchUpCertificateCollection {
-    collected: usize,
-    peer_failed: bool,
-}
-
-fn unverified_catch_up_certificate_entries<'a>(
-    entries: &'a [FederationJournalEntry],
-    quorum_status: Option<&CatchUpCertificateQuorumStatus>,
-) -> &'a [FederationJournalEntry] {
-    let Some(quorum) = quorum_status else {
-        return entries;
-    };
-    if quorum.from_index != 0 {
-        return entries;
-    }
-    let next_index = quorum.latest_index.saturating_add(1);
-    let start = entries
-        .iter()
-        .position(|entry| entry.index >= next_index)
-        .unwrap_or(entries.len());
-    &entries[start..]
-}
-
-pub(super) async fn persist_local_catch_up_certificate_chunks(
-    state: &MintState,
-    runtime_config: &cdk::mint::FederationRuntimeConfig,
-    entries: &[FederationJournalEntry],
-    latest_order_digest: cdk::federation::FederationJournalDigest,
-    materialized_state_digest: FederationMaterializedStateDigest,
-    chunk_size: usize,
-) -> usize {
-    let mut persisted = 0;
-    for chunk in entries.chunks(chunk_size) {
-        let operations = chunk
-            .iter()
-            .map(FederationCatchUpOperation::from)
-            .collect::<Vec<_>>();
-        let certificate = match FederationCatchUpCertificate::new_signed(
-            runtime_config.federation_id(),
-            &operations,
-            latest_order_digest,
-            materialized_state_digest,
-            runtime_config.private_config(),
-        ) {
-            Ok(certificate) => certificate,
-            Err(err) => {
-                tracing::warn!(
-                    "Could not sign local federation catch-up certificates: {}",
-                    err
-                );
-                continue;
-            }
-        };
-        match state
-            .persist_federation_catch_up_certificate(&certificate)
-            .await
-        {
-            Ok(()) => persisted += 1,
-            Err(err) => {
-                tracing::warn!(
-                    "Could not persist local federation catch-up certificates: {}",
-                    err
-                );
-            }
-        }
-    }
-
-    persisted
-}
-
-async fn collect_catch_up_certificate_from_peer<T>(
-    state: &MintState,
-    client: &FederationRestPeerClient<T>,
-    peer: &MemberConfigPublic,
-    entries: &[FederationJournalEntry],
-    chunk_size: usize,
-) -> CatchUpCertificateCollection
-where
-    T: Transport,
-{
-    let mut collected = 0;
-    for chunk in entries.chunks(chunk_size) {
-        let Some(first) = chunk.first() else {
-            continue;
-        };
-        let request = FederationJournalCatchUpRequest::new(first.index)
-            .with_limit(chunk.len() as u16)
-            .with_known_order_digest(first.previous_order_digest);
-        let response = match client.catch_up(peer, &request).await {
-            Ok(response) => response,
-            Err(err) => {
-                tracing::warn!(
-                    member_id = %peer.member_id,
-                    "Federation catch-up certificate request failed: {}",
-                    err
-                );
-                return CatchUpCertificateCollection {
-                    collected,
-                    peer_failed: true,
-                };
-            }
-        };
-        if let Err(err) = verify_catch_up_certificate_entries(chunk, &response) {
-            tracing::warn!(
-                member_id = %peer.member_id,
-                "Federation catch-up certificate did not match local journal: {}",
-                err
-            );
-            return CatchUpCertificateCollection {
-                collected,
-                peer_failed: true,
-            };
-        }
-        let Some(certificate) = response.catch_up_certificate.as_ref() else {
-            continue;
-        };
-        match state
-            .persist_federation_catch_up_certificate(certificate)
-            .await
-        {
-            Ok(()) => collected += 1,
-            Err(err) => {
-                tracing::warn!(
-                    member_id = %peer.member_id,
-                    "Could not persist federation catch-up certificates: {}",
-                    err
-                );
-            }
-        }
-    }
-
-    CatchUpCertificateCollection {
-        collected,
-        peer_failed: false,
-    }
-}
-
-async fn collect_catch_up_certificate_quorum<T>(
-    state: &MintState,
-    client: &FederationRestPeerClient<T>,
-    source_member: &MemberConfigPublic,
-    response: &FederationJournalCatchUpResponse,
-) -> anyhow::Result<Vec<FederationCatchUpCertificate>>
-where
-    T: Transport,
-{
-    if response.entries.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let Some(runtime_config) = state.mint.federation_config() else {
-        return Err(FederationError::RuntimeUnavailable {
-            component: "mint configuration",
-        }
-        .into());
-    };
-    let public_config = runtime_config.public_config();
-    let required = usize::from(public_config.threshold_params.consensus_threshold);
-    let mut signers = BTreeSet::new();
-    if let Some(catch_up_certificate) = response.catch_up_certificate.as_ref() {
-        signers.insert(catch_up_certificate.signer);
-    }
-    let mut additional_certificates = Vec::new();
-    for certificate in &response.catch_up_certificates {
-        let Some(member) = public_config.member(certificate.signer) else {
-            tracing::warn!(
-                member_id = %certificate.signer,
-                "Federation peer relayed a catch-up certificate from an unknown member"
-            );
-            continue;
-        };
-        if let Err(err) = certificate.verify(
-            member,
-            response.federation_id,
-            response.from_index,
-            &response.entries,
-            response.latest_order_digest,
-            response.materialized_state_digest,
-        ) {
-            tracing::warn!(
-                member_id = %certificate.signer,
-                "Federation peer relayed an invalid catch-up certificate: {}",
-                err
-            );
-            continue;
-        }
-        if signers.insert(certificate.signer) {
-            additional_certificates.push(certificate.clone());
-        }
-    }
-    if signers.len() >= required {
-        return Ok(additional_certificates);
-    }
-
-    let first = response
-        .entries
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("missing entries for catch-up evidence"))?;
-    let limit = u16::try_from(response.entries.len()).map_err(|_| {
-        anyhow::anyhow!(
-            "catch-up response carried too many entries for an evidence request: {}",
-            response.entries.len()
-        )
-    })?;
-    let request = FederationJournalCatchUpRequest::new(response.from_index)
-        .with_limit(limit)
-        .with_known_order_digest(first.previous_order_digest);
-    for peer in public_config.members.values() {
-        if peer.member_id == runtime_config.member_id()
-            || peer.member_id == source_member.member_id
-            || signers.contains(&peer.member_id)
-        {
-            continue;
-        }
-
-        let peer_response = match client.catch_up(peer, &request).await {
-            Ok(response) => response,
-            Err(err) => {
-                tracing::warn!(
-                    member_id = %peer.member_id,
-                    "Federation catch-up quorum evidence request failed: {}",
-                    err
-                );
-                continue;
-            }
-        };
-        if let Err(err) =
-            super::verify_catch_up_operation_evidence(&response.entries, &peer_response)
-        {
-            tracing::warn!(
-                member_id = %peer.member_id,
-                "Federation catch-up quorum evidence did not match peer journal range: {}",
-                err
-            );
-            continue;
-        }
-        let Some(catch_up_certificate) = peer_response.catch_up_certificate else {
-            continue;
-        };
-        if let Err(err) = catch_up_certificate.verify(
-            peer,
-            response.federation_id,
-            response.from_index,
-            &response.entries,
-            response.latest_order_digest,
-            response.materialized_state_digest,
-        ) {
-            tracing::warn!(
-                member_id = %peer.member_id,
-                "Federation catch-up quorum evidence signature failed: {}",
-                err
-            );
-            continue;
-        }
-        if signers.insert(catch_up_certificate.signer) {
-            additional_certificates.push(catch_up_certificate);
-        }
-        if signers.len() >= required {
-            break;
-        }
-    }
-
-    Ok(additional_certificates)
-}
-
 impl<T> FederationRestPeerClient<T>
 where
     T: Transport,
 {
-    pub(crate) async fn catch_up_state_from_member(
-        &self,
-        state: &MintState,
-        member: &MemberConfigPublic,
-    ) -> anyhow::Result<(
-        FederationJournalCatchUpResponse,
-        Vec<FederationJournalEntry>,
-    )> {
-        let consensus = state.federation.consensus.as_ref().ok_or_else(|| {
-            FederationError::RuntimeUnavailable {
-                component: "consensus",
-            }
-        })?;
-        let request = {
-            let consensus = consensus.lock().await;
-            let mut request = consensus
-                .catch_up_request()
-                .with_limit(self.sync_config.catch_up_limit)
-                .with_historical_certificate_page();
-            if let Ok(status) = consensus.aleph_bft_status() {
-                request = request.with_aleph_bft_next_item_index(status.next_item_index);
-            }
-            request
-        };
-        let response = self.catch_up(member, &request).await?;
-        let additional_certificates =
-            collect_catch_up_certificate_quorum(state, self, member, &response).await?;
-        let applied = state
-            .apply_federation_catch_up_response_with_catch_up_certificate_quorum(
-                &response,
-                &additional_certificates,
-            )
-            .await?;
-        Ok((response, applied))
-    }
-
     pub(crate) async fn catch_up_state_to_checkpoint_from_member(
         &self,
         state: &MintState,
@@ -1455,8 +950,6 @@ where
             if let Some(last) = page.entries.last() {
                 known_order_digest = last.order_digest;
             }
-            page.catch_up_certificate = None;
-            page.catch_up_certificates.clear();
             match aggregate.as_mut() {
                 Some(aggregate) => {
                     aggregate.entries.append(&mut page.entries);
@@ -1501,7 +994,6 @@ where
         let peer_status = self.peer_status(member).await?;
         let mut local_status = local_peer_order_status(state).await?;
         let mut recovered_from_peer = false;
-        let mut latest_catch_up_materialized_state_digest = None;
 
         if peer_requires_catch_up(&local_status, &peer_status)? {
             if should_defer_catch_up_to_live_aleph_bft(state).await {
@@ -1535,24 +1027,18 @@ where
                     return Ok(peer_status);
                 };
                 let before_status = local_status.clone();
-                match self
+                if let Err(err) = self
                     .catch_up_state_to_checkpoint_from_member(state, member, &target)
                     .await
                 {
-                    Ok((response, _applied)) => {
-                        latest_catch_up_materialized_state_digest =
-                            Some(response.materialized_state_digest);
-                    }
-                    Err(err) => {
-                        state
-                            .mark_federation_lagging(
-                                member.member_id,
-                                before_status.operation_count,
-                                peer_status.operation_count,
-                            )
-                            .await;
-                        return Err(err);
-                    }
+                    state
+                        .mark_federation_lagging(
+                            member.member_id,
+                            before_status.operation_count,
+                            peer_status.operation_count,
+                        )
+                        .await;
+                    return Err(err);
                 }
 
                 local_status = local_peer_order_status(state).await?;
@@ -1593,20 +1079,6 @@ where
                 found: peer_status.latest_order_digest,
             }
             .into());
-        }
-
-        if let (true, Some(expected_materialized_state_digest)) = (
-            recovered_from_peer,
-            latest_catch_up_materialized_state_digest,
-        ) {
-            wait_for_local_materialized_state_digest(
-                state,
-                member,
-                local_status.operation_count,
-                expected_materialized_state_digest,
-                self.sync_config,
-            )
-            .await?;
         }
 
         let local_full_status = local_peer_status(state).await?;
@@ -1821,38 +1293,4 @@ fn format_aleph_bft_next_item_index(status: &FederationPeerStatus) -> String {
         Some(index) => index.to_string(),
         None => "none".to_string(),
     }
-}
-
-async fn wait_for_local_materialized_state_digest(
-    state: &MintState,
-    member: &MemberConfigPublic,
-    operation_count: u64,
-    expected_materialized_state_digest: FederationMaterializedStateDigest,
-    sync_config: FederationPeerSyncConfig,
-) -> anyhow::Result<()> {
-    for attempt in 1..=sync_config.digest_recheck_attempts {
-        let local_status = local_peer_status(state).await?;
-        if local_status.materialized_state_digest == Some(expected_materialized_state_digest) {
-            tracing::debug!(
-                member_id = %member.member_id,
-                operation_count,
-                attempt,
-                "Federation peer sync local materialized digest matched catch-up response"
-            );
-            return Ok(());
-        }
-
-        if attempt < sync_config.digest_recheck_attempts {
-            time::sleep(sync_config.digest_recheck_delay).await;
-        }
-    }
-
-    state
-        .mark_federation_materialized_state_mismatch(member.member_id, operation_count)
-        .await;
-    Err(FederationError::NodeMaterializedStateMismatch {
-        peer: member.member_id,
-        operation_count,
-    }
-    .into())
 }

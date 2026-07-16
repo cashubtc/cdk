@@ -3,7 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederationConsensusRuntimeStatus,
+    generate_trusted_dealer_configs, FederationApplicationDigest, FederationCheckpointId,
+    FederationCheckpointKind, FederationCheckpointQuorumSummary, FederationCheckpointStatus,
+    FederationCheckpointSummary, FederationConsensusRuntimeStatus,
     FederationInvalidOperationAlertSummary, FederationJournalDigest,
     FederationMaterializedStateDigest, FederationPaymentObservationContext,
     FederationPaymentObservationEvidenceGroupSummary, FederationPeerStatus,
@@ -169,16 +171,18 @@ fn local_status(
     operation_count: u64,
 ) -> FederationLocalStatusResponse {
     let member_id = MemberId::new(member_id).expect("member id");
+    let mut peer_status = FederationPeerStatus::new_with_materialized_state_digest(
+        public_config.federation_id,
+        member_id,
+        operation_count,
+        None,
+        FederationJournalDigest::genesis(),
+        FederationMaterializedStateDigest::from_bytes([1; 32]),
+    );
+    peer_status.application_digest = Some(FederationApplicationDigest::genesis());
     FederationLocalStatusResponse {
         version: FEDERATION_REST_API_VERSION,
-        peer_status: FederationPeerStatus::new_with_materialized_state_digest(
-            public_config.federation_id,
-            member_id,
-            operation_count,
-            None,
-            FederationJournalDigest::genesis(),
-            FederationMaterializedStateDigest::from_bytes([1; 32]),
-        ),
+        peer_status,
         sync_state: "healthy".to_string(),
         sync_ready: true,
         sync_message: "federation member is healthy".to_string(),
@@ -194,10 +198,7 @@ fn local_status(
         response_cache_hit_rate_bps: 0,
         duplicate_submissions: 0,
         duplicate_pending_waiter_joins: 0,
-        catch_up_certificate_quorum_operation_count: None,
-        catch_up_certificate_quorum_from_index: None,
-        catch_up_certificate_quorum_latest_index: None,
-        catch_up_certificate_quorum_signers: Vec::new(),
+        checkpoint: FederationCheckpointStatus::default(),
         payment_observation_reports: Vec::new(),
         aleph_bft_status: None,
         aleph_bft_live_session_active: true,
@@ -208,6 +209,19 @@ fn local_status(
         wallet_recovery: None,
         wallet_liveness: None,
         wallet_operator: None,
+    }
+}
+
+fn checkpoint_quorum(signers: Vec<MemberId>) -> FederationCheckpointQuorumSummary {
+    FederationCheckpointQuorumSummary {
+        checkpoint: FederationCheckpointSummary {
+            checkpoint_id: FederationCheckpointId::from_bytes([7; 32]),
+            kind: FederationCheckpointKind::Scheduled,
+            scheduled_checkpoint_sequence: 1,
+            journal_next_index: 3,
+            finalized_next_item_index: 3,
+        },
+        signers,
     }
 }
 
@@ -579,10 +593,9 @@ fn status_lines_include_payment_observation_report_counts() {
 
     let member_line = member_status_line(&status);
     assert!(member_line.contains("materialized_rows=0"));
-    assert!(member_line.contains("catch_up_certificate_quorum_operations=none"));
-    assert!(member_line.contains("catch_up_certificate_quorum_from=none"));
-    assert!(member_line.contains("catch_up_certificate_quorum_latest=none"));
-    assert!(member_line.contains("catch_up_certificate_quorum_signers=none"));
+    assert!(member_line.contains("trusted_checkpoint=none"));
+    assert!(member_line.contains("checkpoint_lag_operations=0"));
+    assert!(member_line.contains("audit_mismatch=false"));
     assert!(member_line.contains("payment_reports=1"));
     assert!(member_line.contains("payment_conflicts=1"));
     assert!(member_line.contains("payment_unresolved=0"));
@@ -665,23 +678,20 @@ fn status_payment_observation_alert_guard_rejects_conflict_status() {
 }
 
 #[test]
-fn status_line_includes_catch_up_certificate_quorum_evidence() {
+fn status_line_includes_checkpoint_quorum_evidence() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 3);
-    status.catch_up_certificate_quorum_operation_count = Some(3);
-    status.catch_up_certificate_quorum_from_index = Some(0);
-    status.catch_up_certificate_quorum_latest_index = Some(2);
-    status.catch_up_certificate_quorum_signers = vec![
+    status.checkpoint.trusted_checkpoint = Some(checkpoint_quorum(vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(2).expect("member two"),
-    ];
+    ]));
 
     let member_line = member_status_line(&status);
 
-    assert!(member_line.contains("catch_up_certificate_quorum_operations=3"));
-    assert!(member_line.contains("catch_up_certificate_quorum_from=0"));
-    assert!(member_line.contains("catch_up_certificate_quorum_latest=2"));
-    assert!(member_line.contains("catch_up_certificate_quorum_signers=1,2"));
+    assert!(member_line.contains(
+        "trusted_checkpoint=0707070707070707070707070707070707070707070707070707070707070707"
+    ));
+    assert!(member_line.contains("trusted_checkpoint_signers=1,2"));
 }
 
 #[test]
@@ -923,27 +933,26 @@ fn status_operation_lag_guard_rejects_member_beyond_limit() {
 }
 
 #[test]
-fn status_catch_up_certificate_quorum_guard_accepts_zero_operation_member_without_evidence() {
+fn status_checkpoint_quorum_guard_accepts_zero_operation_member_without_evidence() {
     let (public_config, _) = status_fixture();
     let statuses = vec![local_status(&public_config, 1, 0)];
 
-    ensure_statuses_catch_up_certificate_quorum(&public_config, &statuses)
-        .expect("zero operation member needs no session evidence");
+    ensure_statuses_checkpoint_quorum(&public_config, &statuses)
+        .expect("zero operation member needs no checkpoint evidence");
 }
 
 #[test]
-fn status_catch_up_certificate_quorum_guard_accepts_covered_current_height() {
+fn status_checkpoint_quorum_guard_accepts_trusted_quorum() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 3);
-    status.catch_up_certificate_quorum_operation_count = Some(3);
-    status.catch_up_certificate_quorum_signers = vec![
+    status.checkpoint.trusted_checkpoint = Some(checkpoint_quorum(vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(2).expect("member two"),
         MemberId::new(3).expect("member three"),
-    ];
+    ]));
 
-    ensure_statuses_catch_up_certificate_quorum(&public_config, &[status])
-        .expect("current height has quorum evidence");
+    ensure_statuses_checkpoint_quorum(&public_config, &[status])
+        .expect("member has trusted checkpoint quorum evidence");
 }
 
 #[test]
@@ -953,7 +962,7 @@ fn status_json_rejects_missing_current_fields() {
 
     for field in [
         "pending_mempool_items",
-        "catch_up_certificate_quorum_signers",
+        "checkpoint",
         "materialized_state_rows",
     ] {
         let mut value = serde_json::to_value(&status).expect("status json");
@@ -963,71 +972,67 @@ fn status_json_rejects_missing_current_fields() {
 }
 
 #[test]
-fn status_catch_up_certificate_quorum_guard_rejects_missing_evidence() {
+fn status_checkpoint_quorum_guard_rejects_missing_evidence() {
     let (public_config, _) = status_fixture();
     let status = local_status(&public_config, 1, 3);
 
-    let err = ensure_statuses_catch_up_certificate_quorum(&public_config, &[status])
+    let err = ensure_statuses_checkpoint_quorum(&public_config, &[status])
         .expect_err("non-empty operation history needs quorum evidence");
 
-    assert!(err
-        .to_string()
-        .contains("no catch-up certificate quorum evidence"));
+    assert!(err.to_string().contains("no trusted checkpoint quorum"));
 }
 
 #[test]
-fn status_catch_up_certificate_quorum_guard_rejects_short_coverage() {
+fn status_checkpoint_quorum_guard_rejects_checkpoint_behind_current_frontier() {
     let (public_config, _) = status_fixture();
-    let mut status = local_status(&public_config, 1, 3);
-    status.catch_up_certificate_quorum_operation_count = Some(2);
-    status.catch_up_certificate_quorum_signers = vec![
+    let mut status = local_status(&public_config, 1, 4);
+    status.checkpoint.trusted_checkpoint = Some(checkpoint_quorum(vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(2).expect("member two"),
         MemberId::new(3).expect("member three"),
-    ];
+    ]));
 
-    let err = ensure_statuses_catch_up_certificate_quorum(&public_config, &[status])
-        .expect_err("short quorum coverage should fail");
+    let err = ensure_statuses_checkpoint_quorum(&public_config, &[status])
+        .expect_err("trusted checkpoint must cover the current operation frontier");
 
-    assert!(err.to_string().contains("below current operation count"));
+    assert!(err
+        .to_string()
+        .contains("trusted checkpoint quorum for 3 operations"));
+    assert!(err.to_string().contains("current operation count 4"));
 }
 
 #[test]
-fn status_catch_up_certificate_quorum_guard_rejects_insufficient_distinct_signers() {
+fn status_checkpoint_quorum_guard_rejects_insufficient_distinct_signers() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 3);
-    status.catch_up_certificate_quorum_operation_count = Some(3);
-    status.catch_up_certificate_quorum_signers = vec![
+    status.checkpoint.trusted_checkpoint = Some(checkpoint_quorum(vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(1).expect("member one duplicate"),
         MemberId::new(2).expect("member two"),
-    ];
+    ]));
 
-    let err = ensure_statuses_catch_up_certificate_quorum(&public_config, &[status])
+    let err = ensure_statuses_checkpoint_quorum(&public_config, &[status])
         .expect_err("duplicate signers should not satisfy quorum");
 
     assert!(err
         .to_string()
-        .contains("distinct catch-up certificate quorum signers"));
+        .contains("distinct checkpoint quorum signers"));
 }
 
 #[test]
-fn status_catch_up_certificate_quorum_guard_rejects_unknown_signer() {
+fn status_checkpoint_quorum_guard_rejects_unknown_signer() {
     let (public_config, _) = status_fixture();
     let mut status = local_status(&public_config, 1, 3);
-    status.catch_up_certificate_quorum_operation_count = Some(3);
-    status.catch_up_certificate_quorum_signers = vec![
+    status.checkpoint.trusted_checkpoint = Some(checkpoint_quorum(vec![
         MemberId::new(1).expect("member one"),
         MemberId::new(2).expect("member two"),
         MemberId::new(9).expect("unknown member"),
-    ];
+    ]));
 
-    let err = ensure_statuses_catch_up_certificate_quorum(&public_config, &[status])
+    let err = ensure_statuses_checkpoint_quorum(&public_config, &[status])
         .expect_err("unknown signer should fail");
 
-    assert!(err
-        .to_string()
-        .contains("unknown catch-up certificate quorum signer"));
+    assert!(err.to_string().contains("unknown checkpoint quorum signer"));
 }
 
 #[test]

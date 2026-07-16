@@ -1,7 +1,9 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (milestones 1-3 and 5 complete; milestone 4 checkpoint
-catch-up complete except for cut-through removal of the legacy certificate path)
+Status: in progress (checkpoint protocol, persistence, exchange, bounded catch-up,
+and nonzero startup are implemented; the certificate cut-through and
+checkpoint-native operator surface are implemented and under verification;
+retention policy and milestone-8 performance validation remain)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -748,7 +750,7 @@ checkpoint to move ahead of durable consensus or application state.
 
 ### Checklist
 
-- [ ] Replace the fresh federation schema's
+- [x] Replace the fresh federation schema's
       `federation_catch_up_certificates` table with checkpoint payload,
       individual-signature, assembled-quorum, and trusted-frontier tables.
 - [x] Persist checkpoint kind, scheduled sequence, and scheduled anchor without
@@ -780,7 +782,7 @@ checkpoint to move ahead of durable consensus or application state.
 - [ ] Define crash-safe retention: keep all scheduled quorum checkpoints; prune
       superseded non-quorum proposals and prune recovery quorums only after a
       scheduled quorum covers them and no trusted frontier depends on them.
-- [ ] Preserve the cut-through policy: edit the existing fresh federation
+- [x] Preserve the cut-through policy: edit the existing fresh federation
       schema migrations in place; do not add an upgrade migration from the
       certificate schema, compatibility tables, or dual reads/writes.
 
@@ -794,12 +796,10 @@ mismatch latch. Promotion checks the checkpoint's historical boundary digests
 against the locally persisted rows, rejects any frontier ahead of local state,
 and updates the trusted ID in the caller's transaction.
 
-The existing certificate table remains temporarily present because production
-transport and readiness still use it. No checkpoint runtime path reads or
-writes certificate evidence, and the checkpoint schema was added directly to
-the existing fresh-schema migration rather than through an upgrade migration.
-Milestone 7 will remove the certificate table and its remaining runtime code in
-one cut-through change before the implementation is production-ready.
+The fresh SQLite and PostgreSQL federation schemas now contain only checkpoint
+payload, signature, quorum, scalar-frontier, and supporting checkpoint indexes.
+The former certificate table and codecs have been removed in place; there is no
+upgrade migration, compatibility table, or dual-read/write bridge.
 
 Verified with:
 
@@ -866,7 +866,7 @@ peer-sync tick.
 
 ### Checklist
 
-- [ ] Replace `catch_up_certificate_chunk_size` with consensus-configured
+- [x] Replace `catch_up_certificate_chunk_size` with consensus-configured
       `checkpoint_interval_journal_operations` and
       `checkpoint_interval_finalized_items`; document initial defaults of
       10,000 for both.
@@ -905,10 +905,10 @@ peer-sync tick.
 - [x] Keep checkpoint traffic off AlephBFT and out of the operation journal.
 - [x] Ensure ordinary status polling transfers only scalar checkpoint summary
       fields, not full signature sets.
-- [ ] When the local journal and finalized-item cursors already match the peer,
+- [x] When the local journal and finalized-item cursors already match the peer,
       issue no `/federation/v1/journal` request. Healthy idle peer synchronization
       is limited to scalar status/checkpoint-summary polling.
-- [ ] Call the journal catch-up endpoint only during startup/recovery or after a
+- [x] Call the journal catch-up endpoint only during startup/recovery or after a
       peer summary proves that the local journal, finalized-item cursor, or
       trusted checkpoint frontier is behind a selected target checkpoint.
 
@@ -1057,9 +1057,10 @@ frontier that becomes authoritative.
 - [x] Require exact equality with the target checkpoint's journal cursor/order
       digest, finalized cursor/finalized digest, session cursors, and projected
       application digest. Buffer and validate the complete batch before
-      mutation, serialize application under the operation-application lock, and
-      require its final authoritative materialized-state audit to equal the
-      target checkpoint before promotion.
+      mutation and serialize application under the operation-application lock.
+      Trust the quorum's checkpoint-time materialized-state audit together with
+      transactionally consistent local frontiers; do not add a full-state scan
+      to normal catch-up.
 - [x] Apply each operation through its existing atomic business-state
       transaction and promote only after the complete checkpoint-bounded batch
       verifies. A crash may leave durable data ahead of the trusted checkpoint,
@@ -1079,7 +1080,7 @@ frontier that becomes authoritative.
 - [x] Download the stable tail from one source, validate rolling commitments to
       the recovery checkpoint, and promote it through the same checkpoint
       path; never trust a single REST peer's uncertified tail.
-- [ ] Remove all request-time range certificate creation and verification from
+- [x] Remove all request-time range certificate creation and verification from
       journal responses.
 
 ### Progress and verification
@@ -1096,12 +1097,15 @@ Checkpoint pages use bounded indexed SQL ranges and never read beyond the
 target cursors. The requester buffers all pages, validates their continuity and
 rolling order/finalized/application commitments, reconstructs the checkpoint
 session cursors, applies through the existing deterministic business-state
-transactions, audits the final authoritative projection, and only then promotes
-the trusted checkpoint. Promotion immediately rebases the in-memory runtime at
-the new nonzero frontier, so a subsequent scheduled or recovery batch retains
-only its suffix. Targeted journal pages no longer create request-time range
-certificates. The remaining unbounded certificate response path is legacy-only
-and is removed by milestone 7.
+transactions, requires the resulting scalar durable frontiers to equal the
+checkpoint, and only then promotes the trusted checkpoint. It does not run the
+full materialized-state audit on this normal recovery path. Promotion
+immediately rebases the in-memory runtime at the new nonzero frontier, so a
+subsequent scheduled or recovery batch retains only its suffix. Targeted and
+ordinary journal pages now use bounded indexed ranges and never create or
+verify request-time range certificates. Checkpoint identity binds the targeted
+recovery page; the requester separately verifies the stored bounded checkpoint
+quorum.
 
 Coverage now includes exact next-checkpoint lookup, checkpoint transport
 serialization, bounded response validation, paged serving from a source that
@@ -1323,32 +1327,74 @@ trusted checkpoint frontier as scalar runtime state.
 
 ### Checklist
 
-- [ ] Replace `VerifyingCatchUpCertificate` with a checkpoint-specific readiness
-      state carrying the trusted and target checkpoint cursors.
-- [ ] Replace certificate error variants with checkpoint mismatch, insufficient
+- [x] Replace `VerifyingCatchUpCertificate` with `AwaitingQuorum`; keep the
+      readiness state small and expose trusted/target checkpoint cursors through
+      the scalar checkpoint status instead of duplicating them in the enum.
+- [x] Replace certificate error variants with checkpoint mismatch, insufficient
       quorum, unavailable checkpoint, and checkpoint-tail catch-up errors.
-- [ ] Replace local status certificate fields with latest local scheduled
+- [x] Replace local status certificate fields with latest local scheduled
       checkpoint, latest scheduled quorum, latest recovery quorum, latest
       trusted frontier, checkpoint kind/lag, application digest, last audited
       frontier, durable audit-mismatch latch, and signer count/IDs.
-- [ ] Read status fields from in-memory/durable scalar frontier state without
-      scanning journal or signature rows.
-- [ ] Replace certificate Prometheus metrics and add scheduled/recovery
-      checkpoint creation, stored-quorum transfer, promotion, catch-up batch,
-      signature-verification, and startup-tail counters/timers.
-- [ ] Rename the mintd status guard to
+- [x] Read status fields from in-memory/durable scalar frontier state without
+      scanning journal or historical signature rows; loading the one bounded
+      stored quorum is independent of federation history length.
+- [x] Replace the certificate Prometheus gauge with a checkpoint-lag gauge.
+- [ ] Add scheduled/recovery checkpoint creation, stored-quorum transfer,
+      promotion, catch-up batch, signature-verification, and startup-tail
+      counters/timers needed for milestone-8 measurements.
+- [x] Rename the mintd status guard to
       `--require-checkpoint-quorum` and update digest comparison output.
-- [ ] Add an explicit mintd operator materialized-state audit command. It
-      computes the full authoritative-state digest at an exact stable frontier,
-      forms or fetches the matching checkpoint quorum, compares the local audit
-      with the signed digest, and durably latches the member fail-closed on
-      mismatch.
-- [ ] Do not schedule that operator audit automatically and do not invoke it
+- [x] Add an explicit mintd operator materialized-state audit command. For the
+      simplest safe version 1, require the current durable frontier to equal an
+      already trusted checkpoint, verify that stored quorum, recompute the full
+      authoritative-state digest, compare it with the signed digest, and durably
+      latch the member fail-closed on mismatch. Do not form or fetch a new
+      checkpoint as part of the audit command.
+- [x] Do not schedule that operator audit automatically and do not invoke it
       from normal startup, status, readiness polling, or the peer-sync loop.
-- [ ] Update smoke scripts to wait for checkpoint coverage only at explicit
+- [x] Update smoke scripts to wait for checkpoint coverage only at explicit
       recovery/checkpoint gates, not after every lightweight operation.
 - [ ] Keep logs transition-based and bounded; unchanged checkpoint polls must
       remain debug-silent.
+
+### Progress and verification
+
+Ordinary status now reads the scalar checkpoint frontier and bounded newest
+checkpoint/quorum records. It performs no journal projection and no signature
+verification. Peer convergence compares the rolling application digest and the
+checkpoint ID that owns any reported full-state audit digest. The former
+certificate coverage gauge and mintd guard have become checkpoint lag and
+`--require-checkpoint-quorum`, and the local federation smoke scripts use those
+checkpoint-native gates. The guard preserves the former coverage semantics: a
+nonempty member must report enough distinct configured signers and the trusted
+checkpoint cursor must cover its current operation frontier.
+
+`cdk-mintd federation audit-checkpoint` is deliberately operator-only. The
+private signed route accepts no caller-selected checkpoint: it verifies the
+already trusted local quorum, requires the current scalar frontier to equal that
+checkpoint exactly, then performs the expensive direct authoritative-state
+projection. A mismatch commits the one-way durable latch and halts the current
+AlephBFT session. No startup, polling, readiness, or background path calls this
+audit.
+
+Current cut-through verification completed:
+
+- `cargo fmt --all -- --check`;
+- shell syntax checks for both federation smoke templates;
+- `git diff --check`;
+- production and fresh-schema searches proving that no certificate type,
+  field, table, metric, CLI flag, or configuration name remains.
+
+Earlier passes completed `cargo check` for `cdk-common`, `cdk-axum`, and
+`cdk-mintd` with federation enabled, plus a `cdk-axum --lib --no-run` test
+build after the certificate tests were removed. A subsequent mintd test build
+found four stale certificate-era digest-retry fixture fields; those fixtures
+were removed. The final post-cleanup type-check rerun advanced through a cold
+dependency rebuild but repeatedly paused in the local compiler's dynamic
+loader and was cancelled without reaching project code. Do not treat the
+formatting/search gates as a replacement for that pending final compiler
+rerun.
 
 ### Files and references
 
@@ -1402,27 +1448,37 @@ configuration behavior.
 
 ### Checklist
 
-- [ ] Delete `FederationCatchUpCertificate`,
+- [x] Delete `FederationCatchUpCertificate`,
       `FederationCatchUpCertificateQuorum`, transcript construction, range-key
       grouping, and range quorum verification.
-- [ ] Remove `catch_up_certificate` from
+- [x] Remove `catch_up_certificate` from
       `FederationJournalCatchUpResponse` and delete response signing.
-- [ ] Delete `catch_up_certificate_quorum_status`, contiguous-prefix rebuilding,
+- [x] Delete `catch_up_certificate_quorum_status`, contiguous-prefix rebuilding,
       its cache/invalidation plumbing, and certificate collection functions.
-- [ ] Delete certificate database methods, codecs, table/index names, and tests.
-- [ ] Confirm both scheduled and recovery policies use only
+- [x] Delete certificate database methods, codecs, table/index names, and tests.
+- [x] Confirm both scheduled and recovery policies use only
       `FederationCheckpointQuorum`; do not retain a renamed range-certificate
       compatibility path.
-- [ ] Delete certificate readiness/error/status/metric/CLI/config fields and all
+- [x] Delete certificate readiness/error/status/metric/CLI/config fields and all
       compatibility aliases.
-- [ ] Update current architecture, implementation, security-review, stress-test,
+- [x] Update current architecture, implementation, security-review, stress-test,
       and operator documentation to describe checkpoints.
-- [ ] Squash the checkpoint schema into the existing initial federation
-      migrations and regenerate federation development databases/configs; no
-      existing federation database or upgrade bridge is supported after the
-      cut-through change.
-- [ ] Use `rg` to prove no production references to catch-up certificates remain;
+- [x] Squash the checkpoint schema into the existing initial federation
+      migrations; no existing federation database or upgrade bridge is
+      supported after the cut-through change.
+- [ ] Regenerate federation development databases/configs before deployment.
+- [x] Use `rg` to prove no production references to catch-up certificates remain;
       historical review text may retain clearly marked provenance only.
+
+### Progress and verification
+
+The range-certificate types, signature transcripts, quorum reconstruction,
+runtime cache/collection path, database APIs and schema, response fields,
+readiness state, status/CLI/config fields, and metrics have been deleted.
+Journal serving is a bounded indexed range read for both targeted checkpoint
+catch-up and the remaining non-target backup request. Scheduled and recovery
+frontiers now share only `FederationCheckpointQuorum` and its persistence and
+promotion path.
 
 ### Files and references
 

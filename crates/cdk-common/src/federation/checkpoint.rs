@@ -318,7 +318,8 @@ impl Default for FederationCheckpointPolicy {
 /// The three rolling frontiers advance only through contiguous persisted rows.
 /// `application_next_index` may lag the journal while accepted operations are
 /// being applied, but it can never advance beyond `journal_next_index`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FederationCheckpointFrontier {
     /// First accepted-operation index not yet durably journaled.
     pub journal_next_index: u64,

@@ -786,7 +786,7 @@ where
             }
             .into());
         }
-        response.verify_catch_up_certificate(member)?;
+        response.validate_entries()?;
         Ok(response)
     }
 

@@ -49,8 +49,8 @@ pub(crate) async fn run_status_command(
     if let Some(max_operation_lag) = args.max_operation_lag {
         ensure_statuses_operation_lag(&statuses, max_operation_lag)?;
     }
-    if args.require_catch_up_certificate_quorum {
-        ensure_statuses_catch_up_certificate_quorum(&public_config, &statuses)?;
+    if args.require_checkpoint_quorum {
+        ensure_statuses_checkpoint_quorum(&public_config, &statuses)?;
     }
     if args.require_no_payment_observation_alerts {
         ensure_statuses_no_payment_observation_alerts(&statuses)?;
@@ -167,7 +167,7 @@ where
     Ok(response)
 }
 
-fn status_targets(
+pub(crate) fn status_targets(
     public_config: &FederationConfig,
     selected_members: &[u16],
 ) -> Result<Vec<MemberConfigPublic>> {
@@ -306,16 +306,36 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         .latest_index
         .map(|index| index.to_string())
         .unwrap_or_else(|| "none".to_string());
-    let catch_up_certificate_quorum_operations = status
-        .catch_up_certificate_quorum_operation_count
-        .map(|count| count.to_string())
+    let latest_scheduled_checkpoint = status
+        .checkpoint
+        .latest_scheduled_checkpoint
+        .as_ref()
+        .map(|summary| summary.checkpoint_id.to_string())
         .unwrap_or_else(|| "none".to_string());
-    let catch_up_certificate_quorum_from =
-        option_u64(status.catch_up_certificate_quorum_from_index);
-    let catch_up_certificate_quorum_latest =
-        option_u64(status.catch_up_certificate_quorum_latest_index);
-    let catch_up_certificate_quorum_signers =
-        member_list(&status.catch_up_certificate_quorum_signers);
+    let latest_scheduled_quorum = status
+        .checkpoint
+        .latest_scheduled_quorum
+        .as_ref()
+        .map(|quorum| quorum.checkpoint.checkpoint_id.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let latest_recovery_quorum = status
+        .checkpoint
+        .latest_recovery_quorum
+        .as_ref()
+        .map(|quorum| quorum.checkpoint.checkpoint_id.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let trusted_checkpoint = status
+        .checkpoint
+        .trusted_checkpoint
+        .as_ref()
+        .map(|quorum| quorum.checkpoint.checkpoint_id.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let trusted_checkpoint_signers = status
+        .checkpoint
+        .trusted_checkpoint
+        .as_ref()
+        .map(|quorum| member_list(&quorum.signers))
+        .unwrap_or_else(|| "none".to_string());
     let sync_peer = status
         .sync_peer
         .map(|peer| peer.to_string())
@@ -331,8 +351,16 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         .materialized_state_digest
         .map(|digest| digest.to_string())
         .unwrap_or_else(|| "none".to_string());
+    let application_digest = peer
+        .application_digest
+        .map(|digest| digest.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let audited_checkpoint = peer
+        .latest_audited_checkpoint_id
+        .map(|checkpoint_id| checkpoint_id.to_string())
+        .unwrap_or_else(|| "none".to_string());
     format!(
-        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} materialized_state_digest={} materialized_rows={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} catch_up_certificate_quorum_operations={} catch_up_certificate_quorum_from={} catch_up_certificate_quorum_latest={} catch_up_certificate_quorum_signers={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
+        "member {}: sync={} ready={} sync_peer={} sync_local_operations={} sync_peer_operations={} sync_operations={} operations={} latest_index={} order_digest={} application_digest={} audited_checkpoint={} materialized_state_digest={} materialized_rows={} latest_scheduled_checkpoint={} latest_scheduled_quorum={} latest_recovery_quorum={} trusted_checkpoint={} trusted_checkpoint_signers={} checkpoint_lag_operations={} audit_mismatch={} pending_mempool_items={} pending_response_waiters={} response_cache_items={} response_cache_hits={}/{} response_cache_hit_rate_bps={} duplicate_submissions={} duplicate_pending_waiter_joins={} payment_reports={} payment_conflicts={} payment_unresolved={} payment_stale={} invalid_operation_alerts={} aleph_bft_live_session={} aleph_bft_network_inbound={} aleph_bft={} message={}",
         peer.member_id,
         status.sync_state,
         status.sync_ready,
@@ -343,8 +371,17 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         peer.operation_count,
         latest_index,
         peer.latest_order_digest,
+        application_digest,
+        audited_checkpoint,
         materialized_state_digest,
         status.materialized_state_rows.len(),
+        latest_scheduled_checkpoint,
+        latest_scheduled_quorum,
+        latest_recovery_quorum,
+        trusted_checkpoint,
+        trusted_checkpoint_signers,
+        status.checkpoint.lag_from_trusted_checkpoint,
+        status.checkpoint.frontier.materialized_state_audit_mismatch,
         status.pending_mempool_items,
         status.pending_response_waiters,
         status.response_cache_items,
@@ -353,10 +390,6 @@ fn member_status_line(status: &FederationLocalStatusResponse) -> String {
         status.response_cache_hit_rate_bps,
         status.duplicate_submissions,
         status.duplicate_pending_waiter_joins,
-        catch_up_certificate_quorum_operations,
-        catch_up_certificate_quorum_from,
-        catch_up_certificate_quorum_latest,
-        catch_up_certificate_quorum_signers,
         payment_reports,
         payment_conflicts,
         payment_unresolved,
@@ -545,7 +578,7 @@ fn ensure_statuses_ready(statuses: &[FederationLocalStatusResponse]) -> Result<(
 }
 
 fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Result<()> {
-    ensure_statuses_have_materialized_state_digest(statuses)?;
+    ensure_statuses_have_application_digest(statuses)?;
     let Some(first) = statuses.first() else {
         return Ok(());
     };
@@ -553,28 +586,16 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
         if status.peer_status.operation_count != first.peer_status.operation_count
             || status.peer_status.aleph_bft_session != first.peer_status.aleph_bft_session
             || status.peer_status.latest_order_digest != first.peer_status.latest_order_digest
+            || status.peer_status.application_digest != first.peer_status.application_digest
+            || status.peer_status.latest_audited_checkpoint_id
+                != first.peer_status.latest_audited_checkpoint_id
             || status.peer_status.materialized_state_digest
                 != first.peer_status.materialized_state_digest
         {
             bail!(
-                "federation status is not converged: member {} has operations {} AlephBFT session {} order digest {} materialized state digest {}, expected operations {} AlephBFT session {} order digest {} materialized state digest {}",
+                "federation status is not converged: member {} differs from member {} in operation height, AlephBFT session, order digest, application digest, or audited checkpoint state",
                 status.peer_status.member_id,
-                status.peer_status.operation_count,
-                status.peer_status.aleph_bft_session,
-                status.peer_status.latest_order_digest,
-                status
-                    .peer_status
-                    .materialized_state_digest
-                    .map(|digest| digest.to_string())
-                    .unwrap_or_else(|| "none".to_string()),
-                first.peer_status.operation_count,
-                first.peer_status.aleph_bft_session,
-                first.peer_status.latest_order_digest,
-                first
-                    .peer_status
-                    .materialized_state_digest
-                    .map(|digest| digest.to_string())
-                    .unwrap_or_else(|| "none".to_string())
+                first.peer_status.member_id,
             );
         }
     }
@@ -612,9 +633,10 @@ fn ensure_statuses_operation_lag(
 }
 
 fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) -> Result<()> {
-    ensure_statuses_have_materialized_state_digest(statuses)?;
+    ensure_statuses_have_application_digest(statuses)?;
     for status in statuses {
-        if status.sync_state == "materialized_state_mismatch"
+        if status.checkpoint.frontier.materialized_state_audit_mismatch
+            || status.sync_state == "materialized_state_mismatch"
             || (status.sync_state == "halted" && status.sync_message.contains("digest mismatch"))
         {
             bail!(
@@ -641,9 +663,19 @@ fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) 
             }
             if status.peer_status.materialized_state_digest
                 != other.peer_status.materialized_state_digest
+                || status.peer_status.latest_audited_checkpoint_id
+                    != other.peer_status.latest_audited_checkpoint_id
             {
                 bail!(
                     "federation digest alert: members {} and {} disagree on materialized state digest at operation count {}",
+                    status.peer_status.member_id,
+                    other.peer_status.member_id,
+                    status.peer_status.operation_count
+                );
+            }
+            if status.peer_status.application_digest != other.peer_status.application_digest {
+                bail!(
+                    "federation digest alert: members {} and {} disagree on application digest at operation count {}",
                     status.peer_status.member_id,
                     other.peer_status.member_id,
                     status.peer_status.operation_count
@@ -655,13 +687,13 @@ fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) 
     Ok(())
 }
 
-fn ensure_statuses_have_materialized_state_digest(
+fn ensure_statuses_have_application_digest(
     statuses: &[FederationLocalStatusResponse],
 ) -> Result<()> {
     for status in statuses {
-        if status.peer_status.materialized_state_digest.is_none() {
+        if status.peer_status.application_digest.is_none() {
             bail!(
-                "federation member {} omitted its materialized state digest",
+                "federation member {} omitted its application digest",
                 status.peer_status.member_id
             );
         }
@@ -669,7 +701,7 @@ fn ensure_statuses_have_materialized_state_digest(
     Ok(())
 }
 
-fn ensure_statuses_catch_up_certificate_quorum(
+fn ensure_statuses_checkpoint_quorum(
     public_config: &FederationConfig,
     statuses: &[FederationLocalStatusResponse],
 ) -> Result<()> {
@@ -679,28 +711,26 @@ fn ensure_statuses_catch_up_certificate_quorum(
         if operation_count == 0 {
             continue;
         }
-        let Some(quorum_operation_count) = status.catch_up_certificate_quorum_operation_count
-        else {
+        let Some(quorum) = status.checkpoint.trusted_checkpoint.as_ref() else {
             bail!(
-                "federation member {} has {} operations but no catch-up certificate quorum evidence",
+                "federation member {} has {} operations but no trusted checkpoint quorum",
                 status.peer_status.member_id,
                 operation_count
             );
         };
-        if quorum_operation_count < operation_count {
+        if quorum.checkpoint.journal_next_index < operation_count {
             bail!(
-                "federation member {} has catch-up certificate quorum evidence for {} operations, below current operation count {}",
+                "federation member {} has a trusted checkpoint quorum for {} operations, below current operation count {}",
                 status.peer_status.member_id,
-                quorum_operation_count,
+                quorum.checkpoint.journal_next_index,
                 operation_count
             );
         }
-
         let mut distinct_signers = BTreeSet::new();
-        for signer in &status.catch_up_certificate_quorum_signers {
+        for signer in &quorum.signers {
             if public_config.member(*signer).is_none() {
                 bail!(
-                    "federation member {} reports unknown catch-up certificate quorum signer {}",
+                    "federation member {} reports unknown checkpoint quorum signer {}",
                     status.peer_status.member_id,
                     signer
                 );
@@ -709,7 +739,7 @@ fn ensure_statuses_catch_up_certificate_quorum(
         }
         if distinct_signers.len() < required {
             bail!(
-                "federation member {} has {} distinct catch-up certificate quorum signers, required {}",
+                "federation member {} has {} distinct checkpoint quorum signers, required {}",
                 status.peer_status.member_id,
                 distinct_signers.len(),
                 required
@@ -752,7 +782,7 @@ fn payment_observation_report_is_alert(report: &FederationPaymentObservationRepo
         || !report.competing_terminal_state_observers.is_empty()
 }
 
-fn initial_status_sequence() -> u64 {
+pub(crate) fn initial_status_sequence() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| {

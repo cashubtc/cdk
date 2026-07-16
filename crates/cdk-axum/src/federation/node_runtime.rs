@@ -1,8 +1,6 @@
 //! Federation node runtime ownership.
 
 use std::collections::BTreeMap;
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -18,10 +16,10 @@ use crate::{
 use cdk::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
-    FederationApplicationState, FederationCatchUpCertificate, FederationCatchUpOperation,
-    FederationCheckpoint, FederationCheckpointBoundary, FederationCheckpointFetchResponse,
-    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointQuorumResponse, FederationCheckpointSignature,
+    FederationApplicationState, FederationCatchUpOperation, FederationCheckpoint,
+    FederationCheckpointAuditResponse, FederationCheckpointBoundary,
+    FederationCheckpointFetchResponse, FederationCheckpointId, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointQuorumResponse, FederationCheckpointSignature,
     FederationCheckpointSignatureResponse, FederationCheckpointSummary,
     FederationCheckpointSummaryResponse, FederationConfig, FederationConsensusItem,
     FederationConsensusItemAdmission, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
@@ -31,20 +29,12 @@ use cdk::federation::{
     FederationDkgSetupState, FederationDkgTranscriptHash, FederationDkgTranscriptSignatureRequest,
     FederationError, FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record, FederationFrostRootRecord,
-    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalDigest,
-    FederationJournalEntry, FederationMaterializedStateDigest, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationRestMessageKind,
-    FederationSubmitOperationResponse, MemberId, FEDERATION_REST_API_VERSION,
+    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
+    FederationRestMessageKind, FederationSubmitOperationResponse, MemberId,
+    FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MaterializedStateDigestCache {
-    pub(super) operation_count: u64,
-    pub(super) latest_order_digest: FederationJournalDigest,
-    pub(super) latest_operation_status: Option<FederationOperationStatus>,
-    pub(super) materialized_state_digest: FederationMaterializedStateDigest,
-}
 
 /// Runtime-owned handles for one active federation member.
 #[derive(Clone)]
@@ -67,19 +57,9 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) frost_signing: Option<super::frost_signing::FederationFrostSigningRuntime>,
     /// Serializes journal persistence and application across live finality and catch-up.
     pub(crate) operation_application: Arc<tokio::sync::Mutex<()>>,
-    pub(crate) catch_up_certificate_quorum_cache:
-        Arc<tokio::sync::Mutex<Option<Option<super::CatchUpCertificateQuorumStatus>>>>,
-    pub(crate) materialized_state_digest_cache:
-        Arc<tokio::sync::Mutex<Option<MaterializedStateDigestCache>>>,
     pub(crate) recovery_checkpoint_requested: Arc<AtomicBool>,
     pub(crate) recovery_checkpoint_observation:
         Arc<tokio::sync::Mutex<Option<FederationCheckpointBoundary>>>,
-    #[cfg(test)]
-    pub(crate) catch_up_certificate_quorum_validation_count: Arc<AtomicUsize>,
-    #[cfg(test)]
-    pub(crate) catch_up_certificate_journal_load_count: Arc<AtomicUsize>,
-    #[cfg(test)]
-    pub(crate) materialized_state_digest_computation_count: Arc<AtomicUsize>,
     #[cfg(test)]
     pub(crate) fail_next_pending_operation_persistence: Arc<AtomicBool>,
     #[cfg(test)]
@@ -165,22 +145,6 @@ fn federation_not_ready_error(status: FederationSyncStatus) -> cdk::Error {
         FederationSyncStatus::CatchingUp { peer } => {
             FederationError::NodeCatchingUp { peer }.into()
         }
-        FederationSyncStatus::VerifyingCatchUpCertificate {
-            peer,
-            operation_count,
-        } => FederationError::NodeVerifyingCatchUpCertificate {
-            peer,
-            operation_count,
-        }
-        .into(),
-        FederationSyncStatus::MaterializedStateMismatch {
-            peer,
-            operation_count,
-        } => FederationError::NodeMaterializedStateMismatch {
-            peer,
-            operation_count,
-        }
-        .into(),
         FederationSyncStatus::Halted { reason } => FederationError::NodeHalted {
             reason: cdk::federation::redact_federation_operator_message(&reason),
         }
@@ -209,13 +173,8 @@ impl FederationNodeRuntime {
             onchain_wallets: Vec::new(),
             frost_signing: None,
             operation_application: Arc::new(tokio::sync::Mutex::new(())),
-            catch_up_certificate_quorum_cache: Arc::new(tokio::sync::Mutex::new(None)),
-            materialized_state_digest_cache: Arc::new(tokio::sync::Mutex::new(None)),
             recovery_checkpoint_requested: Arc::new(AtomicBool::new(false)),
             recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
-            catch_up_certificate_quorum_validation_count: Arc::new(AtomicUsize::new(0)),
-            catch_up_certificate_journal_load_count: Arc::new(AtomicUsize::new(0)),
-            materialized_state_digest_computation_count: Arc::new(AtomicUsize::new(0)),
             fail_next_pending_operation_persistence: Arc::new(AtomicBool::new(false)),
             suppress_next_terminal_response_publication: Arc::new(AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
@@ -263,30 +222,6 @@ impl FederationNodeRuntime {
         self.mint
             .as_ref()
             .ok_or_else(|| runtime_unavailable("mint"))
-    }
-
-    pub(super) async fn catch_up_certificate_quorum_status(
-        &self,
-        mint: &Mint,
-    ) -> Result<Option<super::CatchUpCertificateQuorumStatus>, cdk::Error> {
-        let mut cache = self.catch_up_certificate_quorum_cache.lock().await;
-        if let Some(status) = cache.as_ref() {
-            return Ok(status.clone());
-        }
-        #[cfg(test)]
-        self.catch_up_certificate_quorum_validation_count
-            .fetch_add(1, Ordering::SeqCst);
-        let status = super::catch_up_certificate_quorum_status(mint).await?;
-        *cache = Some(status.clone());
-        Ok(status)
-    }
-
-    async fn invalidate_catch_up_certificate_quorum_status(&self) {
-        *self.catch_up_certificate_quorum_cache.lock().await = None;
-    }
-
-    async fn invalidate_materialized_state_digest(&self) {
-        *self.materialized_state_digest_cache.lock().await = None;
     }
 
     #[cfg(feature = "prometheus")]
@@ -569,36 +504,22 @@ impl FederationNodeRuntime {
         let Ok(mint) = self.active_mint() else {
             return;
         };
-        let Some(config) = mint.federation_config() else {
-            return;
-        };
         let initial_status = sync.lock().await.status();
         match &initial_status {
-            FederationSyncStatus::Healthy
-            | FederationSyncStatus::AwaitingQuorum { .. }
-            | FederationSyncStatus::VerifyingCatchUpCertificate { .. } => {}
+            FederationSyncStatus::Healthy | FederationSyncStatus::AwaitingQuorum { .. } => {}
             FederationSyncStatus::Lagging { .. }
             | FederationSyncStatus::CatchingUp { .. }
-            | FederationSyncStatus::MaterializedStateMismatch { .. }
             | FederationSyncStatus::Halted { .. } => return,
         }
 
-        let peer = config
-            .public_config()
-            .members
-            .values()
-            .find(|member| member.member_id != config.member_id())
-            .map(|member| member.member_id)
-            .unwrap_or_else(|| config.member_id());
-
-        let entries = match mint.localstore().get_federation_journal_entries().await {
-            Ok(entries) => entries,
+        let frontier = match mint.localstore().get_federation_checkpoint_frontier().await {
+            Ok(frontier) => frontier,
             Err(err) => {
                 self.finish_startup_revalidation(
                     &initial_status,
                     FederationSyncStatus::Halted {
                         reason: format!(
-                            "could not inspect federation startup journal for quorum evidence: {err}"
+                            "could not inspect federation startup checkpoint frontier: {err}"
                         ),
                     },
                 )
@@ -606,91 +527,13 @@ impl FederationNodeRuntime {
                 return;
             }
         };
-        let operation_count = entries.len() as u64;
-        if operation_count == 0 {
-            self.finish_startup_revalidation(
-                &initial_status,
-                FederationSyncStatus::AwaitingQuorum { operation_count },
-            )
-            .await;
-            return;
-        }
-
-        let quorum = match self.catch_up_certificate_quorum_status(mint).await {
-            Ok(quorum) => quorum,
-            Err(err) => {
-                self.finish_startup_revalidation(
-                    &initial_status,
-                    FederationSyncStatus::Halted {
-                        reason: format!(
-                            "could not inspect federation startup catch-up certificate quorum: {err}"
-                        ),
-                    },
-                )
-                .await;
-                return;
+        let next_status = if frontier.materialized_state_audit_mismatch {
+            FederationSyncStatus::Halted {
+                reason: "materialized-state audit mismatch is latched".to_string(),
             }
-        };
-
-        let Some(quorum) = quorum else {
-            self.finish_startup_revalidation(
-                &initial_status,
-                FederationSyncStatus::VerifyingCatchUpCertificate {
-                    peer,
-                    operation_count,
-                },
-            )
-            .await;
-            return;
-        };
-
-        if quorum.operation_count != operation_count {
-            self.finish_startup_revalidation(
-                &initial_status,
-                FederationSyncStatus::VerifyingCatchUpCertificate {
-                    peer,
-                    operation_count,
-                },
-            )
-            .await;
-            return;
-        }
-
-        let local_digest = match mint.federation_materialized_state_snapshot().await {
-            Ok(snapshot) => match snapshot.digest() {
-                Ok(digest) => digest,
-                Err(err) => {
-                    self.finish_startup_revalidation(
-                        &initial_status,
-                        FederationSyncStatus::Halted {
-                            reason: format!(
-                                "could not compute federation startup materialized-state digest: {err}"
-                            ),
-                        },
-                    )
-                    .await;
-                    return;
-                }
-            },
-            Err(err) => {
-                self.finish_startup_revalidation(
-                    &initial_status,
-                    FederationSyncStatus::Halted {
-                        reason: format!(
-                            "could not project federation startup materialized state: {err}"
-                        ),
-                    },
-                )
-                .await;
-                return;
-            }
-        };
-        let next_status = if local_digest == quorum.materialized_state_digest {
-            FederationSyncStatus::AwaitingQuorum { operation_count }
         } else {
-            FederationSyncStatus::MaterializedStateMismatch {
-                peer,
-                operation_count,
+            FederationSyncStatus::AwaitingQuorum {
+                operation_count: frontier.journal_next_index,
             }
         };
         self.finish_startup_revalidation(&initial_status, next_status)
@@ -726,33 +569,6 @@ impl FederationNodeRuntime {
     pub(crate) async fn mark_catching_up(&self, peer: MemberId) {
         self.update_sync_status(|sync| sync.mark_catching_up(peer))
             .await
-    }
-
-    pub(crate) async fn mark_verifying_catch_up_certificate(
-        &self,
-        peer: MemberId,
-        operation_count: u64,
-    ) {
-        self.update_sync_status(|sync| {
-            sync.mark_verifying_catch_up_certificate(peer, operation_count);
-        })
-        .await
-    }
-
-    pub(crate) async fn mark_materialized_state_mismatch(
-        &self,
-        peer: MemberId,
-        operation_count: u64,
-    ) {
-        #[cfg(feature = "prometheus")]
-        if let Some(member) = self.metric_member_label() {
-            cdk_prometheus::METRICS
-                .record_federation_state_digest_mismatch(&member, &peer.to_string());
-        }
-        self.update_sync_status(|sync| {
-            sync.mark_materialized_state_mismatch(peer, operation_count);
-        })
-        .await
     }
 
     pub(crate) async fn mark_healthy(&self) {
@@ -1005,77 +821,17 @@ impl FederationNodeRuntime {
         &self,
         response: &FederationJournalCatchUpResponse,
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
-        self.apply_verified_catch_up_response(response, &[]).await
+        self.apply_verified_catch_up_response(response).await
     }
 
-    pub(crate) async fn apply_catch_up_response_with_catch_up_certificate_quorum(
-        &self,
-        response: &FederationJournalCatchUpResponse,
-        additional_certificates: &[FederationCatchUpCertificate],
-    ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
-        let runtime_config = self
-            .active_mint()?
-            .federation_config()
-            .cloned()
-            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
-        let public_config = runtime_config.public_config().clone();
-        if response.version != FEDERATION_REST_API_VERSION {
-            return Err(cdk::Error::Federation(
-                FederationError::RestVersionMismatch {
-                    expected: FEDERATION_REST_API_VERSION,
-                    found: response.version,
-                },
-            ));
-        }
-        if response.federation_id != public_config.federation_id {
-            return Err(cdk::Error::Federation(
-                FederationError::CatchUpFederationMismatch {
-                    expected: public_config.federation_id,
-                    found: response.federation_id,
-                },
-            ));
-        }
-        response.verify_catch_up_certificate_quorum(&public_config, additional_certificates)?;
-
-        let mut catch_up_certificates = Vec::new();
-        if let Some(catch_up_certificate) = response.catch_up_certificate.as_ref() {
-            catch_up_certificates.push(catch_up_certificate);
-        }
-        catch_up_certificates.extend(additional_certificates.iter());
-        for catch_up_certificate in &catch_up_certificates {
-            let member =
-                public_config
-                    .member(catch_up_certificate.signer)
-                    .ok_or(cdk::Error::Federation(FederationError::UnknownMember {
-                        member_id: catch_up_certificate.signer,
-                    }))?;
-            catch_up_certificate.verify(
-                member,
-                response.federation_id,
-                response.from_index,
-                &response.entries,
-                response.latest_order_digest,
-                response.materialized_state_digest,
-            )?;
-        }
-
-        self.apply_verified_catch_up_response(response, &catch_up_certificates)
-            .await
-    }
-
+    #[cfg(test)]
     async fn apply_verified_catch_up_response(
         &self,
         response: &FederationJournalCatchUpResponse,
-        catch_up_certificates: &[&FederationCatchUpCertificate],
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
         let _application = self.operation_application.lock().await;
-        self.apply_verified_catch_up_response_under_application_lock(
-            response,
-            catch_up_certificates,
-            None,
-            None,
-        )
-        .await
+        self.apply_verified_catch_up_response_under_application_lock(response, None, None)
+            .await
     }
 
     pub(crate) async fn apply_checkpoint_catch_up_response(
@@ -1105,7 +861,6 @@ impl FederationNodeRuntime {
         let applied = self
             .apply_verified_catch_up_response_under_application_lock(
                 response,
-                &[],
                 current.as_ref().map(|quorum| &quorum.checkpoint),
                 Some(checkpoint),
             )
@@ -1121,21 +876,6 @@ impl FederationNodeRuntime {
         {
             return Err(FederationError::CheckpointInvalid {
                 reason: "durable catch-up frontiers do not equal the target checkpoint".to_string(),
-            }
-            .into());
-        }
-        let materialized_state_digest = mint
-            .federation_materialized_state_snapshot()
-            .await?
-            .digest()?;
-        if materialized_state_digest != checkpoint.materialized_state_digest {
-            let mut tx = db.begin_transaction().await?;
-            tx.latch_federation_materialized_state_audit_mismatch()
-                .await?;
-            tx.commit().await?;
-            return Err(FederationError::CheckpointInvalid {
-                reason: "catch-up materialized-state audit does not equal the target checkpoint"
-                    .to_string(),
             }
             .into());
         }
@@ -1215,7 +955,6 @@ impl FederationNodeRuntime {
     async fn apply_verified_catch_up_response_under_application_lock(
         &self,
         response: &FederationJournalCatchUpResponse,
-        catch_up_certificates: &[&FederationCatchUpCertificate],
         base_checkpoint: Option<&FederationCheckpoint>,
         target_checkpoint: Option<&FederationCheckpoint>,
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
@@ -1260,11 +999,8 @@ impl FederationNodeRuntime {
             if response_to_apply.from_index != response.from_index
                 || response_to_apply.entries.len() != response.entries.len()
             {
-                return Err(cdk::Error::Federation(
-                    FederationError::CatchUpCertificateMismatch {
-                        reason: "signed catch-up evidence does not cover the local suffix"
-                            .to_string(),
-                    },
+                return Err(crate::aleph_bft_catch_up_recovery_mismatch(
+                    "checkpoint catch-up response does not cover the local suffix".to_string(),
                 ));
             }
         }
@@ -1365,13 +1101,8 @@ impl FederationNodeRuntime {
 
         let mut entries_to_apply = entries_to_retry_from_local_overlap;
         entries_to_apply.extend(crate::accepted_federation_journal_entries(&applied));
-        self.persist_catch_up(
-            target_session,
-            &new_finalized_items,
-            &applied,
-            catch_up_certificates,
-        )
-        .await?;
+        self.persist_catch_up(target_session, &new_finalized_items, &applied)
+            .await?;
         *consensus = next_consensus;
         drop(consensus);
         self.apply_journal_entries(&entries_to_apply).await?;
@@ -1827,30 +1558,6 @@ impl FederationNodeRuntime {
         Ok(setup_state)
     }
 
-    pub(crate) async fn persist_journal_entries(
-        &self,
-        entries: &[FederationJournalEntry],
-        catch_up_certificates: &[&FederationCatchUpCertificate],
-    ) -> Result<(), cdk::Error> {
-        let db = self.active_mint()?.localstore();
-        let mut tx = db.begin_transaction().await?;
-        for entry in entries {
-            tx.add_federation_journal_entry(entry).await?;
-        }
-        for catch_up_certificate in catch_up_certificates {
-            tx.add_federation_catch_up_certificate(catch_up_certificate)
-                .await?;
-        }
-        tx.commit().await?;
-        if !entries.is_empty() || !catch_up_certificates.is_empty() {
-            self.invalidate_catch_up_certificate_quorum_status().await;
-        }
-        if !entries.is_empty() {
-            self.invalidate_materialized_state_digest().await;
-        }
-        Ok(())
-    }
-
     pub(crate) async fn persist_pending_operation(
         &self,
         operation: FederationAlephBftPendingOperationRecord,
@@ -1889,10 +1596,7 @@ impl FederationNodeRuntime {
             tx.add_federation_journal_entry(entry).await?;
         }
         tx.commit().await?;
-        if !entries.is_empty() {
-            self.invalidate_catch_up_certificate_quorum_status().await;
-            self.invalidate_materialized_state_digest().await;
-        }
+        if !entries.is_empty() {}
         Ok(())
     }
 
@@ -1901,7 +1605,6 @@ impl FederationNodeRuntime {
         active_session: u64,
         finalized_items: &[FederationAlephBftFinalizedItem],
         entries: &[FederationJournalEntry],
-        catch_up_certificates: &[&FederationCatchUpCertificate],
     ) -> Result<(), cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut tx = db.begin_transaction().await?;
@@ -1916,17 +1619,8 @@ impl FederationNodeRuntime {
         for entry in entries {
             tx.add_federation_journal_entry(entry).await?;
         }
-        for catch_up_certificate in catch_up_certificates {
-            tx.add_federation_catch_up_certificate(catch_up_certificate)
-                .await?;
-        }
         tx.commit().await?;
-        if !entries.is_empty() || !catch_up_certificates.is_empty() {
-            self.invalidate_catch_up_certificate_quorum_status().await;
-        }
-        if !entries.is_empty() {
-            self.invalidate_materialized_state_digest().await;
-        }
+        if !entries.is_empty() {}
         Ok(())
     }
 
@@ -2083,6 +1777,73 @@ impl FederationNodeRuntime {
         let _application = self.operation_application.lock().await;
         self.capture_scheduled_checkpoint_if_eligible_under_application_lock()
             .await
+    }
+
+    /// Run the operator-requested full-state audit against the exact trusted checkpoint frontier.
+    pub(crate) async fn audit_trusted_checkpoint_materialized_state(
+        &self,
+    ) -> Result<FederationCheckpointAuditResponse, cdk::Error> {
+        let _application = self.operation_application.lock().await;
+        let mint = self.active_mint()?;
+        let runtime_config = mint
+            .federation_config()
+            .ok_or_else(|| runtime_unavailable("mint configuration"))?;
+        let db = mint.localstore();
+        let frontier = db.get_federation_checkpoint_frontier().await?;
+        if frontier.materialized_state_audit_mismatch {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "materialized-state audit mismatch is already latched".to_string(),
+            }
+            .into());
+        }
+        let quorum = db
+            .get_trusted_federation_checkpoint_quorum()
+            .await?
+            .ok_or_else(|| FederationError::CheckpointInvalid {
+                reason: "operator audit requires a trusted checkpoint".to_string(),
+            })?;
+        quorum.verify(runtime_config.public_config())?;
+        let checkpoint = &quorum.checkpoint;
+        let checkpoint_id = checkpoint.id()?;
+        if frontier.trusted_checkpoint_id != Some(checkpoint_id)
+            || frontier.journal_next_index != checkpoint.journal_next_index
+            || frontier.journal_order_digest != checkpoint.journal_order_digest
+            || frontier.finalized_next_item_index != checkpoint.finalized_next_item_index
+            || frontier.finalized_item_digest != checkpoint.finalized_item_digest
+            || frontier.application_next_index != checkpoint.journal_next_index
+            || frontier.application_digest != checkpoint.application_digest
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "operator audit requires the current durable frontier to equal the trusted checkpoint"
+                    .to_string(),
+            }
+            .into());
+        }
+
+        let materialized_state_digest = mint
+            .federation_materialized_state_snapshot()
+            .await?
+            .digest()?;
+        if materialized_state_digest != checkpoint.materialized_state_digest {
+            let mut tx = db.begin_transaction().await?;
+            tx.latch_federation_materialized_state_audit_mismatch()
+                .await?;
+            tx.commit().await?;
+            return Err(FederationError::MaterializedStateAuditMismatch {
+                checkpoint_id,
+                expected: checkpoint.materialized_state_digest,
+                found: materialized_state_digest,
+            }
+            .into());
+        }
+
+        Ok(FederationCheckpointAuditResponse {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id: runtime_config.federation_id(),
+            member_id: runtime_config.member_id(),
+            checkpoint: FederationCheckpointSummary::from_checkpoint(checkpoint)?,
+            materialized_state_digest,
+        })
     }
 
     async fn current_checkpoint_boundary_under_application_lock(
@@ -2509,9 +2270,7 @@ impl FederationNodeRuntime {
         &self,
         entries: &[FederationJournalEntry],
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
-        if !entries.is_empty() {
-            self.invalidate_materialized_state_digest().await;
-        }
+        if !entries.is_empty() {}
         let db = self.active_mint()?.localstore();
         let mut applied = Vec::new();
         let mut terminal_applications = Vec::with_capacity(entries.len());
@@ -2554,9 +2313,7 @@ impl FederationNodeRuntime {
         }
         self.mark_operation_applications(&terminal_applications)
             .await?;
-        if !entries.is_empty() {
-            self.invalidate_materialized_state_digest().await;
-        }
+        if !entries.is_empty() {}
         let mint = self.active_mint()?;
         crate::reconcile_federation_onchain_wallets(mint, &self.onchain_wallets)
             .await
@@ -2588,14 +2345,10 @@ impl FederationNodeRuntime {
                     })
                 })?;
             if local_entry.application != peer_entry.application {
-                return Err(cdk::Error::Federation(
-                    FederationError::CatchUpCertificateMismatch {
-                        reason: format!(
-                            "catch-up rejection mismatch at operation {}",
-                            peer_entry.operation_id
-                        ),
-                    },
-                ));
+                return Err(crate::aleph_bft_catch_up_recovery_mismatch(format!(
+                    "catch-up rejection mismatch at operation {}",
+                    peer_entry.operation_id
+                )));
             }
         }
 
@@ -2692,7 +2445,6 @@ impl FederationNodeRuntime {
                 return Err(error.into());
             }
         }
-        self.invalidate_materialized_state_digest().await;
 
         if let Some(consensus) = &self.consensus {
             consensus

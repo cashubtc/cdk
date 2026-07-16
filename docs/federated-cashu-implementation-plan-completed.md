@@ -1,4 +1,9 @@
 # Federated Cashu with CDK: implementation plan
+
+> Historical implementation record. References to catch-up certificates
+> describe the superseded experimental design. The current cut-through recovery
+> design is `docs/federated-cdk-checkpoint-implementation-plan.md`.
+
 This is a working checklist for adding federated Cashu mint support to CDK while keeping the public Cashu wallet-to-mint protocol as close as possible to today's NUT endpoints. The plan assumes BLS blind signatures are the federation signing scheme, with locally generated key shares first and real DKG later.
 
 Sandbox test note: run localhost-listener and real-network tests with network permission enabled from the first attempt (an escalated `cargo test ...` invocation in Codex), because `127.0.0.1:0` bind failures without it are environmental rather than regressions.
