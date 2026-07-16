@@ -3046,6 +3046,51 @@ impl From<&FederationJournalEntry> for FederationCatchUpOperation {
     }
 }
 
+impl FederationCatchUpOperation {
+    /// Validate one compact peer projection against its canonical journal entry.
+    pub fn ensure_matches_journal_entry(&self, entry: &FederationJournalEntry) -> Result<()> {
+        if entry.index != self.index {
+            return Err(FederationError::CatchUpIndexMismatch {
+                expected: entry.index,
+                found: self.index,
+            });
+        }
+        if entry.operation_id != self.operation_id {
+            return Err(FederationError::CatchUpOperationIdMismatch {
+                index: self.index,
+                expected: entry.operation_id,
+                found: self.operation_id,
+            });
+        }
+        if entry.previous_order_digest != self.previous_order_digest {
+            return Err(FederationError::CatchUpDigestMismatch {
+                index: self.index,
+                expected: entry.previous_order_digest,
+                found: self.previous_order_digest,
+            });
+        }
+        if entry.order_digest != self.order_digest {
+            return Err(FederationError::CatchUpDigestMismatch {
+                index: self.index.saturating_add(1),
+                expected: entry.order_digest,
+                found: self.order_digest,
+            });
+        }
+        if entry.application.is_terminal()
+            && self.application.is_terminal()
+            && entry.application != self.application
+        {
+            return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                reason: format!(
+                    "catch-up application outcome mismatch at operation {}",
+                    self.operation_id
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Catch-up response containing finalized history and compact application metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -3365,26 +3410,6 @@ mod tests {
         (config, first_private, second_private)
     }
 
-    fn transport_config_three() -> (FederationConfig, Vec<MemberConfigPrivate>) {
-        let first_secret = identity_secret(1);
-        let second_secret = identity_secret(2);
-        let third_secret = identity_secret(3);
-        let members = BTreeMap::from([
-            (roster_member_id(1), member_config(1, &first_secret)),
-            (roster_member_id(2), member_config(2, &second_secret)),
-            (roster_member_id(3), member_config(3, &third_secret)),
-        ]);
-        let threshold_params = ThresholdParams::new(3, 2, 2).expect("threshold params");
-        let config = FederationConfig::new(threshold_params, members, Vec::new())
-            .expect("federation config");
-        let private_members = vec![
-            private_member(1, first_secret),
-            private_member(2, second_secret),
-            private_member(3, third_secret),
-        ];
-        (config, private_members)
-    }
-
     fn keyset_id() -> Id {
         Id::from_str("00bfa73302d12ffd").expect("keyset id")
     }
@@ -3640,6 +3665,7 @@ mod tests {
                 "aleph_bft_live_session_active",
                 "aleph_bft_network_inbound_active",
                 "aleph_bft_status",
+                "checkpoint",
                 "duplicate_pending_waiter_joins",
                 "duplicate_submissions",
                 "invalid_operation_alerts",

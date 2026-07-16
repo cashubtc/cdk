@@ -314,6 +314,29 @@ impl FederationAlephBftFinalizedItem {
             self.unit_index,
         )
     }
+
+    /// Validate that another retained item is the exact same finalized fact.
+    pub fn ensure_matches(&self, other: &Self) -> Result<()> {
+        if self.accepted_item_index != other.accepted_item_index
+            || self.session != other.session
+            || self.unit_finalization_index != other.unit_finalization_index
+            || self.unit_submitting_member != other.unit_submitting_member
+            || self.unit_index != other.unit_index
+            || self.item_index_in_unit != other.item_index_in_unit
+            || self.operation_id != other.operation_id
+            || self.status != other.status
+            || self.unit_body_hash != other.unit_body_hash
+            || self.item.canonical_bytes()? != other.item.canonical_bytes()?
+        {
+            return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
+                reason: format!(
+                    "finalized item mismatch at accepted item index {}",
+                    other.accepted_item_index
+                ),
+            });
+        }
+        Ok(())
+    }
 }
 
 /// Operator-facing status for the consensus runtime.

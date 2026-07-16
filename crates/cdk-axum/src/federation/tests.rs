@@ -80,9 +80,10 @@ use super::aleph_bft_network::{
     CdkAlephBftNetworkPumpConfig, CdkAlephBftNetworkRetryQueue,
     CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT,
 };
+#[cfg(feature = "prometheus")]
+use super::aleph_bft_runtime::CdkAlephBftSessionIo;
 use super::aleph_bft_runtime::{
     CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetwork, CdkAlephBftNetworkData,
-    CdkAlephBftSessionIo,
 };
 use super::aleph_bft_session::AlephBftSessionSupervisorState;
 use super::peer_client::FederationRestPeerClientError;
@@ -8006,6 +8007,7 @@ async fn assert_trusted_checkpoint_suffix_rejects_corruption(alter_consensus_evi
         error.downcast_ref::<cdk::Error>(),
         Some(cdk::Error::Federation(
             FederationError::AlephBftFinalizedItemRecoveryMismatch { .. }
+                | FederationError::CatchUpOperationIdMismatch { .. }
         ))
     ));
     assert!(db
@@ -8089,16 +8091,28 @@ async fn trusted_checkpoint_startup_rejects_changed_terminal_result() {
         response: cdk::error::ErrorResponse::from(cdk::Error::TokenAlreadySpent),
     };
 
-    let error = crate::validate_checkpoint_startup_suffix(
-        &checkpoint,
-        &frontier,
-        &journal_entries,
-        &finalized_items,
-    )
-    .expect_err("changed terminal result must fail suffix verification");
+    let active_session = db
+        .get_federation_aleph_bft_active_session()
+        .await
+        .expect("active session")
+        .unwrap_or(0);
+    let verified_quorum = quorum
+        .verify(&public_config)
+        .expect("verify checkpoint quorum");
+    let verifier = crate::FederationCheckpointStartupVerifier {
+        mint: &state.mint,
+        config: &public_config,
+        member_id: local_private.member_id,
+        active_session,
+        checkpoint: &verified_quorum,
+    };
+    let error = verifier
+        .verify(&frontier, &journal_entries, &finalized_items)
+        .await
+        .expect_err("changed terminal result must fail suffix verification");
     assert!(matches!(
         error,
-        cdk::Error::Federation(FederationError::CheckpointStartupSuffixMismatch { .. })
+        cdk::Error::Federation(FederationError::AlephBftFinalizedItemRecoveryMismatch { .. })
     ));
 }
 
@@ -10179,7 +10193,10 @@ async fn federation_runtime_startup_rejects_aleph_bft_journal_mismatch() {
         .expect_err("AlephBFT journal mismatch rejected");
     assert!(matches!(
         err.downcast_ref::<FederationError>(),
-        Some(FederationError::AlephBftFinalizedItemRecoveryMismatch { .. })
+        Some(
+            FederationError::AlephBftFinalizedItemRecoveryMismatch { .. }
+                | FederationError::CatchUpOperationIdMismatch { .. }
+        )
     ));
 }
 

@@ -3199,7 +3199,7 @@ mod tests {
             FederationPaymentObservationContext::MintQuote,
             "mint-quote",
             2,
-            &[first.clone()],
+            std::slice::from_ref(&first),
         );
         assert_eq!(
             unresolved.status,

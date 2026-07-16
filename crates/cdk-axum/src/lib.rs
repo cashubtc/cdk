@@ -22,19 +22,19 @@ use cdk::federation::{
     redact_federation_operator_message, FederationAddressAllocationScope,
     FederationAddressKeychain, FederationAlephBftFinalizedItem,
     FederationAlephBftFinalizedItemStatus, FederationAlephBftUnitPayload,
-    FederationApplicationDigest, FederationChainObservation, FederationCheckpoint,
-    FederationCheckpointFrontier, FederationCheckpointQuorum, FederationConfig,
-    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRuntime,
-    FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
-    FederationDkgFinalizedMemberConfig, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationError, FederationFrostApplicationId,
-    FederationFrostDkgContext, FederationInvalidOperationAlertSummary,
-    FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationOnchainWalletStatus, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationKind, FederationOperationStatus, FederationRestMessageKind,
-    FederationRestSequenceTracker, FederationSubmitOperationResponse, InMemoryFederationJournal,
-    MemberId,
+    FederationChainObservation, FederationCheckpoint, FederationCheckpointFrontier,
+    FederationCheckpointQuorum, FederationConfig, FederationConfigSnapshot,
+    FederationConsensusItem, FederationConsensusRuntime, FederationConsensusRuntimeStatus,
+    FederationDkgActivationRequest, FederationDkgFinalizedMemberConfig,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest, FederationError,
+    FederationFrostApplicationId, FederationFrostDkgContext,
+    FederationInvalidOperationAlertSummary, FederationJournalAppendOutcome,
+    FederationJournalCatchUpResponse, FederationJournalEntry, FederationOnchainWalletStatus,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationRestMessageKind, FederationRestSequenceTracker,
+    FederationSubmitOperationResponse, FederationSuffixVerifier, MemberId,
+    VerifiedFederationCheckpointQuorum,
 };
 use cdk::mint::Mint;
 #[cfg(feature = "federation")]
@@ -753,7 +753,7 @@ impl FederationOperationNotifications {
     }
 }
 
-#[cfg(feature = "federation")]
+#[cfg(all(feature = "federation", test))]
 fn catch_up_response_suffix_for_local_journal(
     local_entries: &[FederationJournalEntry],
     local_next_index: u64,
@@ -787,7 +787,7 @@ fn catch_up_response_suffix_for_local_journal(
                 found: local_next_index,
             })
         })?;
-        ensure_catch_up_overlap_matches(local_entry, entry)?;
+        entry.ensure_matches_journal_entry(local_entry)?;
         suffix_start = suffix_start.saturating_add(1);
     }
 
@@ -801,60 +801,7 @@ fn catch_up_response_suffix_for_local_journal(
     Ok(Some(suffix))
 }
 
-#[cfg(feature = "federation")]
-fn ensure_catch_up_overlap_matches(
-    local_entry: &FederationJournalEntry,
-    peer_entry: &cdk::federation::FederationCatchUpOperation,
-) -> Result<(), cdk::Error> {
-    if local_entry.index != peer_entry.index {
-        return Err(cdk::Error::Federation(
-            FederationError::CatchUpIndexMismatch {
-                expected: local_entry.index,
-                found: peer_entry.index,
-            },
-        ));
-    }
-    if local_entry.operation_id != peer_entry.operation_id {
-        return Err(cdk::Error::Federation(
-            FederationError::CatchUpOperationIdMismatch {
-                index: peer_entry.index,
-                expected: local_entry.operation_id,
-                found: peer_entry.operation_id,
-            },
-        ));
-    }
-    if local_entry.previous_order_digest != peer_entry.previous_order_digest {
-        return Err(cdk::Error::Federation(
-            FederationError::CatchUpDigestMismatch {
-                index: peer_entry.index,
-                expected: local_entry.previous_order_digest,
-                found: peer_entry.previous_order_digest,
-            },
-        ));
-    }
-    if local_entry.order_digest != peer_entry.order_digest {
-        return Err(cdk::Error::Federation(
-            FederationError::CatchUpDigestMismatch {
-                index: peer_entry.index.saturating_add(1),
-                expected: local_entry.order_digest,
-                found: peer_entry.order_digest,
-            },
-        ));
-    }
-    if should_overlay_local_status_after_aleph_bft_recovery(local_entry.status())
-        && should_overlay_local_status_after_aleph_bft_recovery(peer_entry.application.status())
-        && local_entry.application != peer_entry.application
-    {
-        return Err(aleph_bft_catch_up_recovery_mismatch(format!(
-            "catch-up application outcome mismatch at operation {}",
-            peer_entry.operation_id
-        )));
-    }
-
-    Ok(())
-}
-
-#[cfg(feature = "federation")]
+#[cfg(all(feature = "federation", test))]
 fn aleph_bft_finalized_item_suffix_for_local(
     local_items: &[FederationAlephBftFinalizedItem],
     local_next_item_index: u64,
@@ -882,7 +829,7 @@ fn aleph_bft_finalized_item_suffix_for_local(
                     peer_item.accepted_item_index
                 ))
             })?;
-            ensure_aleph_bft_finalized_item_overlap_matches(local_item, peer_item)?;
+            local_item.ensure_matches(peer_item)?;
         } else {
             suffix.push(peer_item.clone());
         }
@@ -897,40 +844,7 @@ fn aleph_bft_finalized_item_suffix_for_local(
     Ok(suffix)
 }
 
-#[cfg(feature = "federation")]
-fn ensure_aleph_bft_finalized_item_overlap_matches(
-    local_item: &FederationAlephBftFinalizedItem,
-    peer_item: &FederationAlephBftFinalizedItem,
-) -> Result<(), cdk::Error> {
-    if local_item.accepted_item_index != peer_item.accepted_item_index
-        || local_item.session != peer_item.session
-        || local_item.unit_finalization_index != peer_item.unit_finalization_index
-        || local_item.unit_submitting_member != peer_item.unit_submitting_member
-        || local_item.unit_index != peer_item.unit_index
-        || local_item.item_index_in_unit != peer_item.item_index_in_unit
-        || local_item.operation_id != peer_item.operation_id
-        || local_item.status != peer_item.status
-        || local_item.unit_body_hash != peer_item.unit_body_hash
-    {
-        return Err(aleph_bft_catch_up_recovery_mismatch(format!(
-            "finalized item overlap mismatch at accepted item index {}",
-            peer_item.accepted_item_index
-        )));
-    }
-
-    let local_body = local_item.item.canonical_bytes()?;
-    let peer_body = peer_item.item.canonical_bytes()?;
-    if local_body != peer_body {
-        return Err(aleph_bft_catch_up_recovery_mismatch(format!(
-            "finalized item body mismatch at accepted item index {}",
-            peer_item.accepted_item_index
-        )));
-    }
-
-    Ok(())
-}
-
-#[cfg(feature = "federation")]
+#[cfg(all(feature = "federation", test))]
 fn ensure_catch_up_entries_match_recovered_journal(
     recovered_entries: &[FederationJournalEntry],
     response_to_apply: Option<&FederationJournalCatchUpResponse>,
@@ -947,7 +861,7 @@ fn ensure_catch_up_entries_match_recovered_journal(
             for (recovered_entry, response_entry) in
                 recovered_entries.iter().zip(response.entries.iter())
             {
-                ensure_catch_up_overlap_matches(recovered_entry, response_entry)?;
+                response_entry.ensure_matches_journal_entry(recovered_entry)?;
             }
         }
         None => {
@@ -2111,7 +2025,7 @@ fn accepted_federation_journal_entries(
         .collect()
 }
 
-#[cfg(feature = "federation")]
+#[cfg(all(feature = "federation", test))]
 fn should_overlay_local_status_after_aleph_bft_recovery(status: FederationOperationStatus) -> bool {
     matches!(
         status,
@@ -2674,192 +2588,143 @@ fn checkpoint_is_exact_startup_frontier(
 }
 
 #[cfg(feature = "federation")]
-fn validate_checkpoint_startup_suffix(
-    checkpoint: &FederationCheckpoint,
-    frontier: &FederationCheckpointFrontier,
-    journal_entries: &[FederationJournalEntry],
+async fn historical_entries_referenced_by_finalized_items(
+    mint: &Mint,
     finalized_items: &[FederationAlephBftFinalizedItem],
-) -> std::result::Result<usize, cdk::Error> {
-    let journal = InMemoryFederationJournal::from_base_and_entries(
-        checkpoint.journal_next_index,
-        checkpoint.journal_order_digest,
-        journal_entries.to_vec(),
-    )?;
-    if journal.next_index() != frontier.journal_next_index
-        || journal.latest_order_digest() != frontier.journal_order_digest
-    {
-        return Err(FederationError::CheckpointStartupSuffixMismatch {
-            reason: "retained journal suffix does not reach the durable frontier".to_string(),
-        }
-        .into());
-    }
-
-    let terminal_prefix_len = frontier
-        .application_next_index
-        .checked_sub(checkpoint.journal_next_index)
-        .ok_or_else(|| FederationError::CheckpointStartupSuffixMismatch {
-            reason: "durable application cursor precedes the trusted checkpoint".to_string(),
-        })?;
-    let terminal_prefix_len = usize::try_from(terminal_prefix_len).map_err(|_| {
-        FederationError::CheckpointStartupSuffixMismatch {
-            reason: "durable application suffix length exceeds local address space".to_string(),
-        }
-    })?;
-    if terminal_prefix_len > journal_entries.len() {
-        return Err(FederationError::CheckpointStartupSuffixMismatch {
-            reason: "durable application cursor exceeds the retained journal suffix".to_string(),
-        }
-        .into());
-    }
-    if let Some(entry) = journal_entries[..terminal_prefix_len]
-        .iter()
-        .find(|entry| !entry.application.is_terminal())
-    {
-        return Err(FederationError::CheckpointStartupSuffixMismatch {
-            reason: format!(
-                "durable application prefix contains non-terminal journal index {}",
-                entry.index
-            ),
-        }
-        .into());
-    }
-    let application_digest = journal_entries[..terminal_prefix_len].iter().try_fold(
-        checkpoint.application_digest,
-        |digest: FederationApplicationDigest, entry| {
-            digest.append_terminal(entry.index, entry.operation_id, &entry.application)
-        },
-    )?;
-    if application_digest != frontier.application_digest {
-        return Err(FederationError::CheckpointStartupSuffixMismatch {
-            reason: "retained application suffix digest does not reach the durable frontier"
-                .to_string(),
-        }
-        .into());
-    }
-
-    let mut finalized_digest = checkpoint.finalized_item_digest;
-    let mut expected_item_index = checkpoint.finalized_next_item_index;
-    for item in finalized_items {
-        if item.accepted_item_index != expected_item_index {
-            return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                reason: format!(
-                    "non-contiguous checkpoint suffix item: expected {expected_item_index}, found {}",
-                    item.accepted_item_index
-                ),
-            }
-            .into());
-        }
-        finalized_digest = finalized_digest.append(item)?;
-        expected_item_index = expected_item_index.saturating_add(1);
-    }
-    if expected_item_index != frontier.finalized_next_item_index
-        || finalized_digest != frontier.finalized_item_digest
-    {
-        return Err(FederationError::CheckpointStartupSuffixMismatch {
-            reason: "retained finalized-item suffix does not reach the durable frontier"
-                .to_string(),
-        }
-        .into());
-    }
-
-    let accepted_operations = finalized_items
-        .iter()
-        .filter_map(|item| {
-            if item.status != FederationAlephBftFinalizedItemStatus::Accepted {
-                return None;
-            }
-            match &item.item {
-                FederationConsensusItem::Operation(envelope) => Some((item, envelope)),
-                _ => None,
-            }
-        })
-        .collect::<Vec<_>>();
-    if accepted_operations.len() != journal_entries.len() {
-        return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-            reason: format!(
-                "checkpoint suffix operation count mismatch: finalized={}, journal={}",
-                accepted_operations.len(),
-                journal_entries.len()
-            ),
-        }
-        .into());
-    }
-    for ((item, envelope), entry) in accepted_operations.into_iter().zip(journal_entries) {
-        if item.operation_id != Some(entry.operation_id)
-            || envelope.canonical_bytes()? != entry.envelope.canonical_bytes()?
-            || Some(item.consensus_evidence()) != entry.consensus_evidence
+    checkpoint_journal_next_index: u64,
+) -> std::result::Result<Vec<FederationJournalEntry>, cdk::Error> {
+    let db = mint.localstore();
+    let mut historical_entries = BTreeMap::new();
+    for finalized_item in finalized_items {
+        if finalized_item.status == FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
         {
-            return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                reason: format!(
-                    "checkpoint journal suffix disagrees with finalized item {}",
-                    item.accepted_item_index
-                ),
+            continue;
+        }
+        let FederationConsensusItem::Operation(envelope) = &finalized_item.item else {
+            continue;
+        };
+        let operation_id = envelope.operation_id()?;
+        if let Some(entry) = db
+            .get_federation_journal_entry_by_operation_id(operation_id)
+            .await?
+            .filter(|entry| entry.index < checkpoint_journal_next_index)
+        {
+            historical_entries.insert(entry.index, entry);
+        }
+        for conflict_key in envelope.operation.conflict_keys() {
+            if let Some(entry) = db
+                .get_federation_journal_entry_by_conflict_key(&conflict_key)
+                .await?
+                .filter(|entry| entry.index < checkpoint_journal_next_index)
+            {
+                historical_entries.insert(entry.index, entry);
             }
-            .into());
         }
     }
-    Ok(terminal_prefix_len)
+    Ok(historical_entries.into_values().collect())
 }
 
 #[cfg(feature = "federation")]
-async fn repair_checkpoint_startup_application_suffix(
-    mint: &Mint,
-    checkpoint: &FederationCheckpoint,
-    initial_frontier: &FederationCheckpointFrontier,
-    initial_journal_entries: &[FederationJournalEntry],
-    finalized_items: &[FederationAlephBftFinalizedItem],
-    terminal_prefix_len: usize,
-    consensus: &mut FederationConsensusRuntime,
-) -> std::result::Result<usize, cdk::Error> {
-    let entries_to_replay = &initial_journal_entries[terminal_prefix_len..];
-    if !entries_to_replay.is_empty() {
-        tracing::info!(
-            trusted_checkpoint_journal_index = checkpoint.journal_next_index,
-            application_next_index = initial_frontier.application_next_index,
-            journal_next_index = initial_frontier.journal_next_index,
-            replay_entries = entries_to_replay.len(),
-            "Repairing terminal application after trusted checkpoint startup"
-        );
-    } else {
-        return Ok(0);
-    }
-    for entry in entries_to_replay {
-        federation::apply_federation_journal_entry_for_replay(mint, entry).await?;
+struct FederationCheckpointStartupVerifier<'a> {
+    mint: &'a Mint,
+    config: &'a FederationConfig,
+    member_id: MemberId,
+    active_session: u64,
+    checkpoint: &'a VerifiedFederationCheckpointQuorum,
+}
+
+#[cfg(feature = "federation")]
+impl FederationCheckpointStartupVerifier<'_> {
+    async fn verify(
+        &self,
+        frontier: &FederationCheckpointFrontier,
+        journal_entries: &[FederationJournalEntry],
+        finalized_items: &[FederationAlephBftFinalizedItem],
+    ) -> std::result::Result<cdk::federation::VerifiedFederationSuffix, cdk::Error> {
+        let checkpoint_payload = self.checkpoint.checkpoint();
+        let historical_entries = historical_entries_referenced_by_finalized_items(
+            self.mint,
+            finalized_items,
+            checkpoint_payload.journal_next_index,
+        )
+        .await?;
+        let mut verifier = FederationSuffixVerifier::from_checkpoint(
+            self.config,
+            self.member_id,
+            self.active_session,
+            self.checkpoint,
+        )?;
+        verifier.register_historical_entries(historical_entries)?;
+        verifier.push_finalized_items(finalized_items)?;
+        verifier.push_journal_entries(journal_entries)?;
+        Ok(verifier.finish_for_durable_frontier(frontier)?)
     }
 
-    let db = mint.localstore();
-    let repaired_frontier = db.get_federation_checkpoint_frontier().await?;
-    if !repaired_frontier.ordered_history_matches(initial_frontier) {
-        return Err(FederationError::CheckpointStartupSuffixMismatch {
-            reason: "durable ordered frontier changed during startup application replay"
-                .to_string(),
+    async fn repair_application(
+        &self,
+        initial_frontier: &FederationCheckpointFrontier,
+        initial_journal_entries: &[FederationJournalEntry],
+        finalized_items: &[FederationAlephBftFinalizedItem],
+        terminal_prefix_len: usize,
+        consensus: &mut FederationConsensusRuntime,
+    ) -> std::result::Result<usize, cdk::Error> {
+        let checkpoint_payload = self.checkpoint.checkpoint();
+        let entries_to_replay = &initial_journal_entries[terminal_prefix_len..];
+        if !entries_to_replay.is_empty() {
+            tracing::info!(
+                trusted_checkpoint_journal_index = checkpoint_payload.journal_next_index,
+                application_next_index = initial_frontier.application_next_index,
+                journal_next_index = initial_frontier.journal_next_index,
+                replay_entries = entries_to_replay.len(),
+                "Repairing terminal application after trusted checkpoint startup"
+            );
+        } else {
+            return Ok(0);
         }
-        .into());
-    }
-    let repaired_journal_entries = db
-        .get_federation_journal_entries_from(checkpoint.journal_next_index)
-        .await?;
-    let repaired_terminal_prefix_len = validate_checkpoint_startup_suffix(
-        checkpoint,
-        &repaired_frontier,
-        &repaired_journal_entries,
-        finalized_items,
-    )?;
-    if !repaired_frontier.is_fully_terminal()
-        || repaired_terminal_prefix_len != repaired_journal_entries.len()
-    {
-        return Err(
-            FederationError::CheckpointStartupApplicationReplayIncomplete {
-                expected: repaired_frontier.journal_next_index,
-                found: repaired_frontier.application_next_index,
+        for entry in entries_to_replay {
+            federation::apply_federation_journal_entry_for_replay(self.mint, entry).await?;
+        }
+
+        let db = self.mint.localstore();
+        let repaired_frontier = db.get_federation_checkpoint_frontier().await?;
+        if !repaired_frontier.ordered_history_matches(initial_frontier) {
+            return Err(FederationError::CheckpointStartupSuffixMismatch {
+                reason: "durable ordered frontier changed during startup application replay"
+                    .to_string(),
             }
-            .into(),
-        );
+            .into());
+        }
+        let repaired_journal_entries = db
+            .get_federation_journal_entries_from(checkpoint_payload.journal_next_index)
+            .await?;
+        let repaired_suffix = self
+            .verify(
+                &repaired_frontier,
+                &repaired_journal_entries,
+                finalized_items,
+            )
+            .await?;
+        let repaired_terminal_prefix_len =
+            usize::try_from(repaired_suffix.terminal_application_count()).map_err(|_| {
+                FederationError::CheckpointStartupSuffixMismatch {
+                    reason: "terminal application suffix length exceeds local address space"
+                        .to_string(),
+                }
+            })?;
+        if !repaired_frontier.is_fully_terminal()
+            || repaired_terminal_prefix_len != repaired_journal_entries.len()
+        {
+            return Err(
+                FederationError::CheckpointStartupApplicationReplayIncomplete {
+                    expected: repaired_frontier.journal_next_index,
+                    found: repaired_frontier.application_next_index,
+                }
+                .into(),
+            );
+        }
+        *consensus = repaired_suffix.into_runtime();
+        Ok(entries_to_replay.len())
     }
-    for entry in repaired_journal_entries {
-        consensus.update_application_state(entry.operation_id, entry.application)?;
-    }
-    Ok(entries_to_replay.len())
 }
 
 #[cfg(feature = "federation")]
@@ -2939,20 +2804,12 @@ async fn create_federation_runtime_state_with_wallet(
                 }
                 .into());
             }
-            if checkpoint_is_exact_startup_frontier(checkpoint, &frontier)? {
-                let mut consensus =
-                    FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint(
-                        config.public_config(),
-                        config.member_id(),
-                        checkpoint,
-                    )?;
-                if active_session > checkpoint.aleph_bft_session {
-                    consensus.begin_aleph_bft_session(active_session)?;
-                }
-                Some(consensus)
+            let exact_checkpoint = checkpoint_is_exact_startup_frontier(checkpoint, &frontier)?;
+            #[cfg(feature = "prometheus")]
+            let tail_started_at = std::time::Instant::now();
+            let (journal_entries, finalized_items) = if exact_checkpoint {
+                (Vec::new(), Vec::new())
             } else {
-                #[cfg(feature = "prometheus")]
-                let tail_started_at = std::time::Instant::now();
                 let journal_entries = db
                     .get_federation_journal_entries_from(checkpoint.journal_next_index)
                     .await?;
@@ -2987,34 +2844,34 @@ async fn create_federation_runtime_state_with_wallet(
                         finalized_rows,
                     );
                 }
-                let terminal_prefix_len = validate_checkpoint_startup_suffix(
-                    checkpoint,
-                    &frontier,
-                    &journal_entries,
-                    &finalized_items,
-                )?;
-                let recovered_session = latest_aleph_bft_finalized_session(&finalized_items)
-                    .max(active_session)
-                    .max(checkpoint.aleph_bft_session);
-                let mut consensus =
-                    FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint_suffix(
-                        config.public_config(),
-                        config.member_id(),
-                        recovered_session,
-                        checkpoint,
-                        journal_entries.clone(),
-                        finalized_items.clone(),
-                    )?;
-                let replayed_entries = repair_checkpoint_startup_application_suffix(
-                    mint,
-                    checkpoint,
-                    &frontier,
-                    &journal_entries,
-                    &finalized_items,
-                    terminal_prefix_len,
-                    &mut consensus,
-                )
+                (journal_entries, finalized_items)
+            };
+            let startup_verifier = FederationCheckpointStartupVerifier {
+                mint,
+                config: config.public_config(),
+                member_id: config.member_id(),
+                active_session,
+                checkpoint: &verified_quorum,
+            };
+            let verified_suffix = startup_verifier
+                .verify(&frontier, &journal_entries, &finalized_items)
                 .await?;
+            let terminal_prefix_len = usize::try_from(verified_suffix.terminal_application_count())
+                .map_err(|_| FederationError::CheckpointStartupSuffixMismatch {
+                    reason: "terminal application suffix length exceeds local address space"
+                        .to_string(),
+                })?;
+            let mut consensus = verified_suffix.into_runtime();
+            if !exact_checkpoint {
+                let replayed_entries = startup_verifier
+                    .repair_application(
+                        &frontier,
+                        &journal_entries,
+                        &finalized_items,
+                        terminal_prefix_len,
+                        &mut consensus,
+                    )
+                    .await?;
                 #[cfg(feature = "prometheus")]
                 cdk_prometheus::METRICS.record_federation_checkpoint_work(
                     &config.member_id().to_string(),
@@ -3029,8 +2886,8 @@ async fn create_federation_runtime_state_with_wallet(
                     cdk_prometheus::FederationCheckpointOperation::StartupTail,
                     tail_started_at.elapsed().as_secs_f64(),
                 );
-                Some(consensus)
             }
+            Some(consensus)
         }
     };
     let used_checkpoint = checkpoint_consensus.is_some();
@@ -3060,24 +2917,16 @@ async fn create_federation_runtime_state_with_wallet(
             }
             let recovered_session =
                 latest_aleph_bft_finalized_session(&finalized_items).max(active_session);
-            let mut consensus =
-                FederationConsensusRuntime::authenticated_aleph_bft_from_finalized_items(
-                    config.public_config(),
-                    config.member_id(),
-                    recovered_session,
-                    finalized_items,
-                )?;
-            ensure_persisted_journal_matches_aleph_bft_recovery(
-                &persisted_entries,
-                consensus.journal().entries(),
+            let mut verifier = FederationSuffixVerifier::from_genesis(
+                config.public_config(),
+                config.member_id(),
+                recovered_session,
             )?;
-            for entry in &persisted_entries {
-                if should_overlay_local_status_after_aleph_bft_recovery(entry.status()) {
-                    consensus
-                        .update_application_state(entry.operation_id, entry.application.clone())?;
-                }
-            }
-            consensus
+            verifier.push_finalized_items(&finalized_items)?;
+            verifier.push_journal_entries(&persisted_entries)?;
+            verifier
+                .finish_for_durable_frontier(&frontier)?
+                .into_runtime()
         }
     };
     let session_id = consensus.aleph_bft_status()?.session;
@@ -3363,44 +3212,4 @@ fn latest_aleph_bft_finalized_session(finalized_items: &[FederationAlephBftFinal
         .map(|item| item.session)
         .max()
         .unwrap_or(0)
-}
-
-#[cfg(feature = "federation")]
-fn ensure_persisted_journal_matches_aleph_bft_recovery(
-    persisted_entries: &[FederationJournalEntry],
-    recovered_entries: &[FederationJournalEntry],
-) -> Result<()> {
-    if persisted_entries.is_empty() {
-        return Ok(());
-    }
-    if persisted_entries.len() != recovered_entries.len() {
-        return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-            reason: format!(
-                "journal entry count mismatch: persisted={}, recovered={}",
-                persisted_entries.len(),
-                recovered_entries.len()
-            ),
-        }
-        .into());
-    }
-
-    for (persisted, recovered) in persisted_entries.iter().zip(recovered_entries) {
-        if persisted.index != recovered.index
-            || persisted.operation_id != recovered.operation_id
-            || persisted.envelope.canonical_bytes()? != recovered.envelope.canonical_bytes()?
-            || persisted.previous_order_digest != recovered.previous_order_digest
-            || persisted.order_digest != recovered.order_digest
-            || persisted.consensus_evidence != recovered.consensus_evidence
-        {
-            return Err(FederationError::AlephBftFinalizedItemRecoveryMismatch {
-                reason: format!(
-                    "journal entry mismatch at accepted operation index {}",
-                    persisted.index
-                ),
-            }
-            .into());
-        }
-    }
-
-    Ok(())
 }

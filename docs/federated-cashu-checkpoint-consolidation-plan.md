@@ -354,9 +354,9 @@ Update this table whenever a milestone changes state.
 | Milestone | Description | Status | Commit(s) | Verification summary |
 |---|---|---|---|---|
 | 0 | Baseline, invariants, and fault reproduction | Complete | `test: freeze checkpoint consolidation baselines` | Crash windows, quiet-tip starvation, catch-up aggregation, runtime-clone growth, startup work, and focused safety suites are frozen with deterministic local tests. |
-| 1 | Crash-safe checkpoint suffix replay | In progress | — | Separating ordered-tail verification from terminal application replay while retaining fail-closed startup. |
-| 2 | Canonical frontier and verified checkpoint types | Not started | — | — |
-| 3 | Shared incremental suffix verifier | Not started | — | — |
+| 1 | Crash-safe checkpoint suffix replay | Complete | `fix: repair checkpoint startup application tails` | Trusted-checkpoint startup verifies ordered tails, repairs only the unapplied suffix through the existing idempotent application path, and revalidates the exact durable frontier before readiness. |
+| 2 | Canonical frontier and verified checkpoint types | Complete | `refactor: unify federation checkpoint frontiers` | Canonical component/frontier types own equality and coverage rules; quorum verification returns an unforgeable authority wrapper required by promotion and trusted recovery boundaries. |
+| 3 | Shared incremental suffix verifier | Complete | `refactor: unify federation suffix verification` | Startup, genesis reconstruction, and signed catch-up share one unit-buffered verifier, canonical overlap comparisons, live finalization semantics, rolling digests, and exact target proof. |
 | 4 | Unified consensus recovery API | Not started | — | — |
 | 5 | Bounded streaming checkpoint catch-up | Not started | — | — |
 | 6 | Focused runtime component split | Not started | — | — |
@@ -754,7 +754,7 @@ cut-through policy. The checkpoint-status subset changed here is green.
 
 ## Milestone 3: Shared incremental suffix verifier
 
-Status: not started
+Status: complete
 
 ### Objective
 
@@ -763,45 +763,95 @@ verification engine.
 
 ### Checklist
 
-- [ ] Implement a verifier initialized from genesis or a verified checkpoint.
-- [ ] Incrementally validate finalized-item contiguity, unit completeness,
+- [x] Implement a verifier initialized from genesis or a verified checkpoint.
+- [x] Incrementally validate finalized-item contiguity, unit completeness,
       body hashes, provenance, session transitions, and per-member watermarks.
-- [ ] Incrementally derive accepted journal operations from finalized items and
+- [x] Incrementally derive accepted journal operations from finalized items and
       validate journal indices, operation IDs, canonical envelopes, conflict
       outcomes, consensus evidence, and order digests.
-- [ ] Incrementally validate terminal application order and application digest.
-- [ ] Make overlap validation an explicit pre-suffix adapter with one canonical
+- [x] Incrementally validate terminal application order and application digest.
+- [x] Make overlap validation an explicit pre-suffix adapter with one canonical
       comparison implementation.
-- [ ] Return an opaque verified suffix/frontier result only after exact target
+- [x] Return an opaque verified suffix/frontier result only after exact target
       equality.
-- [ ] Use the verifier for trusted-checkpoint local startup suffix validation.
-- [ ] Use the same verifier for remote checkpoint-bound catch-up.
-- [ ] Use the same verifier for genesis reconstruction where doing so removes
+- [x] Use the verifier for trusted-checkpoint local startup suffix validation.
+- [x] Use the same verifier for remote checkpoint-bound catch-up.
+- [x] Use the same verifier for genesis reconstruction where doing so removes
       duplicate logic without slowing the exact-checkpoint path.
-- [ ] Delete superseded startup, catch-up rolling-frontier, and overlap helper
+- [x] Delete superseded startup, catch-up rolling-frontier, and overlap helper
       implementations.
 
 ### Exit tests
 
-- [ ] Identical suffixes presented through startup and network catch-up produce
+- [x] Identical suffixes presented through startup and network catch-up produce
       identical verified results.
-- [ ] A mutation corpus changing every committed field is rejected by both
+- [x] A mutation corpus changing every committed field is rejected by both
       paths at the same logical validation stage.
-- [ ] Chunk boundaries, page sizes, and item grouping do not change the final
+- [x] Chunk boundaries, page sizes, and item grouping do not change the final
       verified frontier.
-- [ ] Partial AlephBFT units are rejected without advancing verified state.
-- [ ] Duplicate and invalidly authenticated finalized operations reproduce the
+- [x] Partial AlephBFT units are rejected without advancing verified state.
+- [x] Duplicate and invalidly authenticated finalized operations reproduce the
       same journal behavior as live finalization.
-- [ ] Exact-checkpoint startup consumes no historical prefix rows.
+- [x] Exact-checkpoint startup consumes no historical prefix rows.
 
 ### Progress notes
 
-Record the verifier state machine, invariants owned by each method, and deleted
-duplicate functions here.
+`FederationSuffixVerifier` starts from either genesis digests or a
+`VerifiedFederationCheckpointQuorum`. It accepts finalized-item and journal
+chunks independently, retains only the currently unclosed AlephBFT unit, and
+does not advance its committed finalized frontier until the unit body is
+complete. Closing a unit reconstructs the canonical payload and sends it
+through the same authenticated live finalization path, which reproduces roster,
+authorization, duplicate-operation, conflict, session, unit-finalization, and
+per-member watermark behavior instead of maintaining a second implementation.
+
+Each derived journal row is paired once with either a full durable row or the
+compact catch-up projection. The shared comparison checks index, operation ID,
+order-digest links, canonical envelope, conflict keys, consensus evidence, and
+consensus-conflict outcome. Full local rows overlay only terminal application
+state; compact peer terminal state is used solely to verify the signed
+application frontier until local deterministic replay reproduces it. The
+application digest advances only over the contiguous terminal prefix, so a
+terminal row beyond a durable non-terminal gap is retained but cannot move the
+committed cursor. `VerifiedFederationSuffix` remains field-private and is
+created only after journal, finalized, application, and—when checkpoint
+targeted—AlephBFT frontiers equal the target exactly.
+
+Trusted-checkpoint startup, the no-checkpoint genesis reconstruction path, and
+checkpoint-bound peer catch-up now use this engine. Exact-checkpoint startup
+passes empty chunks and therefore performs no journal, finalized-item, or
+historical-guard reads. A non-empty checkpoint tail loads only targeted
+pre-checkpoint duplicate/conflict guards referenced by that tail. The old
+startup suffix validator, catch-up rolling-digest validator, genesis journal
+comparison loop, and handwritten journal/finalized overlap comparators were
+removed. Overlap uses `FederationCatchUpOperation::ensure_matches_journal_entry`
+and `FederationAlephBftFinalizedItem::ensure_matches` everywhere.
+
+Verification completed locally:
+
+- `cargo test -p cdk-common --features federation suffix_verifier --lib` (8
+  passed), including full-versus-compact equivalence, finalized and journal
+  mutation corpora, one-item page boundaries through multi-item units, partial
+  units, application gaps, duplicates, and invalid authorization;
+- `cargo test -p cdk-axum --features federation checkpoint --lib` (19 passed),
+  including exact-checkpoint zero-prefix startup and two successive signed
+  checkpoint promotions;
+- focused `catch_up` (22 passed, 1 ignored), `trusted_checkpoint` (8 passed),
+  and `federation_runtime_startup` (6 passed) filters;
+- the full `cdk-common` federation library suite (405 passed, 1 ignored, after
+  correcting the stale local-status field fixture) and full `cdk` federation library suite
+  (768 passed; 765 passed in the sandbox and the three loopback-listener tests
+  passed separately with local bind permission);
+- `cargo check --workspace --all-targets`, strict `cdk-common` Clippy,
+  `cargo fmt --all -- --check`, and `git diff --check`.
+
+Strict `cdk-axum` Clippy remains blocked by the pre-existing library lint
+backlog; after grouping the new startup verifier parameters it reports no new
+Milestone 3 finding.
 
 ### Commit gate
 
-- [ ] Commit the shared verifier migration and tests before starting milestone
+- [x] Commit the shared verifier migration and tests before starting milestone
       4.
 
 ## Milestone 4: Unified consensus recovery API

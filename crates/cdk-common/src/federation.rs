@@ -21,6 +21,7 @@ mod operation;
 mod operator_status;
 mod recovery;
 mod signing;
+mod suffix_verifier;
 mod transaction_proposal;
 mod transport;
 mod trusted_dealer;
@@ -147,6 +148,7 @@ pub use self::recovery::{
 pub use self::signing::{
     FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
 };
+pub use self::suffix_verifier::{FederationSuffixVerifier, VerifiedFederationSuffix};
 pub use self::transaction_proposal::{
     FederationAcceptedTransaction, FederationAcceptedTransactionState,
     FederationCdkOnchainFrostAuthorization, FederationFrostInputSignatureAudit,
