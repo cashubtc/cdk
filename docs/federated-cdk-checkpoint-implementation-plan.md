@@ -3,8 +3,8 @@
 Status: in progress (checkpoint protocol, persistence, exchange, bounded catch-up,
 nonzero startup, certificate cut-through, checkpoint-native operator tooling,
 crash-safe checkpoint retention, and bounded work instrumentation are
-implemented; synthetic baselines, bounded-log verification, and milestone-8
-validation remain)
+implemented; checkpoint production is event-driven and stable checkpoint polls
+are work/log silent; synthetic baselines and milestone-8 validation remain)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -913,10 +913,10 @@ peer-sync tick.
       `checkpoint_interval_journal_operations` and
       `checkpoint_interval_finalized_items`; document initial defaults of
       10,000 for both.
-- [ ] Add runtime dirty/eligible frontiers advanced only after durable finalized
+- [x] Add runtime dirty/eligible frontiers advanced only after durable finalized
       unit application and trigger scheduled eligibility when either interval
       crosses its next target.
-- [ ] Select the first terminal, fully materialized, complete finalized-unit
+- [x] Select the first terminal, fully materialized, complete finalized-unit
       boundary after eligibility and capture its exact boundary commitments
       before later finalization advances state.
 - [x] Under the operation-application lock and a transactionally stable database
@@ -957,24 +957,26 @@ peer-sync tick.
 
 ### Progress and verification
 
-The live finalized-unit path now maintains per-member next-unit watermarks in
-the consensus finalization handler. While the existing operation-application
-mutex still excludes later finalization, it checks the bounded rolling
-frontiers against the latest scheduled quorum. An eligible member computes the
-direct full-state audit, derives the canonical scheduled checkpoint, and
-persists the candidate and its local identity signature in one transaction.
-A pending scheduled sequence suppresses later unit events, so the expensive
-audit and local signature are not repeated while quorum exchange is pending.
-Duplicate finalized-unit retry follows the same capture hook, which closes the
-ordinary post-commit retry window.
+The live finalized-unit path reuses the durable journal/application frontier
+and the consensus complete-unit watermarks as its dirty/eligible frontier; it
+does not maintain a parallel cache. After one finalized unit is durably
+persisted and fully applied, while the existing operation-application mutex
+still excludes later finalization, it checks those bounded rolling frontiers
+against the latest scheduled quorum. The first eligible complete boundary is
+therefore audited and persisted before a later unit can advance state. A
+pending scheduled sequence suppresses later unit events, so the expensive audit
+and local signature are not repeated while quorum exchange is pending.
+Duplicate finalized-unit retry follows the same hook. A single startup-only
+recovery call closes the crash window between durable application and candidate
+persistence; status, signature, and peer-sync polling no longer re-enter
+checkpoint production.
 
 Authenticated private REST now exposes four bounded checkpoint message classes:
 scalar summary, exact-ID fetch, exact-ID local-signature request, and assembled
 quorum publication. They use the existing signed envelope, request admission,
 kind-isolated replay windows, peer timeout, and reconnect selection. Signature
-requests do not contain a checkpoint payload. The receiver first re-enters the
-scheduled-candidate capture path under the application lock, then returns only
-its already persisted signature for that exact locally derived checkpoint ID.
+requests do not contain a checkpoint payload. The receiver returns only its
+already persisted signature for that exact locally derived checkpoint ID.
 
 The peer-sync round compares scalar summaries, fetches an advertised assembled
 quorum from one holder, requests only missing signatures for an identical local
@@ -982,8 +984,7 @@ scheduled candidate, promotes once threshold is reached, and publishes the
 stored proof only to peers that do not report it. An ahead quorum is verified
 and stored without being promoted before the local durable frontier reaches it.
 Unchanged rounds therefore perform no checkpoint signing, audit, quorum write,
-or full-proof transfer. The summary re-entry hook also closes the ordinary
-crash window between a durable eligible boundary and candidate capture.
+full-proof transfer, or stored-proof verification.
 
 Recovery checkpoints now reuse the same candidate, signature, quorum,
 promotion, fetch, and dissemination path. A member that is not healthy requests
@@ -1001,10 +1002,12 @@ member's current complete-unit boundary. If the tip moved while signatures were
 collected, demand remains active and the same bounded process targets the newer
 stable tip.
 
-The first-boundary selection and event-driven-frontier checklist items remain
-intentionally unchecked until catch-up/restart paths prove that a member which
-missed the live hook selects the same earliest eligible complete-unit boundary
-rather than its later catch-up tip.
+Focused runtime regressions now prove that the interval-crossing unit is the
+captured scheduled boundary, later finalization cannot move a pending
+candidate, and startup recovery creates only one signature for durable eligible
+progress whose ordinary capture was interrupted. A twelve-round stable-poll
+regression also proves zero checkpoint work-counter growth, zero journal
+catch-up requests, and no debug-or-higher log output.
 
 Verified with:
 
@@ -1021,7 +1024,13 @@ Verified with:
 - `cargo test -p cdk-common --features federation
   transported_complete_boundary_requires_the_exact_roster --lib`;
 - `cargo test -p cdk-axum --features federation
-  recovery_checkpoint_observation_requires_two_identical_boundaries --lib`.
+  recovery_checkpoint_observation_requires_two_identical_boundaries --lib`;
+- `cargo test -p cdk-axum --features federation
+  scheduled_checkpoint_captures_first_complete_eligible_boundary --lib`;
+- `cargo test -p cdk-axum --features federation
+  startup_recovers_an_interrupted_eligible_checkpoint_capture_once --lib`;
+- `cargo test -p cdk-axum --features federation,prometheus
+  unchanged_checkpoint_polls_do_not_repeat_signature_verification --lib`.
 
 The current `cdk-axum` clippy rerun remains blocked by existing federation
 warnings outside this checkpoint slice; the checkpoint changes are covered by
@@ -1398,7 +1407,7 @@ trusted checkpoint frontier as scalar runtime state.
       from normal startup, status, readiness polling, or the peer-sync loop.
 - [x] Update smoke scripts to wait for checkpoint coverage only at explicit
       recovery/checkpoint gates, not after every lightweight operation.
-- [ ] Keep logs transition-based and bounded; unchanged checkpoint polls must
+- [x] Keep logs transition-based and bounded; unchanged checkpoint polls must
       remain debug-silent.
 
 ### Progress and verification
@@ -1428,6 +1437,15 @@ report the actual number of signatures verified without changing the common
 checkpoint protocol. Stored proof transfer is measured for both fetch and
 publication, and the startup fast path separately identifies full-history and
 post-checkpoint suffix rows.
+
+Stable polling now treats locally stored proofs according to their trust
+boundary: startup verifies the trusted proof, remote ingress verifies fetched
+or published proofs, and catch-up/promotion verify before state changes; scalar
+summary and fetch serving do not repeat that cryptographic work. Scheduled
+candidate recovery runs once at startup and otherwise only from durable
+finalized-unit application. The unconditional successful-round debug message
+was removed. Twelve unchanged checkpoint summary/fetch/exchange rounds are
+covered by a scoped log-capture and work-counter regression.
 
 Current cut-through verification completed:
 

@@ -64,6 +64,8 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) fail_next_pending_operation_persistence: Arc<AtomicBool>,
     #[cfg(test)]
     pub(crate) suppress_next_terminal_response_publication: Arc<AtomicBool>,
+    #[cfg(test)]
+    pub(crate) suppress_next_scheduled_checkpoint_capture: Arc<AtomicBool>,
     pub(crate) aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
     pub(crate) aleph_bft_live_session: FederationAlephBftLiveSessionState,
     pub(crate) aleph_bft_halt_epoch: Arc<AtomicU64>,
@@ -136,12 +138,12 @@ fn checkpoint_summary(
     Ok(FederationCheckpointSummary::from_checkpoint(checkpoint)?)
 }
 
-fn checkpoint_quorum_summary(
+fn stored_checkpoint_quorum_summary(
     quorum: &FederationCheckpointQuorum,
     config: &FederationConfig,
-    local_member: MemberId,
 ) -> Result<FederationCheckpointSummary, cdk::Error> {
-    super::verify_checkpoint_quorum_with_metrics(quorum, config, local_member)?;
+    // This is presentation-only metadata. Stored proofs are verified at startup or ingress, and
+    // a peer must verify the full proof after fetching it before making any safety decision.
     checkpoint_summary(&quorum.checkpoint, config)
 }
 
@@ -229,6 +231,7 @@ impl FederationNodeRuntime {
             recovery_checkpoint_observation: Arc::new(tokio::sync::Mutex::new(None)),
             fail_next_pending_operation_persistence: Arc::new(AtomicBool::new(false)),
             suppress_next_terminal_response_publication: Arc::new(AtomicBool::new(false)),
+            suppress_next_scheduled_checkpoint_capture: Arc::new(AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_halt_epoch: Arc::new(AtomicU64::new(0)),
@@ -1848,6 +1851,13 @@ impl FederationNodeRuntime {
         if !boundary.is_scheduled_eligible(public_config.checkpoint_policy, latest_scheduled)? {
             return Ok(());
         }
+        #[cfg(test)]
+        if self
+            .suppress_next_scheduled_checkpoint_capture
+            .swap(false, Ordering::AcqRel)
+        {
+            return Ok(());
+        }
 
         #[cfg(feature = "prometheus")]
         let checkpoint_started_at = std::time::Instant::now();
@@ -1883,10 +1893,23 @@ impl FederationNodeRuntime {
         Ok(())
     }
 
-    pub(crate) async fn ensure_scheduled_checkpoint_candidate(&self) -> Result<(), cdk::Error> {
+    /// Recover the one scheduled candidate that a crash may have interrupted.
+    ///
+    /// Normal checkpoint production is driven by finalized-unit application. This startup-only
+    /// hook closes the gap between committing one eligible unit and persisting its candidate
+    /// without turning peer polling into a checkpoint-production loop.
+    pub(crate) async fn recover_scheduled_checkpoint_candidate_at_startup(
+        &self,
+    ) -> Result<(), cdk::Error> {
         let _application = self.operation_application.lock().await;
         self.capture_scheduled_checkpoint_if_eligible_under_application_lock()
             .await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn suppress_next_scheduled_checkpoint_capture(&self) {
+        self.suppress_next_scheduled_checkpoint_capture
+            .store(true, Ordering::Release);
     }
 
     /// Run the operator-requested full-state audit against the exact trusted checkpoint frontier.
@@ -2002,7 +2025,6 @@ impl FederationNodeRuntime {
         &self,
         next_scheduled_quorum_after: Option<u64>,
     ) -> Result<FederationCheckpointSummaryResponse, cdk::Error> {
-        self.ensure_scheduled_checkpoint_candidate().await?;
         let stable_tip = self.stable_checkpoint_boundary().await?;
         let mint = self.active_mint()?;
         let runtime_config = mint
@@ -2024,24 +2046,18 @@ impl FederationNodeRuntime {
         let latest_scheduled_quorum = db
             .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
             .await?
-            .map(|quorum| {
-                checkpoint_quorum_summary(&quorum, public_config, runtime_config.member_id())
-            })
+            .map(|quorum| stored_checkpoint_quorum_summary(&quorum, public_config))
             .transpose()?;
         let latest_recovery_quorum = db
             .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
             .await?
-            .map(|quorum| {
-                checkpoint_quorum_summary(&quorum, public_config, runtime_config.member_id())
-            })
+            .map(|quorum| stored_checkpoint_quorum_summary(&quorum, public_config))
             .transpose()?;
         let next_scheduled_quorum = match next_scheduled_quorum_after {
             Some(sequence) => db
                 .get_next_federation_scheduled_checkpoint_quorum(sequence)
                 .await?
-                .map(|quorum| {
-                    checkpoint_quorum_summary(&quorum, public_config, runtime_config.member_id())
-                })
+                .map(|quorum| stored_checkpoint_quorum_summary(&quorum, public_config))
                 .transpose()?,
             None => None,
         };
@@ -2251,14 +2267,9 @@ impl FederationNodeRuntime {
                 .into());
             }
         }
+        // Serving a stored proof is not a trust transition. The fetching peer verifies the full
+        // quorum before persistence, catch-up, or promotion.
         let quorum = db.get_federation_checkpoint_quorum(checkpoint_id).await?;
-        if let Some(quorum) = quorum.as_ref() {
-            super::verify_checkpoint_quorum_with_metrics(
-                quorum,
-                public_config,
-                runtime_config.member_id(),
-            )?;
-        }
         Ok(FederationCheckpointFetchResponse {
             version: FEDERATION_REST_API_VERSION,
             federation_id: runtime_config.federation_id(),
@@ -2272,7 +2283,6 @@ impl FederationNodeRuntime {
         &self,
         checkpoint_id: FederationCheckpointId,
     ) -> Result<FederationCheckpointSignatureResponse, cdk::Error> {
-        self.ensure_scheduled_checkpoint_candidate().await?;
         let mint = self.active_mint()?;
         let runtime_config = mint
             .federation_config()

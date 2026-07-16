@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+#[cfg(feature = "prometheus")]
+use std::io;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -21,16 +23,17 @@ use cdk::federation::{
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
     FederationApplicationState, FederationCheckpoint, FederationCheckpointBoundary,
-    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfigSnapshot,
-    FederationConsensusItem, FederationConsensusRuntime, FederationDkgActivationRequest,
-    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgCeremonyState,
-    FederationDkgCommitmentRound, FederationDkgMemberKeysetShare, FederationDkgSetupMethod,
-    FederationDkgTranscript, FederationDkgTranscriptHash, FederationDkgTranscriptSignature,
-    FederationError, FederationJournalAppendOutcome, FederationJournalDigest,
-    FederationJournalEntry, FederationKeysetRotationOperation, FederationMeltQuoteMetadata,
-    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationKind, FederationOperationStatus,
-    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationCheckpointPolicy, FederationCheckpointQuorum, FederationCheckpointSignature,
+    FederationCheckpointSummaryRequest, FederationCheckpointSummaryResponse,
+    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRuntime,
+    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
+    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgMemberKeysetShare,
+    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
+    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
+    FederationMeltQuoteMetadata, FederationMintQuotePaymentObservation, FederationOperation,
+    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
+    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationRecord,
     FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
     FederationRestMessageKind, FederationSignedRequest, InMemoryFederationJournal,
@@ -62,6 +65,8 @@ use parity_scale_codec::{Decode, Encode};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tower::ServiceExt;
+#[cfg(feature = "prometheus")]
+use tracing::instrument::WithSubscriber;
 
 use crate::auth::AuthHeader;
 
@@ -111,6 +116,58 @@ fn prometheus_metric_value(metric: &str, labels: &[(&str, &str)]) -> f64 {
                 .and_then(|(_, value)| value.parse::<f64>().ok())
         })
         .unwrap_or(0.0)
+}
+
+#[cfg(feature = "prometheus")]
+fn prometheus_metric_sum(metric: &str, labels: &[(&str, &str)]) -> f64 {
+    let registry = cdk_prometheus::METRICS.registry();
+    let scrape = cdk_prometheus::prometheus::TextEncoder::new()
+        .encode_to_string(&registry.gather())
+        .expect("encode prometheus metrics");
+    scrape
+        .lines()
+        .filter_map(|line| {
+            if !line.starts_with(metric) {
+                return None;
+            }
+            for (key, value) in labels {
+                let fragment = format!("{key}=\"{value}\"");
+                if !line.contains(&fragment) {
+                    return None;
+                }
+            }
+            line.rsplit_once(' ')
+                .and_then(|(_, value)| value.parse::<f64>().ok())
+        })
+        .sum()
+}
+
+#[cfg(feature = "prometheus")]
+#[derive(Debug, Clone, Default)]
+struct CapturedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+#[cfg(feature = "prometheus")]
+impl io::Write for CapturedLogWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .expect("captured log lock")
+            .extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(feature = "prometheus")]
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for CapturedLogWriter {
+    type Writer = Self;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        self.clone()
+    }
 }
 
 #[test]
@@ -345,6 +402,7 @@ fn federation_reconnect_backoff_doubles_until_max() {
 #[derive(Debug, Default)]
 struct MockFederationTransportState {
     status_response: Option<FederationPeerStatus>,
+    checkpoint_summary_response: Option<(FederationCheckpointSummaryResponse, MemberConfigPrivate)>,
     submit_response: Option<FederationSubmitOperationResponse>,
     aleph_bft_network_message_response: Option<FederationAlephBftNetworkMessageResponse>,
     aleph_bft_network_message_delays: VecDeque<Duration>,
@@ -352,6 +410,7 @@ struct MockFederationTransportState {
     dkg_setup_responses: VecDeque<FederationDkgSetupResponse>,
     catch_up_responses: VecDeque<FederationJournalCatchUpResponse>,
     status_requests: Vec<FederationSignedRequest<FederationPeerStatusRequest>>,
+    checkpoint_summary_requests: Vec<FederationSignedRequest<FederationCheckpointSummaryRequest>>,
     dkg_commitment_requests: Vec<FederationSignedRequest<FederationDkgCommitmentRequest>>,
     dkg_reveal_requests: Vec<FederationSignedRequest<FederationDkgRevealRequest>>,
     dkg_secret_share_requests: Vec<FederationSignedRequest<FederationDkgSecretShareRequest>>,
@@ -817,6 +876,19 @@ impl MockFederationTransport {
         self
     }
 
+    #[cfg(feature = "prometheus")]
+    fn with_checkpoint_summary_response(
+        self,
+        response: FederationCheckpointSummaryResponse,
+        signer: MemberConfigPrivate,
+    ) -> Self {
+        self.state
+            .lock()
+            .expect("mock transport lock")
+            .checkpoint_summary_response = Some((response, signer));
+        self
+    }
+
     fn with_submit_response(self, response: FederationSubmitOperationResponse) -> Self {
         self.state
             .lock()
@@ -883,6 +955,17 @@ impl MockFederationTransport {
             .lock()
             .expect("mock transport lock")
             .status_requests
+            .clone()
+    }
+
+    #[cfg(feature = "prometheus")]
+    fn checkpoint_summary_requests(
+        &self,
+    ) -> Vec<FederationSignedRequest<FederationCheckpointSummaryRequest>> {
+        self.state
+            .lock()
+            .expect("mock transport lock")
+            .checkpoint_summary_requests
             .clone()
     }
 
@@ -1124,6 +1207,26 @@ impl Transport for MockFederationTransport {
                     .status_response
                     .clone()
                     .ok_or_else(|| HttpError::Other("missing status response".to_string()))?;
+                json_response(response)
+            }
+            path if path.ends_with("/federation/v1/checkpoints/summary") => {
+                let request = serde_json::from_value::<
+                    FederationSignedRequest<FederationCheckpointSummaryRequest>,
+                >(serde_json::to_value(payload)?)?;
+                state.checkpoint_summary_requests.push(request.clone());
+                let (response, signer) =
+                    state.checkpoint_summary_response.clone().ok_or_else(|| {
+                        HttpError::Other("missing checkpoint summary response".to_string())
+                    })?;
+                let response = FederationSignedRequest::new_signed(
+                    request.federation_id,
+                    request.sender,
+                    request.sequence,
+                    FederationRestMessageKind::CheckpointSummary,
+                    response,
+                    &signer,
+                )
+                .map_err(|err| HttpError::Other(err.to_string()))?;
                 json_response(response)
             }
             path if path.ends_with("/federation/v1/dkg/commitments") => {
@@ -1712,15 +1815,29 @@ fn transport_config_with_federation_api_urls(
     first_federation_api_url: MintUrl,
     second_federation_api_url: MintUrl,
 ) -> (FederationConfig, MemberConfigPrivate, MemberConfigPrivate) {
+    transport_config_with_members_and_federation_api_urls(
+        member_id(1),
+        member_id(2),
+        first_federation_api_url,
+        second_federation_api_url,
+    )
+}
+
+fn transport_config_with_members_and_federation_api_urls(
+    first_member_id: MemberId,
+    second_member_id: MemberId,
+    first_federation_api_url: MintUrl,
+    second_federation_api_url: MintUrl,
+) -> (FederationConfig, MemberConfigPrivate, MemberConfigPrivate) {
     let members = vec![
         TrustedDealerMember::new(
-            member_id(1),
+            first_member_id,
             MintUrl::from_str("https://mint1.example.com").expect("public mint url"),
             first_federation_api_url,
             SecretKey::from_slice(&[1; 32]).expect("identity secret"),
         ),
         TrustedDealerMember::new(
-            member_id(2),
+            second_member_id,
             MintUrl::from_str("https://mint2.example.com").expect("public mint url"),
             second_federation_api_url,
             SecretKey::from_slice(&[2; 32]).expect("identity secret"),
@@ -1747,12 +1864,12 @@ fn transport_config_with_federation_api_urls(
     .expect("trusted dealer bundle");
     let first_private = bundle
         .private_configs
-        .get(&member_id(1))
+        .get(&first_member_id)
         .expect("first private config")
         .clone();
     let second_private = bundle
         .private_configs
-        .get(&member_id(2))
+        .get(&second_member_id)
         .expect("second private config")
         .clone();
     (bundle.public_config, first_private, second_private)
@@ -2304,6 +2421,9 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
                 false,
             )),
             suppress_next_terminal_response_publication: Arc::new(
+                std::sync::atomic::AtomicBool::new(false),
+            ),
+            suppress_next_scheduled_checkpoint_capture: Arc::new(
                 std::sync::atomic::AtomicBool::new(false),
             ),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
@@ -7351,6 +7471,259 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
 }
 
 #[tokio::test]
+async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
+    let (mut public_config, local_private, _) = transport_config();
+    public_config.checkpoint_policy =
+        FederationCheckpointPolicy::new(2, 2).expect("checkpoint policy");
+    let state = federation_route_state_for_private(public_config, local_private).await;
+    let db = state.mint.localstore();
+
+    time::timeout(
+        Duration::from_secs(15),
+        state.submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new())),
+    )
+    .await
+    .expect("first finalized operation timeout")
+    .expect("first finalized operation");
+    assert!(db
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .await
+        .expect("first scheduled checkpoint lookup")
+        .is_none());
+
+    time::timeout(
+        Duration::from_secs(15),
+        state.submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new())),
+    )
+    .await
+    .expect("eligible finalized operation timeout")
+    .expect("eligible finalized operation");
+    let candidate = db
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .await
+        .expect("eligible scheduled checkpoint lookup")
+        .expect("scheduled checkpoint candidate");
+    let candidate_id = candidate.id().expect("scheduled checkpoint id");
+    assert_eq!(candidate.journal_next_index, 2);
+    assert_eq!(candidate.finalized_next_item_index, 2);
+    assert_eq!(candidate.next_unit_finalization_index, 2);
+    assert_eq!(
+        candidate.materialized_state_digest,
+        state
+            .mint
+            .federation_materialized_state_snapshot()
+            .await
+            .expect("eligible materialized state")
+            .digest()
+            .expect("eligible materialized state digest")
+    );
+
+    time::timeout(
+        Duration::from_secs(15),
+        state.submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new())),
+    )
+    .await
+    .expect("later finalized operation timeout")
+    .expect("later finalized operation");
+    let retained = db
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .await
+        .expect("retained scheduled checkpoint lookup")
+        .expect("retained scheduled checkpoint candidate");
+    assert_eq!(retained.id().expect("retained checkpoint id"), candidate_id);
+    assert_eq!(retained.journal_next_index, 2);
+    assert_eq!(
+        db.get_federation_checkpoint_signatures(candidate_id)
+            .await
+            .expect("scheduled checkpoint signatures")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn startup_recovers_an_interrupted_eligible_checkpoint_capture_once() {
+    let (mut public_config, local_private, _) = transport_config();
+    public_config.checkpoint_policy =
+        FederationCheckpointPolicy::new(2, 2).expect("checkpoint policy");
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let seed = [62_u8; 64];
+    let initial = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        local_private.clone(),
+        Arc::clone(&db),
+        &seed,
+    )
+    .await;
+    initial
+        .submit_federation_envelope(mint_quote_envelope(&initial, &QuoteId::new()))
+        .await
+        .expect("first pre-restart operation");
+    initial
+        .federation
+        .suppress_next_scheduled_checkpoint_capture();
+    initial
+        .submit_federation_envelope(mint_quote_envelope(&initial, &QuoteId::new()))
+        .await
+        .expect("eligible pre-restart operation");
+    assert!(db
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .await
+        .expect("pre-restart scheduled checkpoint lookup")
+        .is_none());
+    drop(initial);
+
+    let mut restarted = federation_route_state_for_private_with_db(
+        public_config,
+        local_private,
+        Arc::clone(&db),
+        &seed,
+    )
+    .await;
+    let (consensus, sequences) = crate::create_federation_runtime_state(&restarted.mint)
+        .await
+        .expect("restart federation runtime");
+    restarted.federation.consensus = consensus;
+    restarted.federation.sequences = sequences;
+
+    restarted
+        .federation
+        .recover_scheduled_checkpoint_candidate_at_startup()
+        .await
+        .expect("recover interrupted checkpoint capture");
+    let candidate = db
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Scheduled)
+        .await
+        .expect("recovered scheduled checkpoint lookup")
+        .expect("recovered scheduled checkpoint");
+    assert_eq!(candidate.journal_next_index, 2);
+    assert_eq!(candidate.finalized_next_item_index, 2);
+    let checkpoint_id = candidate.id().expect("recovered checkpoint id");
+
+    restarted
+        .federation
+        .recover_scheduled_checkpoint_candidate_at_startup()
+        .await
+        .expect("repeat startup recovery");
+    assert_eq!(
+        db.get_federation_checkpoint_signatures(checkpoint_id)
+            .await
+            .expect("recovered checkpoint signatures")
+            .len(),
+        1
+    );
+}
+
+#[cfg(feature = "prometheus")]
+#[tokio::test]
+async fn unchanged_checkpoint_polls_do_not_repeat_signature_verification() {
+    let local_member = member_id(61_001);
+    let peer_member = member_id(61_002);
+    let (public_config, local_private, peer_private) =
+        transport_config_with_members_and_federation_api_urls(
+            local_member,
+            peer_member,
+            MintUrl::from_str("http://checkpoint-idle-local.test")
+                .expect("local federation api url"),
+            MintUrl::from_str("http://checkpoint-idle-peer.test").expect("peer federation api url"),
+        );
+    let state =
+        federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("persist checkpointed operation");
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        &state,
+        &public_config,
+        None,
+        &[&local_private, &peer_private],
+    )
+    .await;
+    let db = state.mint.localstore();
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin trusted checkpoint promotion");
+    tx.promote_verified_federation_checkpoint(&quorum)
+        .await
+        .expect("promote trusted checkpoint");
+    tx.commit().await.expect("commit trusted checkpoint");
+
+    let mut peer_summary = state
+        .federation
+        .checkpoint_summary(Some(0))
+        .await
+        .expect("local checkpoint summary");
+    peer_summary.member_id = peer_member;
+    let transport = MockFederationTransport::default()
+        .with_checkpoint_summary_response(peer_summary.clone(), peer_private);
+    let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+        .expect("checkpoint peer client");
+    let peer = public_config.member(peer_member).expect("checkpoint peer");
+    let member_label = local_member.to_string();
+    let labels = [
+        ("member", member_label.as_str()),
+        ("work", "signatures_verified"),
+    ];
+    let before = prometheus_metric_value("cdk_federation_checkpoint_work_total", &labels);
+    let member_labels = [("member", member_label.as_str())];
+    let total_work_before =
+        prometheus_metric_sum("cdk_federation_checkpoint_work_total", &member_labels);
+    let captured_logs = CapturedLogWriter::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .without_time()
+        .with_target(false)
+        .with_ansi(false)
+        .with_writer(captured_logs.clone())
+        .finish();
+    async {
+        for _ in 0..12 {
+            let summary = state
+                .federation
+                .checkpoint_summary(Some(0))
+                .await
+                .expect("unchanged local checkpoint summary");
+            assert_eq!(
+                summary.latest_recovery_quorum,
+                peer_summary.latest_recovery_quorum
+            );
+            let fetched = state
+                .federation
+                .fetch_checkpoint(checkpoint.id().expect("checkpoint id"))
+                .await
+                .expect("unchanged local checkpoint fetch");
+            assert!(fetched.quorum.is_some());
+            assert_eq!(
+                exchange_checkpoint_round(&state, &client, std::slice::from_ref(&peer)).await,
+                0
+            );
+        }
+    }
+    .with_subscriber(subscriber)
+    .await;
+
+    assert_eq!(
+        prometheus_metric_value("cdk_federation_checkpoint_work_total", &labels),
+        before
+    );
+    assert_eq!(
+        prometheus_metric_sum("cdk_federation_checkpoint_work_total", &member_labels,),
+        total_work_before
+    );
+    assert_eq!(transport.checkpoint_summary_requests().len(), 12);
+    assert!(transport.catch_up_requests().is_empty());
+    let captured_logs =
+        String::from_utf8(captured_logs.0.lock().expect("captured log lock").clone())
+            .expect("captured logs are UTF-8");
+    assert!(
+        captured_logs.is_empty(),
+        "unchanged checkpoint polls emitted logs: {captured_logs}"
+    );
+}
+
+#[tokio::test]
 async fn operator_checkpoint_audit_matches_exact_trusted_frontier() {
     let (state, public_config, peer_private) = federation_route_state().await;
     state
@@ -7438,7 +7811,11 @@ async fn operator_checkpoint_audit_latches_materialized_state_mismatch() {
         .expect("load mint quote")
         .expect("mint quote");
     quote
-        .increment_amount_paid(Amount::from(1).with_unit(CurrencyUnit::Sat))
+        .add_payment(
+            Amount::from(1).with_unit(CurrencyUnit::Sat),
+            "out-of-band-audit-payment".to_string(),
+            Some(1),
+        )
         .expect("alter mint quote");
     tx.update_mint_quote(&mut quote)
         .await

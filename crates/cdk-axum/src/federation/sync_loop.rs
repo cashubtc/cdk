@@ -157,12 +157,6 @@ where
                     true,
                     Some(status.operation_count),
                 );
-                tracing::debug!(
-                    member_id = %peer.member_id,
-                    operation_count = status.operation_count,
-                    latest_index = ?status.latest_index,
-                    "Federation peer sync completed"
-                );
             }
             Err(err) => {
                 let reconnect_after = backoff.as_mut().map(|backoff| {
@@ -206,7 +200,7 @@ where
     synced
 }
 
-async fn exchange_checkpoint_round<T>(
+pub(super) async fn exchange_checkpoint_round<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
     peers: &[&MemberConfigPublic],
@@ -237,18 +231,8 @@ where
         .await
     {
         Ok(Some(quorum)) => {
-            let Some(runtime_config) = state.mint.federation_config() else {
-                tracing::warn!("Could not verify trusted checkpoint without mint configuration");
-                return 0;
-            };
-            if let Err(err) = super::verify_checkpoint_quorum_with_metrics(
-                &quorum,
-                runtime_config.public_config(),
-                runtime_config.member_id(),
-            ) {
-                tracing::warn!("Could not verify trusted checkpoint for discovery: {}", err);
-                return 0;
-            }
+            // Trusted quorums are verified during startup and before atomic promotion. Polling
+            // reads only the scalar scheduled sequence and must not repeat cryptographic work.
             quorum.checkpoint.scheduled_checkpoint_sequence
         }
         Ok(None) => 0,
@@ -257,14 +241,6 @@ where
             return 0;
         }
     };
-    if let Err(err) = state
-        .federation
-        .ensure_scheduled_checkpoint_candidate()
-        .await
-    {
-        tracing::warn!("Could not capture local scheduled checkpoint: {}", err);
-        return 0;
-    }
     let mut updates = 0;
     let mut peer_summaries = Vec::with_capacity(peers.len());
     for &peer in peers {
