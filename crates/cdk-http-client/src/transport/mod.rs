@@ -75,6 +75,33 @@ pub trait Transport: Send + Sync + Debug + Clone {
         P: Serialize + Send + Sync,
         R: DeserializeOwned;
 
+    /// HTTP POST request with an explicit decoded response-body byte limit.
+    ///
+    /// Native transports override this to enforce the limit while reading.
+    /// The default keeps custom/test transports source-compatible and checks
+    /// their already-decoded result before returning it.
+    async fn http_post_bounded<P, R>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+        max_response_bytes: usize,
+    ) -> Result<R, HttpError>
+    where
+        P: Serialize + Send + Sync,
+        R: DeserializeOwned + Serialize,
+    {
+        let response: R = self.http_post(url, auth_token, payload).await?;
+        let actual = serde_json::to_vec(&response)?.len();
+        if actual > max_response_bytes {
+            return Err(HttpError::ResponseTooLarge {
+                actual,
+                max: max_response_bytes,
+            });
+        }
+        Ok(response)
+    }
+
     /// HTTP POST request with a form body returning a raw response.
     async fn http_post_form_raw<P>(
         &self,
@@ -172,6 +199,30 @@ impl Transport for Async {
         }
 
         request.send_json::<R>().await
+    }
+
+    async fn http_post_bounded<P, R>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+        max_response_bytes: usize,
+    ) -> Result<R, HttpError>
+    where
+        P: Serialize + Send + Sync,
+        R: DeserializeOwned + Serialize,
+    {
+        let url_str = url.to_string();
+        let mut request = self.inner.post(&url_str).json(payload);
+
+        if let Some(auth) = auth_token {
+            request = request.header(auth.header_key(), auth.to_string());
+        }
+
+        request
+            .send_bounded(max_response_bytes)
+            .await?
+            .json_or_status_error()
     }
 
     async fn http_post_form_raw<P>(

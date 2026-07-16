@@ -12,6 +12,7 @@ use dnssec_prover::query::{ProofBuilder, QueryBuf};
 #[cfg(feature = "bip353")]
 use dnssec_prover::rr::TXT_TYPE;
 use http::header::{self, HeaderName, HeaderValue};
+use hyper::body::HttpBody;
 use hyper::http::{Method, Request, Uri};
 use hyper::{Body, Client};
 use serde::de::DeserializeOwned;
@@ -152,7 +153,7 @@ impl TorAsync {
         auth: Option<AuthToken>,
         body: Option<(Vec<u8>, &'static str)>,
     ) -> Result<RawResponse, HttpError> {
-        self.raw_request_with_accept(method, url, auth, body, "application/json")
+        self.raw_request_with_accept(method, url, auth, body, "application/json", None)
             .await
     }
 
@@ -163,6 +164,7 @@ impl TorAsync {
         auth: Option<AuthToken>,
         mut body: Option<(Vec<u8>, &'static str)>,
         accept: &'static str,
+        max_response_bytes: Option<usize>,
     ) -> Result<RawResponse, HttpError> {
         let tls = tls_api_native_tls::TlsConnector::builder()
             .map_err(|e| HttpError::Other(format!("{e:?}")))?
@@ -209,17 +211,33 @@ impl TorAsync {
             );
         }
 
-        let resp = client
+        let mut resp = client
             .request(req)
             .await
             .map_err(|e| HttpError::Connection(e.to_string()))?;
 
         let status = resp.status().as_u16();
-        let bytes = hyper::body::to_bytes(resp.into_body())
-            .await
-            .map_err(|e| HttpError::Other(e.to_string()))?;
+        if let (Some(max), Some(actual)) = (max_response_bytes, resp.size_hint().exact()) {
+            if actual > max as u64 {
+                return Err(HttpError::ResponseTooLarge {
+                    actual: usize::try_from(actual).unwrap_or(usize::MAX),
+                    max,
+                });
+            }
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = resp.data().await {
+            let chunk = chunk.map_err(|e| HttpError::Other(e.to_string()))?;
+            let actual = bytes.len().saturating_add(chunk.len());
+            if let Some(max) = max_response_bytes {
+                if actual > max {
+                    return Err(HttpError::ResponseTooLarge { actual, max });
+                }
+            }
+            bytes.extend_from_slice(&chunk);
+        }
 
-        Ok(RawResponse::new(status, bytes.to_vec()))
+        Ok(RawResponse::new(status, bytes))
     }
 
     async fn request<R>(
@@ -340,6 +358,31 @@ impl Transport for TorAsync {
             Some((body, "application/json")),
         )
         .await
+    }
+
+    async fn http_post_bounded<P, R>(
+        &self,
+        url: Url,
+        auth_token: Option<AuthToken>,
+        payload: &P,
+        max_response_bytes: usize,
+    ) -> Result<R, HttpError>
+    where
+        P: Serialize + Send + Sync,
+        R: DeserializeOwned + Serialize,
+    {
+        let body =
+            serde_json::to_vec(payload).map_err(|e| HttpError::Serialization(e.to_string()))?;
+        self.raw_request_with_accept(
+            Method::POST,
+            url,
+            auth_token,
+            Some((body, "application/json")),
+            "application/json",
+            Some(max_response_bytes),
+        )
+        .await?
+        .json_or_status_error()
     }
 
     async fn http_post_form_raw<P>(

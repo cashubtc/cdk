@@ -2422,6 +2422,45 @@ async fn recovery_checkpoint_for_state(
     checkpoint
 }
 
+fn one_operation_unit_checkpoint_pages(
+    runtime: &FederationConsensusRuntime,
+    checkpoint: &FederationCheckpoint,
+    limit: u16,
+) -> Vec<FederationJournalCatchUpResponse> {
+    let checkpoint_id = checkpoint.id().expect("checkpoint page target id");
+    let mut pages = Vec::new();
+    let mut next = 0_usize;
+    let target = usize::try_from(checkpoint.journal_next_index)
+        .expect("checkpoint journal cursor fits usize");
+    assert_eq!(
+        checkpoint.journal_next_index, checkpoint.finalized_next_item_index,
+        "test helper requires one accepted operation per finalized item"
+    );
+    while next < target {
+        let request = FederationJournalCatchUpRequest::new(next as u64)
+            .with_target_checkpoint(checkpoint_id)
+            .with_limit(limit)
+            .with_aleph_bft_next_item_index(next as u64);
+        let response = FederationJournalCatchUpResponse::from_journal(
+            checkpoint.federation_id,
+            runtime.journal(),
+            checkpoint.materialized_state_digest,
+            &request,
+            limit,
+            limit,
+        )
+        .bound_to_checkpoint(checkpoint)
+        .expect("bound one-operation-unit checkpoint page");
+        let end = next.saturating_add(response.entries.len());
+        pages.push(response.with_aleph_bft_finalized_items(
+            runtime.finalized_items()[next..end].to_vec(),
+            end == target,
+        ));
+        next = end;
+    }
+    pages
+}
+
 async fn federation_route_state_for_private_with_db(
     public_config: FederationConfig,
     local_private: MemberConfigPrivate,
@@ -2582,6 +2621,7 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
             suppress_next_scheduled_checkpoint_capture: Arc::new(
                 std::sync::atomic::AtomicBool::new(false),
             ),
+            fail_next_checkpoint_promotion: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_halt_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -8914,7 +8954,7 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         &seed,
     )
     .await;
-    let target = federation_route_state_for_private_with_db(
+    let mut target = federation_route_state_for_private_with_db(
         public_config.clone(),
         target_private.clone(),
         Arc::clone(&target_db),
@@ -9020,13 +9060,48 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .await
         .expect("target quote after rejected batch")
         .is_none());
-    let applied = target
+    target.federation.fail_next_checkpoint_promotion();
+    target
         .apply_federation_checkpoint_catch_up_response(&response, &quorum)
         .await
-        .expect("apply checkpoint catch-up");
+        .expect_err("injected pre-promotion failure");
+    assert!(target_db
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+        .expect("trusted checkpoint after pre-promotion failure")
+        .is_none());
+    let staged_frontier = target_db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("staged frontier before promotion restart");
+    assert!(staged_frontier.exactly_matches_checkpoint(&checkpoint));
 
-    assert_eq!(applied.len(), 1);
-    assert_eq!(applied[0].index, 0);
+    let (restarted_consensus, restarted_sequences) =
+        crate::create_federation_runtime_state(&target.mint)
+            .await
+            .expect("restart exact staged checkpoint frontier");
+    target.federation.consensus = restarted_consensus;
+    target.federation.sequences = restarted_sequences;
+    let empty_request = FederationJournalCatchUpRequest::new(checkpoint.journal_next_index)
+        .with_target_checkpoint(checkpoint_id)
+        .with_aleph_bft_next_item_index(checkpoint.finalized_next_item_index);
+    let empty_response = FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        &InMemoryFederationJournal::from_base(
+            checkpoint.journal_next_index,
+            checkpoint.journal_order_digest,
+        ),
+        checkpoint.materialized_state_digest,
+        &empty_request,
+        100,
+        100,
+    );
+    let applied = target
+        .apply_federation_checkpoint_catch_up_response(&empty_response, &quorum)
+        .await
+        .expect("promote exact staged checkpoint after restart");
+
+    assert!(applied.is_empty());
     let trusted = target_db
         .get_trusted_federation_checkpoint_quorum()
         .await
@@ -9890,7 +9965,7 @@ async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations(
 }
 
 #[tokio::test]
-async fn checkpoint_page_aggregation_retains_the_complete_target_batch() {
+async fn checkpoint_page_streaming_keeps_only_one_bounded_page_in_flight() {
     let (state, public_config, local_private, _, _) =
         federation_route_state_three_with_local_private().await;
     let mut runtime = FederationConsensusRuntime::for_members(
@@ -9919,10 +9994,10 @@ async fn checkpoint_page_aggregation_retains_the_complete_target_batch() {
     }
 
     let target_checkpoint_id = cdk::federation::FederationCheckpointId::from_bytes([71; 32]);
-    let mut aggregate = None;
     let mut next_index = 0_usize;
     let mut page_count = 0_usize;
     let mut largest_page_bytes = 0_usize;
+    let mut transferred_bytes = 0_usize;
     while next_index < operation_count {
         let request = FederationJournalCatchUpRequest::new(next_index as u64)
             .with_target_checkpoint(target_checkpoint_id)
@@ -9941,30 +10016,176 @@ async fn checkpoint_page_aggregation_retains_the_complete_target_batch() {
             runtime.finalized_items()[next_index..page_end].to_vec(),
             page_end == operation_count,
         );
-        largest_page_bytes = largest_page_bytes.max(
-            serde_json::to_vec(&page)
-                .expect("encode checkpoint aggregation page")
-                .len(),
-        );
-        super::sync_loop::append_checkpoint_catch_up_page(&mut aggregate, page);
+        let page_bytes = page
+            .ensure_within_checkpoint_page_limit()
+            .expect("bounded checkpoint streaming page");
+        largest_page_bytes = largest_page_bytes.max(page_bytes);
+        transferred_bytes = transferred_bytes.saturating_add(page_bytes);
         next_index = page_end;
         page_count = page_count.saturating_add(1);
     }
 
-    let aggregate = aggregate.expect("checkpoint aggregation result");
-    let aggregate_bytes = serde_json::to_vec(&aggregate)
-        .expect("encode checkpoint aggregation result")
-        .len();
-    assert_eq!(aggregate.entries.len(), operation_count);
-    assert_eq!(aggregate.aleph_bft_finalized_items.len(), operation_count);
     assert_eq!(page_count, 4);
     assert!(
-        aggregate_bytes > largest_page_bytes.saturating_mul(3),
-        "the aggregate must retain work from every bounded page"
+        transferred_bytes > largest_page_bytes.saturating_mul(3),
+        "the transfer must span several independently bounded pages"
     );
     eprintln!(
-        "checkpoint_catch_up_aggregation pages={page_count} operations={operation_count} largest_page_bytes={largest_page_bytes} aggregate_bytes={aggregate_bytes}"
+        "checkpoint_catch_up_streaming pages={page_count} operations={operation_count} largest_page_bytes={largest_page_bytes} transferred_bytes={transferred_bytes}"
     );
+}
+
+#[test]
+fn checkpoint_transfer_budget_rejects_oversize_and_overflow() {
+    assert_eq!(
+        super::sync_loop::checked_checkpoint_transfer_bytes(40, 2, 42)
+            .expect("transfer exactly at budget"),
+        42
+    );
+    assert!(matches!(
+        super::sync_loop::checked_checkpoint_transfer_bytes(40, 3, 42),
+        Err(FederationError::CheckpointCatchUpTooLarge {
+            resource: "transfer batch",
+            actual: 43,
+            max: 42,
+        })
+    ));
+    assert!(matches!(
+        super::sync_loop::checked_checkpoint_transfer_bytes(u64::MAX, 1, u64::MAX),
+        Err(FederationError::CheckpointCatchUpTooLarge {
+            resource: "transfer batch",
+            actual: u64::MAX,
+            max: u64::MAX,
+        })
+    ));
+}
+
+#[test]
+fn checkpoint_page_byte_limit_trims_only_at_complete_verified_units() {
+    let (public_config, local_private, _) = transport_config();
+    let mut runtime = FederationConsensusRuntime::authenticated_aleph_bft(
+        &public_config,
+        local_private.member_id,
+        0,
+    )
+    .expect("large checkpoint page runtime");
+    for unit_index in 0..12_u64 {
+        let mut envelope = payment_observation_envelope(public_config.federation_id);
+        let FederationOperation::MintQuotePayment(observation) = &mut envelope.operation else {
+            panic!("mint quote payment observation");
+        };
+        observation.quote = format!("large-checkpoint-page-{unit_index}");
+        observation.payment_proof = Some("x".repeat(700 * 1024));
+        envelope = envelope
+            .authorize(&local_private)
+            .expect("authorize large checkpoint page operation");
+        let unit = FederationAlephBftUnitPayload::new(
+            public_config.federation_id,
+            local_private.member_id,
+            0,
+            unit_index,
+            vec![FederationConsensusItem::operation(envelope)],
+        )
+        .expect("large checkpoint page unit");
+        runtime
+            .finalize_unit(unit)
+            .expect("finalize large checkpoint page unit");
+    }
+    let request = FederationJournalCatchUpRequest::new(0)
+        .with_limit(100)
+        .with_aleph_bft_next_item_index(0);
+    let response = FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        runtime.journal(),
+        cdk::federation::FederationMaterializedStateDigest::genesis(),
+        &request,
+        100,
+        100,
+    )
+    .with_aleph_bft_finalized_items(runtime.finalized_items().to_vec(), true);
+    assert!(
+        response.encoded_size().expect("untrimmed page size")
+            > cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES
+    );
+
+    let fitted = super::catch_up_routes::fit_checkpoint_page_to_byte_limit(response)
+        .expect("fit checkpoint page at complete unit");
+    fitted
+        .ensure_within_checkpoint_page_limit()
+        .expect("fitted checkpoint page size");
+    assert!(!fitted.entries.is_empty());
+    assert!(fitted.entries.len() < 12);
+    assert_eq!(
+        fitted.entries.len(),
+        fitted
+            .aleph_bft_finalized_items
+            .iter()
+            .filter(|item| {
+                item.status == FederationAlephBftFinalizedItemStatus::Accepted
+                    && item.operation_id.is_some()
+            })
+            .count()
+    );
+    assert!(!fitted.complete);
+    assert!(!fitted.aleph_bft_finalized_items_complete);
+}
+
+#[test]
+fn checkpoint_page_cursor_checks_reject_no_progress_and_overflow() {
+    assert!(matches!(
+        super::sync_loop::checked_checkpoint_page_cursors(7, 9, 0, 0),
+        Err(FederationError::CatchUpNoProgress { index: 7 })
+    ));
+    assert!(matches!(
+        super::sync_loop::checked_checkpoint_page_cursors(u64::MAX, 9, 1, 0),
+        Err(FederationError::CheckpointInvalid { .. })
+    ));
+    assert!(matches!(
+        super::sync_loop::checked_checkpoint_page_cursors(7, u64::MAX, 0, 1),
+        Err(FederationError::CheckpointInvalid { .. })
+    ));
+}
+
+#[tokio::test]
+async fn rest_peer_client_rejects_oversized_catch_up_before_validation() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let peer_member = public_config
+        .member(peer_private.member_id)
+        .expect("oversized response peer");
+    let request = FederationJournalCatchUpRequest::new(0);
+    let response = FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        &InMemoryFederationJournal::new(),
+        cdk::federation::FederationMaterializedStateDigest::genesis(),
+        &request,
+        100,
+        100,
+    )
+    .with_aleph_bft_backup(FederationAlephBftBackupResponse {
+        session: 0,
+        from_chunk: 0,
+        chunks: vec![vec![255; 3 * 1024 * 1024]],
+        complete: true,
+    });
+    let transport = MockFederationTransport::default().with_catch_up_response(response);
+    let client = FederationRestPeerClient::new_with_config(
+        transport,
+        &public_config,
+        local_private,
+        FederationPeerSyncConfig::default(),
+    )
+    .expect("oversized response client");
+    let error = client
+        .catch_up(peer_member, &request)
+        .await
+        .expect_err("oversized catch-up response must fail before validation");
+    assert!(matches!(
+        error.downcast_ref::<FederationError>(),
+        Some(FederationError::CheckpointCatchUpTooLarge {
+            resource: "decoded response",
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
@@ -10132,6 +10353,390 @@ async fn rest_peer_client_pages_catch_up_across_default_limit_boundary() {
             transport.catch_up_requests().len()
         );
     }
+}
+
+#[tokio::test]
+async fn checkpoint_catch_up_resumes_after_each_durable_page_restart() {
+    let catch_up_limit = 2;
+    let operation_count = 5_usize;
+    let (public_config, local_private, peer_private, witness_private) = transport_config_three();
+    let peer_member = public_config
+        .member(peer_private.member_id)
+        .expect("peer member");
+    let peer_state =
+        federation_route_state_for_private(public_config.clone(), peer_private.clone()).await;
+    for unit_index in 0..operation_count as u64 {
+        let unit = FederationAlephBftUnitPayload::new(
+            public_config.federation_id,
+            peer_member.member_id,
+            0,
+            unit_index,
+            vec![FederationConsensusItem::operation(mint_quote_envelope(
+                &peer_state,
+                &QuoteId::new(),
+            ))],
+        )
+        .expect("restart catch-up unit");
+        peer_state
+            .apply_federation_aleph_bft_finalized_unit(unit)
+            .await
+            .expect("apply restart catch-up unit");
+    }
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        &peer_state,
+        &public_config,
+        None,
+        &[&peer_private, &witness_private],
+    )
+    .await;
+    let checkpoint_id = checkpoint.id().expect("restart checkpoint id");
+    let peer_consensus = peer_state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("peer consensus")
+        .lock()
+        .await
+        .clone();
+    let pages = one_operation_unit_checkpoint_pages(&peer_consensus, &checkpoint, catch_up_limit);
+    assert_eq!(pages.len(), 3);
+
+    for crash_after_pages in 1..pages.len() {
+        let mut state =
+            federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
+        for page in pages.iter().take(crash_after_pages) {
+            state
+                .apply_federation_checkpoint_catch_up_response(page, &quorum)
+                .await
+                .expect("apply durable catch-up page before restart");
+        }
+        let durable_cursor =
+            u64::try_from(crash_after_pages.saturating_mul(catch_up_limit as usize))
+                .expect("durable page cursor fits u64");
+        let frontier = state
+            .mint
+            .localstore()
+            .get_federation_checkpoint_frontier()
+            .await
+            .expect("durable catch-up frontier");
+        assert_eq!(frontier.journal_next_index, durable_cursor);
+        assert_eq!(frontier.application_next_index, durable_cursor);
+        assert!(state
+            .mint
+            .localstore()
+            .get_trusted_federation_checkpoint_quorum()
+            .await
+            .expect("trusted checkpoint before restart")
+            .is_none());
+
+        let (restarted_consensus, restarted_sequences) =
+            crate::create_federation_runtime_state(&state.mint)
+                .await
+                .expect("restart from durable checkpoint page");
+        state.federation.consensus = restarted_consensus;
+        state.federation.sequences = restarted_sequences;
+
+        let mut transport = MockFederationTransport::default();
+        for page in pages.iter().skip(crash_after_pages).cloned() {
+            transport = transport.with_catch_up_response(page);
+        }
+        let client = FederationRestPeerClient::new_with_config(
+            transport.clone(),
+            &public_config,
+            local_private.clone(),
+            FederationPeerSyncConfig {
+                catch_up_limit,
+                ..FederationPeerSyncConfig::default()
+            },
+        )
+        .expect("restart peer client");
+        client
+            .catch_up_state_to_checkpoint_from_member(&state, peer_member, &quorum)
+            .await
+            .expect("resume checkpoint catch-up after restart");
+
+        let requests = transport.catch_up_requests();
+        assert_eq!(
+            requests.len(),
+            pages.len().saturating_sub(crash_after_pages)
+        );
+        assert_eq!(requests[0].payload.next_index, durable_cursor);
+        assert_eq!(
+            requests[0].payload.aleph_bft_next_item_index,
+            durable_cursor
+        );
+        let trusted = state
+            .mint
+            .localstore()
+            .get_trusted_federation_checkpoint_quorum()
+            .await
+            .expect("trusted resumed checkpoint")
+            .expect("promoted resumed checkpoint");
+        assert_eq!(
+            trusted.checkpoint.id().expect("trusted checkpoint id"),
+            checkpoint_id
+        );
+    }
+}
+
+#[tokio::test]
+async fn one_page_and_many_page_checkpoint_catch_up_produce_identical_state() {
+    let operation_count = 6_usize;
+    let (public_config, local_private, source_private, witness_private) = transport_config_three();
+    let seed = [73_u8; 64];
+    let source = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        source_private.clone(),
+        Arc::new(cdk_sqlite::mint::memory::empty().await.expect("source db")),
+        &seed,
+    )
+    .await;
+    let mut quote_ids = Vec::new();
+    for _ in 0..operation_count {
+        let quote_id = QuoteId::new();
+        source
+            .submit_federation_envelope(mint_quote_envelope(&source, &quote_id))
+            .await
+            .expect("source page-equivalence operation");
+        quote_ids.push(quote_id);
+    }
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        &source,
+        &public_config,
+        None,
+        &[&source_private, &witness_private],
+    )
+    .await;
+    let source_runtime = source
+        .federation
+        .consensus
+        .as_ref()
+        .expect("source page-equivalence consensus")
+        .lock()
+        .await
+        .clone();
+    let one_page =
+        one_operation_unit_checkpoint_pages(&source_runtime, &checkpoint, operation_count as u16);
+    let many_pages = one_operation_unit_checkpoint_pages(&source_runtime, &checkpoint, 2);
+    assert_eq!(one_page.len(), 1);
+    assert_eq!(many_pages.len(), 3);
+
+    let one_page_target = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        local_private.clone(),
+        Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("one-page target db"),
+        ),
+        &seed,
+    )
+    .await;
+    let many_page_target = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        local_private.clone(),
+        Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("many-page target db"),
+        ),
+        &seed,
+    )
+    .await;
+    let source_member = public_config
+        .member(source_private.member_id)
+        .expect("source member");
+    let one_transport = MockFederationTransport::default()
+        .with_catch_up_response(one_page.into_iter().next().expect("one checkpoint page"));
+    let mut many_transport = MockFederationTransport::default();
+    for page in many_pages {
+        many_transport = many_transport.with_catch_up_response(page);
+    }
+    let one_client = FederationRestPeerClient::new_with_config(
+        one_transport,
+        &public_config,
+        local_private.clone(),
+        FederationPeerSyncConfig {
+            catch_up_limit: operation_count as u16,
+            ..FederationPeerSyncConfig::default()
+        },
+    )
+    .expect("one-page client");
+    let many_client = FederationRestPeerClient::new_with_config(
+        many_transport,
+        &public_config,
+        local_private,
+        FederationPeerSyncConfig {
+            catch_up_limit: 2,
+            ..FederationPeerSyncConfig::default()
+        },
+    )
+    .expect("many-page client");
+    one_client
+        .catch_up_state_to_checkpoint_from_member(&one_page_target, source_member, &quorum)
+        .await
+        .expect("one-page checkpoint catch-up");
+    many_client
+        .catch_up_state_to_checkpoint_from_member(&many_page_target, source_member, &quorum)
+        .await
+        .expect("many-page checkpoint catch-up");
+
+    assert_eq!(
+        materialized_state_snapshot(&one_page_target)
+            .await
+            .expect("one-page materialized state"),
+        materialized_state_snapshot(&many_page_target)
+            .await
+            .expect("many-page materialized state")
+    );
+    assert_eq!(
+        one_page_target
+            .mint
+            .localstore()
+            .get_federation_checkpoint_frontier()
+            .await
+            .expect("one-page frontier"),
+        many_page_target
+            .mint
+            .localstore()
+            .get_federation_checkpoint_frontier()
+            .await
+            .expect("many-page frontier")
+    );
+    for quote_id in quote_ids {
+        assert!(one_page_target
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("one-page quote")
+            .is_some());
+        assert!(many_page_target
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("many-page quote")
+            .is_some());
+    }
+}
+
+#[tokio::test]
+async fn checkpoint_catch_up_rejects_bad_source_then_uses_second_source() {
+    let operation_count = 3_usize;
+    let (state, public_config, local_private, source_private, second_source_private) =
+        federation_route_state_three_with_local_private().await;
+    let source_member = public_config
+        .member(source_private.member_id)
+        .expect("source member");
+    let second_source_member = public_config
+        .member(second_source_private.member_id)
+        .expect("second source member");
+    let source_state =
+        federation_route_state_for_private(public_config.clone(), source_private.clone()).await;
+    for unit_index in 0..operation_count as u64 {
+        let unit = FederationAlephBftUnitPayload::new(
+            public_config.federation_id,
+            source_member.member_id,
+            0,
+            unit_index,
+            vec![FederationConsensusItem::operation(mint_quote_envelope(
+                &source_state,
+                &QuoteId::new(),
+            ))],
+        )
+        .expect("source failover unit");
+        source_state
+            .apply_federation_aleph_bft_finalized_unit(unit)
+            .await
+            .expect("apply source failover unit");
+    }
+    let (checkpoint, quorum) = recovery_checkpoint_quorum_for_state(
+        &source_state,
+        &public_config,
+        None,
+        &[&source_private, &second_source_private],
+    )
+    .await;
+    let checkpoint_id = checkpoint.id().expect("source failover checkpoint id");
+    let source_consensus = source_state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("source consensus")
+        .lock()
+        .await
+        .clone();
+    let request = FederationJournalCatchUpRequest::new(0)
+        .with_target_checkpoint(checkpoint_id)
+        .with_aleph_bft_next_item_index(0);
+    let response = FederationJournalCatchUpResponse::from_journal(
+        public_config.federation_id,
+        source_consensus.journal(),
+        checkpoint.materialized_state_digest,
+        &request,
+        100,
+        100,
+    )
+    .bound_to_checkpoint(&checkpoint)
+    .expect("bound source failover response")
+    .with_aleph_bft_finalized_items(source_consensus.finalized_items().to_vec(), true);
+    let mut invalid_response = response.clone();
+    invalid_response.entries[0].operation_id = FederationOperationId::from_bytes([91; 32]);
+
+    let bad_transport = MockFederationTransport::default().with_catch_up_response(invalid_response);
+    let bad_client = FederationRestPeerClient::new_with_config(
+        bad_transport.clone(),
+        &public_config,
+        local_private.clone(),
+        FederationPeerSyncConfig::default(),
+    )
+    .expect("bad source client");
+    bad_client
+        .catch_up_state_to_checkpoint_from_member(&state, source_member, &quorum)
+        .await
+        .expect_err("invalid first source must fail closed");
+    let rejected_frontier = state
+        .mint
+        .localstore()
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("frontier after invalid source");
+    assert_eq!(rejected_frontier.journal_next_index, 0);
+    assert_eq!(rejected_frontier.finalized_next_item_index, 0);
+    assert!(state
+        .mint
+        .localstore()
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+        .expect("trusted checkpoint after invalid source")
+        .is_none());
+
+    let good_transport = MockFederationTransport::default().with_catch_up_response(response);
+    let good_client = FederationRestPeerClient::new_with_config(
+        good_transport.clone(),
+        &public_config,
+        local_private,
+        FederationPeerSyncConfig::default(),
+    )
+    .expect("second source client");
+    good_client
+        .catch_up_state_to_checkpoint_from_member(&state, second_source_member, &quorum)
+        .await
+        .expect("second source completes checkpoint catch-up");
+    assert_eq!(bad_transport.catch_up_requests().len(), 1);
+    assert_eq!(good_transport.catch_up_requests().len(), 1);
+    let trusted = state
+        .mint
+        .localstore()
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+        .expect("trusted checkpoint after source failover")
+        .expect("checkpoint promoted after source failover");
+    assert_eq!(
+        trusted.checkpoint.id().expect("trusted checkpoint id"),
+        checkpoint_id
+    );
 }
 
 #[tokio::test]
@@ -23579,7 +24184,7 @@ async fn private_journal_route_returns_whole_aleph_bft_finalized_item_units() {
         .await
         .expect("apply AlephBFT unit");
 
-    let partial_request = signed_catch_up_request(
+    let small_limit_request = signed_catch_up_request(
         &public_config,
         &peer_private,
         local_member,
@@ -23588,13 +24193,18 @@ async fn private_journal_route_returns_whole_aleph_bft_finalized_item_units() {
             .with_limit(1)
             .with_aleph_bft_next_item_index(0),
     );
-    let partial_response = post_journal(State(state.clone()), Json(partial_request))
+    let small_limit_response = post_journal(State(state.clone()), Json(small_limit_request))
         .await
-        .expect("partial-limit journal response")
+        .expect("small-limit journal response")
         .0;
-    assert_eq!(partial_response.entries.len(), 1);
-    assert!(partial_response.aleph_bft_finalized_items.is_empty());
-    assert!(!partial_response.aleph_bft_finalized_items_complete);
+    assert_eq!(small_limit_response.entries.len(), 2);
+    assert_eq!(small_limit_response.aleph_bft_finalized_items.len(), 2);
+    assert!(small_limit_response.complete);
+    assert!(small_limit_response.aleph_bft_finalized_items_complete);
+    assert!(small_limit_response
+        .aleph_bft_finalized_items
+        .iter()
+        .all(|item| item.unit_index == 0));
 
     let complete_request = signed_catch_up_request(
         &public_config,
@@ -23616,6 +24226,62 @@ async fn private_journal_route_returns_whole_aleph_bft_finalized_item_units() {
         .aleph_bft_finalized_items
         .iter()
         .all(|item| item.unit_index == 0));
+}
+
+#[tokio::test]
+async fn private_journal_route_aligns_claims_with_duplicate_finalized_items() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(envelope.clone()),
+            FederationConsensusItem::operation(envelope),
+        ],
+    )
+    .expect("duplicate-operation unit");
+    state
+        .apply_federation_aleph_bft_finalized_unit(unit)
+        .await
+        .expect("apply duplicate-operation unit");
+
+    let request = signed_catch_up_request(
+        &public_config,
+        &peer_private,
+        local_private.member_id,
+        1,
+        FederationJournalCatchUpRequest::new(0)
+            .with_limit(1)
+            .with_aleph_bft_next_item_index(0),
+    );
+    let response = post_journal(State(state), Json(request))
+        .await
+        .expect("duplicate-operation journal page")
+        .0;
+    assert_eq!(response.entries.len(), 1);
+    assert_eq!(response.aleph_bft_finalized_items.len(), 2);
+    assert_eq!(
+        response.aleph_bft_finalized_items[0].status,
+        FederationAlephBftFinalizedItemStatus::Accepted
+    );
+    assert_eq!(
+        response.aleph_bft_finalized_items[1].status,
+        FederationAlephBftFinalizedItemStatus::DuplicateOperation
+    );
+    assert!(response.complete);
+    assert!(response.aleph_bft_finalized_items_complete);
 }
 
 #[tokio::test]

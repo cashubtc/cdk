@@ -27,7 +27,7 @@ use super::{
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservationReportSummary, FederationWalletRecoveryStatus,
     InMemoryFederationJournal, MemberConfigPrivate, MemberId, Result,
-    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES,
+    FEDERATION_MAX_ALEPH_BFT_UNIT_PAYLOAD_BYTES, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
 };
 use crate::nuts::nut01::BlsSecretKeyShare;
 use crate::Amount;
@@ -3127,6 +3127,24 @@ pub struct FederationJournalCatchUpResponse {
 }
 
 impl FederationJournalCatchUpResponse {
+    /// Return the exact JSON bytes used on the private federation transport.
+    pub fn encoded_size(&self) -> Result<usize> {
+        Ok(serde_json::to_vec(self)?.len())
+    }
+
+    /// Reject a catch-up page above the fixed protocol response limit.
+    pub fn ensure_within_checkpoint_page_limit(&self) -> Result<usize> {
+        let actual = self.encoded_size()?;
+        if actual > FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES {
+            return Err(FederationError::CheckpointCatchUpTooLarge {
+                resource: "page",
+                actual: actual as u64,
+                max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES as u64,
+            });
+        }
+        Ok(actual)
+    }
+
     /// Validate the contiguous operation commitments carried by this page.
     pub fn validate_entries(&self) -> Result<()> {
         let mut expected_index = self.from_index;

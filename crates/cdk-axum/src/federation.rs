@@ -211,7 +211,12 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/operations", post(post_operation))
         .route("/aleph-bft/activity", post(post_aleph_bft_activity))
         .route("/aleph-bft/messages", post(post_aleph_bft_network_message))
-        .route("/journal", post(post_journal))
+        .route(
+            "/journal",
+            post(post_journal).layer(DefaultBodyLimit::max(
+                cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
+            )),
+        )
 }
 
 pub(crate) async fn get_public_config(

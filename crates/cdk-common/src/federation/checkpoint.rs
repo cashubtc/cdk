@@ -38,6 +38,60 @@ pub const FEDERATION_CHECKPOINT_VERSION: u16 = 1;
 pub const DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS: u64 = 10_000;
 /// Default finalized-item interval between scheduled checkpoints.
 pub const DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS: u64 = 10_000;
+/// Default canonical finalized-history bytes between scheduled checkpoints.
+pub const DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES: u64 = 32 * 1024 * 1024;
+/// Protocol maximum canonical finalized-history bytes in one checkpoint batch.
+pub const FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES: u64 = 64 * 1024 * 1024;
+/// Protocol maximum accepted operations in one checkpoint batch.
+pub const FEDERATION_MAX_CHECKPOINT_BATCH_JOURNAL_OPERATIONS: u64 = 20_000;
+/// Protocol maximum finalized consensus items in one checkpoint batch.
+pub const FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS: u64 = 20_000;
+/// Protocol maximum encoded bytes in one checkpoint catch-up response page.
+pub const FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES: usize = 8 * 1024 * 1024;
+/// Protocol maximum encoded bytes in one checkpoint catch-up request.
+pub const FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES: usize = 64 * 1024;
+/// Protocol maximum aggregate encoded bytes fetched for one checkpoint batch.
+pub const FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Sum canonical finalized-history bytes for one checkpoint batch.
+pub fn federation_checkpoint_batch_canonical_bytes(
+    items: &[FederationAlephBftFinalizedItem],
+) -> Result<u64> {
+    items.iter().try_fold(0_u64, |total, item| {
+        let item_bytes = u64::try_from(item.canonical_size()?)
+            .map_err(|_| checkpoint_invalid("canonical finalized item size exceeds u64"))?;
+        total
+            .checked_add(item_bytes)
+            .ok_or_else(|| checkpoint_invalid("checkpoint canonical byte count overflow"))
+    })
+}
+
+fn ensure_checkpoint_batch_item_limits(
+    journal_next_index: u64,
+    finalized_next_item_index: u64,
+    base: Option<&FederationCheckpoint>,
+) -> Result<(u64, u64)> {
+    let base_journal_next_index = base.map_or(0, |checkpoint| checkpoint.journal_next_index);
+    let base_finalized_next_item_index =
+        base.map_or(0, |checkpoint| checkpoint.finalized_next_item_index);
+    let journal_progress = journal_next_index
+        .checked_sub(base_journal_next_index)
+        .ok_or_else(|| checkpoint_invalid("checkpoint batch journal frontier regressed"))?;
+    let finalized_progress = finalized_next_item_index
+        .checked_sub(base_finalized_next_item_index)
+        .ok_or_else(|| checkpoint_invalid("checkpoint batch finalized frontier regressed"))?;
+    if journal_progress > FEDERATION_MAX_CHECKPOINT_BATCH_JOURNAL_OPERATIONS {
+        return Err(checkpoint_invalid(
+            "checkpoint batch exceeds the accepted-operation maximum",
+        ));
+    }
+    if finalized_progress > FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS {
+        return Err(checkpoint_invalid(
+            "checkpoint batch exceeds the finalized-item maximum",
+        ));
+    }
+    Ok((journal_progress, finalized_progress))
+}
 
 /// Cumulative digest of terminal application results in accepted-operation order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -272,6 +326,8 @@ pub struct FederationCheckpointPolicy {
     pub checkpoint_interval_journal_operations: u64,
     /// Finalized consensus items since the preceding scheduled checkpoint.
     pub checkpoint_interval_finalized_items: u64,
+    /// Canonical finalized-history bytes since the preceding scheduled checkpoint.
+    pub checkpoint_interval_canonical_bytes: u64,
 }
 
 impl FederationCheckpointPolicy {
@@ -283,6 +339,7 @@ impl FederationCheckpointPolicy {
         let policy = Self {
             checkpoint_interval_journal_operations,
             checkpoint_interval_finalized_items,
+            checkpoint_interval_canonical_bytes: DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES,
         };
         policy.validate()?;
         Ok(policy)
@@ -300,6 +357,32 @@ impl FederationCheckpointPolicy {
                 "finalized-item checkpoint interval must be non-zero",
             ));
         }
+        if self.checkpoint_interval_journal_operations
+            > FEDERATION_MAX_CHECKPOINT_BATCH_JOURNAL_OPERATIONS
+        {
+            return Err(checkpoint_invalid(
+                "journal-operation checkpoint interval exceeds the protocol batch maximum",
+            ));
+        }
+        if self.checkpoint_interval_finalized_items
+            > FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS
+        {
+            return Err(checkpoint_invalid(
+                "finalized-item checkpoint interval exceeds the protocol batch maximum",
+            ));
+        }
+        if self.checkpoint_interval_canonical_bytes == 0 {
+            return Err(checkpoint_invalid(
+                "canonical-byte checkpoint interval must be non-zero",
+            ));
+        }
+        if self.checkpoint_interval_canonical_bytes
+            > FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES
+        {
+            return Err(checkpoint_invalid(
+                "canonical-byte checkpoint interval exceeds the protocol batch maximum",
+            ));
+        }
         Ok(())
     }
 }
@@ -309,6 +392,7 @@ impl Default for FederationCheckpointPolicy {
         Self {
             checkpoint_interval_journal_operations: DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS,
             checkpoint_interval_finalized_items: DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
+            checkpoint_interval_canonical_bytes: DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES,
         }
     }
 }
@@ -849,34 +933,26 @@ impl FederationCheckpointBoundary {
         &self,
         policy: FederationCheckpointPolicy,
         latest_scheduled: Option<&FederationCheckpoint>,
+        batch_canonical_bytes: u64,
     ) -> Result<bool> {
         policy.validate()?;
-        let (base_journal_next_index, base_finalized_next_item_index) = match latest_scheduled {
-            Some(checkpoint) => {
-                if checkpoint.kind != FederationCheckpointKind::Scheduled {
-                    return Err(checkpoint_invalid(
-                        "scheduled eligibility anchor is not a scheduled checkpoint",
-                    ));
-                }
-                (
-                    checkpoint.journal_next_index,
-                    checkpoint.finalized_next_item_index,
-                )
+        if let Some(checkpoint) = latest_scheduled {
+            if checkpoint.kind != FederationCheckpointKind::Scheduled {
+                return Err(checkpoint_invalid(
+                    "scheduled eligibility anchor is not a scheduled checkpoint",
+                ));
             }
-            None => (0, 0),
-        };
-        let journal_progress = self
-            .journal_next_index
-            .checked_sub(base_journal_next_index)
-            .ok_or_else(|| checkpoint_invalid("scheduled journal frontier regressed"))?;
-        let finalized_progress = self
-            .finalized_next_item_index
-            .checked_sub(base_finalized_next_item_index)
-            .ok_or_else(|| checkpoint_invalid("scheduled finalized-item frontier regressed"))?;
+        }
+        let (journal_progress, finalized_progress) = ensure_checkpoint_batch_item_limits(
+            self.journal_next_index,
+            self.finalized_next_item_index,
+            latest_scheduled,
+        )?;
 
         Ok(
             journal_progress >= policy.checkpoint_interval_journal_operations
-                || finalized_progress >= policy.checkpoint_interval_finalized_items,
+                || finalized_progress >= policy.checkpoint_interval_finalized_items
+                || batch_canonical_bytes >= policy.checkpoint_interval_canonical_bytes,
         )
     }
 
@@ -886,8 +962,13 @@ impl FederationCheckpointBoundary {
         config: &FederationConfig,
         latest_scheduled: Option<&FederationCheckpoint>,
         materialized_state_digest: FederationMaterializedStateDigest,
+        batch_canonical_bytes: u64,
     ) -> Result<FederationCheckpoint> {
-        if !self.is_scheduled_eligible(config.checkpoint_policy, latest_scheduled)? {
+        if !self.is_scheduled_eligible(
+            config.checkpoint_policy,
+            latest_scheduled,
+            batch_canonical_bytes,
+        )? {
             return Err(checkpoint_invalid(
                 "complete unit boundary has not crossed a scheduled interval",
             ));
@@ -927,6 +1008,11 @@ impl FederationCheckpointBoundary {
                 "recovery anchor is not a scheduled checkpoint",
             ));
         }
+        ensure_checkpoint_batch_item_limits(
+            self.journal_next_index,
+            self.finalized_next_item_index,
+            latest_scheduled,
+        )?;
         let (scheduled_checkpoint_sequence, scheduled_anchor_id) = match latest_scheduled {
             Some(checkpoint) => (
                 checkpoint.scheduled_checkpoint_sequence,
@@ -1170,6 +1256,17 @@ impl FederationCheckpoint {
             }
         }
 
+        Ok(())
+    }
+
+    /// Validate that one checkpoint-bounded transfer stays within item limits.
+    pub fn validate_catch_up_batch_from(&self, current: Option<&Self>) -> Result<()> {
+        self.validate_promotion_from(current)?;
+        ensure_checkpoint_batch_item_limits(
+            self.journal_next_index,
+            self.finalized_next_item_index,
+            current,
+        )?;
         Ok(())
     }
 
@@ -1869,7 +1966,7 @@ mod tests {
                 finalized_digest.as_str(),
             ),
             (
-                "d2b571bd919ab092745c317ddf0029d7ad1ff469fd5e30a7d2aa0ace574630cc",
+                "61b0608c5a52cc89337cc93cc1d78993e17672c7c2178ccb8f8d00d53a6ae6d5",
                 "6f98c1caffcb0b8c7970d6b697c821e0f46949fce43c74c4e349a10e38ccfb3d",
                 "d741b5d8863d623672627c1d7fd5ccea7a0420e78b9b68ac89b231ae2be5daa2",
             )
@@ -1883,10 +1980,22 @@ mod tests {
             FederationCheckpointPolicy {
                 checkpoint_interval_journal_operations: 10_000,
                 checkpoint_interval_finalized_items: 10_000,
+                checkpoint_interval_canonical_bytes: DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES,
             }
         );
         assert!(FederationCheckpointPolicy::new(0, 10).is_err());
         assert!(FederationCheckpointPolicy::new(10, 0).is_err());
+        assert!(FederationCheckpointPolicy::new(
+            FEDERATION_MAX_CHECKPOINT_BATCH_JOURNAL_OPERATIONS.saturating_add(1),
+            10,
+        )
+        .is_err());
+        let invalid_byte_policy = FederationCheckpointPolicy {
+            checkpoint_interval_canonical_bytes: FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES
+                .saturating_add(1),
+            ..Default::default()
+        };
+        assert!(invalid_byte_policy.validate().is_err());
 
         let (mut config, _) = configs();
         config.checkpoint_policy = FederationCheckpointPolicy::new(5, 10).expect("policy");
@@ -1910,16 +2019,32 @@ mod tests {
 
         let before = complete_boundary(&config, 4, 9);
         assert!(!before
-            .is_scheduled_eligible(config.checkpoint_policy, None)
+            .is_scheduled_eligible(config.checkpoint_policy, None, 0)
             .expect("eligibility before interval"));
         let journal_eligible = complete_boundary(&config, 6, 9);
         assert!(journal_eligible
-            .is_scheduled_eligible(config.checkpoint_policy, None)
+            .is_scheduled_eligible(config.checkpoint_policy, None, 0)
             .expect("journal eligibility"));
         let finalized_eligible = complete_boundary(&config, 4, 12);
         assert!(finalized_eligible
-            .is_scheduled_eligible(config.checkpoint_policy, None)
+            .is_scheduled_eligible(config.checkpoint_policy, None, 0)
             .expect("finalized eligibility"));
+        assert!(before
+            .is_scheduled_eligible(
+                config.checkpoint_policy,
+                None,
+                DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES,
+            )
+            .expect("canonical byte eligibility"));
+
+        let mut oversized = checkpoint(&config);
+        oversized.journal_next_index =
+            FEDERATION_MAX_CHECKPOINT_BATCH_JOURNAL_OPERATIONS.saturating_add(1);
+        oversized.finalized_next_item_index = oversized.journal_next_index;
+        assert!(matches!(
+            oversized.validate_catch_up_batch_from(None),
+            Err(FederationError::CheckpointInvalid { .. })
+        ));
     }
 
     #[test]
@@ -1950,7 +2075,7 @@ mod tests {
         let first_boundary = complete_boundary(&config, 6, 12);
         let audit = FederationMaterializedStateDigest::from_bytes([14; 32]);
         let first = first_boundary
-            .scheduled_checkpoint(&config, None, audit)
+            .scheduled_checkpoint(&config, None, audit, 0)
             .expect("first scheduled checkpoint");
         let recovery_boundary = complete_boundary(&config, 8, 14);
         let recovery = recovery_boundary
@@ -1958,7 +2083,7 @@ mod tests {
             .expect("recovery checkpoint");
         let second_boundary = complete_boundary(&config, 12, 22);
         let second = second_boundary
-            .scheduled_checkpoint(&config, Some(&first), audit)
+            .scheduled_checkpoint(&config, Some(&first), audit, 0)
             .expect("second scheduled checkpoint");
 
         assert_eq!(first.scheduled_checkpoint_sequence, 1);

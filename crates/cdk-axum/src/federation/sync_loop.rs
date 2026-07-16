@@ -3,8 +3,9 @@ use std::collections::BTreeSet;
 use cdk::federation::{
     FederationCheckpoint, FederationCheckpointKind, FederationCheckpointQuorum,
     FederationCheckpointSummary, FederationCheckpointSummaryResponse, FederationError,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationPeerStatus, MemberConfigPublic, MemberId,
+    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
+    MemberConfigPublic, MemberId, FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
 };
 use cdk_http_client::{Async, Transport};
 use tokio::time::{self, Instant};
@@ -611,23 +612,6 @@ async fn local_pending_checkpoint(
     }
 }
 
-pub(crate) fn append_checkpoint_catch_up_page(
-    aggregate: &mut Option<FederationJournalCatchUpResponse>,
-    mut page: FederationJournalCatchUpResponse,
-) {
-    match aggregate.as_mut() {
-        Some(aggregate) => {
-            aggregate.entries.append(&mut page.entries);
-            aggregate
-                .aleph_bft_finalized_items
-                .append(&mut page.aleph_bft_finalized_items);
-            aggregate.complete = page.complete;
-            aggregate.aleph_bft_finalized_items_complete = page.aleph_bft_finalized_items_complete;
-        }
-        None => *aggregate = Some(page),
-    }
-}
-
 async fn disseminate_latest_checkpoint_quorums<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
@@ -794,6 +778,53 @@ pub(super) fn quorum_evidence_is_current(
     now.saturating_duration_since(observed_at) <= max_age
 }
 
+pub(super) fn checked_checkpoint_transfer_bytes(
+    transferred: u64,
+    page_bytes: u64,
+    maximum: u64,
+) -> Result<u64, FederationError> {
+    let actual =
+        transferred
+            .checked_add(page_bytes)
+            .ok_or(FederationError::CheckpointCatchUpTooLarge {
+                resource: "transfer batch",
+                actual: u64::MAX,
+                max: maximum,
+            })?;
+    if actual > maximum {
+        return Err(FederationError::CheckpointCatchUpTooLarge {
+            resource: "transfer batch",
+            actual,
+            max: maximum,
+        });
+    }
+    Ok(actual)
+}
+
+pub(super) fn checked_checkpoint_page_cursors(
+    next_journal_index: u64,
+    next_finalized_item_index: u64,
+    journal_progress: u64,
+    finalized_progress: u64,
+) -> Result<(u64, u64), FederationError> {
+    if journal_progress == 0 && finalized_progress == 0 {
+        return Err(FederationError::CatchUpNoProgress {
+            index: next_journal_index,
+        });
+    }
+    let next_journal_index = next_journal_index
+        .checked_add(journal_progress)
+        .ok_or_else(|| FederationError::CheckpointInvalid {
+            reason: "checkpoint catch-up journal cursor overflow".to_string(),
+        })?;
+    let next_finalized_item_index = next_finalized_item_index
+        .checked_add(finalized_progress)
+        .ok_or_else(|| FederationError::CheckpointInvalid {
+            reason: "checkpoint catch-up finalized cursor overflow".to_string(),
+        })?;
+    Ok((next_journal_index, next_finalized_item_index))
+}
+
 pub(super) fn quorum_compatible_session(
     local_status: &FederationPeerStatus,
     peer_statuses: &[FederationPeerStatus],
@@ -859,10 +890,7 @@ where
         state: &MintState,
         member: &MemberConfigPublic,
         quorum: &FederationCheckpointQuorum,
-    ) -> anyhow::Result<(
-        FederationJournalCatchUpResponse,
-        Vec<FederationJournalEntry>,
-    )> {
+    ) -> anyhow::Result<()> {
         let runtime_config =
             state
                 .mint
@@ -877,6 +905,14 @@ where
             runtime_config.member_id(),
         )?;
         let checkpoint = &quorum.checkpoint;
+        let current_checkpoint = state
+            .mint
+            .localstore()
+            .get_trusted_federation_checkpoint_quorum()
+            .await?;
+        checkpoint.validate_catch_up_batch_from(
+            current_checkpoint.as_ref().map(|quorum| &quorum.checkpoint),
+        )?;
         let checkpoint_id = checkpoint.id()?;
         let consensus = state.federation.consensus.as_ref().ok_or_else(|| {
             FederationError::RuntimeUnavailable {
@@ -904,7 +940,15 @@ where
 
         let mut next_journal_index = initial_journal_index;
         let mut next_finalized_item_index = initial_finalized_item_index;
-        let mut aggregate: Option<FederationJournalCatchUpResponse> = None;
+        let mut transferred_bytes = 0u64;
+        #[cfg(feature = "prometheus")]
+        let mut peak_in_flight_bytes = 0u64;
+        let mut page_count = 0u64;
+        #[cfg(feature = "prometheus")]
+        let metric_member = runtime_config.member_id().to_string();
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS
+            .set_federation_checkpoint_catch_up_peak_in_flight_bytes(&metric_member, 0);
         while next_journal_index < checkpoint.journal_next_index
             || next_finalized_item_index < checkpoint.finalized_next_item_index
         {
@@ -913,9 +957,44 @@ where
                 .with_limit(self.sync_config.catch_up_limit)
                 .with_known_order_digest(known_order_digest)
                 .with_aleph_bft_next_item_index(next_finalized_item_index);
+            let request_bytes = serde_json::to_vec(&request)?.len();
+            if request_bytes > FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES {
+                return Err(FederationError::CheckpointCatchUpTooLarge {
+                    resource: "request",
+                    actual: u64::try_from(request_bytes).unwrap_or(u64::MAX),
+                    max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES as u64,
+                }
+                .into());
+            }
             let page = self
                 .catch_up_to_checkpoint(member, &request, checkpoint)
                 .await?;
+            let page_bytes =
+                u64::try_from(page.ensure_within_checkpoint_page_limit()?).unwrap_or(u64::MAX);
+            transferred_bytes = checked_checkpoint_transfer_bytes(
+                transferred_bytes,
+                page_bytes,
+                FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
+            )?;
+            #[cfg(feature = "prometheus")]
+            {
+                peak_in_flight_bytes = peak_in_flight_bytes.max(page_bytes);
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &metric_member,
+                    cdk_prometheus::FederationCheckpointWork::CatchUpPagesFetched,
+                    1,
+                );
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &metric_member,
+                    cdk_prometheus::FederationCheckpointWork::CatchUpCanonicalBytesFetched,
+                    page_bytes,
+                );
+                cdk_prometheus::METRICS.set_federation_checkpoint_catch_up_peak_in_flight_bytes(
+                    &metric_member,
+                    u64_to_i64_saturating(peak_in_flight_bytes),
+                );
+            }
+            page_count = page_count.saturating_add(1);
             if page.from_index != next_journal_index
                 || page.aleph_bft_from_item_index != next_finalized_item_index
             {
@@ -935,32 +1014,33 @@ where
                     .into());
                 }
             }
-            let journal_progress = page.entries.len() as u64;
-            let finalized_progress = page.aleph_bft_finalized_items.len() as u64;
-            if journal_progress == 0 && finalized_progress == 0 {
-                return Err(FederationError::CatchUpNoProgress {
-                    index: next_journal_index,
+            let journal_progress = u64::try_from(page.entries.len()).map_err(|_| {
+                FederationError::CheckpointInvalid {
+                    reason: "checkpoint catch-up journal page length exceeds u64".to_string(),
                 }
-                .into());
-            }
-            next_journal_index = next_journal_index
-                .checked_add(journal_progress)
-                .ok_or_else(|| FederationError::CheckpointInvalid {
-                    reason: "checkpoint catch-up journal cursor overflow".to_string(),
-                })?;
-            next_finalized_item_index = next_finalized_item_index
-                .checked_add(finalized_progress)
-                .ok_or_else(|| FederationError::CheckpointInvalid {
-                reason: "checkpoint catch-up finalized cursor overflow".to_string(),
             })?;
+            let finalized_progress =
+                u64::try_from(page.aleph_bft_finalized_items.len()).map_err(|_| {
+                    FederationError::CheckpointInvalid {
+                        reason: "checkpoint catch-up finalized page length exceeds u64".to_string(),
+                    }
+                })?;
+            (next_journal_index, next_finalized_item_index) = checked_checkpoint_page_cursors(
+                next_journal_index,
+                next_finalized_item_index,
+                journal_progress,
+                finalized_progress,
+            )?;
             if let Some(last) = page.entries.last() {
                 known_order_digest = last.order_digest;
             }
-            append_checkpoint_catch_up_page(&mut aggregate, page);
+            state
+                .apply_federation_checkpoint_catch_up_response(&page, quorum)
+                .await?;
         }
 
-        let response = aggregate.unwrap_or_else(|| {
-            FederationJournalCatchUpResponse::from_journal(
+        if page_count == 0 {
+            let response = FederationJournalCatchUpResponse::from_journal(
                 checkpoint.federation_id,
                 &cdk::federation::InMemoryFederationJournal::from_base(
                     checkpoint.journal_next_index,
@@ -972,13 +1052,13 @@ where
                     .with_aleph_bft_next_item_index(checkpoint.finalized_next_item_index),
                 self.sync_config.catch_up_limit,
                 self.sync_config.catch_up_limit,
-            )
-        });
-        response.validate_checkpoint_binding(checkpoint)?;
-        let applied = state
-            .apply_federation_checkpoint_catch_up_response(&response, quorum)
-            .await?;
-        Ok((response, applied))
+            );
+            response.validate_checkpoint_binding(checkpoint)?;
+            state
+                .apply_federation_checkpoint_catch_up_response(&response, quorum)
+                .await?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn sync_once_from_member(
@@ -1026,6 +1106,14 @@ where
                     .catch_up_state_to_checkpoint_from_member(state, member, &target)
                     .await
                 {
+                    #[cfg(feature = "prometheus")]
+                    if let Some(config) = state.mint.federation_config() {
+                        cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                            &config.member_id().to_string(),
+                            cdk_prometheus::FederationCheckpointWork::CatchUpRetries,
+                            1,
+                        );
+                    }
                     state
                         .mark_federation_lagging(
                             member.member_id,

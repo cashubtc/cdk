@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use futures::StreamExt;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -248,6 +249,48 @@ impl ReqwestRequestBuilder {
         let response = inner.send().await.map_err(map_reqwest_error)?;
         let status = response.status().as_u16();
         let body = response.bytes().await.map_err(map_reqwest_error)?.to_vec();
+        Ok(RawResponse::new(status, body))
+    }
+
+    /// Send the request while bounding bytes retained from the response body.
+    pub async fn send_bounded(self, max_response_bytes: usize) -> Response<RawResponse> {
+        if let Some(err) = self.error {
+            return Err(err);
+        }
+
+        let Some(inner) = self.inner else {
+            return Err(HttpError::Other("request builder consumed".to_string()));
+        };
+
+        let response = inner.send().await.map_err(map_reqwest_error)?;
+        let status = response.status().as_u16();
+        if let Some(actual) = response.content_length() {
+            if actual > max_response_bytes as u64 {
+                return Err(HttpError::ResponseTooLarge {
+                    actual: usize::try_from(actual).unwrap_or(usize::MAX),
+                    max: max_response_bytes,
+                });
+            }
+        }
+        let mut body = Vec::with_capacity(
+            response
+                .content_length()
+                .and_then(|length| usize::try_from(length).ok())
+                .unwrap_or_default()
+                .min(max_response_bytes),
+        );
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(map_reqwest_error)?;
+            let actual = body.len().saturating_add(chunk.len());
+            if actual > max_response_bytes {
+                return Err(HttpError::ResponseTooLarge {
+                    actual,
+                    max: max_response_bytes,
+                });
+            }
+            body.extend_from_slice(&chunk);
+        }
         Ok(RawResponse::new(status, body))
     }
 

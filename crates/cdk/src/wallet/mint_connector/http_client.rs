@@ -167,6 +167,10 @@ where
                 }
             }
             HttpError::Timeout => Error::Timeout,
+            HttpError::ResponseTooLarge { actual, max } => Error::HttpError(
+                None,
+                format!("HTTP response too large: actual={actual}, max={max}"),
+            ),
             HttpError::Connection(message)
             | HttpError::Serialization(message)
             | HttpError::Proxy(message)

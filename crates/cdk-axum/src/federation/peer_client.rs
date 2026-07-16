@@ -21,9 +21,10 @@ use cdk::federation::{
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
     FederationPeerStatusRequest, FederationRestMessageKind, FederationSignedRequest,
     FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
-    MemberConfigPublic, FEDERATION_REST_API_VERSION,
+    MemberConfigPublic, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
-use cdk_http_client::{Async, Transport};
+use cdk_http_client::{Async, HttpError, Transport};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use tokio::time;
@@ -136,6 +137,61 @@ where
             self.transport
                 .http_post(federation_endpoint(member, endpoint)?, None, payload);
         match time::timeout(timeout, request).await {
+            Ok(result) => Ok(result?),
+            Err(_) => Err(FederationRestPeerClientError::RequestTimeout {
+                member_id: member.member_id,
+                operation: operation.to_string(),
+                timeout,
+            }
+            .into()),
+        }
+    }
+
+    async fn http_post_bounded_with_timeout<P, R>(
+        &self,
+        member: &MemberConfigPublic,
+        endpoint: &str,
+        operation: &str,
+        payload: &P,
+        timeout: Duration,
+        max_response_bytes: usize,
+    ) -> anyhow::Result<R>
+    where
+        P: Serialize + Send + Sync,
+        R: DeserializeOwned + Serialize,
+    {
+        let _permit = match self.outbound_admission.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(tokio::sync::TryAcquireError::NoPermits) => {
+                return Err(FederationRestPeerClientError::OutboundAdmissionFull {
+                    member_id: member.member_id,
+                    operation: operation.to_string(),
+                }
+                .into());
+            }
+            Err(tokio::sync::TryAcquireError::Closed) => {
+                return Err(FederationRestPeerClientError::OutboundAdmissionClosed {
+                    member_id: member.member_id,
+                    operation: operation.to_string(),
+                }
+                .into());
+            }
+        };
+        let request = self.transport.http_post_bounded(
+            federation_endpoint(member, endpoint)?,
+            None,
+            payload,
+            max_response_bytes,
+        );
+        match time::timeout(timeout, request).await {
+            Ok(Err(HttpError::ResponseTooLarge { actual, max })) => {
+                Err(FederationError::CheckpointCatchUpTooLarge {
+                    resource: "decoded response",
+                    actual: u64::try_from(actual).unwrap_or(u64::MAX),
+                    max: u64::try_from(max).unwrap_or(u64::MAX),
+                }
+                .into())
+            }
             Ok(result) => Ok(result?),
             Err(_) => Err(FederationRestPeerClientError::RequestTimeout {
                 member_id: member.member_id,
@@ -842,13 +898,15 @@ where
     ) -> anyhow::Result<FederationJournalCatchUpResponse> {
         let request =
             self.signed_request(member, FederationRestMessageKind::CatchUp, request.clone())?;
+        ensure_checkpoint_catch_up_request_size(&request)?;
         let response: FederationJournalCatchUpResponse = self
-            .http_post_with_timeout(
+            .http_post_bounded_with_timeout(
                 member,
                 "journal",
                 "catch-up request",
                 &request,
                 self.sync_config.peer_request_timeout,
+                FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
             )
             .await?;
         if response.version != FEDERATION_REST_API_VERSION {
@@ -866,6 +924,7 @@ where
             .into());
         }
         response.validate_entries()?;
+        response.ensure_within_checkpoint_page_limit()?;
         Ok(response)
     }
 
@@ -884,13 +943,15 @@ where
         }
         let request =
             self.signed_request(member, FederationRestMessageKind::CatchUp, request.clone())?;
+        ensure_checkpoint_catch_up_request_size(&request)?;
         let response: FederationJournalCatchUpResponse = self
-            .http_post_with_timeout(
+            .http_post_bounded_with_timeout(
                 member,
                 "journal",
                 "checkpoint catch-up request",
                 &request,
                 self.sync_config.peer_request_timeout,
+                FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
             )
             .await?;
         if response.version != FEDERATION_REST_API_VERSION {
@@ -907,6 +968,7 @@ where
             }
             .into());
         }
+        response.ensure_within_checkpoint_page_limit()?;
         response.validate_checkpoint_binding(checkpoint)?;
         Ok(response)
     }
@@ -974,6 +1036,24 @@ where
 
         Ok(())
     }
+}
+
+fn ensure_checkpoint_catch_up_request_size<P>(
+    request: &FederationSignedRequest<P>,
+) -> anyhow::Result<usize>
+where
+    P: Serialize,
+{
+    let actual = serde_json::to_vec(request)?.len();
+    if actual > FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES {
+        return Err(FederationError::CheckpointCatchUpTooLarge {
+            resource: "request",
+            actual: u64::try_from(actual).unwrap_or(u64::MAX),
+            max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES as u64,
+        }
+        .into());
+    }
+    Ok(actual)
 }
 
 fn federation_rest_sequence_time_seed() -> u64 {

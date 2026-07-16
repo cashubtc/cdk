@@ -1,6 +1,6 @@
 # Federated Cashu checkpoint and catch-up consolidation plan
 
-Status: in progress
+Status: in progress (milestones 0-5 complete; milestone 6 next)
 Scope: federation-only checkpoint, catch-up, startup recovery, and related
 AlephBFT runtime consolidation
 Primary goal: simplify the checkpoint and catch-up implementation without
@@ -944,7 +944,7 @@ Verification completed locally:
 
 ## Milestone 5: Bounded streaming checkpoint catch-up
 
-Status: not started
+Status: complete
 
 ### Objective
 
@@ -953,51 +953,102 @@ complete target validation and data-before-trust promotion.
 
 ### Checklist
 
-- [ ] Add a consensus-configured or protocol-fixed maximum checkpoint batch
+- [x] Add a consensus-configured or protocol-fixed maximum checkpoint batch
       byte budget in addition to item-count intervals.
-- [ ] Define whether scheduled eligibility triggers on journal count, finalized
+- [x] Define whether scheduled eligibility triggers on journal count, finalized
       count, cumulative canonical bytes, or any of those thresholds.
-- [ ] Bound request, response, staged, decoded, and aggregate in-flight bytes.
-- [ ] Replace whole-batch `Vec` aggregation with page-by-page incremental
+- [x] Bound request, response, staged, decoded, and aggregate in-flight bytes.
+- [x] Replace whole-batch `Vec` aggregation with page-by-page incremental
       verification through the shared suffix verifier.
-- [ ] Select and document one crash-safe staging model: durable staging tables,
+- [x] Select and document one crash-safe staging model: durable staging tables,
       durable untrusted suffix rows, or incrementally applied verified pages
       while retaining the old trusted checkpoint.
-- [ ] Ensure a failed page or source cannot contaminate the trusted frontier and
+- [x] Ensure a failed page or source cannot contaminate the trusted frontier and
       can be discarded or safely overlapped on retry.
-- [ ] Persist enough rolling verifier progress to resume after a crash without
+- [x] Persist enough rolling verifier progress to resume after a crash without
       downloading or replaying already durable pages unnecessarily.
-- [ ] Promote the target checkpoint only after every target cursor, digest, and
+- [x] Promote the target checkpoint only after every target cursor, digest, and
       watermark matches exactly and business application is terminal.
-- [ ] Preserve one-source body fetching with source failover and transferable
+- [x] Preserve one-source body fetching with source failover and transferable
       quorum-proof fetching.
-- [ ] Add bounded metrics for pages, canonical bytes, staged bytes, applied
+- [x] Add bounded metrics for pages, canonical bytes, staged bytes, applied
       bytes, retries, and peak in-flight batch bytes.
 
 ### Exit tests
 
-- [ ] Catch-up memory remains within a deterministic configured bound for a
+- [x] Catch-up memory remains within a deterministic configured bound for a
       checkpoint containing the maximum supported item count and large
       operations.
-- [ ] One-page and many-page delivery produce identical state and checkpoint
+- [x] One-page and many-page delivery produce identical state and checkpoint
       promotion.
-- [ ] Crash after every page, after staging, during application, and before
+- [x] Crash after every page, after staging, during application, and before
       promotion resumes safely from durable progress.
-- [ ] Invalid data on the first source is rejected and a second source can
+- [x] Invalid data on the first source is rejected and a second source can
       complete recovery from the unchanged trusted base.
-- [ ] No-progress, oversized-page, oversized-batch, integer-overflow, and
+- [x] No-progress, oversized-page, oversized-batch, integer-overflow, and
       decompression/decoding amplification cases fail with structured errors.
-- [ ] Genesis catch-up and multiple sequential scheduled checkpoints remain
+- [x] Genesis catch-up and multiple sequential scheduled checkpoints remain
       supported without whole-history memory accumulation.
 
 ### Progress notes
 
-Record selected staging design, bounds, worst-case calculations, and measured
-peak work here.
+Selected the simplest crash-safe model: each complete-unit page is authenticated
+against the already verified target quorum, suffix-verified, durably persisted,
+and deterministically applied while the previous checkpoint remains the only
+trusted checkpoint. No staging tables or second recovery protocol were added.
+Only an exact final page may promote the target. A valid prefix from a source
+may remain as an untrusted durable suffix; an invalid page changes nothing, and
+another source resumes at the durable scalar cursor.
+
+The protocol now uses a signed checkpoint policy and fixed cut-through limits:
+
+- scheduled eligibility fires when any of accepted-operation count, finalized
+  item count, or cumulative canonical finalized bytes crosses its interval;
+- the defaults are 10,000 accepted operations, 10,000 finalized items, or 32
+  MiB of canonical finalized history;
+- one checkpoint batch is capped at 20,000 accepted operations, 20,000
+  finalized items, and 64 MiB of canonical finalized history;
+- one signed request is capped at 64 KiB, one response page at 8 MiB, and one
+  checkpoint transfer at 256 MiB including JSON and compact-claim overhead.
+
+Native bitreq, reqwest, and Tor transports enforce the page bound while reading
+the response, before JSON decoding. Item caps additionally bound decoded object
+overhead. The route trims only at a complete AlephBFT-unit boundary and keeps
+compact journal claims aligned with accepted finalized items. A single unit
+that cannot fit is rejected rather than split.
+
+There is no whole-batch response aggregate. At most one fetched page is held by
+the sync loop. Fail-closed page verification clones the bounded retained suffix
+runtime, so worst-case recovery memory is a constant function of the 64 MiB /
+20,000-item suffix caps plus one 8 MiB page and fixed structural overhead, never
+of federation lifetime. After a successful page, the in-memory runtime carries
+the rolling verifier state. The same journal, finalized, and application
+digests and cursors are durable; after a process crash startup reconstructs that
+bounded suffix once and requests only pages after the durable cursor.
+
+Checkpoint metrics now record pages fetched/applied, encoded transport bytes,
+staged/applied bytes, retry count, and the largest encoded page in the latest
+batch. The peak gauge measures encoded in-flight page work rather than
+allocator-specific heap overhead.
+
+Local verification completed with:
+
+- `cargo check --workspace --all-targets`;
+- `cargo clippy --workspace --all-targets -- -D warnings`;
+- the full `cdk-common` federation suite (405 passed, 1 ignored), including the
+  shared suffix suite (8 passed);
+- the full `cdk` federation library suite (768 passed);
+- the Axum checkpoint suite (26 passed, 2 ignored) and catch-up suite (26
+  passed, 1 ignored), including maximum-page trimming, no-progress/overflow,
+  one-page versus many-page equivalence, source failover, crash after every
+  durable page, partial/staged application restart, and pre-promotion failure;
+- the Prometheus library suite (11 passed) and mint-daemon fake-wallet library
+  suite (55 passed);
+- bounded HTTP response tests with both native bitreq and reqwest backends.
 
 ### Commit gate
 
-- [ ] Commit bounded streaming catch-up and all fault/resource tests before
+- [x] Commit bounded streaming catch-up and all fault/resource tests before
       starting milestone 6.
 
 ## Milestone 6: Focused runtime component split

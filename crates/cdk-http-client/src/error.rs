@@ -22,6 +22,14 @@ pub enum HttpError {
     /// Serialization error
     #[error("Serialization error: {0}")]
     Serialization(String),
+    /// An HTTP response exceeded an explicit caller-provided byte limit.
+    #[error("HTTP response too large: actual={actual}, max={max}")]
+    ResponseTooLarge {
+        /// Bytes observed before the request was rejected.
+        actual: usize,
+        /// Maximum admitted response bytes.
+        max: usize,
+    },
     /// Proxy error
     #[error("Proxy error: {0}")]
     Proxy(String),

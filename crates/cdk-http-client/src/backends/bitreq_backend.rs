@@ -337,6 +337,38 @@ impl BitreqRequestBuilder {
         ))
     }
 
+    /// Send the request while bounding bytes retained from the response body.
+    pub async fn send_bounded(self, max_response_bytes: usize) -> Response<RawResponse> {
+        if let Some(err) = self.error {
+            return Err(err);
+        }
+        let request = apply_proxy_if_needed(self.inner, &self.url, &self.proxy_config)?;
+        let request = if self.no_redirects {
+            request.with_max_redirects(0)
+        } else {
+            request
+        };
+        let request = match self.request_timeout_secs {
+            Some(timeout_secs) => request.with_timeout(timeout_secs),
+            None => request,
+        }
+        .with_max_body_size(max_response_bytes);
+        let response = tokio::task::spawn_blocking(move || request.send())
+            .await
+            .map_err(|err| HttpError::Other(format!("HTTP request task failed: {err}")))?
+            .map_err(|err| match err {
+                bitreq::Error::BodyOverflow => HttpError::ResponseTooLarge {
+                    actual: max_response_bytes.saturating_add(1),
+                    max: max_response_bytes,
+                },
+                err => HttpError::from(err),
+            })?;
+        Ok(RawResponse::new(
+            response.status_code as u16,
+            response.into_bytes(),
+        ))
+    }
+
     /// Send the request and deserialize the response as JSON.
     pub async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
         if let Some(err) = self.error {

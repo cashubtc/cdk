@@ -10,14 +10,14 @@ use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 use super::{
-    FederationApplicationState, FederationCheckpoint, FederationConfig, FederationError,
-    FederationId, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
-    FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
-    FederationOperationConflictKey, FederationOperationEnvelope, FederationOperationId,
-    FederationOperationStatus, FederationPeerStatus, FederationRestMessageKind,
-    FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    InMemoryFederationJournal, MemberId, Result, ThresholdParams,
-    VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
+    FederationAlephBftRecoveryCursor, FederationApplicationState, FederationCheckpoint,
+    FederationConfig, FederationError, FederationId, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationJournalConsensusEvidence, FederationJournalEntry,
+    FederationMaterializedStateDigest, FederationOperationConflictKey, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationStatus, FederationPeerStatus,
+    FederationRestMessageKind, FederationSignedRequest, FederationSubmitOperationRequest,
+    FederationSubmitOperationResponse, InMemoryFederationJournal, MemberId, Result,
+    ThresholdParams, VerifiedFederationCheckpointQuorum, VerifiedFederationSuffix,
     FEDERATION_MAX_OPERATION_ENVELOPE_BYTES,
 };
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -304,6 +304,11 @@ impl FederationAlephBftFinalizedUnitOutcome {
 }
 
 impl FederationAlephBftFinalizedItem {
+    /// Return this finalized fact's canonical encoded size for checkpoint budgeting.
+    pub fn canonical_size(&self) -> Result<usize> {
+        Ok(canonical_json_bytes(self)?.len())
+    }
+
     /// Return consensus evidence matching this finalized item.
     #[must_use]
     pub fn consensus_evidence(&self) -> FederationJournalConsensusEvidence {
@@ -2360,6 +2365,16 @@ impl FederationConsensusRuntime {
     /// Return the current AlephBFT runtime status.
     pub fn aleph_bft_status(&self) -> Result<FederationConsensusRuntimeStatus> {
         Ok(self.status())
+    }
+
+    /// Return the complete-unit recovery cursor represented by this runtime.
+    pub fn aleph_bft_recovery_cursor(&self) -> Result<FederationAlephBftRecoveryCursor> {
+        let status = self.aleph_bft_status()?;
+        Ok(FederationAlephBftRecoveryCursor {
+            session: status.session,
+            next_unit_finalization_index: status.next_unit_finalization_index,
+            next_unit_index_by_member: self.next_unit_index_by_member().clone(),
+        })
     }
 }
 

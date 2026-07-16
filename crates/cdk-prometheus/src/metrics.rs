@@ -35,6 +35,18 @@ pub enum FederationCheckpointWork {
     CheckpointsPromoted,
     /// Checkpoint-bounded catch-up batches durably applied.
     CatchUpBatchesApplied,
+    /// Checkpoint catch-up pages fetched from peers.
+    CatchUpPagesFetched,
+    /// Canonical transport bytes fetched in checkpoint catch-up pages.
+    CatchUpCanonicalBytesFetched,
+    /// Verified checkpoint catch-up pages durably applied.
+    CatchUpPagesApplied,
+    /// Verified checkpoint catch-up page bytes durably staged before application.
+    CatchUpStagedBytes,
+    /// Verified checkpoint catch-up page bytes durably applied.
+    CatchUpAppliedBytes,
+    /// Checkpoint catch-up requests retried with another source or round.
+    CatchUpRetries,
 }
 
 /// Fixed federation synchronization state entries used for transition counters.
@@ -71,6 +83,12 @@ impl FederationCheckpointWork {
             Self::QuorumsTransferred => "quorums_transferred",
             Self::CheckpointsPromoted => "checkpoints_promoted",
             Self::CatchUpBatchesApplied => "catch_up_batches_applied",
+            Self::CatchUpPagesFetched => "catch_up_pages_fetched",
+            Self::CatchUpCanonicalBytesFetched => "catch_up_canonical_bytes_fetched",
+            Self::CatchUpPagesApplied => "catch_up_pages_applied",
+            Self::CatchUpStagedBytes => "catch_up_staged_bytes",
+            Self::CatchUpAppliedBytes => "catch_up_applied_bytes",
+            Self::CatchUpRetries => "catch_up_retries",
         }
     }
 }
@@ -214,6 +232,7 @@ pub struct CdkMetrics {
     federation_aggregation_failures_total: IntCounterVec,
     federation_state_digest_mismatches_total: IntCounterVec,
     federation_checkpoint_work_total: IntCounterVec,
+    federation_checkpoint_catch_up_peak_in_flight_bytes: IntGaugeVec,
     federation_checkpoint_duration: HistogramVec,
 }
 
@@ -243,6 +262,7 @@ struct FederationMetricCollectors {
     aggregation_failures_total: IntCounterVec,
     state_digest_mismatches_total: IntCounterVec,
     checkpoint_work_total: IntCounterVec,
+    checkpoint_catch_up_peak_in_flight_bytes: IntGaugeVec,
     checkpoint_duration: HistogramVec,
 }
 
@@ -319,6 +339,8 @@ impl CdkMetrics {
             federation_state_digest_mismatches_total: federation_metrics
                 .state_digest_mismatches_total,
             federation_checkpoint_work_total: federation_metrics.checkpoint_work_total,
+            federation_checkpoint_catch_up_peak_in_flight_bytes: federation_metrics
+                .checkpoint_catch_up_peak_in_flight_bytes,
             federation_checkpoint_duration: federation_metrics.checkpoint_duration,
         })
     }
@@ -727,6 +749,17 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(federation_checkpoint_work_total.clone()))?;
 
+        let federation_checkpoint_catch_up_peak_in_flight_bytes = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_checkpoint_catch_up_peak_in_flight_bytes",
+                "Largest encoded checkpoint catch-up page observed by the latest completed batch",
+            ),
+            &["member"],
+        )?;
+        registry.register(Box::new(
+            federation_checkpoint_catch_up_peak_in_flight_bytes.clone(),
+        ))?;
+
         let federation_checkpoint_duration = HistogramVec::new(
             prometheus::HistogramOpts::new(
                 "cdk_federation_checkpoint_duration_seconds",
@@ -764,6 +797,8 @@ impl CdkMetrics {
             aggregation_failures_total: federation_aggregation_failures_total,
             state_digest_mismatches_total: federation_state_digest_mismatches_total,
             checkpoint_work_total: federation_checkpoint_work_total,
+            checkpoint_catch_up_peak_in_flight_bytes:
+                federation_checkpoint_catch_up_peak_in_flight_bytes,
             checkpoint_duration: federation_checkpoint_duration,
         })
     }
@@ -1084,6 +1119,17 @@ impl CdkMetrics {
             .inc_by(count);
     }
 
+    /// Set the largest encoded page observed by the latest checkpoint catch-up batch.
+    pub fn set_federation_checkpoint_catch_up_peak_in_flight_bytes(
+        &self,
+        member: &str,
+        bytes: i64,
+    ) {
+        self.federation_checkpoint_catch_up_peak_in_flight_bytes
+            .with_label_values(&[member])
+            .set(bytes);
+    }
+
     /// Record the duration of one fixed checkpoint or restart operation.
     pub fn record_federation_checkpoint_duration(
         &self,
@@ -1344,6 +1390,7 @@ mod tests {
             FederationCheckpointOperation::StartupTail,
             0.25,
         );
+        metrics.set_federation_checkpoint_catch_up_peak_in_flight_bytes(member, 4096);
 
         assert_eq!(
             metrics
@@ -1357,6 +1404,13 @@ mod tests {
             .with_label_values(&[member, "startup_tail"]);
         assert_eq!(duration.get_sample_count(), 1);
         assert_eq!(duration.get_sample_sum(), 0.25);
+        assert_eq!(
+            metrics
+                .federation_checkpoint_catch_up_peak_in_flight_bytes
+                .with_label_values(&[member])
+                .get(),
+            4096
+        );
     }
 
     #[test]

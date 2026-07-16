@@ -18,13 +18,13 @@ use cdk::federation::{
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
     FederationApplicationState, FederationCatchUpOperation, FederationCheckpoint,
     FederationCheckpointAuditResponse, FederationCheckpointBoundary,
-    FederationCheckpointFetchResponse, FederationCheckpointId, FederationCheckpointKind,
-    FederationCheckpointQuorum, FederationCheckpointQuorumResponse, FederationCheckpointSignature,
-    FederationCheckpointSignatureResponse, FederationCheckpointSummary,
-    FederationCheckpointSummaryResponse, FederationConfig, FederationConsensusItem,
-    FederationConsensusItemAdmission, FederationConsensusRecoveryBase, FederationConsensusRuntime,
-    FederationConsensusRuntimeStatus, FederationDkgActivationRequest, FederationDkgCeremonyId,
-    FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
+    FederationCheckpointFetchResponse, FederationCheckpointFrontier, FederationCheckpointId,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointQuorumResponse,
+    FederationCheckpointSignature, FederationCheckpointSignatureResponse,
+    FederationCheckpointSummary, FederationCheckpointSummaryResponse, FederationConfig,
+    FederationConsensusItem, FederationConsensusItemAdmission, FederationConsensusRecoveryBase,
+    FederationConsensusRuntime, FederationConsensusRuntimeStatus, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
     FederationDkgSecretShareRequest, FederationDkgSetupState, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationError,
@@ -68,6 +68,8 @@ pub(crate) struct FederationNodeRuntime {
     pub(crate) suppress_next_terminal_response_publication: Arc<AtomicBool>,
     #[cfg(test)]
     pub(crate) suppress_next_scheduled_checkpoint_capture: Arc<AtomicBool>,
+    #[cfg(test)]
+    pub(crate) fail_next_checkpoint_promotion: Arc<AtomicBool>,
     pub(crate) aleph_bft_network_inbound: FederationAlephBftNetworkInboundState,
     pub(crate) aleph_bft_live_session: FederationAlephBftLiveSessionState,
     pub(crate) aleph_bft_halt_epoch: Arc<AtomicU64>,
@@ -323,6 +325,7 @@ impl FederationNodeRuntime {
             fail_next_pending_operation_persistence: Arc::new(AtomicBool::new(false)),
             suppress_next_terminal_response_publication: Arc::new(AtomicBool::new(false)),
             suppress_next_scheduled_checkpoint_capture: Arc::new(AtomicBool::new(false)),
+            fail_next_checkpoint_promotion: Arc::new(AtomicBool::new(false)),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_halt_epoch: Arc::new(AtomicU64::new(0)),
@@ -1026,7 +1029,8 @@ impl FederationNodeRuntime {
             )?),
             None => None,
         };
-        checkpoint.validate_promotion_from(current.as_ref().map(|quorum| &quorum.checkpoint))?;
+        checkpoint
+            .validate_catch_up_batch_from(current.as_ref().map(|quorum| &quorum.checkpoint))?;
         if frontier.journal_next_index != response.from_index
             || frontier.application_next_index != response.from_index
             || frontier.finalized_next_item_index != response.aleph_bft_from_item_index
@@ -1041,15 +1045,56 @@ impl FederationNodeRuntime {
         let applied = self
             .apply_verified_checkpoint_catch_up_response_under_application_lock(
                 response,
+                &frontier,
                 current_verified.as_ref(),
                 &verified_quorum,
+                response.complete && response.aleph_bft_finalized_items_complete,
             )
             .await?;
 
         let frontier = db.get_federation_checkpoint_frontier().await?;
+        let target_reached = response.complete && response.aleph_bft_finalized_items_complete;
+        if !target_reached {
+            checkpoint.committed_frontier().ensure_covers(
+                &frontier.committed_frontier(
+                    self.consensus
+                        .as_ref()
+                        .ok_or_else(|| runtime_unavailable("consensus"))?
+                        .lock()
+                        .await
+                        .aleph_bft_recovery_cursor()?,
+                )?,
+            )?;
+            #[cfg(feature = "prometheus")]
+            {
+                let member = runtime_config.member_id().to_string();
+                let page_bytes = response.ensure_within_checkpoint_page_limit()? as u64;
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &member,
+                    cdk_prometheus::FederationCheckpointWork::CatchUpPagesApplied,
+                    1,
+                );
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &member,
+                    cdk_prometheus::FederationCheckpointWork::CatchUpAppliedBytes,
+                    page_bytes,
+                );
+            }
+            return Ok(applied);
+        }
         if !frontier.exactly_matches_checkpoint(checkpoint) {
             return Err(FederationError::CheckpointInvalid {
                 reason: "durable catch-up frontiers do not equal the target checkpoint".to_string(),
+            }
+            .into());
+        }
+        #[cfg(test)]
+        if self
+            .fail_next_checkpoint_promotion
+            .swap(false, Ordering::AcqRel)
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "injected failure before checkpoint promotion".to_string(),
             }
             .into());
         }
@@ -1095,6 +1140,16 @@ impl FederationNodeRuntime {
                 cdk_prometheus::FederationCheckpointWork::CatchUpBatchesApplied,
                 1,
             );
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &member,
+                cdk_prometheus::FederationCheckpointWork::CatchUpPagesApplied,
+                1,
+            );
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &member,
+                cdk_prometheus::FederationCheckpointWork::CatchUpAppliedBytes,
+                response.ensure_within_checkpoint_page_limit()? as u64,
+            );
             cdk_prometheus::METRICS.record_federation_checkpoint_duration(
                 &member,
                 cdk_prometheus::FederationCheckpointOperation::CatchUpBatch,
@@ -1107,15 +1162,16 @@ impl FederationNodeRuntime {
     async fn apply_verified_checkpoint_catch_up_response_under_application_lock(
         &self,
         response: &FederationJournalCatchUpResponse,
+        durable_frontier: &FederationCheckpointFrontier,
         base_checkpoint: Option<&VerifiedFederationCheckpointQuorum>,
         target_checkpoint: &VerifiedFederationCheckpointQuorum,
+        target_reached: bool,
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
         let runtime_config = self
             .active_mint()?
             .federation_config()
             .cloned()
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
-        let public_config = runtime_config.public_config();
         let consensus = self
             .consensus
             .as_ref()
@@ -1123,22 +1179,6 @@ impl FederationNodeRuntime {
         let mut consensus = consensus.lock().await;
         let base_journal_next_index =
             base_checkpoint.map_or(0, |checkpoint| checkpoint.checkpoint().journal_next_index);
-        let base_finalized_next_item_index = base_checkpoint.map_or(0, |checkpoint| {
-            checkpoint.checkpoint().finalized_next_item_index
-        });
-        let local_entries = consensus
-            .journal()
-            .entries()
-            .iter()
-            .filter(|entry| entry.index >= base_journal_next_index)
-            .cloned()
-            .collect::<Vec<_>>();
-        let local_finalized_items = consensus
-            .aleph_bft_finalized_items()?
-            .iter()
-            .filter(|item| item.accepted_item_index >= base_finalized_next_item_index)
-            .cloned()
-            .collect::<Vec<_>>();
         let status = consensus.aleph_bft_status()?;
         if response.from_index != consensus.journal().next_index()
             || response.aleph_bft_from_item_index != status.next_item_index
@@ -1150,58 +1190,54 @@ impl FederationNodeRuntime {
             .into());
         }
 
-        let mut all_finalized_items = local_finalized_items.clone();
-        all_finalized_items.extend(response.aleph_bft_finalized_items.iter().cloned());
         let historical_entries = crate::historical_entries_referenced_by_finalized_items(
             self.active_mint()?,
-            &all_finalized_items,
+            &response.aleph_bft_finalized_items,
             base_journal_next_index,
         )
         .await?;
         let target_session = target_checkpoint.checkpoint().aleph_bft_session;
-        let mut verifier = match base_checkpoint {
-            Some(base_checkpoint) => FederationSuffixVerifier::new(
-                public_config,
-                runtime_config.member_id(),
-                target_session,
-                FederationConsensusRecoveryBase::Checkpoint(base_checkpoint),
-            )?,
-            None => FederationSuffixVerifier::new(
-                public_config,
-                runtime_config.member_id(),
-                target_session,
-                FederationConsensusRecoveryBase::Genesis,
-            )?,
-        };
+        let local_entry_count = consensus.journal().entries().len();
+        let committed_frontier =
+            durable_frontier.committed_frontier(consensus.aleph_bft_recovery_cursor()?)?;
+        let mut verifier = FederationSuffixVerifier::from_durable_runtime(
+            consensus.clone(),
+            target_session,
+            base_journal_next_index,
+            committed_frontier,
+        )?;
         verifier.register_historical_entries(historical_entries)?;
-        verifier.push_finalized_items(&local_finalized_items)?;
-        verifier.push_journal_entries(&local_entries)?;
         verifier.push_finalized_items(&response.aleph_bft_finalized_items)?;
         verifier.push_catch_up_operations(&response.entries)?;
-        let verified_suffix = verifier.finish_for_checkpoint(target_checkpoint)?;
+        let verified_suffix = if target_reached {
+            verifier.finish_for_checkpoint(target_checkpoint)?
+        } else {
+            verifier.finish_for_checkpoint_prefix(target_checkpoint)?
+        };
         let recovered_entries = verified_suffix.journal_entries().to_vec();
-        if recovered_entries.len() < local_entries.len() {
+        if recovered_entries.len() < local_entry_count {
             return Err(crate::aleph_bft_catch_up_recovery_mismatch(format!(
                 "verified checkpoint suffix recovered {} entries but the local suffix has {}",
                 recovered_entries.len(),
-                local_entries.len()
+                local_entry_count
             )));
         }
-        let entries_to_retry_from_local_overlap = crate::stale_local_aleph_bft_entries_to_retry(
-            &local_entries,
-            &recovered_entries[..local_entries.len()],
-        );
-        let applied = recovered_entries[local_entries.len()..].to_vec();
+        let applied = recovered_entries[local_entry_count..].to_vec();
         let next_consensus = FederationConsensusRuntime::recover_verified_suffix(verified_suffix);
 
-        let mut entries_to_apply = entries_to_retry_from_local_overlap;
-        entries_to_apply.extend(crate::accepted_federation_journal_entries(&applied));
+        let entries_to_apply = crate::accepted_federation_journal_entries(&applied);
         self.persist_catch_up(
             target_session,
             &response.aleph_bft_finalized_items,
             &applied,
         )
         .await?;
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_checkpoint_work(
+            &runtime_config.member_id().to_string(),
+            cdk_prometheus::FederationCheckpointWork::CatchUpStagedBytes,
+            response.ensure_within_checkpoint_page_limit()? as u64,
+        );
         *consensus = next_consensus;
         drop(consensus);
         self.apply_journal_entries(&entries_to_apply).await?;
@@ -1974,7 +2010,50 @@ impl FederationNodeRuntime {
         else {
             return Ok(());
         };
-        if !boundary.is_scheduled_eligible(public_config.checkpoint_policy, latest_scheduled)? {
+        let batch_base_finalized_index = latest_scheduled
+            .map(|checkpoint| checkpoint.finalized_next_item_index)
+            .unwrap_or(0);
+        let expected_batch_items = boundary
+            .finalized_next_item_index
+            .checked_sub(batch_base_finalized_index)
+            .ok_or_else(|| FederationError::CheckpointInvalid {
+                reason: "scheduled checkpoint finalized frontier regressed".to_string(),
+            })?;
+        if expected_batch_items > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "scheduled checkpoint batch exceeds the finalized-item maximum".to_string(),
+            }
+            .into());
+        }
+        let batch_item_limit = usize::try_from(expected_batch_items)
+            .expect("bounded checkpoint finalized-item count fits in usize");
+        let batch_finalized_items = db
+            .get_federation_aleph_bft_finalized_items_range(
+                batch_base_finalized_index,
+                boundary.finalized_next_item_index,
+                batch_item_limit,
+            )
+            .await?;
+        if batch_finalized_items.len() != batch_item_limit {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "scheduled checkpoint batch has missing finalized items".to_string(),
+            }
+            .into());
+        }
+        let batch_canonical_bytes =
+            cdk::federation::federation_checkpoint_batch_canonical_bytes(&batch_finalized_items)?;
+        if batch_canonical_bytes > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "scheduled checkpoint batch exceeds the canonical byte maximum".to_string(),
+            }
+            .into());
+        }
+        if !boundary.is_scheduled_eligible(
+            public_config.checkpoint_policy,
+            latest_scheduled,
+            batch_canonical_bytes,
+        )? {
             return Ok(());
         }
         #[cfg(test)]
@@ -1993,6 +2072,7 @@ impl FederationNodeRuntime {
             public_config,
             latest_scheduled,
             materialized_state_digest,
+            batch_canonical_bytes,
         )?;
         let signature = FederationCheckpointSignature::new_signed(
             &checkpoint,
@@ -2035,6 +2115,12 @@ impl FederationNodeRuntime {
     #[cfg(test)]
     pub(crate) fn suppress_next_scheduled_checkpoint_capture(&self) {
         self.suppress_next_scheduled_checkpoint_capture
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_checkpoint_promotion(&self) {
+        self.fail_next_checkpoint_promotion
             .store(true, Ordering::Release);
     }
 
@@ -2336,6 +2422,46 @@ impl FederationNodeRuntime {
             {
                 return Ok(Some(candidate));
             }
+        }
+
+        let batch_base_finalized_index = latest_scheduled
+            .map(|checkpoint| checkpoint.finalized_next_item_index)
+            .unwrap_or(0);
+        let expected_batch_items = boundary
+            .finalized_next_item_index
+            .checked_sub(batch_base_finalized_index)
+            .ok_or_else(|| FederationError::CheckpointInvalid {
+                reason: "recovery checkpoint finalized frontier regressed".to_string(),
+            })?;
+        if expected_batch_items > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "recovery checkpoint batch exceeds the finalized-item maximum".to_string(),
+            }
+            .into());
+        }
+        let batch_item_limit = usize::try_from(expected_batch_items)
+            .expect("bounded checkpoint finalized-item count fits in usize");
+        let batch_finalized_items = db
+            .get_federation_aleph_bft_finalized_items_range(
+                batch_base_finalized_index,
+                boundary.finalized_next_item_index,
+                batch_item_limit,
+            )
+            .await?;
+        if batch_finalized_items.len() != batch_item_limit {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "recovery checkpoint batch has missing finalized items".to_string(),
+            }
+            .into());
+        }
+        let batch_canonical_bytes =
+            cdk::federation::federation_checkpoint_batch_canonical_bytes(&batch_finalized_items)?;
+        if batch_canonical_bytes > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES
+        {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "recovery checkpoint batch exceeds the canonical byte maximum".to_string(),
+            }
+            .into());
         }
 
         #[cfg(feature = "prometheus")]

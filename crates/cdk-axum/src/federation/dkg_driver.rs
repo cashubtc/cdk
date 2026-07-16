@@ -446,7 +446,9 @@ fn classify_federation_dkg_delivery_failure(err: &anyhow::Error) -> FederationDk
             }
             HttpError::Connection(_) => (FederationDkgDeliveryFailureKind::Connection, None),
             HttpError::Timeout => (FederationDkgDeliveryFailureKind::Timeout, None),
-            HttpError::Serialization(_) => (FederationDkgDeliveryFailureKind::ResponseDecode, None),
+            HttpError::Serialization(_) | HttpError::ResponseTooLarge { .. } => {
+                (FederationDkgDeliveryFailureKind::ResponseDecode, None)
+            }
             HttpError::Proxy(_) | HttpError::Build(_) => (
                 FederationDkgDeliveryFailureKind::TransportConfiguration,
                 None,

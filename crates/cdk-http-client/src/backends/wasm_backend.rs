@@ -251,6 +251,19 @@ impl WasmRequestBuilder {
         self.execute().await
     }
 
+    /// Send the request and reject a response above the supplied byte limit.
+    pub async fn send_bounded(self, max_response_bytes: usize) -> Response<RawResponse> {
+        let response = self.execute().await?;
+        let actual = response.body.len();
+        if actual > max_response_bytes {
+            return Err(HttpError::ResponseTooLarge {
+                actual,
+                max: max_response_bytes,
+            });
+        }
+        Ok(response)
+    }
+
     /// Send the request and deserialize the response as JSON.
     pub async fn send_json<R: DeserializeOwned>(self) -> Response<R> {
         self.execute().await?.json_or_status_error()

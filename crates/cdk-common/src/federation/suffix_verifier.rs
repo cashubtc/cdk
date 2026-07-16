@@ -163,6 +163,60 @@ impl FederationSuffixVerifier {
         })
     }
 
+    /// Resume page verification from a transactionally persisted durable runtime.
+    ///
+    /// The runtime already contains the verified suffix after `base_journal_next_index`.
+    /// This avoids replaying that suffix for every later page while the supplied
+    /// rolling frontier preserves the journal, finalized, and application digests.
+    pub fn from_durable_runtime(
+        runtime: FederationConsensusRuntime,
+        active_session: u64,
+        base_journal_next_index: u64,
+        frontier: FederationCommittedFrontier,
+    ) -> Result<Self> {
+        frontier.validate_shape()?;
+        if !frontier.is_fully_terminal() {
+            return Err(suffix_mismatch(
+                "durable checkpoint catch-up runtime has a non-terminal application suffix",
+            ));
+        }
+        let retained_journal_entries = u64::try_from(runtime.journal().entries().len())
+            .map_err(|_| suffix_mismatch("retained journal length does not fit in u64"))?;
+        let expected_journal_next_index = base_journal_next_index
+            .checked_add(retained_journal_entries)
+            .ok_or_else(|| suffix_mismatch("retained journal cursor overflow"))?;
+        if runtime.journal().next_index() != frontier.journal.next_index
+            || expected_journal_next_index != frontier.journal.next_index
+            || runtime.journal().latest_order_digest() != frontier.journal.order_digest
+        {
+            return Err(suffix_mismatch(
+                "durable checkpoint catch-up runtime does not match its journal frontier",
+            ));
+        }
+        let status = runtime.aleph_bft_status()?;
+        if status.next_item_index != frontier.finalized.next_item_index
+            || runtime.aleph_bft_recovery_cursor()? != frontier.aleph_bft
+        {
+            return Err(suffix_mismatch(
+                "durable checkpoint catch-up runtime does not match its finalized frontier",
+            ));
+        }
+        let matched_claims = runtime.journal().entries().len();
+        Ok(Self {
+            runtime,
+            active_session,
+            base_journal_next_index,
+            journal_frontier: frontier.journal,
+            finalized_frontier: frontier.finalized,
+            application_frontier: frontier.application,
+            application_gap_seen: false,
+            pending_unit: Vec::new(),
+            claims: VecDeque::new(),
+            matched_claims,
+            finalized_input_started: false,
+        })
+    }
+
     /// Register bounded pre-checkpoint entries referenced by suffix operations.
     pub fn register_historical_entries(
         &mut self,
@@ -285,13 +339,47 @@ impl FederationSuffixVerifier {
         )
     }
 
+    /// Finish one authenticated prefix page bounded by a verified checkpoint.
+    ///
+    /// The returned suffix may end before the target but can never cross any
+    /// target cursor or watermark. Callers must use [`Self::finish_for_checkpoint`]
+    /// before promoting the checkpoint.
+    pub fn finish_for_checkpoint_prefix(
+        self,
+        target: &VerifiedFederationCheckpointQuorum,
+    ) -> Result<VerifiedFederationSuffix> {
+        let verified = self.finish_current()?;
+        target
+            .checkpoint()
+            .committed_frontier()
+            .ensure_covers(verified.frontier())?;
+        Ok(verified)
+    }
+
     fn finish(
-        mut self,
+        self,
         target_journal: FederationJournalFrontier,
         target_finalized: FederationFinalizedFrontier,
         target_application: FederationApplicationFrontier,
         target_aleph_bft: Option<FederationAlephBftRecoveryCursor>,
     ) -> Result<VerifiedFederationSuffix> {
+        let verified = self.finish_current()?;
+        let frontier = verified.frontier();
+        if frontier.journal != target_journal
+            || frontier.finalized != target_finalized
+            || frontier.application != target_application
+            || target_aleph_bft
+                .as_ref()
+                .is_some_and(|target| *target != frontier.aleph_bft)
+        {
+            return Err(suffix_mismatch(
+                "verified suffix does not reach the exact target frontier",
+            ));
+        }
+        Ok(verified)
+    }
+
+    fn finish_current(mut self) -> Result<VerifiedFederationSuffix> {
         self.commit_pending_unit()?;
         self.match_available_claims()?;
         if !self.claims.is_empty() || self.matched_claims != self.runtime.journal().entries().len()
@@ -318,17 +406,6 @@ impl FederationSuffixVerifier {
             aleph_bft,
         };
         frontier.validate_shape()?;
-        if frontier.journal != target_journal
-            || frontier.finalized != target_finalized
-            || frontier.application != target_application
-            || target_aleph_bft
-                .as_ref()
-                .is_some_and(|target| *target != frontier.aleph_bft)
-        {
-            return Err(suffix_mismatch(
-                "verified suffix does not reach the exact target frontier",
-            ));
-        }
         Ok(VerifiedFederationSuffix {
             runtime: self.runtime,
             frontier,

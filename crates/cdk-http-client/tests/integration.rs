@@ -93,6 +93,32 @@ async fn test_fetch_server_error() {
 }
 
 #[tokio::test]
+async fn test_bounded_post_rejects_response_before_json_decode() {
+    let mut server = mockito::Server::new_async().await;
+    let body = format!(r#"{{"success":true,"data":"{}"}}"#, "x".repeat(4096));
+    let mock = server
+        .mock("POST", "/api/bounded")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(body)
+        .create_async()
+        .await;
+
+    let client = HttpClient::new();
+    let url = format!("{}/api/bounded", server.url());
+    let result = client
+        .post(&url)
+        .json(&TestPayload {
+            name: "bounded".to_string(),
+            value: 1,
+        })
+        .send_bounded(128)
+        .await;
+    assert!(matches!(result, Err(HttpError::ResponseTooLarge { .. })));
+    mock.assert_async().await;
+}
+
+#[tokio::test]
 async fn test_fetch_no_redirects_returns_redirect_status() {
     let mut server = mockito::Server::new_async().await;
 

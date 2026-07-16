@@ -60,13 +60,20 @@ pub use self::chain_observation::{
     FederationOnchainQuotePayment, FederationWalletUtxo, FederationWalletUtxoState,
 };
 pub use self::checkpoint::{
-    FederationAlephBftRecoveryCursor, FederationApplicationDigest, FederationApplicationFrontier,
-    FederationCheckpoint, FederationCheckpointBoundary, FederationCheckpointFrontier,
-    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointPolicy,
-    FederationCheckpointQuorum, FederationCheckpointSignature, FederationCommittedFrontier,
-    FederationFinalizedFrontier, FederationFinalizedItemDigest, FederationJournalFrontier,
-    VerifiedFederationCheckpointQuorum, DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
+    federation_checkpoint_batch_canonical_bytes, FederationAlephBftRecoveryCursor,
+    FederationApplicationDigest, FederationApplicationFrontier, FederationCheckpoint,
+    FederationCheckpointBoundary, FederationCheckpointFrontier, FederationCheckpointId,
+    FederationCheckpointKind, FederationCheckpointPolicy, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationCommittedFrontier, FederationFinalizedFrontier,
+    FederationFinalizedItemDigest, FederationJournalFrontier, VerifiedFederationCheckpointQuorum,
+    DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES, DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
     DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS, FEDERATION_CHECKPOINT_VERSION,
+    FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES,
+    FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS,
+    FEDERATION_MAX_CHECKPOINT_BATCH_JOURNAL_OPERATIONS,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
 };
 pub use self::config::{
     FederatedKeyset, FederationConfig, FederationConfigDigest, FederationConfigSnapshot,
@@ -697,6 +704,16 @@ pub enum FederationError {
         actual: usize,
         /// Maximum allowed canonical item size.
         max: usize,
+    },
+    /// Checkpoint catch-up work exceeded one fixed protocol byte limit.
+    #[error("Federation checkpoint catch-up {resource} too large: actual={actual}, max={max}")]
+    CheckpointCatchUpTooLarge {
+        /// Stable bounded resource label.
+        resource: &'static str,
+        /// Bytes observed or requested.
+        actual: u64,
+        /// Maximum admitted bytes.
+        max: u64,
     },
     /// Pending consensus item admission would exceed the configured queue limit.
     #[error("Federation pending consensus mempool full: pending={pending}, max={max}")]

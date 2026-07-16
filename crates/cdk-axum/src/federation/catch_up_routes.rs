@@ -3,7 +3,8 @@ use axum::response::Response;
 use cdk::federation::{
     FederationAlephBftBackupResponse, FederationAlephBftFinalizedItem, FederationError,
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationRestMessageKind,
-    FederationSignedRequest, InMemoryFederationJournal,
+    FederationSignedRequest, InMemoryFederationJournal, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
 };
 use tracing::instrument;
 
@@ -106,10 +107,11 @@ async fn durable_catch_up_response(
         DEFAULT_FEDERATION_CATCH_UP_LIMIT,
         MAX_FEDERATION_CATCH_UP_LIMIT,
     );
+    let fetch_limit = limit.max(FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS);
     let entries = state
         .mint
         .localstore()
-        .get_federation_journal_entries_range(request.next_index, end_index, limit)
+        .get_federation_journal_entries_range(request.next_index, end_index, fetch_limit)
         .await
         .map_err(|err| anyhow_response(err.into()))?;
     let base_order_digest = match entries.first() {
@@ -144,11 +146,17 @@ async fn durable_catch_up_response(
         }
     }
 
+    let mut response_request = request.clone();
+    response_request.limit = Some(u16::try_from(fetch_limit).map_err(|_| {
+        federation_error_response(FederationError::CheckpointInvalid {
+            reason: "catch-up fetch limit exceeds u16".to_string(),
+        })
+    })?);
     let mut response = FederationJournalCatchUpResponse::from_journal(
         runtime_config.federation_id(),
         &journal,
         state_digest,
-        request,
+        &response_request,
         DEFAULT_FEDERATION_CATCH_UP_LIMIT,
         MAX_FEDERATION_CATCH_UP_LIMIT,
     );
@@ -173,14 +181,138 @@ async fn durable_catch_up_response(
         maybe_attach_aleph_bft_finalized_items(state, request, finalized_end_item_index, response)
             .await
             .map_err(anyhow_response)?;
+    let response = align_catch_up_page_to_finalized_prefix(response, end_index)
+        .map_err(federation_error_response)?;
+    let response = maybe_attach_aleph_bft_backup(state, request, response)
+        .await
+        .map_err(anyhow_response)?;
+    let response =
+        fit_checkpoint_page_to_byte_limit(response).map_err(federation_error_response)?;
     if let Some(checkpoint) = target_checkpoint.as_ref() {
         response
             .validate_checkpoint_binding(checkpoint)
             .map_err(federation_error_response)?;
     }
-    let response = maybe_attach_aleph_bft_backup(state, request, response)
-        .await
-        .map_err(anyhow_response)?;
+    Ok(response)
+}
+
+pub(super) fn fit_checkpoint_page_to_byte_limit(
+    mut response: FederationJournalCatchUpResponse,
+) -> Result<FederationJournalCatchUpResponse, FederationError> {
+    loop {
+        let encoded_size = response.encoded_size()?;
+        if encoded_size <= FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES {
+            return Ok(response);
+        }
+
+        if let Some(last) = response.aleph_bft_finalized_items.last() {
+            let last_unit_start = response
+                .aleph_bft_finalized_items
+                .iter()
+                .rposition(|item| {
+                    item.session != last.session
+                        || item.unit_finalization_index != last.unit_finalization_index
+                        || item.unit_submitting_member != last.unit_submitting_member
+                        || item.unit_index != last.unit_index
+                        || item.unit_body_hash != last.unit_body_hash
+                })
+                .map_or(0, |index| index.saturating_add(1));
+            if last_unit_start == 0 {
+                return Err(FederationError::CheckpointCatchUpTooLarge {
+                    resource: "single finalized unit page",
+                    actual: u64::try_from(encoded_size).unwrap_or(u64::MAX),
+                    max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES as u64,
+                });
+            }
+            let retain_at_most = response
+                .aleph_bft_finalized_items
+                .len()
+                .saturating_mul(FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES)
+                .checked_div(encoded_size)
+                .unwrap_or_default()
+                .min(response.aleph_bft_finalized_items.len().saturating_sub(1));
+            let mut retained_items = 0;
+            let mut cursor = 0;
+            while cursor < response.aleph_bft_finalized_items.len() {
+                let unit = &response.aleph_bft_finalized_items[cursor];
+                let mut next = cursor.saturating_add(1);
+                while next < response.aleph_bft_finalized_items.len() {
+                    let next_item = &response.aleph_bft_finalized_items[next];
+                    if next_item.session != unit.session
+                        || next_item.unit_finalization_index != unit.unit_finalization_index
+                        || next_item.unit_submitting_member != unit.unit_submitting_member
+                        || next_item.unit_index != unit.unit_index
+                        || next_item.unit_body_hash != unit.unit_body_hash
+                    {
+                        break;
+                    }
+                    next = next.saturating_add(1);
+                }
+                if retained_items != 0 && next > retain_at_most {
+                    break;
+                }
+                retained_items = next;
+                cursor = next;
+            }
+            retained_items = retained_items.min(last_unit_start);
+            let removed_accepted_operations = response.aleph_bft_finalized_items[retained_items..]
+                .iter()
+                .filter(|item| {
+                    item.status == cdk::federation::FederationAlephBftFinalizedItemStatus::Accepted
+                        && item.operation_id.is_some()
+                })
+                .count();
+            let retained_entries = response
+                .entries
+                .len()
+                .checked_sub(removed_accepted_operations)
+                .ok_or_else(|| FederationError::CheckpointInvalid {
+                    reason: "catch-up page finalized prefix has too few journal claims".to_string(),
+                })?;
+            response.entries.truncate(retained_entries);
+            response.complete = false;
+            response.aleph_bft_finalized_items.truncate(retained_items);
+            response.aleph_bft_finalized_items_complete = false;
+            continue;
+        }
+
+        return Err(FederationError::CheckpointCatchUpTooLarge {
+            resource: "page metadata and backup",
+            actual: u64::try_from(encoded_size).unwrap_or(u64::MAX),
+            max: FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES as u64,
+        });
+    }
+}
+
+fn align_catch_up_page_to_finalized_prefix(
+    mut response: FederationJournalCatchUpResponse,
+    journal_end_index: u64,
+) -> Result<FederationJournalCatchUpResponse, FederationError> {
+    let accepted_operations = response
+        .aleph_bft_finalized_items
+        .iter()
+        .filter(|item| {
+            item.status == cdk::federation::FederationAlephBftFinalizedItemStatus::Accepted
+                && item.operation_id.is_some()
+        })
+        .count();
+    if response.entries.len() < accepted_operations {
+        return Err(FederationError::CheckpointInvalid {
+            reason: "catch-up finalized prefix exceeds the available journal claims".to_string(),
+        });
+    }
+    response.entries.truncate(accepted_operations);
+    let returned_next_index = response
+        .from_index
+        .checked_add(u64::try_from(response.entries.len()).map_err(|_| {
+            FederationError::CheckpointInvalid {
+                reason: "catch-up journal page length exceeds u64".to_string(),
+            }
+        })?)
+        .ok_or_else(|| FederationError::CheckpointInvalid {
+            reason: "catch-up journal cursor overflow".to_string(),
+        })?;
+    response.complete = returned_next_index == journal_end_index;
     Ok(response)
 }
 
@@ -243,13 +375,14 @@ async fn maybe_attach_aleph_bft_finalized_items(
         }
         .into());
     }
+    let fetch_limit = requested_limit.max(FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS);
     let finalized_items = state
         .mint
         .localstore()
         .get_federation_aleph_bft_finalized_items_range(
             request.aleph_bft_next_item_index,
             finalized_end_item_index,
-            requested_limit.saturating_add(1),
+            fetch_limit.saturating_add(1),
         )
         .await?;
     let (finalized_items, fetched_page_complete) =
@@ -303,7 +436,7 @@ fn truncate_to_complete_aleph_bft_units(
             }
             next += 1;
         }
-        if next > limit {
+        if next > limit && keep != 0 {
             break;
         }
         keep = next;

@@ -1,10 +1,11 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (checkpoint protocol, persistence, exchange, bounded catch-up,
-nonzero startup, certificate cut-through, checkpoint-native operator tooling,
-crash-safe checkpoint retention, and bounded work instrumentation are
-implemented; checkpoint production is event-driven and stable checkpoint polls
-are work/log silent; synthetic baselines and milestone-8 validation remain)
+Status: in progress (checkpoint protocol, persistence, exchange, bounded
+page-streamed catch-up, nonzero startup, certificate cut-through,
+checkpoint-native operator tooling, crash-safe checkpoint retention, and
+bounded work instrumentation are implemented; checkpoint production is
+event-driven and stable checkpoint polls are work/log silent; synthetic
+baselines and milestone-8 validation remain)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -1160,18 +1161,20 @@ frontier that becomes authoritative.
 - [x] Initialize rolling operation, finalized-item, and terminal-application
       digests from the trusted checkpoint and update them only across received
       suffix items.
-- [x] Require exact equality with the target checkpoint's journal cursor/order
-      digest, finalized cursor/finalized digest, session cursors, and projected
-      application digest. Buffer and validate the complete batch before
-      mutation and serialize application under the operation-application lock.
+- [x] Require every complete-unit page to remain covered by the target
+      checkpoint's journal cursor/order digest, finalized cursor/finalized
+      digest, session cursors, and projected application digest. Verify and
+      apply one bounded page at a time under the operation-application lock;
+      require exact equality across every committed frontier before promotion.
       Trust the quorum's checkpoint-time materialized-state audit together with
       transactionally consistent local frontiers; do not add a full-state scan
       to normal catch-up.
-- [x] Apply each operation through its existing atomic business-state
-      transaction and promote only after the complete checkpoint-bounded batch
-      verifies. A crash may leave durable data ahead of the trusted checkpoint,
-      never the checkpoint ahead of data; public routes remain closed and retry
-      resumes from the scalar durable frontier.
+- [x] Apply each page through existing atomic persistence and business-state
+      transactions while retaining the old trusted checkpoint, and promote
+      only after the complete checkpoint-bounded suffix verifies. A crash may
+      leave durable untrusted data ahead of the trusted checkpoint, never the
+      checkpoint ahead of data; public routes remain closed and retry resumes
+      from the scalar durable frontier.
 - [x] Resume interrupted catch-up from the last promoted checkpoint or a later
       scalar durable frontier without replaying earlier batches.
 - [x] If one source serves invalid data, discard that batch, retain the trusted
@@ -1200,29 +1203,48 @@ only the stored checkpoint payload, not its quorum, because the requester
 already holds and verifies the transferable proof.
 
 Checkpoint pages use bounded indexed SQL ranges and never read beyond the
-target cursors. The requester buffers all pages, validates their continuity and
-rolling order/finalized/application commitments, reconstructs the checkpoint
-session cursors, applies through the existing deterministic business-state
-transactions, requires the resulting scalar durable frontiers to equal the
-checkpoint, and only then promotes the trusted checkpoint. It does not run the
-full materialized-state audit on this normal recovery path. Promotion
+target cursors. The requester holds no whole-batch aggregate: it validates,
+persists, and deterministically applies one complete-unit page while the old
+checkpoint remains trusted. The bounded in-memory suffix runtime carries
+rolling order/finalized/application commitments between pages; fail-closed
+verification clones that runtime rather than replaying every earlier page.
+Durable scalar frontiers let a restart reconstruct the bounded suffix once and
+request only the remaining pages. The final page must exactly equal every
+checkpoint cursor, digest, and session watermark before promotion. This normal
+recovery path does not run the full materialized-state audit. Promotion
 immediately rebases the in-memory runtime at the new nonzero frontier, so a
 subsequent scheduled or recovery batch retains only its suffix. Targeted and
-ordinary journal pages now use bounded indexed ranges and never create or
-verify request-time range certificates. Checkpoint identity binds the targeted
-recovery page; the requester separately verifies the stored bounded checkpoint
-quorum.
+ordinary journal pages never create or verify request-time range certificates;
+checkpoint identity binds the targeted page and the requester separately
+verifies the stored bounded checkpoint quorum.
+
+The signed checkpoint policy now triggers a scheduled boundary when any of the
+accepted-operation, finalized-item, or canonical-finalized-byte intervals is
+crossed. Defaults are 10,000 / 10,000 / 32 MiB. Fixed protocol caps limit one
+batch to 20,000 accepted operations, 20,000 finalized items, and 64 MiB of
+canonical finalized history; requests are limited to 64 KiB, pages to 8 MiB,
+and total encoded transfer work to 256 MiB. Native transports reject oversized
+bodies while reading and before JSON decoding. Pages end only at complete
+AlephBFT units, with compact journal claims aligned to the accepted items.
+
+Checkpoint observability records fetched/applied pages, encoded bytes,
+staged/applied bytes, retries, and peak encoded in-flight page size. Operator
+auditing remains explicit only: catch-up, startup, and background sync do not
+invoke a full materialized-state audit.
 
 Coverage now includes exact next-checkpoint lookup, checkpoint transport
-serialization, bounded response validation, paged serving from a source that
-stores only the checkpoint payload, tamper rejection before mutation, catch-up
-from genesis, and a second checkpoint suffix after rebasing. Compilation and
-linting were verified with:
+serialization, pre-decode response limits, complete-unit byte trimming, paged
+serving from a source that stores only the checkpoint payload, tamper rejection
+before mutation, source failover, crash/resume after every durable page,
+one-page/many-page equivalence, catch-up from genesis, and a second checkpoint
+suffix after rebasing. Compilation and linting were verified with:
 
 - `cargo test -p cdk-axum --features federation --lib --no-run`;
 - `cargo test -p cdk-sqlite --features federation --lib --no-run`;
 - `cargo check -p cdk-axum --features federation`.
 - `cargo clippy -p cdk-common --lib --features federation -- -D warnings`.
+- `cargo check --workspace --all-targets`;
+- `cargo clippy --workspace --all-targets -- -D warnings`.
 
 ### Files and references
 

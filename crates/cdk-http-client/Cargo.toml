@@ -47,7 +47,7 @@ arti-hyper = { version = "0.19.0", optional = true }
 getrandom = { version = "0.4", optional = true }
 http = { version = "0.2", optional = true }
 hyper = { version = "0.14", optional = true, features = ["client", "http1", "http2"] }
-reqwest = { version = "0.13", default-features = false, features = ["form", "json", "rustls-no-provider", "socks"], optional = true }
+reqwest = { version = "0.13", default-features = false, features = ["form", "json", "rustls-no-provider", "socks", "stream"], optional = true }
 rustls.workspace = true
 tls-api = { version = "0.9", optional = true }
 tls-api-native-tls = { version = "0.9", optional = true }
