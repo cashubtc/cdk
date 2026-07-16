@@ -211,6 +211,7 @@ impl FederationNodeRuntime {
         target_checkpoint: &VerifiedFederationCheckpointQuorum,
         target_reached: bool,
     ) -> Result<Vec<FederationJournalEntry>, cdk::Error> {
+        #[cfg(feature = "prometheus")]
         let runtime_config = self
             .active_mint()?
             .federation_config()

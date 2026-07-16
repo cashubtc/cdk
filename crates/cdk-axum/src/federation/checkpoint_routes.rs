@@ -33,7 +33,7 @@ pub(super) async fn post_checkpoint_summary(
         .record_federation_sequence(kind, verified.sender, verified.sequence)
         .await;
     if payload.payload.request_recovery_checkpoint {
-        state.federation.request_recovery_checkpoint();
+        state.federation.request_recovery_checkpoint().await;
     }
     let response = state
         .federation

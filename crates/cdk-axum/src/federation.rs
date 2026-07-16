@@ -33,6 +33,7 @@ mod aleph_bft_network;
 mod aleph_bft_routes;
 mod aleph_bft_runtime;
 mod aleph_bft_session;
+mod backup_routes;
 mod broadcast;
 mod catch_up_routes;
 mod checkpoint_catch_up;
@@ -69,6 +70,7 @@ pub(crate) use self::aleph_bft_session::{
     halt_current_federation_aleph_bft_session, start_federation_aleph_bft_live_session,
     AlephBftSessionSupervisor,
 };
+use self::backup_routes::post_aleph_bft_backup;
 pub(crate) use self::broadcast::FederationTransactionBroadcaster;
 use self::catch_up_routes::post_journal;
 use self::checkpoint_routes::{
@@ -216,6 +218,12 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/operations", post(post_operation))
         .route("/aleph-bft/activity", post(post_aleph_bft_activity))
         .route("/aleph-bft/messages", post(post_aleph_bft_network_message))
+        .route(
+            "/aleph-bft/backup",
+            post(post_aleph_bft_backup).layer(DefaultBodyLimit::max(
+                cdk::federation::FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES,
+            )),
+        )
         .route(
             "/journal",
             post(post_journal).layer(DefaultBodyLimit::max(

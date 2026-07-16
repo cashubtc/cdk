@@ -1,6 +1,6 @@
 # Federated Cashu checkpoint and catch-up consolidation plan
 
-Status: in progress (milestones 0-7 complete; milestone 8 next)
+Status: in progress (milestones 0-8 complete; milestone 9 next)
 Scope: federation-only checkpoint, catch-up, startup recovery, and related
 AlephBFT runtime consolidation
 Primary goal: simplify the checkpoint and catch-up implementation without
@@ -361,7 +361,7 @@ Update this table whenever a milestone changes state.
 | 5 | Bounded streaming checkpoint catch-up | Complete | `feat: stream bounded checkpoint catch-up` | Catch-up verifies, stages, applies, and resumes one bounded complete-unit page at a time; exact-frontier promotion and native predecode HTTP limits keep memory and authority bounded. |
 | 6 | Focused runtime component split | Complete | `refactor: split federation runtime components` | Checkpoint, catch-up, operation, readiness, DKG, wallet/FROST, and test-fault ownership is explicit; structured-concurrency and blocked-network regressions freeze the lock boundary. |
 | 7 | AlephBFT-ordered recovery barrier | Complete | `feat: order recovery checkpoint barriers` | A versioned barrier is ordered and persisted as an ordinary AlephBFT item; its complete-unit terminal boundary deterministically creates the existing recovery-checkpoint candidate, while a local lease and fixed one-unit tail bound suppress duplicate work. |
-| 8 | Transport and request-state consolidation | Not started | — | — |
+| 8 | Transport and request-state consolidation | Complete | `refactor: separate federation recovery transport` | Checkpoint-history and AlephBFT-backup traffic use distinct signed message kinds, wire types, routes, clients, size limits, and mutation paths; recovery demand and its proposal lease are one explicit state machine. |
 | 9 | Remove whole-runtime cloning | Not started | — | — |
 | 10 | Bootstrap, backup, operator, and retention contract | Not started | — | — |
 | 11 | Adversarial integration, performance, and final cleanup | Not started | — | — |
@@ -1255,7 +1255,7 @@ Local verification completed with:
 
 ## Milestone 8: Transport and request-state consolidation
 
-Status: not started
+Status: complete
 
 ### Objective
 
@@ -1264,44 +1264,86 @@ minimal transport contracts and eliminate impossible recovery-request states.
 
 ### Checklist
 
-- [ ] Introduce a focused checkpoint catch-up page containing only fields needed
+- [x] Introduce a focused checkpoint catch-up page containing only fields needed
       to verify and advance journal/finalized/application history to a target.
-- [ ] Introduce a separate AlephBFT backup page request/response with its own
+- [x] Introduce a separate AlephBFT backup page request/response with its own
       session, chunk, byte, authentication, timeout, and completion rules.
-- [ ] Remove dummy or empty journal response construction used solely to carry
+- [x] Remove dummy or empty journal response construction used solely to carry
       backup data.
-- [ ] Keep signed private REST authentication, receiver binding, message-kind
+- [x] Keep signed private REST authentication, receiver binding, message-kind
       isolation, replay windows, and body hashes intact.
-- [ ] Replace boolean-plus-optional recovery request state with one explicit
+- [x] Replace boolean-plus-optional recovery request state with one explicit
       state machine, or delete it entirely if the ordered barrier makes it
       unnecessary.
-- [ ] Consolidate checkpoint summary transport around the canonical frontier
+- [x] Consolidate checkpoint summary transport around the canonical frontier
       projection and verified checkpoint IDs.
-- [ ] Split the oversized transport module into domain files without creating
+- [x] Split the oversized transport module into domain files without creating
       circular ownership or duplicate serialization definitions.
-- [ ] Remove obsolete experimental aliases and constructors under the
+- [x] Remove obsolete experimental aliases and constructors under the
       cut-through policy.
 
 ### Exit tests
 
-- [ ] Journal catch-up cannot accidentally carry or interpret AlephBFT backup
+- [x] Journal catch-up cannot accidentally carry or interpret AlephBFT backup
       bytes.
-- [ ] Backup recovery cannot mutate journal, application, checkpoint, or trusted
+- [x] Backup recovery cannot mutate journal, application, checkpoint, or trusted
       frontier state.
-- [ ] Wrong kind, sender, receiver, sequence, session, checkpoint ID, or body
+- [x] Wrong kind, sender, receiver, sequence, session, checkpoint ID, or body
       hash is rejected before mutation.
-- [ ] Pagination and size bounds are independently enforced for history and
+- [x] Pagination and size bounds are independently enforced for history and
       backup endpoints.
-- [ ] Wire round-trip tests and authenticated REST integration tests pass for
+- [x] Wire round-trip tests and authenticated REST integration tests pass for
       every new request/response type.
 
 ### Progress notes
 
-Record final endpoint/type layout and removed transport fields here.
+`FederationJournalCatchUpRequest` and
+`FederationJournalCatchUpResponse` now carry only checkpoint-bounded journal,
+finalized-item, and terminal-application evidence. Their serde contracts reject
+the removed `aleph_bft_backup` field. The generic non-target catch-up client and
+the `with_aleph_bft_backup` constructors were deleted, so backup recovery can no
+longer fabricate an empty journal page merely to move opaque bytes.
+
+Opaque live-session backup transfer now owns the `AlephBftBackup` signed message
+kind, `FederationAlephBftBackupRequest/Response` types, and
+`/federation/v1/aleph-bft/backup` route. The request binds an exact session and
+next chunk. The signed response additionally binds federation, serving member,
+request sequence, kind, body hash, session, and starting chunk. Raw bytes,
+encoded bytes, chunks per page, request body, completion, and no-progress rules
+are validated independently of checkpoint-history pagination. The peer client
+uses its own bounded request call and timeout; session-wide chunk/byte bounds
+still apply before atomic backup replacement.
+
+The backup wire types moved into the focused
+`federation/transport/aleph_bft_backup.rs` domain module, and Axum serving moved
+into `backup_routes.rs`. Checkpoint summaries no longer expose the obsolete
+quiet-tip `stable_tip`; candidates and quorums are represented only by canonical
+checkpoint IDs, kinds, sequences, and committed frontiers.
+
+Recovery demand and the proposal deadline are now one mutex-protected
+`Idle | Requested { next_proposal_at }` state machine. Request, lease, and clear
+transitions cannot create the prior boolean/optional combinations.
+
+Wire tests reject backup fields in history messages, altered signed bodies,
+wrong receivers, wrong members/cursors, no-progress pages, and independent
+chunk/raw/encoded limits. Axum tests prove wrong-kind rejection before replay
+state mutation, bounded authenticated paging, malformed-page atomicity,
+predecode oversize rejection, and that successful backup replacement leaves
+journal, materialized application, checkpoint, and trusted frontier state
+unchanged.
+
+Local verification completed with:
+
+- all 44 `cdk-common` federation transport tests;
+- the Axum backup suite (22 passed);
+- the Axum catch-up suite (26 passed, 1 manual process stress test ignored);
+- the Axum checkpoint suite (28 passed);
+- `cargo check -p cdk-axum --all-targets --features federation`; and
+- `cargo fmt --all -- --check` and `git diff --check`.
 
 ### Commit gate
 
-- [ ] Commit transport/request-state consolidation and tests before starting
+- [x] Commit transport/request-state consolidation and tests before starting
       milestone 9.
 
 ## Milestone 9: Remove whole-runtime cloning

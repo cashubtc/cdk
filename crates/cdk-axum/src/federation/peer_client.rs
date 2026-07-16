@@ -4,6 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
+    FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
     FederationCheckpoint, FederationCheckpointFetchRequest, FederationCheckpointFetchResponse,
     FederationCheckpointId, FederationCheckpointQuorum, FederationCheckpointQuorumRequest,
@@ -21,7 +22,8 @@ use cdk::federation::{
     FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
     FederationPeerStatusRequest, FederationRestMessageKind, FederationSignedRequest,
     FederationSubmitOperationRequest, FederationSubmitOperationResponse, MemberConfigPrivate,
-    MemberConfigPublic, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
+    MemberConfigPublic, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
 use cdk_http_client::{Async, HttpError, Transport};
@@ -891,41 +893,49 @@ where
         Ok(response)
     }
 
-    pub(crate) async fn catch_up(
+    pub(crate) async fn aleph_bft_backup(
         &self,
         member: &MemberConfigPublic,
-        request: &FederationJournalCatchUpRequest,
-    ) -> anyhow::Result<FederationJournalCatchUpResponse> {
+        request: FederationAlephBftBackupRequest,
+    ) -> anyhow::Result<FederationAlephBftBackupResponse> {
+        request.validate()?;
         let request =
-            self.signed_request(member, FederationRestMessageKind::CatchUp, request.clone())?;
-        ensure_checkpoint_catch_up_request_size(&request)?;
-        let response: FederationJournalCatchUpResponse = self
+            self.signed_request(member, FederationRestMessageKind::AlephBftBackup, request)?;
+        let request_bytes = serde_json::to_vec(&request)?.len();
+        if request_bytes > FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES {
+            return Err(FederationError::CheckpointCatchUpTooLarge {
+                resource: "AlephBFT backup request",
+                actual: u64::try_from(request_bytes).unwrap_or(u64::MAX),
+                max: FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES as u64,
+            }
+            .into());
+        }
+        let request_sequence = request.sequence;
+        let response: FederationSignedRequest<FederationAlephBftBackupResponse> = self
             .http_post_bounded_with_timeout(
                 member,
-                "journal",
-                "catch-up request",
+                "aleph-bft/backup",
+                "AlephBFT backup request",
                 &request,
                 self.sync_config.peer_request_timeout,
-                FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
+                FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
             )
             .await?;
-        if response.version != FEDERATION_REST_API_VERSION {
-            return Err(FederationError::RestVersionMismatch {
-                expected: FEDERATION_REST_API_VERSION,
-                found: response.version,
+        self.validate_signed_response(
+            &response,
+            member,
+            FederationRestMessageKind::AlephBftBackup,
+        )?;
+        if response.sequence != request_sequence {
+            return Err(FederationError::CheckpointInvalid {
+                reason: "AlephBFT backup response sequence mismatch".to_string(),
             }
             .into());
         }
-        if response.federation_id != self.federation_id {
-            return Err(FederationError::CatchUpFederationMismatch {
-                expected: self.federation_id,
-                found: response.federation_id,
-            }
-            .into());
-        }
-        response.validate_entries()?;
-        response.ensure_within_checkpoint_page_limit()?;
-        Ok(response)
+        response
+            .payload
+            .validate(self.federation_id, member.member_id, request.payload)?;
+        Ok(response.payload)
     }
 
     pub(crate) async fn catch_up_to_checkpoint(

@@ -1,9 +1,9 @@
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
-    FederationAlephBftBackupResponse, FederationAlephBftFinalizedItem, FederationError,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationRestMessageKind,
-    FederationSignedRequest, InMemoryFederationJournal, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
+    FederationAlephBftFinalizedItem, FederationError, FederationJournalCatchUpRequest,
+    FederationJournalCatchUpResponse, FederationRestMessageKind, FederationSignedRequest,
+    InMemoryFederationJournal, FEDERATION_MAX_ALEPH_BFT_UNIT_ITEMS,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
 };
 use tracing::instrument;
@@ -17,8 +17,6 @@ use super::{
 
 const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
 const MAX_FEDERATION_CATCH_UP_LIMIT: u16 = 1000;
-const MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_RESPONSE: usize = 512;
-const MAX_ALEPH_BFT_BACKUP_BYTES_PER_RESPONSE: usize = 1024 * 1024;
 
 #[instrument(skip_all)]
 pub(super) async fn post_journal(
@@ -183,9 +181,6 @@ async fn durable_catch_up_response(
             .map_err(anyhow_response)?;
     let response = align_catch_up_page_to_finalized_prefix(response, end_index)
         .map_err(federation_error_response)?;
-    let response = maybe_attach_aleph_bft_backup(state, request, response)
-        .await
-        .map_err(anyhow_response)?;
     let response =
         fit_checkpoint_page_to_byte_limit(response).map_err(federation_error_response)?;
     if let Some(checkpoint) = target_checkpoint.as_ref() {
@@ -314,49 +309,6 @@ fn align_catch_up_page_to_finalized_prefix(
         })?;
     response.complete = returned_next_index == journal_end_index;
     Ok(response)
-}
-
-async fn maybe_attach_aleph_bft_backup(
-    state: &MintState,
-    request: &FederationJournalCatchUpRequest,
-    response: FederationJournalCatchUpResponse,
-) -> anyhow::Result<FederationJournalCatchUpResponse> {
-    let Some(backup_request) = request.aleph_bft_backup else {
-        return Ok(response);
-    };
-    let query_limit = MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_RESPONSE.saturating_add(1);
-    let available = state
-        .mint
-        .localstore()
-        .get_federation_aleph_bft_backup_chunks_from(
-            backup_request.session,
-            backup_request.next_chunk,
-            query_limit,
-        )
-        .await?;
-    let available_len = available.len();
-    let mut chunks = Vec::new();
-    let mut encoded_bytes = 0usize;
-    for chunk in available
-        .into_iter()
-        .take(MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_RESPONSE)
-    {
-        let next_bytes = encoded_bytes.saturating_add(chunk.len());
-        if !chunks.is_empty() && next_bytes > MAX_ALEPH_BFT_BACKUP_BYTES_PER_RESPONSE {
-            break;
-        }
-        encoded_bytes = next_bytes;
-        chunks.push(chunk);
-    }
-    let complete = available_len <= chunks.len();
-    Ok(
-        response.with_aleph_bft_backup(FederationAlephBftBackupResponse {
-            session: backup_request.session,
-            from_chunk: backup_request.next_chunk,
-            chunks,
-            complete,
-        }),
-    )
 }
 
 async fn maybe_attach_aleph_bft_finalized_items(

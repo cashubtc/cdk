@@ -15,13 +15,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
     FederationAlephBftFinalizedItem, FederationApplicationDigest, FederationApplicationState,
-    FederationCheckpoint, FederationCheckpointBoundary, FederationCheckpointFrontier,
-    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationCommittedFrontier, FederationConfig,
-    FederationConfigDigest, FederationConsensusRuntimeStatus, FederationDkgCeremonyId,
-    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointId,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
+    FederationCommittedFrontier, FederationConfig, FederationConfigDigest,
+    FederationConsensusRuntimeStatus, FederationDkgCeremonyId, FederationDkgKeysetSpec,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
@@ -31,6 +30,15 @@ use super::{
 };
 use crate::nuts::nut01::BlsSecretKeyShare;
 use crate::Amount;
+
+mod aleph_bft_backup;
+
+pub use self::aleph_bft_backup::{
+    FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES,
+};
 
 /// Version of the private federation REST payload format.
 pub const FEDERATION_REST_API_VERSION: u16 = 1;
@@ -96,6 +104,8 @@ pub enum FederationRestMessageKind {
     AlephBftActivity,
     /// Deliver one opaque AlephBFT network message to a peer.
     AlephBftNetworkMessage,
+    /// Request one bounded opaque page of the active AlephBFT session backup.
+    AlephBftBackup,
     /// Request missing journal entries from a peer.
     CatchUp,
 }
@@ -145,6 +155,7 @@ impl FederationRestMessageKind {
             Self::SubmitOperation => b"submit_operation",
             Self::AlephBftActivity => b"aleph_bft_activity",
             Self::AlephBftNetworkMessage => b"aleph_bft_network_message",
+            Self::AlephBftBackup => b"aleph_bft_backup",
             Self::CatchUp => b"catch_up",
         }
     }
@@ -1326,9 +1337,6 @@ pub struct FederationCheckpointSummaryResponse {
     pub federation_id: FederationId,
     /// Member serving this response.
     pub member_id: MemberId,
-    /// Exact current terminal complete-unit frontier, without a state-audit digest.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stable_tip: Option<FederationCheckpointBoundary>,
     /// Newest locally stored scheduled candidate, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_scheduled_candidate: Option<FederationCheckpointSummary>,
@@ -1405,9 +1413,6 @@ impl FederationCheckpointSummaryResponse {
             return Err(FederationError::CheckpointInvalid {
                 reason: "checkpoint summary response member mismatch".to_string(),
             });
-        }
-        if let Some(stable_tip) = self.stable_tip.as_ref() {
-            stable_tip.validate_against_config(config)?;
         }
         for (summary, expected_kind) in [
             (
@@ -2924,9 +2929,6 @@ pub struct FederationJournalCatchUpRequest {
     pub known_order_digest: Option<FederationJournalDigest>,
     /// Next missing AlephBFT finalized-item index for AlephBFT catch-up.
     pub aleph_bft_next_item_index: u64,
-    /// Optional bounded AlephBFT backup-page request for live-session recovery.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aleph_bft_backup: Option<FederationAlephBftBackupRequest>,
 }
 
 impl FederationJournalCatchUpRequest {
@@ -2939,7 +2941,6 @@ impl FederationJournalCatchUpRequest {
             limit: None,
             known_order_digest: None,
             aleph_bft_next_item_index: 0,
-            aleph_bft_backup: None,
         }
     }
 
@@ -2971,46 +2972,12 @@ impl FederationJournalCatchUpRequest {
         self
     }
 
-    /// Request AlephBFT backup chunks starting at `next_chunk` for one session.
-    #[must_use]
-    pub fn with_aleph_bft_backup(mut self, session: u64, next_chunk: u64) -> Self {
-        self.aleph_bft_backup = Some(FederationAlephBftBackupRequest {
-            session,
-            next_chunk,
-        });
-        self
-    }
-
     /// Return the bounded limit to apply to a response.
     #[must_use]
     pub fn effective_limit(&self, default_limit: u16, max_limit: u16) -> usize {
         let requested = self.limit.unwrap_or(default_limit).min(max_limit);
         usize::from(requested)
     }
-}
-
-/// One page request for an append-only AlephBFT session backup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FederationAlephBftBackupRequest {
-    /// AlephBFT session whose signed DAG backup is requested.
-    pub session: u64,
-    /// First missing zero-based backup chunk.
-    pub next_chunk: u64,
-}
-
-/// One bounded page of an append-only AlephBFT session backup.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FederationAlephBftBackupResponse {
-    /// AlephBFT session represented by these chunks.
-    pub session: u64,
-    /// Zero-based index of the first returned chunk.
-    pub from_chunk: u64,
-    /// Consecutive opaque upstream AlephBFT backup chunks.
-    pub chunks: Vec<Vec<u8>>,
-    /// Whether this page reaches the peer's current append-only backup end.
-    pub complete: bool,
 }
 
 /// Compact operation commitment and post-consensus application metadata for catch-up.
@@ -3119,9 +3086,6 @@ pub struct FederationJournalCatchUpResponse {
     pub aleph_bft_finalized_items: Vec<FederationAlephBftFinalizedItem>,
     /// Whether all requested AlephBFT finalized items were returned.
     pub aleph_bft_finalized_items_complete: bool,
-    /// Optional bounded AlephBFT backup page requested for session recovery.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub aleph_bft_backup: Option<FederationAlephBftBackupResponse>,
     /// Whether the peer returned all entries currently available from `from_index`.
     pub complete: bool,
 }
@@ -3214,7 +3178,6 @@ impl FederationJournalCatchUpResponse {
             aleph_bft_from_item_index: request.aleph_bft_next_item_index,
             aleph_bft_finalized_items: Vec::new(),
             aleph_bft_finalized_items_complete: true,
-            aleph_bft_backup: None,
             complete,
         }
     }
@@ -3310,13 +3273,6 @@ impl FederationJournalCatchUpResponse {
         self.aleph_bft_finalized_items_complete = complete;
         self
     }
-
-    /// Attach one bounded AlephBFT backup page for live-session recovery.
-    #[must_use]
-    pub fn with_aleph_bft_backup(mut self, backup: FederationAlephBftBackupResponse) -> Self {
-        self.aleph_bft_backup = Some(backup);
-        self
-    }
 }
 
 fn signing_transcript(
@@ -3359,8 +3315,9 @@ mod tests {
     use std::str::FromStr;
 
     use super::super::{
-        FederationApplicationDigest, FederationConfig, FederationDkgKeysetSpec, FederationError,
-        FederationFinalizedItemDigest, MemberConfigPrivate, MemberConfigPublic, ThresholdParams,
+        FederationApplicationDigest, FederationCheckpointBoundary, FederationConfig,
+        FederationDkgKeysetSpec, FederationError, FederationFinalizedItemDigest,
+        MemberConfigPrivate, MemberConfigPublic, ThresholdParams,
         FEDERATION_MAX_DKG_KEYSET_AMOUNTS, FEDERATION_MAX_DKG_MEMBERS,
         FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
     };
@@ -3903,22 +3860,22 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_request_and_response_carry_aleph_bft_replay_fields() {
-        let request = FederationJournalCatchUpRequest::new(3)
-            .with_aleph_bft_next_item_index(7)
-            .with_aleph_bft_backup(2, 11);
+    fn catch_up_and_aleph_bft_backup_use_separate_wire_types() {
+        let request = FederationJournalCatchUpRequest::new(3).with_aleph_bft_next_item_index(7);
         assert_eq!(request.aleph_bft_next_item_index, 7);
-        assert_eq!(
-            request.aleph_bft_backup,
-            Some(FederationAlephBftBackupRequest {
-                session: 2,
-                next_chunk: 11,
-            })
-        );
         let encoded_request = serde_json::to_value(&request).expect("request json");
         assert_eq!(encoded_request["aleph_bft_next_item_index"], 7);
-        assert_eq!(encoded_request["aleph_bft_backup"]["session"], 2);
-        assert_eq!(encoded_request["aleph_bft_backup"]["next_chunk"], 11);
+        assert!(encoded_request.get("aleph_bft_backup").is_none());
+        let mut contaminated_request = encoded_request.clone();
+        contaminated_request["aleph_bft_backup"] = serde_json::json!({
+            "version": FEDERATION_REST_API_VERSION,
+            "session": 2,
+            "next_chunk": 11,
+        });
+        assert!(
+            serde_json::from_value::<FederationJournalCatchUpRequest>(contaminated_request)
+                .is_err()
+        );
 
         let mut journal = InMemoryFederationJournal::new();
         journal.append(mint_quote_envelope()).expect("append quote");
@@ -3930,13 +3887,7 @@ mod tests {
             50,
             100,
         )
-        .with_aleph_bft_finalized_items(Vec::new(), false)
-        .with_aleph_bft_backup(FederationAlephBftBackupResponse {
-            session: 2,
-            from_chunk: 11,
-            chunks: vec![b"backup".to_vec()],
-            complete: true,
-        });
+        .with_aleph_bft_finalized_items(Vec::new(), false);
         let encoded_response = serde_json::to_value(&response).expect("response json");
         let operation = encoded_response["entries"][0]
             .as_object()
@@ -3966,9 +3917,145 @@ mod tests {
             encoded_response["aleph_bft_finalized_items_complete"],
             false
         );
-        assert_eq!(encoded_response["aleph_bft_backup"]["session"], 2);
-        assert_eq!(encoded_response["aleph_bft_backup"]["from_chunk"], 11);
-        assert_eq!(encoded_response["aleph_bft_backup"]["complete"], true);
+        assert!(encoded_response.get("aleph_bft_backup").is_none());
+        let mut contaminated_response = encoded_response.clone();
+        contaminated_response["aleph_bft_backup"] = serde_json::json!({
+            "version": FEDERATION_REST_API_VERSION,
+            "federation_id": federation_id(),
+            "member_id": member_id(),
+            "session": 2,
+            "from_chunk": 11,
+            "chunks": [],
+            "complete": true,
+        });
+        assert!(
+            serde_json::from_value::<FederationJournalCatchUpResponse>(contaminated_response)
+                .is_err()
+        );
+
+        let backup_request = FederationAlephBftBackupRequest::new(2, 11);
+        backup_request.validate().expect("backup request");
+        let backup_response = FederationAlephBftBackupResponse::new(
+            federation_id(),
+            member_id(),
+            backup_request,
+            vec![b"backup".to_vec()],
+            true,
+        );
+        backup_response
+            .validate(federation_id(), member_id(), backup_request)
+            .expect("backup response");
+        let encoded_backup = serde_json::to_value(backup_response).expect("backup response json");
+        assert_eq!(encoded_backup["session"], 2);
+        assert_eq!(encoded_backup["from_chunk"], 11);
+        assert_eq!(encoded_backup["complete"], true);
+        assert!(encoded_backup.get("entries").is_none());
+    }
+
+    #[test]
+    fn aleph_bft_backup_page_rejects_wrong_binding_and_independent_bounds() {
+        let request = FederationAlephBftBackupRequest::new(4, 7);
+        let response = FederationAlephBftBackupResponse::new(
+            federation_id(),
+            member_id(),
+            request,
+            vec![vec![1, 2, 3]],
+            true,
+        );
+        response
+            .validate(federation_id(), member_id(), request)
+            .expect("valid backup response");
+        assert!(response
+            .validate(federation_id(), roster_member_id(2), request)
+            .is_err());
+        assert!(response
+            .validate(
+                federation_id(),
+                member_id(),
+                FederationAlephBftBackupRequest::new(4, 8),
+            )
+            .is_err());
+
+        let too_many_chunks = FederationAlephBftBackupResponse::new(
+            federation_id(),
+            member_id(),
+            request,
+            vec![vec![1]; FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE + 1],
+            true,
+        );
+        assert!(matches!(
+            too_many_chunks.validate(federation_id(), member_id(), request),
+            Err(FederationError::CheckpointCatchUpTooLarge { .. })
+        ));
+        let too_many_bytes = FederationAlephBftBackupResponse::new(
+            federation_id(),
+            member_id(),
+            request,
+            vec![vec![
+                1;
+                FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE + 1
+            ]],
+            true,
+        );
+        assert!(matches!(
+            too_many_bytes.validate(federation_id(), member_id(), request),
+            Err(FederationError::CheckpointCatchUpTooLarge { .. })
+        ));
+        let no_progress = FederationAlephBftBackupResponse::new(
+            federation_id(),
+            member_id(),
+            request,
+            Vec::new(),
+            false,
+        );
+        assert!(matches!(
+            no_progress.validate(federation_id(), member_id(), request),
+            Err(FederationError::CheckpointInvalid { .. })
+        ));
+    }
+
+    #[test]
+    fn signed_aleph_bft_backup_transport_binds_kind_receiver_sequence_and_body() {
+        let (config, first_private, second_private) = transport_config();
+        let receiver = second_private.member_id;
+        let request = FederationSignedRequest::new_signed(
+            config.federation_id,
+            receiver,
+            17,
+            FederationRestMessageKind::AlephBftBackup,
+            FederationAlephBftBackupRequest::new(4, 7),
+            &first_private,
+        )
+        .expect("signed backup request");
+        request
+            .verify(&config, receiver)
+            .expect("backup request verifies");
+        assert!(request.verify(&config, first_private.member_id).is_err());
+
+        let mut altered = request.clone();
+        altered.payload.next_chunk = 8;
+        assert!(altered.verify(&config, receiver).is_err());
+
+        let response = FederationAlephBftBackupResponse::new(
+            config.federation_id,
+            receiver,
+            request.payload,
+            vec![vec![1, 2, 3]],
+            true,
+        );
+        let response = FederationSignedRequest::new_signed(
+            config.federation_id,
+            first_private.member_id,
+            request.sequence,
+            FederationRestMessageKind::AlephBftBackup,
+            response,
+            &second_private,
+        )
+        .expect("signed backup response");
+        response
+            .verify(&config, first_private.member_id)
+            .expect("backup response verifies");
+        assert_eq!(response.sequence, request.sequence);
     }
 
     #[test]
@@ -4154,7 +4241,6 @@ mod tests {
             version: FEDERATION_REST_API_VERSION,
             federation_id: config.federation_id,
             member_id: receiver,
-            stable_tip: None,
             latest_scheduled_candidate: None,
             latest_recovery_candidate: None,
             latest_scheduled_quorum: None,

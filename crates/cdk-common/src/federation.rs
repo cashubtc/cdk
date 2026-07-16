@@ -200,7 +200,9 @@ pub use self::transport::{
     FederationRestMessageKind, FederationRestSequenceTracker, FederationRestSignature,
     FederationSignedRequest, FederationSubmitOperationRequest, FederationSubmitOperationResponse,
     FederationWalletRebroadcastResponse, FederationWalletTransactionRequest,
-    FEDERATION_REST_API_VERSION,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_CHUNKS_PER_PAGE, FEDERATION_MAX_ALEPH_BFT_BACKUP_PAGE_BYTES,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_RAW_BYTES_PER_PAGE,
+    FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
 pub use self::trusted_dealer::{
     generate_trusted_dealer_configs, generate_trusted_dealer_configs_with_options,

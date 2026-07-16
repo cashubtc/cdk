@@ -3,7 +3,8 @@
 Status: in progress (checkpoint protocol, persistence, exchange, bounded
 page-streamed catch-up, nonzero startup, certificate cut-through,
 checkpoint-native operator tooling, crash-safe checkpoint retention, ordered
-recovery barriers, and bounded work instrumentation are implemented;
+recovery barriers, separated recovery transport, and bounded work
+instrumentation are implemented;
 checkpoint production is event-driven and stable checkpoint polls are work/log
 silent; consolidation and final validation remain)
 Scope: federation-only, cut-through replacement of catch-up certificates  
@@ -791,6 +792,7 @@ the checkpoint production-library clippy gate is clean.
 - `crates/cdk-common/src/federation/checkpoint.rs`
 - `crates/cdk-common/src/federation.rs`
 - `crates/cdk-common/src/federation/transport.rs`
+- `crates/cdk-common/src/federation/transport/aleph_bft_backup.rs`
 - `crates/cdk-common/src/federation/consensus.rs`
 - `crates/cdk-common/src/federation/consensus/tests.rs`
 - `crates/cdk-common/src/federation/journal.rs`
@@ -1236,6 +1238,14 @@ ordinary journal pages never create or verify request-time range certificates;
 checkpoint identity binds the targeted page and the requester separately
 verifies the stored bounded checkpoint quorum.
 
+Journal/finalized catch-up and opaque AlephBFT backup recovery now use separate
+private REST contracts. Journal messages reject backup fields. Backup pages use
+their own signed message kind, request/response types, route, client call,
+session/chunk cursor validation, completion rules, and encoded/raw/chunk bounds.
+The signed response is bound to federation, serving member, receiver, sequence,
+kind, and body hash. Backup persistence remains atomic and cannot advance the
+journal, application, checkpoint, or trusted frontier.
+
 The signed checkpoint policy now triggers a scheduled boundary when any of the
 accepted-operation, finalized-item, or canonical-finalized-byte intervals is
 crossed. Defaults are 10,000 / 10,000 / 32 MiB. Fixed protocol caps limit one
@@ -1270,6 +1280,7 @@ suffix after rebasing. Compilation and linting were verified with:
 - `crates/cdk-common/src/federation/consensus.rs`
 - `crates/cdk-common/src/federation/journal.rs`
 - `crates/cdk-axum/src/federation/catch_up_routes.rs`
+- `crates/cdk-axum/src/federation/backup_routes.rs`
 - `crates/cdk-axum/src/federation/peer_client.rs`
 - `crates/cdk-axum/src/federation/sync_loop.rs`
 - `crates/cdk-axum/src/federation/node_runtime.rs`
@@ -1649,9 +1660,10 @@ configuration behavior.
 The range-certificate types, signature transcripts, quorum reconstruction,
 runtime cache/collection path, database APIs and schema, response fields,
 readiness state, status/CLI/config fields, and metrics have been deleted.
-Journal serving is a bounded indexed range read for both targeted checkpoint
-catch-up and the remaining non-target backup request. Scheduled and recovery
-frontiers now share only `FederationCheckpointQuorum` and its persistence and
+Journal serving is a bounded indexed range read for checkpoint history only.
+The remaining live-session backup request uses a separate signed route and
+cannot carry or interpret journal/application state. Scheduled and recovery
+frontiers share only `FederationCheckpointQuorum` and its persistence and
 promotion path.
 
 ### Files and references

@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
 
 use cdk::federation::{
-    FederationCheckpoint, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointSummary, FederationCheckpointSummaryResponse, FederationError,
-    FederationJournalCatchUpRequest, FederationJournalCatchUpResponse, FederationPeerStatus,
-    MemberConfigPublic, MemberId, FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
+    FederationAlephBftBackupRequest, FederationCheckpoint, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSummary, FederationCheckpointSummaryResponse,
+    FederationError, FederationJournalCatchUpRequest, FederationJournalCatchUpResponse,
+    FederationPeerStatus, MemberConfigPublic, MemberId,
+    FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
 };
 use cdk_http_client::{Async, Transport};
@@ -216,15 +217,10 @@ where
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Healthy)
     );
-    if startup_recovery
-        && matches!(
-            state.federation.stable_checkpoint_boundary().await,
-            Ok(Some(_))
-        )
-    {
-        state.federation.request_recovery_checkpoint();
+    if startup_recovery {
+        state.federation.request_recovery_checkpoint().await;
     }
-    let request_recovery_checkpoint = state.federation.recovery_checkpoint_is_requested();
+    let request_recovery_checkpoint = state.federation.recovery_checkpoint_is_requested().await;
     let trusted_scheduled_sequence = match state
         .mint
         .localstore()
@@ -1080,7 +1076,7 @@ where
 
             while peer_requires_catch_up(&local_status, &peer_status)? {
                 let Some(target) = next_local_checkpoint_catch_up_target(state).await? else {
-                    state.federation.request_recovery_checkpoint();
+                    state.federation.request_recovery_checkpoint().await;
                     state
                         .mark_federation_lagging(
                             member.member_id,
@@ -1188,56 +1184,12 @@ where
             return Ok(());
         }
 
-        let consensus = state.federation.consensus.as_ref().ok_or_else(|| {
-            FederationError::RuntimeUnavailable {
-                component: "consensus",
-            }
-        })?;
         let mut chunks = Vec::new();
         let mut next_chunk = 0u64;
         let mut total_bytes = 0usize;
         loop {
-            let request = {
-                let consensus = consensus.lock().await;
-                let mut request = consensus
-                    .catch_up_request()
-                    .with_limit(self.sync_config.catch_up_limit)
-                    .with_aleph_bft_backup(session, next_chunk);
-                if let Ok(status) = consensus.aleph_bft_status() {
-                    request = request.with_aleph_bft_next_item_index(status.next_item_index);
-                }
-                request
-            };
-            let response = self.catch_up(member, &request).await?;
-            let backup = response.aleph_bft_backup.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "federation member {} omitted requested AlephBFT session {} backup",
-                    member.member_id,
-                    session
-                )
-            })?;
-            if backup.session != session || backup.from_chunk != next_chunk {
-                anyhow::bail!(
-                    "federation member {} returned AlephBFT backup page session/chunk {}/{}; expected {}/{}",
-                    member.member_id,
-                    backup.session,
-                    backup.from_chunk,
-                    session,
-                    next_chunk
-                );
-            }
-            if backup.chunks.iter().any(Vec::is_empty) {
-                anyhow::bail!(
-                    "federation member {} returned an empty AlephBFT backup chunk",
-                    member.member_id
-                );
-            }
-            if backup.chunks.is_empty() && !backup.complete {
-                anyhow::bail!(
-                    "federation member {} returned no AlephBFT backup progress",
-                    member.member_id
-                );
-            }
+            let request = FederationAlephBftBackupRequest::new(session, next_chunk);
+            let backup = self.aleph_bft_backup(member, request).await?;
             for chunk in backup.chunks {
                 total_bytes = total_bytes
                     .checked_add(chunk.len())

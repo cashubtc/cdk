@@ -17,8 +17,10 @@
 //! to build a deterministic plan may occur under the consensus lock; no peer
 //! request may.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use cdk::federation::MemberId;
 use cdk::mint::Mint;
@@ -43,37 +45,56 @@ impl FederationOperationPipeline {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum FederationRecoveryRequestState {
+    #[default]
+    Idle,
+    Requested {
+        next_proposal_at: Option<Instant>,
+    },
+}
+
 /// Owns checkpoint demand and the bounded local barrier-proposal lease.
 #[derive(Debug, Clone, Default)]
 pub(super) struct FederationCheckpointManager {
-    pub(super) recovery_requested: Arc<AtomicBool>,
-    pub(super) next_recovery_proposal_at: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
+    recovery: Arc<tokio::sync::Mutex<FederationRecoveryRequestState>>,
 }
 
 impl FederationCheckpointManager {
-    pub(super) fn request_recovery(&self) {
-        self.recovery_requested.store(true, Ordering::Release);
-    }
-
-    pub(super) fn recovery_is_requested(&self) -> bool {
-        self.recovery_requested.load(Ordering::Acquire)
-    }
-
-    pub(super) async fn reserve_recovery_proposal(
-        &self,
-        now: std::time::Instant,
-        lease: std::time::Duration,
-    ) -> bool {
-        let mut next_proposal_at = self.next_recovery_proposal_at.lock().await;
-        if next_proposal_at.is_some_and(|deadline| deadline > now) {
-            return false;
+    pub(super) async fn request_recovery(&self) {
+        let mut state = self.recovery.lock().await;
+        if *state == FederationRecoveryRequestState::Idle {
+            *state = FederationRecoveryRequestState::Requested {
+                next_proposal_at: None,
+            };
         }
-        *next_proposal_at = Some(now + lease);
-        true
     }
 
-    pub(super) fn clear_recovery(&self) {
-        self.recovery_requested.store(false, Ordering::Release);
+    pub(super) async fn recovery_is_requested(&self) -> bool {
+        matches!(
+            *self.recovery.lock().await,
+            FederationRecoveryRequestState::Requested { .. }
+        )
+    }
+
+    pub(super) async fn reserve_recovery_proposal(&self, now: Instant, lease: Duration) -> bool {
+        let mut state = self.recovery.lock().await;
+        match *state {
+            FederationRecoveryRequestState::Requested {
+                next_proposal_at: Some(deadline),
+            } if deadline > now => false,
+            FederationRecoveryRequestState::Requested { .. } => {
+                *state = FederationRecoveryRequestState::Requested {
+                    next_proposal_at: Some(now + lease),
+                };
+                true
+            }
+            FederationRecoveryRequestState::Idle => false,
+        }
+    }
+
+    pub(super) async fn clear_recovery(&self) {
+        *self.recovery.lock().await = FederationRecoveryRequestState::Idle;
     }
 }
 

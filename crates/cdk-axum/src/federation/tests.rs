@@ -19,21 +19,22 @@ use cdk::cdk_payment::{
 };
 use cdk::federation::{
     generate_trusted_dealer_configs, FederationAlephBftActivityRequest,
-    FederationAlephBftBackupResponse, FederationAlephBftFinalizedItemStatus,
-    FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
-    FederationApplicationState, FederationCheckpoint, FederationCheckpointBoundary,
-    FederationCheckpointPolicy, FederationCheckpointQuorum, FederationCheckpointSignature,
-    FederationCheckpointSummaryRequest, FederationCheckpointSummaryResponse,
-    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRuntime,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgMemberKeysetShare,
-    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
-    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMeltQuoteMetadata, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
+    FederationAlephBftFinalizedItemStatus, FederationAlephBftNetworkMessageRequest,
+    FederationAlephBftNetworkMessageResponse, FederationAlephBftPendingOperationRecord,
+    FederationAlephBftUnitPayload, FederationApplicationState, FederationCheckpoint,
+    FederationCheckpointBoundary, FederationCheckpointPolicy, FederationCheckpointQuorum,
+    FederationCheckpointSignature, FederationCheckpointSummaryRequest,
+    FederationCheckpointSummaryResponse, FederationConfigSnapshot, FederationConsensusItem,
+    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
+    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
+    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMeltQuoteMetadata,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationRecord,
     FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
     FederationRecoveryBarrier, FederationRestMessageKind, FederationSignedRequest,
@@ -188,9 +189,9 @@ fn federation_peer_sync_disable_value_accepts_truthy_values() {
 #[tokio::test]
 async fn recovery_checkpoint_demand_uses_a_bounded_local_proposal_lease() {
     let runtime = FederationNodeRuntime::disabled();
-    assert!(!runtime.recovery_checkpoint_is_requested());
-    runtime.request_recovery_checkpoint();
-    assert!(runtime.recovery_checkpoint_is_requested());
+    assert!(!runtime.recovery_checkpoint_is_requested().await);
+    runtime.request_recovery_checkpoint().await;
+    assert!(runtime.recovery_checkpoint_is_requested().await);
     let now = std::time::Instant::now();
     assert!(
         runtime
@@ -220,7 +221,7 @@ async fn idle_member_does_not_propose_recovery_barrier_work() {
     let (public_config, first_private, _) = transport_config();
     let state = federation_route_state_for_private(public_config, first_private).await;
 
-    assert!(!state.federation.recovery_checkpoint_is_requested());
+    assert!(!state.federation.recovery_checkpoint_is_requested().await);
     assert!(!state
         .federation
         .propose_recovery_barrier_if_requested()
@@ -237,7 +238,7 @@ async fn idle_member_does_not_propose_recovery_barrier_work() {
 }
 
 #[tokio::test]
-async fn independent_members_derive_identical_recovery_checkpoint_at_stable_tip() {
+async fn independent_members_derive_identical_recovery_checkpoint_at_terminal_boundary() {
     let (public_config, first_private, second_private) = transport_config();
     let first =
         federation_route_state_for_private(public_config.clone(), first_private.clone()).await;
@@ -468,7 +469,7 @@ async fn recovery_barrier_reaches_quorum_with_one_member_unavailable() {
 async fn concurrent_recovery_requests_queue_one_effective_barrier() {
     let (public_config, first_private, _) = transport_config();
     let state = federation_route_state_for_private(public_config, first_private).await;
-    state.federation.request_recovery_checkpoint();
+    state.federation.request_recovery_checkpoint().await;
 
     let (first, second) = tokio::join!(
         state.federation.propose_recovery_barrier_if_requested(),
@@ -509,7 +510,7 @@ async fn restart_retries_last_ordered_barrier_with_the_same_checkpoint_id() {
     let (public_config, first_private, _) = transport_config();
     let mut state = federation_route_state_for_private(public_config.clone(), first_private).await;
     state.federation.suppress_next_recovery_checkpoint_capture();
-    state.federation.request_recovery_checkpoint();
+    state.federation.request_recovery_checkpoint().await;
     assert!(state
         .federation
         .propose_recovery_barrier_if_requested()
@@ -751,6 +752,7 @@ struct MockFederationTransportState {
     aleph_bft_network_message_delays: VecDeque<Duration>,
     aleph_bft_network_message_status_error: Option<(u16, String)>,
     dkg_setup_responses: VecDeque<FederationDkgSetupResponse>,
+    aleph_bft_backup_responses: VecDeque<(FederationAlephBftBackupResponse, MemberConfigPrivate)>,
     catch_up_responses: VecDeque<FederationJournalCatchUpResponse>,
     status_requests: Vec<FederationSignedRequest<FederationPeerStatusRequest>>,
     checkpoint_summary_requests: Vec<FederationSignedRequest<FederationCheckpointSummaryRequest>>,
@@ -762,6 +764,7 @@ struct MockFederationTransportState {
     submitted_operations: Vec<FederationSignedRequest<FederationSubmitOperationRequest>>,
     aleph_bft_network_message_requests:
         Vec<FederationSignedRequest<FederationAlephBftNetworkMessageRequest>>,
+    aleph_bft_backup_requests: Vec<FederationSignedRequest<FederationAlephBftBackupRequest>>,
     catch_up_requests: Vec<FederationSignedRequest<FederationJournalCatchUpRequest>>,
 }
 
@@ -1318,6 +1321,19 @@ impl MockFederationTransport {
         self
     }
 
+    fn with_aleph_bft_backup_response(
+        self,
+        response: FederationAlephBftBackupResponse,
+        signer: MemberConfigPrivate,
+    ) -> Self {
+        self.state
+            .lock()
+            .expect("mock transport lock")
+            .aleph_bft_backup_responses
+            .push_back((response, signer));
+        self
+    }
+
     fn status_requests(&self) -> Vec<FederationSignedRequest<FederationPeerStatusRequest>> {
         self.state
             .lock()
@@ -1423,6 +1439,16 @@ impl MockFederationTransport {
             .lock()
             .expect("mock transport lock")
             .catch_up_requests
+            .clone()
+    }
+
+    fn aleph_bft_backup_requests(
+        &self,
+    ) -> Vec<FederationSignedRequest<FederationAlephBftBackupRequest>> {
+        self.state
+            .lock()
+            .expect("mock transport lock")
+            .aleph_bft_backup_requests
             .clone()
     }
 }
@@ -1654,6 +1680,29 @@ impl Transport for MockFederationTransport {
                     .submit_response
                     .clone()
                     .ok_or_else(|| HttpError::Other("missing submit response".to_string()))?;
+                json_response(response)
+            }
+            path if path.ends_with("/federation/v1/aleph-bft/backup") => {
+                let request = serde_json::from_value::<
+                    FederationSignedRequest<FederationAlephBftBackupRequest>,
+                >(serde_json::to_value(payload)?)?;
+                state.aleph_bft_backup_requests.push(request.clone());
+                let (response, signer) =
+                    state
+                        .aleph_bft_backup_responses
+                        .pop_front()
+                        .ok_or_else(|| {
+                            HttpError::Other("missing AlephBFT backup response".to_string())
+                        })?;
+                let response = FederationSignedRequest::new_signed(
+                    request.federation_id,
+                    request.sender,
+                    request.sequence,
+                    FederationRestMessageKind::AlephBftBackup,
+                    response,
+                    &signer,
+                )
+                .map_err(|err| HttpError::Other(err.to_string()))?;
                 json_response(response)
             }
             path if path.ends_with("/federation/v1/journal") => {
@@ -3002,10 +3051,11 @@ async fn backup_recovery_test_state() -> (
     MintState,
     FederationConfig,
     MemberConfigPrivate,
+    MemberConfigPrivate,
     MemberConfigPublic,
     FederationConsensusRuntime,
 ) {
-    let (public_config, local_private, _) = transport_config();
+    let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
     let state = federation_route_state_for_private_with_db_and_aleph_bft(
@@ -3048,6 +3098,7 @@ async fn backup_recovery_test_state() -> (
         state,
         public_config,
         local_private,
+        peer_private,
         peer_member,
         peer_consensus,
     )
@@ -5456,7 +5507,7 @@ async fn rest_peer_client_rejects_aleph_bft_status_without_finalized_cursor() {
 
 #[tokio::test]
 async fn rest_peer_client_recovers_complete_aleph_bft_backup_pages_atomically() {
-    let (state, public_config, local_private, peer_member, peer_consensus) =
+    let (state, public_config, local_private, peer_private, peer_member, peer_consensus) =
         backup_recovery_test_state().await;
     let mut peer_status = aleph_bft_peer_status_with_materialized_digest(
         &state,
@@ -5465,31 +5516,47 @@ async fn rest_peer_client_recovers_complete_aleph_bft_backup_pages_atomically() 
         &peer_consensus,
     )
     .await;
-    let materialized_state_digest = peer_status
-        .materialized_state_digest
-        .expect("peer materialized-state digest");
     peer_status.materialized_state_digest = None;
-    let request = FederationJournalCatchUpRequest::new(1).with_aleph_bft_next_item_index(1);
-    let mut first_response = test_catch_up_response(&peer_consensus, &request);
-    first_response.materialized_state_digest = materialized_state_digest;
-    let first_response = first_response.with_aleph_bft_backup(FederationAlephBftBackupResponse {
-        session: 0,
-        from_chunk: 0,
-        chunks: vec![vec![1, 2, 3]],
-        complete: false,
-    });
-    let mut second_response = test_catch_up_response(&peer_consensus, &request);
-    second_response.materialized_state_digest = materialized_state_digest;
-    let second_response = second_response.with_aleph_bft_backup(FederationAlephBftBackupResponse {
-        session: 0,
-        from_chunk: 1,
-        chunks: vec![vec![4, 5]],
-        complete: true,
-    });
+    let first_request = FederationAlephBftBackupRequest::new(0, 0);
+    let first_response = FederationAlephBftBackupResponse::new(
+        public_config.federation_id,
+        peer_member.member_id,
+        first_request,
+        vec![vec![1, 2, 3]],
+        false,
+    );
+    let second_request = FederationAlephBftBackupRequest::new(0, 1);
+    let second_response = FederationAlephBftBackupResponse::new(
+        public_config.federation_id,
+        peer_member.member_id,
+        second_request,
+        vec![vec![4, 5]],
+        true,
+    );
+    let db = state.mint.localstore();
+    let frontier_before = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("checkpoint frontier before backup");
+    let journal_before = db
+        .get_federation_journal_entries()
+        .await
+        .expect("journal before backup");
+    let trusted_before = db
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+        .expect("trusted checkpoint before backup");
+    let materialized_before = state
+        .mint
+        .federation_materialized_state_snapshot()
+        .await
+        .expect("materialized state before backup")
+        .digest()
+        .expect("materialized digest before backup");
     let transport = MockFederationTransport::default()
         .with_status_response(peer_status)
-        .with_catch_up_response(first_response)
-        .with_catch_up_response(second_response);
+        .with_aleph_bft_backup_response(first_response, peer_private.clone())
+        .with_aleph_bft_backup_response(second_response, peer_private);
     let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
         .expect("peer client");
 
@@ -5510,18 +5577,48 @@ async fn rest_peer_client_recovers_complete_aleph_bft_backup_pages_atomically() 
             .expect("recovered backup chunks"),
         vec![vec![1, 2, 3], vec![4, 5]]
     );
+    assert_eq!(
+        db.get_federation_checkpoint_frontier()
+            .await
+            .expect("checkpoint frontier after backup"),
+        frontier_before
+    );
+    assert_eq!(
+        serde_json::to_value(
+            db.get_federation_journal_entries()
+                .await
+                .expect("journal after backup")
+        )
+        .expect("journal JSON after backup"),
+        serde_json::to_value(journal_before).expect("journal JSON before backup")
+    );
+    assert_eq!(
+        db.get_trusted_federation_checkpoint_quorum()
+            .await
+            .expect("trusted checkpoint after backup"),
+        trusted_before
+    );
+    assert_eq!(
+        state
+            .mint
+            .federation_materialized_state_snapshot()
+            .await
+            .expect("materialized state after backup")
+            .digest()
+            .expect("materialized digest after backup"),
+        materialized_before
+    );
     let backup_offsets = transport
-        .catch_up_requests()
+        .aleph_bft_backup_requests()
         .into_iter()
-        .filter_map(|request| request.payload.aleph_bft_backup)
-        .map(|request| request.next_chunk)
+        .map(|request| request.payload.next_chunk)
         .collect::<Vec<_>>();
     assert_eq!(backup_offsets, vec![0, 1]);
 }
 
 #[tokio::test]
 async fn rest_peer_client_rejects_malformed_backup_page_without_partial_persistence() {
-    let (state, public_config, local_private, peer_member, peer_consensus) =
+    let (state, public_config, local_private, peer_private, peer_member, peer_consensus) =
         backup_recovery_test_state().await;
     let mut peer_status = aleph_bft_peer_status_with_materialized_digest(
         &state,
@@ -5530,32 +5627,26 @@ async fn rest_peer_client_rejects_malformed_backup_page_without_partial_persiste
         &peer_consensus,
     )
     .await;
-    let materialized_state_digest = peer_status
-        .materialized_state_digest
-        .expect("peer materialized-state digest");
     peer_status.materialized_state_digest = None;
-    let request = FederationJournalCatchUpRequest::new(1).with_aleph_bft_next_item_index(1);
-    let mut first_response = test_catch_up_response(&peer_consensus, &request);
-    first_response.materialized_state_digest = materialized_state_digest;
-    let first_response = first_response.with_aleph_bft_backup(FederationAlephBftBackupResponse {
-        session: 0,
-        from_chunk: 0,
-        chunks: vec![vec![1, 2, 3]],
-        complete: false,
-    });
-    let mut malformed_response = test_catch_up_response(&peer_consensus, &request);
-    malformed_response.materialized_state_digest = materialized_state_digest;
-    let malformed_response =
-        malformed_response.with_aleph_bft_backup(FederationAlephBftBackupResponse {
-            session: 0,
-            from_chunk: 2,
-            chunks: vec![vec![4, 5]],
-            complete: true,
-        });
+    let first_request = FederationAlephBftBackupRequest::new(0, 0);
+    let first_response = FederationAlephBftBackupResponse::new(
+        public_config.federation_id,
+        peer_member.member_id,
+        first_request,
+        vec![vec![1, 2, 3]],
+        false,
+    );
+    let malformed_response = FederationAlephBftBackupResponse::new(
+        public_config.federation_id,
+        peer_member.member_id,
+        FederationAlephBftBackupRequest::new(0, 2),
+        vec![vec![4, 5]],
+        true,
+    );
     let transport = MockFederationTransport::default()
         .with_status_response(peer_status)
-        .with_catch_up_response(first_response)
-        .with_catch_up_response(malformed_response);
+        .with_aleph_bft_backup_response(first_response, peer_private.clone())
+        .with_aleph_bft_backup_response(malformed_response, peer_private);
     let client = FederationRestPeerClient::new(transport, &public_config, local_private)
         .expect("peer client");
 
@@ -5567,7 +5658,7 @@ async fn rest_peer_client_rejects_malformed_backup_page_without_partial_persiste
     .expect("malformed AlephBFT backup rejection completed")
     .expect_err("out-of-order backup page must fail");
 
-    assert!(err.to_string().contains("expected 0/1"));
+    assert!(err.to_string().contains("session or chunk cursor mismatch"));
     assert!(state
         .mint
         .localstore()
@@ -10239,7 +10330,7 @@ async fn router_startup_replays_aleph_bft_finalized_items_before_serving_local_s
 }
 
 #[tokio::test]
-async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations() {
+async fn finalized_catch_up_does_not_carry_backup_state() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
     let mnemonic = Mnemonic::generate(12).expect("mnemonic");
@@ -10250,9 +10341,6 @@ async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations(
         &mnemonic.to_seed_normalized(""),
     )
     .await;
-    let peer_member = public_config
-        .member(peer_private.member_id)
-        .expect("peer member");
     let quote_id = QuoteId::new();
     let envelope = mint_quote_envelope(&state, &quote_id);
     let operation_id = envelope.operation_id().expect("operation id");
@@ -10269,17 +10357,6 @@ async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations(
         .apply_federation_aleph_bft_finalized_unit(first_unit.clone())
         .await
         .expect("local first finalized unit");
-    let stale_backup = vec![vec![9, 9, 9]];
-    let mut tx = state
-        .mint
-        .localstore()
-        .begin_transaction()
-        .await
-        .expect("begin stale backup transaction");
-    tx.append_federation_aleph_bft_backup_bytes(0, &stale_backup[0])
-        .await
-        .expect("seed stale backup");
-    tx.commit().await.expect("commit stale backup");
     let mut peer_adapter = FederationConsensusRuntime::for_members(
         public_config.federation_id,
         peer_private.member_id,
@@ -10327,58 +10404,14 @@ async fn aleph_bft_peer_sync_catches_up_finalized_cursor_without_new_operations(
             .expect("materialized state digest");
     let response =
         response.with_aleph_bft_finalized_items(peer_adapter.finalized_items()[1..].to_vec(), true);
-    let peer_status = aleph_bft_peer_status_with_materialized_digest(
-        &state,
-        &public_config,
-        peer_private.member_id,
-        &peer_adapter,
-    )
-    .await;
-    let backup_request = FederationJournalCatchUpRequest::new(1).with_aleph_bft_next_item_index(2);
-    let mut backup_response = test_catch_up_response(&peer_adapter, &backup_request);
-    backup_response.materialized_state_digest = peer_status
-        .materialized_state_digest
-        .expect("peer materialized-state digest");
-    let backup_response = backup_response.with_aleph_bft_backup(FederationAlephBftBackupResponse {
-        session: 0,
-        from_chunk: 0,
-        chunks: vec![vec![1, 2, 3]],
-        complete: true,
-    });
-    let transport = MockFederationTransport::default()
-        .with_status_response(peer_status)
-        .with_catch_up_response(response)
-        .with_catch_up_response(backup_response);
-    let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
-        .expect("client");
-
-    client
-        .sync_once_from_member(&state, peer_member)
+    state
+        .apply_federation_catch_up_response(&response)
         .await
-        .expect("sync finalized cursor");
-
-    let requests = transport.catch_up_requests();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].payload.next_index, 1);
-    assert_eq!(requests[0].payload.aleph_bft_next_item_index, 1);
-    assert_eq!(
-        requests[1]
-            .payload
-            .aleph_bft_backup
-            .as_ref()
-            .expect("backup recovery request")
-            .next_chunk,
-        0
-    );
-    assert_eq!(
-        state
-            .mint
-            .localstore()
-            .get_federation_aleph_bft_backup_chunks(0)
-            .await
-            .expect("backup after finalized catch-up"),
-        vec![vec![1, 2, 3]]
-    );
+        .expect("apply finalized-item catch-up independently");
+    assert!(serde_json::to_value(&response)
+        .expect("catch-up response JSON")
+        .get("aleph_bft_backup")
+        .is_none());
     let stored_finalized_items = state
         .mint
         .localstore()
@@ -10589,27 +10622,21 @@ fn checkpoint_page_cursor_checks_reject_no_progress_and_overflow() {
 }
 
 #[tokio::test]
-async fn rest_peer_client_rejects_oversized_catch_up_before_validation() {
+async fn rest_peer_client_rejects_oversized_backup_before_validation() {
     let (public_config, local_private, peer_private) = transport_config();
     let peer_member = public_config
         .member(peer_private.member_id)
         .expect("oversized response peer");
-    let request = FederationJournalCatchUpRequest::new(0);
-    let response = FederationJournalCatchUpResponse::from_journal(
+    let request = FederationAlephBftBackupRequest::new(0, 0);
+    let response = FederationAlephBftBackupResponse::new(
         public_config.federation_id,
-        &InMemoryFederationJournal::new(),
-        cdk::federation::FederationMaterializedStateDigest::genesis(),
-        &request,
-        100,
-        100,
-    )
-    .with_aleph_bft_backup(FederationAlephBftBackupResponse {
-        session: 0,
-        from_chunk: 0,
-        chunks: vec![vec![255; 3 * 1024 * 1024]],
-        complete: true,
-    });
-    let transport = MockFederationTransport::default().with_catch_up_response(response);
+        peer_member.member_id,
+        request,
+        vec![vec![255; 3 * 1024 * 1024]],
+        true,
+    );
+    let transport =
+        MockFederationTransport::default().with_aleph_bft_backup_response(response, peer_private);
     let client = FederationRestPeerClient::new_with_config(
         transport,
         &public_config,
@@ -10618,9 +10645,9 @@ async fn rest_peer_client_rejects_oversized_catch_up_before_validation() {
     )
     .expect("oversized response client");
     let error = client
-        .catch_up(peer_member, &request)
+        .aleph_bft_backup(peer_member, request)
         .await
-        .expect_err("oversized catch-up response must fail before validation");
+        .expect_err("oversized backup response must fail before validation");
     assert!(matches!(
         error.downcast_ref::<FederationError>(),
         Some(FederationError::CheckpointCatchUpTooLarge {
@@ -24726,7 +24753,7 @@ async fn private_journal_route_aligns_claims_with_duplicate_finalized_items() {
 }
 
 #[tokio::test]
-async fn private_journal_route_pages_aleph_bft_backup_with_a_byte_bound() {
+async fn private_backup_route_pages_aleph_bft_backup_with_independent_bounds() {
     let (state, public_config, peer_private) = federation_route_state().await;
     let local_member = state
         .mint
@@ -24752,18 +24779,21 @@ async fn private_journal_route_pages_aleph_bft_backup_with_a_byte_bound() {
     for (sequence, next_chunk, expected_byte, complete) in
         [(1, 0, 1, false), (2, 1, 2, false), (3, 2, 3, true)]
     {
-        let request = signed_catch_up_request(
-            &public_config,
-            &peer_private,
+        let request = FederationSignedRequest::new_signed(
+            public_config.federation_id,
             local_member,
             sequence,
-            FederationJournalCatchUpRequest::new(0).with_aleph_bft_backup(4, next_chunk),
-        );
-        let response = post_journal(State(state.clone()), Json(request))
+            FederationRestMessageKind::AlephBftBackup,
+            FederationAlephBftBackupRequest::new(4, next_chunk),
+            &peer_private,
+        )
+        .expect("signed backup request");
+        let response = post_aleph_bft_backup(State(state.clone()), Json(request))
             .await
             .expect("backup page response")
-            .0;
-        let backup = response.aleph_bft_backup.expect("requested backup page");
+            .0
+            .payload;
+        let backup = response;
         assert_eq!(backup.session, 4);
         assert_eq!(backup.from_chunk, next_chunk);
         assert_eq!(backup.chunks.len(), 1);
@@ -24771,6 +24801,40 @@ async fn private_journal_route_pages_aleph_bft_backup_with_a_byte_bound() {
         assert!(backup.chunks[0].iter().all(|byte| *byte == expected_byte));
         assert_eq!(backup.complete, complete);
     }
+}
+
+#[tokio::test]
+async fn private_backup_route_rejects_wrong_kind_before_sequence_persistence() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .member_id();
+    let request = FederationSignedRequest::new_signed(
+        public_config.federation_id,
+        local_member,
+        1,
+        FederationRestMessageKind::CatchUp,
+        FederationAlephBftBackupRequest::new(4, 0),
+        &peer_private,
+    )
+    .expect("wrong-kind backup request");
+
+    let response = post_aleph_bft_backup(State(state.clone()), Json(request))
+        .await
+        .expect_err("wrong message kind must fail");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let sequences = state
+        .mint
+        .localstore()
+        .get_federation_dkg_member_sequences()
+        .await
+        .expect("persisted sequences");
+    assert!(
+        sequences.is_empty(),
+        "wrong-kind backup requests must not persist the sender sequence"
+    );
 }
 
 #[tokio::test]

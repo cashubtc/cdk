@@ -334,19 +334,10 @@ impl FederationNodeRuntime {
         )?))
     }
 
-    pub(crate) async fn stable_checkpoint_boundary(
-        &self,
-    ) -> Result<Option<FederationCheckpointBoundary>, cdk::Error> {
-        let _application = self.components.operation.lock().await;
-        self.current_checkpoint_boundary_under_application_lock()
-            .await
-    }
-
     pub(crate) async fn checkpoint_summary(
         &self,
         next_scheduled_quorum_after: Option<u64>,
     ) -> Result<FederationCheckpointSummaryResponse, cdk::Error> {
-        let stable_tip = self.stable_checkpoint_boundary().await?;
         let mint = self.active_mint()?;
         let runtime_config = mint
             .federation_config()
@@ -387,7 +378,6 @@ impl FederationNodeRuntime {
             version: FEDERATION_REST_API_VERSION,
             federation_id: runtime_config.federation_id(),
             member_id: runtime_config.member_id(),
-            stable_tip,
             latest_scheduled_candidate,
             latest_recovery_candidate,
             latest_scheduled_quorum,
@@ -396,20 +386,20 @@ impl FederationNodeRuntime {
         })
     }
 
-    pub(crate) fn request_recovery_checkpoint(&self) {
-        self.components.checkpoint.request_recovery();
+    pub(crate) async fn request_recovery_checkpoint(&self) {
+        self.components.checkpoint.request_recovery().await;
     }
 
-    pub(crate) fn recovery_checkpoint_is_requested(&self) -> bool {
-        self.components.checkpoint.recovery_is_requested()
+    pub(crate) async fn recovery_checkpoint_is_requested(&self) -> bool {
+        self.components.checkpoint.recovery_is_requested().await
     }
 
-    fn clear_recovery_checkpoint_request(&self) {
-        self.components.checkpoint.clear_recovery();
+    async fn clear_recovery_checkpoint_request(&self) {
+        self.components.checkpoint.clear_recovery().await;
     }
 
     pub(crate) async fn propose_recovery_barrier_if_requested(&self) -> Result<bool, cdk::Error> {
-        if !self.recovery_checkpoint_is_requested()
+        if !self.recovery_checkpoint_is_requested().await
             || !matches!(
                 self.sync_status().await,
                 None | Some(crate::FederationSyncStatus::Healthy)
@@ -428,7 +418,7 @@ impl FederationNodeRuntime {
         }
 
         let _application = self.components.operation.lock().await;
-        if !self.recovery_checkpoint_is_requested() {
+        if !self.recovery_checkpoint_is_requested().await {
             return Ok(false);
         }
         let mint = self.active_mint()?;
@@ -466,7 +456,7 @@ impl FederationNodeRuntime {
             .recent_checkpoint_candidate_frontier(public_config, requested_after)
             .await?
         {
-            self.clear_recovery_checkpoint_request();
+            self.clear_recovery_checkpoint_request().await;
             return Ok(false);
         }
 
@@ -483,15 +473,15 @@ impl FederationNodeRuntime {
             scheduled_anchor_id,
             requested_after,
         )?;
-        self.clear_recovery_checkpoint_request();
+        self.clear_recovery_checkpoint_request().await;
         match consensus.submit_aleph_bft_recovery_barrier(barrier) {
             Ok(true) => {}
             Ok(false) => {
-                self.request_recovery_checkpoint();
+                self.request_recovery_checkpoint().await;
                 return Ok(false);
             }
             Err(err) => {
-                self.request_recovery_checkpoint();
+                self.request_recovery_checkpoint().await;
                 return Err(err.into());
             }
         }
@@ -636,7 +626,7 @@ impl FederationNodeRuntime {
                 .max_by_key(|barrier| barrier.requested_after_finalized_item_index)
                 .is_some();
             if !has_current_anchor_barrier {
-                self.request_recovery_checkpoint();
+                self.request_recovery_checkpoint().await;
                 return Ok(None);
             }
         }
@@ -900,7 +890,7 @@ impl FederationNodeRuntime {
             }
         }
         if should_promote && checkpoint.kind == FederationCheckpointKind::Recovery {
-            self.clear_recovery_checkpoint_request();
+            self.clear_recovery_checkpoint_request().await;
         }
         Ok(FederationCheckpointQuorumResponse {
             version: FEDERATION_REST_API_VERSION,
