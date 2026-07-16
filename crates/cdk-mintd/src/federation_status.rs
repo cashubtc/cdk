@@ -583,14 +583,9 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
         return Ok(());
     };
     for status in statuses.iter().skip(1) {
-        if status.peer_status.operation_count != first.peer_status.operation_count
-            || status.peer_status.aleph_bft_session != first.peer_status.aleph_bft_session
-            || status.peer_status.latest_order_digest != first.peer_status.latest_order_digest
-            || status.peer_status.application_digest != first.peer_status.application_digest
-            || status.peer_status.latest_audited_checkpoint_id
-                != first.peer_status.latest_audited_checkpoint_id
-            || status.peer_status.materialized_state_digest
-                != first.peer_status.materialized_state_digest
+        if !status
+            .peer_status
+            .has_same_committed_state(&first.peer_status)
         {
             bail!(
                 "federation status is not converged: member {} differs from member {} in operation height, AlephBFT session, order digest, application digest, or audited checkpoint state",
@@ -718,11 +713,11 @@ fn ensure_statuses_checkpoint_quorum(
                 operation_count
             );
         };
-        if quorum.checkpoint.journal_next_index < operation_count {
+        if quorum.checkpoint.frontier.journal.next_index < operation_count {
             bail!(
                 "federation member {} has a trusted checkpoint quorum for {} operations, below current operation count {}",
                 status.peer_status.member_id,
-                quorum.checkpoint.journal_next_index,
+                quorum.checkpoint.frontier.journal.next_index,
                 operation_count
             );
         }

@@ -251,20 +251,9 @@ fn checkpoint_matches_boundary(
     checkpoint: &FederationCheckpoint,
     boundary: &FederationCheckpointBoundary,
 ) -> bool {
-    checkpoint.journal_next_index == boundary.journal_next_index
-        && checkpoint.journal_order_digest == boundary.journal_order_digest
-        && checkpoint.finalized_next_item_index == boundary.finalized_next_item_index
-        && checkpoint.finalized_item_digest == boundary.finalized_item_digest
-        && checkpoint.application_digest == boundary.application_digest
-        && checkpoint.aleph_bft_session == boundary.aleph_bft_session
-        && checkpoint.next_unit_finalization_index == boundary.next_unit_finalization_index
-        && checkpoint.next_unit_index_by_member == boundary.next_unit_index_by_member
-}
-
-fn checkpoint_covers(current: &FederationCheckpoint, candidate: &FederationCheckpoint) -> bool {
-    current.scheduled_checkpoint_sequence >= candidate.scheduled_checkpoint_sequence
-        && current.journal_next_index >= candidate.journal_next_index
-        && current.finalized_next_item_index >= candidate.finalized_next_item_index
+    checkpoint
+        .committed_frontier()
+        .exactly_matches(&boundary.committed_frontier())
 }
 
 fn finalized_unit_recovery_mismatch(
@@ -1017,12 +1006,12 @@ impl FederationNodeRuntime {
         #[cfg(feature = "prometheus")]
         let catch_up_started_at = std::time::Instant::now();
         let public_config = runtime_config.public_config();
-        super::verify_checkpoint_quorum_with_metrics(
+        let verified_quorum = super::verify_checkpoint_quorum_with_metrics(
             quorum,
             public_config,
             runtime_config.member_id(),
         )?;
-        let checkpoint = &quorum.checkpoint;
+        let checkpoint = verified_quorum.checkpoint();
         response.validate_checkpoint_binding(checkpoint)?;
         let db = mint.localstore();
         let frontier = db.get_federation_checkpoint_frontier().await?;
@@ -1046,13 +1035,7 @@ impl FederationNodeRuntime {
             .await?;
 
         let frontier = db.get_federation_checkpoint_frontier().await?;
-        if frontier.journal_next_index != checkpoint.journal_next_index
-            || frontier.journal_order_digest != checkpoint.journal_order_digest
-            || frontier.finalized_next_item_index != checkpoint.finalized_next_item_index
-            || frontier.finalized_item_digest != checkpoint.finalized_item_digest
-            || frontier.application_next_index != checkpoint.journal_next_index
-            || frontier.application_digest != checkpoint.application_digest
-        {
+        if !frontier.exactly_matches_checkpoint(checkpoint) {
             return Err(FederationError::CheckpointInvalid {
                 reason: "durable catch-up frontiers do not equal the target checkpoint".to_string(),
             }
@@ -1067,7 +1050,8 @@ impl FederationNodeRuntime {
         #[cfg(feature = "prometheus")]
         let promotion_started_at = std::time::Instant::now();
         let mut tx = db.begin_transaction().await?;
-        tx.promote_verified_federation_checkpoint(quorum).await?;
+        tx.promote_verified_federation_checkpoint(&verified_quorum)
+            .await?;
         tx.commit().await?;
         #[cfg(feature = "prometheus")]
         {
@@ -2107,12 +2091,7 @@ impl FederationNodeRuntime {
         let checkpoint = &quorum.checkpoint;
         let checkpoint_id = checkpoint.id()?;
         if frontier.trusted_checkpoint_id != Some(checkpoint_id)
-            || frontier.journal_next_index != checkpoint.journal_next_index
-            || frontier.journal_order_digest != checkpoint.journal_order_digest
-            || frontier.finalized_next_item_index != checkpoint.finalized_next_item_index
-            || frontier.finalized_item_digest != checkpoint.finalized_item_digest
-            || frontier.application_next_index != checkpoint.journal_next_index
-            || frontier.application_digest != checkpoint.application_digest
+            || !frontier.exactly_matches_checkpoint(checkpoint)
         {
             return Err(FederationError::CheckpointInvalid {
                 reason: "operator audit requires the current durable frontier to equal the trusted checkpoint"
@@ -2324,8 +2303,10 @@ impl FederationNodeRuntime {
             None => None,
         };
         if latest_scheduled.is_some_and(|checkpoint| {
-            checkpoint.journal_next_index > boundary.journal_next_index
-                || checkpoint.finalized_next_item_index > boundary.finalized_next_item_index
+            boundary
+                .committed_frontier()
+                .ensure_covers(&checkpoint.committed_frontier())
+                .is_err()
         }) {
             return Ok(None);
         }
@@ -2351,8 +2332,10 @@ impl FederationNodeRuntime {
                 public_config,
                 runtime_config.member_id(),
             )?;
-            if quorum.checkpoint.journal_next_index > boundary.journal_next_index
-                || quorum.checkpoint.finalized_next_item_index > boundary.finalized_next_item_index
+            if boundary
+                .committed_frontier()
+                .ensure_covers(&quorum.checkpoint.committed_frontier())
+                .is_err()
             {
                 return Ok(None);
             }
@@ -2494,35 +2477,32 @@ impl FederationNodeRuntime {
         let runtime_config = mint
             .federation_config()
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
-        super::verify_checkpoint_quorum_with_metrics(
+        let verified_quorum = super::verify_checkpoint_quorum_with_metrics(
             quorum,
             runtime_config.public_config(),
             runtime_config.member_id(),
         )?;
-        let checkpoint_id = quorum.checkpoint.id()?;
+        let checkpoint = verified_quorum.checkpoint();
+        let checkpoint_id = checkpoint.id()?;
         let db = mint.localstore();
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_checkpoint_quorum(quorum).await?;
         tx.commit().await?;
         let frontier = db.get_federation_checkpoint_frontier().await?;
         let locally_reached = !frontier.materialized_state_audit_mismatch
-            && quorum.checkpoint.journal_next_index <= frontier.journal_next_index
-            && quorum.checkpoint.journal_next_index <= frontier.application_next_index
-            && quorum.checkpoint.finalized_next_item_index <= frontier.finalized_next_item_index;
+            && frontier.ensure_covers_checkpoint(checkpoint).is_ok();
         let should_promote = if locally_reached {
             match db.get_trusted_federation_checkpoint_quorum().await? {
                 Some(current) => {
-                    super::verify_checkpoint_quorum_with_metrics(
+                    let verified_current = super::verify_checkpoint_quorum_with_metrics(
                         &current,
                         runtime_config.public_config(),
                         runtime_config.member_id(),
                     )?;
-                    if checkpoint_covers(&current.checkpoint, &quorum.checkpoint) {
+                    if verified_current.checkpoint().covers(checkpoint) {
                         false
                     } else {
-                        quorum
-                            .checkpoint
-                            .validate_promotion_from(Some(&current.checkpoint))?;
+                        checkpoint.validate_promotion_from(Some(verified_current.checkpoint()))?;
                         true
                     }
                 }
@@ -2535,7 +2515,8 @@ impl FederationNodeRuntime {
             #[cfg(feature = "prometheus")]
             let promotion_started_at = std::time::Instant::now();
             let mut tx = db.begin_transaction().await?;
-            tx.promote_verified_federation_checkpoint(quorum).await?;
+            tx.promote_verified_federation_checkpoint(&verified_quorum)
+                .await?;
             tx.commit().await?;
             #[cfg(feature = "prometheus")]
             {
@@ -2552,8 +2533,8 @@ impl FederationNodeRuntime {
                 );
             }
         }
-        if should_promote && quorum.checkpoint.kind == FederationCheckpointKind::Recovery {
-            self.clear_recovery_checkpoint_request_if_current(&quorum.checkpoint)
+        if should_promote && checkpoint.kind == FederationCheckpointKind::Recovery {
+            self.clear_recovery_checkpoint_request_if_current(checkpoint)
                 .await?;
         }
         Ok(FederationCheckpointQuorumResponse {

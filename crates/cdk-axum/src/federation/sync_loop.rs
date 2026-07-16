@@ -363,19 +363,26 @@ async fn next_local_checkpoint_catch_up_target(
     let local_member = runtime_config.member_id();
     let db = state.mint.localstore();
     let current = db.get_trusted_federation_checkpoint_quorum().await?;
-    if let Some(current) = current.as_ref() {
-        super::verify_checkpoint_quorum_with_metrics(current, public_config, local_member)?;
-    }
-    let scheduled_sequence = current
+    let verified_current = current
         .as_ref()
-        .map_or(0, |quorum| quorum.checkpoint.scheduled_checkpoint_sequence);
+        .map(|current| {
+            super::verify_checkpoint_quorum_with_metrics(current, public_config, local_member)
+        })
+        .transpose()?;
+    let scheduled_sequence = verified_current.as_ref().map_or(0, |quorum| {
+        quorum.checkpoint().scheduled_checkpoint_sequence
+    });
     if let Some(next) = db
         .get_next_federation_scheduled_checkpoint_quorum(scheduled_sequence)
         .await?
     {
-        super::verify_checkpoint_quorum_with_metrics(&next, public_config, local_member)?;
-        next.checkpoint
-            .validate_promotion_from(current.as_ref().map(|quorum| &quorum.checkpoint))?;
+        let verified_next =
+            super::verify_checkpoint_quorum_with_metrics(&next, public_config, local_member)?;
+        verified_next.checkpoint().validate_promotion_from(
+            verified_current
+                .as_ref()
+                .map(|current| current.checkpoint()),
+        )?;
         return Ok(Some(next));
     }
     let Some(recovery) = db
@@ -384,13 +391,17 @@ async fn next_local_checkpoint_catch_up_target(
     else {
         return Ok(None);
     };
-    super::verify_checkpoint_quorum_with_metrics(&recovery, public_config, local_member)?;
-    recovery
-        .checkpoint
-        .validate_promotion_from(current.as_ref().map(|quorum| &quorum.checkpoint))?;
+    let verified_recovery =
+        super::verify_checkpoint_quorum_with_metrics(&recovery, public_config, local_member)?;
+    verified_recovery.checkpoint().validate_promotion_from(
+        verified_current
+            .as_ref()
+            .map(|current| current.checkpoint()),
+    )?;
     let frontier = db.get_federation_checkpoint_frontier().await?;
-    if recovery.checkpoint.journal_next_index <= frontier.journal_next_index
-        && recovery.checkpoint.finalized_next_item_index <= frontier.finalized_next_item_index
+    if frontier
+        .ensure_covers_checkpoint(verified_recovery.checkpoint())
+        .is_ok()
     {
         return Ok(None);
     }
@@ -498,7 +509,7 @@ async fn local_checkpoint_quorum_is_current(
             else {
                 return false;
             };
-            checkpoint_summary_covers(&local_summary, peer_quorum)
+            local_summary.covers(peer_quorum)
         }
         Ok(None) => false,
         Err(err) => {
@@ -515,7 +526,7 @@ async fn local_checkpoint_quorum_is_current(
     {
         Ok(Some(local_quorum)) => {
             FederationCheckpointSummary::from_checkpoint(&local_quorum.checkpoint)
-                .is_ok_and(|local_summary| checkpoint_summary_covers(&local_summary, peer_quorum))
+                .is_ok_and(|local_summary| local_summary.covers(peer_quorum))
         }
         Ok(None) => false,
         Err(err) => {
@@ -523,17 +534,6 @@ async fn local_checkpoint_quorum_is_current(
             false
         }
     }
-}
-
-fn checkpoint_summary_covers(
-    local: &FederationCheckpointSummary,
-    candidate: &FederationCheckpointSummary,
-) -> bool {
-    local.checkpoint_id == candidate.checkpoint_id
-        || local.scheduled_checkpoint_sequence > candidate.scheduled_checkpoint_sequence
-        || (local.scheduled_checkpoint_sequence == candidate.scheduled_checkpoint_sequence
-            && local.finalized_next_item_index >= candidate.finalized_next_item_index
-            && local.journal_next_index >= candidate.journal_next_index)
 }
 
 async fn maybe_capture_recovery_checkpoint(
@@ -803,7 +803,7 @@ pub(super) fn quorum_compatible_session(
         .iter()
         .filter(|candidate| {
             candidate.aleph_bft_session >= local_status.aleph_bft_session
-                && peer_status_has_same_state(local_status, candidate)
+                && local_status.has_same_committed_history_and_audit(candidate)
         })
         .map(|candidate| candidate.aleph_bft_session)
         .filter(|candidate_session| {
@@ -811,23 +811,12 @@ pub(super) fn quorum_compatible_session(
                 .iter()
                 .filter(|status| {
                     status.aleph_bft_session == *candidate_session
-                        && peer_status_has_same_state(local_status, status)
+                        && local_status.has_same_committed_history_and_audit(status)
                 })
                 .count();
             matching_peers.saturating_add(1) >= required
         })
         .max()
-}
-
-fn peer_status_has_same_state(local: &FederationPeerStatus, peer: &FederationPeerStatus) -> bool {
-    local.federation_id == peer.federation_id
-        && local.aleph_bft_next_item_index == peer.aleph_bft_next_item_index
-        && local.operation_count == peer.operation_count
-        && local.latest_index == peer.latest_index
-        && local.latest_order_digest == peer.latest_order_digest
-        && local.application_digest == peer.application_digest
-        && local.latest_audited_checkpoint_id == peer.latest_audited_checkpoint_id
-        && local.materialized_state_digest == peer.materialized_state_digest
 }
 
 #[cfg(feature = "prometheus")]
@@ -1090,7 +1079,7 @@ where
         let local_full_status = local_peer_status(state).await?;
         if !state.federation.live_session_active().await
             && peer_status.aleph_bft_session == local_full_status.aleph_bft_session
-            && peer_status_has_same_state(&local_full_status, &peer_status)
+            && local_full_status.has_same_committed_state(&peer_status)
             && peer_status.aleph_bft_next_item_index.unwrap_or(0) > 0
         {
             self.recover_aleph_bft_backup_from_member(

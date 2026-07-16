@@ -4772,9 +4772,13 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
         .begin_transaction()
         .await
         .expect("begin peer checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote peer recovery checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &quorum
+            .verify(&public_config)
+            .expect("verify peer checkpoint quorum"),
+    )
+    .await
+    .expect("promote peer recovery checkpoint");
     tx.commit().await.expect("commit peer recovery checkpoint");
     let mut tx = peer_state
         .mint
@@ -7531,9 +7535,13 @@ async fn federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows()
         .begin_transaction()
         .await
         .expect("begin checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &quorum
+            .verify(&public_config)
+            .expect("verify checkpoint quorum"),
+    )
+    .await
+    .expect("promote checkpoint");
     tx.commit().await.expect("commit checkpoint promotion");
 
     let (checkpoint_consensus, _) = crate::create_federation_runtime_state(&state.mint)
@@ -7699,9 +7707,13 @@ async fn assert_trusted_checkpoint_partial_tail_restart_recovers(
         .begin_transaction()
         .await
         .expect("begin trusted checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote trusted checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &quorum
+            .verify(&public_config)
+            .expect("verify trusted checkpoint quorum"),
+    )
+    .await
+    .expect("promote trusted checkpoint");
     tx.commit().await.expect("commit trusted checkpoint");
 
     let suffix_quote_ids = [QuoteId::new(), QuoteId::new()];
@@ -7904,9 +7916,13 @@ async fn assert_trusted_checkpoint_suffix_rejects_corruption(alter_consensus_evi
         .begin_transaction()
         .await
         .expect("begin corruption checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote corruption checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &quorum
+            .verify(&public_config)
+            .expect("verify corruption checkpoint quorum"),
+    )
+    .await
+    .expect("promote corruption checkpoint");
     tx.commit().await.expect("commit corruption checkpoint");
 
     let (journal_entry, finalized_items) = {
@@ -8041,9 +8057,13 @@ async fn trusted_checkpoint_startup_rejects_changed_terminal_result() {
         .begin_transaction()
         .await
         .expect("begin terminal-result checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote terminal-result checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &quorum
+            .verify(&public_config)
+            .expect("verify terminal-result checkpoint quorum"),
+    )
+    .await
+    .expect("promote terminal-result checkpoint");
     tx.commit()
         .await
         .expect("commit terminal-result checkpoint");
@@ -8117,9 +8137,13 @@ async fn trusted_checkpoint_restart_replays_rejection_and_later_operation() {
         .begin_transaction()
         .await
         .expect("begin rejection checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote rejection checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &quorum
+            .verify(&public_config)
+            .expect("verify rejection checkpoint quorum"),
+    )
+    .await
+    .expect("promote rejection checkpoint");
     tx.commit().await.expect("commit rejection checkpoint");
 
     let conflicting_envelope = config
@@ -8576,9 +8600,13 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
                 .begin_transaction()
                 .await
                 .expect("begin trusted checkpoint promotion");
-            tx.promote_verified_federation_checkpoint(&quorum)
-                .await
-                .expect("promote trusted checkpoint");
+            tx.promote_verified_federation_checkpoint(
+                &quorum
+                    .verify(&public_config)
+                    .expect("verify trusted checkpoint quorum"),
+            )
+            .await
+            .expect("promote trusted checkpoint");
             tx.commit().await.expect("commit trusted checkpoint");
             checkpoint
         }
@@ -8754,9 +8782,13 @@ async fn operator_checkpoint_audit_matches_exact_trusted_frontier() {
         .begin_transaction()
         .await
         .expect("begin checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &quorum
+            .verify(&public_config)
+            .expect("verify checkpoint quorum"),
+    )
+    .await
+    .expect("promote checkpoint");
     tx.commit().await.expect("commit checkpoint promotion");
 
     let audit = state
@@ -8801,9 +8833,13 @@ async fn operator_checkpoint_audit_latches_materialized_state_mismatch() {
         .begin_transaction()
         .await
         .expect("begin checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &quorum
+            .verify(&public_config)
+            .expect("verify checkpoint quorum"),
+    )
+    .await
+    .expect("promote checkpoint");
     tx.commit().await.expect("commit checkpoint promotion");
 
     let mut tx = db
@@ -9177,9 +9213,13 @@ async fn long_offline_member_recovers_from_one_quorum_holder_without_signer_work
         .begin_transaction()
         .await
         .expect("begin source checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote source checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &quorum
+            .verify(&public_config)
+            .expect("verify source checkpoint quorum"),
+    )
+    .await
+    .expect("promote source checkpoint");
     tx.commit().await.expect("commit source checkpoint");
     seed_synthetic_active_session_backup(&source, checkpoint.aleph_bft_session, 1, 16).await;
 
@@ -22497,9 +22537,13 @@ async fn build_synthetic_checkpoint_history(
         .begin_transaction()
         .await
         .expect("begin synthetic checkpoint promotion");
-    tx.promote_verified_federation_checkpoint(&quorum)
-        .await
-        .expect("promote synthetic checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &quorum
+            .verify(public_config)
+            .expect("verify synthetic checkpoint quorum"),
+    )
+    .await
+    .expect("promote synthetic checkpoint");
     tx.commit()
         .await
         .expect("commit synthetic checkpoint promotion");

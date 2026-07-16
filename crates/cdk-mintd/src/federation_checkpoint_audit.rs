@@ -54,8 +54,8 @@ pub(crate) async fn run_checkpoint_audit_command(
         "member {}: checkpoint={} journal_next_index={} finalized_next_item_index={} materialized_state_digest={} audit=matched",
         response.member_id,
         response.checkpoint.checkpoint_id,
-        response.checkpoint.journal_next_index,
-        response.checkpoint.finalized_next_item_index,
+        response.checkpoint.frontier.journal.next_index,
+        response.checkpoint.frontier.finalized.next_item_index,
         response.materialized_state_digest,
     );
     Ok(())

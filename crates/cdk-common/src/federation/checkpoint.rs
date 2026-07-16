@@ -313,6 +313,277 @@ impl Default for FederationCheckpointPolicy {
     }
 }
 
+/// Contiguous accepted-operation journal position and cumulative order digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationJournalFrontier {
+    /// First accepted-operation index not represented by the digest.
+    pub next_index: u64,
+    /// Cumulative accepted-operation order digest at `next_index`.
+    pub order_digest: FederationJournalDigest,
+}
+
+impl FederationJournalFrontier {
+    /// Return the empty journal frontier.
+    #[must_use]
+    pub fn genesis() -> Self {
+        Self {
+            next_index: 0,
+            order_digest: FederationJournalDigest::genesis(),
+        }
+    }
+
+    fn validate_shape(self) -> Result<()> {
+        if self.next_index == 0 && self.order_digest != FederationJournalDigest::genesis() {
+            return Err(checkpoint_invalid(
+                "empty journal cursor does not use the journal genesis digest",
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_covers(self, current: Self) -> Result<()> {
+        ensure_cursor_does_not_regress("journal next index", self.next_index, current.next_index)?;
+        if self.next_index == current.next_index && self.order_digest != current.order_digest {
+            return Err(checkpoint_invalid(
+                "journal digest changed at an unchanged cursor",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Contiguous AlephBFT finalized-item position and cumulative provenance digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationFinalizedFrontier {
+    /// First finalized-item index not represented by the digest.
+    pub next_item_index: u64,
+    /// Cumulative finalized-item digest at `next_item_index`.
+    pub item_digest: FederationFinalizedItemDigest,
+}
+
+impl FederationFinalizedFrontier {
+    /// Return the empty finalized-item frontier.
+    #[must_use]
+    pub fn genesis() -> Self {
+        Self {
+            next_item_index: 0,
+            item_digest: FederationFinalizedItemDigest::genesis(),
+        }
+    }
+
+    fn validate_shape(self) -> Result<()> {
+        if self.next_item_index == 0 && self.item_digest != FederationFinalizedItemDigest::genesis()
+        {
+            return Err(checkpoint_invalid(
+                "empty finalized-item cursor does not use the finalized-item genesis digest",
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_covers(self, current: Self) -> Result<()> {
+        ensure_cursor_does_not_regress(
+            "finalized next item index",
+            self.next_item_index,
+            current.next_item_index,
+        )?;
+        if self.next_item_index == current.next_item_index
+            && self.item_digest != current.item_digest
+        {
+            return Err(checkpoint_invalid(
+                "finalized-item digest changed at an unchanged cursor",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Contiguous terminal-application position and cumulative result digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationApplicationFrontier {
+    /// First accepted-operation index without a committed terminal result.
+    pub next_index: u64,
+    /// Cumulative terminal-application digest at `next_index`.
+    pub digest: FederationApplicationDigest,
+}
+
+impl FederationApplicationFrontier {
+    /// Return the empty terminal-application frontier.
+    #[must_use]
+    pub fn genesis() -> Self {
+        Self {
+            next_index: 0,
+            digest: FederationApplicationDigest::genesis(),
+        }
+    }
+
+    fn validate_shape(self) -> Result<()> {
+        if self.next_index == 0 && self.digest != FederationApplicationDigest::genesis() {
+            return Err(checkpoint_invalid(
+                "empty application cursor does not use the application genesis digest",
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_covers(self, current: Self) -> Result<()> {
+        ensure_cursor_does_not_regress(
+            "application next index",
+            self.next_index,
+            current.next_index,
+        )?;
+        if self.next_index == current.next_index && self.digest != current.digest {
+            return Err(checkpoint_invalid(
+                "application digest changed at an unchanged cursor",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// AlephBFT session and complete-unit recovery position committed by a checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationAlephBftRecoveryCursor {
+    /// Session containing the committed complete-unit boundary.
+    pub session: u64,
+    /// Next finalized-unit index expected in `session`.
+    pub next_unit_finalization_index: u64,
+    /// Next unit index expected from every configured member in `session`.
+    pub next_unit_index_by_member: BTreeMap<MemberId, u64>,
+}
+
+impl FederationAlephBftRecoveryCursor {
+    fn validate_roster(&self, config: &FederationConfig) -> Result<()> {
+        let expected_members = config.members.keys().copied().collect::<BTreeSet<_>>();
+        let found_members = self
+            .next_unit_index_by_member
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if found_members != expected_members {
+            return Err(checkpoint_invalid(
+                "next-unit watermarks do not match the configured federation roster",
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_covers(&self, current: &Self) -> Result<()> {
+        if self.session < current.session {
+            return Err(checkpoint_invalid("AlephBFT session regressed"));
+        }
+        if self.session != current.session {
+            return Ok(());
+        }
+        ensure_cursor_does_not_regress(
+            "unit finalization index",
+            self.next_unit_finalization_index,
+            current.next_unit_finalization_index,
+        )?;
+        for (member_id, current_index) in &current.next_unit_index_by_member {
+            let Some(candidate_index) = self.next_unit_index_by_member.get(member_id) else {
+                return Err(checkpoint_invalid(
+                    "candidate checkpoint omitted a member unit watermark",
+                ));
+            };
+            ensure_cursor_does_not_regress("member unit index", *candidate_index, *current_index)?;
+        }
+        Ok(())
+    }
+}
+
+/// Canonical committed federation recovery frontier.
+///
+/// Existing checkpoint, boundary, durable, status, and transport records keep
+/// their explicit serialized fields and project them into this type. This keeps
+/// checkpoint IDs and database encodings stable while centralizing equality,
+/// coverage, roster, complete-unit, and terminality rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationCommittedFrontier {
+    /// Accepted-operation journal position.
+    pub journal: FederationJournalFrontier,
+    /// AlephBFT finalized-item position.
+    pub finalized: FederationFinalizedFrontier,
+    /// Terminal-application position.
+    pub application: FederationApplicationFrontier,
+    /// AlephBFT complete-unit recovery position.
+    pub aleph_bft: FederationAlephBftRecoveryCursor,
+}
+
+impl FederationCommittedFrontier {
+    /// Validate cursor relationships and genesis digest bindings.
+    pub fn validate_shape(&self) -> Result<()> {
+        self.journal.validate_shape()?;
+        self.finalized.validate_shape()?;
+        self.application.validate_shape()?;
+        if self.application.next_index > self.journal.next_index {
+            return Err(checkpoint_invalid(
+                "application cursor is ahead of the journal cursor",
+            ));
+        }
+        if self.journal.next_index > self.finalized.next_item_index {
+            return Err(checkpoint_invalid(
+                "accepted-operation cursor is ahead of the finalized-item cursor",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return whether every accepted operation has a terminal application result.
+    #[must_use]
+    pub fn is_fully_terminal(&self) -> bool {
+        self.application.next_index == self.journal.next_index
+    }
+
+    /// Validate this as a terminal complete-unit frontier for the exact roster.
+    pub fn validate_complete_unit(&self, config: &FederationConfig) -> Result<()> {
+        self.validate_complete_unit_shape()?;
+        config.validate()?;
+        self.aleph_bft.validate_roster(config)
+    }
+
+    fn validate_complete_unit_shape(&self) -> Result<()> {
+        self.validate_shape()?;
+        if !self.is_fully_terminal() {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary has non-terminal accepted operations",
+            ));
+        }
+        if self.finalized.next_item_index == 0 || self.aleph_bft.next_unit_finalization_index == 0 {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary does not contain a complete finalized unit",
+            ));
+        }
+        if self.aleph_bft.next_unit_index_by_member.is_empty() {
+            return Err(checkpoint_invalid(
+                "checkpoint boundary has no member unit watermarks",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate that this frontier monotonically covers `current`.
+    pub fn ensure_covers(&self, current: &Self) -> Result<()> {
+        self.validate_shape()?;
+        current.validate_shape()?;
+        self.journal.ensure_covers(current.journal)?;
+        self.finalized.ensure_covers(current.finalized)?;
+        self.application.ensure_covers(current.application)?;
+        self.aleph_bft.ensure_covers(&current.aleph_bft)
+    }
+
+    /// Return whether all four committed progress dimensions match exactly.
+    #[must_use]
+    pub fn exactly_matches(&self, other: &Self) -> bool {
+        self == other
+    }
+}
+
 /// Scalar durable checkpoint metadata used by bounded startup validation.
 ///
 /// The three rolling frontiers advance only through contiguous persisted rows.
@@ -360,6 +631,127 @@ impl FederationCheckpointFrontier {
             materialized_state_audit_mismatch: false,
         }
     }
+
+    /// Project the durable accepted-operation journal position.
+    #[must_use]
+    pub const fn journal_frontier(&self) -> FederationJournalFrontier {
+        FederationJournalFrontier {
+            next_index: self.journal_next_index,
+            order_digest: self.journal_order_digest,
+        }
+    }
+
+    /// Project the durable finalized-item position.
+    #[must_use]
+    pub const fn finalized_frontier(&self) -> FederationFinalizedFrontier {
+        FederationFinalizedFrontier {
+            next_item_index: self.finalized_next_item_index,
+            item_digest: self.finalized_item_digest,
+        }
+    }
+
+    /// Project the durable terminal-application position.
+    #[must_use]
+    pub const fn application_frontier(&self) -> FederationApplicationFrontier {
+        FederationApplicationFrontier {
+            next_index: self.application_next_index,
+            digest: self.application_digest,
+        }
+    }
+
+    /// Project durable history with the separately persisted AlephBFT recovery cursor.
+    pub fn committed_frontier(
+        &self,
+        aleph_bft: FederationAlephBftRecoveryCursor,
+    ) -> Result<FederationCommittedFrontier> {
+        let frontier = FederationCommittedFrontier {
+            journal: self.journal_frontier(),
+            finalized: self.finalized_frontier(),
+            application: self.application_frontier(),
+            aleph_bft,
+        };
+        frontier.validate_shape()?;
+        Ok(frontier)
+    }
+
+    /// Validate durable cursor relationships and genesis digest bindings.
+    pub fn validate_shape(&self) -> Result<()> {
+        self.journal_frontier().validate_shape()?;
+        self.finalized_frontier().validate_shape()?;
+        self.application_frontier().validate_shape()?;
+        if self.application_next_index > self.journal_next_index {
+            return Err(checkpoint_invalid(
+                "application cursor is ahead of the journal cursor",
+            ));
+        }
+        if self.journal_next_index > self.finalized_next_item_index {
+            return Err(checkpoint_invalid(
+                "accepted-operation cursor is ahead of the finalized-item cursor",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return whether the durable application cursor has reached the journal cursor.
+    #[must_use]
+    pub fn is_fully_terminal(&self) -> bool {
+        self.application_next_index == self.journal_next_index
+    }
+
+    /// Validate that durable history monotonically covers a checkpoint target.
+    pub fn ensure_covers_checkpoint(&self, checkpoint: &FederationCheckpoint) -> Result<()> {
+        self.validate_shape()?;
+        let target = checkpoint.committed_frontier();
+        self.journal_frontier().ensure_covers(target.journal)?;
+        self.finalized_frontier().ensure_covers(target.finalized)?;
+        self.application_frontier()
+            .ensure_covers(target.application)
+    }
+
+    /// Validate only that durable cursors cover a checkpoint position.
+    ///
+    /// Database promotion uses this before loading the historical digests at
+    /// the checkpoint's earlier cursor. It does not establish digest trust.
+    pub fn ensure_covers_checkpoint_position(
+        &self,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<()> {
+        self.validate_shape()?;
+        if checkpoint.journal_next_index > self.journal_next_index
+            || checkpoint.journal_next_index > self.application_next_index
+            || checkpoint.finalized_next_item_index > self.finalized_next_item_index
+        {
+            return Err(checkpoint_invalid(
+                "checkpoint is ahead of durable local frontiers",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return whether durable cursors are exactly at a checkpoint position.
+    #[must_use]
+    pub fn is_at_checkpoint_position(&self, checkpoint: &FederationCheckpoint) -> bool {
+        self.journal_next_index == checkpoint.journal_next_index
+            && self.application_next_index == checkpoint.journal_next_index
+            && self.finalized_next_item_index == checkpoint.finalized_next_item_index
+    }
+
+    /// Return whether all durable history dimensions equal a checkpoint target exactly.
+    #[must_use]
+    pub fn exactly_matches_checkpoint(&self, checkpoint: &FederationCheckpoint) -> bool {
+        let target = checkpoint.committed_frontier();
+        self.journal_frontier() == target.journal
+            && self.finalized_frontier() == target.finalized
+            && self.application_frontier() == target.application
+    }
+
+    /// Return whether durable ordered history equals another durable frontier.
+    #[must_use]
+    pub fn ordered_history_matches(&self, other: &Self) -> bool {
+        self.journal_frontier() == other.journal_frontier()
+            && self.finalized_frontier() == other.finalized_frontier()
+            && self.trusted_checkpoint_id == other.trusted_checkpoint_id
+    }
 }
 
 /// Exact durable frontier captured after one complete finalized unit is terminally applied.
@@ -389,6 +781,30 @@ pub struct FederationCheckpointBoundary {
 }
 
 impl FederationCheckpointBoundary {
+    /// Project this boundary into the canonical committed frontier.
+    #[must_use]
+    pub fn committed_frontier(&self) -> FederationCommittedFrontier {
+        FederationCommittedFrontier {
+            journal: FederationJournalFrontier {
+                next_index: self.journal_next_index,
+                order_digest: self.journal_order_digest,
+            },
+            finalized: FederationFinalizedFrontier {
+                next_item_index: self.finalized_next_item_index,
+                item_digest: self.finalized_item_digest,
+            },
+            application: FederationApplicationFrontier {
+                next_index: self.journal_next_index,
+                digest: self.application_digest,
+            },
+            aleph_bft: FederationAlephBftRecoveryCursor {
+                session: self.aleph_bft_session,
+                next_unit_finalization_index: self.next_unit_finalization_index,
+                next_unit_index_by_member: self.next_unit_index_by_member.clone(),
+            },
+        }
+    }
+
     /// Capture a terminal durable frontier at an explicitly completed unit boundary.
     pub fn from_complete_unit(
         frontier: &FederationCheckpointFrontier,
@@ -401,28 +817,13 @@ impl FederationCheckpointBoundary {
                 "materialized-state audit mismatch is latched",
             ));
         }
-        if frontier.application_next_index != frontier.journal_next_index {
+        frontier.validate_shape()?;
+        if !frontier.is_fully_terminal() {
             return Err(checkpoint_invalid(
                 "checkpoint boundary has non-terminal accepted operations",
             ));
         }
-        if frontier.journal_next_index > frontier.finalized_next_item_index {
-            return Err(checkpoint_invalid(
-                "checkpoint boundary journal is ahead of finalized items",
-            ));
-        }
-        if frontier.finalized_next_item_index == 0 || next_unit_finalization_index == 0 {
-            return Err(checkpoint_invalid(
-                "checkpoint boundary does not contain a complete finalized unit",
-            ));
-        }
-        if next_unit_index_by_member.is_empty() {
-            return Err(checkpoint_invalid(
-                "checkpoint boundary has no member unit watermarks",
-            ));
-        }
-
-        Ok(Self {
+        let boundary = Self {
             journal_next_index: frontier.journal_next_index,
             journal_order_digest: frontier.journal_order_digest,
             finalized_next_item_index: frontier.finalized_next_item_index,
@@ -431,34 +832,16 @@ impl FederationCheckpointBoundary {
             aleph_bft_session,
             next_unit_finalization_index,
             next_unit_index_by_member,
-        })
+        };
+        boundary
+            .committed_frontier()
+            .validate_complete_unit_shape()?;
+        Ok(boundary)
     }
 
     /// Validate a transported complete-unit boundary against the configured roster.
     pub fn validate_against_config(&self, config: &FederationConfig) -> Result<()> {
-        config.validate()?;
-        if self.journal_next_index > self.finalized_next_item_index {
-            return Err(checkpoint_invalid(
-                "checkpoint boundary journal is ahead of finalized items",
-            ));
-        }
-        if self.finalized_next_item_index == 0 || self.next_unit_finalization_index == 0 {
-            return Err(checkpoint_invalid(
-                "checkpoint boundary does not contain a complete finalized unit",
-            ));
-        }
-        let expected_members = config.members.keys().copied().collect::<BTreeSet<_>>();
-        let found_members = self
-            .next_unit_index_by_member
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        if found_members != expected_members {
-            return Err(checkpoint_invalid(
-                "checkpoint boundary watermarks do not match the configured roster",
-            ));
-        }
-        Ok(())
+        self.committed_frontier().validate_complete_unit(config)
     }
 
     /// Return whether this complete boundary has crossed either interval after the anchor.
@@ -654,6 +1037,40 @@ pub struct FederationCheckpoint {
 }
 
 impl FederationCheckpoint {
+    /// Project the signed payload into the canonical committed frontier.
+    #[must_use]
+    pub fn committed_frontier(&self) -> FederationCommittedFrontier {
+        FederationCommittedFrontier {
+            journal: FederationJournalFrontier {
+                next_index: self.journal_next_index,
+                order_digest: self.journal_order_digest,
+            },
+            finalized: FederationFinalizedFrontier {
+                next_item_index: self.finalized_next_item_index,
+                item_digest: self.finalized_item_digest,
+            },
+            application: FederationApplicationFrontier {
+                next_index: self.journal_next_index,
+                digest: self.application_digest,
+            },
+            aleph_bft: FederationAlephBftRecoveryCursor {
+                session: self.aleph_bft_session,
+                next_unit_finalization_index: self.next_unit_finalization_index,
+                next_unit_index_by_member: self.next_unit_index_by_member.clone(),
+            },
+        }
+    }
+
+    /// Return whether this checkpoint makes the candidate proof redundant.
+    #[must_use]
+    pub fn covers(&self, candidate: &Self) -> bool {
+        self.scheduled_checkpoint_sequence >= candidate.scheduled_checkpoint_sequence
+            && self
+                .committed_frontier()
+                .ensure_covers(&candidate.committed_frontier())
+                .is_ok()
+    }
+
     /// Return canonical JSON bytes for the signed payload.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         self.validate_shape()?;
@@ -682,19 +1099,7 @@ impl FederationCheckpoint {
             return Err(checkpoint_invalid("federation config digest mismatch"));
         }
 
-        let expected_members = config.members.keys().copied().collect::<BTreeSet<_>>();
-        let found_members = self
-            .next_unit_index_by_member
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        if found_members != expected_members {
-            return Err(checkpoint_invalid(
-                "next-unit watermarks do not match the configured federation roster",
-            ));
-        }
-
-        Ok(())
+        self.committed_frontier().aleph_bft.validate_roster(config)
     }
 
     /// Validate monotonic promotion from an already trusted checkpoint.
@@ -720,60 +1125,11 @@ impl FederationCheckpoint {
             return Ok(());
         }
 
-        ensure_cursor_does_not_regress(
-            "journal next index",
-            self.journal_next_index,
-            current.journal_next_index,
-        )?;
-        ensure_cursor_does_not_regress(
-            "finalized next item index",
-            self.finalized_next_item_index,
-            current.finalized_next_item_index,
-        )?;
-        if self.aleph_bft_session < current.aleph_bft_session {
-            return Err(checkpoint_invalid("AlephBFT session regressed"));
-        }
-        if self.aleph_bft_session == current.aleph_bft_session {
-            ensure_cursor_does_not_regress(
-                "unit finalization index",
-                self.next_unit_finalization_index,
-                current.next_unit_finalization_index,
-            )?;
-            for (member_id, current_index) in &current.next_unit_index_by_member {
-                let Some(candidate_index) = self.next_unit_index_by_member.get(member_id) else {
-                    return Err(checkpoint_invalid(
-                        "candidate checkpoint omitted a member unit watermark",
-                    ));
-                };
-                ensure_cursor_does_not_regress(
-                    "member unit index",
-                    *candidate_index,
-                    *current_index,
-                )?;
-            }
-        }
-
-        if self.journal_next_index == current.journal_next_index {
-            if self.journal_order_digest != current.journal_order_digest {
-                return Err(checkpoint_invalid(
-                    "journal digest changed at an unchanged cursor",
-                ));
-            }
-            if self.application_digest != current.application_digest {
-                return Err(checkpoint_invalid(
-                    "application digest changed at an unchanged cursor",
-                ));
-            }
-        }
-        if self.finalized_next_item_index == current.finalized_next_item_index
-            && self.finalized_item_digest != current.finalized_item_digest
-        {
-            return Err(checkpoint_invalid(
-                "finalized-item digest changed at an unchanged cursor",
-            ));
-        }
-        if self.journal_next_index == current.journal_next_index
-            && self.finalized_next_item_index == current.finalized_next_item_index
+        let candidate_frontier = self.committed_frontier();
+        let current_frontier = current.committed_frontier();
+        candidate_frontier.ensure_covers(&current_frontier)?;
+        if candidate_frontier.journal == current_frontier.journal
+            && candidate_frontier.finalized == current_frontier.finalized
             && self.materialized_state_digest != current.materialized_state_digest
         {
             return Err(checkpoint_invalid(
@@ -845,37 +1201,7 @@ impl FederationCheckpoint {
                 }
             }
         }
-        if self.journal_next_index > self.finalized_next_item_index {
-            return Err(checkpoint_invalid(
-                "accepted-operation cursor is ahead of the finalized-item cursor",
-            ));
-        }
-        if self.journal_next_index == 0 {
-            if self.journal_order_digest != FederationJournalDigest::genesis() {
-                return Err(checkpoint_invalid(
-                    "empty journal cursor does not use the journal genesis digest",
-                ));
-            }
-            if self.application_digest != FederationApplicationDigest::genesis() {
-                return Err(checkpoint_invalid(
-                    "empty application cursor does not use the application genesis digest",
-                ));
-            }
-        }
-        if self.finalized_next_item_index == 0
-            && self.finalized_item_digest != FederationFinalizedItemDigest::genesis()
-        {
-            return Err(checkpoint_invalid(
-                "empty finalized-item cursor does not use the finalized-item genesis digest",
-            ));
-        }
-        if self.next_unit_index_by_member.is_empty() {
-            return Err(checkpoint_invalid(
-                "checkpoint must include member unit watermarks",
-            ));
-        }
-
-        Ok(())
+        self.committed_frontier().validate_complete_unit_shape()
     }
 }
 
@@ -1093,8 +1419,8 @@ impl FederationCheckpointQuorum {
         }
     }
 
-    /// Verify the bounded proof against the configured consensus threshold.
-    pub fn verify(&self, config: &FederationConfig) -> Result<BTreeSet<MemberId>> {
+    /// Verify the bounded proof and return authority that cannot be constructed unchecked.
+    pub fn verify(&self, config: &FederationConfig) -> Result<VerifiedFederationCheckpointQuorum> {
         self.checkpoint.validate_against_config(config)?;
         if self.signatures.len() > config.members.len() {
             return Err(checkpoint_invalid(
@@ -1123,7 +1449,61 @@ impl FederationCheckpointQuorum {
             return Err(FederationError::CheckpointQuorumNotReached { required, found });
         }
 
-        Ok(signers)
+        Ok(VerifiedFederationCheckpointQuorum {
+            quorum: self.clone(),
+            signers,
+        })
+    }
+}
+
+/// Cryptographically verified authority to trust or promote one checkpoint quorum.
+///
+/// The raw [`FederationCheckpointQuorum`] remains the serialized transport and
+/// storage type. This wrapper has private fields, does not implement
+/// deserialization, and is created only by [`FederationCheckpointQuorum::verify`].
+///
+/// ```compile_fail
+/// use std::collections::BTreeSet;
+/// use cdk_common::federation::{
+///     FederationCheckpointQuorum, VerifiedFederationCheckpointQuorum,
+/// };
+///
+/// fn bypass(raw: FederationCheckpointQuorum) -> VerifiedFederationCheckpointQuorum {
+///     VerifiedFederationCheckpointQuorum {
+///         quorum: raw,
+///         signers: BTreeSet::new(),
+///     }
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedFederationCheckpointQuorum {
+    quorum: FederationCheckpointQuorum,
+    signers: BTreeSet<MemberId>,
+}
+
+impl VerifiedFederationCheckpointQuorum {
+    /// Return the verified raw proof for persistence or transport.
+    #[must_use]
+    pub const fn as_quorum(&self) -> &FederationCheckpointQuorum {
+        &self.quorum
+    }
+
+    /// Return the verified checkpoint payload.
+    #[must_use]
+    pub const fn checkpoint(&self) -> &FederationCheckpoint {
+        &self.quorum.checkpoint
+    }
+
+    /// Return the distinct configured signers that formed the verified threshold.
+    #[must_use]
+    pub const fn signers(&self) -> &BTreeSet<MemberId> {
+        &self.signers
+    }
+
+    /// Consume the authority wrapper and return its raw proof.
+    #[must_use]
+    pub fn into_quorum(self) -> FederationCheckpointQuorum {
+        self.quorum
     }
 }
 
@@ -1358,6 +1738,110 @@ mod tests {
     }
 
     #[test]
+    fn committed_frontier_centralizes_exact_coverage_and_complete_unit_rules() {
+        let (config, _) = configs();
+        let checkpoint = checkpoint(&config);
+        let base = checkpoint.committed_frontier();
+        assert!(base.exactly_matches(&base));
+        base.ensure_covers(&base).expect("reflexive coverage");
+        base.validate_complete_unit(&config)
+            .expect("checkpoint complete-unit frontier");
+
+        let boundary = FederationCheckpointBoundary {
+            journal_next_index: checkpoint.journal_next_index,
+            journal_order_digest: checkpoint.journal_order_digest,
+            finalized_next_item_index: checkpoint.finalized_next_item_index,
+            finalized_item_digest: checkpoint.finalized_item_digest,
+            application_digest: checkpoint.application_digest,
+            aleph_bft_session: checkpoint.aleph_bft_session,
+            next_unit_finalization_index: checkpoint.next_unit_finalization_index,
+            next_unit_index_by_member: checkpoint.next_unit_index_by_member.clone(),
+        };
+        assert!(base.exactly_matches(&boundary.committed_frontier()));
+
+        let mut advanced = base.clone();
+        advanced.journal.next_index += 1;
+        advanced.journal.order_digest = FederationJournalDigest::from_bytes([21; 32]);
+        advanced.finalized.next_item_index += 1;
+        advanced.finalized.item_digest = FederationFinalizedItemDigest::from_bytes([22; 32]);
+        advanced.application.next_index += 1;
+        advanced.application.digest = FederationApplicationDigest::from_bytes([23; 32]);
+        advanced.aleph_bft.next_unit_finalization_index += 1;
+        for unit_index in advanced.aleph_bft.next_unit_index_by_member.values_mut() {
+            *unit_index += 1;
+        }
+        advanced.ensure_covers(&base).expect("monotonic coverage");
+        assert!(base.ensure_covers(&advanced).is_err());
+
+        for changed in [
+            {
+                let mut changed = base.clone();
+                changed.journal.order_digest = FederationJournalDigest::from_bytes([31; 32]);
+                changed
+            },
+            {
+                let mut changed = base.clone();
+                changed.finalized.item_digest = FederationFinalizedItemDigest::from_bytes([32; 32]);
+                changed
+            },
+            {
+                let mut changed = base.clone();
+                changed.application.digest = FederationApplicationDigest::from_bytes([33; 32]);
+                changed
+            },
+        ] {
+            assert!(changed.ensure_covers(&base).is_err());
+        }
+
+        let mut application_lag = base.clone();
+        application_lag.application.next_index -= 1;
+        assert!(!application_lag.is_fully_terminal());
+        assert!(application_lag.validate_complete_unit(&config).is_err());
+
+        let mut incomplete_roster = base;
+        incomplete_roster
+            .aleph_bft
+            .next_unit_index_by_member
+            .remove(&member_id(1));
+        assert!(incomplete_roster.validate_complete_unit(&config).is_err());
+    }
+
+    #[test]
+    fn committed_frontier_serialization_and_checkpoint_projection_round_trip() {
+        let (config, _) = configs();
+        let checkpoint = checkpoint(&config);
+        let checkpoint_id = checkpoint.id().expect("checkpoint id");
+        let frontier = checkpoint.committed_frontier();
+        let encoded = serde_json::to_vec(&frontier).expect("serialize committed frontier");
+        let decoded: FederationCommittedFrontier =
+            serde_json::from_slice(&encoded).expect("deserialize committed frontier");
+        assert_eq!(decoded, frontier);
+
+        let checkpoint_encoded = serde_json::to_vec(&checkpoint).expect("serialize checkpoint");
+        let checkpoint_decoded: FederationCheckpoint =
+            serde_json::from_slice(&checkpoint_encoded).expect("deserialize checkpoint");
+        assert_eq!(
+            checkpoint_decoded.id().expect("decoded checkpoint id"),
+            checkpoint_id
+        );
+        assert_eq!(checkpoint_decoded.committed_frontier(), frontier);
+
+        let summary = crate::federation::FederationCheckpointSummary::from_checkpoint(&checkpoint)
+            .expect("checkpoint summary");
+        let summary_encoded = serde_json::to_vec(&summary).expect("serialize checkpoint summary");
+        let summary_decoded: crate::federation::FederationCheckpointSummary =
+            serde_json::from_slice(&summary_encoded).expect("deserialize checkpoint summary");
+        assert_eq!(summary_decoded, summary);
+        assert!(summary.covers(&summary_decoded));
+
+        let mut conflicting_summary = summary_decoded;
+        conflicting_summary.checkpoint_id = FederationCheckpointId::from_bytes([99; 32]);
+        conflicting_summary.frontier.journal.order_digest =
+            FederationJournalDigest::from_bytes([98; 32]);
+        assert!(!summary.covers(&conflicting_summary));
+    }
+
+    #[test]
     fn checkpoint_id_and_rolling_digests_have_fixed_vectors() {
         let (config, _) = configs();
         let checkpoint = checkpoint(&config);
@@ -1566,7 +2050,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let quorum = FederationCheckpointQuorum::new(checkpoint.clone(), signatures.clone());
-        assert_eq!(quorum.verify(&config).expect("quorum").len(), 3);
+        assert_eq!(quorum.verify(&config).expect("quorum").signers().len(), 3);
 
         let insufficient =
             FederationCheckpointQuorum::new(checkpoint.clone(), signatures[..2].to_vec());

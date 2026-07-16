@@ -644,7 +644,7 @@ the already-terminal benchmark suffix.
 
 ## Milestone 2: Canonical frontier and verified checkpoint types
 
-Status: not started
+Status: complete
 
 ### Objective
 
@@ -654,47 +654,102 @@ authority.
 
 ### Checklist
 
-- [ ] Inventory every duplicated cursor/digest grouping and every handwritten
+- [x] Inventory every duplicated cursor/digest grouping and every handwritten
       `matches`, `covers`, or monotonicity comparison.
-- [ ] Introduce the canonical committed-frontier object and focused journal,
+- [x] Introduce the canonical committed-frontier object and focused journal,
       finalized, application, and AlephBFT component cursors.
-- [ ] Embed or losslessly project that object in checkpoint, boundary, durable
+- [x] Embed or losslessly project that object in checkpoint, boundary, durable
       metadata, summary, status, and catch-up binding types.
-- [ ] Move exact equality, coverage, non-regression, complete-unit, roster
+- [x] Move exact equality, coverage, non-regression, complete-unit, roster
       watermark, and fully-terminal validation onto the owning types.
-- [ ] Introduce a verified checkpoint/quorum wrapper constructible only after
+- [x] Introduce a verified checkpoint/quorum wrapper constructible only after
       version, federation, config digest, lineage, signature, distinct-signer,
       and threshold validation.
-- [ ] Change promotion and recovery APIs to require the verified wrapper where
+- [x] Change promotion and recovery APIs to require the verified wrapper where
       practical.
-- [ ] Remove manual partial comparisons and duplicated validation helpers after
+- [x] Remove manual partial comparisons and duplicated validation helpers after
       callers migrate.
-- [ ] Keep serialization explicit and stable within the cut-through protocol;
+- [x] Keep serialization explicit and stable within the cut-through protocol;
       do not expose private wrapper invariants through unchecked constructors.
-- [ ] Update SQLite and PostgreSQL mappings together if the canonical object
+- [x] Update SQLite and PostgreSQL mappings together if the canonical object
       changes stored columns or serialization.
 
 ### Exit tests
 
-- [ ] Compile-time API tests or module privacy prevent constructing a verified
+- [x] Compile-time API tests or module privacy prevent constructing a verified
       checkpoint without quorum verification.
-- [ ] Property tests cover reflexive exact matching, monotonic coverage,
+- [x] Property tests cover reflexive exact matching, monotonic coverage,
       rollback rejection, changed-digest rejection at equal cursors, scheduled
       lineage, recovery anchoring, and roster watermark equality.
-- [ ] Serialization round trips preserve checkpoint IDs and canonical bytes.
-- [ ] Existing valid checkpoint fixtures retain their intended semantic fields;
+- [x] Serialization round trips preserve checkpoint IDs and canonical bytes.
+- [x] Existing valid checkpoint fixtures retain their intended semantic fields;
       obsolete experimental fixtures are regenerated rather than adapted.
-- [ ] No production caller manually compares a subset of canonical frontier
+- [x] No production caller manually compares a subset of canonical frontier
       fields to decide trust or readiness.
 
 ### Progress notes
 
-Record final type names, field ownership, serialization decisions, and removed
-helpers here.
+`FederationCommittedFrontier` now owns the journal, finalized-item,
+terminal-application, and AlephBFT recovery dimensions through
+`FederationJournalFrontier`, `FederationFinalizedFrontier`,
+`FederationApplicationFrontier`, and `FederationAlephBftRecoveryCursor`.
+It owns shape, full terminality, complete-unit, exact-roster, exact-match, and
+monotonic-coverage rules. `FederationCheckpoint`,
+`FederationCheckpointBoundary`, and the scalar durable
+`FederationCheckpointFrontier` expose lossless projections rather than
+duplicating those decisions. Durable metadata also owns the narrower
+checkpoint-position operation required before a database loads historical
+digests. Peer committed-state comparison moved onto `FederationPeerStatus`.
+
+Checkpoint summaries now carry the exact canonical committed frontier instead
+of two unbound cursor scalars. This is a cut-through private REST shape change;
+there is no compatibility adapter. Signed checkpoint JSON itself and the SQL
+checkpoint/frontier columns are unchanged, so canonical checkpoint bytes,
+fixed checkpoint IDs, and existing database records retain their semantics.
+SQLite and PostgreSQL needed only the shared promotion API update, not a schema
+or mapping migration.
+
+`FederationCheckpointQuorum` remains the raw bounded transport/storage proof.
+Its `verify` method now returns `VerifiedFederationCheckpointQuorum`, whose
+fields are private and which deliberately has no deserializer or unchecked
+constructor. Proof verification establishes payload version and shape,
+federation/config binding, exact roster, signature validity, signer
+distinctness, and threshold. The database promotion API accepts only this
+wrapper and validates promotion lineage against the transactionally locked
+current checkpoint, avoiding a check/use race. Startup and catch-up recovery
+take their checkpoint reference from the verified wrapper before making trust
+decisions. The old `checkpoint_covers`, `checkpoint_summary_covers`, and
+handwritten checkpoint/boundary and durable/checkpoint equality logic were
+removed or reduced to canonical projections.
+
+Verification completed locally:
+
+- `cargo check --workspace --all-targets` passed;
+- `cargo test -p cdk-common --features federation checkpoint --lib` passed 17
+  tests, including committed-frontier property checks, fixed checkpoint vectors,
+  lineage, roster, quorum, and serialization tests;
+- `cargo test -p cdk-common --features federation --doc` passed the external
+  compile-fail test proving the verified wrapper cannot be constructed;
+- `cdk-axum` checkpoint (20 passed, 2 ignored), catch-up (22 passed, 1
+  ignored), startup (6 passed), and quorum/session (7 passed) filters passed;
+- targeted `cdk-mintd` checkpoint-status guards passed 6 tests;
+- SQLite and disposable-local PostgreSQL checkpoint persistence passed, and
+  PostgreSQL was stopped afterward;
+- federation-disabled `cdk-axum` check, formatting, and diff checks passed;
+- strict library Clippy passed for `cdk-common` and `cdk-sql-common`.
+
+The strict `cdk-common` test-target Clippy command remains blocked by two
+pre-existing test lints, and strict `cdk-axum` library Clippy remains blocked by
+the same 25 pre-existing findings recorded in milestone 1; neither reported a
+new canonical-frontier finding. The full `cdk-mintd` library run reached 207
+passes and the same six unrelated existing failures: two status tests whose
+assertions already disagree with their unchanged single-member/error-message
+logic, and four trusted-dealer setup tests rejected by the current production
+cut-through policy. The checkpoint-status subset changed here is green.
 
 ### Commit gate
 
-- [ ] Commit the canonical frontier/type migration and tests before starting
+- [x] Commit the canonical frontier/type migration and tests before starting
       milestone 3.
 
 ## Milestone 3: Shared incremental suffix verifier

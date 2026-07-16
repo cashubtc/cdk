@@ -889,7 +889,7 @@ where
         checkpoint.clone(),
         vec![first_signature, second_signature],
     );
-    quorum.verify(&config).expect("checkpoint quorum");
+    let verified_quorum = quorum.verify(&config).expect("checkpoint quorum");
     let pre_scheduled_recovery = FederationCheckpoint {
         kind: FederationCheckpointKind::Recovery,
         scheduled_checkpoint_sequence: 0,
@@ -964,7 +964,7 @@ where
     tx.add_federation_checkpoint_quorum(&quorum)
         .await
         .expect("idempotent checkpoint quorum");
-    tx.promote_verified_federation_checkpoint(&quorum)
+    tx.promote_verified_federation_checkpoint(&verified_quorum)
         .await
         .expect("promote checkpoint quorum");
     tx.commit().await.expect("commit checkpoint candidate");
@@ -1070,7 +1070,7 @@ where
             .expect("second recovery signature"),
     ];
     let recovery_quorum = FederationCheckpointQuorum::new(recovery.clone(), recovery_signatures);
-    recovery_quorum
+    let verified_recovery_quorum = recovery_quorum
         .verify(&config)
         .expect("recovery checkpoint quorum");
     let recovery_id = recovery.id().expect("recovery checkpoint id");
@@ -1080,7 +1080,7 @@ where
     tx.add_federation_checkpoint_candidate(&recovery)
         .await
         .expect("persist recovery checkpoint candidate");
-    tx.promote_verified_federation_checkpoint(&recovery_quorum)
+    tx.promote_verified_federation_checkpoint(&verified_recovery_quorum)
         .await
         .expect("promote recovery checkpoint");
     tx.commit().await.expect("commit recovery checkpoint");
@@ -1131,7 +1131,7 @@ where
             .expect("second second-scheduled signature"),
         ],
     );
-    second_scheduled_quorum
+    let verified_second_scheduled_quorum = second_scheduled_quorum
         .verify(&config)
         .expect("second scheduled quorum");
     let second_scheduled_id = second_scheduled.id().expect("second scheduled id");
@@ -1152,7 +1152,7 @@ where
     let mut tx = Database::begin_transaction(&db)
         .await
         .expect("begin covering scheduled promotion");
-    tx.promote_verified_federation_checkpoint(&second_scheduled_quorum)
+    tx.promote_verified_federation_checkpoint(&verified_second_scheduled_quorum)
         .await
         .expect("promote covering scheduled checkpoint");
     tx.commit()
@@ -1219,7 +1219,7 @@ where
         .await
         .expect("begin promotion after audit mismatch");
     assert!(tx
-        .promote_verified_federation_checkpoint(&recovery_quorum)
+        .promote_verified_federation_checkpoint(&verified_recovery_quorum)
         .await
         .is_err());
     tx.rollback()

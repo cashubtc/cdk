@@ -59,10 +59,12 @@ pub use self::chain_observation::{
     FederationOnchainQuotePayment, FederationWalletUtxo, FederationWalletUtxoState,
 };
 pub use self::checkpoint::{
-    FederationApplicationDigest, FederationCheckpoint, FederationCheckpointBoundary,
-    FederationCheckpointFrontier, FederationCheckpointId, FederationCheckpointKind,
-    FederationCheckpointPolicy, FederationCheckpointQuorum, FederationCheckpointSignature,
-    FederationFinalizedItemDigest, DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
+    FederationAlephBftRecoveryCursor, FederationApplicationDigest, FederationApplicationFrontier,
+    FederationCheckpoint, FederationCheckpointBoundary, FederationCheckpointFrontier,
+    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointPolicy,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationCommittedFrontier,
+    FederationFinalizedFrontier, FederationFinalizedItemDigest, FederationJournalFrontier,
+    VerifiedFederationCheckpointQuorum, DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
     DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS, FEDERATION_CHECKPOINT_VERSION,
 };
 pub use self::config::{

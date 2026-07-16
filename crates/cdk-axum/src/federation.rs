@@ -13,7 +13,8 @@ use cdk::federation::{
     FederationMaterializedStateSnapshot, FederationOperationStatus, FederationPeerStatus,
     FederationRestMessageKind, FederationRestSequenceTracker, FederationSignedRequest,
     FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FederationVerifiedOperationAdmission, MemberId, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
+    FederationVerifiedOperationAdmission, MemberId, VerifiedFederationCheckpointQuorum,
+    FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
 };
 #[cfg(test)]
 use cdk::federation::{
@@ -135,10 +136,10 @@ pub(crate) fn verify_checkpoint_quorum_with_metrics(
     quorum: &FederationCheckpointQuorum,
     config: &FederationConfig,
     local_member: MemberId,
-) -> Result<(), cdk::Error> {
+) -> Result<VerifiedFederationCheckpointQuorum, cdk::Error> {
     #[cfg(feature = "prometheus")]
     let started_at = std::time::Instant::now();
-    let result = quorum.verify(config).map(|_| ()).map_err(cdk::Error::from);
+    let result = quorum.verify(config).map_err(cdk::Error::from);
     #[cfg(feature = "prometheus")]
     {
         let member = local_member.to_string();

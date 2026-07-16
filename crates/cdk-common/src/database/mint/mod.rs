@@ -26,7 +26,7 @@ use crate::federation::{
     FederationId, FederationJournalEntry, FederationJournalTip,
     FederationMaterializedStateKeyRecord, FederationOperationConflictKey, FederationOperationId,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationSignatureShareRecord, MemberId,
+    FederationSignatureShareRecord, MemberId, VerifiedFederationCheckpointQuorum,
 };
 use crate::mint::{
     self, MeltQuote, MintKeySetInfo, MintQuote as MintMintQuote, Operation, ProofsWithState,
@@ -815,7 +815,7 @@ pub trait FederationJournalTransaction {
     /// Atomically promote a caller-verified quorum no further than durable local state.
     async fn promote_verified_federation_checkpoint(
         &mut self,
-        quorum: &FederationCheckpointQuorum,
+        quorum: &VerifiedFederationCheckpointQuorum,
     ) -> Result<(), Self::Err>;
 
     /// Prune superseded checkpoint candidates and covered recovery proofs.

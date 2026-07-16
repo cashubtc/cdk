@@ -211,7 +211,7 @@ async fn federation_checkpoint_status(
         .transpose()?;
     let trusted_journal_next_index = trusted_checkpoint
         .as_ref()
-        .map_or(0, |trusted| trusted.checkpoint.journal_next_index);
+        .map_or(0, |trusted| trusted.checkpoint.frontier.journal.next_index);
 
     Ok(FederationCheckpointStatus {
         lag_from_trusted_checkpoint: frontier

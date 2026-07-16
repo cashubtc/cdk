@@ -1,15 +1,17 @@
+use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederationApplicationDigest, FederationCheckpointId,
-    FederationCheckpointKind, FederationCheckpointQuorumSummary, FederationCheckpointStatus,
-    FederationCheckpointSummary, FederationConsensusRuntimeStatus,
-    FederationInvalidOperationAlertSummary, FederationJournalDigest,
-    FederationMaterializedStateDigest, FederationPaymentObservationContext,
-    FederationPaymentObservationEvidenceGroupSummary, FederationPeerStatus,
-    FederationWalletBroadcastHealth, FederationWalletOperationPhase,
+    generate_trusted_dealer_configs, FederationAlephBftRecoveryCursor, FederationApplicationDigest,
+    FederationApplicationFrontier, FederationCheckpointId, FederationCheckpointKind,
+    FederationCheckpointQuorumSummary, FederationCheckpointStatus, FederationCheckpointSummary,
+    FederationCommittedFrontier, FederationConsensusRuntimeStatus, FederationFinalizedFrontier,
+    FederationFinalizedItemDigest, FederationInvalidOperationAlertSummary, FederationJournalDigest,
+    FederationJournalFrontier, FederationMaterializedStateDigest,
+    FederationPaymentObservationContext, FederationPaymentObservationEvidenceGroupSummary,
+    FederationPeerStatus, FederationWalletBroadcastHealth, FederationWalletOperationPhase,
     FederationWalletOperationPhaseCount, FederationWalletOperatorStatus, FederationWalletUtxoState,
     FederationWalletUtxoStatusCount, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
@@ -218,8 +220,29 @@ fn checkpoint_quorum(signers: Vec<MemberId>) -> FederationCheckpointQuorumSummar
             checkpoint_id: FederationCheckpointId::from_bytes([7; 32]),
             kind: FederationCheckpointKind::Scheduled,
             scheduled_checkpoint_sequence: 1,
-            journal_next_index: 3,
-            finalized_next_item_index: 3,
+            frontier: FederationCommittedFrontier {
+                journal: FederationJournalFrontier {
+                    next_index: 3,
+                    order_digest: FederationJournalDigest::genesis(),
+                },
+                finalized: FederationFinalizedFrontier {
+                    next_item_index: 3,
+                    item_digest: FederationFinalizedItemDigest::genesis(),
+                },
+                application: FederationApplicationFrontier {
+                    next_index: 3,
+                    digest: FederationApplicationDigest::genesis(),
+                },
+                aleph_bft: FederationAlephBftRecoveryCursor {
+                    session: 0,
+                    next_unit_finalization_index: 1,
+                    next_unit_index_by_member: signers
+                        .iter()
+                        .copied()
+                        .map(|member_id| (member_id, 1))
+                        .collect::<BTreeMap<_, _>>(),
+                },
+            },
         },
         signers,
     }

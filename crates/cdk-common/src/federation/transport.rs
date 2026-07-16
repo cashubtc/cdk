@@ -17,10 +17,11 @@ use super::{
     FederationAlephBftFinalizedItem, FederationApplicationDigest, FederationApplicationState,
     FederationCheckpoint, FederationCheckpointBoundary, FederationCheckpointFrontier,
     FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationConfig, FederationConfigDigest,
-    FederationConsensusRuntimeStatus, FederationDkgCeremonyId, FederationDkgKeysetSpec,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError, FederationId,
+    FederationCheckpointSignature, FederationCommittedFrontier, FederationConfig,
+    FederationConfigDigest, FederationConsensusRuntimeStatus, FederationDkgCeremonyId,
+    FederationDkgKeysetSpec, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgTranscriptHash,
+    FederationDkgTranscriptSignature, FederationError, FederationId,
     FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
     FederationMaterializedStateDigest, FederationMaterializedStateRowFingerprint,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
@@ -1270,8 +1271,8 @@ impl Default for FederationCheckpointSummaryRequest {
     }
 }
 
-/// Scalar identity and cursors for one stored checkpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Bounded identity and canonical recovery frontier for one stored checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FederationCheckpointSummary {
     /// Canonical checkpoint ID.
@@ -1280,10 +1281,8 @@ pub struct FederationCheckpointSummary {
     pub kind: FederationCheckpointKind,
     /// Latest scheduled sequence represented by the checkpoint.
     pub scheduled_checkpoint_sequence: u64,
-    /// First accepted-operation index after the checkpoint.
-    pub journal_next_index: u64,
-    /// First finalized-item index after the checkpoint.
-    pub finalized_next_item_index: u64,
+    /// Exact committed recovery frontier represented by the checkpoint.
+    pub frontier: FederationCommittedFrontier,
 }
 
 impl FederationCheckpointSummary {
@@ -1293,8 +1292,7 @@ impl FederationCheckpointSummary {
             checkpoint_id: checkpoint.id()?,
             kind: checkpoint.kind,
             scheduled_checkpoint_sequence: checkpoint.scheduled_checkpoint_sequence,
-            journal_next_index: checkpoint.journal_next_index,
-            finalized_next_item_index: checkpoint.finalized_next_item_index,
+            frontier: checkpoint.committed_frontier(),
         })
     }
 
@@ -1306,6 +1304,15 @@ impl FederationCheckpointSummary {
             });
         }
         Ok(())
+    }
+
+    /// Return whether this summary makes the candidate proof redundant.
+    #[must_use]
+    pub fn covers(&self, candidate: &Self) -> bool {
+        self.checkpoint_id == candidate.checkpoint_id
+            || self.scheduled_checkpoint_sequence > candidate.scheduled_checkpoint_sequence
+            || (self.scheduled_checkpoint_sequence == candidate.scheduled_checkpoint_sequence
+                && self.frontier.ensure_covers(&candidate.frontier).is_ok())
     }
 }
 
@@ -1424,11 +1431,14 @@ impl FederationCheckpointSummaryResponse {
                 FederationCheckpointKind::Scheduled,
             ),
         ] {
-            if summary.is_some_and(|summary| summary.kind != expected_kind) {
-                return Err(FederationError::CheckpointInvalid {
-                    reason: "checkpoint summary field contains the wrong checkpoint kind"
-                        .to_string(),
-                });
+            if let Some(summary) = summary {
+                if summary.kind != expected_kind {
+                    return Err(FederationError::CheckpointInvalid {
+                        reason: "checkpoint summary field contains the wrong checkpoint kind"
+                            .to_string(),
+                    });
+                }
+                summary.frontier.validate_complete_unit(config)?;
             }
         }
         Ok(())
@@ -2513,6 +2523,26 @@ pub struct FederationPeerStatus {
 }
 
 impl FederationPeerStatus {
+    /// Return whether both members report the same committed and audited state.
+    #[must_use]
+    pub fn has_same_committed_state(&self, other: &Self) -> bool {
+        self.aleph_bft_session == other.aleph_bft_session
+            && self.has_same_committed_history_and_audit(other)
+    }
+
+    /// Return whether committed history and audit state match, ignoring active session.
+    #[must_use]
+    pub fn has_same_committed_history_and_audit(&self, other: &Self) -> bool {
+        self.federation_id == other.federation_id
+            && self.aleph_bft_next_item_index == other.aleph_bft_next_item_index
+            && self.operation_count == other.operation_count
+            && self.latest_index == other.latest_index
+            && self.latest_order_digest == other.latest_order_digest
+            && self.application_digest == other.application_digest
+            && self.latest_audited_checkpoint_id == other.latest_audited_checkpoint_id
+            && self.materialized_state_digest == other.materialized_state_digest
+    }
+
     /// Create a peer status snapshot.
     #[must_use]
     pub fn new(

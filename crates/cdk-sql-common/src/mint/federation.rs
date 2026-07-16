@@ -76,6 +76,7 @@ use cdk_common::federation::{
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,
+    VerifiedFederationCheckpointQuorum,
 };
 use cdk_common::quote_id::QuoteId;
 use cdk_common::PublicKey;

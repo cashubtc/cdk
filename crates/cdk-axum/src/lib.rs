@@ -2668,51 +2668,9 @@ fn checkpoint_is_exact_startup_frontier(
         }
         .into());
     }
-    if frontier.application_next_index > frontier.journal_next_index
-        || frontier.journal_next_index > frontier.finalized_next_item_index
-    {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "durable checkpoint frontier cursors are inconsistent".to_string(),
-        }
-        .into());
-    }
-    if frontier.journal_next_index < checkpoint.journal_next_index
-        || frontier.application_next_index < checkpoint.journal_next_index
-        || frontier.finalized_next_item_index < checkpoint.finalized_next_item_index
-    {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "trusted checkpoint is ahead of the durable local frontier".to_string(),
-        }
-        .into());
-    }
-    if frontier.journal_next_index == checkpoint.journal_next_index
-        && frontier.journal_order_digest != checkpoint.journal_order_digest
-    {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "journal digest disagrees with the trusted checkpoint".to_string(),
-        }
-        .into());
-    }
-    if frontier.application_next_index == checkpoint.journal_next_index
-        && frontier.application_digest != checkpoint.application_digest
-    {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "application digest disagrees with the trusted checkpoint".to_string(),
-        }
-        .into());
-    }
-    if frontier.finalized_next_item_index == checkpoint.finalized_next_item_index
-        && frontier.finalized_item_digest != checkpoint.finalized_item_digest
-    {
-        return Err(FederationError::CheckpointInvalid {
-            reason: "finalized-item digest disagrees with the trusted checkpoint".to_string(),
-        }
-        .into());
-    }
-
-    Ok(frontier.journal_next_index == checkpoint.journal_next_index
-        && frontier.application_next_index == checkpoint.journal_next_index
-        && frontier.finalized_next_item_index == checkpoint.finalized_next_item_index)
+    frontier.ensure_covers_checkpoint_position(checkpoint)?;
+    frontier.ensure_covers_checkpoint(checkpoint)?;
+    Ok(frontier.is_at_checkpoint_position(checkpoint))
 }
 
 #[cfg(feature = "federation")]
@@ -2871,12 +2829,7 @@ async fn repair_checkpoint_startup_application_suffix(
 
     let db = mint.localstore();
     let repaired_frontier = db.get_federation_checkpoint_frontier().await?;
-    if repaired_frontier.trusted_checkpoint_id != initial_frontier.trusted_checkpoint_id
-        || repaired_frontier.journal_next_index != initial_frontier.journal_next_index
-        || repaired_frontier.journal_order_digest != initial_frontier.journal_order_digest
-        || repaired_frontier.finalized_next_item_index != initial_frontier.finalized_next_item_index
-        || repaired_frontier.finalized_item_digest != initial_frontier.finalized_item_digest
-    {
+    if !repaired_frontier.ordered_history_matches(initial_frontier) {
         return Err(FederationError::CheckpointStartupSuffixMismatch {
             reason: "durable ordered frontier changed during startup application replay"
                 .to_string(),
@@ -2892,7 +2845,7 @@ async fn repair_checkpoint_startup_application_suffix(
         &repaired_journal_entries,
         finalized_items,
     )?;
-    if repaired_frontier.application_next_index != repaired_frontier.journal_next_index
+    if !repaired_frontier.is_fully_terminal()
         || repaired_terminal_prefix_len != repaired_journal_entries.len()
     {
         return Err(
@@ -2968,31 +2921,32 @@ async fn create_federation_runtime_state_with_wallet(
             .into());
         }
         (Some(trusted_checkpoint_id), Some(quorum)) => {
-            federation::verify_checkpoint_quorum_with_metrics(
+            let verified_quorum = federation::verify_checkpoint_quorum_with_metrics(
                 &quorum,
                 config.public_config(),
                 config.member_id(),
             )?;
-            if quorum.checkpoint.id()? != trusted_checkpoint_id {
+            let checkpoint = verified_quorum.checkpoint();
+            if checkpoint.id()? != trusted_checkpoint_id {
                 return Err(FederationError::CheckpointInvalid {
                     reason: "trusted checkpoint ID does not match its stored quorum".to_string(),
                 }
                 .into());
             }
-            if active_session < quorum.checkpoint.aleph_bft_session {
+            if active_session < checkpoint.aleph_bft_session {
                 return Err(FederationError::CheckpointInvalid {
                     reason: "active AlephBFT session is behind the trusted checkpoint".to_string(),
                 }
                 .into());
             }
-            if checkpoint_is_exact_startup_frontier(&quorum.checkpoint, &frontier)? {
+            if checkpoint_is_exact_startup_frontier(checkpoint, &frontier)? {
                 let mut consensus =
                     FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint(
                         config.public_config(),
                         config.member_id(),
-                        &quorum.checkpoint,
+                        checkpoint,
                     )?;
-                if active_session > quorum.checkpoint.aleph_bft_session {
+                if active_session > checkpoint.aleph_bft_session {
                     consensus.begin_aleph_bft_session(active_session)?;
                 }
                 Some(consensus)
@@ -3000,11 +2954,11 @@ async fn create_federation_runtime_state_with_wallet(
                 #[cfg(feature = "prometheus")]
                 let tail_started_at = std::time::Instant::now();
                 let journal_entries = db
-                    .get_federation_journal_entries_from(quorum.checkpoint.journal_next_index)
+                    .get_federation_journal_entries_from(checkpoint.journal_next_index)
                     .await?;
                 let finalized_items = db
                     .get_federation_aleph_bft_finalized_items_from(
-                        quorum.checkpoint.finalized_next_item_index,
+                        checkpoint.finalized_next_item_index,
                     )
                     .await?;
                 #[cfg(feature = "prometheus")]
@@ -3034,26 +2988,26 @@ async fn create_federation_runtime_state_with_wallet(
                     );
                 }
                 let terminal_prefix_len = validate_checkpoint_startup_suffix(
-                    &quorum.checkpoint,
+                    checkpoint,
                     &frontier,
                     &journal_entries,
                     &finalized_items,
                 )?;
                 let recovered_session = latest_aleph_bft_finalized_session(&finalized_items)
                     .max(active_session)
-                    .max(quorum.checkpoint.aleph_bft_session);
+                    .max(checkpoint.aleph_bft_session);
                 let mut consensus =
                     FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint_suffix(
                         config.public_config(),
                         config.member_id(),
                         recovered_session,
-                        &quorum.checkpoint,
+                        checkpoint,
                         journal_entries.clone(),
                         finalized_items.clone(),
                     )?;
                 let replayed_entries = repair_checkpoint_startup_application_suffix(
                     mint,
-                    &quorum.checkpoint,
+                    checkpoint,
                     &frontier,
                     &journal_entries,
                     &finalized_items,

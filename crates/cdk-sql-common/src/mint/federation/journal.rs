@@ -540,14 +540,9 @@ where
             "Federation materialized-state audit mismatch is latched".to_string(),
         ));
     }
-    if checkpoint.journal_next_index > frontier.journal_next_index
-        || checkpoint.journal_next_index > frontier.application_next_index
-        || checkpoint.finalized_next_item_index > frontier.finalized_next_item_index
-    {
-        return Err(Error::Internal(
-            "Federation checkpoint is ahead of durable local frontiers".to_string(),
-        ));
-    }
+    frontier
+        .ensure_covers_checkpoint_position(checkpoint)
+        .map_err(|error| Error::Internal(error.to_string()))?;
     if federation_journal_digest_at(transaction, checkpoint.journal_next_index).await?
         != checkpoint.journal_order_digest
         || federation_application_digest_at(transaction, checkpoint.journal_next_index).await?
@@ -994,10 +989,7 @@ where
         checkpoint: &FederationCheckpoint,
     ) -> Result<(), Self::Err> {
         let frontier = ensure_checkpoint_not_ahead_of_local_state(self, checkpoint).await?;
-        if checkpoint.journal_next_index != frontier.journal_next_index
-            || checkpoint.journal_next_index != frontier.application_next_index
-            || checkpoint.finalized_next_item_index != frontier.finalized_next_item_index
-        {
+        if !frontier.is_at_checkpoint_position(checkpoint) {
             return Err(Error::Internal(
                 "Federation checkpoint candidate does not equal the current durable frontier"
                     .to_string(),
@@ -1129,8 +1121,9 @@ where
 
     async fn promote_verified_federation_checkpoint(
         &mut self,
-        quorum: &FederationCheckpointQuorum,
+        verified_quorum: &VerifiedFederationCheckpointQuorum,
     ) -> Result<(), Self::Err> {
+        let quorum = verified_quorum.as_quorum();
         self.add_federation_checkpoint_quorum(quorum).await?;
         let frontier = ensure_checkpoint_not_ahead_of_local_state(self, &quorum.checkpoint).await?;
         let current = match frontier.trusted_checkpoint_id {
