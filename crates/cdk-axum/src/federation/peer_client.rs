@@ -240,6 +240,8 @@ where
         member: &MemberConfigPublic,
         checkpoint_id: FederationCheckpointId,
     ) -> anyhow::Result<FederationCheckpointFetchResponse> {
+        #[cfg(feature = "prometheus")]
+        let transfer_started_at = std::time::Instant::now();
         let request = self.signed_request(
             member,
             FederationRestMessageKind::CheckpointFetch,
@@ -254,7 +256,44 @@ where
                 self.sync_config.peer_request_timeout,
             )
             .await?;
-        response.validate(&self.public_config, member.member_id, checkpoint_id)?;
+        let quorum_signature_count = response
+            .quorum
+            .as_ref()
+            .map(|quorum| quorum.signatures.len());
+        #[cfg(feature = "prometheus")]
+        let verification_started_at = std::time::Instant::now();
+        let validation = response.validate(&self.public_config, member.member_id, checkpoint_id);
+        #[cfg(feature = "prometheus")]
+        if let Some(signature_count) = quorum_signature_count {
+            let local_member = self.private_config.member_id.to_string();
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &local_member,
+                cdk_prometheus::FederationCheckpointWork::SignaturesVerified,
+                u64::try_from(signature_count).unwrap_or(u64::MAX),
+            );
+            cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+                &local_member,
+                cdk_prometheus::FederationCheckpointOperation::SignatureVerification,
+                verification_started_at.elapsed().as_secs_f64(),
+            );
+        }
+        validation?;
+        #[cfg(feature = "prometheus")]
+        if quorum_signature_count.is_some() {
+            let local_member = self.private_config.member_id.to_string();
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &local_member,
+                cdk_prometheus::FederationCheckpointWork::QuorumsTransferred,
+                1,
+            );
+            cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+                &local_member,
+                cdk_prometheus::FederationCheckpointOperation::QuorumTransfer,
+                transfer_started_at.elapsed().as_secs_f64(),
+            );
+        }
+        #[cfg(not(feature = "prometheus"))]
+        let _ = quorum_signature_count;
         Ok(response)
     }
 
@@ -279,7 +318,27 @@ where
                 self.sync_config.peer_request_timeout,
             )
             .await?;
-        response.validate(&self.public_config, member.member_id, checkpoint)?;
+        #[cfg(feature = "prometheus")]
+        let verification_started_at = std::time::Instant::now();
+        let has_signature = response.signature.is_some();
+        let verification = response.validate(&self.public_config, member.member_id, checkpoint);
+        #[cfg(feature = "prometheus")]
+        if has_signature {
+            let local_member = self.private_config.member_id.to_string();
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &local_member,
+                cdk_prometheus::FederationCheckpointWork::SignaturesVerified,
+                1,
+            );
+            cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+                &local_member,
+                cdk_prometheus::FederationCheckpointOperation::SignatureVerification,
+                verification_started_at.elapsed().as_secs_f64(),
+            );
+        }
+        #[cfg(not(feature = "prometheus"))]
+        let _ = has_signature;
+        verification?;
         Ok(response)
     }
 
@@ -288,7 +347,13 @@ where
         member: &MemberConfigPublic,
         quorum: &FederationCheckpointQuorum,
     ) -> anyhow::Result<()> {
-        quorum.verify(&self.public_config)?;
+        #[cfg(feature = "prometheus")]
+        let transfer_started_at = std::time::Instant::now();
+        super::verify_checkpoint_quorum_with_metrics(
+            quorum,
+            &self.public_config,
+            self.private_config.member_id,
+        )?;
         let checkpoint_id = quorum.checkpoint.id()?;
         let request = self.signed_request(
             member,
@@ -305,6 +370,20 @@ where
             )
             .await?;
         response.validate(self.federation_id, member.member_id, checkpoint_id)?;
+        #[cfg(feature = "prometheus")]
+        {
+            let local_member = self.private_config.member_id.to_string();
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &local_member,
+                cdk_prometheus::FederationCheckpointWork::QuorumsTransferred,
+                1,
+            );
+            cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+                &local_member,
+                cdk_prometheus::FederationCheckpointOperation::QuorumTransfer,
+                transfer_started_at.elapsed().as_secs_f64(),
+            );
+        }
         Ok(())
     }
 

@@ -907,8 +907,17 @@ impl CdkAlephBftDbBackup {
 
     async fn try_replay_io(
         &self,
-    ) -> Result<(CdkAlephBftBackupReader, CdkAlephBftDbBackupWriter), cdk::Error> {
-        let (chunks, _) = load_bounded_aleph_bft_backup_chunks(&self.db, self.session_id).await?;
+    ) -> Result<
+        (
+            CdkAlephBftBackupReader,
+            CdkAlephBftDbBackupWriter,
+            usize,
+            usize,
+        ),
+        cdk::Error,
+    > {
+        let (chunks, total_bytes) =
+            load_bounded_aleph_bft_backup_chunks(&self.db, self.session_id).await?;
         let persisted_chunks = chunks.len();
         let bytes = chunks.concat();
 
@@ -918,6 +927,8 @@ impl CdkAlephBftDbBackup {
                 position: 0,
             },
             self.writer_with_replayed_bytes(bytes, persisted_chunks),
+            persisted_chunks,
+            total_bytes,
         ))
     }
 }
@@ -1240,7 +1251,23 @@ impl CdkAlephBftSessionIo {
         keychain: CdkAlephBftKeychain,
     ) -> Result<Self, cdk::Error> {
         let backup = CdkAlephBftDbBackup::new(db, session_id);
-        let (unit_loader, unit_saver) = backup.try_replay_io().await?;
+        let (unit_loader, unit_saver, backup_chunks, backup_bytes) = backup.try_replay_io().await?;
+        #[cfg(feature = "prometheus")]
+        {
+            let member = keychain.private_config.member_id.to_string();
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &member,
+                cdk_prometheus::FederationCheckpointWork::BackupChunksLoaded,
+                u64::try_from(backup_chunks).unwrap_or(u64::MAX),
+            );
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &member,
+                cdk_prometheus::FederationCheckpointWork::BackupBytesLoaded,
+                u64::try_from(backup_bytes).unwrap_or(u64::MAX),
+            );
+        }
+        #[cfg(not(feature = "prometheus"))]
+        let _ = (backup_chunks, backup_bytes);
         let data_provider =
             CdkAlephBftDataProvider::with_activity_hint(consensus, activity_hint.clone());
         let (sender, finalized_units) = mpsc::unbounded_channel();

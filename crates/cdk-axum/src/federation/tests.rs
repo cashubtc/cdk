@@ -33,8 +33,9 @@ use cdk::federation::{
     FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationRecord,
     FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
-    FederationRestMessageKind, FederationSignedRequest, MemberConfigPrivate, MemberConfigPublic,
-    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationRestMessageKind, FederationSignedRequest, InMemoryFederationJournal,
+    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams, TrustedDealerKeysetSpec,
+    TrustedDealerMember,
 };
 use cdk::mint::{MintBuilder, MintInput, MintMeltLimits, MintQuote, QuoteId};
 use cdk::mint_url::MintUrl;

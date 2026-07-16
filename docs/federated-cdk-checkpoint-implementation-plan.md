@@ -2,8 +2,9 @@
 
 Status: in progress (checkpoint protocol, persistence, exchange, bounded catch-up,
 nonzero startup, certificate cut-through, checkpoint-native operator tooling,
-and crash-safe checkpoint retention are implemented; performance
-instrumentation, bounded-log verification, and milestone-8 validation remain)
+crash-safe checkpoint retention, and bounded work instrumentation are
+implemented; synthetic baselines, bounded-log verification, and milestone-8
+validation remain)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -548,11 +549,11 @@ the existing safety regressions as checkpoint requirements.
 
 ### Checklist
 
-- [ ] Add counters/timers for full journal rows loaded, finalized items loaded,
+- [x] Add counters/timers for full journal rows loaded, finalized items loaded,
       certificate/checkpoint signatures verified, startup replayed entries,
       materialized-state digest duration, AlephBFT backup bytes/chunks loaded,
       and readiness duration.
-- [ ] Keep instrumentation bounded and free of operation payloads or secrets.
+- [x] Keep instrumentation bounded and free of operation payloads or secrets.
 - [ ] Add synthetic histories at 1,000, 10,000, and at least 100,000 operations
       without requiring public networking.
 - [ ] Record idle CPU/work-counter behavior across at least twelve five-second
@@ -563,6 +564,35 @@ the existing safety regressions as checkpoint requirements.
 - [ ] Preserve the materialized-state mismatch regression as an explicit
       operator-audit gate, and preserve partial evidence and restart catch-up
       regressions as startup/recovery gates.
+
+### Progress and verification
+
+Checkpoint and restart work now uses two shared Prometheus collectors instead
+of one collector per call site:
+
+- `cdk_federation_checkpoint_work_total{member,work}` counts journal/finalized
+  rows loaded, signatures verified, pre-checkpoint entries replayed, checkpoint
+  suffix rows loaded, backup bytes/chunks loaded, scheduled/recovery candidates
+  created, stored quorums transferred, checkpoints promoted, and catch-up
+  batches applied;
+- `cdk_federation_checkpoint_duration_seconds{member,operation}` measures
+  materialized-state projection/digest work, startup readiness, startup-tail
+  reconstruction, scheduled/recovery creation, quorum transfer, promotion,
+  signature verification, and checkpoint-bounded catch-up.
+
+Both variable labels are closed Rust enums. The only other label is the finite
+configured member ID; checkpoint IDs, operation IDs, payloads, peer URLs,
+errors, and secrets cannot become metric labels. Instrumentation is behind the
+existing optional Prometheus feature and the federation-only build retains the
+same behavior without the metrics dependency.
+
+Verified with the fixed-label collector unit test, federation-only and
+federation-plus-Prometheus `cdk-axum` checks, and focused Prometheus-enabled
+runtime tests for exact-checkpoint startup with no prefix rows,
+checkpoint-bounded catch-up/promotion, and persisted live-session backup
+replay. Strict `cdk-prometheus` clippy passes. Strict workspace/Axum clippy
+still encounters pre-existing unrelated warnings before it can serve as a
+repository-wide gate.
 
 ### Files and references
 
@@ -1353,7 +1383,7 @@ trusted checkpoint frontier as scalar runtime state.
       scanning journal or historical signature rows; loading the one bounded
       stored quorum is independent of federation history length.
 - [x] Replace the certificate Prometheus gauge with a checkpoint-lag gauge.
-- [ ] Add scheduled/recovery checkpoint creation, stored-quorum transfer,
+- [x] Add scheduled/recovery checkpoint creation, stored-quorum transfer,
       promotion, catch-up batch, signature-verification, and startup-tail
       counters/timers needed for milestone-8 measurements.
 - [x] Rename the mintd status guard to
@@ -1390,6 +1420,14 @@ checkpoint exactly, then performs the expensive direct authoritative-state
 projection. A mismatch commits the one-way durable latch and halts the current
 AlephBFT session. No startup, polling, readiness, or background path calls this
 audit.
+
+Checkpoint-native observability now reuses the two bounded work/duration
+collectors described in milestone 0. Quorum verification is wrapped once in
+the Axum federation layer so startup, exchange, catch-up, audit, and promotion
+report the actual number of signatures verified without changing the common
+checkpoint protocol. Stored proof transfer is measured for both fetch and
+publication, and the startup fast path separately identifies full-history and
+post-checkpoint suffix rows.
 
 Current cut-through verification completed:
 

@@ -30,9 +30,9 @@ use cdk::federation::{
     FederationError, FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
     FederationFrostDkgRound1Request, FederationFrostDkgRound2Record, FederationFrostRootRecord,
     FederationJournalAppendOutcome, FederationJournalCatchUpResponse, FederationJournalEntry,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
-    FederationRestMessageKind, FederationSubmitOperationResponse, MemberId,
-    FEDERATION_REST_API_VERSION,
+    FederationMaterializedStateDigest, FederationOperationEnvelope, FederationOperationId,
+    FederationOperationStatus, FederationRestMessageKind, FederationSubmitOperationResponse,
+    MemberConfigPublic, MemberId, FEDERATION_REST_API_VERSION,
 };
 use cdk::mint::Mint;
 
@@ -77,6 +77,57 @@ fn runtime_unavailable(component: &'static str) -> cdk::Error {
     FederationError::RuntimeUnavailable { component }.into()
 }
 
+async fn materialized_state_digest_with_metrics(
+    mint: &Mint,
+    member_id: MemberId,
+) -> Result<FederationMaterializedStateDigest, cdk::Error> {
+    #[cfg(feature = "prometheus")]
+    let started_at = std::time::Instant::now();
+    let digest = mint
+        .federation_materialized_state_snapshot()
+        .await?
+        .digest()?;
+    #[cfg(feature = "prometheus")]
+    cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+        &member_id.to_string(),
+        cdk_prometheus::FederationCheckpointOperation::MaterializedStateDigest,
+        started_at.elapsed().as_secs_f64(),
+    );
+    #[cfg(not(feature = "prometheus"))]
+    let _ = member_id;
+    Ok(digest)
+}
+
+fn verify_checkpoint_signature_with_metrics(
+    signature: &FederationCheckpointSignature,
+    checkpoint: &FederationCheckpoint,
+    signer: &MemberConfigPublic,
+    local_member: MemberId,
+) -> Result<(), cdk::Error> {
+    #[cfg(feature = "prometheus")]
+    let started_at = std::time::Instant::now();
+    let result = signature
+        .verify(checkpoint, signer)
+        .map_err(cdk::Error::from);
+    #[cfg(feature = "prometheus")]
+    {
+        let member = local_member.to_string();
+        cdk_prometheus::METRICS.record_federation_checkpoint_work(
+            &member,
+            cdk_prometheus::FederationCheckpointWork::SignaturesVerified,
+            1,
+        );
+        cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+            &member,
+            cdk_prometheus::FederationCheckpointOperation::SignatureVerification,
+            started_at.elapsed().as_secs_f64(),
+        );
+    }
+    #[cfg(not(feature = "prometheus"))]
+    let _ = local_member;
+    result
+}
+
 fn checkpoint_summary(
     checkpoint: &FederationCheckpoint,
     config: &FederationConfig,
@@ -88,8 +139,9 @@ fn checkpoint_summary(
 fn checkpoint_quorum_summary(
     quorum: &FederationCheckpointQuorum,
     config: &FederationConfig,
+    local_member: MemberId,
 ) -> Result<FederationCheckpointSummary, cdk::Error> {
-    quorum.verify(config)?;
+    super::verify_checkpoint_quorum_with_metrics(quorum, config, local_member)?;
     checkpoint_summary(&quorum.checkpoint, config)
 }
 
@@ -845,15 +897,25 @@ impl FederationNodeRuntime {
             .federation_config()
             .cloned()
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
+        #[cfg(feature = "prometheus")]
+        let catch_up_started_at = std::time::Instant::now();
         let public_config = runtime_config.public_config();
-        quorum.verify(public_config)?;
+        super::verify_checkpoint_quorum_with_metrics(
+            quorum,
+            public_config,
+            runtime_config.member_id(),
+        )?;
         let checkpoint = &quorum.checkpoint;
         response.validate_checkpoint_binding(checkpoint)?;
         let db = mint.localstore();
         let frontier = db.get_federation_checkpoint_frontier().await?;
         let current = db.get_trusted_federation_checkpoint_quorum().await?;
         if let Some(current) = current.as_ref() {
-            current.verify(public_config)?;
+            super::verify_checkpoint_quorum_with_metrics(
+                current,
+                public_config,
+                runtime_config.member_id(),
+            )?;
         }
         checkpoint.validate_promotion_from(current.as_ref().map(|quorum| &quorum.checkpoint))?;
         Self::validate_checkpoint_catch_up_rolling_frontiers(&frontier, response, checkpoint)?;
@@ -885,14 +947,44 @@ impl FederationNodeRuntime {
                 runtime_config.member_id(),
                 checkpoint,
             )?;
+        #[cfg(feature = "prometheus")]
+        let promotion_started_at = std::time::Instant::now();
         let mut tx = db.begin_transaction().await?;
         tx.promote_verified_federation_checkpoint(quorum).await?;
         tx.commit().await?;
+        #[cfg(feature = "prometheus")]
+        {
+            let member = runtime_config.member_id().to_string();
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &member,
+                cdk_prometheus::FederationCheckpointWork::CheckpointsPromoted,
+                1,
+            );
+            cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+                &member,
+                cdk_prometheus::FederationCheckpointOperation::CheckpointPromotion,
+                promotion_started_at.elapsed().as_secs_f64(),
+            );
+        }
         let consensus = self
             .consensus
             .as_ref()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         *consensus.lock().await = checkpoint_runtime;
+        #[cfg(feature = "prometheus")]
+        {
+            let member = runtime_config.member_id().to_string();
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &member,
+                cdk_prometheus::FederationCheckpointWork::CatchUpBatchesApplied,
+                1,
+            );
+            cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+                &member,
+                cdk_prometheus::FederationCheckpointOperation::CatchUpBatch,
+                catch_up_started_at.elapsed().as_secs_f64(),
+            );
+        }
         Ok(applied)
     }
 
@@ -1725,7 +1817,11 @@ impl FederationNodeRuntime {
             .await?;
         let latest_scheduled = match latest_scheduled_quorum.as_ref() {
             Some(quorum) => {
-                quorum.verify(public_config)?;
+                super::verify_checkpoint_quorum_with_metrics(
+                    quorum,
+                    public_config,
+                    runtime_config.member_id(),
+                )?;
                 Some(&quorum.checkpoint)
             }
             None => None,
@@ -1753,10 +1849,10 @@ impl FederationNodeRuntime {
             return Ok(());
         }
 
-        let materialized_state_digest = mint
-            .federation_materialized_state_snapshot()
-            .await?
-            .digest()?;
+        #[cfg(feature = "prometheus")]
+        let checkpoint_started_at = std::time::Instant::now();
+        let materialized_state_digest =
+            materialized_state_digest_with_metrics(mint, runtime_config.member_id()).await?;
         let checkpoint = boundary.scheduled_checkpoint(
             public_config,
             latest_scheduled,
@@ -1770,6 +1866,20 @@ impl FederationNodeRuntime {
         tx.add_federation_checkpoint_candidate(&checkpoint).await?;
         tx.add_federation_checkpoint_signature(&signature).await?;
         tx.commit().await?;
+        #[cfg(feature = "prometheus")]
+        {
+            let member = runtime_config.member_id().to_string();
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &member,
+                cdk_prometheus::FederationCheckpointWork::ScheduledCheckpointsCreated,
+                1,
+            );
+            cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+                &member,
+                cdk_prometheus::FederationCheckpointOperation::ScheduledCheckpointCreation,
+                checkpoint_started_at.elapsed().as_secs_f64(),
+            );
+        }
         Ok(())
     }
 
@@ -1802,7 +1912,11 @@ impl FederationNodeRuntime {
             .ok_or_else(|| FederationError::CheckpointInvalid {
                 reason: "operator audit requires a trusted checkpoint".to_string(),
             })?;
-        quorum.verify(runtime_config.public_config())?;
+        super::verify_checkpoint_quorum_with_metrics(
+            &quorum,
+            runtime_config.public_config(),
+            runtime_config.member_id(),
+        )?;
         let checkpoint = &quorum.checkpoint;
         let checkpoint_id = checkpoint.id()?;
         if frontier.trusted_checkpoint_id != Some(checkpoint_id)
@@ -1820,10 +1934,8 @@ impl FederationNodeRuntime {
             .into());
         }
 
-        let materialized_state_digest = mint
-            .federation_materialized_state_snapshot()
-            .await?
-            .digest()?;
+        let materialized_state_digest =
+            materialized_state_digest_with_metrics(mint, runtime_config.member_id()).await?;
         if materialized_state_digest != checkpoint.materialized_state_digest {
             let mut tx = db.begin_transaction().await?;
             tx.latch_federation_materialized_state_audit_mismatch()
@@ -1912,18 +2024,24 @@ impl FederationNodeRuntime {
         let latest_scheduled_quorum = db
             .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
             .await?
-            .map(|quorum| checkpoint_quorum_summary(&quorum, public_config))
+            .map(|quorum| {
+                checkpoint_quorum_summary(&quorum, public_config, runtime_config.member_id())
+            })
             .transpose()?;
         let latest_recovery_quorum = db
             .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
             .await?
-            .map(|quorum| checkpoint_quorum_summary(&quorum, public_config))
+            .map(|quorum| {
+                checkpoint_quorum_summary(&quorum, public_config, runtime_config.member_id())
+            })
             .transpose()?;
         let next_scheduled_quorum = match next_scheduled_quorum_after {
             Some(sequence) => db
                 .get_next_federation_scheduled_checkpoint_quorum(sequence)
                 .await?
-                .map(|quorum| checkpoint_quorum_summary(&quorum, public_config))
+                .map(|quorum| {
+                    checkpoint_quorum_summary(&quorum, public_config, runtime_config.member_id())
+                })
                 .transpose()?,
             None => None,
         };
@@ -2016,7 +2134,11 @@ impl FederationNodeRuntime {
             .await?;
         let latest_scheduled = match latest_scheduled_quorum.as_ref() {
             Some(quorum) => {
-                quorum.verify(public_config)?;
+                super::verify_checkpoint_quorum_with_metrics(
+                    quorum,
+                    public_config,
+                    runtime_config.member_id(),
+                )?;
                 Some(&quorum.checkpoint)
             }
             None => None,
@@ -2044,7 +2166,11 @@ impl FederationNodeRuntime {
             .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Recovery)
             .await?
         {
-            quorum.verify(public_config)?;
+            super::verify_checkpoint_quorum_with_metrics(
+                &quorum,
+                public_config,
+                runtime_config.member_id(),
+            )?;
             if quorum.checkpoint.journal_next_index > boundary.journal_next_index
                 || quorum.checkpoint.finalized_next_item_index > boundary.finalized_next_item_index
             {
@@ -2071,10 +2197,10 @@ impl FederationNodeRuntime {
             }
         }
 
-        let materialized_state_digest = mint
-            .federation_materialized_state_snapshot()
-            .await?
-            .digest()?;
+        #[cfg(feature = "prometheus")]
+        let checkpoint_started_at = std::time::Instant::now();
+        let materialized_state_digest =
+            materialized_state_digest_with_metrics(mint, runtime_config.member_id()).await?;
         let checkpoint = boundary.recovery_checkpoint(
             public_config,
             latest_scheduled,
@@ -2088,6 +2214,20 @@ impl FederationNodeRuntime {
         tx.add_federation_checkpoint_candidate(&checkpoint).await?;
         tx.add_federation_checkpoint_signature(&signature).await?;
         tx.commit().await?;
+        #[cfg(feature = "prometheus")]
+        {
+            let member = runtime_config.member_id().to_string();
+            cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                &member,
+                cdk_prometheus::FederationCheckpointWork::RecoveryCheckpointsCreated,
+                1,
+            );
+            cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+                &member,
+                cdk_prometheus::FederationCheckpointOperation::RecoveryCheckpointCreation,
+                checkpoint_started_at.elapsed().as_secs_f64(),
+            );
+        }
         Ok(Some(checkpoint))
     }
 
@@ -2113,7 +2253,11 @@ impl FederationNodeRuntime {
         }
         let quorum = db.get_federation_checkpoint_quorum(checkpoint_id).await?;
         if let Some(quorum) = quorum.as_ref() {
-            quorum.verify(public_config)?;
+            super::verify_checkpoint_quorum_with_metrics(
+                quorum,
+                public_config,
+                runtime_config.member_id(),
+            )?;
         }
         Ok(FederationCheckpointFetchResponse {
             version: FEDERATION_REST_API_VERSION,
@@ -2152,7 +2296,12 @@ impl FederationNodeRuntime {
                     member_id: runtime_config.member_id(),
                 },
             )?;
-            signature.verify(checkpoint, member)?;
+            verify_checkpoint_signature_with_metrics(
+                signature,
+                checkpoint,
+                member,
+                runtime_config.member_id(),
+            )?;
         }
         Ok(FederationCheckpointSignatureResponse {
             version: FEDERATION_REST_API_VERSION,
@@ -2171,7 +2320,11 @@ impl FederationNodeRuntime {
         let runtime_config = mint
             .federation_config()
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
-        quorum.verify(runtime_config.public_config())?;
+        super::verify_checkpoint_quorum_with_metrics(
+            quorum,
+            runtime_config.public_config(),
+            runtime_config.member_id(),
+        )?;
         let checkpoint_id = quorum.checkpoint.id()?;
         let db = mint.localstore();
         let mut tx = db.begin_transaction().await?;
@@ -2185,7 +2338,11 @@ impl FederationNodeRuntime {
         let should_promote = if locally_reached {
             match db.get_trusted_federation_checkpoint_quorum().await? {
                 Some(current) => {
-                    current.verify(runtime_config.public_config())?;
+                    super::verify_checkpoint_quorum_with_metrics(
+                        &current,
+                        runtime_config.public_config(),
+                        runtime_config.member_id(),
+                    )?;
                     if checkpoint_covers(&current.checkpoint, &quorum.checkpoint) {
                         false
                     } else {
@@ -2201,9 +2358,25 @@ impl FederationNodeRuntime {
             false
         };
         if should_promote {
+            #[cfg(feature = "prometheus")]
+            let promotion_started_at = std::time::Instant::now();
             let mut tx = db.begin_transaction().await?;
             tx.promote_verified_federation_checkpoint(quorum).await?;
             tx.commit().await?;
+            #[cfg(feature = "prometheus")]
+            {
+                let member = runtime_config.member_id().to_string();
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &member,
+                    cdk_prometheus::FederationCheckpointWork::CheckpointsPromoted,
+                    1,
+                );
+                cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+                    &member,
+                    cdk_prometheus::FederationCheckpointOperation::CheckpointPromotion,
+                    promotion_started_at.elapsed().as_secs_f64(),
+                );
+            }
         }
         if should_promote && quorum.checkpoint.kind == FederationCheckpointKind::Recovery {
             self.clear_recovery_checkpoint_request_if_current(&quorum.checkpoint)
@@ -2248,7 +2421,12 @@ impl FederationNodeRuntime {
                 .ok_or(FederationError::UnknownMember {
                     member_id: signature.signer,
                 })?;
-        signature.verify(&checkpoint, member)?;
+        verify_checkpoint_signature_with_metrics(
+            signature,
+            &checkpoint,
+            member,
+            runtime_config.member_id(),
+        )?;
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_checkpoint_signature(signature).await?;
         tx.commit().await?;
@@ -2260,7 +2438,11 @@ impl FederationNodeRuntime {
             return Ok(None);
         }
         let quorum = FederationCheckpointQuorum::new(checkpoint, signatures);
-        quorum.verify(public_config)?;
+        super::verify_checkpoint_quorum_with_metrics(
+            &quorum,
+            public_config,
+            runtime_config.member_id(),
+        )?;
         drop(application);
         self.persist_checkpoint_quorum(&quorum).await?;
         Ok(Some(quorum))

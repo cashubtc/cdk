@@ -241,7 +241,11 @@ where
                 tracing::warn!("Could not verify trusted checkpoint without mint configuration");
                 return 0;
             };
-            if let Err(err) = quorum.verify(runtime_config.public_config()) {
+            if let Err(err) = super::verify_checkpoint_quorum_with_metrics(
+                &quorum,
+                runtime_config.public_config(),
+                runtime_config.member_id(),
+            ) {
                 tracing::warn!("Could not verify trusted checkpoint for discovery: {}", err);
                 return 0;
             }
@@ -380,10 +384,11 @@ async fn next_local_checkpoint_catch_up_target(
                 component: "mint configuration",
             })?;
     let public_config = runtime_config.public_config();
+    let local_member = runtime_config.member_id();
     let db = state.mint.localstore();
     let current = db.get_trusted_federation_checkpoint_quorum().await?;
     if let Some(current) = current.as_ref() {
-        current.verify(public_config)?;
+        super::verify_checkpoint_quorum_with_metrics(current, public_config, local_member)?;
     }
     let scheduled_sequence = current
         .as_ref()
@@ -392,7 +397,7 @@ async fn next_local_checkpoint_catch_up_target(
         .get_next_federation_scheduled_checkpoint_quorum(scheduled_sequence)
         .await?
     {
-        next.verify(public_config)?;
+        super::verify_checkpoint_quorum_with_metrics(&next, public_config, local_member)?;
         next.checkpoint
             .validate_promotion_from(current.as_ref().map(|quorum| &quorum.checkpoint))?;
         return Ok(Some(next));
@@ -403,7 +408,7 @@ async fn next_local_checkpoint_catch_up_target(
     else {
         return Ok(None);
     };
-    recovery.verify(public_config)?;
+    super::verify_checkpoint_quorum_with_metrics(&recovery, public_config, local_member)?;
     recovery
         .checkpoint
         .validate_promotion_from(current.as_ref().map(|quorum| &quorum.checkpoint))?;
@@ -862,14 +867,19 @@ where
         FederationJournalCatchUpResponse,
         Vec<FederationJournalEntry>,
     )> {
-        let public_config = state
-            .mint
-            .federation_config()
-            .ok_or(FederationError::RuntimeUnavailable {
-                component: "mint configuration",
-            })?
-            .public_config();
-        quorum.verify(public_config)?;
+        let runtime_config =
+            state
+                .mint
+                .federation_config()
+                .ok_or(FederationError::RuntimeUnavailable {
+                    component: "mint configuration",
+                })?;
+        let public_config = runtime_config.public_config();
+        super::verify_checkpoint_quorum_with_metrics(
+            quorum,
+            public_config,
+            runtime_config.member_id(),
+        )?;
         let checkpoint = &quorum.checkpoint;
         let checkpoint_id = checkpoint.id()?;
         let consensus = state.federation.consensus.as_ref().ok_or_else(|| {

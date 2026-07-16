@@ -6,6 +6,96 @@ use prometheus::{HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec,
 /// Global metrics instance
 pub static METRICS: std::sync::LazyLock<CdkMetrics> = std::sync::LazyLock::new(CdkMetrics::default);
 
+/// Fixed units of checkpoint and restart work used for bounded instrumentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FederationCheckpointWork {
+    /// Journal rows loaded while reconstructing federation state.
+    JournalRowsLoaded,
+    /// Finalized items loaded while reconstructing federation state.
+    FinalizedItemsLoaded,
+    /// Checkpoint identity signatures verified.
+    SignaturesVerified,
+    /// Historical journal entries replayed during pre-checkpoint startup.
+    StartupEntriesReplayed,
+    /// Journal rows loaded from the suffix after a trusted checkpoint.
+    StartupTailJournalRowsLoaded,
+    /// Finalized items loaded from the suffix after a trusted checkpoint.
+    StartupTailFinalizedItemsLoaded,
+    /// AlephBFT live-session backup bytes loaded.
+    BackupBytesLoaded,
+    /// AlephBFT live-session backup chunks loaded.
+    BackupChunksLoaded,
+    /// Scheduled checkpoint candidates durably created.
+    ScheduledCheckpointsCreated,
+    /// Recovery checkpoint candidates durably created.
+    RecoveryCheckpointsCreated,
+    /// Stored checkpoint quorums transferred over private federation transport.
+    QuorumsTransferred,
+    /// Verified checkpoint frontiers durably promoted.
+    CheckpointsPromoted,
+    /// Checkpoint-bounded catch-up batches durably applied.
+    CatchUpBatchesApplied,
+}
+
+impl FederationCheckpointWork {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::JournalRowsLoaded => "journal_rows_loaded",
+            Self::FinalizedItemsLoaded => "finalized_items_loaded",
+            Self::SignaturesVerified => "signatures_verified",
+            Self::StartupEntriesReplayed => "startup_entries_replayed",
+            Self::StartupTailJournalRowsLoaded => "startup_tail_journal_rows_loaded",
+            Self::StartupTailFinalizedItemsLoaded => "startup_tail_finalized_items_loaded",
+            Self::BackupBytesLoaded => "backup_bytes_loaded",
+            Self::BackupChunksLoaded => "backup_chunks_loaded",
+            Self::ScheduledCheckpointsCreated => "scheduled_checkpoints_created",
+            Self::RecoveryCheckpointsCreated => "recovery_checkpoints_created",
+            Self::QuorumsTransferred => "quorums_transferred",
+            Self::CheckpointsPromoted => "checkpoints_promoted",
+            Self::CatchUpBatchesApplied => "catch_up_batches_applied",
+        }
+    }
+}
+
+/// Fixed checkpoint operations whose latency is measured without dynamic labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FederationCheckpointOperation {
+    /// Full authoritative materialized-state digest creation.
+    MaterializedStateDigest,
+    /// Router startup through initial federation readiness evaluation.
+    StartupReadiness,
+    /// Validation and reconstruction of a suffix after a trusted checkpoint.
+    StartupTail,
+    /// Scheduled checkpoint creation, including its full-state audit.
+    ScheduledCheckpointCreation,
+    /// Recovery checkpoint creation, including its full-state audit.
+    RecoveryCheckpointCreation,
+    /// Transfer of one already assembled checkpoint quorum.
+    QuorumTransfer,
+    /// Durable promotion of one verified checkpoint frontier.
+    CheckpointPromotion,
+    /// Verification of a checkpoint signature set.
+    SignatureVerification,
+    /// Validation and application of one checkpoint-bounded catch-up batch.
+    CatchUpBatch,
+}
+
+impl FederationCheckpointOperation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::MaterializedStateDigest => "materialized_state_digest",
+            Self::StartupReadiness => "startup_readiness",
+            Self::StartupTail => "startup_tail",
+            Self::ScheduledCheckpointCreation => "scheduled_checkpoint_creation",
+            Self::RecoveryCheckpointCreation => "recovery_checkpoint_creation",
+            Self::QuorumTransfer => "quorum_transfer",
+            Self::CheckpointPromotion => "checkpoint_promotion",
+            Self::SignatureVerification => "signature_verification",
+            Self::CatchUpBatch => "catch_up_batch",
+        }
+    }
+}
+
 /// RAII guard for recording mint operation metrics.
 ///
 /// The guard increments the in-flight gauge when it is created, records the
@@ -104,6 +194,8 @@ pub struct CdkMetrics {
     federation_signing_share_latency: HistogramVec,
     federation_aggregation_failures_total: IntCounterVec,
     federation_state_digest_mismatches_total: IntCounterVec,
+    federation_checkpoint_work_total: IntCounterVec,
+    federation_checkpoint_duration: HistogramVec,
 }
 
 #[derive(Debug)]
@@ -130,6 +222,8 @@ struct FederationMetricCollectors {
     signing_share_latency: HistogramVec,
     aggregation_failures_total: IntCounterVec,
     state_digest_mismatches_total: IntCounterVec,
+    checkpoint_work_total: IntCounterVec,
+    checkpoint_duration: HistogramVec,
 }
 
 impl CdkMetrics {
@@ -203,6 +297,8 @@ impl CdkMetrics {
             federation_aggregation_failures_total: federation_metrics.aggregation_failures_total,
             federation_state_digest_mismatches_total: federation_metrics
                 .state_digest_mismatches_total,
+            federation_checkpoint_work_total: federation_metrics.checkpoint_work_total,
+            federation_checkpoint_duration: federation_metrics.checkpoint_duration,
         })
     }
 
@@ -592,6 +688,27 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(federation_state_digest_mismatches_total.clone()))?;
 
+        let federation_checkpoint_work_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_checkpoint_work_total",
+                "Cumulative checkpoint and restart work grouped by a fixed unit",
+            ),
+            &["member", "work"],
+        )?;
+        registry.register(Box::new(federation_checkpoint_work_total.clone()))?;
+
+        let federation_checkpoint_duration = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "cdk_federation_checkpoint_duration_seconds",
+                "Checkpoint and restart operation duration grouped by a fixed operation",
+            )
+            .buckets(vec![
+                0.000_1, 0.000_5, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0,
+            ]),
+            &["member", "operation"],
+        )?;
+        registry.register(Box::new(federation_checkpoint_duration.clone()))?;
+
         Ok(FederationMetricCollectors {
             consensus_operation_count: federation_consensus_operation_count,
             sync_ready: federation_sync_ready,
@@ -615,6 +732,8 @@ impl CdkMetrics {
             signing_share_latency: federation_signing_share_latency,
             aggregation_failures_total: federation_aggregation_failures_total,
             state_digest_mismatches_total: federation_state_digest_mismatches_total,
+            checkpoint_work_total: federation_checkpoint_work_total,
+            checkpoint_duration: federation_checkpoint_duration,
         })
     }
 
@@ -910,6 +1029,30 @@ impl CdkMetrics {
             .with_label_values(&[member, peer])
             .inc();
     }
+
+    /// Add a bounded unit of checkpoint or restart work.
+    pub fn record_federation_checkpoint_work(
+        &self,
+        member: &str,
+        work: FederationCheckpointWork,
+        count: u64,
+    ) {
+        self.federation_checkpoint_work_total
+            .with_label_values(&[member, work.as_str()])
+            .inc_by(count);
+    }
+
+    /// Record the duration of one fixed checkpoint or restart operation.
+    pub fn record_federation_checkpoint_duration(
+        &self,
+        member: &str,
+        operation: FederationCheckpointOperation,
+        duration_seconds: f64,
+    ) {
+        self.federation_checkpoint_duration
+            .with_label_values(&[member, operation.as_str()])
+            .observe(duration_seconds);
+    }
 }
 
 impl Default for CdkMetrics {
@@ -925,7 +1068,10 @@ mod tests {
 
     use prometheus::core::Collector;
 
-    use super::{CdkMetrics, MintMetricGuard, METRICS};
+    use super::{
+        CdkMetrics, FederationCheckpointOperation, FederationCheckpointWork, MintMetricGuard,
+        METRICS,
+    };
 
     static METRICS_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -1139,6 +1285,36 @@ mod tests {
                 .get(),
             1
         );
+    }
+
+    #[test]
+    fn federation_checkpoint_metrics_use_fixed_work_and_operation_labels() {
+        let metrics = CdkMetrics::new().expect("metrics should be created");
+        let member = "2";
+
+        metrics.record_federation_checkpoint_work(
+            member,
+            FederationCheckpointWork::StartupTailJournalRowsLoaded,
+            7,
+        );
+        metrics.record_federation_checkpoint_duration(
+            member,
+            FederationCheckpointOperation::StartupTail,
+            0.25,
+        );
+
+        assert_eq!(
+            metrics
+                .federation_checkpoint_work_total
+                .with_label_values(&[member, "startup_tail_journal_rows_loaded"])
+                .get(),
+            7
+        );
+        let duration = metrics
+            .federation_checkpoint_duration
+            .with_label_values(&[member, "startup_tail"]);
+        assert_eq!(duration.get_sample_count(), 1);
+        assert_eq!(duration.get_sample_sum(), 0.25);
     }
 
     #[test]

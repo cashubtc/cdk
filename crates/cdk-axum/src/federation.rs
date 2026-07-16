@@ -8,11 +8,12 @@ use axum::Router;
 #[cfg(test)]
 use cdk::federation::FederationLocalStatusResponse;
 use cdk::federation::{
-    redact_federation_operator_message, FederationError, FederationMaterializedStateRowFingerprint,
+    redact_federation_operator_message, FederationCheckpointQuorum, FederationConfig,
+    FederationError, FederationMaterializedStateRowFingerprint,
     FederationMaterializedStateSnapshot, FederationOperationStatus, FederationPeerStatus,
     FederationRestMessageKind, FederationRestSequenceTracker, FederationSignedRequest,
     FederationSubmitOperationRequest, FederationSubmitOperationResponse,
-    FederationVerifiedOperationAdmission, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
+    FederationVerifiedOperationAdmission, MemberId, FEDERATION_MAX_DKG_REQUEST_BODY_BYTES,
 };
 #[cfg(test)]
 use cdk::federation::{
@@ -112,8 +113,8 @@ use self::sync_loop::{
 pub(crate) use self::wallet_liveness::FederationWalletLivenessWorker;
 #[cfg(test)]
 use cdk::federation::{
-    FederationConfig, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
-    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationId, FederationJournalCatchUpRequest,
     FederationMaterializedStateRow, FederationPeerStatusRequest,
 };
@@ -125,6 +126,33 @@ use tokio::time::{self, Duration};
 type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTracker>>;
 
 const FEDERATION_DISABLE_PEER_SYNC_ENV_VAR: &str = "CDK_FEDERATION_DISABLE_PEER_SYNC";
+
+pub(crate) fn verify_checkpoint_quorum_with_metrics(
+    quorum: &FederationCheckpointQuorum,
+    config: &FederationConfig,
+    local_member: MemberId,
+) -> Result<(), cdk::Error> {
+    #[cfg(feature = "prometheus")]
+    let started_at = std::time::Instant::now();
+    let result = quorum.verify(config).map(|_| ()).map_err(cdk::Error::from);
+    #[cfg(feature = "prometheus")]
+    {
+        let member = local_member.to_string();
+        cdk_prometheus::METRICS.record_federation_checkpoint_work(
+            &member,
+            cdk_prometheus::FederationCheckpointWork::SignaturesVerified,
+            u64::try_from(quorum.signatures.len()).unwrap_or(u64::MAX),
+        );
+        cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+            &member,
+            cdk_prometheus::FederationCheckpointOperation::SignatureVerification,
+            started_at.elapsed().as_secs_f64(),
+        );
+    }
+    #[cfg(not(feature = "prometheus"))]
+    let _ = local_member;
+    result
+}
 
 pub(crate) fn create_federation_router() -> Router<MintState> {
     let dkg_router = Router::new()
@@ -585,8 +613,17 @@ async fn local_peer_status_with_materialized_rows(
     Vec<FederationMaterializedStateRowFingerprint>,
 )> {
     let mut status = local_peer_status(state).await?;
+    #[cfg(feature = "prometheus")]
+    let digest_started_at = std::time::Instant::now();
     let snapshot = materialized_state_snapshot(state).await?;
-    status.materialized_state_digest = Some(snapshot.digest()?);
+    let digest = snapshot.digest()?;
+    #[cfg(feature = "prometheus")]
+    cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+        &status.member_id.to_string(),
+        cdk_prometheus::FederationCheckpointOperation::MaterializedStateDigest,
+        digest_started_at.elapsed().as_secs_f64(),
+    );
+    status.materialized_state_digest = Some(digest);
     let materialized_state_rows = snapshot.row_fingerprints()?;
     Ok((status, materialized_state_rows))
 }

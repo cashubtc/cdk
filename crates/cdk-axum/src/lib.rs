@@ -2420,6 +2420,8 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation")] federation_bdk_config: Option<FederatedBdkLocalConfig>,
     #[cfg(all(test, feature = "federation"))] federation_local_finality_test: bool,
 ) -> Result<Router> {
+    #[cfg(all(feature = "federation", feature = "prometheus"))]
+    let federation_startup_started_at = std::time::Instant::now();
     #[cfg(feature = "federation")]
     let (
         federation_consensus,
@@ -2537,6 +2539,14 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation")]
     if spawn_federation_peer_sync {
         state.restore_federation_startup_readiness().await;
+    }
+    #[cfg(all(feature = "federation", feature = "prometheus"))]
+    if let Some(config) = state.mint.federation_config() {
+        cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+            &config.member_id().to_string(),
+            cdk_prometheus::FederationCheckpointOperation::StartupReadiness,
+            federation_startup_started_at.elapsed().as_secs_f64(),
+        );
     }
     #[cfg(feature = "federation")]
     let expose_federation_routes =
@@ -2858,7 +2868,11 @@ async fn create_federation_runtime_state_with_wallet(
             .into());
         }
         (Some(trusted_checkpoint_id), Some(quorum)) => {
-            quorum.verify(config.public_config())?;
+            federation::verify_checkpoint_quorum_with_metrics(
+                &quorum,
+                config.public_config(),
+                config.member_id(),
+            )?;
             if quorum.checkpoint.id()? != trusted_checkpoint_id {
                 return Err(FederationError::CheckpointInvalid {
                     reason: "trusted checkpoint ID does not match its stored quorum".to_string(),
@@ -2883,6 +2897,8 @@ async fn create_federation_runtime_state_with_wallet(
                 }
                 Some(consensus)
             } else {
+                #[cfg(feature = "prometheus")]
+                let tail_started_at = std::time::Instant::now();
                 let journal_entries = db
                     .get_federation_journal_entries_from(quorum.checkpoint.journal_next_index)
                     .await?;
@@ -2891,6 +2907,32 @@ async fn create_federation_runtime_state_with_wallet(
                         quorum.checkpoint.finalized_next_item_index,
                     )
                     .await?;
+                #[cfg(feature = "prometheus")]
+                {
+                    let member = config.member_id().to_string();
+                    let journal_rows = u64::try_from(journal_entries.len()).unwrap_or(u64::MAX);
+                    let finalized_rows = u64::try_from(finalized_items.len()).unwrap_or(u64::MAX);
+                    cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                        &member,
+                        cdk_prometheus::FederationCheckpointWork::JournalRowsLoaded,
+                        journal_rows,
+                    );
+                    cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                        &member,
+                        cdk_prometheus::FederationCheckpointWork::FinalizedItemsLoaded,
+                        finalized_rows,
+                    );
+                    cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                        &member,
+                        cdk_prometheus::FederationCheckpointWork::StartupTailJournalRowsLoaded,
+                        journal_rows,
+                    );
+                    cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                        &member,
+                        cdk_prometheus::FederationCheckpointWork::StartupTailFinalizedItemsLoaded,
+                        finalized_rows,
+                    );
+                }
                 validate_checkpoint_startup_suffix(
                     &quorum.checkpoint,
                     &frontier,
@@ -2900,7 +2942,7 @@ async fn create_federation_runtime_state_with_wallet(
                 let recovered_session = latest_aleph_bft_finalized_session(&finalized_items)
                     .max(active_session)
                     .max(quorum.checkpoint.aleph_bft_session);
-                Some(
+                let consensus =
                     FederationConsensusRuntime::authenticated_aleph_bft_from_checkpoint_suffix(
                         config.public_config(),
                         config.member_id(),
@@ -2908,8 +2950,14 @@ async fn create_federation_runtime_state_with_wallet(
                         &quorum.checkpoint,
                         journal_entries,
                         finalized_items,
-                    )?,
-                )
+                    )?;
+                #[cfg(feature = "prometheus")]
+                cdk_prometheus::METRICS.record_federation_checkpoint_duration(
+                    &config.member_id().to_string(),
+                    cdk_prometheus::FederationCheckpointOperation::StartupTail,
+                    tail_started_at.elapsed().as_secs_f64(),
+                );
+                Some(consensus)
             }
         }
     };
@@ -2919,6 +2967,25 @@ async fn create_federation_runtime_state_with_wallet(
         None => {
             let persisted_entries = db.get_federation_journal_entries().await?;
             let finalized_items = db.get_federation_aleph_bft_finalized_items().await?;
+            #[cfg(feature = "prometheus")]
+            {
+                let member = config.member_id().to_string();
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &member,
+                    cdk_prometheus::FederationCheckpointWork::JournalRowsLoaded,
+                    u64::try_from(persisted_entries.len()).unwrap_or(u64::MAX),
+                );
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &member,
+                    cdk_prometheus::FederationCheckpointWork::FinalizedItemsLoaded,
+                    u64::try_from(finalized_items.len()).unwrap_or(u64::MAX),
+                );
+                cdk_prometheus::METRICS.record_federation_checkpoint_work(
+                    &member,
+                    cdk_prometheus::FederationCheckpointWork::StartupEntriesReplayed,
+                    u64::try_from(persisted_entries.len()).unwrap_or(u64::MAX),
+                );
+            }
             let recovered_session =
                 latest_aleph_bft_finalized_session(&finalized_items).max(active_session);
             let mut consensus =
