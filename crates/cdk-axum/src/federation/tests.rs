@@ -8427,6 +8427,138 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .is_some());
 }
 
+#[cfg(feature = "prometheus")]
+#[tokio::test]
+async fn long_offline_member_recovers_from_one_quorum_holder_without_signer_work() {
+    let federation_api_urls = (1u16..=7)
+        .map(|value| {
+            MintUrl::from_str(&format!("https://checkpoint-peer-{value}.test"))
+                .expect("federation api url")
+        })
+        .collect();
+    let (public_config, private_configs) = transport_config_with_member_federation_api_urls(
+        ThresholdParams::with_bft_consensus(7, 4).expect("threshold params"),
+        federation_api_urls,
+    );
+    let source_private = private_configs[5].clone();
+    let target_private = private_configs[6].clone();
+    let source =
+        federation_route_state_for_private(public_config.clone(), source_private.clone()).await;
+    let target =
+        federation_route_state_for_private(public_config.clone(), target_private.clone()).await;
+    let quote_ids = (0..3).map(|_| QuoteId::new()).collect::<Vec<_>>();
+    for quote_id in &quote_ids {
+        source
+            .submit_federation_envelope(mint_quote_envelope(&source, quote_id))
+            .await
+            .expect("source accepted offline-history operation");
+    }
+
+    let signers = private_configs.iter().take(5).collect::<Vec<_>>();
+    let (checkpoint, quorum) =
+        recovery_checkpoint_quorum_for_state(&source, &public_config, None, &signers).await;
+    let checkpoint_id = checkpoint.id().expect("offline recovery checkpoint id");
+    let source_db = source.mint.localstore();
+    let mut tx = source_db
+        .begin_transaction()
+        .await
+        .expect("begin source checkpoint promotion");
+    tx.promote_verified_federation_checkpoint(&quorum)
+        .await
+        .expect("promote source checkpoint");
+    tx.commit().await.expect("commit source checkpoint");
+    seed_synthetic_active_session_backup(&source, checkpoint.aleph_bft_session, 1, 16).await;
+
+    let signer_work_before = signers
+        .iter()
+        .map(|private| {
+            let member = private.member_id.to_string();
+            let work = prometheus_metric_sum(
+                "cdk_federation_checkpoint_work_total",
+                &[("member", member.as_str())],
+            );
+            (member, work)
+        })
+        .collect::<Vec<_>>();
+    let router = Router::new()
+        .nest("/federation/v1", create_federation_router())
+        .with_state(source);
+    let client = FederationRestPeerClient::new(
+        RouterFederationTransport::new(router),
+        &public_config,
+        target_private,
+    )
+    .expect("single-source checkpoint client");
+    let source_member = public_config
+        .member(source_private.member_id)
+        .expect("quorum-holder member");
+
+    client
+        .sync_once_from_member(&target, source_member)
+        .await
+        .expect("discover offline checkpoint target");
+    assert_eq!(
+        exchange_checkpoint_round(&target, &client, &[source_member]).await,
+        1
+    );
+    let target_db = target.mint.localstore();
+    assert!(target_db
+        .get_federation_checkpoint_quorum(checkpoint_id)
+        .await
+        .expect("fetched checkpoint quorum")
+        .is_some());
+    assert!(target_db
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+        .expect("unpromoted fetched checkpoint")
+        .is_none());
+
+    let peer_status = client
+        .sync_once_from_member(&target, source_member)
+        .await
+        .expect("catch up offline member to checkpoint");
+    assert_eq!(peer_status.operation_count, 3);
+    assert_eq!(
+        target_db
+            .get_trusted_federation_checkpoint_quorum()
+            .await
+            .expect("trusted recovered checkpoint")
+            .expect("promoted recovered checkpoint")
+            .checkpoint
+            .id()
+            .expect("trusted recovered checkpoint id"),
+        checkpoint_id
+    );
+    for quote_id in &quote_ids {
+        assert!(target_db
+            .get_mint_quote(quote_id)
+            .await
+            .expect("recovered quote lookup")
+            .is_some());
+    }
+    let consensus = target
+        .federation
+        .consensus
+        .as_ref()
+        .expect("recovered target consensus")
+        .lock()
+        .await;
+    assert_eq!(consensus.status().accepted_operation_count, 3);
+    assert!(consensus.journal().entries().is_empty());
+    assert!(consensus.finalized_items().is_empty());
+    drop(consensus);
+    for (member, before) in signer_work_before {
+        assert_eq!(
+            prometheus_metric_sum(
+                "cdk_federation_checkpoint_work_total",
+                &[("member", member.as_str())],
+            ),
+            before,
+            "historical signer performed recovery-time checkpoint work"
+        );
+    }
+}
+
 #[tokio::test]
 async fn federation_dkg_setup_runtime_has_no_persisted_application_consensus() {
     let (mut public_config, mut local_private, _) = transport_config();

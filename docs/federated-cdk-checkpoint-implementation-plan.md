@@ -1679,7 +1679,7 @@ weakening catch-up, restart, or Byzantine fault handling.
       traffic with milestone 0.
 - [ ] Redeploy a fresh development federation and exercise member restart from
       scheduled and recovery checkpoints after creating several batches.
-- [ ] Recover a long-offline member using checkpoint quorums fetched from one
+- [x] Recover a long-offline member using checkpoint quorums fetched from one
       peer and assert that historical signers perform zero new signature or
       journal-scan work.
 - [x] Run the explicit operator materialized-state audit against matching and
@@ -1811,6 +1811,27 @@ This keeps signature, threshold, response-binding, rolling-commitment,
 application, and promotion checks in one end-to-end member-runtime test. The
 focused test passes with federation enabled; lower-level mutation permutations
 remain centralized in the checkpoint and transport modules.
+
+### Local single-source offline-recovery evidence
+
+A seven-member BFT harness now separates every recovery role. Members one
+through five are the historical checkpoint signers, member six holds the
+assembled quorum and all finalized bodies, and member seven starts from genesis
+as the long-offline target. The target is configured with only member six's
+real private federation router. Its first discovery pass fetches and persists
+the stored five-signature quorum; its second pass downloads the three-operation
+batch and bounded current-session backup from the same source, validates the
+rolling commitments, and promotes the exact recovery checkpoint.
+
+After promotion, all three quotes are materialized, the authenticated runtime
+reports all three accepted operations, and no journal or finalized prefix rows
+remain in memory. Aggregate checkpoint-work counters for each of the five
+historical signers are snapshotted after quorum creation and remain unchanged
+through recovery. The test therefore proves one-source body/proof transfer with
+zero recovery-time signature or journal-scan work by the original signers. It
+does not mark the member healthy from one source; the separate quorum-readiness
+gate remains intact. The focused release test passes with federation and
+Prometheus enabled.
 
 ### Local operator-audit evidence
 
