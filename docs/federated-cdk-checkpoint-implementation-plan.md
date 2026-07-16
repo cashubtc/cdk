@@ -1666,7 +1666,7 @@ weakening catch-up, restart, or Byzantine fault handling.
       real multi-member harness.
 - [ ] Measure idle CPU and work counters for at least ten minutes with a long
       synthetic history.
-- [ ] Measure cold start at multiple history sizes with suffix zero and a fixed
+- [x] Measure cold start at multiple history sizes with suffix zero and a fixed
       suffix and fixed active-session backup size; fit/report whether work
       scales with history, suffix, or current-session backup.
 - [ ] Repeat the federation receive stress matrix and compare confirmed TPS,
@@ -1682,6 +1682,49 @@ weakening catch-up, restart, or Byzantine fault handling.
       status, or peer sync.
 - [ ] Record aggregate findings without credentials, private URLs, machine
       identifiers, private keys, database copies, or bearer tokens.
+
+### Local performance evidence
+
+The Milestone 0 file-backed SQLite benchmark now reuses one synthetic history
+to measure three restart shapes at 1,000, 10,000, and 100,000 finalized
+operations:
+
+1. an exact trusted checkpoint with no AlephBFT backup;
+2. the same exact checkpoint with four active-session backup chunks totaling
+   4,096 bytes;
+3. a fixed 64-operation journal/finalized suffix with the same four chunks.
+
+The timed backup cases reconstruct the federation runtime and then invoke the
+same `CdkAlephBftSessionIo::from_db` path used to resume the live AlephBFT
+session. The suffix uses the same consensus and durable transaction fixture as
+the prefix; there is no benchmark-only row format or alternate startup loader.
+One release run produced:
+
+| Historical prefix | Exact, no backup | Exact + 4 KiB backup | 64-op suffix + 4 KiB backup |
+| ---: | ---: | ---: | ---: |
+| 1,000 | 8.428 ms | 10.268 ms | 11.479 ms |
+| 10,000 | 8.422 ms | 10.460 ms | 11.663 ms |
+| 100,000 | 8.434 ms | 10.148 ms | 11.437 ms |
+
+At every history size, exact startup loaded zero journal/finalized rows; the
+fixed-tail case loaded exactly 64 journal rows and 64 finalized items. Both
+backup cases loaded exactly 4,096 bytes in four chunks. Every case verified the
+same two checkpoint signatures, replayed zero pre-checkpoint entries, and
+performed zero materialized-state audits. Exact-plus-backup timing varied by
+0.312 ms across the 100x history range, while fixed-tail timing varied by
+0.226 ms. The observed work therefore scales with suffix `S` plus current
+session backup `B`, not retained history `H`.
+
+The benchmark is reproducible with:
+
+```bash
+cargo test --release -p cdk-axum --features federation,prometheus \
+  benchmark_checkpoint_startup_is_history_length_independent -- \
+  --ignored --nocapture
+```
+
+Raw compiler and test output remains outside the repository; only these
+payload-free aggregates are retained here.
 
 ### Files and references
 

@@ -82,6 +82,7 @@ use super::aleph_bft_network::{
 };
 use super::aleph_bft_runtime::{
     CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetwork, CdkAlephBftNetworkData,
+    CdkAlephBftSessionIo,
 };
 use super::aleph_bft_session::AlephBftSessionSupervisorState;
 use super::peer_client::FederationRestPeerClientError;
@@ -20812,31 +20813,15 @@ async fn reset_synthetic_history_consensus(
 }
 
 #[cfg(feature = "prometheus")]
-async fn build_synthetic_checkpoint_history(
+async fn append_synthetic_history_conflicts(
     state: &mut MintState,
     public_config: &FederationConfig,
     local_private: &MemberConfigPrivate,
-    peer_private: &MemberConfigPrivate,
+    base_envelope: &FederationOperationEnvelope,
+    base_entry: &FederationJournalEntry,
+    mut next_operation_index: u64,
     operation_count: u64,
-) -> FederationCheckpoint {
-    assert!(operation_count > 0, "synthetic history must be non-empty");
-    let quote_id = QuoteId::new();
-    let base_envelope = mint_quote_envelope(state, &quote_id);
-    state
-        .submit_federation_envelope(base_envelope.clone())
-        .await
-        .expect("apply synthetic history conflict anchor");
-    let base_entry = state
-        .mint
-        .localstore()
-        .get_federation_journal_entry_by_operation_id(
-            base_envelope.operation_id().expect("base operation id"),
-        )
-        .await
-        .expect("load synthetic history conflict anchor")
-        .expect("synthetic history conflict anchor exists");
-
-    let mut next_operation_index = 1_u64;
+) {
     while next_operation_index < operation_count {
         let batch_len = usize::try_from(
             operation_count
@@ -20850,7 +20835,7 @@ async fn build_synthetic_checkpoint_history(
                     u64::try_from(offset).expect("synthetic batch offset fits in u64"),
                 );
                 FederationConsensusItem::operation(synthetic_conflicting_mint_quote_envelope(
-                    &base_envelope,
+                    base_envelope,
                     local_private,
                     operation_index,
                 ))
@@ -20905,8 +20890,45 @@ async fn build_synthetic_checkpoint_history(
         next_operation_index = next_operation_index.saturating_add(
             u64::try_from(batch_len).expect("synthetic batch length fits in u64"),
         );
-        reset_synthetic_history_consensus(state, public_config, &base_entry).await;
+        reset_synthetic_history_consensus(state, public_config, base_entry).await;
     }
+}
+
+#[cfg(feature = "prometheus")]
+async fn build_synthetic_checkpoint_history(
+    state: &mut MintState,
+    public_config: &FederationConfig,
+    local_private: &MemberConfigPrivate,
+    peer_private: &MemberConfigPrivate,
+    operation_count: u64,
+) -> FederationCheckpoint {
+    assert!(operation_count > 0, "synthetic history must be non-empty");
+    let quote_id = QuoteId::new();
+    let base_envelope = mint_quote_envelope(state, &quote_id);
+    state
+        .submit_federation_envelope(base_envelope.clone())
+        .await
+        .expect("apply synthetic history conflict anchor");
+    let base_entry = state
+        .mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(
+            base_envelope.operation_id().expect("base operation id"),
+        )
+        .await
+        .expect("load synthetic history conflict anchor")
+        .expect("synthetic history conflict anchor exists");
+
+    append_synthetic_history_conflicts(
+        state,
+        public_config,
+        local_private,
+        &base_envelope,
+        &base_entry,
+        1,
+        operation_count,
+    )
+    .await;
 
     let frontier = state
         .mint
@@ -20946,6 +20968,137 @@ fn checkpoint_work_delta(member: &str, work: &str, before: f64) -> f64 {
         "cdk_federation_checkpoint_work_total",
         &[("member", member), ("work", work)],
     ) - before
+}
+
+#[cfg(feature = "prometheus")]
+const SYNTHETIC_STARTUP_WORK_NAMES: [&str; 8] = [
+    "journal_rows_loaded",
+    "finalized_items_loaded",
+    "signatures_verified",
+    "startup_entries_replayed",
+    "startup_tail_journal_rows_loaded",
+    "startup_tail_finalized_items_loaded",
+    "backup_bytes_loaded",
+    "backup_chunks_loaded",
+];
+
+#[cfg(feature = "prometheus")]
+struct SyntheticCheckpointStartupMeasurement {
+    consensus: Arc<tokio::sync::Mutex<FederationConsensusRuntime>>,
+    elapsed: Duration,
+    work: [f64; SYNTHETIC_STARTUP_WORK_NAMES.len()],
+    materialized_state_audits: f64,
+}
+
+#[cfg(feature = "prometheus")]
+async fn measure_synthetic_checkpoint_startup(
+    state: &MintState,
+    public_config: &FederationConfig,
+    local_private: &MemberConfigPrivate,
+    load_active_session_backup: bool,
+) -> SyntheticCheckpointStartupMeasurement {
+    let member_label = local_private.member_id.to_string();
+    let before = SYNTHETIC_STARTUP_WORK_NAMES.map(|work| {
+        prometheus_metric_value(
+            "cdk_federation_checkpoint_work_total",
+            &[("member", member_label.as_str()), ("work", work)],
+        )
+    });
+    let audit_labels = [
+        ("member", member_label.as_str()),
+        ("operation", "materialized_state_digest"),
+    ];
+    let audits_before = prometheus_metric_value(
+        "cdk_federation_checkpoint_duration_seconds_count",
+        &audit_labels,
+    );
+
+    let started = std::time::Instant::now();
+    let (consensus, _) = crate::create_federation_runtime_state(&state.mint)
+        .await
+        .expect("restart from synthetic checkpoint");
+    let consensus = consensus.expect("synthetic checkpoint consensus");
+    if load_active_session_backup {
+        let session = consensus.lock().await.status().session;
+        let keychain = CdkAlephBftKeychain::try_new(public_config, local_private.clone())
+            .expect("synthetic startup keychain");
+        let db = state.mint.localstore();
+        let _session_io = CdkAlephBftSessionIo::from_db(
+            Arc::clone(&consensus),
+            Arc::clone(&db),
+            session,
+            CdkAlephBftActivityHint::default(),
+            keychain,
+        )
+        .await
+        .expect("load synthetic active-session backup");
+    }
+    let elapsed = started.elapsed();
+    let work = std::array::from_fn(|index| {
+        checkpoint_work_delta(
+            &member_label,
+            SYNTHETIC_STARTUP_WORK_NAMES[index],
+            before[index],
+        )
+    });
+    let materialized_state_audits = prometheus_metric_value(
+        "cdk_federation_checkpoint_duration_seconds_count",
+        &audit_labels,
+    ) - audits_before;
+
+    SyntheticCheckpointStartupMeasurement {
+        consensus,
+        elapsed,
+        work,
+        materialized_state_audits,
+    }
+}
+
+#[cfg(feature = "prometheus")]
+async fn seed_synthetic_active_session_backup(
+    state: &MintState,
+    session: u64,
+    chunk_count: usize,
+    bytes_per_chunk: usize,
+) {
+    let chunks = (0..chunk_count)
+        .map(|index| vec![u8::try_from(index.saturating_add(1)).unwrap_or(u8::MAX); bytes_per_chunk])
+        .collect::<Vec<_>>();
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin synthetic backup transaction");
+    tx.replace_federation_aleph_bft_backup_chunks(session, &chunks)
+        .await
+        .expect("persist synthetic backup chunks");
+    tx.set_federation_aleph_bft_active_session(session)
+        .await
+        .expect("persist synthetic active session");
+    tx.commit().await.expect("commit synthetic backup");
+}
+
+#[cfg(feature = "prometheus")]
+fn print_synthetic_checkpoint_startup(
+    scenario: &str,
+    operation_count: u64,
+    suffix_operations: u64,
+    measurement: &SyntheticCheckpointStartupMeasurement,
+) {
+    eprintln!(
+        "checkpoint_startup scenario={scenario} operations={operation_count} suffix_operations={suffix_operations} elapsed_us={} journal_rows_loaded={:.0} finalized_items_loaded={:.0} signatures_verified={:.0} startup_entries_replayed={:.0} startup_tail_journal_rows_loaded={:.0} startup_tail_finalized_items_loaded={:.0} backup_bytes_loaded={:.0} backup_chunks_loaded={:.0} materialized_state_audits={:.0}",
+        measurement.elapsed.as_micros(),
+        measurement.work[0],
+        measurement.work[1],
+        measurement.work[2],
+        measurement.work[3],
+        measurement.work[4],
+        measurement.work[5],
+        measurement.work[6],
+        measurement.work[7],
+        measurement.materialized_state_audits,
+    );
 }
 
 #[cfg(feature = "prometheus")]
@@ -21005,74 +21158,141 @@ async fn benchmark_checkpoint_startup_is_history_length_independent() {
                 .await
                 .expect("reopen synthetic history sqlite database"),
         );
-        let restarted = federation_route_state_for_private_with_db(
-            public_config,
-            local_private,
+        let mut restarted = federation_route_state_for_private_with_db(
+            public_config.clone(),
+            local_private.clone(),
             reopened_db,
             &seed,
         )
         .await;
-        let member_label = local_member.to_string();
-        let work_names = [
-            "journal_rows_loaded",
-            "finalized_items_loaded",
-            "signatures_verified",
-            "startup_entries_replayed",
-            "startup_tail_journal_rows_loaded",
-            "startup_tail_finalized_items_loaded",
-            "backup_bytes_loaded",
-            "backup_chunks_loaded",
-        ];
-        let before = work_names
-            .iter()
-            .map(|work| {
-                prometheus_metric_value(
-                    "cdk_federation_checkpoint_work_total",
-                    &[("member", member_label.as_str()), ("work", work)],
-                )
-            })
-            .collect::<Vec<_>>();
+        let exact = measure_synthetic_checkpoint_startup(
+            &restarted,
+            &public_config,
+            &local_private,
+            false,
+        )
+        .await;
+        {
+            let consensus = exact.consensus.lock().await;
+            assert_eq!(
+                consensus.status().accepted_operation_count,
+                operation_count
+            );
+            assert_eq!(consensus.status().finalized_item_count, operation_count);
+            assert!(consensus.journal().entries().is_empty());
+            assert!(consensus.finalized_items().is_empty());
+        }
+        assert_eq!(exact.work, [0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(exact.materialized_state_audits, 0.0);
+        print_synthetic_checkpoint_startup("exact", operation_count, 0, &exact);
 
-        let started = std::time::Instant::now();
-        let (consensus, _) = crate::create_federation_runtime_state(&restarted.mint)
-            .await
-            .expect("restart from synthetic checkpoint");
-        let elapsed = started.elapsed();
-        let consensus = consensus.expect("synthetic checkpoint consensus");
-        let consensus = consensus.lock().await;
-        assert_eq!(
-            consensus.status().accepted_operation_count,
-            operation_count
+        restarted.federation.consensus = Some(exact.consensus);
+        seed_synthetic_active_session_backup(&restarted, 0, 4, 1_024).await;
+        drop(restarted);
+
+        let backup_db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("reopen synthetic backup database"),
         );
-        assert_eq!(consensus.status().finalized_item_count, operation_count);
-        assert!(consensus.journal().entries().is_empty());
-        assert!(consensus.finalized_items().is_empty());
-        drop(consensus);
+        let mut backup_state = federation_route_state_for_private_with_db(
+            public_config.clone(),
+            local_private.clone(),
+            backup_db,
+            &seed,
+        )
+        .await;
+        let exact_with_backup = measure_synthetic_checkpoint_startup(
+            &backup_state,
+            &public_config,
+            &local_private,
+            true,
+        )
+        .await;
+        {
+            let consensus = exact_with_backup.consensus.lock().await;
+            assert_eq!(
+                consensus.status().accepted_operation_count,
+                operation_count
+            );
+            assert_eq!(consensus.status().finalized_item_count, operation_count);
+            assert!(consensus.journal().entries().is_empty());
+            assert!(consensus.finalized_items().is_empty());
+        }
+        assert_eq!(
+            exact_with_backup.work,
+            [0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 4_096.0, 4.0]
+        );
+        assert_eq!(exact_with_backup.materialized_state_audits, 0.0);
+        print_synthetic_checkpoint_startup(
+            "exact_with_backup",
+            operation_count,
+            0,
+            &exact_with_backup,
+        );
 
-        let deltas = work_names
-            .iter()
-            .zip(before)
-            .map(|(work, before)| checkpoint_work_delta(&member_label, work, before))
-            .collect::<Vec<_>>();
-        assert_eq!(deltas[0], 0.0, "checkpoint startup loaded journal prefix");
-        assert_eq!(deltas[1], 0.0, "checkpoint startup loaded finalized prefix");
-        assert_eq!(deltas[2], 2.0, "checkpoint startup quorum verification");
-        assert_eq!(deltas[3], 0.0, "checkpoint startup replayed journal prefix");
-        assert_eq!(deltas[4], 0.0, "checkpoint startup loaded journal suffix");
-        assert_eq!(deltas[5], 0.0, "checkpoint startup loaded finalized suffix");
-        assert_eq!(deltas[6], 0.0, "checkpoint startup loaded backup bytes");
-        assert_eq!(deltas[7], 0.0, "checkpoint startup loaded backup chunks");
-        eprintln!(
-            "checkpoint_startup operations={operation_count} elapsed_us={} journal_rows_loaded={:.0} finalized_items_loaded={:.0} signatures_verified={:.0} startup_entries_replayed={:.0} startup_tail_journal_rows_loaded={:.0} startup_tail_finalized_items_loaded={:.0} backup_bytes_loaded={:.0} backup_chunks_loaded={:.0}",
-            elapsed.as_micros(),
-            deltas[0],
-            deltas[1],
-            deltas[2],
-            deltas[3],
-            deltas[4],
-            deltas[5],
-            deltas[6],
-            deltas[7]
+        backup_state.federation.consensus = Some(exact_with_backup.consensus);
+        let base_entry = backup_state
+            .mint
+            .localstore()
+            .get_federation_journal_entries_range(0, 1, 1)
+            .await
+            .expect("load synthetic suffix conflict anchor")
+            .pop()
+            .expect("synthetic suffix conflict anchor exists");
+        reset_synthetic_history_consensus(&mut backup_state, &public_config, &base_entry).await;
+        let suffix_operations = 64_u64;
+        let suffix_tip = operation_count
+            .checked_add(suffix_operations)
+            .expect("synthetic suffix tip");
+        append_synthetic_history_conflicts(
+            &mut backup_state,
+            &public_config,
+            &local_private,
+            &base_entry.envelope,
+            &base_entry,
+            operation_count,
+            suffix_tip,
+        )
+        .await;
+        drop(backup_state);
+
+        let tail_db = Arc::new(
+            cdk_sqlite::MintSqliteDatabase::new(db_file.path())
+                .await
+                .expect("reopen synthetic checkpoint tail database"),
+        );
+        let tail_state = federation_route_state_for_private_with_db(
+            public_config.clone(),
+            local_private.clone(),
+            tail_db,
+            &seed,
+        )
+        .await;
+        let tail_with_backup = measure_synthetic_checkpoint_startup(
+            &tail_state,
+            &public_config,
+            &local_private,
+            true,
+        )
+        .await;
+        {
+            let consensus = tail_with_backup.consensus.lock().await;
+            assert_eq!(consensus.status().accepted_operation_count, suffix_tip);
+            assert_eq!(consensus.status().finalized_item_count, suffix_tip);
+            assert_eq!(consensus.journal().entries().len(), 64);
+            assert_eq!(consensus.finalized_items().len(), 64);
+        }
+        assert_eq!(
+            tail_with_backup.work,
+            [64.0, 64.0, 2.0, 0.0, 64.0, 64.0, 4_096.0, 4.0]
+        );
+        assert_eq!(tail_with_backup.materialized_state_audits, 0.0);
+        print_synthetic_checkpoint_startup(
+            "fixed_tail_with_backup",
+            operation_count,
+            suffix_operations,
+            &tail_with_backup,
         );
     }
 }
