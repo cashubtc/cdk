@@ -8,6 +8,7 @@ cd "$REPO_ROOT"
 MINT_URL="${MINT_URL:-https://cdk-1.nocean.xyz}"
 SSH_HOST="${SSH_HOST:-nocean}"
 REMOTE_DIR="${REMOTE_DIR:-cdk-federation}"
+EXPECTED_MEMBERS="${EXPECTED_MEMBERS:-5}"
 CASES="${CASES:-10:1 20:5 20:10 20:20}"
 TOKEN_AMOUNT="${TOKEN_AMOUNT:-1}"
 FUNDING_BUFFER="${FUNDING_BUFFER:-50}"
@@ -19,6 +20,7 @@ BUILD_CLI="${BUILD_CLI:-1}"
 CLI="${CLI:-$REPO_ROOT/target/release/cdk-cli}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 RUN_DIR="${RUN_DIR:-$REPO_ROOT/target/federation-load-tests/$RUN_ID}"
+RUNTIME_SNAPSHOT_HEADER='member,pid,cpu_seconds,rss_kb,log_lines,sync_transitions,scheduled_checkpoints,recovery_checkpoints,quorums_transferred,checkpoints_promoted,catch_up_batches_applied,signatures_verified'
 
 usage() {
     cat <<'EOF'
@@ -27,6 +29,7 @@ controlled parallelism, and report end-to-end federation throughput.
 
 Usage:
   scripts/benchmark_nocean_federation.sh
+  scripts/benchmark_nocean_federation.sh --self-test
 
 Default benchmark matrix:
   CASES="10:1 20:5 20:10 20:20"
@@ -39,6 +42,11 @@ The report distinguishes wallet-confirmed TPS from committed journal TPS. Under
 overload an operation can commit while the client fails to collect enough
 signature shares for a successful response.
 
+The same observation window reports per-member and aggregate process CPU, RSS,
+log rate, sync-state transitions, and checkpoint work. Metrics stay on the
+remote loopback interface; only aggregate counters are copied into the private
+run directory.
+
 Environment overrides:
   CASES                       Space-separated N:parallelism cases
   TOKEN_AMOUNT                Amount in sat per prepared token (default: 1)
@@ -50,6 +58,7 @@ Environment overrides:
   MINT_URL                    Wallet-facing URL for the federation
   SSH_HOST                    SSH alias used for config and signed status checks
   REMOTE_DIR                  Remote deployment directory below $HOME
+  EXPECTED_MEMBERS            Members required in each metrics snapshot (default: 5)
   RUN_DIR                     Output directory
 
 The output directory is private because failed cases can leave unspent bearer
@@ -70,9 +79,118 @@ is_positive_integer() {
     [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
+aggregate_runtime_window() {
+    local start_snapshot="$1"
+    local end_snapshot="$2"
+    local duration_seconds="$3"
+    local expected_members="$4"
+    local member_output="$5"
+
+    awk -F, \
+        -v duration="$duration_seconds" \
+        -v expected_members="$expected_members" \
+        -v member_output="$member_output" \
+        -v snapshot_header="$RUNTIME_SNAPSHOT_HEADER" '
+        BEGIN {
+            OFS = ","
+            print "member,cpu_seconds,end_rss_kb,log_lines,sync_transitions,scheduled_checkpoints,recovery_checkpoints,quorums_transferred,checkpoints_promoted,catch_up_batches_applied,signatures_verified" > member_output
+        }
+        FNR == NR {
+            if (FNR == 1) {
+                if ($0 != snapshot_header) invalid = 1
+                next
+            }
+            if ($1 in start_seen) invalid = 1
+            start_seen[$1] = 1
+            start_pid[$1] = $2
+            for (field = 3; field <= 12; field++) {
+                start[$1, field] = $field
+            }
+            start_members += 1
+            next
+        }
+        FNR == 1 {
+            if ($0 != snapshot_header) invalid = 1
+            next
+        }
+        {
+            member = $1
+            if (member in end_seen) invalid = 1
+            end_seen[member] = 1
+            if (!(member in start_seen) || $2 != start_pid[member]) invalid = 1
+            for (field = 3; field <= 12; field++) {
+                if (field != 4 && $field < start[member, field]) invalid = 1
+            }
+            cpu = $3 - start[member, 3]
+            logs = $5 - start[member, 5]
+            sync = $6 - start[member, 6]
+            scheduled = $7 - start[member, 7]
+            recovery = $8 - start[member, 8]
+            quorums = $9 - start[member, 9]
+            promoted = $10 - start[member, 10]
+            catch_up = $11 - start[member, 11]
+            signatures = $12 - start[member, 12]
+            printf "%s,%.2f,%d,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f\n",
+                member, cpu, $4, logs, sync, scheduled, recovery, quorums,
+                promoted, catch_up, signatures >> member_output
+            total_cpu += cpu
+            total_logs += logs
+            total_sync += sync
+            total_scheduled += scheduled
+            total_recovery += recovery
+            total_quorums += quorums
+            total_promoted += promoted
+            total_catch_up += catch_up
+            total_signatures += signatures
+            if ($4 > max_rss) max_rss = $4
+            end_members += 1
+        }
+        END {
+            if (duration <= 0 || invalid || start_members != expected_members || end_members != expected_members) exit 1
+            printf "%d,%.2f,%.3f,%d,%.0f,%.3f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f\n",
+                duration, total_cpu, (total_cpu * 1000) / (duration * end_members),
+                max_rss, total_logs, total_logs / (duration * end_members),
+                total_sync, total_scheduled, total_recovery, total_quorums,
+                total_promoted, total_catch_up, total_signatures
+        }
+    ' "$start_snapshot" "$end_snapshot"
+}
+
+run_self_test() {
+    local temp_dir start_snapshot end_snapshot member_output summary
+    temp_dir="$(mktemp -d)"
+    start_snapshot="$temp_dir/start.csv"
+    end_snapshot="$temp_dir/end.csv"
+    member_output="$temp_dir/members.csv"
+    printf '%s\n' \
+        "$RUNTIME_SNAPSHOT_HEADER" \
+        '1,100,10.00,100,50,1,2,0,1,0,0,4' \
+        '2,200,20.00,200,70,0,1,0,0,0,0,2' >"$start_snapshot"
+    printf '%s\n' \
+        "$RUNTIME_SNAPSHOT_HEADER" \
+        '1,100,11.50,110,55,2,3,0,2,1,1,6' \
+        '2,200,22.50,220,77,2,3,1,1,0,1,5' >"$end_snapshot"
+    summary="$(aggregate_runtime_window \
+        "$start_snapshot" "$end_snapshot" 10 2 "$member_output")" \
+        || die "runtime metrics aggregation self-test failed"
+    [[ "$summary" == '10,4.00,200.000,220,12,0.600,3,3,1,2,1,2,5' ]] \
+        || die "runtime metrics aggregation self-test produced an unexpected summary"
+    grep -qx '1,1.50,110,5,1,1,0,1,1,1,2' "$member_output" \
+        || die "runtime metrics aggregation self-test produced an unexpected member row"
+    rm -rf "$temp_dir"
+    echo "Runtime metrics aggregation self-test passed."
+}
+
 case "${1:-}" in
     -h|--help)
         usage
+        exit 0
+        ;;
+    --self-test)
+        require_command awk
+        require_command grep
+        require_command mktemp
+        run_self_test
         exit 0
         ;;
     "") ;;
@@ -97,6 +215,7 @@ fi
 is_positive_integer "$TOKEN_AMOUNT" || die "TOKEN_AMOUNT must be a positive integer"
 [[ "$FUNDING_BUFFER" =~ ^[0-9]+$ ]] || die "FUNDING_BUFFER must be a non-negative integer"
 is_positive_integer "$PREPARE_PARALLELISM" || die "PREPARE_PARALLELISM must be positive"
+is_positive_integer "$EXPECTED_MEMBERS" || die "EXPECTED_MEMBERS must be positive"
 [[ "$SETTLE_SECONDS" =~ ^[0-9]+$ ]] || die "SETTLE_SECONDS must be non-negative"
 is_positive_integer "$CONVERGENCE_ATTEMPTS" || die "CONVERGENCE_ATTEMPTS must be positive"
 is_positive_integer "$CONVERGENCE_DELAY_SECONDS" \
@@ -147,7 +266,7 @@ scp \
 chmod 600 "$PUBLIC_CONFIG"
 
 printf '%s\n' \
-    'case,n,parallelism,successes,failures,elapsed_seconds,successful_tps,committed_tps,p50_seconds,p95_seconds,p99_seconds,max_seconds,operations_before,operations_after,operation_delta' \
+    'case,n,parallelism,successes,failures,elapsed_seconds,successful_tps,committed_tps,p50_seconds,p95_seconds,p99_seconds,max_seconds,operations_before,operations_after,operation_delta,observation_seconds,cpu_seconds_total,cpu_millis_per_member_second,max_end_rss_kb,log_lines,log_lines_per_member_second,sync_transitions,scheduled_checkpoints,recovery_checkpoints,quorums_transferred,checkpoints_promoted,catch_up_batches_applied,signatures_verified' \
     >"$RESULTS_CSV"
 
 add_federation() {
@@ -195,6 +314,17 @@ wait_for_convergence() {
 operation_count_from_status() {
     sed -n 's/.*digest_group operations=\([0-9][0-9]*\).*/\1/p' \
         | head -n 1
+}
+
+capture_runtime_snapshot() {
+    local output="$1"
+
+    ssh "$SSH_HOST" \
+        "cd ~/$REMOTE_DIR && bash scripts/nocean_federation_control.sh runtime-metrics" \
+        >"$output"
+    [[ "$(sed -n '1p' "$output")" == "$RUNTIME_SNAPSHOT_HEADER" ]] \
+        || die "remote runtime metrics returned an unexpected schema"
+    date +%s >"$output.epoch"
 }
 
 echo "Importing the federation into the funding wallet..."
@@ -324,6 +454,8 @@ for benchmark_case in $CASES; do
         sleep "$SETTLE_SECONDS"
     fi
 
+    capture_runtime_snapshot "$CASE_DIR/runtime-before.csv"
+
     echo "Receiving $n tokens with parallelism $parallelism..."
     TIMEFORMAT='%R'
     set +e
@@ -376,7 +508,36 @@ for benchmark_case in $CASES; do
         'BEGIN { if (elapsed > 0) printf "%.3f", operations / elapsed; else print "0.000" }')"
     printf '%s\n' "$after_status" >"$CASE_DIR/status-after.txt"
 
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    capture_runtime_snapshot "$CASE_DIR/runtime-after.csv"
+    read -r runtime_before_epoch <"$CASE_DIR/runtime-before.csv.epoch"
+    read -r runtime_after_epoch <"$CASE_DIR/runtime-after.csv.epoch"
+    observation_seconds=$((runtime_after_epoch - runtime_before_epoch))
+    runtime_summary="$(aggregate_runtime_window \
+        "$CASE_DIR/runtime-before.csv" \
+        "$CASE_DIR/runtime-after.csv" \
+        "$observation_seconds" \
+        "$EXPECTED_MEMBERS" \
+        "$CASE_DIR/runtime-members.csv")" \
+        || die "runtime metrics for $case_name are incomplete or non-monotonic"
+    IFS=',' read -r \
+        observation_seconds \
+        cpu_seconds_total \
+        cpu_millis_per_member_second \
+        max_end_rss_kb \
+        log_lines \
+        log_lines_per_member_second \
+        sync_transitions \
+        scheduled_checkpoints \
+        recovery_checkpoints \
+        quorums_transferred \
+        checkpoints_promoted \
+        catch_up_batches_applied \
+        signatures_verified <<<"$runtime_summary"
+    printf '%s\n' \
+        'observation_seconds,cpu_seconds_total,cpu_millis_per_member_second,max_end_rss_kb,log_lines,log_lines_per_member_second,sync_transitions,scheduled_checkpoints,recovery_checkpoints,quorums_transferred,checkpoints_promoted,catch_up_batches_applied,signatures_verified' \
+        "$runtime_summary" >"$CASE_DIR/runtime-summary.csv"
+
+    result_fields=( \
         "$case_name" \
         "$n" \
         "$parallelism" \
@@ -392,11 +553,26 @@ for benchmark_case in $CASES; do
         "$operations_before" \
         "$operations_after" \
         "$operation_delta" \
-        >>"$RESULTS_CSV"
+        "$observation_seconds" \
+        "$cpu_seconds_total" \
+        "$cpu_millis_per_member_second" \
+        "$max_end_rss_kb" \
+        "$log_lines" \
+        "$log_lines_per_member_second" \
+        "$sync_transitions" \
+        "$scheduled_checkpoints" \
+        "$recovery_checkpoints" \
+        "$quorums_transferred" \
+        "$checkpoints_promoted" \
+        "$catch_up_batches_applied" \
+        "$signatures_verified" \
+    )
+    (IFS=,; printf '%s\n' "${result_fields[*]}") >>"$RESULTS_CSV"
 
-    printf 'Result: N=%s parallelism=%s successes=%s failures=%s elapsed=%ss confirmed-TPS=%s committed-TPS=%s p50=%ss p95=%ss p99=%ss operations=+%s\n' \
+    printf 'Result: N=%s parallelism=%s successes=%s failures=%s elapsed=%ss confirmed-TPS=%s committed-TPS=%s p50=%ss p95=%ss p99=%ss operations=+%s CPU=%ss logs=+%s sync-transitions=+%s scheduled-checkpoints=+%s\n' \
         "$n" "$parallelism" "$successes" "$failures" "$elapsed_seconds" \
-        "$successful_tps" "$committed_tps" "$p50" "$p95" "$p99" "$operation_delta"
+        "$successful_tps" "$committed_tps" "$p50" "$p95" "$p99" "$operation_delta" \
+        "$cpu_seconds_total" "$log_lines" "$sync_transitions" "$scheduled_checkpoints"
 
     if (( batch_status != 0 )); then
         echo "The parallel runner reported failures; logs remain in $CASE_DIR." >&2

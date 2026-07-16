@@ -4,6 +4,7 @@ set -Eeuo pipefail
 MEMBERS="${MEMBERS:-5}"
 THRESHOLD="${THRESHOLD:-3}"
 PORT_START="${PORT_START:-21885}"
+PROMETHEUS_PORT_START="${PROMETHEUS_PORT_START:-21985}"
 PUBLIC_BASE_DOMAIN="${PUBLIC_BASE_DOMAIN:-nocean.xyz}"
 NETWORK="${NETWORK:-signet}"
 MINIMUM_CONFIRMATIONS="${MINIMUM_CONFIRMATIONS:-1}"
@@ -57,23 +58,26 @@ work_dir() {
 
 require_commands() {
     local command
-    for command in tmux curl jq timeout awk find seq; do
+    for command in tmux curl jq timeout awk find ps seq; do
         command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
     done
     [[ -x "$MINTD" ]] || die "missing executable $MINTD"
     for value in "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
-        "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS"; do
+        "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" "$PROMETHEUS_PORT_START"; do
         [[ "$value" =~ ^[1-9][0-9]*$ ]] \
-            || die "checkpoint intervals must be positive integers"
+            || die "numeric settings must be positive integers"
     done
+    ((PROMETHEUS_PORT_START + MEMBERS - 1 <= 65535)) \
+        || die "Prometheus member ports exceed 65535"
 }
 
 generate_member() {
     local member="$1"
-    local dir url port
+    local dir url port prometheus_port
     dir="$(member_dir "$member")"
     url="$(member_url "$member")"
     port=$((PORT_START + member - 1))
+    prometheus_port=$((PROMETHEUS_PORT_START + member - 1))
     mkdir -p "$dir/work"
 
     "$MINTD" federation dkg-member \
@@ -102,7 +106,9 @@ name = "Nocean CDK federation member $member"
 description = "Mutinynet federated Cashu mint member $member"
 
 [prometheus]
-enabled = false
+enabled = true
+address = "127.0.0.1"
+port = $prometheus_port
 
 [database]
 engine = "sqlite"
@@ -146,7 +152,9 @@ name = "Nocean CDK federation member $member"
 description = "Mutinynet federated Cashu mint member $member"
 
 [prometheus]
-enabled = false
+enabled = true
+address = "127.0.0.1"
+port = $prometheus_port
 
 [database]
 engine = "sqlite"
@@ -225,7 +233,6 @@ initialize() {
 run_setup_member() {
     local member="$1"
     exec env \
-        CDK_MINTD_PROMETHEUS_ENABLED=false \
         CDK_FEDERATION_DISABLE_PEER_SYNC=1 \
         RUST_LOG="${RUST_LOG:-info}" \
         "$MINTD" \
@@ -236,7 +243,6 @@ run_setup_member() {
 run_runtime_member() {
     local member="$1"
     exec env \
-        CDK_MINTD_PROMETHEUS_ENABLED=false \
         CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=180 \
         RUST_LOG="${RUST_LOG:-info}" \
         "$MINTD" \
@@ -281,6 +287,97 @@ export_member() {
 member_pane() {
     tmux list-panes -t "$SESSION" -F '#{pane_id} #{pane_title}' \
         | awk -v title="member-$1" '$2 == title { print $1; exit }'
+}
+
+runtime_process_sample() {
+    local pid="$1"
+    ps -p "$pid" -o time= -o rss= 2>/dev/null | awk '
+        function cpu_seconds(raw, parts, count, day_parts, days) {
+            days = 0
+            if (index(raw, "-") > 0) {
+                split(raw, day_parts, "-")
+                days = day_parts[1] + 0
+                raw = day_parts[2]
+            }
+            count = split(raw, parts, ":")
+            if (count == 2) return (days * 86400) + (parts[1] * 60) + parts[2]
+            if (count == 3) {
+                return (days * 86400) + (parts[1] * 3600) + (parts[2] * 60) + parts[3]
+            }
+            return (days * 86400) + raw
+        }
+        NF { printf "%.2f,%d\n", cpu_seconds($1), $2; exit }
+    '
+}
+
+runtime_log_lines() {
+    local member="$1"
+    local -a log_files=()
+    shopt -s nullglob
+    log_files=("$(work_dir "$member")"/logs/cdk-mintd.log*)
+    shopt -u nullglob
+    if ((${#log_files[@]} == 0)); then
+        printf '0\n'
+        return
+    fi
+    awk 'END { print NR }' "${log_files[@]}"
+}
+
+runtime_prometheus_port() {
+    local member="$1"
+    awk '
+        /^\[prometheus\]$/ { in_prometheus = 1; next }
+        /^\[/ { in_prometheus = 0 }
+        in_prometheus && $1 == "port" && $2 == "=" { print $3; exit }
+    ' "$(runtime_config "$member")"
+}
+
+runtime_federation_metrics() {
+    local member="$1"
+    local port metrics
+    port="$(runtime_prometheus_port "$member")"
+    [[ "$port" =~ ^[1-9][0-9]*$ ]] \
+        || die "member $member runtime config has no Prometheus port"
+    metrics="$(curl --max-time 10 -fsS "http://127.0.0.1:$port/metrics")" \
+        || die "member $member Prometheus metrics are unavailable"
+    printf '%s\n' "$metrics" | awk '
+        /^cdk_federation_sync_transitions_total\{/ {
+            sync_transitions += $NF
+        }
+        /^cdk_federation_checkpoint_work_total\{/ {
+            if ($0 ~ /work="scheduled_checkpoints_created"/) scheduled += $NF
+            if ($0 ~ /work="recovery_checkpoints_created"/) recovery += $NF
+            if ($0 ~ /work="quorums_transferred"/) quorums += $NF
+            if ($0 ~ /work="checkpoints_promoted"/) promoted += $NF
+            if ($0 ~ /work="catch_up_batches_applied"/) catch_up += $NF
+            if ($0 ~ /work="signatures_verified"/) signatures += $NF
+        }
+        END {
+            printf "%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f\n",
+                sync_transitions, scheduled, recovery, quorums, promoted,
+                catch_up, signatures
+        }
+    '
+}
+
+runtime_metrics() {
+    tmux has-session -t "$SESSION" 2>/dev/null \
+        || die "tmux federation session is not running"
+    printf '%s\n' \
+        'member,pid,cpu_seconds,rss_kb,log_lines,sync_transitions,scheduled_checkpoints,recovery_checkpoints,quorums_transferred,checkpoints_promoted,catch_up_batches_applied,signatures_verified'
+    local member pane pid process_sample log_lines federation_metrics
+    for member in $(seq 1 "$MEMBERS"); do
+        pane="$(member_pane "$member")"
+        [[ -n "$pane" ]] || die "could not find tmux pane for member $member"
+        pid="$(tmux display-message -p -t "$pane" '#{pane_pid}')"
+        process_sample="$(runtime_process_sample "$pid")"
+        [[ -n "$process_sample" ]] \
+            || die "member $member process metrics are unavailable"
+        log_lines="$(runtime_log_lines "$member")"
+        federation_metrics="$(runtime_federation_metrics "$member")"
+        printf '%s,%s,%s,%s,%s\n' \
+            "$member" "$pid" "$process_sample" "$log_lines" "$federation_metrics"
+    done
 }
 
 orchestrate() {
@@ -400,6 +497,7 @@ case "${1:-}" in
     runtime-member) run_runtime_member "${2:?member ID required}" ;;
     orchestrate) orchestrate ;;
     status) status ;;
+    runtime-metrics) runtime_metrics ;;
     status-loop) status_loop ;;
     *) die "usage: $0 {fresh|restart|status}" ;;
 esac

@@ -19,6 +19,7 @@ FEE_POLICY_VERSION="${FEE_POLICY_VERSION:-1}"
 APPLICATION_KEY_EPOCH="${APPLICATION_KEY_EPOCH:-1}"
 ESPLORA_URL="${ESPLORA_URL:-https://mutinynet.com/api}"
 CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-mutinynet-public-esplora}"
+PROMETHEUS_PORT_START="${PROMETHEUS_PORT_START:-21985}"
 CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS:-20}"
 CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
 CONTROL_SCRIPT="$SCRIPT_DIR/nocean_federation_control.sh"
@@ -46,6 +47,7 @@ Relevant environment overrides:
   DOCKER_PLATFORM, CARGO_REGISTRY_VOLUME, RUST_IMAGE
   NETWORK, MINIMUM_CONFIRMATIONS, FEE_POLICY_VERSION
   APPLICATION_KEY_EPOCH, ESPLORA_URL, CHAIN_SOURCE_ID
+  PROMETHEUS_PORT_START
   CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS, CHECKPOINT_INTERVAL_FINALIZED_ITEMS
 EOF
 }
@@ -86,10 +88,13 @@ done
     || die "PUBLIC_BASE_DOMAIN contains unsupported characters"
 for value in "$STATUS_TIMEOUT_SECS" "$STATUS_POLL_SECS" "$MINIMUM_CONFIRMATIONS" \
     "$FEE_POLICY_VERSION" "$APPLICATION_KEY_EPOCH" \
+    "$PROMETHEUS_PORT_START" \
     "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
     "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS"; do
     [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "numeric settings must be positive integers"
 done
+((PROMETHEUS_PORT_START + 5 - 1 <= 65535)) \
+    || die "Prometheus member ports exceed 65535"
 
 RUST_VERSION="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' \
     "$REPO_ROOT/rust-toolchain.toml")"
@@ -113,7 +118,7 @@ docker run --rm \
         export CARGO_TARGET_DIR=/work/target/linux-x86_64
         cargo build --locked --release -p cdk-mintd \
             --no-default-features \
-            --features fakewallet,sqlite,info-page,federation
+            --features fakewallet,sqlite,info-page,federation,prometheus
         cargo build --locked --release -p cdk-cli \
             --no-default-features \
             --features federation
@@ -140,6 +145,7 @@ ssh "$SSH_HOST" bash -s -- \
     "$DEPLOY_MODE" "$PUBLIC_BASE_DOMAIN" "$NETWORK" "$MINIMUM_CONFIRMATIONS" \
     "$FEE_POLICY_VERSION" "$APPLICATION_KEY_EPOCH" "$ESPLORA_URL" "$CHAIN_SOURCE_ID" \
     "$STATUS_TIMEOUT_SECS" "$STATUS_POLL_SECS" \
+    "$PROMETHEUS_PORT_START" \
     "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
     "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
@@ -159,8 +165,9 @@ export ESPLORA_URL="${12}"
 export CHAIN_SOURCE_ID="${13}"
 export STATUS_TIMEOUT_SECS="${14}"
 export STATUS_POLL_SECS="${15}"
-export CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${16}"
-export CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${17}"
+export PROMETHEUS_PORT_START="${16}"
+export CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${17}"
+export CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${18}"
 
 cd "$HOME/$REMOTE_DIR"
 for command in sha256sum tmux curl timeout awk find jq; do

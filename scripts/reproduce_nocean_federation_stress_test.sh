@@ -92,7 +92,7 @@ chmod 700 "$OUTPUT_ROOT"
 
 COMBINED_RESULTS="$OUTPUT_ROOT/results.csv"
 printf '%s\n' \
-    'repetition,phase,case,n,parallelism,successes,failures,elapsed_seconds,successful_tps,committed_tps,p50_seconds,p95_seconds,p99_seconds,max_seconds,operations_before,operations_after,operation_delta' \
+    'repetition,phase,case,n,parallelism,successes,failures,elapsed_seconds,successful_tps,committed_tps,p50_seconds,p95_seconds,p99_seconds,max_seconds,operations_before,operations_after,operation_delta,observation_seconds,cpu_seconds_total,cpu_millis_per_member_second,max_end_rss_kb,log_lines,log_lines_per_member_second,sync_transitions,scheduled_checkpoints,recovery_checkpoints,quorums_transferred,checkpoints_promoted,catch_up_batches_applied,signatures_verified' \
     >"$COMBINED_RESULTS"
 
 next_build_cli="$BUILD_CLI"

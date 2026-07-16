@@ -1877,13 +1877,44 @@ verification, catch-up requests, and emitted logs. The normal startup, status,
 and peer-sync paths therefore validate bounded checkpoint metadata but never
 invoke the full-state operator audit.
 
+### Development stress instrumentation
+
+The DKG roster command now accepts journal-operation and finalized-item
+checkpoint intervals and constructs the shared `FederationCheckpointPolicy`
+through the existing domain validator. Its production defaults remain 10,000;
+the fresh Nocean development setup requests 20 for both intervals so the
+receive matrix creates several real scheduled checkpoint batches instead of
+finishing below the first boundary. Zero is rejected by the shared policy
+constructor.
+
+The Nocean runtime exposes each member's Prometheus endpoint only on loopback.
+One deployment-control command returns an aggregate-only CSV row per member
+containing cumulative process CPU, RSS, daemon log lines, lagging/catch-up
+transitions, and fixed checkpoint-work counters. It reads the existing rotating
+daemon logs and Prometheus metrics rather than adding a second logging or
+telemetry path.
+
+The receive benchmark snapshots those rows immediately before load and after
+post-load convergence. It rejects missing members, process replacement, and
+counter regression, retains per-member deltas, and appends aggregate CPU, RSS,
+log-rate, sync-transition, scheduled/recovery checkpoint, quorum-transfer,
+promotion, catch-up-batch, and signature-verification fields to each throughput
+result. A local fixture self-test proves the delta and rate calculation. Shell
+syntax/help checks and a `cdk-mintd` check with the exact deployment feature set
+pass. The fresh deployment, restart exercise, and comparative result capture
+remain intentionally unchecked until they run against the development
+federation.
+
 ### Files and references
 
 - `crates/cdk-axum/src/federation/tests.rs`
 - `crates/cdk-axum/src/federation/tests/aleph_bft_routes.rs`
 - `crates/cdk-mintd/dev/federation/smoke-local-federation.sh.in`
+- `crates/cdk-mintd/src/cli.rs`
+- `crates/cdk-mintd/src/federation_dkg_setup.rs`
 - `crates/cdk-mintd/src/federation_setup/tests.rs`
 - `scripts/benchmark_nocean_federation.sh`
+- `scripts/nocean_federation_control.sh`
 - `scripts/reproduce_nocean_federation_stress_test.sh`
 - `scripts/deploy_nocean_federation.sh`
 - `docs/federated-cashu-nocean-stress-test.md`
