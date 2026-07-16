@@ -834,6 +834,21 @@ impl RouterFederationTransportRegistry {
         }
     }
 
+    fn set_network_partition(&self, first: &[MemberId], second: &[MemberId], partitioned: bool) {
+        let mut faults = self.faults.lock().expect("router transport faults lock");
+        for &sender in first {
+            for &receiver in second {
+                for link in [(sender, receiver), (receiver, sender)] {
+                    if partitioned {
+                        faults.blocked_federation_links.insert(link);
+                    } else {
+                        faults.blocked_federation_links.remove(&link);
+                    }
+                }
+            }
+        }
+    }
+
     fn set_member_aleph_bft_data_hold(&self, sender: MemberId, held: bool) {
         let mut faults = self.faults.lock().expect("router transport faults lock");
         if held {
@@ -16688,6 +16703,8 @@ struct TwoMemberAlephBftLiveSession {
 
 struct MultiMemberAlephBftLiveSession {
     states: Vec<MintState>,
+    dbs: Vec<Arc<cdk_sqlite::MintSqliteDatabase>>,
+    seeds: Vec<Vec<u8>>,
     transport: RouterFederationTransportRegistry,
     federation_api_urls: Vec<MintUrl>,
     public_config: FederationConfig,
@@ -16807,22 +16824,27 @@ async fn start_multi_member_aleph_bft_live_session_with_payment_policy(
     public_config.payment_observation_policy = payment_observation_policy;
     public_config.validate()?;
     let mut states = Vec::new();
+    let mut dbs = Vec::new();
+    let mut seeds = Vec::new();
     let mut make_payment_calls = Vec::new();
     for private_config in private_configs.iter().cloned() {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let seed = mnemonic.to_seed_normalized("");
         let (payment_processor, member_make_payment_calls) =
             CountingFakeWallet::with_call_counter();
         states.push(
             federation_route_state_for_private_with_db_and_aleph_bft_payment_processor(
                 public_config.clone(),
                 private_config,
-                db,
-                &mnemonic.to_seed_normalized(""),
+                Arc::clone(&db),
+                &seed,
                 payment_processor,
             )
             .await,
         );
+        dbs.push(db);
+        seeds.push(seed.to_vec());
         make_payment_calls.push(member_make_payment_calls);
     }
     let transport = RouterFederationTransportRegistry::default();
@@ -16854,6 +16876,8 @@ async fn start_multi_member_aleph_bft_live_session_with_payment_policy(
     Ok((
         MultiMemberAlephBftLiveSession {
             states,
+            dbs,
+            seeds,
             transport,
             federation_api_urls,
             public_config,
@@ -16863,6 +16887,261 @@ async fn start_multi_member_aleph_bft_live_session_with_payment_policy(
         },
         make_payment_calls,
     ))
+}
+
+async fn assert_multi_member_journal_and_state_converged(
+    session: &MultiMemberAlephBftLiveSession,
+    expected_operation_ids: &[FederationOperationId],
+) {
+    let expected_entries = session.states[0]
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("expected converged journal");
+    assert_eq!(
+        expected_entries
+            .iter()
+            .map(|entry| entry.operation_id)
+            .collect::<Vec<_>>(),
+        expected_operation_ids
+    );
+    let expected_projection = journal_convergence_projection(&expected_entries);
+    let expected_digest = materialized_state_digest(&session.states[0], &expected_entries)
+        .await
+        .expect("expected converged materialized-state digest");
+    for state in &session.states {
+        let entries = state
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("converged journal");
+        assert_eq!(
+            journal_convergence_projection(&entries),
+            expected_projection
+        );
+        assert_eq!(
+            materialized_state_digest(state, &entries)
+                .await
+                .expect("converged materialized-state digest"),
+            expected_digest
+        );
+    }
+}
+
+async fn run_five_member_restart_case(restarted_indexes: &[usize]) {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let live_options = fast_aleph_bft_live_session_options(pump_config, 500);
+    let mut session = start_five_member_aleph_bft_live_session(live_options.clone())
+        .await
+        .expect("five-member restart session");
+
+    let first_quote_id = QuoteId::new();
+    let first_envelope = mint_quote_envelope(&session.states[0], &first_quote_id);
+    let first_operation_id = first_envelope.operation_id().expect("first operation id");
+    session.states[0]
+        .submit_federation_envelope_to_consensus(first_envelope)
+        .await
+        .expect("operation before restart");
+    for state in &session.states {
+        wait_for_applied_operation(state, first_operation_id).await;
+    }
+    for &index in restarted_indexes {
+        wait_for_aleph_bft_backup_bytes(&session.states[index], 0).await;
+        *session.states[index]
+            .federation
+            .aleph_bft_network_inbound
+            .write()
+            .await = None;
+        *session.states[index]
+            .federation
+            .aleph_bft_live_session
+            .write()
+            .await = None;
+        session
+            .transport
+            .remove(&session.federation_api_urls[index]);
+    }
+    for &index in restarted_indexes.iter().rev() {
+        drop(session._handles.remove(index));
+    }
+
+    for &index in restarted_indexes {
+        let mut state = federation_route_state_for_private_with_db_and_aleph_bft(
+            session.public_config.clone(),
+            session.private_configs[index].clone(),
+            Arc::clone(&session.dbs[index]),
+            &session.seeds[index],
+        )
+        .await;
+        replay_aleph_bft_runtime_after_test_process_restart(&mut state).await;
+        let handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+            &state,
+            session.sync_config,
+            live_options.clone(),
+            session.transport.clone(),
+        )
+        .await
+        .expect("restart live member")
+        .expect("restarted live member handle");
+        session.transport.insert(
+            session.federation_api_urls[index].clone(),
+            Router::new()
+                .nest("/federation/v1", create_federation_router())
+                .with_state(state.clone()),
+        );
+        session.states[index] = state;
+        session._handles.push(handle);
+    }
+
+    let second_quote_id = QuoteId::new();
+    let second_envelope = mint_quote_envelope(&session.states[0], &second_quote_id);
+    let second_operation_id = second_envelope
+        .operation_id()
+        .expect("post-restart operation id");
+    session.states[0]
+        .submit_federation_envelope_to_consensus(second_envelope)
+        .await
+        .expect("operation after restart");
+    for state in &session.states {
+        wait_for_applied_operation(state, second_operation_id).await;
+    }
+    assert_multi_member_journal_and_state_converged(
+        &session,
+        &[first_operation_id, second_operation_id],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn aleph_bft_live_restart_matrix_one_member_continues_finality() {
+    run_five_member_restart_case(&[0]).await;
+}
+
+#[tokio::test]
+async fn aleph_bft_live_restart_matrix_consensus_threshold_continues_finality() {
+    run_five_member_restart_case(&[0, 1, 2, 3]).await;
+}
+
+#[tokio::test]
+async fn aleph_bft_live_restart_matrix_all_members_continues_finality() {
+    run_five_member_restart_case(&[0, 1, 2, 3, 4]).await;
+}
+
+async fn run_five_member_partition_and_heal(partition_size: usize, finalizes_while_split: bool) {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let live_options = fast_aleph_bft_live_session_options(pump_config, 500);
+    let mut session = start_five_member_aleph_bft_live_session(live_options)
+        .await
+        .expect("five-member partition session");
+
+    let baseline_quote_id = QuoteId::new();
+    let baseline = mint_quote_envelope(&session.states[0], &baseline_quote_id);
+    let baseline_operation_id = baseline.operation_id().expect("baseline operation id");
+    session.states[0]
+        .submit_federation_envelope_to_consensus(baseline)
+        .await
+        .expect("baseline operation before partition");
+    for state in &session.states {
+        wait_for_applied_operation(state, baseline_operation_id).await;
+    }
+
+    let first = session.private_configs[..partition_size]
+        .iter()
+        .map(|config| config.member_id)
+        .collect::<Vec<_>>();
+    let second = session.private_configs[partition_size..]
+        .iter()
+        .map(|config| config.member_id)
+        .collect::<Vec<_>>();
+    session
+        .transport
+        .set_network_partition(&first, &second, true);
+    session.states[0].federation.peer_sync_config = Some(FederationPeerSyncConfig {
+        operation_submission_timeout: Duration::from_millis(500),
+        ..session.sync_config
+    });
+
+    let partitioned_quote_id = QuoteId::new();
+    let partitioned = mint_quote_envelope(&session.states[0], &partitioned_quote_id);
+    let partitioned_operation_id = partitioned
+        .operation_id()
+        .expect("partitioned operation id");
+    let result = session.states[0]
+        .submit_federation_envelope_to_consensus(partitioned.clone())
+        .await;
+    if finalizes_while_split {
+        let response = result.expect("above-threshold side finalizes while partitioned");
+        assert_eq!(response.operation_id, partitioned_operation_id);
+        for state in &session.states[..partition_size] {
+            wait_for_applied_operation(state, partitioned_operation_id).await;
+        }
+        for state in &session.states[partition_size..] {
+            assert!(state
+                .mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(partitioned_operation_id)
+                .await
+                .expect("isolated journal lookup")
+                .is_none());
+        }
+    } else {
+        let error = result.expect_err("below-threshold side cannot finalize");
+        assert_pending_finalization_error(&error, partitioned_operation_id, 500);
+        for state in &session.states {
+            assert!(state
+                .mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(partitioned_operation_id)
+                .await
+                .expect("split journal lookup")
+                .is_none());
+        }
+    }
+
+    session
+        .transport
+        .set_network_partition(&first, &second, false);
+    session.states[0].federation.peer_sync_config = Some(session.sync_config);
+    if !finalizes_while_split {
+        let response = session.states[0]
+            .submit_federation_envelope_to_consensus(partitioned)
+            .await
+            .expect("healed partition finalizes pending operation");
+        assert_eq!(response.operation_id, partitioned_operation_id);
+    }
+    for state in &session.states {
+        wait_for_applied_operation_with_context(
+            state,
+            partitioned_operation_id,
+            "healed partition convergence",
+        )
+        .await;
+    }
+    assert_multi_member_journal_and_state_converged(
+        &session,
+        &[baseline_operation_id, partitioned_operation_id],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn aleph_bft_live_below_consensus_threshold_partition_heals() {
+    run_five_member_partition_and_heal(3, false).await;
+}
+
+#[tokio::test]
+async fn aleph_bft_live_above_consensus_threshold_partition_heals() {
+    run_five_member_partition_and_heal(4, true).await;
 }
 
 async fn submit_healthy_federation_swap_batch(

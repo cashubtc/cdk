@@ -1657,10 +1657,10 @@ weakening catch-up, restart, or Byzantine fault handling.
 
 ### Checklist
 
-- [ ] Run the full restart matrix: one member, threshold members, all members,
+- [x] Run the full restart matrix: one member, threshold members, all members,
       clean shutdown, crash before checkpoint, crash during promotion, and long
       offline interval.
-- [ ] Run partition tests below and above consensus threshold and heal them.
+- [x] Run partition tests below and above consensus threshold and heal them.
 - [x] Run scheduled-boundary agreement tests where the journal interval is
       crossed mid-unit and where only finalized-item progress triggers the
       checkpoint.
@@ -1794,6 +1794,34 @@ The two focused Axum recovery tests pass with federation enabled. The stale
 frontier and scheduled-supersession assertions remain centralized in the
 existing protocol and shared database tests rather than duplicated in the HTTP
 harness.
+
+### Local restart and partition evidence
+
+The existing five-member live AlephBFT harness now retains each member's test
+database and seed so one shared restart helper can reopen the same durable
+state. Three release tests restart one member, the four-member consensus
+threshold, and all five members. Each case finalizes an operation, waits for
+the current-session backup, cleanly stops the selected supervisors, rebuilds
+the selected runtime states from their existing databases, and proves new
+finality. Every member ends with the same journal projection and authoritative
+materialized-state digest.
+
+The remainder of the crash matrix stays in the narrower existing tests. The
+one-shot startup recovery test simulates interruption after a boundary becomes
+eligible but before its checkpoint candidate is captured. The shared SQLite
+checkpoint persistence test rolls back candidate/quorum writes before
+promotion and proves that neither the checkpoint nor retention side effects
+escape the transaction. The single-source recovery test covers the long-offline
+case. All of these focused release tests pass.
+
+The router transport fault registry now also exposes one bidirectional
+cross-group partition operation, reusing the same link filter already used by
+the DKG and AlephBFT harnesses. In a 3-vs-2 split, the below-consensus side's
+submission times out with no durable journal mutation; after healing, the same
+operation finalizes. In a 4-vs-1 split, the consensus side finalizes while the
+isolated member remains unchanged; after healing, that member catches up. Both
+release tests finish with identical journal projections and materialized-state
+digests on all five members.
 
 ### Local Byzantine catch-up evidence
 
