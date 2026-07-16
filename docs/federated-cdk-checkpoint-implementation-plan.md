@@ -1677,7 +1677,7 @@ weakening catch-up, restart, or Byzantine fault handling.
 - [ ] Recover a long-offline member using checkpoint quorums fetched from one
       peer and assert that historical signers perform zero new signature or
       journal-scan work.
-- [ ] Run the explicit operator materialized-state audit against matching and
+- [x] Run the explicit operator materialized-state audit against matching and
       altered members; confirm that it is never invoked by normal startup,
       status, or peer sync.
 - [ ] Record aggregate findings without credentials, private URLs, machine
@@ -1783,6 +1783,22 @@ This keeps signature, threshold, response-binding, rolling-commitment,
 application, and promotion checks in one end-to-end member-runtime test. The
 focused test passes with federation enabled; lower-level mutation permutations
 remain centralized in the checkpoint and transport modules.
+
+### Local operator-audit evidence
+
+The explicit operator path succeeds when the materialized state matches the
+exact trusted checkpoint. An out-of-band quote mutation produces a different
+digest, fails the audit, durably latches the mismatch, and makes the next audit
+fail closed without rescanning. Both focused operator tests pass.
+
+Normal paths remain audit-free. Every exact and fixed-tail startup shape in the
+history-scaling benchmark records zero materialized-state audit samples. The
+twelve-round unchanged-member test now also snapshots the audit-duration
+counter around local status, checkpoint fetch, and peer checkpoint exchange;
+all twelve rounds leave it unchanged alongside zero checkpoint work, signature
+verification, catch-up requests, and emitted logs. The normal startup, status,
+and peer-sync paths therefore validate bounded checkpoint metadata but never
+invoke the full-state operator audit.
 
 ### Files and references
 

@@ -7909,6 +7909,14 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
     let member_labels = [("member", member_label.as_str())];
     let total_work_before =
         prometheus_metric_sum("cdk_federation_checkpoint_work_total", &member_labels);
+    let audit_labels = [
+        ("member", member_label.as_str()),
+        ("operation", "materialized_state_digest"),
+    ];
+    let audits_before = prometheus_metric_value(
+        "cdk_federation_checkpoint_duration_seconds_count",
+        &audit_labels,
+    );
     let captured_logs = CapturedLogWriter::default();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
@@ -7954,6 +7962,13 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
     assert_eq!(
         prometheus_metric_sum("cdk_federation_checkpoint_work_total", &member_labels,),
         total_work_before
+    );
+    assert_eq!(
+        prometheus_metric_value(
+            "cdk_federation_checkpoint_duration_seconds_count",
+            &audit_labels,
+        ),
+        audits_before
     );
     assert_eq!(transport.checkpoint_summary_requests().len(), 12);
     assert!(transport.catch_up_requests().is_empty());
