@@ -117,6 +117,12 @@ exclude_re = [
     "crates/cashu/src/nuts/nut20.rs:39:.*MintRequest<.*>::msg_to_sign",
     "crates/cashu/src/nuts/nut29.rs:88:.*BatchMintRequest<.*>::msg_to_sign",
 
+    # legacy_mint_quote_msg_to_sign arithmetic only sizes a Vec allocation; it
+    # does not affect the bytes appended to the signing message.
+    "crates/cashu/src/nuts/nut20.rs:.*replace \\+ with \\* in legacy_mint_quote_msg_to_sign",
+    "crates/cashu/src/nuts/nut20.rs:.*replace \\* with \\+ in legacy_mint_quote_msg_to_sign",
+    "crates/cashu/src/nuts/nut20.rs:.*replace \\* with / in legacy_mint_quote_msg_to_sign",
+
     # Equivalent max update: assigning the same value when sigs == sigs_required
     # leaves enforce_sig_flag unchanged.
     "crates/cashu/src/nuts/nut11/mod.rs:.*replace > with >= in enforce_sig_flag",
@@ -138,6 +144,10 @@ exclude_re = [
     # Length guard forced true is equivalent: non-2 array lengths still fail
     # either missing response lookup or tuple deserialization.
     "crates/cashu/src/nuts/nut17/mod.rs:.*items\\.len\\(\\) == 2 with true",
+
+    # Deleting this arm only changes the diagnostic returned for malformed
+    # arrays; they are still rejected by the fallback arm.
+    "crates/cashu/src/nuts/nut17/mod.rs:.*delete match arm serde_json::Value::Array\\(_\\) in deserialize_payload_for_kind::custom_response",
 
     # Target-before-kind transport data is ignored and remains invalid later
     # because no valid target is available for the decoded kind.

@@ -694,6 +694,29 @@ mod tests {
             other => panic!("expected CustomMintQuoteResponse, got {:?}", other),
         }
 
+        let custom_mint_object = serde_json::json!({
+            "quote": "object-quote",
+            "request": "pay://object",
+            "amount": 10,
+            "amount_paid": 0,
+            "amount_issued": 0,
+            "unit": "sat",
+            "expiry": 1701704757
+        });
+        let payload = deserialize_payload_for_kind::<String, serde_json::Error>(
+            &mint_kind,
+            custom_mint_object,
+        )
+        .unwrap();
+        match payload {
+            NotificationPayload::CustomMintQuoteResponse(method, response) => {
+                assert_eq!(method, "paypal");
+                assert_eq!(response.quote, "object-quote");
+                assert_eq!(response.method, PaymentMethod::Custom("paypal".to_string()));
+            }
+            other => panic!("expected CustomMintQuoteResponse, got {:?}", other),
+        }
+
         let custom_melt = r#"[
             "paypal",
             {

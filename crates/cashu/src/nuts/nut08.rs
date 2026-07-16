@@ -82,6 +82,24 @@ mod tests {
     }
 
     #[test]
+    fn bolt12_change_amount_sums_change_outputs() {
+        let response = MeltQuoteBolt12Response {
+            quote: "quote-id",
+            amount: Amount::from(10),
+            fee_reserve: Amount::from(1),
+            state: MeltQuoteState::Paid,
+            expiry: 123,
+            payment_preimage: None,
+            change: Some(vec![blind_signature(3), blind_signature(4)]),
+            request: Some("offer".to_string()),
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT12,
+        };
+
+        assert_eq!(response.change_amount(), Some(Amount::from(7)));
+    }
+
+    #[test]
     fn custom_change_amount_sums_change_outputs() {
         let response = MeltQuoteCustomResponse {
             quote: "quote-id",

@@ -145,6 +145,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn amount_encoding_is_minimal_big_endian() {
+        assert_eq!(
+            amount_to_minimal_bytes(crate::Amount::ZERO),
+            Vec::<u8>::new()
+        );
+        assert_eq!(
+            amount_to_minimal_bytes(crate::Amount::from(256)),
+            vec![1, 0]
+        );
+    }
+
+    #[test]
     fn test_msg_to_sign() {
         let request: MintRequest<String> = serde_json::from_str(r#"{"quote":"0192d3c0-7e8a-7c3d-8e9f-1a2b3c4d5e6f","outputs":[{"amount":1,"id":"009a1f293253e41e","B_":"036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2"},{"amount":1,"id":"009a1f293253e41e","B_":"021f8a566c205633d029094747d2e18f44e05993dda7a5f88f496078205f656e59"}],"signature":"4881093a332ff7c79f3e598ce5b249d64978b47165a0b19c18adf0ced0246228e61e702f0abaf1bf27b92be4336bdbabacfbe4c914076386b3c66fdcd0b3480e"}"#).unwrap();
 
@@ -187,6 +199,19 @@ mod tests {
         .expect("valid pubkey");
 
         let request: MintRequest<Uuid> = serde_json::from_str(r#"{"quote":"9d745270-1405-46de-b5c5-e2762b4f5e00","outputs":[{"amount":1,"id":"00456a94ab4e1c46","B_":"0342e5bcc77f5b2a3c2afb40bb591a1e27da83cddc968abdc0ec4904201a201834"},{"amount":1,"id":"00456a94ab4e1c46","B_":"032fd3c4dc49a2844a89998d5e9d5b0f0b00dde9310063acb8a92e2fdafa4126d4"},{"amount":1,"id":"00456a94ab4e1c46","B_":"033b6fde50b6a0dfe61ad148fff167ad9cf8308ded5f6f6b2fe000a036c464c311"},{"amount":1,"id":"00456a94ab4e1c46","B_":"02be5a55f03e5c0aaea77595d574bce92c6d57a2a0fb2b5955c0b87e4520e06b53"},{"amount":1,"id":"00456a94ab4e1c46","B_":"02209fc2873f28521cbdde7f7b3bb1521002463f5979686fd156f23fe6a8aa2b79"}], "signature": "d4b386f21f7aa7172f0994ee6e4dd966539484247ea71c99b81b8e09b1bb2acbc0026a43c221fd773471dc30d6a32b04692e6837ddaccf0830a63128308e4ee0"}"#).unwrap();
+
+        assert!(request.verify_signature(pubkey).is_ok());
+    }
+
+    #[test]
+    fn test_sign_legacy_produces_verifiable_signature() {
+        let mut request: MintRequest<String> = serde_json::from_str(r#"{"quote":"legacy-quote","outputs":[{"amount":2,"id":"00456a94ab4e1c46","B_":"0342e5bcc77f5b2a3c2afb40bb591a1e27da83cddc968abdc0ec4904201a201834"}]}"#).unwrap();
+        let secret =
+            SecretKey::from_hex("50d7fd7aa2b2fe4607f41f4ce6f8794fc184dd47b8cdfbe4b3d1249aa02d35aa")
+                .expect("valid secret key");
+        let pubkey = secret.public_key();
+
+        request.sign_legacy(secret).unwrap();
 
         assert!(request.verify_signature(pubkey).is_ok());
     }
