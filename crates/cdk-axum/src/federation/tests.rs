@@ -8192,6 +8192,26 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .await
         .expect("target trusted checkpoint before catch-up")
         .is_none());
+    let mut bad_signature_quorum = quorum.clone();
+    let original_signature = bad_signature_quorum.signatures[0];
+    let mut bad_signature_bytes = original_signature.to_bytes();
+    bad_signature_bytes[0] ^= 1;
+    bad_signature_quorum.signatures[0] = FederationCheckpointSignature::from_slice(
+        original_signature.checkpoint_id,
+        original_signature.signer,
+        &bad_signature_bytes,
+    )
+    .expect("bad checkpoint signature fixture");
+    target
+        .apply_federation_checkpoint_catch_up_response(&response, &bad_signature_quorum)
+        .await
+        .expect_err("bad checkpoint signature must fail before application");
+    let minority_quorum =
+        FederationCheckpointQuorum::new(checkpoint.clone(), vec![quorum.signatures[0].clone()]);
+    target
+        .apply_federation_checkpoint_catch_up_response(&response, &minority_quorum)
+        .await
+        .expect_err("minority checkpoint quorum must fail before application");
     let mut tampered = response.clone();
     tampered.entries[0].operation_id = FederationOperationId::from_bytes([99; 32]);
     target

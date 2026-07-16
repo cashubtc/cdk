@@ -1662,7 +1662,7 @@ weakening catch-up, restart, or Byzantine fault handling.
 - [x] Run stable-tail recovery checkpoint tests with exact agreement, a moving
       tip, a stale recovery frontier, and a later scheduled checkpoint that
       supersedes it.
-- [ ] Run malicious source/checkpoint-signature tests from milestone 4 in the
+- [x] Run malicious source/checkpoint-signature tests from milestone 4 in the
       real multi-member harness.
 - [ ] Measure idle CPU and work counters for at least ten minutes with a long
       synthetic history.
@@ -1766,6 +1766,23 @@ The two focused Axum recovery tests pass with federation enabled. The stale
 frontier and scheduled-supersession assertions remain centralized in the
 existing protocol and shared database tests rather than duplicated in the HTTP
 harness.
+
+### Local Byzantine catch-up evidence
+
+The checkpoint catch-up harness uses independent source and target member
+runtimes with separate databases and the production checkpoint application
+path. Before accepting the source's bounded batch, the target now rejects a
+quorum containing a corrupted member signature, a correctly signed but
+below-threshold quorum, and a source response with a tampered operation
+commitment. After all three failures, the target remains at its genesis
+frontier with no materialized quote. The same target then accepts the original
+quorum and honest response, promotes the exact checkpoint, and advances through
+a second checkpoint suffix.
+
+This keeps signature, threshold, response-binding, rolling-commitment,
+application, and promotion checks in one end-to-end member-runtime test. The
+focused test passes with federation enabled; lower-level mutation permutations
+remain centralized in the checkpoint and transport modules.
 
 ### Files and references
 
