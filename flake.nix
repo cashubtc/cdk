@@ -367,12 +367,12 @@
         );
 
         # MSRV dependencies (separate cache due to different toolchain)
-        # Exclude cdk-redb (and its dependents) since redb requires a higher MSRV
+        # Exclude cdk-enclavia and cdk-redb (and its dependents) since they require a higher MSRV
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-bindings-releaser";
+            cargoExtraArgs = "--workspace --exclude cdk-enclavia --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-bindings-releaser";
           }
         );
 
