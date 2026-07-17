@@ -1,0 +1,363 @@
+diff --git a/crates/cdk-ffi/Cargo.toml b/crates/cdk-ffi/Cargo.toml
+--- a/crates/cdk-ffi/Cargo.toml
++++ b/crates/cdk-ffi/Cargo.toml
+@@ -45,8 +45,14 @@ log = "0.4"
+ 
+ 
+ [features]
+-default = ["npubcash", "nwc", "bip353"]
++default = ["npubcash", "nwc", "bip353", "federation"]
+ bip353 = ["cdk/bip353"]
++federation = [
++    "cdk/federation",
++    "cdk-common/federation",
++    "cdk-sql-common/federation",
++    "cdk-sqlite/federation",
++]
+ # Enable Postgres-backed wallet database support in FFI
+ postgres = ["cdk-postgres"]
+ # Enable Supabase-backed wallet database support in FFI
+diff --git a/crates/cdk-ffi/src/error.rs b/crates/cdk-ffi/src/error.rs
+--- a/crates/cdk-ffi/src/error.rs
++++ b/crates/cdk-ffi/src/error.rs
+@@ -56,6 +56,13 @@ impl From<cdk::wallet::Error> for FfiError {
+     }
+ }
+ 
++#[cfg(feature = "federation")]
++impl From<cdk::federation::FederationError> for FfiError {
++    fn from(error: cdk::federation::FederationError) -> Self {
++        Self::internal(error.to_string())
++    }
++}
++
+ impl From<cdk::amount::Error> for FfiError {
+     fn from(err: cdk::amount::Error) -> Self {
+         FfiError::internal(err)
+diff --git a/crates/cdk-ffi/src/lib.rs b/crates/cdk-ffi/src/lib.rs
+--- a/crates/cdk-ffi/src/lib.rs
++++ b/crates/cdk-ffi/src/lib.rs
+@@ -9,6 +9,8 @@ uniffi::setup_scaffolding!();
+ pub mod bip321;
+ pub mod database;
+ pub mod error;
++#[cfg(feature = "federation")]
++pub mod federation;
+ pub mod logging;
+ #[cfg(feature = "npubcash")]
+ pub mod npubcash;
+@@ -28,6 +30,8 @@ mod wallet_trait;
+ 
+ pub use database::*;
+ pub use error::*;
++#[cfg(feature = "federation")]
++pub use federation::*;
+ pub use logging::*;
+ #[cfg(feature = "npubcash")]
+ pub use npubcash::*;
+diff --git a/crates/cdk-ffi/src/types/mint.rs b/crates/cdk-ffi/src/types/mint.rs
+--- a/crates/cdk-ffi/src/types/mint.rs
++++ b/crates/cdk-ffi/src/types/mint.rs
+@@ -637,10 +637,13 @@ pub struct MintInfo {
+     pub time: Option<u64>,
+     /// terms of url service of the mint
+     pub tos_url: Option<String>,
++    /// Whether the mint advertises federation metadata.
++    pub is_federation: bool,
+ }
+ 
+ impl From<cdk::nuts::MintInfo> for MintInfo {
+     fn from(info: cdk::nuts::MintInfo) -> Self {
++        let is_federation = info.federation.is_some();
+         Self {
+             name: info.name,
+             pubkey: info.pubkey.map(|p| p.to_string()),
+@@ -656,6 +659,7 @@ impl From<cdk::nuts::MintInfo> for MintInfo {
+             motd: info.motd,
+             time: info.time,
+             tos_url: info.tos_url,
++            is_federation,
+         }
+     }
+ }
+@@ -1108,6 +1112,7 @@ mod tests {
+             motd: None,
+             time: None,
+             tos_url: None,
++            is_federation: false,
+         };
+ 
+         let result = cdk::nuts::MintInfo::try_from(ffi_mint_info);
+diff --git a/crates/cdk-ffi/src/wallet_repository.rs b/crates/cdk-ffi/src/wallet_repository.rs
+--- a/crates/cdk-ffi/src/wallet_repository.rs
++++ b/crates/cdk-ffi/src/wallet_repository.rs
+@@ -7,14 +7,31 @@ use bip39::Mnemonic;
+ use cdk::wallet::wallet_repository::{
+     WalletRepository as CdkWalletRepository, WalletRepositoryBuilder,
+ };
++#[cfg(feature = "federation")]
++use cdk::wallet::FederatedMintConnector;
++#[cfg(feature = "federation")]
++use tokio::sync::RwLock;
+ 
+ use crate::error::FfiError;
++#[cfg(feature = "federation")]
++use crate::federation::{
++    discover_public_config, parse_federation_invite, FederationWalletConfig, FederationWalletInfo,
++};
+ use crate::types::*;
+ 
++#[cfg(feature = "federation")]
++#[derive(Clone)]
++struct FederationRegistration {
++    config: cdk::federation::FederationConfig,
++    local_mint_url: cdk::mint_url::MintUrl,
++}
++
+ /// FFI-compatible WalletRepository
+ #[derive(uniffi::Object)]
+ pub struct WalletRepository {
+     inner: Arc<CdkWalletRepository>,
++    #[cfg(feature = "federation")]
++    federations: Arc<RwLock<HashMap<cdk::mint_url::MintUrl, FederationRegistration>>>,
+ }
+ 
+ #[uniffi::export(async_runtime = "tokio")]
+@@ -48,9 +65,27 @@ impl WalletRepository {
+ 
+         Ok(Self {
+             inner: Arc::new(wallet),
++            #[cfg(feature = "federation")]
++            federations: Arc::new(RwLock::new(HashMap::new())),
+         })
+     }
+ 
++    /// Create a repository and reactivate persisted federation configs before use.
++    #[cfg(feature = "federation")]
++    #[uniffi::constructor]
++    pub fn new_with_federations(
++        mnemonic: String,
++        store: crate::database::WalletStore,
++        federation_configs: Vec<FederationWalletConfig>,
++    ) -> Result<Self, FfiError> {
++        let repository = Self::new(mnemonic, store)?;
++        let rt = crate::runtime::RuntimeGuard::new().map_err(FfiError::internal)?;
++        for federation_config in federation_configs {
++            rt.block_on(repository.add_federation_config(federation_config, None))?;
++        }
++        Ok(repository)
++    }
++
+     /// Create a new WalletRepository with proxy configuration
+     #[uniffi::constructor]
+     pub fn new_with_proxy(
+@@ -84,6 +119,8 @@ impl WalletRepository {
+ 
+         Ok(Self {
+             inner: Arc::new(wallet),
++            #[cfg(feature = "federation")]
++            federations: Arc::new(RwLock::new(HashMap::new())),
+         })
+     }
+ 
+@@ -102,6 +139,8 @@ impl WalletRepository {
+         ttl_secs: Option<u64>,
+     ) -> Result<(), FfiError> {
+         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
++        #[cfg(feature = "federation")]
++        let cdk_mint_url = self.resolve_federation_mint_url(cdk_mint_url).await;
+         let wallets = self.inner.get_wallets().await;
+ 
+         if let Some(wallet) = wallets.iter().find(|w| w.mint_url == cdk_mint_url) {
+@@ -142,11 +181,30 @@ impl WalletRepository {
+     ) -> Result<(), FfiError> {
+         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
+ 
+-        let config = target_proof_count.map(|count| {
++        let mut config = target_proof_count.map(|count| {
+             cdk::wallet::wallet_repository::WalletConfig::new()
+                 .with_target_proof_count(count as usize)
+         });
+ 
++        #[cfg(feature = "federation")]
++        let registration = self.federations.read().await.get(&cdk_mint_url).cloned();
++
++        #[cfg(feature = "federation")]
++        if let Some(registration) = &registration {
++            let connector =
++                FederatedMintConnector::from_public_config_urls(registration.config.clone())?;
++            config = Some(
++                config
++                    .unwrap_or_default()
++                    .with_mint_connector(Arc::new(connector)),
++            );
++        }
++
++        #[cfg(feature = "federation")]
++        let cdk_mint_url = registration
++            .map(|registration| registration.local_mint_url)
++            .unwrap_or(cdk_mint_url);
++
+         let unit_enum = unit.unwrap_or(CurrencyUnit::Sat);
+ 
+         self.inner
+@@ -156,6 +214,45 @@ impl WalletRepository {
+         Ok(())
+     }
+ 
++    /// Import and activate a federation from an invite code.
++    #[cfg(feature = "federation")]
++    pub async fn add_federation_invite(
++        &self,
++        invite_code: String,
++        target_proof_count: Option<u32>,
++    ) -> Result<FederationWalletInfo, FfiError> {
++        let (config, local_mint_url) = parse_federation_invite(&invite_code)?;
++        self.register_federation(config, local_mint_url, target_proof_count)
++            .await
++    }
++
++    /// Discover, import, and activate a federation through any member mint URL.
++    #[cfg(feature = "federation")]
++    pub async fn add_federation_mint_url(
++        &self,
++        mint_url: MintUrl,
++        target_proof_count: Option<u32>,
++    ) -> Result<FederationWalletInfo, FfiError> {
++        let local_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
++        let config = discover_public_config(&local_mint_url).await?;
++        self.register_federation(config, local_mint_url, target_proof_count)
++            .await
++    }
++
++    /// Reactivate a previously persisted, validated public federation config.
++    #[cfg(feature = "federation")]
++    pub async fn add_federation_config(
++        &self,
++        federation_config: FederationWalletConfig,
++        target_proof_count: Option<u32>,
++    ) -> Result<FederationWalletInfo, FfiError> {
++        let local_mint_url: cdk::mint_url::MintUrl =
++            federation_config.local_mint_url.clone().try_into()?;
++        let config = federation_config.parse()?;
++        self.register_federation(config, local_mint_url, target_proof_count)
++            .await
++    }
++
+     /// Remove mint from WalletRepository
+     pub async fn remove_wallet(
+         &self,
+@@ -166,6 +263,8 @@ impl WalletRepository {
+         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url
+             .try_into()
+             .map_err(|_| FfiError::internal("invalid mint url"))?; // Map the error to your FfiError type
++        #[cfg(feature = "federation")]
++        let cdk_mint_url = self.resolve_federation_mint_url(cdk_mint_url).await;
+ 
+         // 2. Await the inner call and propagate its result with '?'
+         self.inner
+@@ -177,6 +276,8 @@ impl WalletRepository {
+     /// Check if mint is in wallet
+     pub async fn has_mint(&self, mint_url: MintUrl) -> bool {
+         if let Ok(cdk_mint_url) = mint_url.try_into() {
++            #[cfg(feature = "federation")]
++            let cdk_mint_url = self.resolve_federation_mint_url(cdk_mint_url).await;
+             self.inner.has_mint(&cdk_mint_url).await
+         } else {
+             false
+@@ -251,6 +352,8 @@ impl WalletRepository {
+         unit: CurrencyUnit,
+     ) -> Result<Arc<crate::wallet::Wallet>, FfiError> {
+         let cdk_mint_url: cdk::mint_url::MintUrl = mint_url.try_into()?;
++        #[cfg(feature = "federation")]
++        let cdk_mint_url = self.resolve_federation_mint_url(cdk_mint_url).await;
+         let unit_cdk: cdk::nuts::CurrencyUnit = unit.into();
+         let wallet = self.inner.get_wallet(&cdk_mint_url, &unit_cdk).await?;
+         Ok(Arc::new(crate::wallet::Wallet::from_inner(Arc::new(
+@@ -267,6 +370,62 @@ impl WalletRepository {
+     }
+ }
+ 
++#[cfg(feature = "federation")]
++impl WalletRepository {
++    async fn resolve_federation_mint_url(
++        &self,
++        mint_url: cdk::mint_url::MintUrl,
++    ) -> cdk::mint_url::MintUrl {
++        self.federations
++            .read()
++            .await
++            .get(&mint_url)
++            .map(|registration| registration.local_mint_url.clone())
++            .unwrap_or(mint_url)
++    }
++
++    async fn register_federation(
++        &self,
++        config: cdk::federation::FederationConfig,
++        local_mint_url: cdk::mint_url::MintUrl,
++        target_proof_count: Option<u32>,
++    ) -> Result<FederationWalletInfo, FfiError> {
++        config.validate_wallet_runtime_metadata()?;
++        let info = FederationWalletInfo::from_config(&config, local_mint_url.clone())?;
++        let registration = FederationRegistration {
++            config: config.clone(),
++            local_mint_url: local_mint_url.clone(),
++        };
++
++        {
++            let mut federations = self.federations.write().await;
++            federations.insert(local_mint_url.clone(), registration.clone());
++            for member in config.members.values() {
++                federations.insert(member.public_mint_url.clone(), registration.clone());
++            }
++        }
++
++        let target_proof_count = target_proof_count.unwrap_or(3) as usize;
++        let active_units = config
++            .keysets
++            .iter()
++            .filter(|keyset| keyset.active)
++            .map(|keyset| keyset.unit.clone())
++            .collect::<std::collections::BTreeSet<_>>();
++        for unit in active_units {
++            let connector = FederatedMintConnector::from_public_config_urls(config.clone())?;
++            let wallet_config = cdk::wallet::wallet_repository::WalletConfig::new()
++                .with_target_proof_count(target_proof_count)
++                .with_mint_connector(Arc::new(connector));
++            self.inner
++                .set_mint_config(local_mint_url.clone(), unit, wallet_config)
++                .await?;
++        }
++
++        Ok(info)
++    }
++}
++
+ /// Token data FFI type
+ ///
+ /// Contains information extracted from a parsed token.
+diff --git a/bindings/swift/rust/Cargo.toml b/bindings/swift/rust/Cargo.toml
+--- a/bindings/swift/rust/Cargo.toml
++++ b/bindings/swift/rust/Cargo.toml
+@@ -18,7 +18,7 @@ name = "uniffi-bindgen-swift"
+ path = "uniffi-bindgen-swift.rs"
+ 
+ [dependencies]
+-cdk-ffi = { workspace = true, default-features = false, features = ["npubcash", "nwc", "bip353"] }
++cdk-ffi = { workspace = true, default-features = false, features = ["npubcash", "nwc", "bip353", "federation"] }
+ uniffi = { workspace = true, features = ["cli"] }
+ 
+ 
+diff --git a/bindings/kotlin/rust/Cargo.toml b/bindings/kotlin/rust/Cargo.toml
+--- a/bindings/kotlin/rust/Cargo.toml
++++ b/bindings/kotlin/rust/Cargo.toml
+@@ -17,7 +17,7 @@ name = "uniffi-bindgen"
+ path = "uniffi-bindgen.rs"
+ 
+ [dependencies]
+-cdk-ffi = { workspace = true, default-features = false, features = ["npubcash", "nwc", "bip353"] }
++cdk-ffi = { workspace = true, default-features = false, features = ["npubcash", "nwc", "bip353", "federation"] }
+ uniffi = { workspace = true, features = ["cli"] }
+ 
+ [build-dependencies]
