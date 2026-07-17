@@ -1,6 +1,6 @@
 # Federated CDK Performance Optimizations
 
-Status: Milestone 3 complete; Milestone 4 next
+Status: Milestone 4 rejected; Milestone 5 next
 First recorded: 2026-07-17
 
 ## Purpose
@@ -457,8 +457,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 0 | Reproduce and attribute transaction CPU without production optimization | Complete | `a5ae88c88afa0a910632be921e277d3c49c33719` |
 | 1 | Remove repeated full federation-config validation from confirmed checkpoint hot paths | Complete | `887e5a49ea1b31bf72d0290eab25799b10f6567c` |
 | 2 | Verify each unchanged checkpoint signature/quorum only at required trust boundaries | Rejected | `81014e7ed963bf0c7cfe968b026c64fa0ab04332` |
-| 3 | Make scheduled-checkpoint eligibility and suffix accounting linear | Complete | This milestone commit; hash recorded at Milestone 4 start |
-| 4 | Remove duplicate same-request swap/melt proof verification | Not started | - |
+| 3 | Make scheduled-checkpoint eligibility and suffix accounting linear | Complete | `9ea5d80fbd862b35a44ecb77f53d0202af5de729` |
+| 4 | Remove duplicate same-request swap/melt proof verification | Rejected | This milestone commit; hash recorded at Milestone 5 start |
 | 5 | Batch federated input-proof verification where volume proves value | Not started | - |
 | 6 | Batch or remove redundant member signature-share self-verification where proven safe | Not started | - |
 | 7 | Re-profile the remaining consensus and transaction lifecycle | Not started | - |
@@ -1521,22 +1521,34 @@ without repeating the same pure admission verification in nested local calls.
 - Milestone 0 records proof-verification invocations by operation, member, and
   lifecycle layer and confirms duplicate same-request work.
 
+Milestone 4 starts from the retained Milestone 3 commit
+`9ea5d80fbd862b35a44ecb77f53d0202af5de729`. The recorded forced-change
+lifecycle samples already prove that each member performs one builder-layer,
+two admission-layer, and one apply-layer proof-verification pass for the same
+swap or melt request. The first task is to trace those exact call sites and
+identify which of the two pre-consensus admission passes has no independent
+untrusted boundary; no fix is permitted until that ownership is explicit.
+
 ### Todos
 
-- [ ] Trace operation builders, public submission, direct consensus submission,
+- [x] Trace operation builders, public submission, direct consensus submission,
       peer submission, duplicate request handling, and accepted apply for swap and
       melt.
-- [ ] Define which entry points accept untrusted envelopes and must validate them
+- [x] Define which entry points accept untrusted envelopes and must validate them
       independently.
-- [ ] Remove the nested local validation duplication with the smallest ownership
-      change. Do not add an unchecked public entry point or allow peer traffic to
-      bypass admission.
-- [ ] Retain authoritative proof, spending-condition, state, balance, and
+- [x] Test the smallest local-builder ownership change, then remove it after the
+      matched one-proof latency gate fails. No unchecked public entry point or
+      peer admission bypass remains.
+- [x] Retain authoritative proof, spending-condition, state, balance, and
       double-spend validation during deterministic apply.
-- [ ] Add valid, invalid proof, invalid witness, duplicate request, direct peer,
+- [x] Exercise valid, invalid proof, invalid witness, duplicate request, direct peer,
       retry, conflicting operation, and replay tests.
-- [ ] Benchmark one-input and multi-input swaps and melts with wallet fanout to
-      three, four, and five responding members.
+- [x] Benchmark the user-approved one-sample `10:1`, `20:5`, and `100:20`
+      four-proof swap matrix with five-member wallet fanout, plus one matched
+      fresh-federation one-proof gate. Stop before extra melt/fanout samples once
+      the mandatory one-proof gate rejects the candidate; reuse Milestone 0's
+      confirmed melt cardinality instead of collecting knowingly non-retainable
+      measurements.
 
 ### Success criteria
 
@@ -1550,6 +1562,126 @@ without repeating the same pure admission verification in nested local calls.
   the change is reverted and recorded as `Rejected`.
 - A kept result is committed as
   `perf: remove duplicate federation proof verification`.
+
+### Progress record — 2026-07-17
+
+Milestone 4 is `Rejected`. It starts from retained Milestone 3 commit
+`9ea5d80fbd862b35a44ecb77f53d0202af5de729`; the tested production candidate
+has been removed, so this milestone commits evidence and the decision only.
+
+#### Confirmed duplicate and authority boundaries
+
+The public swap and melt handlers call `swap_operation` or `melt_operation`,
+which perform request-local output, content-bound, uniqueness, aggregate-BLS
+proof, and spending-condition validation before authorizing the envelope. They
+then call `submit_federation_envelope`, which validates the envelope and
+operation once before calling `submit_federation_envelope_to_consensus`; that
+nested method validates the same envelope and operation a second time. The two
+admission counters are therefore the same request on the same member, not peer
+fanout or apply work.
+
+Direct consensus and private peer submission enter
+`submit_federation_envelope_to_consensus` and require its independent admission
+pass. Accepted apply separately calls the federation input verifier before
+state, balance, double-spend, and signature-share mutation. Duplicate retries
+join or return the existing operation only after admission. Catch-up/replay
+retains authoritative apply validation. These are distinct trust boundaries and
+were not candidates for removal.
+
+The tested candidate removed the redundant outer/nested admission call and gave
+the two wallet-facing handlers a crate-private locally-built path. That path
+still checked the supported envelope version, member authorization, and exact
+local author before queueing, while direct/peer submission continued to run
+full admission and accepted apply remained unchanged. This was the smallest
+ownership change and introduced no durable state, compatibility path, or public
+unchecked API.
+
+#### Materiality baseline and direct counters
+
+The retained baseline used the exact Milestone 3 source, release mint daemon,
+five fresh SQLite/fakewallet members, threshold three, consensus threshold four,
+`20/20` checkpoint intervals, and 15-sat tokens deliberately split into four
+proofs. Each wallet request contacted all five members. The counters match the
+traced call graph exactly:
+
+| Case | Builder proofs / time | Admission proofs / time | Apply proofs / time | Aggregate member CPU |
+| --- | ---: | ---: | ---: | ---: |
+| `10:1` | 200 / 0.279303 s | 400 / 0.547314 s | 200 / 0.298691 s | 7.59 s |
+| `20:5` | 400 / 0.653697 s | 800 / 1.321174 s | 400 / 0.591120 s | 10.16 s |
+| `100:20` | 2,000 / 5.005476 s | 4,000 / 10.491287 s | 2,000 / 2.865419 s | 36.53 s |
+
+The 100-operation admission duplication alone consumed 28.7% of aggregate
+member CPU, so the candidate cleared the materiality precondition before the
+fix was benchmarked. Milestone 0's forced-change lifecycle independently
+records melt counts of 15 builder, 30 admission, and 15 apply proofs, confirming
+the identical nested call shape for melt.
+
+#### Artifacts and measurement scope
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Retained Milestone 3 mint daemon used by the multi-proof baseline | `5fb9444d97732af295c025e78ab2f47dffc4ac98ca1002fd2a5e0ce3385cb080` |
+| Exact Milestone 3 source rebuilt in an isolated target for the matched one-proof baseline | `8e8be23bba11e7f8d414773d467b2f953c4bf1354b20c3ad3938da190f489280` |
+| Candidate mint daemon | `c9ff7c9e7244c507cf14dfecde042bcea12ec782eabca06f7c16e817449df3ef` |
+| Shared current CLI | `da86ab537de47c5043af493033f4c8d4a9520616e96e7a14fc6296121af05f4b` |
+| Shared benchmark harness | `93025c159b9d9b498946840c1fa2cf93406caab85dee7e6cf7e35b030a7d95c8` |
+
+Two setup attempts produced no sample: the current harness first required a
+newer CLI `--split-target` option, then the initial corrected launcher wrote PID
+files at the previous location. After rebuilding only the shared CLI and
+correcting the launcher, the multi-case invocation completed `10:1` but the
+CLI's recovery summary contaminated the second offline token batch's token-only
+stdout. The retained `20:5` and `100:20` samples therefore ran as separate
+one-case invocations with fresh funding wallets. No timed case was repeated.
+
+#### Multi-proof candidate result
+
+| Case | Success | Wall baseline → candidate | Confirmed TPS | p50 | p95 | Aggregate member CPU |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `10:1` | 10/10 → 10/10 | 24.821 → 23.309 s (-6.1%) | 0.403 → 0.429 (+6.5%) | 2.503 → 2.500 s (-0.1%) | 2.505 → 2.504 s (-0.0%) | 7.59 → 5.10 s (-32.8%) |
+| `20:5` | 20/20 → 20/20 | 10.018 → 10.375 s (+3.6%) | 1.996 → 1.928 (-3.4%) | 2.514 → 2.509 s (-0.2%) | 2.862 → 2.845 s (-0.6%) | 10.16 → 7.20 s (-29.1%) |
+| `100:20` | 100/100 → 100/100 | 15.326 → 15.468 s (+0.9%) | 6.525 → 6.465 (-0.9%) | 2.976 → 2.977 s (+0.0%) | 3.516 → 3.442 s (-2.1%) | 36.53 → 29.04 s (-20.5%) |
+
+All cases had exact immediate/eventual operation deltas, zero late operations,
+zero sync transitions, matching persisted state and exact current materialized
+digests, and bounded idle CPU. Candidate builder/apply proof counts remained
+200/200, 400/400, and 2,000/2,000. Admission proof count and duration were
+exactly zero in all three windows, proving the candidate removed only the
+identified work.
+
+#### Mandatory one-proof gate and decision
+
+An initial candidate one-proof sample at operation height 142 recorded 10/10,
+24.698 seconds wall, 0.405 TPS, 2.498/2.504 seconds p50/p95, and 4.57 CPU-seconds.
+It was discarded from the gate because it had no scheduled checkpoint while the
+fresh reference did and was not an equivalent starting state. No claim uses it.
+
+The valid comparison used separate fresh federations at operation height three,
+the same current CLI and harness, identical `10:1` one-proof workload, three new
+logical checkpoints, 50 finalized units/items, exact convergence, and one
+sample per build as directed:
+
+| Metric | Milestone 3 baseline | Candidate | Change |
+| --- | ---: | ---: | ---: |
+| Success | 10/10 | 10/10 | unchanged |
+| Wall | 22.727 s | 24.707 s | +8.7% |
+| Confirmed TPS | 0.440 | 0.405 | -8.0% |
+| p50 | 2.130 s | 2.501 s | +17.4% |
+| p95 | 2.504 s | 2.506 s | +0.1% |
+| Aggregate member CPU | 3.16 s | 2.80 s | -11.4% |
+
+The removed proof work clearly and materially lowers multi-proof CPU, but the
+matched one-proof wall, throughput, and p50 exceed the milestone's mandatory 5%
+regression limit. The likely consensus-cadence phase effect is an inference and
+does not override measured acceptance criteria; the user-directed single-sample
+scope provides no authorized repetition with which to replace this result.
+
+**Rejected.** The candidate and its temporary test were removed completely.
+Direct/peer admission and authoritative apply were never weakened. Private
+federation configs, wallets, bearer tokens, databases, logs, and raw metrics
+remain outside the repository. This milestone's evidence-only commit subject is
+`docs: reject duplicate federation proof optimization`; its hash is recorded at
+Milestone 5 start.
 
 ## Milestone 5: batch federated input-proof verification
 
@@ -1889,4 +2021,5 @@ Add future measurements here rather than rewriting earlier results.
 | 2026-07-17 | `a5ae88c88afa0a910632be921e277d3c49c33719` | Local release, 5 members, SQLite, fakewallet | `20/20` versus `20000/20000`; one retained `10:1`, `20:5`, `100:20` matrix each | Stable sequential aggregate CPU median 52.45s versus 6.43s (-87.7%); direct `40:10` profile recorded 1,128 full config validations and 18,048 BLS public-key interpolations | Confirmed repeated immutable config/keyset validation is the dominant transaction compute sink; bounded metrics, exact digest diagnostic, and corrected harness kept; no production optimization in M0 |
 | 2026-07-17 | `887e5a49ea1b31bf72d0290eab25799b10f6567c` | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix | CPU 3.77s / 3.39s / 9.54s; success 10/10 / 20/20 / 100/100; 0 full config, keyset, interpolation, or setup-lineage validations in every window | Kept: validated-config checkpoint paths remove the confirmed sink; sequential CPU -92.8% versus baseline median and realistic `100:20` reaches 7.736 confirmed TPS with exact convergence |
 | 2026-07-17 | This Milestone 2 commit; hash recorded at Milestone 3 start | Same Milestone 1 release matrix | Post-fix verification materiality gate | 298 / 248 / 250 wrappers and 1,190 / 921 / 1,050 signatures consumed only 0.108802s / 0.067253s / 0.079927s aggregate | Rejected before implementation: even eliminating all measured signature/quorum verification cannot meet the 15% CPU gate; no production change or extra run |
-| 2026-07-17 | This Milestone 3 commit; hash recorded at Milestone 4 start | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix plus deterministic 20/200/2,000/10,000-item test | Success 10/10 / 20/20 / 100/100; CPU 3.07s / 3.14s / 9.44s; ordinary scheduled eligibility loaded 0 suffix rows and reserialized 0 historical bytes in every case | Kept: prefix accounting removes the confirmed quadratic work; sequential CPU -18.6%, wall -15.4%, direct counters reach zero, and 10,000-item range queries remain O(1) |
+| 2026-07-17 | `9ea5d80fbd862b35a44ecb77f53d0202af5de729` | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix plus deterministic 20/200/2,000/10,000-item test | Success 10/10 / 20/20 / 100/100; CPU 3.07s / 3.14s / 9.44s; ordinary scheduled eligibility loaded 0 suffix rows and reserialized 0 historical bytes in every case | Kept: prefix accounting removes the confirmed quadratic work; sequential CPU -18.6%, wall -15.4%, direct counters reach zero, and 10,000-item range queries remain O(1) |
+| 2026-07-17 | This Milestone 4 commit; hash recorded at Milestone 5 start | Local release, 5 members, SQLite, fakewallet, `20/20`; 4-proof and matched 1-proof | One retained `10:1`, `20:5`, `100:20` multi-proof matrix and one matched fresh `10:1` one-proof sample per build | Multi-proof CPU -32.8% / -29.1% / -20.5% with admission proofs reduced exactly to zero; matched one-proof wall +8.7%, TPS -8.0%, p50 +17.4% | Rejected and reverted: the compute win is real, but the mandatory one-proof latency/throughput budget failed and no repeat was authorized |
