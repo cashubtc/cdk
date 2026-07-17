@@ -280,7 +280,7 @@ jobs:
         working-directory: cdk-dart/rust
         run: |
           mkdir -p ../generated-bindings
-          cargo run --release --bin uniffi-bindgen -- \
+          cargo run --release --bin uniffi-bindgen-dart -- \
             target/${{ matrix.target }}/release/${{ matrix.artifact }} \
             --out-dir ../generated-bindings
 
