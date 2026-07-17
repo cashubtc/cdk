@@ -153,6 +153,30 @@ fn ssl_mode_from_config(tls_mode: Option<&str>, url: &str) -> SslMode {
     }
 }
 
+pub(crate) async fn connect_client(url: &str) -> Result<Client, PgError> {
+    let (_, url) = PgConfig::strip_schema(url);
+    match ssl_mode_from_url(&url) {
+        SslMode::NativeTls(tls) => {
+            let (client, connection) = connect(&url, tls).await?;
+            tokio::spawn(async move {
+                if let Err(error) = connection.await {
+                    tracing::error!(%error, "Postgres connection failed");
+                }
+            });
+            Ok(client)
+        }
+        SslMode::NoTls(tls) => {
+            let (client, connection) = connect(&url, tls).await?;
+            tokio::spawn(async move {
+                if let Err(error) = connection.await {
+                    tracing::error!(%error, "Postgres connection failed");
+                }
+            });
+            Ok(client)
+        }
+    }
+}
+
 impl PgConfig {
     /// Create a new `PgConfig` with explicit TLS mode, pool size, and timeout.
     ///
