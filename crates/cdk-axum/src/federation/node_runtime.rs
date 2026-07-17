@@ -207,7 +207,7 @@ pub(super) fn checkpoint_summary(
     checkpoint: &FederationCheckpoint,
     config: &FederationConfig,
 ) -> Result<FederationCheckpointSummary, cdk::Error> {
-    checkpoint.validate_against_config(config)?;
+    checkpoint.validate_against_validated_config(config)?;
     Ok(FederationCheckpointSummary::from_checkpoint(checkpoint)?)
 }
 

@@ -626,8 +626,16 @@ impl FederationCommittedFrontier {
 
     /// Validate this as a terminal complete-unit frontier for the exact roster.
     pub fn validate_complete_unit(&self, config: &FederationConfig) -> Result<()> {
-        self.validate_complete_unit_shape()?;
         config.validate()?;
+        self.validate_complete_unit_for_validated_config(config)
+    }
+
+    /// Validate this as a terminal complete-unit frontier against an already-validated config.
+    pub fn validate_complete_unit_for_validated_config(
+        &self,
+        config: &FederationConfig,
+    ) -> Result<()> {
+        self.validate_complete_unit_shape()?;
         self.aleph_bft.validate_roster(config)
     }
 
@@ -1176,8 +1184,13 @@ impl FederationCheckpoint {
 
     /// Validate payload structure, federation binding, and roster watermarks.
     pub fn validate_against_config(&self, config: &FederationConfig) -> Result<()> {
-        self.validate_shape()?;
         config.validate()?;
+        self.validate_against_validated_config(config)
+    }
+
+    /// Validate payload structure and bindings against an already-validated config.
+    pub fn validate_against_validated_config(&self, config: &FederationConfig) -> Result<()> {
+        self.validate_shape()?;
         if self.federation_id != config.federation_id {
             return Err(checkpoint_invalid("federation id mismatch"));
         }

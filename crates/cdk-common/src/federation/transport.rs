@@ -1402,6 +1402,16 @@ pub struct FederationCheckpointAuditResponse {
 impl FederationCheckpointSummaryResponse {
     /// Validate response bindings and summary kinds.
     pub fn validate(&self, config: &FederationConfig, expected_member_id: MemberId) -> Result<()> {
+        config.validate()?;
+        self.validate_for_validated_config(config, expected_member_id)
+    }
+
+    /// Validate response bindings and summary kinds against an already-validated config.
+    pub fn validate_for_validated_config(
+        &self,
+        config: &FederationConfig,
+        expected_member_id: MemberId,
+    ) -> Result<()> {
         ensure_federation_rest_version(self.version)?;
         if self.federation_id != config.federation_id {
             return Err(FederationError::RestFederationMismatch {
@@ -1443,7 +1453,9 @@ impl FederationCheckpointSummaryResponse {
                             .to_string(),
                     });
                 }
-                summary.frontier.validate_complete_unit(config)?;
+                summary
+                    .frontier
+                    .validate_complete_unit_for_validated_config(config)?;
             }
         }
         Ok(())

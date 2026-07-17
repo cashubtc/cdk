@@ -273,7 +273,7 @@ where
         }
         response
             .payload
-            .validate(&self.public_config, member.member_id)?;
+            .validate_for_validated_config(&self.public_config, member.member_id)?;
         if let (Some(sequence), Some(next)) = (
             next_scheduled_quorum_after,
             response.payload.next_scheduled_quorum.as_ref(),

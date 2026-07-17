@@ -9595,6 +9595,10 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
     let rounds_started_at = std::time::Instant::now();
     async {
         for _ in 0..rounds {
+            assert!(sync_loop::next_local_checkpoint_catch_up_target(&state)
+                .await
+                .expect("inspect unchanged local checkpoint target")
+                .is_none());
             if !round_delay.is_zero() {
                 time::sleep(round_delay).await;
             }
@@ -9618,6 +9622,11 @@ async fn assert_unchanged_checkpoint_polls_do_not_repeat_signature_verification(
                 0
             );
         }
+        state.mark_federation_healthy().await;
+        assert_eq!(
+            run_federation_peer_sync_round(&state, &client, &[]).await,
+            0
+        );
     }
     .with_subscriber(subscriber)
     .await;

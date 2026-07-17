@@ -259,20 +259,8 @@ async fn apply_checkpoint_discovered_during_peer_sync<T>(
 ) where
     T: Transport,
 {
-    let target_available = match next_local_checkpoint_catch_up_target(state).await {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
-        Err(err) => {
-            tracing::warn!(
-                "Could not inspect late federation checkpoint target: {}",
-                err
-            );
-            false
-        }
-    };
-    if !target_available {
-        return;
-    }
+    // Inspecting a checkpoint target verifies its quorum. Keep that work off the idle path by
+    // first proving that a peer has state this member still needs.
     let local_operation_count = match local_peer_order_status(state).await {
         Ok(status) => status.operation_count,
         Err(err) => {
@@ -290,6 +278,20 @@ async fn apply_checkpoint_discovered_during_peer_sync<T>(
     else {
         return;
     };
+    let target_available = match next_local_checkpoint_catch_up_target(state).await {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect late federation checkpoint target: {}",
+                err
+            );
+            false
+        }
+    };
+    if !target_available {
+        return;
+    }
     let Some(source) = peers
         .iter()
         .find(|peer| peer.member_id == source_status.member_id)
@@ -628,26 +630,20 @@ pub(super) async fn next_local_checkpoint_catch_up_target(
     let local_member = runtime_config.member_id();
     let db = state.mint.localstore();
     let current = db.get_trusted_federation_checkpoint_quorum().await?;
-    let verified_current = current
-        .as_ref()
-        .map(|current| {
-            super::verify_checkpoint_quorum_with_metrics(current, public_config, local_member)
-        })
-        .transpose()?;
-    let scheduled_sequence = verified_current.as_ref().map_or(0, |quorum| {
-        quorum.checkpoint().scheduled_checkpoint_sequence
-    });
+    // Trusted quorums were verified before promotion. Use their checkpoint metadata to decide
+    // whether there is any catch-up work before doing expensive signature verification.
+    let current_checkpoint = current.as_ref().map(|quorum| &quorum.checkpoint);
+    let scheduled_sequence =
+        current_checkpoint.map_or(0, |checkpoint| checkpoint.scheduled_checkpoint_sequence);
     if let Some(next) = db
         .get_next_federation_scheduled_checkpoint_quorum(scheduled_sequence)
         .await?
     {
         let verified_next =
             super::verify_checkpoint_quorum_with_metrics(&next, public_config, local_member)?;
-        verified_next.checkpoint().validate_promotion_from(
-            verified_current
-                .as_ref()
-                .map(|current| current.checkpoint()),
-        )?;
+        verified_next
+            .checkpoint()
+            .validate_promotion_from(current_checkpoint)?;
         return Ok(Some(next));
     }
     let Some(recovery) = db
@@ -656,26 +652,23 @@ pub(super) async fn next_local_checkpoint_catch_up_target(
     else {
         return Ok(None);
     };
-    let verified_recovery =
-        super::verify_checkpoint_quorum_with_metrics(&recovery, public_config, local_member)?;
     if recovery_checkpoint_is_superseded(
-        verified_recovery.checkpoint().scheduled_checkpoint_sequence,
+        recovery.checkpoint.scheduled_checkpoint_sequence,
         scheduled_sequence,
     ) {
         return Ok(None);
     }
-    verified_recovery.checkpoint().validate_promotion_from(
-        verified_current
-            .as_ref()
-            .map(|current| current.checkpoint()),
-    )?;
+    recovery
+        .checkpoint
+        .validate_promotion_from(current_checkpoint)?;
     let frontier = db.get_federation_checkpoint_frontier().await?;
     if frontier
-        .ensure_covers_checkpoint(verified_recovery.checkpoint())
+        .ensure_covers_checkpoint(&recovery.checkpoint)
         .is_ok()
     {
         return Ok(None);
     }
+    super::verify_checkpoint_quorum_with_metrics(&recovery, public_config, local_member)?;
     Ok(Some(recovery))
 }
 

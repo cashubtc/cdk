@@ -1861,6 +1861,27 @@ cargo test --release -p cdk-axum --features federation,prometheus \
 Raw compiler and test output remains outside the repository; only these
 payload-free aggregates are retained here.
 
+### Restart CPU regression and deployment verification
+
+A five-member restart exposed two bounded but repeated hot-path checks that the
+synthetic history benchmark did not cover. Startup and idle peer sync repeatedly
+inspected an already-covered recovery quorum, and checkpoint-summary production
+and validation repeatedly ran full public-config validation. The latter
+re-derived the DKG federated keyset with BLS arithmetic on every poll.
+
+The catch-up target selector now performs cheap frontier and sequence checks
+before verifying a quorum, and healthy equal-height peer sync does not inspect a
+checkpoint target. Checkpoint summary paths use explicit already-validated
+config APIs while retaining checkpoint shape, federation/config digest, and
+exact-roster validation. Full validation remains at config ingress and startup,
+and real catch-up targets still require quorum verification before use.
+
+After deploying the fix and restarting from the existing checkpoint state, all
+five members reached readiness. A ten-second process-counter sample measured
+1.4% to 1.6% CPU per member, down from 64.9% to 92.9% before the complete fix.
+Each member's checkpoint signature-verification counter remained fixed at four
+startup verifications during the idle sample.
+
 ### Local ten-minute idle evidence
 
 The ignored release idle benchmark now reuses the same synthetic-history
