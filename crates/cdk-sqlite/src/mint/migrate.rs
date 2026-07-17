@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
@@ -12,11 +11,13 @@ use cdk_common::mint::{MeltPaymentRequest, MeltQuote, MintKeySetInfo, MintQuote,
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
+use cdk_common::util::hex;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
     MintQuoteState, PaymentMethod, Proof, PublicKey, SecretKey, State as ProofState,
 };
 use chrono::NaiveDateTime;
+use rusqlite::OptionalExtension;
 
 use super::MintSqliteDatabase;
 
@@ -105,6 +106,23 @@ fn validate_nutshell_schema(conn: &rusqlite::Connection) -> Result<(), Error> {
     if version != SUPPORTED_NUTSHELL_SCHEMA_VERSION {
         return Err(Error::Database(Box::new(std::io::Error::other(format!(
             "Unsupported Nutshell mint schema version {version}; expected version {SUPPORTED_NUTSHELL_SCHEMA_VERSION} from Nutshell {MAX_SUPPORTED_NUTSHELL_VERSION}"
+        )))));
+    }
+    Ok(())
+}
+
+fn validate_melt_quote_lookup_ids(conn: &rusqlite::Connection) -> Result<(), Error> {
+    let duplicate = conn
+        .query_row(
+            "SELECT checking_id FROM melt_quotes WHERE lower(state) IN ('paid', 'pending') GROUP BY checking_id HAVING COUNT(*) > 1 LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    if let Some(checking_id) = duplicate {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Nutshell contains multiple paid or pending melt quotes for checking_id {checking_id}"
         )))));
     }
     Ok(())
@@ -271,10 +289,10 @@ fn read_keysets_sqlite(conn: &rusqlite::Connection) -> Result<Vec<MintKeySetInfo
             let valid_from_str = val_to_string(valid_from_val);
 
             let amounts_vec: Vec<u64> = if amounts_str.is_empty() || amounts_str == "[]" {
-                (0..32).map(|i| 2_u64.pow(i)).collect()
+                (0..64).map(|i| 2_u64.pow(i)).collect()
             } else {
                 serde_json::from_str(&amounts_str)
-                    .unwrap_or_else(|_| (0..32).map(|i| 2_u64.pow(i)).collect())
+                    .unwrap_or_else(|_| (0..64).map(|i| 2_u64.pow(i)).collect())
             };
 
             let valid_from = parse_nutshell_timestamp(&valid_from_str);
@@ -447,7 +465,7 @@ fn read_mint_quotes_chunk_sqlite(
                 };
 
             let state_mapped = match state_str.to_lowercase().as_str() {
-                "paid" => MintQuoteState::Paid,
+                "paid" | "pending" => MintQuoteState::Paid,
                 "issued" => MintQuoteState::Issued,
                 _ => MintQuoteState::Unpaid,
             };
@@ -523,7 +541,6 @@ fn read_melt_quotes_chunk_sqlite(
     conn: &rusqlite::Connection,
     limit: i64,
     offset: i64,
-    seen_paid_pending_lookup_ids: &RefCell<HashSet<String>>,
 ) -> Result<Vec<MeltQuote>, Error> {
     let mut stmt = conn.prepare("SELECT quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time, paid_time, state, expiry, proof FROM melt_quotes ORDER BY quote LIMIT ? OFFSET ?;")
         .map_err(|e| Error::Database(Box::new(e)))?;
@@ -590,7 +607,7 @@ fn read_melt_quotes_chunk_sqlite(
                 })
             };
 
-            let mut request_lookup_id = if checking_id.len() == 64 {
+            let request_lookup_id = if checking_id.len() == 64 {
                 if let Ok(bytes) = hex::decode(&checking_id) {
                     if let Ok(arr) = bytes.try_into() {
                         Some(PaymentIdentifier::PaymentHash(arr))
@@ -613,19 +630,6 @@ fn read_melt_quotes_chunk_sqlite(
                 "failed" => MeltQuoteState::Unpaid,
                 _ => MeltQuoteState::Unpaid,
             };
-
-            if let Some(ref ref_id) = request_lookup_id {
-                if state_mapped == MeltQuoteState::Paid || state_mapped == MeltQuoteState::Pending {
-                    let id_key = ref_id.to_string();
-                    let mut borrowed = seen_paid_pending_lookup_ids.borrow_mut();
-                    if borrowed.contains(&id_key) {
-                        let dup_id = format!("{}-dup-{}", id_key, q_id);
-                        request_lookup_id = Some(PaymentIdentifier::CustomId(dup_id));
-                    } else {
-                        borrowed.insert(id_key);
-                    }
-                }
-            }
 
             let method = match PaymentMethod::from_str(&method_str) {
                 Ok(m) => m,
@@ -800,7 +804,7 @@ fn read_proofs_chunk_sqlite(
     let query_str = if spent {
         "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_used ORDER BY secret LIMIT ? OFFSET ?;"
     } else {
-        "SELECT amount, id, c, secret, NULL, melt_quote FROM proofs_pending ORDER BY secret LIMIT ? OFFSET ?;"
+        "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_pending ORDER BY secret LIMIT ? OFFSET ?;"
     };
     let target_state = if spent {
         ProofState::Spent
@@ -939,6 +943,7 @@ async fn migrate_from_nutshell_into(
     let sqlite_conn =
         rusqlite::Connection::open(nutshell_db_path).map_err(|e| Error::Database(Box::new(e)))?;
     validate_nutshell_schema(&sqlite_conn)?;
+    validate_melt_quote_lookup_ids(&sqlite_conn)?;
 
     let source_keysets = source_count(&sqlite_conn, "keysets")?;
     let source_mint_quotes = source_count(&sqlite_conn, "mint_quotes")?;
@@ -968,6 +973,12 @@ async fn migrate_from_nutshell_into(
                     return Err(Error::Database(Box::new(std::io::Error::other(format!(
                         "Unsupported Nutshell version: {}. Maximum supported version is: {}.",
                         ver_clean, MAX_SUPPORTED_NUTSHELL_VERSION
+                    )))));
+                }
+                if keyset_v < (0, 15, 0) {
+                    return Err(Error::Database(Box::new(std::io::Error::other(format!(
+                        "Unsupported Nutshell keyset {} from version {ver_clean}; pre-0.15 keysets cannot be migrated or verified by CDK",
+                        keyset.id
                     )))));
                 }
             }
@@ -1001,7 +1012,6 @@ async fn migrate_from_nutshell_into(
     let mut skipped_keysets_count = 0;
     let mut skipped_promises_count = 0;
     let mut skipped_proofs_count = 0;
-    let seen_paid_pending_lookup_ids = RefCell::new(HashSet::new());
 
     let mut migrated_keysets = 0;
     let mut migrated_mint_quotes = 0;
@@ -1091,12 +1101,7 @@ async fn migrate_from_nutshell_into(
     // 5. Chunked Migration of Melt Quotes
     let mut offset = 0;
     while offset < source_melt_quotes as i64 {
-        let chunk = read_melt_quotes_chunk_sqlite(
-            &sqlite_conn,
-            CHUNK_SIZE,
-            offset,
-            &seen_paid_pending_lookup_ids,
-        )?;
+        let chunk = read_melt_quotes_chunk_sqlite(&sqlite_conn, CHUNK_SIZE, offset)?;
 
         for quote in chunk {
             let quote_id = quote.id.clone();

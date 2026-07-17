@@ -128,7 +128,7 @@ fn verify_semantic_manifest(
 
     let source_proofs = query_strings(
         source,
-        "SELECT lower(y) || '|' || amount || '|' || id || '|' || secret || '|' || lower(c) || '|' || COALESCE(witness, '') || '|SPENT|' || COALESCE(melt_quote, '') FROM proofs_used UNION ALL SELECT lower(y) || '|' || amount || '|' || id || '|' || secret || '|' || lower(c) || '||PENDING|' || COALESCE(melt_quote, '') FROM proofs_pending p WHERE NOT EXISTS (SELECT 1 FROM proofs_used u WHERE u.y = p.y) ORDER BY 1",
+        "SELECT lower(y) || '|' || amount || '|' || id || '|' || secret || '|' || lower(c) || '|' || COALESCE(witness, '') || '|SPENT|' || COALESCE(melt_quote, '') FROM proofs_used UNION ALL SELECT lower(y) || '|' || amount || '|' || id || '|' || secret || '|' || lower(c) || '|' || COALESCE(witness, '') || '|PENDING|' || COALESCE(melt_quote, '') FROM proofs_pending p WHERE NOT EXISTS (SELECT 1 FROM proofs_used u WHERE u.y = p.y) ORDER BY 1",
     )?;
     let target_proofs = query_strings(
         target,

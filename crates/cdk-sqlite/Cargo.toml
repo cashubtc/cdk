@@ -18,13 +18,12 @@ wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
 sqlcipher = ["rusqlite/bundled-sqlcipher"]
 prometheus = ["cdk-sql-common/prometheus", "cdk-prometheus"]
 [dependencies]
-anyhow.workspace = true
 async-trait.workspace = true
 cdk-common = { workspace = true, features = ["test"] }
 cdk-prometheus = { workspace = true, optional = true }
 bitcoin.workspace = true
 cdk-sql-common = { workspace = true }
-rusqlite = { version = "0.31", features = ["bundled"]}
+rusqlite.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"]}
 tracing.workspace = true
@@ -32,8 +31,7 @@ serde.workspace = true
 serde_json.workspace = true
 lightning-invoice.workspace = true
 uuid.workspace = true
-chrono = { version = "0.4", features = ["serde"] }
-hex = "0.4"
+chrono = { version = "0.4", default-features = false }
 paste.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

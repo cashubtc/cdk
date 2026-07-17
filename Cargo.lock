@@ -1868,14 +1868,12 @@ dependencies = [
 name = "cdk-sqlite"
 version = "0.17.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "bitcoin 0.32.101",
  "cdk-common",
  "cdk-prometheus",
  "cdk-sql-common",
  "chrono",
- "hex",
  "lightning-invoice",
  "paste",
  "rusqlite",

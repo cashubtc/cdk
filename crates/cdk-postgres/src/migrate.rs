@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::str::FromStr;
 
@@ -11,13 +10,14 @@ use cdk_common::mint::{MeltPaymentRequest, MeltQuote, MintKeySetInfo, MintQuote,
 use cdk_common::payment::PaymentIdentifier;
 use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
+use cdk_common::util::hex;
 use cdk_common::{
     Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
     MintQuoteState, PaymentMethod, Proof, PublicKey, SecretKey, State as ProofState,
 };
 use chrono::NaiveDateTime;
 
-use super::{MintPgDatabase, PgConfig};
+use super::{connect_client, MintPgDatabase, PgConfig};
 
 const MAX_SUPPORTED_NUTSHELL_VERSION: &str = "0.20.2";
 const SUPPORTED_NUTSHELL_SCHEMA_VERSION: i32 = 36;
@@ -64,16 +64,27 @@ async fn validate_nutshell_schema(client: &tokio_postgres::Client) -> Result<(),
     Ok(())
 }
 
-async fn connect_for_verification(url: &str) -> Result<tokio_postgres::Client, Error> {
-    let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
+async fn validate_melt_quote_lookup_ids(client: &tokio_postgres::Client) -> Result<(), Error> {
+    let duplicate = client
+        .query_opt(
+            "SELECT checking_id FROM melt_quotes WHERE lower(state) IN ('paid', 'pending') GROUP BY checking_id HAVING COUNT(*) > 1 LIMIT 1",
+            &[],
+        )
         .await
         .map_err(|e| Error::Database(Box::new(e)))?;
-    tokio::spawn(async move {
-        if let Err(error) = connection.await {
-            tracing::error!(%error, "Postgres verification connection failed");
-        }
-    });
-    Ok(client)
+    if let Some(row) = duplicate {
+        let checking_id: String = row.try_get(0).map_err(|e| Error::Database(Box::new(e)))?;
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Nutshell contains multiple paid or pending melt quotes for checking_id {checking_id}"
+        )))));
+    }
+    Ok(())
+}
+
+async fn connect_for_verification(url: &str) -> Result<tokio_postgres::Client, Error> {
+    connect_client(url)
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))
 }
 
 async fn pg_pairs(client: &tokio_postgres::Client, sql: &str) -> Result<Vec<(String, i64)>, Error> {
@@ -473,7 +484,6 @@ async fn read_melt_quotes_chunk_postgres(
     client: &tokio_postgres::Client,
     limit: i64,
     offset: i64,
-    seen_paid_pending_lookup_ids: &RefCell<HashSet<String>>,
 ) -> Result<Vec<MeltQuote>, Error> {
     let rows = client.query("SELECT quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time::text, paid_time::text, state, expiry::text, proof FROM melt_quotes ORDER BY quote LIMIT $1 OFFSET $2;", &[&limit, &offset])
         .await
@@ -486,7 +496,10 @@ async fn read_melt_quotes_chunk_postgres(
         let checking_id: String = r.get(3);
         let unit_str: String = r.get(4);
         let amount: i64 = r.get(5);
-        let fee_reserve: i32 = r.get::<_, Option<i32>>(6).unwrap_or(0);
+        let fee_reserve = r
+            .try_get::<_, Option<i64>>(6)
+            .map_err(|e| Error::Database(Box::new(e)))?
+            .unwrap_or(0);
         let created_time_str: Option<String> = r.get(8);
         let paid_time_str: Option<String> = r.get(9);
         let state_str: String = r.get(10);
@@ -535,7 +548,7 @@ async fn read_melt_quotes_chunk_postgres(
             })
         };
 
-        let mut request_lookup_id = if checking_id.len() == 64 {
+        let request_lookup_id = if checking_id.len() == 64 {
             if let Ok(bytes) = hex::decode(&checking_id) {
                 if let Ok(arr) = bytes.try_into() {
                     Some(PaymentIdentifier::PaymentHash(arr))
@@ -557,19 +570,6 @@ async fn read_melt_quotes_chunk_postgres(
             "failed" => MeltQuoteState::Unpaid,
             _ => MeltQuoteState::Unpaid,
         };
-
-        if let Some(ref ref_id) = request_lookup_id {
-            if state_mapped == MeltQuoteState::Paid || state_mapped == MeltQuoteState::Pending {
-                let id_key = ref_id.to_string();
-                let mut borrowed = seen_paid_pending_lookup_ids.borrow_mut();
-                if borrowed.contains(&id_key) {
-                    let dup_id = format!("{}-dup-{}", id_key, q_id);
-                    request_lookup_id = Some(PaymentIdentifier::CustomId(dup_id));
-                } else {
-                    borrowed.insert(id_key);
-                }
-            }
-        }
 
         let method = match PaymentMethod::from_str(&method_str) {
             Ok(m) => m,
@@ -744,7 +744,7 @@ async fn read_proofs_chunk_postgres(
     let query_str = if spent {
         "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_used ORDER BY secret LIMIT $1 OFFSET $2;"
     } else {
-        "SELECT amount, id, c, secret, NULL, melt_quote FROM proofs_pending ORDER BY secret LIMIT $1 OFFSET $2;"
+        "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_pending ORDER BY secret LIMIT $1 OFFSET $2;"
     };
     let target_state = if spent {
         ProofState::Spent
@@ -860,16 +860,12 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
     tracing::info!("Starting nutshell database migration...");
 
     // Connect to source database
-    let (client, connection) = tokio_postgres::connect(nutshell_db_url, tokio_postgres::NoTls)
+    let client = connect_client(nutshell_db_url)
         .await
         .map_err(|e| Error::Database(Box::new(e)))?;
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            tracing::error!("Postgres connection error: {}", e);
-        }
-    });
 
     validate_nutshell_schema(&client).await?;
+    validate_melt_quote_lookup_ids(&client).await?;
     let source_keysets = source_count(&client, "keysets").await?;
     let source_mint_quotes = source_count(&client, "mint_quotes").await?;
     let source_melt_quotes = source_count(&client, "melt_quotes").await?;
@@ -898,12 +894,18 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
                         ver_clean, MAX_SUPPORTED_NUTSHELL_VERSION
                     )))));
                 }
+                if keyset_v < (0, 15, 0) {
+                    return Err(Error::Database(Box::new(std::io::Error::other(format!(
+                        "Unsupported Nutshell keyset {} from version {ver_clean}; pre-0.15 keysets cannot be migrated or verified by CDK",
+                        keyset.id
+                    )))));
+                }
             }
         }
     }
 
     // 2. Setup target database connection
-    let db_config = PgConfig::new(cdk_db_url, Some("disable"), Some(20), Some(10));
+    let db_config = PgConfig::new(cdk_db_url, None, Some(20), Some(10));
     let db = MintPgDatabase::new(db_config).await?;
 
     // 3. Pre-flight checks on target database population
@@ -927,7 +929,6 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
     let mut skipped_keysets_count = 0;
     let mut skipped_promises_count = 0;
     let mut skipped_proofs_count = 0;
-    let seen_paid_pending_lookup_ids = RefCell::new(HashSet::new());
 
     let mut migrated_keysets = 0;
     let mut migrated_mint_quotes = 0;
@@ -965,10 +966,12 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
         migrated_keysets += 1;
     }
 
+    // Keysets use a separate database transaction API from the mint tables. The
+    // public migration wrapper restores all target tables on any error after
+    // this commit, preserving all-or-nothing behavior for callers.
     key_tx.commit().await?;
     tracing::info!("Migrated keysets successfully.");
 
-    // Start main database transaction after keysets are committed to avoid SQLite lock deadlock
     let mut tx = MintDatabase::begin_transaction(&db).await?;
 
     // 4. Chunked Migration of Mint Quotes
@@ -1003,13 +1006,7 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
     // 5. Chunked Migration of Melt Quotes
     let mut offset = 0;
     while offset < source_melt_quotes as i64 {
-        let chunk = read_melt_quotes_chunk_postgres(
-            &client,
-            CHUNK_SIZE,
-            offset,
-            &seen_paid_pending_lookup_ids,
-        )
-        .await?;
+        let chunk = read_melt_quotes_chunk_postgres(&client, CHUNK_SIZE, offset).await?;
 
         for quote in chunk {
             tx.add_melt_quote(quote).await?;
@@ -1192,7 +1189,7 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
 
 /// Migrates a Nutshell database to an empty CDK Postgres database.
 pub async fn migrate_from_nutshell(cdk_db_url: &str, nutshell_db_url: &str) -> Result<(), Error> {
-    let db_config = PgConfig::new(cdk_db_url, Some("disable"), Some(20), Some(10));
+    let db_config = PgConfig::new(cdk_db_url, None, Some(20), Some(10));
     let _initialized_target = MintPgDatabase::new(db_config).await?;
     let target = connect_for_verification(cdk_db_url).await?;
     for table in [
