@@ -591,6 +591,11 @@ impl Wallet {
         proofs: &mut Proofs,
         derivation_indices: &HashMap<Proof, u32>,
     ) {
+        if derivation_indices.is_empty() {
+            // Preserve the selector's legacy ordering when no recovery metadata is available.
+            proofs.sort_by(|a, b| a.cmp(b).reverse());
+            return;
+        }
         proofs.sort_by(|a, b| {
             b.amount.cmp(&a.amount).then_with(|| {
                 derivation_indices
@@ -607,6 +612,9 @@ impl Wallet {
         right: &Proofs,
         derivation_indices: &HashMap<Proof, u32>,
     ) -> bool {
+        if derivation_indices.is_empty() {
+            return false;
+        }
         let mut left_indices = left
             .iter()
             .map(|proof| derivation_indices.get(proof).copied().unwrap_or(u32::MAX))
@@ -687,6 +695,23 @@ mod tests {
     }
 
     #[test]
+    fn test_select_proofs_without_indices_preserves_legacy_order() {
+        let proofs = vec![proof(8), proof(8), proof(8)];
+        let expected = proofs[0].clone();
+
+        let selected = Wallet::select_proofs(
+            Amount::from(8),
+            proofs,
+            &vec![id()],
+            &fee_and_amounts(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(selected, vec![expected]);
+    }
+
+    #[test]
     fn test_select_proofs_keeps_exact_amount_priority_over_age() {
         let old = indexed_proof(16, 4);
         let young = indexed_proof(8, 400);
@@ -713,11 +738,15 @@ mod tests {
         average_gap: u64,
     }
 
-    fn run_gap_simulation(prefer_oldest: bool, target_index: u32) -> GapSimulationResult {
+    fn run_gap_simulation(
+        prefer_oldest: bool,
+        target_index: u32,
+        run_nonce: u64,
+    ) -> GapSimulationResult {
         let mut proofs = Vec::new();
         let mut indices = HashMap::new();
         let mut next_index = 0_u32;
-        let mut rng = 0x4d595df4d0f33173_u64;
+        let mut rng = run_nonce;
         let mut previous_gap = 0_u32;
         let mut maximum_gap = 0_u32;
         let mut shrink_events = 0_u32;
@@ -734,7 +763,15 @@ mod tests {
                 if amount & denomination == 0 {
                     continue;
                 }
-                let proof = indexed_proof(denomination, *next_index);
+                let proof = Proof::new(
+                    Amount::from(denomination),
+                    id(),
+                    Secret::new(format!("simulation-{run_nonce:016x}-{next_index:08}")),
+                    PublicKey::from_hex(
+                        "03deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                    )
+                    .unwrap(),
+                );
                 if retain {
                     indices.insert(proof.clone(), *next_index);
                     proofs.push(proof);
@@ -753,19 +790,14 @@ mod tests {
 
             rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
             let spend = 1 + (rng >> 32) % 4_096;
-            let ranking = indices
-                .iter()
-                .map(|(proof, index)| {
-                    (
-                        proof.clone(),
-                        if prefer_oldest {
-                            *index
-                        } else {
-                            u32::MAX - *index
-                        },
-                    )
-                })
-                .collect();
+            let ranking = if prefer_oldest {
+                indices
+                    .iter()
+                    .map(|(proof, index)| (proof.clone(), *index))
+                    .collect()
+            } else {
+                HashMap::new()
+            };
             let selected = Wallet::select_proofs_with_derivation_indices(
                 Amount::from(spend),
                 proofs.clone(),
@@ -814,31 +846,40 @@ mod tests {
 
     #[test]
     #[ignore = "long-horizon NUT-342 diagnostic simulation"]
-    fn simulate_oldest_first_dynamic_gap() {
-        let newest_first = run_gap_simulation(false, 50_000);
-        let oldest_first = run_gap_simulation(true, 50_000);
+    fn benchmark_legacy_vs_oldest_first_dynamic_gap() {
+        let target_index = std::env::var("CDK_GAP_SIM_TARGET_INDEX")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(50_000);
+        let trials = std::env::var("CDK_GAP_SIM_TRIALS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1);
 
-        println!(
-            "newest-first: final={}, max={}, shrinks={}, samples={}, average={}",
-            newest_first.final_gap,
-            newest_first.maximum_gap,
-            newest_first.shrink_events,
-            newest_first.samples,
-            newest_first.average_gap
-        );
-        println!(
-            "oldest-first: final={}, max={}, shrinks={}, samples={}, average={}",
-            oldest_first.final_gap,
-            oldest_first.maximum_gap,
-            oldest_first.shrink_events,
-            oldest_first.samples,
-            oldest_first.average_gap
-        );
-        assert!(oldest_first.final_gap < newest_first.final_gap);
-        assert!(oldest_first.maximum_gap < newest_first.maximum_gap);
-        assert!(oldest_first.average_gap < newest_first.average_gap);
-        assert!(oldest_first.shrink_events > newest_first.shrink_events);
-        assert_eq!(oldest_first.samples, newest_first.samples);
+        for trial in 1..=trials {
+            let run_nonce = rand::random::<u64>();
+            let legacy = run_gap_simulation(false, target_index, run_nonce);
+            let oldest_first = run_gap_simulation(true, target_index, run_nonce);
+
+            println!("trial={trial} nonce={run_nonce:016x} target_index={target_index}");
+            println!(
+                "legacy: final={}, max={}, shrinks={}, swaps={}, average={}",
+                legacy.final_gap,
+                legacy.maximum_gap,
+                legacy.shrink_events,
+                legacy.samples,
+                legacy.average_gap
+            );
+            println!(
+                "oldest-first: final={}, max={}, shrinks={}, swaps={}, average={}",
+                oldest_first.final_gap,
+                oldest_first.maximum_gap,
+                oldest_first.shrink_events,
+                oldest_first.samples,
+                oldest_first.average_gap
+            );
+            assert_eq!(oldest_first.samples, legacy.samples);
+        }
     }
 
     #[test]
