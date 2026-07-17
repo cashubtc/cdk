@@ -1,6 +1,6 @@
 # Federated CDK Performance Optimizations
 
-Status: Milestone 1 complete
+Status: Milestone 2 rejected
 First recorded: 2026-07-17
 
 ## Purpose
@@ -450,8 +450,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | Milestone | Goal | Status | Commit |
 | --- | --- | --- | --- |
 | 0 | Reproduce and attribute transaction CPU without production optimization | Complete | `a5ae88c88afa0a910632be921e277d3c49c33719` |
-| 1 | Remove repeated full federation-config validation from confirmed checkpoint hot paths | Complete | This milestone commit; hash recorded at Milestone 2 start |
-| 2 | Verify each unchanged checkpoint signature/quorum only at required trust boundaries | Not started | - |
+| 1 | Remove repeated full federation-config validation from confirmed checkpoint hot paths | Complete | `887e5a49ea1b31bf72d0290eab25799b10f6567c` |
+| 2 | Verify each unchanged checkpoint signature/quorum only at required trust boundaries | Rejected | This milestone commit; hash recorded at Milestone 3 start |
 | 3 | Make scheduled-checkpoint eligibility and suffix accounting linear | Not started | - |
 | 4 | Remove duplicate same-request swap/melt proof verification | Not started | - |
 | 5 | Batch federated input-proof verification where volume proves value | Not started | - |
@@ -1212,23 +1212,25 @@ finalized unit, sync poll, persistence step, or promotion check.
 
 ### Todos
 
-- [ ] Trace signature creation, peer receipt, durable insertion, quorum assembly,
+- [x] Trace signature creation, peer receipt, durable insertion, quorum assembly,
       quorum transfer, trusted promotion, startup reload, and catch-up use.
-- [ ] Write the required verification cardinality as a function of unique new
+- [x] Write the required verification cardinality as a function of unique new
       signatures, unique quorums, members, and logical checkpoint boundaries.
-- [ ] Identify duplicate verification of the same evidence in
+- [x] Identify duplicate verification of the same evidence in
       `persist_checkpoint_signature`, quorum construction/persistence, current
       trusted-quorum comparison, capture, and peer sync.
 - [ ] Carry the existing `VerifiedFederationCheckpointQuorum` authority through
       adjacent persistence/promotion calls instead of converting it immediately
       back to raw data and verifying it again.
-- [ ] Prefer verified-at-insertion/startup durable invariants over a new cache.
+- [x] Prefer verified-at-insertion/startup durable invariants over a new cache.
       Add a cache only if measurement proves the same verified object must cross
       non-adjacent paths and no simpler ownership change works.
-- [ ] Add corruption, duplicate signer, minority quorum, wrong checkpoint ID,
+- [x] Add corruption, duplicate signer, minority quorum, wrong checkpoint ID,
       wrong roster, restart, and fetched-quorum adversarial tests.
-- [ ] Repeat unchanged idle sync rounds and active `10:1`, `40:10`, and `100:20`
-      cases with exact verification counters.
+- [x] Reuse the user-reduced post-Milestone-1 `10:1`, `20:5`, and `100:20`
+      release matrix plus its unchanged idle windows with exact verification
+      counters. Do not run an additional `40:10` or repeat matrix after the
+      precondition fails.
 
 ### Success criteria
 
@@ -1244,6 +1246,67 @@ finalized unit, sync poll, persistence step, or promotion check.
   only verified authority can reach trusted promotion or catch-up.
 - A kept result is committed as
   `perf: avoid repeated checkpoint quorum verification`.
+
+### Progress record — 2026-07-17
+
+Milestone 2 is `Rejected` at its precondition gate. It starts from Milestone 1
+commit `887e5a49ea1b31bf72d0290eab25799b10f6567c` and reuses the exact measured
+release artifacts and retained `10:1`, `20:5`, `100:20` matrix from that
+milestone. No production candidate was implemented and no extra benchmark run
+was added.
+
+The lifecycle trace confirms real duplicate work. A locally derived checkpoint
+is signed and persisted, peer signatures are verified on receipt, quorum
+assembly verifies the bounded proof, peer transfer verifies it again, promotion
+verifies it again, and every later capture inspection re-verifies the current
+trusted quorum. Startup and checkpoint catch-up correctly verify durable or
+external evidence before constructing `VerifiedFederationCheckpointQuorum`.
+For `K` logical checkpoints, `N` members, quorum `Q`, and `E` distinct external
+quorum proofs, the necessary cryptographic floor is linear in unique evidence:
+`O(K*N + E*Q)`, with each unique `(checkpoint_id, signer)` verified at receipt
+or trusted startup and each external quorum checked once. It must not scale with
+the number of finalized-unit callbacks that merely inspect an unchanged trusted
+checkpoint.
+
+The observed count amplification is therefore genuine. The `10:1` window
+created two logical checkpoints with ten unique retained signer pairs, yet
+processed 1,190 signatures through 298 verification wrappers, including 250
+capture-context quorum calls. The `20:5` window processed 921 signatures through
+248 wrappers for ten new signer pairs. The `100:20` window created no checkpoint
+and still processed 1,050 signatures through 250 repeated capture inspections
+of unchanged authority. Each three-second post-run idle window processed zero
+additional signatures, proving the amplification is tied to active finalized
+callbacks rather than an unbounded idle poll.
+
+After Milestone 1 removed config interpolation from those wrappers, their direct
+aggregate duration is no longer material:
+
+| Case | Verification wrappers | Signatures processed | Aggregate measured duration | Share of aggregate member CPU |
+| --- | ---: | ---: | ---: | ---: |
+| `10:1` | 298 | 1,190 | 0.108802 s | 2.9% |
+| `20:5` | 248 | 921 | 0.067253 s | 2.0% |
+| `100:20` | 250 | 1,050 | 0.079927 s | 0.8% |
+
+These totals include capture, formation, peer-fetch, promotion, and the direct
+formation/fetch/publish signature wrappers. Even an impossible implementation
+that eliminated every measured verification would remain far below the 15%
+end-to-end CPU gate in all three cases. The high invocation counts are useful
+architectural evidence, but count reduction alone cannot justify ownership
+changes, durable trust assumptions, or a cache under the implementation
+contract.
+
+The Milestone 1 adversarial suite already proves corrupt signatures, duplicate
+and unknown signers, minority quorum, wrong checkpoint ID, wrong federation and
+config bindings, wrong roster watermarks, fetched-quorum corruption, trusted
+checkpoint restart, and bounded catch-up fail closed. Those checks are retained
+unchanged. The unattempted authority-carrying production todo remains open by
+design because the mandatory materiality precondition failed.
+
+**Rejected.** No production code was changed, so there is nothing to revert.
+The simplest correct decision is to retain the bounded counters and move to the
+already-confirmed suffix-loading bottleneck in Milestone 3. The milestone commit
+subject is `docs: reject checkpoint verification optimization`; its hash is
+recorded at Milestone 3 start.
 
 ## Milestone 3: linear scheduled-checkpoint accounting
 
@@ -1671,4 +1734,5 @@ Add future measurements here rather than rewriting earlier results.
 | --- | --- | --- | --- | --- | --- |
 | 2026-07-17 | `a21bf79d37a6807981504741cf65e597ee401b6e` | Nocean, 5 members, fakewallet | `10:1` | 0.063 TPS, p50 15.218s, p95 18.475s, 55.1% average CPU/member | Regression reproduced; static review ranks repeated full `config.validate()` + quorum re-verify on every unit-finalize capture as the top CPU lead; A/B confirmation still required (M0) |
 | 2026-07-17 | `a5ae88c88afa0a910632be921e277d3c49c33719` | Local release, 5 members, SQLite, fakewallet | `20/20` versus `20000/20000`; one retained `10:1`, `20:5`, `100:20` matrix each | Stable sequential aggregate CPU median 52.45s versus 6.43s (-87.7%); direct `40:10` profile recorded 1,128 full config validations and 18,048 BLS public-key interpolations | Confirmed repeated immutable config/keyset validation is the dominant transaction compute sink; bounded metrics, exact digest diagnostic, and corrected harness kept; no production optimization in M0 |
-| 2026-07-17 | This Milestone 1 commit; hash recorded at Milestone 2 start | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix | CPU 3.77s / 3.39s / 9.54s; success 10/10 / 20/20 / 100/100; 0 full config, keyset, interpolation, or setup-lineage validations in every window | Kept: validated-config checkpoint paths remove the confirmed sink; sequential CPU -92.8% versus baseline median and realistic `100:20` reaches 7.736 confirmed TPS with exact convergence |
+| 2026-07-17 | `887e5a49ea1b31bf72d0290eab25799b10f6567c` | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix | CPU 3.77s / 3.39s / 9.54s; success 10/10 / 20/20 / 100/100; 0 full config, keyset, interpolation, or setup-lineage validations in every window | Kept: validated-config checkpoint paths remove the confirmed sink; sequential CPU -92.8% versus baseline median and realistic `100:20` reaches 7.736 confirmed TPS with exact convergence |
+| 2026-07-17 | This Milestone 2 commit; hash recorded at Milestone 3 start | Same Milestone 1 release matrix | Post-fix verification materiality gate | 298 / 248 / 250 wrappers and 1,190 / 921 / 1,050 signatures consumed only 0.108802s / 0.067253s / 0.079927s aggregate | Rejected before implementation: even eliminating all measured signature/quorum verification cannot meet the 15% CPU gate; no production change or extra run |
