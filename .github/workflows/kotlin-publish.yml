@@ -197,23 +197,23 @@ jobs:
           # Linux
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
-            artifact: libcdk_ffi.so
+            artifact: libcdk_ffi_kotlin.so
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            artifact: libcdk_ffi.so
+            artifact: libcdk_ffi_kotlin.so
 
           # macOS
           - target: aarch64-apple-darwin
             runner: macos-14
-            artifact: libcdk_ffi.dylib
+            artifact: libcdk_ffi_kotlin.dylib
 
           # Android
           - target: aarch64-linux-android
             runner: ubuntu-22.04
-            artifact: libcdk_ffi.so
+            artifact: libcdk_ffi_kotlin.so
           - target: x86_64-linux-android
             runner: ubuntu-22.04
-            artifact: libcdk_ffi.so
+            artifact: libcdk_ffi_kotlin.so
 
     steps:
       - name: Clone cdk-kotlin
@@ -282,9 +282,10 @@ jobs:
         run: |
           mkdir -p ../generated-bindings
           nix develop -L ../../cdk#kotlin-build --command \
-            cargo run --release --bin uniffi-bindgen -- generate \
+            cargo run --release --bin uniffi-bindgen-kotlin -- generate \
               --library "target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
               --language kotlin \
+              --config uniffi.toml \
               --out-dir ../generated-bindings \
               --no-format
 
@@ -374,8 +375,8 @@ jobs:
 
           for f in artifacts/*; do
             filename=$(basename "$f")
-            # Extract rust target from artifact filename (e.g. "aarch64-apple-darwin-libcdk_ffi.dylib")
-            for suffix in libcdk_ffi.so libcdk_ffi.dylib; do
+            # Extract rust target from artifact filename (e.g. "aarch64-apple-darwin-libcdk_ffi_kotlin.dylib")
+            for suffix in libcdk_ffi_kotlin.so libcdk_ffi_kotlin.dylib; do
               if [[ "$filename" == *"-${suffix}" ]]; then
                 rust_target="${filename%-${suffix}}"
 
