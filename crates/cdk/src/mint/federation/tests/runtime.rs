@@ -343,3 +343,47 @@ fn runtime_config_validates_public_and_private_configs() {
     );
     assert_eq!(runtime_config.member_id().get(), 1);
 }
+
+#[test]
+fn runtime_config_construction_still_rejects_malformed_public_config() {
+    let valid = runtime_config();
+    let private_config = valid.private_config().clone();
+
+    let mut mismatched_aggregate = valid.public_config().clone();
+    let keyset = &mut mismatched_aggregate.keysets[0];
+    let amount = *keyset
+        .aggregate_keys
+        .keys()
+        .next()
+        .expect("aggregate amount");
+    let member_id = *keyset.public_shares.keys().next().expect("keyset member");
+    let public_share = keyset
+        .public_shares
+        .get_mut(&member_id)
+        .and_then(|shares| shares.get_mut(&amount))
+        .expect("member public share");
+    *public_share = BlsPublicKeyShare::new(
+        public_share.signer_id(),
+        BlsSecretKey::from_reduced_bytes(&[99; 32]).public_key_g2(),
+    );
+    assert!(matches!(
+        FederationRuntimeConfig::new(mismatched_aggregate, private_config.clone()),
+        Err(Error::Federation(
+            FederationError::AggregateKeyMismatch { .. }
+        ))
+    ));
+
+    let mut missing_transcript_signature = valid.public_config().clone();
+    missing_transcript_signature
+        .setup_transcript
+        .as_mut()
+        .expect("setup transcript")
+        .signatures
+        .remove(&valid.member_id());
+    assert!(matches!(
+        FederationRuntimeConfig::new(missing_transcript_signature, private_config),
+        Err(Error::Federation(
+            FederationError::DkgTranscriptMismatch { .. }
+        ))
+    ));
+}

@@ -936,6 +936,12 @@ impl FederationCheckpointBoundary {
         self.committed_frontier().validate_complete_unit(config)
     }
 
+    /// Validate a transported complete-unit boundary against an already-validated config.
+    pub fn validate_against_validated_config(&self, config: &FederationConfig) -> Result<()> {
+        self.committed_frontier()
+            .validate_complete_unit_for_validated_config(config)
+    }
+
     /// Return whether this complete boundary has crossed either interval after the anchor.
     pub fn is_scheduled_eligible(
         &self,
@@ -972,6 +978,23 @@ impl FederationCheckpointBoundary {
         materialized_state_digest: FederationMaterializedStateDigest,
         batch_canonical_bytes: u64,
     ) -> Result<FederationCheckpoint> {
+        config.validate()?;
+        self.scheduled_checkpoint_for_validated_config(
+            config,
+            latest_scheduled,
+            materialized_state_digest,
+            batch_canonical_bytes,
+        )
+    }
+
+    /// Build the next scheduled checkpoint using an already-validated config.
+    pub fn scheduled_checkpoint_for_validated_config(
+        &self,
+        config: &FederationConfig,
+        latest_scheduled: Option<&FederationCheckpoint>,
+        materialized_state_digest: FederationMaterializedStateDigest,
+        batch_canonical_bytes: u64,
+    ) -> Result<FederationCheckpoint> {
         if !self.is_scheduled_eligible(
             config.checkpoint_policy,
             latest_scheduled,
@@ -991,7 +1014,7 @@ impl FederationCheckpointBoundary {
             ),
             None => (1, None),
         };
-        let checkpoint = self.build_checkpoint(
+        let checkpoint = self.build_checkpoint_for_validated_config(
             config,
             FederationCheckpointKind::Scheduled,
             scheduled_checkpoint_sequence,
@@ -1004,6 +1027,21 @@ impl FederationCheckpointBoundary {
 
     /// Build an on-demand recovery checkpoint without advancing scheduled lineage.
     pub fn recovery_checkpoint(
+        &self,
+        config: &FederationConfig,
+        latest_scheduled: Option<&FederationCheckpoint>,
+        materialized_state_digest: FederationMaterializedStateDigest,
+    ) -> Result<FederationCheckpoint> {
+        config.validate()?;
+        self.recovery_checkpoint_for_validated_config(
+            config,
+            latest_scheduled,
+            materialized_state_digest,
+        )
+    }
+
+    /// Build an on-demand recovery checkpoint using an already-validated config.
+    pub fn recovery_checkpoint_for_validated_config(
         &self,
         config: &FederationConfig,
         latest_scheduled: Option<&FederationCheckpoint>,
@@ -1028,7 +1066,7 @@ impl FederationCheckpointBoundary {
             ),
             None => (0, None),
         };
-        let checkpoint = self.build_checkpoint(
+        let checkpoint = self.build_checkpoint_for_validated_config(
             config,
             FederationCheckpointKind::Recovery,
             scheduled_checkpoint_sequence,
@@ -1039,7 +1077,7 @@ impl FederationCheckpointBoundary {
         Ok(checkpoint)
     }
 
-    fn build_checkpoint(
+    fn build_checkpoint_for_validated_config(
         &self,
         config: &FederationConfig,
         kind: FederationCheckpointKind,
@@ -1047,7 +1085,6 @@ impl FederationCheckpointBoundary {
         scheduled_anchor_id: Option<FederationCheckpointId>,
         materialized_state_digest: FederationMaterializedStateDigest,
     ) -> Result<FederationCheckpoint> {
-        config.validate()?;
         if self
             .next_unit_index_by_member
             .keys()
@@ -1087,7 +1124,7 @@ impl FederationCheckpointBoundary {
             next_unit_index_by_member,
             materialized_state_digest,
         };
-        checkpoint.validate_against_config(config)?;
+        checkpoint.validate_against_validated_config(config)?;
         Ok(checkpoint)
     }
 }
@@ -1531,7 +1568,28 @@ impl FederationCheckpointQuorum {
 
     /// Verify the bounded proof and return authority that cannot be constructed unchecked.
     pub fn verify(&self, config: &FederationConfig) -> Result<VerifiedFederationCheckpointQuorum> {
-        self.checkpoint.validate_against_config(config)?;
+        config.validate()?;
+        self.verify_against_validated_config(config)
+    }
+
+    /// Verify the bounded proof against an already-validated federation config.
+    pub fn verify_against_validated_config(
+        &self,
+        config: &FederationConfig,
+    ) -> Result<VerifiedFederationCheckpointQuorum> {
+        // This method skips keyset and setup-transcript validation, but it still
+        // establishes every config invariant that grants checkpoint authority.
+        // In particular, malformed thresholds must never manufacture an empty
+        // `VerifiedFederationCheckpointQuorum`.
+        let expected_federation_id =
+            FederationConfig::derive_federation_id(config.threshold_params, &config.members)?;
+        if expected_federation_id != config.federation_id {
+            return Err(FederationError::FederationIdMismatch {
+                expected: expected_federation_id,
+                found: config.federation_id,
+            });
+        }
+        self.checkpoint.validate_against_validated_config(config)?;
         if self.signatures.len() > config.members.len() {
             return Err(checkpoint_invalid(
                 "checkpoint proof contains more signatures than configured members",
@@ -2193,11 +2251,19 @@ mod tests {
         let insufficient =
             FederationCheckpointQuorum::new(checkpoint.clone(), signatures[..2].to_vec());
         assert!(matches!(
-            insufficient.verify(&config),
+            insufficient.verify_against_validated_config(&config),
             Err(FederationError::CheckpointQuorumNotReached {
                 required: 3,
                 found: 2
             })
+        ));
+
+        let mut zero_threshold = config.clone();
+        zero_threshold.threshold_params.consensus_threshold = 0;
+        let empty = FederationCheckpointQuorum::new(checkpoint.clone(), Vec::new());
+        assert!(matches!(
+            empty.verify_against_validated_config(&zero_threshold),
+            Err(FederationError::InvalidThresholdParams { .. })
         ));
 
         let duplicate = FederationCheckpointQuorum::new(
@@ -2205,7 +2271,7 @@ mod tests {
             vec![signatures[0], signatures[0], signatures[1]],
         );
         assert!(matches!(
-            duplicate.verify(&config),
+            duplicate.verify_against_validated_config(&config),
             Err(FederationError::DuplicateCheckpointSigner { .. })
         ));
 
@@ -2222,7 +2288,7 @@ mod tests {
             vec![corrupted_signature, signatures[1], signatures[2]],
         );
         assert!(matches!(
-            corrupted.verify(&config),
+            corrupted.verify_against_validated_config(&config),
             Err(FederationError::CheckpointSignatureVerificationFailed { .. })
                 | Err(FederationError::InvalidCheckpointSignature)
         ));
@@ -2242,7 +2308,7 @@ mod tests {
             vec![signatures[0], signatures[1], unknown_signature],
         );
         assert!(matches!(
-            unknown.verify(&config),
+            unknown.verify_against_validated_config(&config),
             Err(FederationError::UnknownMember { member_id: found }) if found == member_id(9)
         ));
     }
@@ -2393,6 +2459,48 @@ mod tests {
         assert!(checkpoint(&config)
             .validate_against_config(&other_config)
             .is_err());
+    }
+
+    #[test]
+    fn validated_config_checkpoint_validation_rejects_tampered_bindings_and_roster() {
+        let (config, _) = configs();
+        let original = checkpoint(&config);
+
+        let mut wrong_federation = original.clone();
+        wrong_federation.federation_id = FederationId::from_bytes([91; 32]);
+        assert!(matches!(
+            wrong_federation.validate_against_validated_config(&config),
+            Err(FederationError::CheckpointInvalid { reason })
+                if reason == "federation id mismatch"
+        ));
+
+        let mut wrong_digest = original.clone();
+        wrong_digest.federation_config_digest = FederationConfigDigest::from_bytes([92; 32]);
+        assert!(matches!(
+            wrong_digest.validate_against_validated_config(&config),
+            Err(FederationError::CheckpointInvalid { reason })
+                if reason == "federation config digest mismatch"
+        ));
+
+        let mut missing_member = original.clone();
+        missing_member
+            .next_unit_index_by_member
+            .remove(&member_id(4));
+        assert!(matches!(
+            missing_member.validate_against_validated_config(&config),
+            Err(FederationError::CheckpointInvalid { reason })
+                if reason == "next-unit watermarks do not match the configured federation roster"
+        ));
+
+        let mut unknown_member = original;
+        unknown_member
+            .next_unit_index_by_member
+            .insert(member_id(9), 0);
+        assert!(matches!(
+            unknown_member.validate_against_validated_config(&config),
+            Err(FederationError::CheckpointInvalid { reason })
+                if reason == "next-unit watermarks do not match the configured federation roster"
+        ));
     }
 
     #[test]

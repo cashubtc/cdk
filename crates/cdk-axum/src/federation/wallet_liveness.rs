@@ -792,7 +792,7 @@ impl FederationWalletLivenessWorker {
         let private_config = runtime.private_config().clone();
         let sync_config = state.federation.peer_sync_config.unwrap_or_default();
         tokio::spawn(async move {
-            let client = match FederationRestPeerClient::new_with_config(
+            let client = match FederationRestPeerClient::new_with_validated_config(
                 Async::default(),
                 &public_config,
                 private_config,

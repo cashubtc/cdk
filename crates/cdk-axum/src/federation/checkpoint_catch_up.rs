@@ -146,7 +146,7 @@ impl FederationNodeRuntime {
             .into());
         }
         let checkpoint_runtime = FederationConsensusRuntime::recover_verified_suffix(
-            FederationSuffixVerifier::new(
+            FederationSuffixVerifier::new_for_validated_config(
                 public_config,
                 runtime_config.member_id(),
                 checkpoint.aleph_bft_session,

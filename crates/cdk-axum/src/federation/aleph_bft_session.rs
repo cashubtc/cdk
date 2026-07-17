@@ -662,7 +662,8 @@ where
         .filter(|member| member.member_id != private_config.member_id)
         .cloned()
         .collect::<Vec<_>>();
-    let keychain = CdkAlephBftKeychain::try_new(&public_config, private_config.clone())?;
+    let keychain =
+        CdkAlephBftKeychain::try_new_for_validated_config(&public_config, private_config.clone())?;
     let consensus = state
         .federation
         .consensus
@@ -729,7 +730,7 @@ where
         activity_hint.clone(),
     )?;
     let rotation_transport = transport.clone();
-    let client = FederationRestPeerClient::new_with_config(
+    let client = FederationRestPeerClient::new_with_validated_config(
         transport,
         &public_config,
         private_config,

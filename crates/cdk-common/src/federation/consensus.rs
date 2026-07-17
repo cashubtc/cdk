@@ -1409,7 +1409,7 @@ impl FederationAlephBftFinalizationHandler {
         config: &FederationConfig,
         checkpoint: &FederationCheckpoint,
     ) -> Result<Self> {
-        checkpoint.validate_against_config(config)?;
+        checkpoint.validate_against_validated_config(config)?;
         let allowed_members = config.members.keys().copied().collect::<BTreeSet<_>>();
         Ok(Self {
             federation_id: config.federation_id,
@@ -2120,7 +2120,7 @@ impl FederationConsensusRuntime {
         local_member: MemberId,
         checkpoint: &FederationCheckpoint,
     ) -> Result<Self> {
-        checkpoint.validate_against_config(&public_config)?;
+        checkpoint.validate_against_validated_config(&public_config)?;
         let next_local_unit_index = checkpoint
             .next_unit_index_by_member
             .get(&local_member)
@@ -2771,6 +2771,20 @@ impl FederationConsensusRuntime {
         base: FederationConsensusRecoveryBase<'_>,
     ) -> Result<Self> {
         public_config.validate()?;
+        Self::from_recovery_base_for_validated_config(
+            public_config,
+            member_id,
+            active_session,
+            base,
+        )
+    }
+
+    pub(crate) fn from_recovery_base_for_validated_config(
+        public_config: &FederationConfig,
+        member_id: MemberId,
+        active_session: u64,
+        base: FederationConsensusRecoveryBase<'_>,
+    ) -> Result<Self> {
         let allowed_members = validate_runtime_roster(
             public_config.members.keys().copied(),
             public_config.threshold_params.consensus_threshold,

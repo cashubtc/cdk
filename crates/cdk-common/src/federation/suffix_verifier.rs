@@ -106,7 +106,18 @@ impl FederationSuffixVerifier {
         active_session: u64,
         base: FederationConsensusRecoveryBase<'_>,
     ) -> Result<Self> {
-        let runtime = FederationConsensusRuntime::from_recovery_base(
+        config.validate()?;
+        Self::new_for_validated_config(config, member_id, active_session, base)
+    }
+
+    /// Start verification using a federation config already validated at its trust boundary.
+    pub fn new_for_validated_config(
+        config: &FederationConfig,
+        member_id: MemberId,
+        active_session: u64,
+        base: FederationConsensusRecoveryBase<'_>,
+    ) -> Result<Self> {
+        let runtime = FederationConsensusRuntime::from_recovery_base_for_validated_config(
             config,
             member_id,
             active_session,

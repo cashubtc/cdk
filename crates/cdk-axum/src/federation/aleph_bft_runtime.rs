@@ -272,6 +272,14 @@ impl CdkAlephBftKeychain {
         private_config: MemberConfigPrivate,
     ) -> Result<Self, cdk::Error> {
         public_config.validate()?;
+        Self::try_new_for_validated_config(public_config, private_config)
+    }
+
+    /// Build a keychain from a public config already validated by the runtime config.
+    pub(crate) fn try_new_for_validated_config(
+        public_config: &FederationConfig,
+        private_config: MemberConfigPrivate,
+    ) -> Result<Self, cdk::Error> {
         if !matches!(&private_config.identity_secret_key, SecretKey::Secp256k1(_)) {
             return Err(cdk::Error::Custom(format!(
                 "AlephBFT keychain requires secp256k1 identity key for member {}",

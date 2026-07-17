@@ -28,7 +28,9 @@ use cdk_common::federation::{
 use cdk_common::mint::{MeltSagaState, SagaStateEnum};
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut00::KnownMethod;
-use cdk_common::nuts::nut01::{verify_blind_signature_share, BlsG1PublicKey, BlsSecretKey};
+use cdk_common::nuts::nut01::{
+    verify_blind_signature_share, BlsG1PublicKey, BlsPublicKeyShare, BlsSecretKey,
+};
 use cdk_common::nuts::nut05::MeltQuoteCustomRequest;
 use cdk_common::payment::{
     self, Bolt11Settings, CreateIncomingPaymentResponse, DynMintPayment, Event,

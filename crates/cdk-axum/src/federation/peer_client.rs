@@ -95,6 +95,16 @@ where
         private_config: MemberConfigPrivate,
         sync_config: FederationPeerSyncConfig,
     ) -> anyhow::Result<Self> {
+        public_config.validate()?;
+        Self::new_with_validated_config(transport, public_config, private_config, sync_config)
+    }
+
+    pub(crate) fn new_with_validated_config(
+        transport: T,
+        public_config: &FederationConfig,
+        private_config: MemberConfigPrivate,
+        sync_config: FederationPeerSyncConfig,
+    ) -> anyhow::Result<Self> {
         sync_config.validate()?;
         private_config.validate_against_public(public_config)?;
         Ok(Self {
@@ -324,7 +334,11 @@ where
             .map(|quorum| quorum.signatures.len());
         #[cfg(feature = "prometheus")]
         let verification_started_at = std::time::Instant::now();
-        let validation = response.validate(&self.public_config, member.member_id, checkpoint_id);
+        let validation = response.validate_for_validated_config(
+            &self.public_config,
+            member.member_id,
+            checkpoint_id,
+        );
         #[cfg(feature = "prometheus")]
         if let Some(signature_count) = quorum_signature_count {
             let verification_duration = verification_started_at.elapsed().as_secs_f64();
@@ -370,7 +384,7 @@ where
         member: &MemberConfigPublic,
         checkpoint: &FederationCheckpoint,
     ) -> anyhow::Result<FederationCheckpointSignatureResponse> {
-        checkpoint.validate_against_config(&self.public_config)?;
+        checkpoint.validate_against_validated_config(&self.public_config)?;
         let checkpoint_id = checkpoint.id()?;
         let request = self.signed_request(
             member,

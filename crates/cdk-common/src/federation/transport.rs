@@ -1514,6 +1514,17 @@ impl FederationCheckpointFetchResponse {
         expected_member_id: MemberId,
         expected_checkpoint_id: FederationCheckpointId,
     ) -> Result<()> {
+        config.validate()?;
+        self.validate_for_validated_config(config, expected_member_id, expected_checkpoint_id)
+    }
+
+    /// Validate response bindings and checkpoint evidence using an already-validated config.
+    pub fn validate_for_validated_config(
+        &self,
+        config: &FederationConfig,
+        expected_member_id: MemberId,
+        expected_checkpoint_id: FederationCheckpointId,
+    ) -> Result<()> {
         ensure_federation_rest_version(self.version)?;
         if self.federation_id != config.federation_id {
             return Err(FederationError::RestFederationMismatch {
@@ -1527,7 +1538,7 @@ impl FederationCheckpointFetchResponse {
             });
         }
         if let Some(checkpoint) = self.checkpoint.as_ref() {
-            checkpoint.validate_against_config(config)?;
+            checkpoint.validate_against_validated_config(config)?;
             if checkpoint.id()? != expected_checkpoint_id {
                 return Err(FederationError::CheckpointInvalid {
                     reason: "checkpoint fetch returned a different checkpoint payload".to_string(),
@@ -1535,7 +1546,7 @@ impl FederationCheckpointFetchResponse {
             }
         }
         if let Some(quorum) = self.quorum.as_ref() {
-            quorum.verify(config)?;
+            quorum.verify_against_validated_config(config)?;
             if quorum.checkpoint.id()? != expected_checkpoint_id {
                 return Err(FederationError::CheckpointInvalid {
                     reason: "checkpoint fetch returned a quorum for a different checkpoint"
@@ -1652,8 +1663,14 @@ impl FederationCheckpointQuorumRequest {
 
     /// Validate the payload version and bounded quorum proof.
     pub fn validate(&self, config: &FederationConfig) -> Result<()> {
+        config.validate()?;
+        self.validate_for_validated_config(config)
+    }
+
+    /// Validate the payload and quorum proof using an already-validated config.
+    pub fn validate_for_validated_config(&self, config: &FederationConfig) -> Result<()> {
         ensure_federation_rest_version(self.version)?;
-        self.quorum.verify(config)?;
+        self.quorum.verify_against_validated_config(config)?;
         Ok(())
     }
 }
@@ -4390,6 +4407,72 @@ mod tests {
         }
         .validate(&config, receiver, checkpoint_id)
         .expect("empty checkpoint fetch response validates");
+
+        let boundary = FederationCheckpointBoundary {
+            journal_next_index: 1,
+            journal_order_digest: FederationJournalDigest::genesis(),
+            finalized_next_item_index: 1,
+            finalized_item_digest: FederationFinalizedItemDigest::genesis(),
+            application_digest: FederationApplicationDigest::genesis(),
+            aleph_bft_session: 0,
+            next_unit_finalization_index: 1,
+            next_unit_index_by_member: config
+                .members
+                .keys()
+                .copied()
+                .map(|member_id| (member_id, 1))
+                .collect(),
+        };
+        let checkpoint = boundary
+            .recovery_checkpoint(&config, None, FederationMaterializedStateDigest::genesis())
+            .expect("checkpoint");
+        let checkpoint_id = checkpoint.id().expect("checkpoint id");
+        let signatures = [&first_private, &second_private]
+            .into_iter()
+            .map(|private| {
+                FederationCheckpointSignature::new_signed_no_aux_rand(&checkpoint, private)
+                    .expect("checkpoint signature")
+            })
+            .collect::<Vec<_>>();
+        let response = FederationCheckpointFetchResponse {
+            version: FEDERATION_REST_API_VERSION,
+            federation_id: config.federation_id,
+            member_id: receiver,
+            checkpoint: Some(checkpoint.clone()),
+            quorum: Some(FederationCheckpointQuorum::new(
+                checkpoint.clone(),
+                signatures.clone(),
+            )),
+        };
+        response
+            .validate_for_validated_config(&config, receiver, checkpoint_id)
+            .expect("validated-config fetch response verifies all evidence");
+        assert!(response
+            .validate_for_validated_config(
+                &config,
+                receiver,
+                FederationCheckpointId::from_bytes([42; 32]),
+            )
+            .is_err());
+
+        let mut corrupted_bytes = signatures[0].to_bytes();
+        corrupted_bytes[0] ^= 1;
+        let corrupted_signature = FederationCheckpointSignature::from_slice(
+            checkpoint_id,
+            signatures[0].signer,
+            &corrupted_bytes,
+        )
+        .expect("corrupted signature bytes");
+        let corrupted_response = FederationCheckpointFetchResponse {
+            quorum: Some(FederationCheckpointQuorum::new(
+                checkpoint,
+                vec![corrupted_signature, signatures[1]],
+            )),
+            ..response
+        };
+        assert!(corrupted_response
+            .validate_for_validated_config(&config, receiver, checkpoint_id)
+            .is_err());
     }
 
     #[test]

@@ -61,7 +61,7 @@ async fn durable_catch_up_response(
                     })
                 })?;
             checkpoint
-                .validate_against_config(runtime_config.public_config())
+                .validate_against_validated_config(runtime_config.public_config())
                 .map_err(federation_error_response)?;
             if checkpoint.id().map_err(federation_error_response)? != checkpoint_id {
                 return Err(federation_error_response(

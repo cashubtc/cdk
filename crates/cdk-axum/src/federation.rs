@@ -267,7 +267,9 @@ pub(crate) fn verify_checkpoint_quorum_with_metrics(
 ) -> Result<VerifiedFederationCheckpointQuorum, cdk::Error> {
     #[cfg(feature = "prometheus")]
     let started_at = std::time::Instant::now();
-    let result = quorum.verify(config).map_err(cdk::Error::from);
+    let result = quorum
+        .verify_against_validated_config(config)
+        .map_err(cdk::Error::from);
     #[cfg(feature = "prometheus")]
     {
         let duration_seconds = started_at.elapsed().as_secs_f64();
@@ -369,16 +371,9 @@ pub(crate) async fn get_public_config(
         )
             .into_response()
     })?;
+    // Runtime construction is the full config-validation trust boundary. Serving the
+    // immutable config must not repeat aggregate-key interpolation for every wallet.
     let public_config = runtime_config.public_config();
-
-    if let Err(err) = public_config.validate() {
-        tracing::error!(%err, "Refusing to advertise an invalid federation config");
-        return Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "federation public config is unavailable",
-        )
-            .into_response());
-    }
 
     if public_config.setup_transcript.is_none()
         || !public_config.keysets.iter().any(|keyset| keyset.active)

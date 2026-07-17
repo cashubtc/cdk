@@ -67,7 +67,7 @@ pub(crate) fn spawn_federation_peer_sync_loop_with_config(
 
     let private_config = config.private_config().clone();
     tokio::spawn(async move {
-        let client = match FederationRestPeerClient::new_with_config(
+        let client = match FederationRestPeerClient::new_with_validated_config(
             Async::default(),
             &public_config,
             private_config,

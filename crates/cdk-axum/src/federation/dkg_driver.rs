@@ -1232,7 +1232,7 @@ pub async fn run_federation_dkg_driver(
         &public_config,
         driver_config.secret_share_transport,
     )?;
-    let client = FederationRestPeerClient::new_with_config(
+    let client = FederationRestPeerClient::new_with_validated_config(
         Async::default(),
         &public_config,
         private_config,

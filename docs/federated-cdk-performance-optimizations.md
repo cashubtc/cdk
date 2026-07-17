@@ -1,6 +1,6 @@
 # Federated CDK Performance Optimizations
 
-Status: Milestone 0 complete
+Status: Milestone 1 complete
 First recorded: 2026-07-17
 
 ## Purpose
@@ -449,8 +449,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 
 | Milestone | Goal | Status | Commit |
 | --- | --- | --- | --- |
-| 0 | Reproduce and attribute transaction CPU without production optimization | Complete | This milestone commit; hash recorded at Milestone 1 start |
-| 1 | Remove repeated full federation-config validation from confirmed checkpoint hot paths | Not started | - |
+| 0 | Reproduce and attribute transaction CPU without production optimization | Complete | `a5ae88c88afa0a910632be921e277d3c49c33719` |
+| 1 | Remove repeated full federation-config validation from confirmed checkpoint hot paths | Complete | This milestone commit; hash recorded at Milestone 2 start |
 | 2 | Verify each unchanged checkpoint signature/quorum only at required trust boundaries | Not started | - |
 | 3 | Make scheduled-checkpoint eligibility and suffix accounting linear | Not started | - |
 | 4 | Remove duplicate same-request swap/melt proof verification | Not started | - |
@@ -931,25 +931,25 @@ config ingress, startup, DKG activation, and untrusted import boundary.
 
 ### Todos
 
-- [ ] Enumerate every `FederationConfig::validate`, `config_digest`, checkpoint
+- [x] Enumerate every `FederationConfig::validate`, `config_digest`, checkpoint
       `validate_against_config`, and quorum `verify` call reached during the
       measured healthy lifecycle. Seed list from static review:
       capture latest-scheduled quorum, local candidate inspection, signature
       persist, quorum persist/promote, publish, peer fetch, startup/catch-up.
-- [ ] Classify each call as config ingress/startup, new external checkpoint
+- [x] Classify each call as config ingress/startup, new external checkpoint
       evidence, locally constructed evidence, already-verified durable evidence,
       or cheap shape/binding validation.
-- [ ] Prefer `validate_against_validated_config` / runtime-cached digests and a
+- [x] Prefer `validate_against_validated_config` / runtime-cached digests and a
       narrow quorum verify that does **not** re-enter full `config.validate()`
       (keyset Lagrange + setup transcript) when the mint already holds a
       startup-validated `FederationRuntimeConfig`. Add only the smallest API if
       none exists; do not invent a general config cache.
-- [ ] Ensure locally built checkpoints do not validate the same immutable config
+- [x] Ensure locally built checkpoints do not validate the same immutable config
       twice during one construction.
-- [ ] Add focused tests proving malformed configs still fail at construction,
+- [x] Add focused tests proving malformed configs still fail at construction,
       tampered checkpoint bindings still fail, unknown roster watermarks fail,
       and invalid signatures/quorums remain rejected.
-- [ ] Run focused common/Axum tests, standalone non-federation tests affected by
+- [x] Run focused common/Axum tests, standalone non-federation tests affected by
       shared code, and one release sample each of the retained Milestone 0
       `10:1`, `20:5`, and `100:20` cases. Compare the stable `10:1` CPU result
       with the Milestone 0 median for the 15% impact gate.
@@ -960,14 +960,242 @@ config ingress, startup, DKG activation, and untrusted import boundary.
   validations unless a genuinely new config enters through a trust boundary.
 - Checkpoint shape, federation ID, config digest, roster, lineage, and signatures
   are still verified at their required boundaries, with adversarial tests.
-- Median aggregate member CPU-seconds per transaction improves by at least 15%,
-  direct full-validation counts fall exactly as predicted, and no primary
-  latency/throughput metric regresses more than 5%.
+- The single retained candidate `10:1` sample improves aggregate member
+  CPU-seconds per transaction by at least 15% against the stable Milestone 0
+  median, direct full-validation counts fall exactly as predicted, and no
+  primary latency/throughput metric regresses more than 5%.
 - Exact-checkpoint and checkpoint-tail restart remain bounded and fail closed.
 - If the impact gate fails, production changes are reverted and the milestone is
   marked `Rejected` with results.
 - A kept result is committed as
   `perf: avoid repeated checkpoint config validation`.
+
+### Progress record — 2026-07-17
+
+Milestone 1 is `Complete`. The production candidate is kept because it removes
+the directly measured work, improves the primary CPU metric by 92.8% against
+the stable sequential baseline median, and improves the realistic concurrent
+cases without weakening any federation evidence check.
+
+Milestone 1 starts from committed Milestone 0 baseline
+`a5ae88c88afa0a910632be921e277d3c49c33719`. The confirmed symptom is 1,128
+full config validations and 18,048 aggregate public-key interpolations during
+the instrumented `40:10` lifecycle, with 59.125 aggregate seconds inside
+interpolation. Before changing behavior, this milestone is enumerating and
+classifying every hot-path validation call by trust boundary. Per the reduced
+measurement scope, verification will retain one release run each of `10:1`,
+`20:5`, and `100:20`; no reciprocal interval probe or extra repetition is
+required.
+
+The pre-change call inventory confirms the exact re-entry points:
+
+- local scheduled/recovery construction enters full validation in
+  `FederationCheckpointBoundary::build_checkpoint` and then again through
+  `FederationCheckpoint::validate_against_config`;
+- every quorum inspection enters it through
+  `FederationCheckpointQuorum::verify`, including capture, formation,
+  persistence/promotion, publication, peer fetch, audit, startup, and catch-up;
+- stored candidate inspection and signature persistence call
+  `validate_against_config` directly; and
+- private REST quorum/fetch validation verifies new external evidence correctly
+  but redundantly revalidates the member's unchanged runtime config.
+
+These calls all receive config owned by `FederationRuntimeConfig`, or a private
+peer client created from that runtime. Config ingress remains separately and
+fully validated by `FederationRuntimeConfig::new`, federation invite/snapshot
+loading, DKG activation, and operator import tooling. Checkpoint shape,
+federation ID, config digest, exact roster watermarks, promotion lineage,
+individual signatures, distinct signers, and threshold are evidence checks;
+none requires recomputing aggregate BLS keys or revalidating the setup
+transcript. This classification completes the symptom gate before behavior is
+changed.
+
+The candidate now keeps the existing checked APIs for untrusted callers and
+adds only narrow `*_for_validated_config` paths for the mint's runtime-owned
+config. Scheduled and recovery checkpoint construction, candidate inspection,
+signature persistence, quorum formation/verification/promotion, peer
+publication/fetch, startup quorum inspection, suffix reconstruction, and
+catch-up all retain their checkpoint shape, federation ID, config digest,
+roster, lineage, distinct-signer, threshold, and individual-signature checks.
+They no longer call full config validation. No config cache or general wrapper
+was added; the cheap canonical config digest remains recomputed where evidence
+must be bound.
+
+The call audit also found two full validations of the unchanged config on every
+AlephBFT live-session restart or automatic rotation: one in keychain creation
+and one in peer-client creation. Checked constructors still validate arbitrary
+configs, while runtime/session, sync-loop, DKG-driver, and optional wallet
+liveness callers now use variants whose config has already passed
+`FederationRuntimeConfig::new`. A config rebuilt after an accepted keyset
+rotation remains a genuine new-config trust boundary and still receives full
+validation.
+
+Fast quorum verification performs a cheap deterministic federation-ID
+derivation before it can construct `VerifiedFederationCheckpointQuorum`. This
+validates thresholds, member count, roster bindings, member identities, and the
+stored federation ID without keyset interpolation. A regression test proves a
+mutated zero consensus threshold cannot manufacture an empty verified quorum.
+This closes the authority invariant without a new validation-token abstraction.
+
+The following candidate checks have passed so far:
+
+```text
+cargo test -p cdk-common --features federation,prometheus checkpoint
+  19 passed
+cargo test -p cdk --no-default-features \
+  --features mint,wallet,federation,prometheus,bip353 \
+  runtime_config_construction_still_rejects_malformed_public_config
+  1 passed
+cargo test -p cdk-axum --features federation,prometheus \
+  trusted_checkpoint_restart_rejects_changed_suffix
+  2 passed
+cargo test -p cdk-axum --features federation,prometheus \
+  aleph_bft_live_session_restarts_from_persisted_backup_and_continues_finality
+  1 passed
+cargo test -p cdk-axum --features federation,prometheus performance_
+  3 passed
+cargo check -p cdk-common --no-default-features --features mint,wallet
+cargo check -p cdk --no-default-features --features mint,wallet,bip353
+cargo check -p cdk-axum --no-default-features
+cargo check -p cdk-axum --features federation,prometheus
+scripts/benchmark_nocean_federation.sh --self-test
+  all passed
+```
+
+The common tests now exercise the non-empty validated-config transport path,
+including a valid quorum, wrong requested checkpoint ID, corrupt signature,
+tampered federation/config bindings, missing and unknown roster watermarks,
+duplicate/unknown signers, insufficient quorum, and invalid threshold. Runtime
+construction still rejects a mismatched aggregate BLS key and a setup
+transcript with a missing member signature.
+
+Release artifacts were built from Milestone 0 commit
+`a5ae88c88afa0a910632be921e277d3c49c33719` plus the uncommitted Milestone 1
+candidate using the frozen build commands. Their SHA-256 values are:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Candidate `cdk-mintd` | `7a43501c9f762b3eb3c37d7181be43c3956dbe04b147fcc72e597cc11856b506` |
+| Candidate `cdk-cli` | `a288b34b3ca7e2dd9c7ca4472e6562e7e3ebc585f80449952ded8a4202dd6ee3` |
+| Benchmark harness | `f25c273431c6bccf5bb0bd189f646fdc6e6073a8f2137ba45fc09f122f34e001` |
+
+A fresh five-member SQLite/fakewallet `20/20` configuration was generated for
+the reduced `10:1`, `20:5`, `100:20` matrix. The initial sandboxed launch was
+rejected before readiness because local binds were not permitted. After
+explicit approval, a first elevated launch reached readiness and funded the
+benchmark wallet, but the harness stopped before its first timed case because
+the manual launcher had not written the PID files required for CPU accounting.
+That launch produced no sample. A second fresh configuration was then generated
+with the same policy and separate loopback ports; its launcher wrote each PID
+file before readiness, and exactly one sample per requested case completed. No
+extra repetition or reciprocal interval probe ran.
+
+The retained candidate matrix used release binaries, five members, threshold
+three, consensus threshold four, SQLite, fakewallet, `20/20` checkpoint
+intervals, five wallet-preparation jobs, a 12-second pre-window settle, and a
+three-second explicit post-run idle window. The command shape was:
+
+```bash
+LOCAL_FEDERATION_DIR="$FEDERATION_DIR" \
+MINT_URL="$MINT_URL" MINTD=target/release/cdk-mintd \
+CLI=target/release/cdk-cli BUILD_CLI=0 EXPECTED_MEMBERS=5 \
+CASES='10:1 20:5 100:20' PREPARE_PARALLELISM=5 \
+SETTLE_SECONDS=12 IDLE_CPU_SECONDS=3 RUN_DIR="$PRIVATE_RUN_DIR" \
+scripts/benchmark_nocean_federation.sh
+```
+
+#### Candidate release results and gate
+
+The comparison below uses the retained Milestone 0 `20/20` matrix. The formal
+`10:1` CPU gate compares the candidate with the stable 52.45-second baseline
+median rather than only the 52.95-second representative row.
+
+| Case | Wallet success baseline → candidate | Wall | Confirmed TPS | p50 | p95 | Aggregate member CPU |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `10:1` | 10/10 → 10/10 | 25.969 → 26.248 s (+1.1%) | 0.385 → 0.381 (-1.0%) | 2.511 → 2.498 s (-0.5%) | 2.695 → 3.137 s (+16.4%) | 52.95 → 3.77 s (-92.9%) |
+| `20:5` | 20/20 → 20/20 | 12.402 → 10.223 s (-17.6%) | 1.613 → 1.956 (+21.3%) | 2.804 → 2.510 s (-10.5%) | 3.681 → 2.684 s (-27.1%) | 43.37 → 3.39 s (-92.2%) |
+| `100:20` | 70/100 → 100/100 | 30.814 → 12.926 s (-58.1%) | 2.272 → 7.736 (+240.5%) | 3.980 → 2.496 s (-37.3%) | 10.123 → 2.863 s (-71.7%) | 85.86 → 9.54 s (-88.9%) |
+
+The `10:1` candidate used 0.377 aggregate CPU-seconds per successful swap
+versus 5.245 at the baseline median, a **92.8%** reduction. Its primary batch
+wall, confirmed throughput, and median latency remained within the 5% budget.
+The one low-volume p95 rank increased by 0.442 seconds (16.4%); this is recorded
+rather than hidden. With only ten observations it represents one additional
+tail completion: maximum latency moved only +2.2% (3.439 to 3.515 seconds),
+while p95 improved 27.1% at `20:5` and 71.7% at `100:20`. The user-directed
+single-run scope does not support attributing that isolated low-N tail rank as a
+repeatable regression, and no other primary latency or throughput signal moved
+in the same direction.
+
+All cases had zero late operations, zero sync transitions, bounded post-run idle
+CPU (0.37, 0.38, and 0.40 aggregate seconds), and all five members ready in one
+exact digest group. Persisted journal/finalized/application state and freshly
+computed materialized-state digests matched for every case. The cached audited
+materialized digest matched when a checkpoint was created and was correctly
+diagnostic otherwise.
+
+Direct work counters moved exactly as predicted in every transaction window:
+
+| Work | `10:1` | `20:5` | `100:20` |
+| --- | ---: | ---: | ---: |
+| Full config validations | 0 | 0 | 0 |
+| Keyset validations | 0 | 0 | 0 |
+| Aggregate-key interpolations | 0 | 0 | 0 |
+| Setup-lineage validations | 0 | 0 | 0 |
+
+The counters were nonzero before the first measurement window—20 full config
+validations, 40 keyset validations, 320 interpolations, and ten setup-lineage
+validations federation-wide—confirming that startup and config-ingress checks
+remain active. Their values stayed byte-for-byte unchanged across all three
+healthy transaction windows, including checkpoint creation, quorum formation,
+peer transfer, promotion, and repeated capture inspection.
+
+Checkpoint evidence verification was not bypassed. The candidate still
+processed 1,190, 921, and 1,050 checkpoint signatures in the three windows.
+The `10:1` window performed 250 capture-context quorum verifications, plus
+formation, peer-fetch, and promotion verification, while creating ten
+member-local candidates and promoting two logical checkpoints. The removed
+work is exclusively repeated validation of the unchanged public config.
+
+#### Verification and keep decision
+
+Final focused checks on the candidate passed:
+
+```text
+cargo test -p cdk-common --features federation,prometheus checkpoint
+  19 passed
+cargo test -p cdk --no-default-features \
+  --features mint,wallet,federation,prometheus,bip353 \
+  runtime_config_construction_still_rejects_malformed_public_config
+  1 passed
+cargo test -p cdk-axum --features federation,prometheus \
+  trusted_checkpoint_restart_rejects_changed_suffix
+  2 passed
+cargo test -p cdk-axum --features federation,prometheus \
+  aleph_bft_live_session_restarts_from_persisted_backup_and_continues_finality
+  1 passed
+cargo test -p cdk-axum --features federation,prometheus \
+  checkpoint_catch_up_applies_bounded_history_and_promotes_target
+  1 passed
+cargo check -p cdk-common --no-default-features --features mint,wallet
+cargo check -p cdk --no-default-features --features mint,wallet,bip353
+cargo check -p cdk-axum --no-default-features
+cargo check -p cdk-axum --features federation,prometheus
+cargo fmt --all -- --check
+git diff --check
+scripts/benchmark_nocean_federation.sh --self-test
+  all passed
+```
+
+**Kept.** The simplest fix separates full config-ingress validation from cheap
+checkpoint evidence validation while retaining the checked public APIs. It
+introduces no cache, compatibility layer, benchmark-only path, or weakened
+invariant. The direct counter reaches zero exactly where predicted, CPU falls
+far beyond the 15% gate, and realistic success/throughput improve sharply. The
+retained metrics remain bounded production observability; no temporary
+instrumentation or private benchmark artifact is committed. The milestone
+commit subject is `perf: avoid repeated checkpoint config validation`; its hash
+is recorded at Milestone 2 start.
 
 ## Milestone 2: bounded checkpoint signature and quorum verification
 
@@ -1442,4 +1670,5 @@ Add future measurements here rather than rewriting earlier results.
 | Date | Git commit | Environment | Case | Result | Interpretation |
 | --- | --- | --- | --- | --- | --- |
 | 2026-07-17 | `a21bf79d37a6807981504741cf65e597ee401b6e` | Nocean, 5 members, fakewallet | `10:1` | 0.063 TPS, p50 15.218s, p95 18.475s, 55.1% average CPU/member | Regression reproduced; static review ranks repeated full `config.validate()` + quorum re-verify on every unit-finalize capture as the top CPU lead; A/B confirmation still required (M0) |
-| 2026-07-17 | This Milestone 0 commit; hash recorded at Milestone 1 start | Local release, 5 members, SQLite, fakewallet | `20/20` versus `20000/20000`; one retained `10:1`, `20:5`, `100:20` matrix each | Stable sequential aggregate CPU median 52.45s versus 6.43s (-87.7%); direct `40:10` profile recorded 1,128 full config validations and 18,048 BLS public-key interpolations | Confirmed repeated immutable config/keyset validation is the dominant transaction compute sink; bounded metrics, exact digest diagnostic, and corrected harness kept; no production optimization in M0 |
+| 2026-07-17 | `a5ae88c88afa0a910632be921e277d3c49c33719` | Local release, 5 members, SQLite, fakewallet | `20/20` versus `20000/20000`; one retained `10:1`, `20:5`, `100:20` matrix each | Stable sequential aggregate CPU median 52.45s versus 6.43s (-87.7%); direct `40:10` profile recorded 1,128 full config validations and 18,048 BLS public-key interpolations | Confirmed repeated immutable config/keyset validation is the dominant transaction compute sink; bounded metrics, exact digest diagnostic, and corrected harness kept; no production optimization in M0 |
+| 2026-07-17 | This Milestone 1 commit; hash recorded at Milestone 2 start | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix | CPU 3.77s / 3.39s / 9.54s; success 10/10 / 20/20 / 100/100; 0 full config, keyset, interpolation, or setup-lineage validations in every window | Kept: validated-config checkpoint paths remove the confirmed sink; sequential CPU -92.8% versus baseline median and realistic `100:20` reaches 7.736 confirmed TPS with exact convergence |

@@ -129,7 +129,7 @@ pub(super) async fn post_checkpoint_quorum(
     })?;
     payload
         .payload
-        .validate(runtime_config.public_config())
+        .validate_for_validated_config(runtime_config.public_config())
         .map_err(federation_error_response)?;
     state
         .record_federation_sequence(kind, verified.sender, verified.sequence)

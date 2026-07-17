@@ -2673,7 +2673,7 @@ impl FederationCheckpointStartupVerifier<'_> {
             checkpoint_payload.journal_next_index,
         )
         .await?;
-        let mut verifier = FederationSuffixVerifier::new(
+        let mut verifier = FederationSuffixVerifier::new_for_validated_config(
             self.config,
             self.member_id,
             self.active_session,
@@ -2944,7 +2944,7 @@ async fn create_federation_runtime_state_with_wallet(
             }
             let recovered_session =
                 latest_aleph_bft_finalized_session(&finalized_items).max(active_session);
-            let mut verifier = FederationSuffixVerifier::new(
+            let mut verifier = FederationSuffixVerifier::new_for_validated_config(
                 config.public_config(),
                 config.member_id(),
                 recovered_session,

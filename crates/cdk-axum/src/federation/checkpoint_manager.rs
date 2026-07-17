@@ -141,7 +141,7 @@ impl FederationNodeRuntime {
             .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
             .await?
         {
-            candidate.validate_against_config(public_config)?;
+            candidate.validate_against_validated_config(public_config)?;
             if candidate.scheduled_checkpoint_sequence > scheduled_sequence {
                 #[cfg(feature = "prometheus")]
                 ScheduledCheckpointCaptureOutcome::PendingCandidate.record();
@@ -267,7 +267,7 @@ impl FederationNodeRuntime {
         let checkpoint_started_at = std::time::Instant::now();
         let materialized_state_digest =
             materialized_state_digest_with_metrics(mint, runtime_config.member_id()).await?;
-        let checkpoint = boundary.scheduled_checkpoint(
+        let checkpoint = boundary.scheduled_checkpoint_for_validated_config(
             public_config,
             latest_scheduled,
             materialized_state_digest,
@@ -687,7 +687,7 @@ impl FederationNodeRuntime {
             FederationCheckpointKind::Recovery,
         ] {
             if let Some(checkpoint) = db.get_latest_federation_checkpoint(kind).await? {
-                checkpoint.validate_against_config(public_config)?;
+                checkpoint.validate_against_validated_config(public_config)?;
                 if checkpoint_covers_current_recovery_need(
                     &checkpoint,
                     requested_after,
@@ -699,7 +699,7 @@ impl FederationNodeRuntime {
                 }
             }
             if let Some(quorum) = db.get_latest_federation_checkpoint_quorum(kind).await? {
-                let verified = quorum.verify(public_config)?;
+                let verified = quorum.verify_against_validated_config(public_config)?;
                 if checkpoint_covers_current_recovery_need(
                     verified.checkpoint(),
                     requested_after,
@@ -766,7 +766,7 @@ impl FederationNodeRuntime {
             .federation_config()
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
         let public_config = runtime_config.public_config();
-        boundary.validate_against_config(public_config)?;
+        boundary.validate_against_validated_config(public_config)?;
         let db = mint.localstore();
         let latest_scheduled_quorum = db
             .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
@@ -868,7 +868,7 @@ impl FederationNodeRuntime {
             .get_latest_federation_checkpoint(FederationCheckpointKind::Recovery)
             .await?
         {
-            candidate.validate_against_config(public_config)?;
+            candidate.validate_against_validated_config(public_config)?;
             if candidate.scheduled_checkpoint_sequence == scheduled_sequence
                 && candidate.scheduled_anchor_id == scheduled_anchor_id
                 && checkpoint_matches_boundary(&candidate, &boundary)
@@ -931,7 +931,7 @@ impl FederationNodeRuntime {
         let checkpoint_started_at = std::time::Instant::now();
         let materialized_state_digest =
             materialized_state_digest_with_metrics(mint, runtime_config.member_id()).await?;
-        let checkpoint = boundary.recovery_checkpoint(
+        let checkpoint = boundary.recovery_checkpoint_for_validated_config(
             public_config,
             latest_scheduled,
             materialized_state_digest,
@@ -975,7 +975,7 @@ impl FederationNodeRuntime {
         let db = mint.localstore();
         let checkpoint = db.get_federation_checkpoint(checkpoint_id).await?;
         if let Some(checkpoint) = checkpoint.as_ref() {
-            checkpoint.validate_against_config(public_config)?;
+            checkpoint.validate_against_validated_config(public_config)?;
             if checkpoint.id()? != checkpoint_id {
                 return Err(FederationError::CheckpointInvalid {
                     reason: "stored checkpoint does not match its lookup id".to_string(),
@@ -1004,7 +1004,7 @@ impl FederationNodeRuntime {
         let runtime_config = mint
             .federation_config()
             .ok_or_else(|| runtime_unavailable("mint configuration"))?;
-        checkpoint.validate_against_config(runtime_config.public_config())?;
+        checkpoint.validate_against_validated_config(runtime_config.public_config())?;
         let mut tx = mint.localstore().begin_transaction().await?;
         tx.add_federation_checkpoint_candidate(checkpoint).await?;
         tx.commit().await?;
@@ -1024,7 +1024,7 @@ impl FederationNodeRuntime {
         let checkpoint = db.get_federation_checkpoint(checkpoint_id).await?;
         let signature = match checkpoint.as_ref() {
             Some(checkpoint) => {
-                checkpoint.validate_against_config(public_config)?;
+                checkpoint.validate_against_validated_config(public_config)?;
                 db.get_federation_checkpoint_signatures(checkpoint_id)
                     .await?
                     .into_iter()
@@ -1150,7 +1150,7 @@ impl FederationNodeRuntime {
             .ok_or_else(|| FederationError::CheckpointInvalid {
                 reason: "cannot store a signature for an unknown checkpoint".to_string(),
             })?;
-        checkpoint.validate_against_config(public_config)?;
+        checkpoint.validate_against_validated_config(public_config)?;
         if checkpoint.id()? != checkpoint_id || signature.checkpoint_id != checkpoint_id {
             return Err(FederationError::CheckpointInvalid {
                 reason: "checkpoint signature lookup binding mismatch".to_string(),
