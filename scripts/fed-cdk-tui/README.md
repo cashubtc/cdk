@@ -171,6 +171,11 @@ The default directory contains:
 | `seed` | BIP39 wallet seed, created with private file permissions |
 | `wallet.sqlite` | Proofs, quotes, counters, and saga state |
 | `wallet.sqlite-wal`, `wallet.sqlite-shm` | SQLite runtime files when present |
+| `fed-cdk-tui.log` | Library warnings and errors, appended on every launch |
+
+Tracing output is written to the log file instead of the terminal so library
+warnings can never corrupt the display. Set `RUST_LOG=debug` (or `trace`)
+before launching for verbose diagnostics in that file.
 
 On Unix, the wallet directory is restricted to mode `0700`; the seed and
 federation configuration are written with mode `0600`.

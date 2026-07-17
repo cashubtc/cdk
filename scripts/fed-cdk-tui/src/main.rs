@@ -30,6 +30,8 @@ use tokio::sync::mpsc;
 use crate::telemetry::spawn_member_monitors;
 use crate::wallet::{JoinSource, WalletRuntime};
 
+const LOG_FILE: &str = "fed-cdk-tui.log";
+
 #[derive(Debug, Parser)]
 #[command(name = "fed-cdk-tui", version, about)]
 struct Cli {
@@ -92,11 +94,6 @@ impl Drop for TerminalGuard {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter("warn")
-        .with_writer(io::stderr)
-        .init();
-
     let cli = Cli::parse();
     let data_dir = cli.data_dir.unwrap_or_else(default_data_dir);
 
@@ -110,6 +107,7 @@ async fn main() -> Result<()> {
 
     fs::create_dir_all(&data_dir)
         .with_context(|| format!("could not create {}", data_dir.display()))?;
+    init_tracing(&data_dir)?;
 
     let join_source = match (cli.federation_config, cli.invite, cli.mint_url) {
         (Some(path), None, None) => Some(JoinSource::ConfigPath(path)),
@@ -131,6 +129,26 @@ fn default_data_dir() -> PathBuf {
     home::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".fed-cdk-tui")
+}
+
+/// Route library tracing to a file: writing warnings or errors to the
+/// terminal would corrupt the alternate screen while the TUI is active.
+fn init_tracing(data_dir: &std::path::Path) -> Result<()> {
+    let log_path = data_dir.join(LOG_FILE);
+    let log_file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("could not open {}", log_path.display()))?;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(move || log_file.try_clone().expect("log file handle"))
+        .with_ansi(false)
+        .init();
+    tracing::info!("fed-cdk-tui logging initialized at {}", log_path.display());
+    Ok(())
 }
 
 fn reset_wallet(data_dir: &PathBuf, yes: bool) -> Result<()> {
