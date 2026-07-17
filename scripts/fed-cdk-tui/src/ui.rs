@@ -7,7 +7,9 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use crate::app::{short, ActivityRecord, App, FormField, MemberState, Modal, Tab};
+use crate::app::{
+    short, ActivityRecord, App, FormField, MemberState, Modal, PendingQuote, QuoteKind, Tab,
+};
 
 const BG: Color = Color::Rgb(10, 14, 20);
 const PANEL: Color = Color::Rgb(18, 24, 33);
@@ -433,39 +435,148 @@ fn render_activity(frame: &mut Frame<'_>, area: Rect, app: &App) {
     );
 }
 
-fn render_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
+fn render_history(frame: &mut Frame<'_>, area: Rect, app: &mut App) {
     if app.runtime().is_none() {
         render_empty(frame, area);
         return;
     }
-    let max_rows = area.height.saturating_sub(3) as usize;
-    let rows = app
-        .transactions
-        .iter()
-        .skip(app.history_scroll)
-        .take(max_rows)
-        .map(transaction_row);
+    let chunks = Layout::vertical([Constraint::Min(5), Constraint::Length(1)]).split(area);
+    let table_area = chunks[0];
+    let max_rows = table_area.height.saturating_sub(3) as usize;
+    app.history_visible_rows = max_rows.max(1);
+
+    let quote_count = app.quotes.len();
+    let mut rows = Vec::new();
+    for (index, quote) in app.quotes.iter().enumerate() {
+        rows.push(quote_row(quote, index == app.history_selected));
+    }
+    for (index, transaction) in app.transactions.iter().enumerate() {
+        rows.push(transaction_row(
+            transaction,
+            quote_count + index == app.history_selected,
+        ));
+    }
+    let total_rows = rows.len();
+    let rows = rows.into_iter().skip(app.history_scroll).take(max_rows);
+
     let header = Row::new(["UTC", "DIR", "KIND", "METHOD", "AMOUNT", "FEE", "DETAIL"])
         .style(Style::default().fg(CYAN).bold());
     let widths = [
         Constraint::Length(9),
         Constraint::Length(5),
-        Constraint::Length(8),
+        Constraint::Length(11),
         Constraint::Length(14),
         Constraint::Length(15),
         Constraint::Length(10),
         Constraint::Min(24),
     ];
+    let title = if total_rows == 0 {
+        " Transaction history ".to_string()
+    } else {
+        scroll_title(" Transaction history ", app.history_scroll)
+    };
     frame.render_widget(
         Table::new(rows, widths)
             .header(header)
             .column_spacing(1)
-            .block(panel_block().title(scroll_title(" Transaction history ", app.history_scroll))),
-        area,
+            .block(panel_block().title(title)),
+        table_area,
     );
+    if total_rows == 0 {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No transactions or pending quotes yet",
+                Style::default().fg(MUTED),
+            )),
+            table_area.inner(Margin::new(2, 2)),
+        );
+    }
+    render_history_hint(frame, chunks[1], app);
 }
 
-fn transaction_row(transaction: &Transaction) -> Row<'static> {
+fn render_history_hint(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let line = match app.selected_quote() {
+        Some(quote) => {
+            let action = match (quote.kind, quote.state.as_str(), quote.in_flight) {
+                (_, _, true) => "in-flight; wait for the active operation",
+                (QuoteKind::Mint, "PAID", false) => "e mint this quote",
+                (QuoteKind::Mint, _, false) => "e check payment status",
+                (QuoteKind::Melt, "UNPAID", false) => "e execute this melt",
+                (QuoteKind::Melt, _, false) => "e check melt status",
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!(" {} quote {} ", quote.kind.label(), short(&quote.id, 8)),
+                    Style::default().fg(CYAN).bold(),
+                ),
+                Span::styled(format!("{action}   "), Style::default().fg(AMBER)),
+                Span::styled("c copy request   ", Style::default().fg(MUTED)),
+                Span::styled("j/k select   Home live", Style::default().fg(MUTED)),
+            ])
+        }
+        None => Line::from(Span::styled(
+            " j/k select   PgUp/PgDn page   Home live   e check/mint/melt selected quote",
+            Style::default().fg(MUTED),
+        )),
+    };
+    frame.render_widget(Paragraph::new(line).style(Style::default().bg(PANEL)), area);
+}
+
+fn quote_row(quote: &PendingQuote, selected: bool) -> Row<'static> {
+    let (direction, kind_label, accent) = match quote.kind {
+        QuoteKind::Mint => ("IN", "mint quote", GREEN),
+        QuoteKind::Melt => ("OUT", "melt quote", AMBER),
+    };
+    let mut state = quote.state.clone();
+    if quote.is_expired() && state == "UNPAID" {
+        state = "EXPIRED".to_string();
+    }
+    if quote.in_flight {
+        state.push('*');
+    }
+    let state_color = match state.as_str() {
+        "PAID" | "PAID*" => GREEN,
+        "PENDING" | "PENDING*" => AMBER,
+        "EXPIRED" | "FAILED" | "UNKNOWN" => RED,
+        _ => MUTED,
+    };
+    let detail = vec![
+        Span::styled(state, Style::default().fg(state_color).bold()),
+        Span::styled(
+            format!("  {}", short(&quote.id, 8)),
+            Style::default().fg(MUTED),
+        ),
+        Span::styled(
+            format!("  {}", short(&quote.request, 24)),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ];
+    let base_style = if selected {
+        Style::default().bg(Color::Rgb(29, 41, 55)).fg(TEXT)
+    } else {
+        Style::default().fg(TEXT)
+    };
+    Row::new(vec![
+        Cell::from(if quote.updated_at > 0 {
+            format_time(quote.updated_at)
+        } else {
+            "--".to_string()
+        }),
+        Cell::from(direction).style(Style::default().fg(accent).bold()),
+        Cell::from(kind_label).style(Style::default().fg(AMBER)),
+        Cell::from(quote.method.clone()).style(Style::default().fg(CYAN)),
+        Cell::from(format!("{} sat", format_sats(quote.amount))),
+        Cell::from(if quote.fee_reserve > 0 {
+            format_sats(quote.fee_reserve)
+        } else {
+            "--".to_string()
+        }),
+        Cell::from(Line::from(detail)),
+    ])
+    .style(base_style)
+}
+
+fn transaction_row(transaction: &Transaction, selected: bool) -> Row<'static> {
     let (direction, kind, accent) = match transaction.direction {
         TransactionDirection::Incoming => (
             "IN",
@@ -514,7 +625,11 @@ fn transaction_row(transaction: &Transaction) -> Row<'static> {
         Cell::from(format_sats(u64::from(transaction.fee))),
         Cell::from(detail),
     ])
-    .style(Style::default().fg(TEXT))
+    .style(if selected {
+        Style::default().bg(Color::Rgb(29, 41, 55)).fg(TEXT)
+    } else {
+        Style::default().fg(TEXT)
+    })
 }
 
 fn scroll_title(base: &str, scroll: usize) -> String {
@@ -661,7 +776,7 @@ fn render_toast(frame: &mut Frame<'_>, area: Rect, message: &str, success: bool)
 fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
     let modal_area = match modal {
         Modal::Payload { .. } => centered_rect(80, 18, area),
-        Modal::Help => centered_rect(72, 20, area),
+        Modal::Help => centered_rect(72, 22, area),
         Modal::Form(form) => centered_rect(
             76,
             if form.has_separate_amount_field() {
@@ -778,6 +893,10 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
                 Line::from(vec![
                     key_span("c"),
                     Span::raw(" copy latest payment request or token"),
+                ]),
+                Line::from(vec![
+                    key_span("e"),
+                    Span::raw(" check / mint / melt the selected quote (history view)"),
                 ]),
                 Line::from(vec![key_span("f"), Span::raw(" join when disconnected")]),
                 Line::from(vec![

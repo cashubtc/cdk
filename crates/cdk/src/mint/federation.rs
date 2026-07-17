@@ -111,6 +111,8 @@ use self::chain_observation::{
 };
 use self::transaction_state::persist_pending_onchain_intent;
 
+const FEDERATION_BLS_PROOF_BATCH_MIN: usize = 8;
+
 pub use self::transaction_policy::{
     FederationCpfpPolicy, FederationFeeRateSource, FederationOnchainTransactionPolicy,
 };
@@ -773,41 +775,61 @@ impl FederationRuntimeConfig {
 
     /// Verify spent proofs against the federation aggregate BLS keysets.
     pub fn verify_proofs(&self, proofs: &Proofs) -> Result<(), Error> {
-        for proof in proofs {
-            if proof.keyset_id.get_version() != cdk_common::nuts::KeySetVersion::Version02 {
-                return Err(FederationError::InvalidFederatedKeysetVersion {
-                    keyset_id: proof.keyset_id,
-                }
-                .into());
+        if proofs.len() < FEDERATION_BLS_PROOF_BATCH_MIN {
+            for proof in proofs {
+                cdk_common::dhke::verify_bls_message(
+                    self.aggregate_public_key_for_proof(proof)?,
+                    proof.c,
+                    proof.secret.as_bytes(),
+                )?;
             }
-
-            let keyset = self
-                .public_config
-                .keysets
-                .iter()
-                .find(|keyset| keyset.id == proof.keyset_id)
-                .ok_or(FederationError::UnknownFederatedKeyset {
-                    keyset_id: proof.keyset_id,
-                })?;
-            let aggregate_key = keyset.aggregate_keys.get(&proof.amount).ok_or(
-                FederationError::UnknownFederatedKeysetAmount {
-                    keyset_id: keyset.id,
-                    amount: proof.amount,
-                },
-            )?;
-
-            if proof.dleq.is_some() {
-                return Err(cdk_common::dhke::Error::TokenNotVerified.into());
-            }
-
-            cdk_common::dhke::verify_bls_message(
-                PublicKey::from(*aggregate_key),
-                proof.c,
-                proof.secret.as_bytes(),
-            )?;
+            return Ok(());
         }
 
+        let mint_pubkeys = proofs
+            .iter()
+            .map(|proof| self.aggregate_public_key_for_proof(proof))
+            .collect::<Result<Vec<_>, _>>()?;
+        let signatures = proofs.iter().map(|proof| proof.c).collect::<Vec<_>>();
+        let messages = proofs
+            .iter()
+            .map(|proof| proof.secret.as_bytes())
+            .collect::<Vec<_>>();
+        cdk_common::dhke::batch_verify_bls_messages(&mint_pubkeys, &signatures, &messages)?;
         Ok(())
+    }
+
+    fn aggregate_public_key_for_proof(
+        &self,
+        proof: &cdk_common::Proof,
+    ) -> Result<PublicKey, Error> {
+        if proof.keyset_id.get_version() != cdk_common::nuts::KeySetVersion::Version02 {
+            return Err(FederationError::InvalidFederatedKeysetVersion {
+                keyset_id: proof.keyset_id,
+            }
+            .into());
+        }
+
+        let keyset = self
+            .public_config
+            .keysets
+            .iter()
+            .find(|keyset| keyset.id == proof.keyset_id)
+            .ok_or(FederationError::UnknownFederatedKeyset {
+                keyset_id: proof.keyset_id,
+            })?;
+        let aggregate_key = keyset.aggregate_keys.get(&proof.amount).ok_or(
+            FederationError::UnknownFederatedKeysetAmount {
+                keyset_id: keyset.id,
+                amount: proof.amount,
+            },
+        )?;
+
+        if proof.dleq.is_some() {
+            return Err(cdk_common::dhke::Error::TokenNotVerified.into());
+        }
+
+        Ok(PublicKey::from(*aggregate_key))
     }
 
     fn verify_proofs_with_performance_context(

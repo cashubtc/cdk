@@ -354,5 +354,16 @@ async fn execute_app_command(
                 wallet::spawn_receive(runtime, token, tx);
             }
         }
+        AppCommand::QuoteAction { kind, quote_id } => {
+            if let Some(runtime) = app.runtime() {
+                let member_url = runtime.local_mint_url().to_string();
+                app.operation_started(
+                    kind.operation(),
+                    &format!("checking {} quote via {member_url}", kind.label()),
+                    Some(&member_url),
+                );
+                wallet::spawn_quote_action(runtime, kind, quote_id, tx);
+            }
+        }
     }
 }

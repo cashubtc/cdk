@@ -3,10 +3,12 @@
 
 use std::hint::black_box;
 
+use cdk::dhke::{batch_verify_bls_messages, verify_bls_message};
 use cdk::nuts::nut01::{
     batch_verify_blind_signature_shares, trusted_dealer_keygen, verify_blind_signature_share,
     BlsBlindSignatureShare, BlsG1PublicKey, BlsPublicKeyShare, BlsSecretKey, BlsSignerId,
 };
+use cdk::nuts::{PublicKey, SecretKey};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 
 struct MemberBatch {
@@ -126,5 +128,96 @@ fn bench_bls_blind_share_verification(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_bls_blind_share_verification);
+struct ProofBatch {
+    mint_pubkeys: Vec<PublicKey>,
+    signatures: Vec<PublicKey>,
+    messages: Vec<Vec<u8>>,
+}
+
+fn proof_batch(proof_count: usize) -> ProofBatch {
+    let mint_secrets = (1..=4)
+        .map(|seed| SecretKey::bls_from_reduced_bytes(&[seed; 32]))
+        .collect::<Vec<_>>();
+    let messages = (0..proof_count)
+        .map(|index| format!("BLS proof batch benchmark secret {index}").into_bytes())
+        .collect::<Vec<_>>();
+    let mut mint_pubkeys = Vec::with_capacity(proof_count);
+    let mut signatures = Vec::with_capacity(proof_count);
+    for (index, message) in messages.iter().enumerate() {
+        let mint_secret = &mint_secrets[index % mint_secrets.len()];
+        mint_pubkeys.push(mint_secret.public_key());
+        signatures.push(PublicKey::from(
+            BlsG1PublicKey::hash_to_curve(message)
+                .mul(mint_secret.as_bls().expect("BLS mint secret")),
+        ));
+    }
+
+    ProofBatch {
+        mint_pubkeys,
+        signatures,
+        messages,
+    }
+}
+
+fn bench_bls_proof_verification(c: &mut Criterion) {
+    let mut group = c.benchmark_group("bls-proof-messages");
+    for proof_count in [1, 4, 8, 14, 64] {
+        let batch = proof_batch(proof_count);
+        let message_refs = batch.messages.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        for ((mint_pubkey, signature), message) in batch
+            .mint_pubkeys
+            .iter()
+            .zip(&batch.signatures)
+            .zip(&message_refs)
+        {
+            verify_bls_message(*mint_pubkey, *signature, message)
+                .expect("valid scalar proof fixture");
+        }
+        batch_verify_bls_messages(&batch.mint_pubkeys, &batch.signatures, &message_refs)
+            .expect("valid batch proof fixture");
+
+        group.bench_with_input(
+            BenchmarkId::new("scalar", proof_count),
+            &proof_count,
+            |b, _| {
+                b.iter(|| {
+                    for ((mint_pubkey, signature), message) in batch
+                        .mint_pubkeys
+                        .iter()
+                        .zip(&batch.signatures)
+                        .zip(&message_refs)
+                    {
+                        black_box(
+                            verify_bls_message(*mint_pubkey, *signature, message)
+                                .expect("scalar proof verification"),
+                        );
+                    }
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("batch", proof_count),
+            &proof_count,
+            |b, _| {
+                b.iter(|| {
+                    black_box(
+                        batch_verify_bls_messages(
+                            &batch.mint_pubkeys,
+                            &batch.signatures,
+                            &message_refs,
+                        )
+                        .expect("batch proof verification"),
+                    );
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_bls_blind_share_verification,
+    bench_bls_proof_verification
+);
 criterion_main!(benches);

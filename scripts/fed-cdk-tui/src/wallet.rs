@@ -16,7 +16,7 @@ use cdk::cdk_database::{self, WalletDatabase};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::nut00::ProofsMethods;
-use cdk::nuts::{CurrencyUnit, MintInfo, PaymentMethod};
+use cdk::nuts::{CurrencyUnit, MeltQuoteState, MintInfo, PaymentMethod};
 use cdk::wallet::types::SendKind;
 use cdk::wallet::{
     FederatedMintConnector, FederatedMintConnectorConfig, ReceiveOptions, SendOptions, Wallet,
@@ -30,7 +30,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use crate::app::AppEvent;
+use crate::app::{AppEvent, PendingQuote, QuoteKind};
 
 const CONFIG_VERSION: u16 = 1;
 const CONFIG_FILE: &str = "federation.json";
@@ -431,13 +431,155 @@ async fn send_wallet_snapshot(
         }
     }
     match wallet.list_transactions(None).await {
-        Ok(transactions) => tx.send(AppEvent::Transactions(transactions)).is_ok(),
-        Err(err) => tx
-            .send(AppEvent::BackgroundError(format!(
-                "transaction refresh failed: {err}"
-            )))
-            .is_ok(),
+        Ok(transactions) => {
+            if tx.send(AppEvent::Transactions(transactions)).is_err() {
+                return false;
+            }
+        }
+        Err(err) => {
+            if tx
+                .send(AppEvent::BackgroundError(format!(
+                    "transaction refresh failed: {err}"
+                )))
+                .is_err()
+            {
+                return false;
+            }
+        }
     }
+    tx.send(AppEvent::Quotes(fetch_pending_quotes(&wallet).await))
+        .is_ok()
+}
+
+async fn fetch_pending_quotes(wallet: &cdk::wallet::Wallet) -> Vec<PendingQuote> {
+    let mut quotes = Vec::new();
+    if let Ok(mint_quotes) = wallet.get_unissued_mint_quotes().await {
+        quotes.extend(mint_quotes.into_iter().map(|quote| {
+            let amount = quote
+                .amount
+                .map(u64::from)
+                .unwrap_or_else(|| u64::from(quote.amount_paid));
+            PendingQuote {
+                id: quote.id,
+                kind: QuoteKind::Mint,
+                state: quote.state.to_string(),
+                in_flight: quote.used_by_operation.is_some(),
+                method: quote.payment_method.to_string(),
+                amount,
+                fee_reserve: 0,
+                request: quote.request,
+                expiry: quote.expiry,
+                updated_at: quote.updated_at,
+            }
+        }));
+    }
+    if let Ok(melt_quotes) = wallet.get_active_melt_quotes().await {
+        quotes.extend(melt_quotes.into_iter().map(|quote| PendingQuote {
+            id: quote.id,
+            kind: QuoteKind::Melt,
+            state: quote.state.to_string(),
+            in_flight: quote.used_by_operation.is_some(),
+            method: quote.payment_method.to_string(),
+            amount: u64::from(quote.amount),
+            fee_reserve: u64::from(quote.fee_reserve),
+            request: quote.request,
+            expiry: quote.expiry,
+            updated_at: 0,
+        }));
+    }
+    quotes
+}
+
+pub fn spawn_quote_action(
+    runtime: Arc<WalletRuntime>,
+    kind: QuoteKind,
+    quote_id: String,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    tokio::spawn(async move {
+        let member_url = runtime.local_mint_url().to_string();
+        let result = async {
+            let wallet = runtime.wallet();
+            match kind {
+                QuoteKind::Mint => {
+                    let quote = wallet
+                        .check_mint_quote_status(&quote_id)
+                        .await
+                        .map_err(|err| {
+                            anyhow!("could not check mint quote {}: {err}", short_id(&quote_id))
+                        })?;
+                    if quote.amount_mintable() > Amount::ZERO {
+                        if quote.used_by_operation.is_some() {
+                            bail!(
+                                "mint quote {} is reserved by an in-flight operation",
+                                short_id(&quote_id)
+                            );
+                        }
+                        let proofs = wallet
+                            .mint(&quote_id, SplitTarget::default(), None)
+                            .await
+                            .map_err(|err| {
+                                anyhow!("mint failed for quote {}: {err}", short_id(&quote_id))
+                            })?;
+                        let minted = proofs.total_amount()?;
+                        Ok(format!(
+                            "minted {minted} sat from quote {} via {member_url}",
+                            short_id(&quote_id)
+                        ))
+                    } else {
+                        Ok(format!(
+                            "mint quote {} is {} (paid {} sat, issued {} sat)",
+                            short_id(&quote_id),
+                            quote.state,
+                            quote.amount_paid,
+                            quote.amount_issued
+                        ))
+                    }
+                }
+                QuoteKind::Melt => {
+                    let quote = wallet
+                        .check_melt_quote_status(&quote_id)
+                        .await
+                        .map_err(|err| {
+                            anyhow!("could not check melt quote {}: {err}", short_id(&quote_id))
+                        })?;
+                    match quote.state {
+                        MeltQuoteState::Unpaid => {
+                            if quote.used_by_operation.is_some() {
+                                bail!(
+                                    "melt quote {} is reserved by an in-flight operation",
+                                    short_id(&quote_id)
+                                );
+                            }
+                            let outcome = wallet
+                                .prepare_melt(&quote_id, HashMap::new())
+                                .await?
+                                .confirm()
+                                .await?;
+                            Ok(format!(
+                                "Paid {} sat with {} sat fee ({}) via {member_url}",
+                                outcome.amount(),
+                                outcome.fee_paid(),
+                                outcome.state()
+                            ))
+                        }
+                        MeltQuoteState::Paid => Ok(format!(
+                            "melt quote {} already paid (preimage {})",
+                            short_id(&quote_id),
+                            quote
+                                .payment_proof
+                                .as_deref()
+                                .map(short_request)
+                                .unwrap_or_else(|| "not recorded".to_string())
+                        )),
+                        state => Ok(format!("melt quote {} is {state}", short_id(&quote_id))),
+                    }
+                }
+            }
+        }
+        .await;
+        finish_operation(kind.operation(), result, runtime, tx).await;
+    });
 }
 
 pub fn spawn_onchain_mint(

@@ -12,7 +12,8 @@ The interface provides:
   the federation;
 - exact-value Cashu token send and receive flows;
 - persistent wallet state with startup saga recovery;
-- a transaction history view fed by the wallet database;
+- a transaction history view fed by the wallet database, including unpaid and
+  pending mint/melt quotes with manual check and mint/melt actions;
 - independent `/v1/info` and `/v1/keysets` probes for every member;
 - live HTTP status, latency, success rate, response volume, active keysets,
   endpoint identity, and federation metadata verification;
@@ -110,7 +111,8 @@ next operation directly; the latest payload remains available through `c`.
 | `p` | Melt eCash; select an advertised payment method in the dialog |
 | `s` | Prepare an exact-value Cashu token |
 | `r` | Receive and swap a pasted Cashu token |
-| `c` | Copy the latest address or token |
+| `c` | Copy the latest address, token, or selected quote request |
+| `e` | Check the selected quote; mint or melt it when actionable |
 | `f` | Open the join dialog when disconnected |
 | `x` | Leave the federation; seed, proofs, and config are preserved |
 | `?` | Show help |
@@ -122,7 +124,13 @@ tokens are entered as one value rather than interpreted as shortcuts.
 
 The history view lists the wallet's recorded mint, melt, send, and receive
 transactions from newest to oldest, refreshed after every operation and every
-few seconds. Pressing `x` disconnects the wallet and stops the member probes
+few seconds. Unpaid and pending mint and melt quotes are listed above the
+transactions with their state (`UNPAID`, `PAID`, `PENDING`, `EXPIRED`; `*`
+marks a quote reserved by an in-flight operation). Select a quote with `j`/`k`
+and press `e` to check its status with the federation: a paid mint quote is
+minted, an unpaid melt quote is executed, and a pending melt quote resumes its
+saga. Press `c` to copy the selected quote's invoice or address again.
+Pressing `x` disconnects the wallet and stops the member probes
 without deleting anything; press `f` afterwards to rejoin the same federation
 or join another one from a fresh data directory.
 

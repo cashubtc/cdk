@@ -531,6 +531,29 @@ fn runtime_config_rejects_invalid_aggregate_bls_proofs() {
 }
 
 #[test]
+fn runtime_config_batch_verification_matches_scalar_boundary_and_rejects_corruption() {
+    let runtime_config = runtime_config();
+    let proofs = (0..super::super::FEDERATION_BLS_PROOF_BATCH_MIN)
+        .map(|index| proof_for_runtime(&runtime_config, &format!("batch-proof-{index}")))
+        .collect::<Vec<_>>();
+
+    runtime_config
+        .verify_proofs(&proofs[..proofs.len() - 1].to_vec())
+        .expect("proofs below the cutoff use valid scalar verification");
+    runtime_config
+        .verify_proofs(&proofs)
+        .expect("proofs at the cutoff use valid batch verification");
+
+    for index in [0, proofs.len() / 2, proofs.len() - 1] {
+        let mut corrupted = proofs.clone();
+        corrupted[index].c = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+            format!("corrupted batch proof {index}").as_bytes(),
+        ));
+        assert!(runtime_config.verify_proofs(&corrupted).is_err());
+    }
+}
+
+#[test]
 fn runtime_config_rejects_non_v3_aggregate_proofs() {
     let runtime_config = runtime_config();
     let mut proof = proof_for_runtime(&runtime_config, "non-v3");

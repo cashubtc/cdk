@@ -26,6 +26,7 @@ pub enum AppEvent {
         reserved: u64,
     },
     Transactions(Vec<Transaction>),
+    Quotes(Vec<PendingQuote>),
     OperationPayload {
         operation: &'static str,
         title: String,
@@ -62,6 +63,49 @@ pub enum AppCommand {
     OnchainMelt { address: String, amount: u64 },
     Send(u64),
     Receive(String),
+    QuoteAction { kind: QuoteKind, quote_id: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuoteKind {
+    Mint,
+    Melt,
+}
+
+impl QuoteKind {
+    pub fn operation(self) -> &'static str {
+        match self {
+            Self::Mint => "quote-mint",
+            Self::Melt => "quote-melt",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mint => "mint",
+            Self::Melt => "melt",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingQuote {
+    pub id: String,
+    pub kind: QuoteKind,
+    pub state: String,
+    pub in_flight: bool,
+    pub method: String,
+    pub amount: u64,
+    pub fee_reserve: u64,
+    pub request: String,
+    pub expiry: u64,
+    pub updated_at: u64,
+}
+
+impl PendingQuote {
+    pub fn is_expired(&self) -> bool {
+        self.expiry > 0 && self.expiry < unix_time()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,7 +361,10 @@ pub struct App {
     pub activities: VecDeque<ActivityRecord>,
     pub activity_scroll: usize,
     pub transactions: Vec<Transaction>,
+    pub quotes: Vec<PendingQuote>,
+    pub history_selected: usize,
     pub history_scroll: usize,
+    pub history_visible_rows: usize,
     pub available: u64,
     pub pending: u64,
     pub reserved: u64,
@@ -344,7 +391,10 @@ impl App {
             activities: VecDeque::new(),
             activity_scroll: 0,
             transactions: Vec::new(),
+            quotes: Vec::new(),
+            history_selected: 0,
             history_scroll: 0,
+            history_visible_rows: 1,
             available: 0,
             pending: 0,
             reserved: 0,
@@ -430,6 +480,8 @@ impl App {
         self.pending = 0;
         self.reserved = 0;
         self.transactions.clear();
+        self.quotes.clear();
+        self.history_selected = 0;
         self.history_scroll = 0;
         self.modal = Some(Modal::Form(join_form()));
         self.push_activity(ActivityEntry {
@@ -486,7 +538,13 @@ impl App {
                 if self.runtime.is_some() {
                     transactions.truncate(MAX_TRANSACTIONS);
                     self.transactions = transactions;
-                    self.clamp_history_scroll();
+                    self.clamp_history_selection();
+                }
+            }
+            AppEvent::Quotes(quotes) => {
+                if self.runtime.is_some() {
+                    self.quotes = quotes;
+                    self.clamp_history_selection();
                 }
             }
             AppEvent::OperationPayload {
@@ -664,17 +722,41 @@ impl App {
         self.activity_scroll = self.activity_scroll.min(max_scroll);
     }
 
-    fn clamp_history_scroll(&mut self) {
-        let max_scroll = self.transactions.len().saturating_sub(1);
-        self.history_scroll = self.history_scroll.min(max_scroll);
+    fn history_len(&self) -> usize {
+        self.quotes.len() + self.transactions.len()
+    }
+
+    fn clamp_history_selection(&mut self) {
+        let max_selected = self.history_len().saturating_sub(1);
+        self.history_selected = self.history_selected.min(max_selected);
+        self.history_scroll = self.history_scroll.min(max_selected);
     }
 
     fn scroll_activity(&mut self, delta: isize) {
         self.activity_scroll = scrolled(self.activity_scroll, delta, self.activities.len());
     }
 
-    fn scroll_history(&mut self, delta: isize) {
-        self.history_scroll = scrolled(self.history_scroll, delta, self.transactions.len());
+    pub fn selected_quote(&self) -> Option<&PendingQuote> {
+        if self.tab != Tab::History {
+            return None;
+        }
+        self.quotes.get(self.history_selected)
+    }
+
+    fn history_move(&mut self, delta: isize) {
+        let len = self.history_len();
+        if len == 0 {
+            self.history_selected = 0;
+            self.history_scroll = 0;
+            return;
+        }
+        self.history_selected = scrolled(self.history_selected, delta, len);
+        let visible = self.history_visible_rows.max(1);
+        if self.history_selected < self.history_scroll {
+            self.history_scroll = self.history_selected;
+        } else if self.history_selected >= self.history_scroll + visible {
+            self.history_scroll = self.history_selected + 1 - visible;
+        }
     }
 
     pub fn handle_terminal_event(&mut self, event: Event) -> Vec<AppCommand> {
@@ -722,19 +804,36 @@ impl App {
                 self.modal = Some(Modal::Form(join_form()));
             }
             KeyCode::Char('x') if self.runtime.is_some() => return vec![AppCommand::Leave],
+            KeyCode::Char('e') if self.tab == Tab::History => {
+                if let Some(quote) = self.selected_quote() {
+                    return vec![AppCommand::QuoteAction {
+                        kind: quote.kind,
+                        quote_id: quote.id.clone(),
+                    }];
+                }
+            }
             KeyCode::PageDown => match self.tab {
                 Tab::Activity => self.scroll_activity(10),
-                Tab::History => self.scroll_history(10),
+                Tab::History => {
+                    let page = self.history_visible_rows.max(1) as isize;
+                    self.history_move(page);
+                }
                 _ => {}
             },
             KeyCode::PageUp => match self.tab {
                 Tab::Activity => self.scroll_activity(-10),
-                Tab::History => self.scroll_history(-10),
+                Tab::History => {
+                    let page = self.history_visible_rows.max(1) as isize;
+                    self.history_move(-page);
+                }
                 _ => {}
             },
             KeyCode::Home => match self.tab {
                 Tab::Activity => self.activity_scroll = 0,
-                Tab::History => self.history_scroll = 0,
+                Tab::History => {
+                    self.history_selected = 0;
+                    self.history_scroll = 0;
+                }
                 _ => {}
             },
             KeyCode::Char('m') if self.can_start_operation() => {
@@ -777,15 +876,24 @@ impl App {
                     selected_payment_method: 0,
                 }));
             }
-            KeyCode::Char('c') => self.copy_last_payload(),
+            KeyCode::Char('c') => {
+                if self.tab == Tab::History {
+                    if let Some(request) = self.selected_quote().map(|quote| quote.request.clone())
+                    {
+                        self.copy_text(&request, "Quote payment request copied");
+                        return Vec::new();
+                    }
+                }
+                self.copy_last_payload();
+            }
             KeyCode::Down | KeyCode::Char('j') => match self.tab {
                 Tab::Activity => self.scroll_activity(1),
-                Tab::History => self.scroll_history(1),
+                Tab::History => self.history_move(1),
                 _ => self.select_next_member(),
             },
             KeyCode::Up | KeyCode::Char('k') => match self.tab {
                 Tab::Activity => self.scroll_activity(-1),
-                Tab::History => self.scroll_history(-1),
+                Tab::History => self.history_move(-1),
                 _ => self.select_previous_member(),
             },
             _ => {}
@@ -971,7 +1079,7 @@ impl App {
     }
 
     fn copy_last_payload(&mut self) {
-        let Some(payload) = &self.last_payload else {
+        let Some(payload) = self.last_payload.clone() else {
             self.toast = Some((
                 "No payment request or token is available to copy".to_string(),
                 false,
@@ -979,8 +1087,12 @@ impl App {
             ));
             return;
         };
-        match Clipboard::new().and_then(|mut clipboard| clipboard.set_text(payload.clone())) {
-            Ok(()) => self.toast = Some(("Copied to clipboard".to_string(), true, 24)),
+        self.copy_text(&payload, "Copied to clipboard");
+    }
+
+    fn copy_text(&mut self, text: &str, success_message: &str) {
+        match Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text.to_string())) {
+            Ok(()) => self.toast = Some((success_message.to_string(), true, 24)),
             Err(error) => {
                 self.toast = Some((format!("Clipboard unavailable: {error}"), false, 36));
             }
@@ -1322,5 +1434,128 @@ mod tests {
         )));
 
         assert_eq!(app.tab, Tab::History);
+    }
+
+    fn pending_quote(id: &str, kind: QuoteKind) -> PendingQuote {
+        PendingQuote {
+            id: id.to_string(),
+            kind,
+            state: "UNPAID".to_string(),
+            in_flight: false,
+            method: "bolt11".to_string(),
+            amount: 1_000,
+            fee_reserve: 0,
+            request: "lnbc1example".to_string(),
+            expiry: u64::MAX,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn history_selection_moves_across_quotes_and_transactions() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.modal = None;
+        app.tab = Tab::History;
+        app.history_visible_rows = 2;
+        app.quotes = vec![pending_quote("mint-1", QuoteKind::Mint)];
+        app.transactions = vec![transaction(1), transaction(2)];
+
+        app.handle_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.history_selected, 1);
+        assert!(app.selected_quote().is_none());
+
+        app.handle_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('k'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(app.history_selected, 0);
+        assert_eq!(
+            app.selected_quote().map(|quote| quote.id.as_str()),
+            Some("mint-1")
+        );
+    }
+
+    #[test]
+    fn history_selection_scrolls_to_stay_visible() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.modal = None;
+        app.history_visible_rows = 2;
+        app.transactions = vec![transaction(1), transaction(2), transaction(3)];
+
+        app.history_move(1);
+        assert_eq!(app.history_scroll, 0);
+        app.history_move(1);
+        assert_eq!(app.history_selected, 2);
+        assert_eq!(app.history_scroll, 1);
+        app.history_move(-1);
+        app.history_move(-1);
+        assert_eq!(app.history_selected, 0);
+        assert_eq!(app.history_scroll, 0);
+    }
+
+    #[test]
+    fn e_on_selected_quote_emits_quote_action() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.modal = None;
+        app.tab = Tab::History;
+        app.quotes = vec![pending_quote("mint-1", QuoteKind::Mint)];
+
+        let commands = app.handle_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('e'),
+            KeyModifiers::NONE,
+        )));
+
+        assert!(matches!(
+            commands.as_slice(),
+            [AppCommand::QuoteAction { kind, quote_id }]
+                if *kind == QuoteKind::Mint && quote_id == "mint-1"
+        ));
+    }
+
+    #[test]
+    fn history_selection_clamps_to_shrinking_lists() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.quotes = vec![
+            pending_quote("mint-1", QuoteKind::Mint),
+            pending_quote("melt-1", QuoteKind::Melt),
+        ];
+        app.history_selected = 1;
+        app.history_scroll = 1;
+        app.quotes.clear();
+
+        app.clamp_history_selection();
+
+        assert_eq!(app.history_selected, 0);
+        assert_eq!(app.history_scroll, 0);
+    }
+
+    fn transaction(timestamp: u64) -> Transaction {
+        use std::collections::HashMap;
+        use std::str::FromStr;
+
+        use cdk_common::mint_url::MintUrl;
+        use cdk_common::nuts::CurrencyUnit;
+        use cdk_common::wallet::TransactionDirection;
+        use cdk_common::Amount;
+
+        Transaction {
+            mint_url: MintUrl::from_str("https://mint.example.com").expect("mint url"),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(1_000_u64),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: Vec::new(),
+            timestamp,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+        }
     }
 }
