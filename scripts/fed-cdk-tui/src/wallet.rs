@@ -69,6 +69,7 @@ pub struct WalletRuntime {
     wallet: Wallet,
     stored: StoredFederation,
     payment_capabilities: PaymentCapabilities,
+    data_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -202,7 +203,15 @@ impl WalletRuntime {
             wallet,
             stored,
             payment_capabilities,
+            data_dir: data_dir.to_path_buf(),
         })
+    }
+
+    pub async fn switch_primary(&self, new_local_mint_url: MintUrl) -> Result<Self> {
+        let stored = self.stored.with_primary(new_local_mint_url)?;
+        let runtime = Self::build(&self.data_dir, stored.clone()).await?;
+        persist_config(&self.data_dir, &stored)?;
+        Ok(runtime)
     }
 
     pub fn public_config(&self) -> FederationConfig {
@@ -310,6 +319,23 @@ impl StoredFederation {
             bail!("local mint URL is not in the federation roster");
         }
         Ok(())
+    }
+
+    fn with_primary(&self, new_local_mint_url: MintUrl) -> Result<Self> {
+        if !self
+            .public_config
+            .members
+            .values()
+            .any(|member| member.public_mint_url == new_local_mint_url)
+        {
+            bail!("mint URL {new_local_mint_url} is not in the federation roster");
+        }
+        let stored = Self {
+            local_mint_url: new_local_mint_url,
+            ..self.clone()
+        };
+        stored.validate()?;
+        Ok(stored)
     }
 }
 
@@ -1177,5 +1203,36 @@ mod tests {
         assert!(err.to_string().contains("already belongs to federation"));
 
         fs::remove_dir_all(&data_dir).expect("remove test data dir");
+    }
+
+    #[test]
+    fn with_primary_accepts_roster_member_and_rejects_strangers() {
+        let public_config = valid_public_config();
+        let stored = StoredFederation {
+            version: CONFIG_VERSION,
+            local_mint_url: public_config
+                .member(member_id(1))
+                .expect("member")
+                .public_mint_url
+                .clone(),
+            public_config: public_config.clone(),
+        };
+
+        let member_two_url = public_config
+            .member(member_id(2))
+            .expect("member")
+            .public_mint_url
+            .clone();
+        let switched = stored
+            .with_primary(member_two_url.clone())
+            .expect("roster member accepted");
+        assert_eq!(switched.local_mint_url, member_two_url);
+        assert_eq!(switched.public_config, public_config);
+
+        let stranger = MintUrl::from_str("https://stranger.example.com").expect("mint url");
+        let err = stored
+            .with_primary(stranger)
+            .expect_err("non-roster member rejected");
+        assert!(err.to_string().contains("not in the federation roster"));
     }
 }

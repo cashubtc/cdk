@@ -8,6 +8,7 @@ mod wallet;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -232,6 +233,25 @@ async fn run_tui(data_dir: PathBuf, runtime: Option<Arc<WalletRuntime>>) -> Resu
                         }
                         app.apply_event(AppEvent::Joined(result));
                     }
+                    AppEvent::PrimarySwitched(result) => {
+                        if let Ok(runtime) = &result {
+                            let generation =
+                                monitor_generation.fetch_add(1, Ordering::Relaxed) + 1;
+                            spawn_member_monitors(
+                                runtime.public_config(),
+                                event_tx.clone(),
+                                generation,
+                                monitor_generation.clone(),
+                            );
+                            wallet::spawn_balance_refresh(
+                                runtime.clone(),
+                                event_tx.clone(),
+                                generation,
+                                monitor_generation.clone(),
+                            );
+                        }
+                        app.apply_event(AppEvent::PrimarySwitched(result));
+                    }
                     event => app.apply_event(event),
                 }
             }
@@ -363,6 +383,25 @@ async fn execute_app_command(
                     Some(&member_url),
                 );
                 wallet::spawn_quote_action(runtime, kind, quote_id, tx);
+            }
+        }
+        AppCommand::SwitchPrimary(member_url) => {
+            if let Some(runtime) = app.runtime() {
+                app.operation_started(
+                    "primary",
+                    &format!("switching primary quote coordinator to {member_url}"),
+                    Some(&member_url),
+                );
+                tokio::spawn(async move {
+                    let result = async {
+                        let mint_url = MintUrl::from_str(&member_url)?;
+                        runtime.switch_primary(mint_url).await
+                    }
+                    .await
+                    .map(Arc::new)
+                    .map_err(|err| err.to_string());
+                    let _ = tx.send(AppEvent::PrimarySwitched(result));
+                });
             }
         }
     }

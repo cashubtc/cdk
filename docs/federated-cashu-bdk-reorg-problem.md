@@ -1,6 +1,7 @@
 # Federated BDK: pre-liability reorg leaves spendable deposits stuck
 
-**Status:** Open (observed on nocean Mutinynet, 2026-07-17)  
+**Status:** Implemented; coordinated deployment pending (observed 2026-07-17)
+
 **Related:** `docs/federated-bdk-operations.md`,  
 `docs/federated-cashu-bdk-frost-implementation-plan.md` (Milestone 9),  
 `docs/federation-cleanup-todo.md` item 48
@@ -218,47 +219,47 @@ heal this reorged outpoint.
 3. Diagnose with journal / chain_observation state plus explorer—not tip lag
    alone.
 
-## Minimal fix (proposed)
+## Minimal fix
 
-Keep reorg emission as-is for the first patch. Fix **recovery only**.
+Keep the conservative reorg trigger for the first patch and make same-block,
+pre-liability recovery require a fresh observation epoch.
 
 ### Policy
 
 | Case | Behavior |
 |---|---|
 | Post-liability (`liability_issued`) | Keep sticky `Reorged` + liability alarm |
-| Pre-liability (`!liability_issued`) | On a later **confirmed** deposit that re-establishes the outpoint with `confirmation_depth >= minimum_confirmations`, **clear `reorg_observations`** and recompute `Observed` / `Confirmed` / `Spendable` like a normal deposit |
+| Pre-liability (`!liability_issued`) | Reconfirm the same block in the next observation epoch; remain `Reorged` until the normal member quorum confirms in that epoch |
 
-Why this is minimal for the live bug: evidence **already** re-deposited after
-Reorg (indices 10–12). Only the fail-closed stickiness of `apply_deposit`
-prevented spendability.
+Epoch zero is omitted from serialization for compatibility. Reorg evidence is
+retained, while only confirmations from the current epoch count toward
+spendability. This prevents one reconfirmation from reviving stale votes and
+allows the same observer to report a later real reorg in a newer epoch.
 
 ### Implementation sketch
 
-1. **`apply_deposit`** (`chain_observation.rs`):
-   - if `state == Reorged && !liability_issued` and new confirmation is
-     sufficient (and identity matches);
-   - clear `reorg_observations` (so spendability helpers no longer veto);
-   - allow recompute of state into confirmed/spendable;
-   - if the newly confirmed `(block_hash, height)` differs from the reorged
-     anchor, accept it as pre-liability re-inclusion rather than quarantining
-     solely on hash mismatch (same outpoint / script / value).
-2. **Tests:**
-   - pre-liability: confirm → reorg → reconfirm same block → Spendable + quote
-     credit;
-   - pre-liability: reorg → reconfirm different block → Spendable, no false
-     quarantine;
-   - post-liability: reorg stays Reorged + alarm;
-   - restart preserves recovered and non-recovered state.
-3. **Deploy:** existing nocean UTXO should recover on the **next accepted
-   reconfirm deposit tick** after the fix without a fresh DKG (same journaled
-   outpoint).
+1. Add `observation_epoch` to deposit/reorg evidence, UTXOs, and consensus
+   conflict keys. A reorg invalidates the current epoch; recovery deposits use
+   the next epoch.
+2. Accept recovery only when the output identity and original block anchor
+   match and the confirmation policy is satisfied. Advance the epoch on the
+   first recovery observation, then wait for `required_observers` in that
+   epoch before returning to `Spendable`.
+3. While `Reorged`, observers submit same-block confirmations even when the
+   capped confirmation depth is unchanged. Each member may report one reorg
+   per epoch, including after another member has already failed the UTXO
+   closed.
+4. Deploy all members together. Existing epoch-zero state needs no database
+   edit or new Bitcoin deposit: upgraded members submit epoch-one evidence and
+   the UTXO recovers after the normal quorum is accepted.
 
 ### Follow-ups (not minimal; optional later)
 
 - Require a reorg observation quorum.
 - Emit Reorg only when the stored confirmation block is proven off the local
   tip ancestry, not on momentary `Unconfirmed` / missing BDK rows.
+- Support pre-liability re-inclusion of the same transaction in a different
+  block through a separate anchor-generation design.
 - Operator metrics distinguishing pre-liability reorg vs liability alarm.
 
 ### Explicit non-goals
@@ -266,11 +267,12 @@ prevented spendability.
 - No operator “force mark spendable” that bypasses observation quorum.
 - No changing Mutinynet confirmation defaults only to paper over this.
 - No silent credit after post-liability reorg.
+- No different-block recovery in the first patch.
 
 ## Acceptance criteria
 
-- Class of incidents matching the journal timeline can mint after reconfirm
-  without a new deposit.
+- Class of incidents matching the journal timeline can mint after an upgraded
+  member quorum reconfirms, without a new Bitcoin deposit.
 - Post-liability reorg remains fail-closed with alarm.
 - Focused unit tests above pass.
 - Operator runbook updated in `docs/federated-bdk-operations.md` when landed.

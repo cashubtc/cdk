@@ -18,7 +18,7 @@ The interface provides:
 - live HTTP status, latency, success rate, response volume, active keysets,
   endpoint identity, and federation metadata verification;
 - a scrollable request activity feed and per-member latency sparkline;
-- in-TUI leave and rejoin without restarting the process;
+- in-TUI leave/rejoin and primary-member switching without restarting;
 - terminal paste and system clipboard support.
 
 The health dashboard observes the public wallet-facing REST API. A public
@@ -113,6 +113,7 @@ next operation directly; the latest payload remains available through `c`.
 | `r` | Receive and swap a pasted Cashu token |
 | `c` | Copy the latest address, token, or selected quote request |
 | `e` | Check the selected quote; mint or melt it when actionable |
+| `u` | Make the selected member the primary quote coordinator |
 | `f` | Open the join dialog when disconnected |
 | `x` | Leave the federation; seed, proofs, and config are preserved |
 | `?` | Show help |
@@ -133,6 +134,14 @@ saga. Press `c` to copy the selected quote's invoice or address again.
 Pressing `x` disconnects the wallet and stops the member probes
 without deleting anything; press `f` afterwards to rejoin the same federation
 or join another one from a fresh data directory.
+
+All wallet operations are coordinated through the primary member, marked with
+`★` in the members table. To move the primary role to another member — for
+example when it is slow or unreachable — select the member on the overview or
+members view and press `u`. The new primary is validated against the roster,
+persisted to `federation.json`, and the wallet runtime is rebuilt against the
+same seed and database; in-flight operations finish against the old
+coordinator while new ones use the new one.
 
 ## Send And Receive Between Two Wallets
 

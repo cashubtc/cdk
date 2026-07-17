@@ -19,6 +19,7 @@ const MAX_LATENCY_SAMPLES: usize = 36;
 pub enum AppEvent {
     Terminal(Event),
     Joined(Result<Arc<WalletRuntime>, String>),
+    PrimarySwitched(Result<Arc<WalletRuntime>, String>),
     MemberProbe(MemberProbe),
     Balance {
         available: u64,
@@ -64,6 +65,7 @@ pub enum AppCommand {
     Send(u64),
     Receive(String),
     QuoteAction { kind: QuoteKind, quote_id: String },
+    SwitchPrimary(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -522,6 +524,26 @@ impl App {
                 }
                 Err(error) => self.operation_failed("join", error, None),
             },
+            AppEvent::PrimarySwitched(result) => match result {
+                Ok(runtime) => {
+                    let selected = self.selected_member;
+                    let primary_url = runtime.local_mint_url().to_string();
+                    self.runtime = Some(runtime);
+                    self.monitor_generation = self.monitor_generation.saturating_add(1);
+                    self.rebuild_members();
+                    self.selected_member = selected.min(self.members.len().saturating_sub(1));
+                    self.operation_ended("primary");
+                    self.push_activity(ActivityEntry {
+                        kind: "primary",
+                        member_url: Some(primary_url.as_str()),
+                        message: &format!("Primary quote coordinator switched to {primary_url}"),
+                        ok: Some(true),
+                        ..ActivityEntry::default()
+                    });
+                    self.toast = Some((format!("Primary member is now {primary_url}"), true, 32));
+                }
+                Err(error) => self.operation_failed("primary", error, None),
+            },
             AppEvent::MemberProbe(probe) => self.apply_probe(probe),
             AppEvent::Balance {
                 available,
@@ -804,6 +826,24 @@ impl App {
                 self.modal = Some(Modal::Form(join_form()));
             }
             KeyCode::Char('x') if self.runtime.is_some() => return vec![AppCommand::Leave],
+            KeyCode::Char('u')
+                if self.can_start_operation()
+                    && matches!(self.tab, Tab::Overview | Tab::Members) =>
+            {
+                let primary = self.local_mint_url();
+                match switch_primary_target(&self.members, self.selected_member, primary.as_deref())
+                {
+                    Some(url) => return vec![AppCommand::SwitchPrimary(url)],
+                    None if !self.members.is_empty() => {
+                        self.toast = Some((
+                            "Selected member is already the primary coordinator".to_string(),
+                            false,
+                            28,
+                        ));
+                    }
+                    None => {}
+                }
+            }
             KeyCode::Char('e') if self.tab == Tab::History => {
                 if let Some(quote) = self.selected_quote() {
                     return vec![AppCommand::QuoteAction {
@@ -1236,6 +1276,18 @@ fn scrolled(current: usize, delta: isize, len: usize) -> usize {
     (current as isize + delta).clamp(0, max_scroll) as usize
 }
 
+fn switch_primary_target(
+    members: &BTreeMap<MemberId, MemberState>,
+    selected: usize,
+    current_primary: Option<&str>,
+) -> Option<String> {
+    let member = members.values().nth(selected)?;
+    if Some(member.url.as_str()) == current_primary {
+        return None;
+    }
+    Some(member.url.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1530,6 +1582,29 @@ mod tests {
 
         assert_eq!(app.history_selected, 0);
         assert_eq!(app.history_scroll, 0);
+    }
+
+    #[test]
+    fn switch_primary_target_picks_selected_non_primary_member() {
+        let mut members = BTreeMap::new();
+        for index in 0..3_u16 {
+            let member_id = MemberId::new(index + 1).expect("valid member id");
+            members.insert(
+                member_id,
+                MemberState::new(member_id, format!("https://mint{index}.example.com")),
+            );
+        }
+
+        assert_eq!(
+            switch_primary_target(&members, 1, Some("https://mint0.example.com")),
+            Some("https://mint1.example.com".to_string())
+        );
+        assert_eq!(
+            switch_primary_target(&members, 0, Some("https://mint0.example.com")),
+            None,
+            "already-primary member is not offered"
+        );
+        assert_eq!(switch_primary_target(&BTreeMap::new(), 0, None), None);
     }
 
     fn transaction(timestamp: u64) -> Transaction {

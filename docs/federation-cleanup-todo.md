@@ -2995,7 +2995,7 @@ pending/restart recovery.
 
 ## 48. Allow pre-liability recovery from federated BDK reorg stickiness
 
-**Status:** Open (observed on nocean Mutinynet, 2026-07-17)
+**Status:** Implemented; coordinated deployment pending (observed 2026-07-17)
 
 **Detailed write-up:**
 [`docs/federated-cashu-bdk-reorg-problem.md`](federated-cashu-bdk-reorg-problem.md)
@@ -3030,14 +3030,18 @@ Root cause (layered):
 
 ### Minimal fix
 
-- Pre-liability only (`!liability_issued`): on sufficient reconfirm deposit,
-  clear `reorg_observations` and recompute spendable/confirmed state in
-  `apply_deposit`.
+- Add a backward-compatible observation epoch to deposit/reorg evidence, UTXOs,
+  and conflict keys. Reorg evidence invalidates its epoch but remains retained.
+- Pre-liability only (`!liability_issued`): same-block confirmations advance to
+  a new epoch and must reach the normal observation quorum before the UTXO
+  becomes spendable again. Old confirmations never count toward recovery.
+- Observers resubmit equal-depth confirmations in the recovery epoch and may
+  report one reorg per observer, outpoint, and epoch.
 - Keep post-liability reorg sticky with liability alarm.
-- Do **not** require reorg-emission redesign for the first fix (optional
-  follow-up).
-- Tests: pre-liability reconfirm recovery; post-liability remains fail-closed;
-  restart freeze of recovered state.
+- Keep different-block re-inclusion and proven-ancestry reorg emission as
+  follow-ups.
+- Tests cover threshold-minus-one recovery, repeat reorgs, post-liability
+  stickiness, legacy serialization, restart, and catch-up convergence.
 
 ### Known locations
 

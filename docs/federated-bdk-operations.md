@@ -75,6 +75,27 @@ fail-closed and status shows pending batches and signer failures. During a new
 ceremony startup warns that both the independent BLS and FROST results remain
 incomplete until the same threshold quorum confirms them.
 
+### Reorg recovery
+
+One accepted reorg observation immediately moves the affected UTXO to
+`reorged`. Before Cashu liability is issued, members can recover a false or
+transient reorg only by reconfirming the exact original block in a new
+observation epoch. Old confirmations do not count: the configured payment
+observation quorum must confirm again before the UTXO becomes spendable.
+
+Post-liability reorgs remain sticky and raise a liability alarm. Re-inclusion
+in a different block is not recovered automatically. Do not edit the
+chain-observation database, force a UTXO spendable, or run a fresh DKG to repair
+either case.
+
+Observation-epoch support changes federation consensus payloads. Upgrade and
+restart all members together. For a pre-liability UTXO stuck by an older
+epoch-zero reorg, upgraded members automatically submit epoch-one evidence on
+their next successful same-block scan; no new Bitcoin deposit is required.
+Confirm that the journal receives the configured quorum of new deposit
+observations and that status moves from `reorged` to `spendable` without a
+liability alarm.
+
 ## Safe rebroadcast
 
 An immediate retry requires an explicit acknowledgement:

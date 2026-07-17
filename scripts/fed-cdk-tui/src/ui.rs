@@ -230,7 +230,12 @@ fn render_overview(frame: &mut Frame<'_>, area: Rect, app: &App) {
             .split(area)
     };
     render_member_table(frame, chunks[0], app, true);
-    render_member_detail(frame, chunks[1], app.selected_member());
+    render_member_detail(
+        frame,
+        chunks[1],
+        app.selected_member(),
+        app.local_mint_url(),
+    );
 }
 
 fn render_members(frame: &mut Frame<'_>, area: Rect, app: &App) {
@@ -242,7 +247,12 @@ fn render_members(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .spacing(1)
         .split(area);
     render_member_table(frame, chunks[0], app, false);
-    render_member_detail(frame, chunks[1], app.selected_member());
+    render_member_detail(
+        frame,
+        chunks[1],
+        app.selected_member(),
+        app.local_mint_url(),
+    );
 }
 
 fn render_member_table(frame: &mut Frame<'_>, area: Rect, app: &App, compact: bool) {
@@ -260,6 +270,7 @@ fn render_member_table(frame: &mut Frame<'_>, area: Rect, app: &App, compact: bo
 
     let rows = app.members.values().enumerate().map(|(index, member)| {
         let selected = index == app.selected_member;
+        let is_primary = app.local_mint_url().as_deref() == Some(member.url.as_str());
         let state = if member.online {
             "● READY"
         } else {
@@ -278,7 +289,11 @@ fn render_member_table(frame: &mut Frame<'_>, area: Rect, app: &App, compact: bo
         };
         Row::new(vec![
             Cell::from(state).style(Style::default().fg(state_color).bold()),
-            Cell::from(format!("#{:02}", member.member_id.get())),
+            Cell::from(if is_primary {
+                format!("#{:02} ★", member.member_id.get())
+            } else {
+                format!("#{:02}", member.member_id.get())
+            }),
             Cell::from(endpoint),
             Cell::from(
                 member
@@ -307,13 +322,18 @@ fn render_member_table(frame: &mut Frame<'_>, area: Rect, app: &App, compact: bo
         Table::new(rows, widths)
             .header(header)
             .column_spacing(1)
-            .block(panel_block().title(" Members  ↑/↓ or j/k "))
+            .block(panel_block().title(" Members  ↑/↓ j/k · u primary "))
             .row_highlight_style(Style::default().add_modifier(Modifier::BOLD)),
         area,
     );
 }
 
-fn render_member_detail(frame: &mut Frame<'_>, area: Rect, member: Option<&MemberState>) {
+fn render_member_detail(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    member: Option<&MemberState>,
+    primary: Option<String>,
+) {
     let Some(member) = member else {
         frame.render_widget(
             Paragraph::new("Waiting for member data...")
@@ -323,10 +343,15 @@ fn render_member_detail(frame: &mut Frame<'_>, area: Rect, member: Option<&Membe
         );
         return;
     };
+    let is_primary = primary.as_deref() == Some(member.url.as_str());
     let chunks = Layout::vertical([Constraint::Min(8), Constraint::Length(3)])
         .split(area.inner(Margin::new(1, 1)));
     frame.render_widget(
-        panel_block().title(format!(" Member {} ", member.member_id)),
+        panel_block().title(format!(
+            " Member {}{} ",
+            member.member_id,
+            if is_primary { " ★ primary" } else { "" }
+        )),
         area,
     );
 
@@ -348,6 +373,15 @@ fn render_member_detail(frame: &mut Frame<'_>, area: Rect, member: Option<&Membe
                 "UNAVAILABLE"
             },
             status_color,
+        ),
+        key_value(
+            "Role",
+            if is_primary {
+                "primary quote coordinator"
+            } else {
+                "member (press u to make primary)"
+            },
+            if is_primary { CYAN } else { MUTED },
         ),
         key_value("Mint methods", &mint_methods, CYAN),
         key_value("Melt methods", &melt_methods, CYAN),
@@ -737,6 +771,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         shortcut("s", "send", command_color),
         shortcut("r", "receive", command_color),
         shortcut("c", "copy", TEXT),
+        shortcut("u", "primary", command_color),
         shortcut("x", "leave", if connected { TEXT } else { Color::DarkGray }),
         shortcut("?", "help", TEXT),
         shortcut("q", "quit", TEXT),
@@ -897,6 +932,10 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
                 Line::from(vec![
                     key_span("e"),
                     Span::raw(" check / mint / melt the selected quote (history view)"),
+                ]),
+                Line::from(vec![
+                    key_span("u"),
+                    Span::raw(" make the selected member the primary quote coordinator"),
                 ]),
                 Line::from(vec![key_span("f"), Span::raw(" join when disconnected")]),
                 Line::from(vec![
