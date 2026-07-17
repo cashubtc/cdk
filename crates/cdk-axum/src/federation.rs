@@ -140,16 +140,137 @@ type SequenceHandle = std::sync::Arc<tokio::sync::Mutex<FederationRestSequenceTr
 
 const FEDERATION_DISABLE_PEER_SYNC_ENV_VAR: &str = "CDK_FEDERATION_DISABLE_PEER_SYNC";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckpointQuorumVerificationContext {
+    Capture,
+    Formation,
+    Promotion,
+    Publish,
+    #[cfg(feature = "prometheus")]
+    PeerFetch,
+    StartupCatchUp,
+    Audit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CheckpointSignatureVerificationContext {
+    Formation,
+    Publish,
+    #[cfg(feature = "prometheus")]
+    PeerFetch,
+}
+
+#[cfg(feature = "prometheus")]
+impl CheckpointQuorumVerificationContext {
+    const fn performance_labels(
+        self,
+    ) -> (
+        cdk_prometheus::FederationPerformanceOperation,
+        cdk_prometheus::FederationPerformanceWork,
+        cdk_prometheus::FederationPerformanceWork,
+    ) {
+        use cdk_prometheus::{FederationPerformanceOperation, FederationPerformanceWork};
+
+        match self {
+            Self::Capture => (
+                FederationPerformanceOperation::QuorumVerificationCapture,
+                FederationPerformanceWork::QuorumVerificationCaptureAttempts,
+                FederationPerformanceWork::QuorumVerificationCaptureFailures,
+            ),
+            Self::Formation => (
+                FederationPerformanceOperation::QuorumVerificationFormation,
+                FederationPerformanceWork::QuorumVerificationFormationAttempts,
+                FederationPerformanceWork::QuorumVerificationFormationFailures,
+            ),
+            Self::Promotion => (
+                FederationPerformanceOperation::QuorumVerificationPromotion,
+                FederationPerformanceWork::QuorumVerificationPromotionAttempts,
+                FederationPerformanceWork::QuorumVerificationPromotionFailures,
+            ),
+            Self::Publish => (
+                FederationPerformanceOperation::QuorumVerificationPublish,
+                FederationPerformanceWork::QuorumVerificationPublishAttempts,
+                FederationPerformanceWork::QuorumVerificationPublishFailures,
+            ),
+            Self::PeerFetch => (
+                FederationPerformanceOperation::QuorumVerificationPeerFetch,
+                FederationPerformanceWork::QuorumVerificationPeerFetchAttempts,
+                FederationPerformanceWork::QuorumVerificationPeerFetchFailures,
+            ),
+            Self::StartupCatchUp => (
+                FederationPerformanceOperation::QuorumVerificationStartupCatchUp,
+                FederationPerformanceWork::QuorumVerificationStartupCatchUpAttempts,
+                FederationPerformanceWork::QuorumVerificationStartupCatchUpFailures,
+            ),
+            Self::Audit => (
+                FederationPerformanceOperation::QuorumVerificationAudit,
+                FederationPerformanceWork::QuorumVerificationAuditAttempts,
+                FederationPerformanceWork::QuorumVerificationAuditFailures,
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "prometheus")]
+impl CheckpointSignatureVerificationContext {
+    const fn performance_operation(self) -> cdk_prometheus::FederationPerformanceOperation {
+        match self {
+            Self::Formation => {
+                cdk_prometheus::FederationPerformanceOperation::CheckpointSignatureVerificationFormation
+            }
+            Self::Publish => {
+                cdk_prometheus::FederationPerformanceOperation::CheckpointSignatureVerificationPublish
+            }
+            Self::PeerFetch => {
+                cdk_prometheus::FederationPerformanceOperation::CheckpointSignatureVerificationPeerFetch
+            }
+        }
+    }
+}
+
+#[cfg(feature = "prometheus")]
+pub(crate) fn record_checkpoint_quorum_verification_performance(
+    context: CheckpointQuorumVerificationContext,
+    success: bool,
+    duration_seconds: f64,
+) {
+    let (operation, attempts_work, failures_work) = context.performance_labels();
+    cdk_prometheus::METRICS.record_federation_performance_work(attempts_work, 1);
+    if !success {
+        cdk_prometheus::METRICS.record_federation_performance_work(failures_work, 1);
+    }
+    cdk_prometheus::METRICS.record_federation_performance_operation(
+        operation,
+        cdk_prometheus::FederationPerformanceOutcome::from_success(success),
+        duration_seconds,
+    );
+}
+
+#[cfg(feature = "prometheus")]
+pub(crate) fn record_checkpoint_signature_verification_performance(
+    context: CheckpointSignatureVerificationContext,
+    success: bool,
+    duration_seconds: f64,
+) {
+    cdk_prometheus::METRICS.record_federation_performance_operation(
+        context.performance_operation(),
+        cdk_prometheus::FederationPerformanceOutcome::from_success(success),
+        duration_seconds,
+    );
+}
+
 pub(crate) fn verify_checkpoint_quorum_with_metrics(
     quorum: &FederationCheckpointQuorum,
     config: &FederationConfig,
     local_member: MemberId,
+    context: CheckpointQuorumVerificationContext,
 ) -> Result<VerifiedFederationCheckpointQuorum, cdk::Error> {
     #[cfg(feature = "prometheus")]
     let started_at = std::time::Instant::now();
     let result = quorum.verify(config).map_err(cdk::Error::from);
     #[cfg(feature = "prometheus")]
     {
+        let duration_seconds = started_at.elapsed().as_secs_f64();
         let member = local_member.to_string();
         cdk_prometheus::METRICS.record_federation_checkpoint_work(
             &member,
@@ -159,11 +280,16 @@ pub(crate) fn verify_checkpoint_quorum_with_metrics(
         cdk_prometheus::METRICS.record_federation_checkpoint_duration(
             &member,
             cdk_prometheus::FederationCheckpointOperation::SignatureVerification,
-            started_at.elapsed().as_secs_f64(),
+            duration_seconds,
+        );
+        record_checkpoint_quorum_verification_performance(
+            context,
+            result.is_ok(),
+            duration_seconds,
         );
     }
     #[cfg(not(feature = "prometheus"))]
-    let _ = local_member;
+    let _ = (local_member, context);
     result
 }
 
@@ -652,6 +778,11 @@ async fn local_peer_status_with_materialized_rows(
         cdk_prometheus::FederationCheckpointOperation::MaterializedStateDigest,
         digest_started_at.elapsed().as_secs_f64(),
     );
+    // This digest describes the current full-row snapshot, not the older checkpoint
+    // audit cached in `local_peer_status`. Exact cross-member comparison is therefore
+    // only meaningful while writes are quiesced: the snapshot and frontier reads are
+    // deliberately bounded but are not one atomic database observation.
+    status.latest_audited_checkpoint_id = None;
     status.materialized_state_digest = Some(digest);
     let materialized_state_rows = snapshot.row_fingerprints()?;
     Ok((status, materialized_state_rows))
@@ -692,6 +823,56 @@ fn federation_completed_operation_uuid(operation_id: FederationOperationId) -> U
     let mut uuid = [0_u8; 16];
     uuid.copy_from_slice(&bytes[..16]);
     Uuid::from_bytes(uuid)
+}
+
+#[cfg(all(test, feature = "prometheus"))]
+mod performance_instrumentation_tests {
+    use std::collections::HashSet;
+
+    use super::{CheckpointQuorumVerificationContext, CheckpointSignatureVerificationContext};
+
+    #[test]
+    fn quorum_verification_contexts_have_distinct_fixed_metric_labels() {
+        let contexts = [
+            CheckpointQuorumVerificationContext::Capture,
+            CheckpointQuorumVerificationContext::Formation,
+            CheckpointQuorumVerificationContext::Promotion,
+            CheckpointQuorumVerificationContext::Publish,
+            CheckpointQuorumVerificationContext::PeerFetch,
+            CheckpointQuorumVerificationContext::StartupCatchUp,
+            CheckpointQuorumVerificationContext::Audit,
+        ];
+        let mut operations = HashSet::new();
+        let mut attempts = HashSet::new();
+        let mut failures = HashSet::new();
+
+        for context in contexts {
+            let (operation, attempt, failure) = context.performance_labels();
+            assert!(operations.insert(operation));
+            assert!(attempts.insert(attempt));
+            assert!(failures.insert(failure));
+            assert_ne!(attempt, failure);
+        }
+
+        assert_eq!(operations.len(), contexts.len());
+        assert_eq!(attempts.len(), contexts.len());
+        assert_eq!(failures.len(), contexts.len());
+    }
+
+    #[test]
+    fn checkpoint_signature_contexts_have_distinct_fixed_metric_labels() {
+        let contexts = [
+            CheckpointSignatureVerificationContext::Formation,
+            CheckpointSignatureVerificationContext::Publish,
+            CheckpointSignatureVerificationContext::PeerFetch,
+        ];
+        let operations = contexts
+            .into_iter()
+            .map(CheckpointSignatureVerificationContext::performance_operation)
+            .collect::<HashSet<_>>();
+
+        assert_eq!(operations.len(), contexts.len());
+    }
 }
 
 #[cfg(test)]

@@ -132,6 +132,413 @@ impl FederationCheckpointOperation {
     }
 }
 
+/// Fixed units of process-local federation performance work.
+///
+/// These values intentionally contain no member, peer, checkpoint, signature,
+/// quote, or operation identifiers. A federation deployment identifies the
+/// member from the Prometheus scrape target instead of adding another label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FederationPerformanceWork {
+    /// Full public-config validation invocations.
+    ConfigValidationAttempts,
+    /// Failed full public-config validation invocations.
+    ConfigValidationFailures,
+    /// Federated keyset validation invocations.
+    KeysetValidationAttempts,
+    /// Failed federated keyset validation invocations.
+    KeysetValidationFailures,
+    /// Aggregate-key interpolation invocations, one per amount.
+    AggregateKeyInterpolationAttempts,
+    /// Failed aggregate-key interpolation invocations.
+    AggregateKeyInterpolationFailures,
+    /// Setup-transcript lineage validation invocations.
+    SetupLineageValidationAttempts,
+    /// Failed setup-transcript lineage validation invocations.
+    SetupLineageValidationFailures,
+    /// Scheduled-checkpoint capture invocations.
+    ScheduledCaptureAttempts,
+    /// Failed scheduled-checkpoint capture invocations.
+    ScheduledCaptureFailures,
+    /// Captures skipped because a newer local candidate is already pending.
+    ScheduledCaptureSkippedPendingCandidate,
+    /// Captures skipped because there is no complete finalized boundary.
+    ScheduledCaptureSkippedNoBoundary,
+    /// Captures skipped because the local frontier trails the trusted checkpoint.
+    ScheduledCaptureSkippedFrontierBehind,
+    /// Captures skipped because the configured checkpoint interval is not eligible.
+    ScheduledCaptureSkippedIneligible,
+    /// Captures suppressed by a test-only fault injection.
+    ScheduledCaptureSuppressed,
+    /// Scheduled-checkpoint candidates durably created.
+    ScheduledCaptureCreated,
+    /// Finalized suffix rows loaded by scheduled-checkpoint capture.
+    ScheduledCaptureSuffixRowsLoaded,
+    /// Canonical suffix bytes computed by scheduled-checkpoint capture.
+    ScheduledCaptureCanonicalBytesProcessed,
+    /// Loaded suffix rows discarded when a scheduled capture is ineligible.
+    ScheduledCaptureIneligibleRowsDiscarded,
+    /// Computed canonical bytes discarded when a scheduled capture is ineligible.
+    ScheduledCaptureIneligibleCanonicalBytesDiscarded,
+    /// Rows loaded into a materialized-state snapshot.
+    MaterializedStateRowsLoaded,
+    /// Checkpoint candidate persistence invocations.
+    CheckpointPersistenceAttempts,
+    /// Failed checkpoint candidate persistence invocations.
+    CheckpointPersistenceFailures,
+    /// Successful checkpoint candidate persistence invocations.
+    CheckpointPersistenceSuccesses,
+    /// Upstream AlephBFT finalized units that contain application data.
+    AlephBftFinalizedUnitsWithData,
+    /// Upstream AlephBFT finalized units that contain no application data.
+    AlephBftFinalizedUnitsWithoutData,
+    /// Quorum verifications while inspecting checkpoint capture state.
+    QuorumVerificationCaptureAttempts,
+    /// Failed quorum verifications while inspecting checkpoint capture state.
+    QuorumVerificationCaptureFailures,
+    /// Quorum verifications while forming a quorum from signatures.
+    QuorumVerificationFormationAttempts,
+    /// Failed quorum verifications while forming a quorum from signatures.
+    QuorumVerificationFormationFailures,
+    /// Quorum verifications while persisting or promoting a checkpoint.
+    QuorumVerificationPromotionAttempts,
+    /// Failed quorum verifications while persisting or promoting a checkpoint.
+    QuorumVerificationPromotionFailures,
+    /// Quorum verifications before publishing a checkpoint to peers.
+    QuorumVerificationPublishAttempts,
+    /// Failed quorum verifications before publishing a checkpoint to peers.
+    QuorumVerificationPublishFailures,
+    /// Quorum verifications while validating a checkpoint fetched from a peer.
+    QuorumVerificationPeerFetchAttempts,
+    /// Failed quorum verifications while validating a checkpoint fetched from a peer.
+    QuorumVerificationPeerFetchFailures,
+    /// Quorum verifications during startup or checkpoint catch-up.
+    QuorumVerificationStartupCatchUpAttempts,
+    /// Failed quorum verifications during startup or checkpoint catch-up.
+    QuorumVerificationStartupCatchUpFailures,
+    /// Quorum verifications during an operator-requested checkpoint audit.
+    QuorumVerificationAuditAttempts,
+    /// Failed quorum verifications during an operator-requested checkpoint audit.
+    QuorumVerificationAuditFailures,
+    /// Swap proofs passed to aggregate-BLS verification by the request builder.
+    SwapBuilderProofsVerified,
+    /// Swap proofs passed to aggregate-BLS verification during operation admission.
+    SwapAdmissionProofsVerified,
+    /// Swap proofs passed to aggregate-BLS verification during authoritative apply.
+    SwapApplyProofsVerified,
+    /// Melt proofs passed to aggregate-BLS verification by the request builder.
+    MeltBuilderProofsVerified,
+    /// Melt proofs passed to aggregate-BLS verification during operation admission.
+    MeltAdmissionProofsVerified,
+    /// Melt proofs passed to aggregate-BLS verification during authoritative apply.
+    MeltApplyProofsVerified,
+    /// Journal entries processed by authoritative application.
+    JournalEntriesProcessed,
+    /// Blinded outputs for which this member attempted to create a signature share.
+    MemberBlindedShareOutputs,
+}
+
+impl FederationPerformanceWork {
+    /// Complete fixed label domain for schema and cardinality checks.
+    pub const ALL: [Self; 48] = [
+        Self::ConfigValidationAttempts,
+        Self::ConfigValidationFailures,
+        Self::KeysetValidationAttempts,
+        Self::KeysetValidationFailures,
+        Self::AggregateKeyInterpolationAttempts,
+        Self::AggregateKeyInterpolationFailures,
+        Self::SetupLineageValidationAttempts,
+        Self::SetupLineageValidationFailures,
+        Self::ScheduledCaptureAttempts,
+        Self::ScheduledCaptureFailures,
+        Self::ScheduledCaptureSkippedPendingCandidate,
+        Self::ScheduledCaptureSkippedNoBoundary,
+        Self::ScheduledCaptureSkippedFrontierBehind,
+        Self::ScheduledCaptureSkippedIneligible,
+        Self::ScheduledCaptureSuppressed,
+        Self::ScheduledCaptureCreated,
+        Self::ScheduledCaptureSuffixRowsLoaded,
+        Self::ScheduledCaptureCanonicalBytesProcessed,
+        Self::ScheduledCaptureIneligibleRowsDiscarded,
+        Self::ScheduledCaptureIneligibleCanonicalBytesDiscarded,
+        Self::MaterializedStateRowsLoaded,
+        Self::CheckpointPersistenceAttempts,
+        Self::CheckpointPersistenceFailures,
+        Self::CheckpointPersistenceSuccesses,
+        Self::AlephBftFinalizedUnitsWithData,
+        Self::AlephBftFinalizedUnitsWithoutData,
+        Self::QuorumVerificationCaptureAttempts,
+        Self::QuorumVerificationCaptureFailures,
+        Self::QuorumVerificationFormationAttempts,
+        Self::QuorumVerificationFormationFailures,
+        Self::QuorumVerificationPromotionAttempts,
+        Self::QuorumVerificationPromotionFailures,
+        Self::QuorumVerificationPublishAttempts,
+        Self::QuorumVerificationPublishFailures,
+        Self::QuorumVerificationPeerFetchAttempts,
+        Self::QuorumVerificationPeerFetchFailures,
+        Self::QuorumVerificationStartupCatchUpAttempts,
+        Self::QuorumVerificationStartupCatchUpFailures,
+        Self::QuorumVerificationAuditAttempts,
+        Self::QuorumVerificationAuditFailures,
+        Self::SwapBuilderProofsVerified,
+        Self::SwapAdmissionProofsVerified,
+        Self::SwapApplyProofsVerified,
+        Self::MeltBuilderProofsVerified,
+        Self::MeltAdmissionProofsVerified,
+        Self::MeltApplyProofsVerified,
+        Self::JournalEntriesProcessed,
+        Self::MemberBlindedShareOutputs,
+    ];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfigValidationAttempts => "config_validation_attempts",
+            Self::ConfigValidationFailures => "config_validation_failures",
+            Self::KeysetValidationAttempts => "keyset_validation_attempts",
+            Self::KeysetValidationFailures => "keyset_validation_failures",
+            Self::AggregateKeyInterpolationAttempts => "aggregate_key_interpolation_attempts",
+            Self::AggregateKeyInterpolationFailures => "aggregate_key_interpolation_failures",
+            Self::SetupLineageValidationAttempts => "setup_lineage_validation_attempts",
+            Self::SetupLineageValidationFailures => "setup_lineage_validation_failures",
+            Self::ScheduledCaptureAttempts => "scheduled_capture_attempts",
+            Self::ScheduledCaptureFailures => "scheduled_capture_failures",
+            Self::ScheduledCaptureSkippedPendingCandidate => {
+                "scheduled_capture_skipped_pending_candidate"
+            }
+            Self::ScheduledCaptureSkippedNoBoundary => "scheduled_capture_skipped_no_boundary",
+            Self::ScheduledCaptureSkippedFrontierBehind => {
+                "scheduled_capture_skipped_frontier_behind"
+            }
+            Self::ScheduledCaptureSkippedIneligible => "scheduled_capture_skipped_ineligible",
+            Self::ScheduledCaptureSuppressed => "scheduled_capture_suppressed",
+            Self::ScheduledCaptureCreated => "scheduled_capture_created",
+            Self::ScheduledCaptureSuffixRowsLoaded => "scheduled_capture_suffix_rows_loaded",
+            Self::ScheduledCaptureCanonicalBytesProcessed => {
+                "scheduled_capture_canonical_bytes_processed"
+            }
+            Self::ScheduledCaptureIneligibleRowsDiscarded => {
+                "scheduled_capture_ineligible_rows_discarded"
+            }
+            Self::ScheduledCaptureIneligibleCanonicalBytesDiscarded => {
+                "scheduled_capture_ineligible_canonical_bytes_discarded"
+            }
+            Self::MaterializedStateRowsLoaded => "materialized_state_rows_loaded",
+            Self::CheckpointPersistenceAttempts => "checkpoint_persistence_attempts",
+            Self::CheckpointPersistenceFailures => "checkpoint_persistence_failures",
+            Self::CheckpointPersistenceSuccesses => "checkpoint_persistence_successes",
+            Self::AlephBftFinalizedUnitsWithData => "aleph_bft_finalized_units_with_data",
+            Self::AlephBftFinalizedUnitsWithoutData => "aleph_bft_finalized_units_without_data",
+            Self::QuorumVerificationCaptureAttempts => "quorum_verification_capture_attempts",
+            Self::QuorumVerificationCaptureFailures => "quorum_verification_capture_failures",
+            Self::QuorumVerificationFormationAttempts => "quorum_verification_formation_attempts",
+            Self::QuorumVerificationFormationFailures => "quorum_verification_formation_failures",
+            Self::QuorumVerificationPromotionAttempts => "quorum_verification_promotion_attempts",
+            Self::QuorumVerificationPromotionFailures => "quorum_verification_promotion_failures",
+            Self::QuorumVerificationPublishAttempts => "quorum_verification_publish_attempts",
+            Self::QuorumVerificationPublishFailures => "quorum_verification_publish_failures",
+            Self::QuorumVerificationPeerFetchAttempts => "quorum_verification_peer_fetch_attempts",
+            Self::QuorumVerificationPeerFetchFailures => "quorum_verification_peer_fetch_failures",
+            Self::QuorumVerificationStartupCatchUpAttempts => {
+                "quorum_verification_startup_catch_up_attempts"
+            }
+            Self::QuorumVerificationStartupCatchUpFailures => {
+                "quorum_verification_startup_catch_up_failures"
+            }
+            Self::QuorumVerificationAuditAttempts => "quorum_verification_audit_attempts",
+            Self::QuorumVerificationAuditFailures => "quorum_verification_audit_failures",
+            Self::SwapBuilderProofsVerified => "swap_builder_proofs_verified",
+            Self::SwapAdmissionProofsVerified => "swap_admission_proofs_verified",
+            Self::SwapApplyProofsVerified => "swap_apply_proofs_verified",
+            Self::MeltBuilderProofsVerified => "melt_builder_proofs_verified",
+            Self::MeltAdmissionProofsVerified => "melt_admission_proofs_verified",
+            Self::MeltApplyProofsVerified => "melt_apply_proofs_verified",
+            Self::JournalEntriesProcessed => "journal_entries_processed",
+            Self::MemberBlindedShareOutputs => "member_blinded_share_outputs",
+        }
+    }
+}
+
+/// Fixed process-local federation operations whose duration is measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FederationPerformanceOperation {
+    /// Full public federation-config validation.
+    FullConfigValidation,
+    /// Validation of one federated keyset.
+    KeysetValidation,
+    /// Interpolation of one aggregate key from member shares.
+    AggregateKeyInterpolation,
+    /// Validation of setup-transcript lineage.
+    SetupLineageValidation,
+    /// One complete scheduled-checkpoint capture attempt.
+    ScheduledCheckpointCapture,
+    /// Loading the finalized suffix for scheduled-checkpoint capture.
+    ScheduledCheckpointSuffixLoad,
+    /// Computing canonical bytes for a scheduled-checkpoint suffix.
+    ScheduledCheckpointCanonicalBytes,
+    /// Loading a complete materialized-state snapshot.
+    MaterializedStateLoad,
+    /// Digesting a loaded materialized-state snapshot.
+    MaterializedStateDigest,
+    /// Persisting one checkpoint candidate, audit, and local signature.
+    CheckpointPersistence,
+    /// Quorum verification while inspecting checkpoint capture state.
+    QuorumVerificationCapture,
+    /// Quorum verification while forming a quorum from signatures.
+    QuorumVerificationFormation,
+    /// Quorum verification while persisting or promoting a checkpoint.
+    QuorumVerificationPromotion,
+    /// Quorum verification before publishing a checkpoint to peers.
+    QuorumVerificationPublish,
+    /// Quorum verification while validating a checkpoint fetched from a peer.
+    QuorumVerificationPeerFetch,
+    /// Quorum verification during startup or checkpoint catch-up.
+    QuorumVerificationStartupCatchUp,
+    /// Quorum verification during an operator-requested checkpoint audit.
+    QuorumVerificationAudit,
+    /// Verification of one incoming checkpoint signature during quorum formation.
+    CheckpointSignatureVerificationFormation,
+    /// Self-verification of one local signature before publishing it.
+    CheckpointSignatureVerificationPublish,
+    /// Verification of one checkpoint signature fetched from a peer.
+    CheckpointSignatureVerificationPeerFetch,
+    /// Waiting to acquire the outer operation-application lock.
+    OperationApplicationLockWait,
+    /// Holding the outer operation-application lock.
+    OperationApplicationLockHold,
+    /// Applying accepted federation journal entries to mint state.
+    JournalApplication,
+    /// Capturing a recovery checkpoint while application is serialized.
+    RecoveryCheckpointCapture,
+    /// Aggregate-BLS verification of swap proofs by the request builder.
+    SwapProofVerificationBuilder,
+    /// Aggregate-BLS verification of swap proofs during operation admission.
+    SwapProofVerificationAdmission,
+    /// Aggregate-BLS verification of swap proofs during authoritative apply.
+    SwapProofVerificationApply,
+    /// Aggregate-BLS verification of melt proofs by the request builder.
+    MeltProofVerificationBuilder,
+    /// Aggregate-BLS verification of melt proofs during operation admission.
+    MeltProofVerificationAdmission,
+    /// Aggregate-BLS verification of melt proofs during authoritative apply.
+    MeltProofVerificationApply,
+    /// Creation of one member BLS blind-signature share.
+    MemberBlindedShareSigning,
+    /// Pairing-based self-verification of one member BLS blind-signature share.
+    MemberBlindedShareSelfVerification,
+}
+
+impl FederationPerformanceOperation {
+    /// Complete fixed label domain for schema and cardinality checks.
+    pub const ALL: [Self; 32] = [
+        Self::FullConfigValidation,
+        Self::KeysetValidation,
+        Self::AggregateKeyInterpolation,
+        Self::SetupLineageValidation,
+        Self::ScheduledCheckpointCapture,
+        Self::ScheduledCheckpointSuffixLoad,
+        Self::ScheduledCheckpointCanonicalBytes,
+        Self::MaterializedStateLoad,
+        Self::MaterializedStateDigest,
+        Self::CheckpointPersistence,
+        Self::QuorumVerificationCapture,
+        Self::QuorumVerificationFormation,
+        Self::QuorumVerificationPromotion,
+        Self::QuorumVerificationPublish,
+        Self::QuorumVerificationPeerFetch,
+        Self::QuorumVerificationStartupCatchUp,
+        Self::QuorumVerificationAudit,
+        Self::CheckpointSignatureVerificationFormation,
+        Self::CheckpointSignatureVerificationPublish,
+        Self::CheckpointSignatureVerificationPeerFetch,
+        Self::OperationApplicationLockWait,
+        Self::OperationApplicationLockHold,
+        Self::JournalApplication,
+        Self::RecoveryCheckpointCapture,
+        Self::SwapProofVerificationBuilder,
+        Self::SwapProofVerificationAdmission,
+        Self::SwapProofVerificationApply,
+        Self::MeltProofVerificationBuilder,
+        Self::MeltProofVerificationAdmission,
+        Self::MeltProofVerificationApply,
+        Self::MemberBlindedShareSigning,
+        Self::MemberBlindedShareSelfVerification,
+    ];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::FullConfigValidation => "full_config_validation",
+            Self::KeysetValidation => "keyset_validation",
+            Self::AggregateKeyInterpolation => "aggregate_key_interpolation",
+            Self::SetupLineageValidation => "setup_lineage_validation",
+            Self::ScheduledCheckpointCapture => "scheduled_checkpoint_capture",
+            Self::ScheduledCheckpointSuffixLoad => "scheduled_checkpoint_suffix_load",
+            Self::ScheduledCheckpointCanonicalBytes => "scheduled_checkpoint_canonical_bytes",
+            Self::MaterializedStateLoad => "materialized_state_load",
+            Self::MaterializedStateDigest => "materialized_state_digest",
+            Self::CheckpointPersistence => "checkpoint_persistence",
+            Self::QuorumVerificationCapture => "quorum_verification_capture",
+            Self::QuorumVerificationFormation => "quorum_verification_formation",
+            Self::QuorumVerificationPromotion => "quorum_verification_promotion",
+            Self::QuorumVerificationPublish => "quorum_verification_publish",
+            Self::QuorumVerificationPeerFetch => "quorum_verification_peer_fetch",
+            Self::QuorumVerificationStartupCatchUp => "quorum_verification_startup_catch_up",
+            Self::QuorumVerificationAudit => "quorum_verification_audit",
+            Self::CheckpointSignatureVerificationFormation => {
+                "checkpoint_signature_verification_formation"
+            }
+            Self::CheckpointSignatureVerificationPublish => {
+                "checkpoint_signature_verification_publish"
+            }
+            Self::CheckpointSignatureVerificationPeerFetch => {
+                "checkpoint_signature_verification_peer_fetch"
+            }
+            Self::OperationApplicationLockWait => "operation_application_lock_wait",
+            Self::OperationApplicationLockHold => "operation_application_lock_hold",
+            Self::JournalApplication => "journal_application",
+            Self::RecoveryCheckpointCapture => "recovery_checkpoint_capture",
+            Self::SwapProofVerificationBuilder => "swap_proof_verification_builder",
+            Self::SwapProofVerificationAdmission => "swap_proof_verification_admission",
+            Self::SwapProofVerificationApply => "swap_proof_verification_apply",
+            Self::MeltProofVerificationBuilder => "melt_proof_verification_builder",
+            Self::MeltProofVerificationAdmission => "melt_proof_verification_admission",
+            Self::MeltProofVerificationApply => "melt_proof_verification_apply",
+            Self::MemberBlindedShareSigning => "member_blinded_share_signing",
+            Self::MemberBlindedShareSelfVerification => "member_blinded_share_self_verification",
+        }
+    }
+}
+
+/// Fixed outcome label for a process-local federation performance operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FederationPerformanceOutcome {
+    /// The measured operation completed successfully, including intentional skips.
+    Success,
+    /// The measured operation returned an error.
+    Failure,
+}
+
+impl FederationPerformanceOutcome {
+    /// Complete fixed label domain for schema and cardinality checks.
+    pub const ALL: [Self; 2] = [Self::Success, Self::Failure];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Failure => "failure",
+        }
+    }
+
+    /// Convert a result predicate into the corresponding fixed outcome.
+    #[must_use]
+    pub const fn from_success(success: bool) -> Self {
+        if success {
+            Self::Success
+        } else {
+            Self::Failure
+        }
+    }
+}
+
 /// RAII guard for recording mint operation metrics.
 ///
 /// The guard increments the in-flight gauge when it is created, records the
@@ -234,6 +641,8 @@ pub struct CdkMetrics {
     federation_checkpoint_work_total: IntCounterVec,
     federation_checkpoint_catch_up_peak_in_flight_bytes: IntGaugeVec,
     federation_checkpoint_duration: HistogramVec,
+    federation_performance_work_total: IntCounterVec,
+    federation_performance_operation_duration: HistogramVec,
 }
 
 #[derive(Debug)]
@@ -264,6 +673,8 @@ struct FederationMetricCollectors {
     checkpoint_work_total: IntCounterVec,
     checkpoint_catch_up_peak_in_flight_bytes: IntGaugeVec,
     checkpoint_duration: HistogramVec,
+    performance_work_total: IntCounterVec,
+    performance_operation_duration: HistogramVec,
 }
 
 impl CdkMetrics {
@@ -342,6 +753,9 @@ impl CdkMetrics {
             federation_checkpoint_catch_up_peak_in_flight_bytes: federation_metrics
                 .checkpoint_catch_up_peak_in_flight_bytes,
             federation_checkpoint_duration: federation_metrics.checkpoint_duration,
+            federation_performance_work_total: federation_metrics.performance_work_total,
+            federation_performance_operation_duration: federation_metrics
+                .performance_operation_duration,
         })
     }
 
@@ -772,6 +1186,28 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(federation_checkpoint_duration.clone()))?;
 
+        let federation_performance_work_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_performance_work_total",
+                "Cumulative process-local federation performance work grouped by a fixed unit",
+            ),
+            &["work"],
+        )?;
+        registry.register(Box::new(federation_performance_work_total.clone()))?;
+
+        let federation_performance_operation_duration = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "cdk_federation_performance_operation_duration_seconds",
+                "Process-local federation performance operation duration grouped by fixed operation and outcome",
+            )
+            .buckets(vec![
+                0.000_01, 0.000_05, 0.000_1, 0.000_5, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5,
+                1.0, 5.0, 15.0, 60.0,
+            ]),
+            &["operation", "outcome"],
+        )?;
+        registry.register(Box::new(federation_performance_operation_duration.clone()))?;
+
         Ok(FederationMetricCollectors {
             consensus_operation_count: federation_consensus_operation_count,
             sync_ready: federation_sync_ready,
@@ -800,6 +1236,8 @@ impl CdkMetrics {
             checkpoint_catch_up_peak_in_flight_bytes:
                 federation_checkpoint_catch_up_peak_in_flight_bytes,
             checkpoint_duration: federation_checkpoint_duration,
+            performance_work_total: federation_performance_work_total,
+            performance_operation_duration: federation_performance_operation_duration,
         })
     }
 
@@ -1141,6 +1579,25 @@ impl CdkMetrics {
             .with_label_values(&[member, operation.as_str()])
             .observe(duration_seconds);
     }
+
+    /// Add a bounded unit of process-local federation performance work.
+    pub fn record_federation_performance_work(&self, work: FederationPerformanceWork, count: u64) {
+        self.federation_performance_work_total
+            .with_label_values(&[work.as_str()])
+            .inc_by(count);
+    }
+
+    /// Record one process-local fixed federation operation and its outcome.
+    pub fn record_federation_performance_operation(
+        &self,
+        operation: FederationPerformanceOperation,
+        outcome: FederationPerformanceOutcome,
+        duration_seconds: f64,
+    ) {
+        self.federation_performance_operation_duration
+            .with_label_values(&[operation.as_str(), outcome.as_str()])
+            .observe(duration_seconds);
+    }
 }
 
 impl Default for CdkMetrics {
@@ -1158,6 +1615,7 @@ mod tests {
 
     use super::{
         CdkMetrics, FederationCheckpointOperation, FederationCheckpointWork,
+        FederationPerformanceOperation, FederationPerformanceOutcome, FederationPerformanceWork,
         FederationSyncTransition, MintMetricGuard, METRICS,
     };
 
@@ -1410,6 +1868,68 @@ mod tests {
                 .with_label_values(&[member])
                 .get(),
             4096
+        );
+    }
+
+    #[test]
+    fn federation_performance_metrics_have_fixed_process_local_cardinality() {
+        let metrics = CdkMetrics::new().expect("metrics should be created");
+
+        for work in FederationPerformanceWork::ALL {
+            metrics.record_federation_performance_work(work, 1);
+        }
+        for operation in FederationPerformanceOperation::ALL {
+            for outcome in FederationPerformanceOutcome::ALL {
+                metrics.record_federation_performance_operation(operation, outcome, 0.001);
+            }
+        }
+
+        let work_families = metrics.federation_performance_work_total.collect();
+        assert_eq!(work_families.len(), 1);
+        assert_eq!(
+            work_families[0].get_metric().len(),
+            FederationPerformanceWork::ALL.len()
+        );
+        for metric in work_families[0].get_metric() {
+            let labels = metric
+                .get_label()
+                .iter()
+                .map(|label| label.name())
+                .collect::<Vec<_>>();
+            assert_eq!(labels, vec!["work"]);
+        }
+
+        let operation_families = metrics.federation_performance_operation_duration.collect();
+        assert_eq!(operation_families.len(), 1);
+        assert_eq!(
+            operation_families[0].get_metric().len(),
+            FederationPerformanceOperation::ALL.len() * FederationPerformanceOutcome::ALL.len()
+        );
+        for metric in operation_families[0].get_metric() {
+            let labels = metric
+                .get_label()
+                .iter()
+                .map(|label| label.name())
+                .collect::<Vec<_>>();
+            assert_eq!(labels, vec!["operation", "outcome"]);
+        }
+    }
+
+    #[test]
+    fn federation_performance_enum_labels_are_unique() {
+        let work_labels = FederationPerformanceWork::ALL
+            .into_iter()
+            .map(FederationPerformanceWork::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(work_labels.len(), FederationPerformanceWork::ALL.len());
+
+        let operation_labels = FederationPerformanceOperation::ALL
+            .into_iter()
+            .map(FederationPerformanceOperation::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            operation_labels.len(),
+            FederationPerformanceOperation::ALL.len()
         );
     }
 

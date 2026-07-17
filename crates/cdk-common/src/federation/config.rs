@@ -3,6 +3,8 @@
 use core::fmt;
 use core::str::FromStr;
 use std::collections::BTreeMap;
+#[cfg(feature = "prometheus")]
+use std::time::Instant;
 
 use bitcoin::base64::engine::{general_purpose, GeneralPurpose};
 use bitcoin::base64::{alphabet, Engine as _};
@@ -634,6 +636,38 @@ impl FederatedKeyset {
         threshold_params: ThresholdParams,
         members: &BTreeMap<MemberId, MemberConfigPublic>,
     ) -> Result<()> {
+        #[cfg(feature = "prometheus")]
+        {
+            cdk_prometheus::METRICS.record_federation_performance_work(
+                cdk_prometheus::FederationPerformanceWork::KeysetValidationAttempts,
+                1,
+            );
+        }
+        #[cfg(feature = "prometheus")]
+        let started_at = Instant::now();
+        let result = self.validate_inner(threshold_params, members);
+        #[cfg(feature = "prometheus")]
+        {
+            if result.is_err() {
+                cdk_prometheus::METRICS.record_federation_performance_work(
+                    cdk_prometheus::FederationPerformanceWork::KeysetValidationFailures,
+                    1,
+                );
+            }
+            cdk_prometheus::METRICS.record_federation_performance_operation(
+                cdk_prometheus::FederationPerformanceOperation::KeysetValidation,
+                cdk_prometheus::FederationPerformanceOutcome::from_success(result.is_ok()),
+                started_at.elapsed().as_secs_f64(),
+            );
+        }
+        result
+    }
+
+    fn validate_inner(
+        &self,
+        threshold_params: ThresholdParams,
+        members: &BTreeMap<MemberId, MemberConfigPublic>,
+    ) -> Result<()> {
         self.validate_metadata(members)?;
 
         for (amount, aggregate_key) in &self.aggregate_keys {
@@ -656,10 +690,34 @@ impl FederatedKeyset {
                 shares.push(*share);
             }
 
+            #[cfg(feature = "prometheus")]
+            {
+                cdk_prometheus::METRICS.record_federation_performance_work(
+                    cdk_prometheus::FederationPerformanceWork::AggregateKeyInterpolationAttempts,
+                    1,
+                );
+            }
+            #[cfg(feature = "prometheus")]
+            let interpolation_started_at = Instant::now();
             let derived = aggregate_public_key_shares(
                 usize::from(threshold_params.signature_threshold),
                 &shares,
-            )?;
+            );
+            #[cfg(feature = "prometheus")]
+            {
+                if derived.is_err() {
+                    cdk_prometheus::METRICS.record_federation_performance_work(
+                        cdk_prometheus::FederationPerformanceWork::AggregateKeyInterpolationFailures,
+                        1,
+                    );
+                }
+                cdk_prometheus::METRICS.record_federation_performance_operation(
+                    cdk_prometheus::FederationPerformanceOperation::AggregateKeyInterpolation,
+                    cdk_prometheus::FederationPerformanceOutcome::from_success(derived.is_ok()),
+                    interpolation_started_at.elapsed().as_secs_f64(),
+                );
+            }
+            let derived = derived?;
             if derived != *aggregate_key {
                 return Err(FederationError::AggregateKeyMismatch {
                     keyset_id: self.id,
@@ -963,6 +1021,34 @@ impl FederationConfig {
 
     /// Validate this config.
     pub fn validate(&self) -> Result<()> {
+        #[cfg(feature = "prometheus")]
+        {
+            cdk_prometheus::METRICS.record_federation_performance_work(
+                cdk_prometheus::FederationPerformanceWork::ConfigValidationAttempts,
+                1,
+            );
+        }
+        #[cfg(feature = "prometheus")]
+        let started_at = Instant::now();
+        let result = self.validate_inner();
+        #[cfg(feature = "prometheus")]
+        {
+            if result.is_err() {
+                cdk_prometheus::METRICS.record_federation_performance_work(
+                    cdk_prometheus::FederationPerformanceWork::ConfigValidationFailures,
+                    1,
+                );
+            }
+            cdk_prometheus::METRICS.record_federation_performance_operation(
+                cdk_prometheus::FederationPerformanceOperation::FullConfigValidation,
+                cdk_prometheus::FederationPerformanceOutcome::from_success(result.is_ok()),
+                started_at.elapsed().as_secs_f64(),
+            );
+        }
+        result
+    }
+
+    fn validate_inner(&self) -> Result<()> {
         validate_protocol_component(
             "wallet",
             FEDERATION_WALLET_PROTOCOL_VERSION,

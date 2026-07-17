@@ -1,6 +1,6 @@
 # Federated CDK Performance Optimizations
 
-Status: Implementation plan ready; milestone 0 not started
+Status: Milestone 0 complete
 First recorded: 2026-07-17
 
 ## Purpose
@@ -28,7 +28,6 @@ Related documents:
 
 - `docs/federated-cashu-implementation-plan.md`
 - `docs/federated-cdk-checkpoint-implementation-plan.md`
-- `docs/federated-cdk-checkpoint-performance-benchmark.md`
 - `docs/federated-cashu-checkpoint-consolidation-plan.md`
 - `docs/federated-cashu-nocean-stress-test.md`
 - `docs/federated-cashu-minting-performance-benchmark.md`
@@ -214,12 +213,15 @@ excess matches re-inspecting already-durable local evidence on the healthy path.
 ### Capture runs on every unit finalization, not only journal ops
 
 `operation_pipeline::apply_finalized_unit` always calls
-`capture_scheduled_checkpoint_if_eligible_under_application_lock` after apply,
-under the same `components.operation` lock used for journal apply and BLS share
-signing. Empty and payload-bearing units both enter this path. Capture therefore
-scales with finalized-unit rate (historically several items per accepted op), not
-only with accepted journal operations. CPU spends there directly serialize
-concurrent swap apply.
+`capture_scheduled_checkpoint_if_eligible_under_application_lock` after applying
+a payload-bearing finalized unit, under the same `components.operation` lock
+used for journal apply and BLS share signing. The live AlephBFT adapter does not
+forward units whose application data is `None`, and federation unit payloads
+reject empty item lists, so the earlier claim that empty units enter checkpoint
+capture was incorrect. Capture scales with payload-bearing finalized-unit rate,
+which can still exceed accepted journal-operation rate. CPU spent there directly
+serializes concurrent swap apply. Milestone 0 will count upstream data/no-data
+finalizations separately from actual capture attempts.
 
 ### Token preparation is also affected
 
@@ -447,7 +449,7 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 
 | Milestone | Goal | Status | Commit |
 | --- | --- | --- | --- |
-| 0 | Reproduce and attribute transaction CPU without production optimization | Not started | - |
+| 0 | Reproduce and attribute transaction CPU without production optimization | Complete | This milestone commit; hash recorded at Milestone 1 start |
 | 1 | Remove repeated full federation-config validation from confirmed checkpoint hot paths | Not started | - |
 | 2 | Verify each unchanged checkpoint signature/quorum only at required trust boundaries | Not started | - |
 | 3 | Make scheduled-checkpoint eligibility and suffix accounting linear | Not started | - |
@@ -468,16 +470,16 @@ production optimization is allowed in this milestone.
 
 ### Todos
 
-- [ ] Freeze and record source commit, binary hashes, Rust profile, host shape,
+- [x] Freeze and record source commit, binary hashes, Rust profile, host shape,
       member/signature/consensus thresholds, database backend, checkpoint policy,
       fakewallet policy, and benchmark script version.
-- [ ] Correct the benchmark report to distinguish member-local checkpoint events
+- [x] Correct the benchmark report to distinguish member-local checkpoint events
       from distinct logical checkpoint IDs and unique signatures.
-- [ ] Add bounded temporary counters/timers around:
+- [x] Add bounded temporary counters/timers around:
   - full config validation, aggregate-key interpolation, and setup-transcript
     lineage validation (distinct from cheap shape/digest binding checks);
-  - checkpoint capture called from unit finalization, including empty units, and
-    each early-return reason;
+  - upstream AlephBFT data/no-data finalizations, checkpoint capture called from
+    payload-bearing finalization, and each early-return reason;
   - individual signature and quorum verification, keyed only by bounded operation
     class rather than checkpoint ID in production metrics; split own calls into
     capture-of-latest-stored, formation, promotion, publish, peer-fetch, and
@@ -489,21 +491,23 @@ production optimization is allowed in this milestone.
     signing;
   - swap/melt proof verification, member-share signing/self-verification, and
     wallet share/aggregate/final-proof verification.
-- [ ] Capture sampling profiles for one member and all five aggregate processes
+- [x] Capture sampling profiles for one member and all five aggregate processes
       during one sequential swap, `10:1`, and a concurrent receive wave.
-- [ ] Run at least three release samples of `10:1`, `20:5`, `40:10`, and `100:20`
-      on a fresh five-member local SQLite federation with fakewallet and `20/20`
-      checkpoint intervals.
-- [ ] Repeat the same matrix with a checkpoint interval beyond the test history.
-      Checkpoint validation remains enabled; this is a scheduling-frequency A/B,
-      not a production bypass.
-- [ ] Vary journal and finalized-item intervals independently to identify which
-      progress dimension triggers candidate creation and suffix work.
-- [ ] Derive the expected signature/quorum-verification cardinality for one new
+- [x] Run one release sample each of `10:1`, `20:5`, and `100:20` on a fresh
+      five-member local SQLite federation with fakewallet and `20/20` checkpoint
+      intervals. Additional repetitions already captured before this scope was
+      reduced remain supporting evidence, not a completion requirement.
+- [x] Repeat `10:1`, `20:5`, and `100:20` once with a checkpoint interval beyond
+      the test history. Checkpoint validation remains enabled; this is a
+      scheduling-frequency A/B, not a production bypass.
+- [x] Record the interval-isolation scope decision. A `20/20000` probe completed
+      before measurement scope was reduced; its reciprocal `20000/20` probe was
+      canceled by user direction and is not a Milestone 0 completion gate.
+- [x] Derive the expected signature/quorum-verification cardinality for one new
       logical checkpoint and compare it with per-member observations.
-- [ ] Measure mint and melt separately from swap, including accepted journal
+- [x] Measure mint and melt separately from swap, including accepted journal
       operations per logical lifecycle.
-- [ ] Remove temporary instrumentation that is not retained as bounded production
+- [x] Remove temporary instrumentation that is not retained as bounded production
       observability.
 
 ### Success criteria
@@ -513,14 +517,403 @@ production optimization is allowed in this milestone.
 - At least one suspected stage has matching stack attribution, invocation counts,
   measured duration, and a controlled A/B response. No production fix begins
   without this evidence.
-- Run-to-run median CPU-seconds per transaction is stable enough to evaluate a
-  15% change, or additional samples establish a confidence interval that is.
+- The retained sequential samples establish a CPU baseline stable enough to
+  evaluate the 15% Milestone 1 impact gate. Broader matrix repetition is not a
+  Milestone 0 completion requirement.
 - Expected and observed logical checkpoint, candidate, quorum, and signature
   cardinalities are documented without conflating per-member sums.
 - Every run has exact success/journal deltas, converged digests, zero unexpected
   alerts, and bounded post-run idle CPU.
 - The milestone results and retained harness/metric changes are committed as
   `test: establish federation transaction performance baseline`.
+
+### Progress record — 2026-07-17
+
+Milestone 0 is `Complete`. It contains both the untouched-source reproduction
+and the bounded instrumented release evidence. No production optimization is
+included. Its commit subject is
+`test: establish federation transaction performance baseline`; the resulting
+hash is recorded in the first Milestone 1 update, where it is available without
+self-referencing this commit.
+
+#### Frozen preliminary baseline
+
+| Item | Value |
+| --- | --- |
+| Source commit | `63797df00659954e29534e839552b978a780c1cd` |
+| `cdk-mintd` SHA-256 | `f694f42190785eb7a3dd1ea2f16249103689e6689a63c03aca946ed20eff7d9f` |
+| `cdk-cli` SHA-256 | `8b667eb542b1c3d276a77a89c3ef49ef8f8d439d9aa43638ba254bc057dc28bb` |
+| Benchmark script SHA-256 | `8dd7a4bd730781511cd70443a992f8ded21fc62e6f56ca6c57b53668129b3650` |
+| Build profile | `--release --locked`; mint features `federation-test-utils,sqlite,prometheus`; CLI feature `federation` |
+| Compiler used | `rustc 1.95.0 (59807616e 2026-04-14)`, `aarch64-apple-darwin` |
+| Repository toolchain request | Rust `1.96.0`; the local mismatch remains recorded for repetition |
+| Host | Apple ARM64, 18 logical cores, 128 GiB memory, macOS 26.5 |
+| Federation | Five local members, signature threshold 3, consensus threshold 4, SQLite, local fakewallet |
+| Workload | Ten sequential receive/swaps (`10:1`) |
+| Policies compared | journal/finalized intervals `20/20` and `20000/20000` |
+
+Build commands:
+
+```bash
+cargo build --locked --release -p cdk-mintd \
+  --no-default-features \
+  --features federation-test-utils,sqlite,prometheus
+cargo build --locked --release -p cdk-cli \
+  --no-default-features --features federation
+```
+
+The two fresh configurations used the following command shape, with the two
+recorded interval pairs and separate loopback port ranges:
+
+```bash
+target/release/cdk-mintd federation test-trusted-dealer \
+  --output-dir "$FEDERATION_DIR" --force --local-fakewallet-configs \
+  --members 5 --threshold 3 --port-start "$PORT_START" \
+  --checkpoint-interval-journal-operations "$JOURNAL_INTERVAL" \
+  --checkpoint-interval-finalized-items "$FINALIZED_INTERVAL"
+```
+
+Each running federation was measured with:
+
+```bash
+LOCAL_FEDERATION_DIR="$FEDERATION_DIR" \
+MINTD=target/release/cdk-mintd CLI=target/release/cdk-cli \
+BUILD_CLI=0 EXPECTED_MEMBERS=5 CASES='10:1' \
+PREPARE_PARALLELISM=5 SETTLE_SECONDS=12 RUN_DIR="$PRIVATE_RUN_DIR" \
+scripts/benchmark_nocean_federation.sh
+```
+
+Private run directories, wallet databases, bearer tokens, member configs, raw
+checkpoint identifiers, and profiles remain outside the repository.
+
+#### Preliminary checkpoint-frequency A/B
+
+| Metric | `20/20` | `20000/20000` | Change |
+| --- | ---: | ---: | ---: |
+| Successful swaps | 10/10 | 10/10 | unchanged |
+| Accepted journal operations | 6 to 16 | 6 to 16 | +10 in both |
+| Receive wall time | 25.406 s | 22.218 s | -12.5% |
+| Committed TPS | 0.394 | 0.450 | +14.2% |
+| p50 | 2.498 s | 2.006 s | -19.7% |
+| p95 / p99 | 2.759 s | 2.513 s | -8.9% |
+| Maximum latency | 3.488 s | 2.527 s | -27.6% |
+| Aggregate member CPU | 48.38 s | 4.71 s | -90.3% |
+| CPU per accepted operation | 4.838 s | 0.471 s | -90.3% |
+| CPU ms/member-second | 387.040 | 42.818 | -88.9% |
+| Maximum end RSS | 54,208 KiB | 54,544 KiB | +0.6% |
+| Member-local scheduled candidates | +10 | 0 | -100% |
+| Member-local promotions | +10 | 0 | -100% |
+| Signatures processed by checkpoint verification calls | +1,123 | 0 | -100% |
+| Sync transitions / unexpected alerts | 0 / 0 | 0 / 0 | unchanged |
+
+The `20/20` members each consumed 9.29–10.12 CPU-seconds; the high-interval
+members each consumed 0.94–0.95 CPU-seconds. The response was therefore
+federation-wide, not one overloaded process. The `20/20` end state contained
+three distinct scheduled checkpoint IDs and 15 distinct
+`(checkpoint_id, signer)` pairs. One checkpoint predated the receive window, so
+the +10 member-local candidates and promotions represent two new logical
+checkpoints across five members, not ten logical checkpoints. The databases
+held 63 replicated signature rows for the 15 unique pairs. The +1,123 counter
+records signatures processed by verification calls, not unique evidence.
+
+#### Profile attribution
+
+All five `20/20` member samples showed the same `Iterator::fold` hot symbol,
+with 6,048–6,521 samples per member. One member contained this 661-sample
+branch:
+
+```text
+apply_federation_aleph_bft_finalized_unit_with_retry
+  -> capture_scheduled_checkpoint_if_eligible_under_application_lock
+  -> FederationCheckpoint::validate_against_config
+  -> FederationConfig::validate
+  -> FederationDkgTranscript::validate_setup_lineage_against_config
+  -> FederationConfig::validate
+  -> FederatedKeyset::validate
+  -> aggregate_public_key_shares
+  -> bls12_381 G2 scalar multiplication
+```
+
+The high-interval member profile was mostly parked and retained only seven
+top-of-stack samples in the corresponding iterator-fold symbol. The stack and
+90.3% CPU response identify scheduled-checkpoint processing and repeated
+config/keyset validation as the dominant compute sink in this small run. The
+wall-time gain was much smaller, leaving consensus cadence as a separate latency
+limit to measure after checkpoint amplification is removed.
+
+The high interval is a diagnostic scheduling A/B, not a proposed production
+change. No production optimization was made in Milestone 0.
+
+#### Instrumented release artifacts
+
+The instrumented build remained based on source commit
+`63797df00659954e29534e839552b978a780c1cd`; all source changes were bounded
+observability, benchmark-harness correctness, tests, and an exact current-state
+digest diagnostic. The artifacts used below were:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Instrumented `cdk-mintd` | `12ca4b150f915d24dfc01555831ac7eb33d0b3248250a2edd149d2892d76851d` |
+| Instrumented `cdk-cli` | `c9aa46dd3e40ad6057ddf4a36222a2fb6a3b247481ce8aedeef716b9eb1e3926` |
+| Benchmark harness used for the runs | `c8b1a9434b43be815f8bb5efa9948aa810a27253808352f19b8ede8541f236df` |
+
+The build profile, host, topology, database, thresholds, and fakewallet policy
+were identical to the frozen preliminary baseline. Each formal sample used a
+fresh generated federation. The harness recorded the operation height at the
+receive-window boundary and again after bounded convergence; it also required
+matching journal, finalized-item, application, and freshly materialized state
+digests. Cached audited materialized digests were diagnostic because they
+describe the last checkpoint, not necessarily current state.
+
+#### Reduced release matrix and A/B
+
+At user direction, Milestone 0 retains one representative release run of
+`10:1`, `20:5`, and `100:20` per checkpoint policy instead of requiring a
+three-repetition full matrix. Extra fresh-federation samples completed before
+that direction are used only to quantify the sequential baseline's stability.
+
+| Policy | Case | Wallet success | Immediate / eventual journal delta | Wall | Confirmed TPS | Committed TPS | p50 | p95 | Aggregate member CPU | Post-run idle CPU |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `20/20` | `10:1` | 10/10 | +10 / +10 | 25.969 s | 0.385 | 0.385 | 2.511 s | 2.695 s | 52.95 s | 0.36 s / 4 s |
+| `20/20` | `20:5` | 20/20 | +20 / +20 | 12.402 s | 1.613 | 1.613 | 2.804 s | 3.681 s | 43.37 s | 1.11 s / 3 s |
+| `20/20` | `100:20` | 70/100 | +72 / +72 | 30.814 s | 2.272 | 2.337 | 3.980 s | 10.123 s | 85.86 s | 0.79 s / 3 s |
+| `20000/20000` | `10:1` | 10/10 | +10 / +10 | 21.720 s | 0.460 | 0.460 | 2.001 s | 2.508 s | 6.43 s | 0.37 s / 3 s |
+| `20000/20000` | `20:5` | 20/20 | +20 / +20 | 9.241 s | 2.164 | 2.164 | 2.178 s | 2.799 s | 7.60 s | 0.40 s / 3 s |
+| `20000/20000` | `100:20` | 64/100 | +64 / +64 | 33.901 s | 1.888 | 1.888 | 4.001 s | 9.483 s | 51.88 s | 0.39 s / 4 s |
+
+Every row converged with zero sync transitions or federation alert buckets and
+matching fresh current-state digests. The `20/20` `100:20` row includes two
+accepted swaps whose wallets timed out before receiving threshold responses;
+the harness therefore reports wallet-confirmed and immediate committed TPS
+separately. The remaining failures were threshold member-request timeouts, not
+rejected or late federation operations. Because `100:20` also failed with no
+scheduled checkpoint in the high-interval control, that saturation symptom is
+separate from checkpoint CPU and remains work for the later lifecycle/transport
+milestones.
+
+The extra fresh `10:1` samples establish a stable CPU comparison:
+
+| Policy | Aggregate CPU samples | Median | Full range |
+| --- | --- | ---: | ---: |
+| `20/20` | 52.95 s, 50.60 s, 52.45 s | 52.45 s | 4.5% of median |
+| `20000/20000` | 6.43 s, 7.06 s, 6.34 s | 6.43 s | 11.2% of median |
+
+The median CPU reduction is **87.7%** while the validation code remains enabled.
+This is a scheduling-frequency control, not a candidate production fix.
+
+The preliminary samples above ran first. The following ledger records every
+subsequent completed instrumented sample in execution order, including work
+that finished before the measurement scope was reduced. Only the six rows
+marked `retained matrix` are the required representative `10:1`, `20:5`, and
+`100:20` comparison; all other rows are supporting evidence. Every listed row
+had zero late operations, converged exact current-state digests, and no sync
+transition or federation alert.
+
+| Order | Policy / run | Case | Wallet success | Immediate / eventual journal delta | Wall | Aggregate CPU | Use |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | --- |
+| 1 | `20/20` profile | `1:1` | 1/1 | +1 / +1 | 2.151 s | 0.73 s | profile |
+| 2 | `20/20` profile | `40:10` | 40/40 | +40 / +40 | 16.969 s | 56.97 s | profile |
+| 3 | `20/20` fresh 1 | `10:1` | 10/10 | +10 / +10 | 25.969 s | 52.95 s | retained matrix |
+| 4 | `20/20` fresh 1 | `20:5` | 20/20 | +20 / +20 | 12.402 s | 43.37 s | retained matrix |
+| 5 | `20/20` fresh 1 | `40:10` | 40/40 | +40 / +40 | 12.707 s | 43.22 s | supporting |
+| 6 | `20/20` fresh 1 | `100:20` | 70/100 | +72 / +72 | 30.814 s | 85.86 s | retained matrix |
+| 7 | `20/20` continued 2 | `10:1` | 10/10 | +10 / +10 | 25.133 s | 54.34 s | supporting |
+| 8 | `20/20` continued 2 | `20:5` | 20/20 | +20 / +20 | 11.600 s | 43.59 s | supporting |
+| 9 | `20/20` continued 2 | `40:10` | 36/40 | +36 / +36 | 18.826 s | 49.98 s | supporting; run stopped here |
+| 10 | `20/20` fresh 2 | `10:1` | 10/10 | +10 / +10 | 25.881 s | 50.60 s | stability support |
+| 11 | `20/20` fresh 2 | `20:5` | 20/20 | +20 / +20 | 15.598 s | 57.26 s | supporting |
+| 12 | `20/20` fresh 2 | `40:10` | 40/40 | +40 / +40 | 12.093 s | 49.78 s | supporting |
+| 13 | `20/20` fresh 2 | `100:20` | 86/100 | +86 / +86 | 34.875 s | 109.21 s | supporting |
+| 14 | `20/20` fresh 3 | `10:1` | 10/10 | +10 / +10 | 22.033 s | 52.45 s | stability support |
+| 15 | `20/20` fresh 3 | `20:5` | 20/20 | +20 / +20 | 14.404 s | 56.54 s | supporting |
+| 16 | `20/20` fresh 3 | `40:10` | 40/40 | +40 / +40 | 12.446 s | 42.97 s | supporting |
+| 17 | `20/20` fresh 3 | `100:20` | 91/100 | +91 / +91 | 34.895 s | 130.15 s | supporting |
+| 18 | `20000/20000` fresh 1 | `10:1` | 10/10 | +10 / +10 | 21.720 s | 6.43 s | retained matrix |
+| 19 | `20000/20000` fresh 1 | `20:5` | 20/20 | +20 / +20 | 9.241 s | 7.60 s | retained matrix |
+| 20 | `20000/20000` fresh 1 | `40:10` | 40/40 | +40 / +40 | 17.924 s | 28.17 s | supporting |
+| 21 | `20000/20000` fresh 1 | `100:20` | 64/100 | +64 / +64 | 33.901 s | 51.88 s | retained matrix |
+| 22 | `20000/20000` fresh 2 | `10:1` | 10/10 | +10 / +10 | 23.245 s | 7.06 s | stability support |
+| 23 | `20000/20000` fresh 2 | `20:5` | 20/20 | +20 / +20 | 9.756 s | 8.68 s | supporting |
+| 24 | `20000/20000` fresh 2 | `40:10` | 34/40 | +34 / +34 | 17.940 s | 23.17 s | supporting |
+| 25 | `20000/20000` fresh 2 | `100:20` | 62/100 | +62 / +62 | 27.972 s | 57.84 s | supporting |
+| 26 | `20000/20000` fresh 3 | `10:1` | 10/10 | +10 / +10 | 22.744 s | 6.34 s | stability support |
+| 27 | `20000/20000` fresh 3 | `20:5` | 20/20 | +20 / +20 | 10.384 s | 9.03 s | supporting |
+| 28 | `20000/20000` fresh 3 | `40:10` | 40/40 | +40 / +40 | 14.976 s | 23.06 s | supporting |
+| 29 | `20000/20000` fresh 3 | `100:20` | 81/100 | +81 / +81 | 31.762 s | 62.71 s | supporting |
+| 30 | `20/20000` interval probe | `40:10` | 40/40 | +40 / +40 | 14.210 s | 50.11 s | supporting interval isolation |
+
+The planned reciprocal `20000/20` probe produced no sample: it was canceled at
+user direction, as was any further repetition, and is neither evidence nor a
+completion gate.
+
+#### Direct stage attribution
+
+The instrumented `40:10` `20/20` profile window completed 40/40 swaps with an
+exact +40 journal delta. Duration sums below are aggregate member wall time and
+are nested; they must not be added together.
+
+| Stage or work item | Count / volume | Aggregate duration | Per logical swap |
+| --- | ---: | ---: | ---: |
+| Journal entries applied | 200 | 1.219 s | 5 entries |
+| Payload / no-data AlephBFT finalizations | 225 / 625 | - | 5.625 / 15.625 |
+| Scheduled capture attempts | 225 | 50.241 s | 5.625 attempts |
+| Full config validations | 1,128 | 88.873 s inclusive | 28.2 validations |
+| Keyset validations | 2,256 | 59.213 s | 56.4 validations |
+| Aggregate public-key interpolations | 18,048 | 59.125 s | 451.2 interpolations |
+| Capture-context quorum verification | 225 | 23.935 s | 5.625 calls |
+| Application-lock hold / wait | 239 / 239 | 54.478 s / 3.495 s | 1.362 s / 0.087 s |
+| Builder / admission / apply proof checks | 200 / 400 / 200 | 0.847 s / 1.429 s / 0.357 s | 5 / 10 / 5 proofs |
+| Share signing / self-verification | 200 / 200 | 0.050 s / 0.328 s | 5 / 5 outputs |
+
+The count identities locate the amplification precisely: 1,128 config
+validations comprise 564 outer current-config validations and 564 nested setup
+lineage config validations; two keysets per config and eight denominations per
+keyset produce 18,048 aggregate-key interpolations. Aggregate interpolation is
+99.85% of keyset-validation time and its G2 scalar-multiplication leaf accounts
+for approximately the observed 56.97 process CPU-seconds. Capture occupies
+92.2% of application-lock hold time. Stand-alone, non-quorum individual
+signature-verification wrapper calls in formation, peer-fetch, and publish
+totaled only 18 calls and 0.606 ms. Quorum wrappers still processed 1,289
+individual signatures in the representative sequential run; their expensive
+work is repeated checkpoint and immutable config validation, not signature
+pairing itself.
+
+Capture outcomes also prove a secondary, smaller waste. Of 225 attempts, 186
+returned for a pending candidate, 29 loaded and canonicalized a suffix before
+returning ineligible, and 10 created local candidates. The 39 suffix loads read
+694 rows / 819,172 canonical bytes; 202 rows / 245,334 bytes were discarded by
+the 29 ineligible attempts. A separate `1:1` window had 25 payload finalizations
+and 25 ineligible capture attempts; all loaded the same growing suffix first,
+processing 375 rows / 733,875 bytes. Suffix loading consumed 160.7 ms of the
+164.5 ms capture total in that window. This is the evidence gate for Milestone 3.
+
+All five concurrent sampling profiles contained the full hot branch from
+finalized-unit apply through scheduled capture, checkpoint/quorum validation,
+`FederationConfig::validate`, `FederatedKeyset::validate`,
+`aggregate_public_key_shares`, and BLS12-381 G2 scalar multiplication. The G2
+`Iterator::fold` leaf had 1,496, 1,904, 1,889, 1,691, and 1,743 recursive
+samples (median 1,743). The `1:1` profiles showed capture and proof pairing but
+no config interpolation, matching the zero counters before a scheduled quorum
+existed.
+
+#### Checkpoint cardinality and interval scope
+
+For five members and checkpoint quorum four, one healthy logical checkpoint has
+four to five local candidates/signatures (normally five), five final quorum rows,
+and 20 to 25 replicated signature rows after convergence. If `F` members form a
+quorum locally, successful remote signature transfers are `3F` and direct
+individual signature checks are `9F`. Even before capture, formation, ingress,
+trusted-quorum comparison, and transfer require at least 15 full-quorum calls,
+or 60 signature checks. A boundary capture adds about 20 more; the practical
+floor is therefore 89 to 125 processed signatures, despite only four or five
+unique signatures. Quorum ingress plus promotion also performs at least ten
+full signature-row UPSERT passes (40 row UPSERTs) per logical checkpoint.
+
+The representative `20/20` `10:1` run observed exactly ten member-local
+candidate creations for two retained logical checkpoint IDs and ten unique
+retained `(checkpoint, signer)` pairs: five candidates/signatures per logical
+checkpoint. It processed 1,289 signatures in verification calls, far above the
+ten unique evidence pairs. Retained-ID deltas are lower bounds on creations
+because converged pruning removes losing non-quorum candidates; the report does
+not relabel them as exact creation counts.
+
+One `20/20000` `40:10` probe completed before measurement scope was reduced. It
+created ten member-local candidates/two retained checkpoint IDs, processed 976
+signatures, and used 50.11 aggregate CPU-seconds, proving the journal interval
+alone can schedule checkpoint work even when the finalized-item interval is
+beyond the test history. The reciprocal `20000/20` probe was canceled at user
+direction and no claim about finalized-only scheduling is made in Milestone 0.
+
+#### Mint and forced-change melt lifecycle
+
+One fresh `20/20` release federation measured mint and melt separately. A
+20-sat mint completed in 7.25 seconds and appended exactly three operation kinds:
+`mint_quote`, `mint_quote_payment`, and `mint`. After four local offline 1-sat
+sends, a 10-sat fakewallet payment forced a change-producing melt. It completed
+in 10.26 seconds, left the expected 5-sat wallet balance, and appended exactly
+four operation kinds: `melt_quote`, `swap`, `melt`, and
+`melt_quote_payment`. This corrects the earlier three-operation estimate for a
+complete paid melt lifecycle.
+
+The mint window applied 15 replicated journal entries and produced 50 member
+signature shares for ten outputs. Wallet diagnostics measured ten final blind
+signature checks and ten final proof checks. The melt window applied 20
+replicated journal entries. Its forced-change swap verified four input proofs
+per member in builder/apply and twice at admission, while the melt verified
+three input proofs per member in builder/apply and twice at admission. Server
+metrics therefore recorded swap proof counts of 20/40/20 and melt proof counts
+of 15/30/15 for builder/admission/apply. This is direct evidence for the
+duplicate-verification work scoped to Milestone 4.
+
+The paid melt crossed a scheduled checkpoint boundary and again exposed the
+dominant path: 118 full config validations, 236 keyset validations, and 1,888
+aggregate-key interpolations consumed 6.982, 4.672, and 4.668 aggregate seconds
+respectively. The final exact current-state comparison reported all five members
+healthy and converged at operation height seven with matching journal,
+finalized-item, application, and materialized-state digests.
+
+All retained production instrumentation uses fixed enum-derived labels and
+process-local counters/histograms. Checkpoint IDs, member IDs, request IDs, and
+other unbounded values are excluded. Wallet detail remains debug-level tracing.
+The sampling hook, raw profiles, bearer tokens, databases, and lifecycle logs
+remain private benchmark artifacts under `target/`; no temporary dynamic-label
+instrumentation remains in the source tree.
+
+#### Verification and keep decision
+
+The final retained harness SHA-256 is
+`f25c273431c6bccf5bb0bd189f646fdc6e6073a8f2137ba45fc09f122f34e001`.
+The only change after the measured harness hash above corrected the help text to
+say post-run idle CPU and renamed its CSV signer field to the accurate
+`new_retained_checkpoint_signer_pairs`; its self-tests were rerun afterward.
+
+The following focused checks passed on the combined Milestone 0 worktree:
+
+```text
+cargo test -p cdk-prometheus federation_performance
+  2 passed
+cargo test -p cdk-common --features federation,prometheus \
+  config_validation_performance_metrics_cover_success_and_failure_branches
+  1 passed
+cargo test -p cdk --no-default-features \
+  --features mint,wallet,federation,prometheus,bip353 performance_
+  2 passed
+cargo test -p cdk-mintd --no-default-features \
+  --features federation-test-utils,sqlite,prometheus digest_comparison_
+  13 passed
+cargo test -p cdk-axum --features federation,prometheus performance_
+  2 passed
+cargo test -p cdk-axum --features federation,prometheus \
+  scheduled_checkpoint_captures_first_complete_eligible_boundary
+  1 passed
+cargo test -p cdk-axum --features federation,prometheus \
+  private_local_status_full_rows_replace_stale_cached_audit_digest
+  1 passed
+cargo test -p cdk-axum --features federation,prometheus \
+  aleph_bft_live_session_restarts_from_persisted_backup_and_continues_finality
+  1 passed
+cargo check -p cdk-common --no-default-features --features mint,wallet
+cargo check -p cdk --no-default-features --features mint,wallet,bip353
+cargo check -p cdk-axum --no-default-features
+  all passed
+cargo fmt --all -- --check
+git diff --check
+scripts/benchmark_nocean_federation.sh --self-test
+  all passed
+```
+
+A reduced-feature `cdk` unit-test build without the crate's normal `bip353`
+feature remains blocked by pre-existing test-only `Transport` mocks that omit
+`resolve_dns_txt`; the equivalent normal-feature tests and all three
+non-federation production checks above pass. No unrelated mock change was added
+to this milestone.
+
+**Keep:** fixed-cardinality server metrics, debug-only wallet stage tracing, the
+corrected local/remote harness, and exact current-state digest comparison. They
+directly proved the cause, preserved protocol behavior in release lifecycle and
+restart tests, and remain useful to verify later fixes. **Reject/remove:** no
+production optimization was attempted, no dynamic-ID metrics were introduced,
+and private profiling/lifecycle helpers remain outside the tracked source tree.
 
 ## Milestone 1: stop repeated full config validation
 
@@ -557,7 +950,9 @@ config ingress, startup, DKG activation, and untrusted import boundary.
       tampered checkpoint bindings still fail, unknown roster watermarks fail,
       and invalid signatures/quorums remain rejected.
 - [ ] Run focused common/Axum tests, standalone non-federation tests affected by
-      shared code, and the exact Milestone 0 release matrix three times.
+      shared code, and one release sample each of the retained Milestone 0
+      `10:1`, `20:5`, and `100:20` cases. Compare the stable `10:1` CPU result
+      with the Milestone 0 median for the 15% impact gate.
 
 ### Success criteria
 
@@ -1047,3 +1442,4 @@ Add future measurements here rather than rewriting earlier results.
 | Date | Git commit | Environment | Case | Result | Interpretation |
 | --- | --- | --- | --- | --- | --- |
 | 2026-07-17 | `a21bf79d37a6807981504741cf65e597ee401b6e` | Nocean, 5 members, fakewallet | `10:1` | 0.063 TPS, p50 15.218s, p95 18.475s, 55.1% average CPU/member | Regression reproduced; static review ranks repeated full `config.validate()` + quorum re-verify on every unit-finalize capture as the top CPU lead; A/B confirmation still required (M0) |
+| 2026-07-17 | This Milestone 0 commit; hash recorded at Milestone 1 start | Local release, 5 members, SQLite, fakewallet | `20/20` versus `20000/20000`; one retained `10:1`, `20:5`, `100:20` matrix each | Stable sequential aggregate CPU median 52.45s versus 6.43s (-87.7%); direct `40:10` profile recorded 1,128 full config validations and 18,048 BLS public-key interpolations | Confirmed repeated immutable config/keyset validation is the dominant transaction compute sink; bounded metrics, exact digest diagnostic, and corrected harness kept; no production optimization in M0 |

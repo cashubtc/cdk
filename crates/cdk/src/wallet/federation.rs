@@ -5,7 +5,7 @@ use std::fmt;
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use cdk_common::error::ErrorResponse;
@@ -141,6 +141,52 @@ enum ShareAmountValidation {
     Exact,
     AllowZeroAmountPlaceholder,
     Restore,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum FederationWalletPerformanceStage {
+    MemberShareBatchVerification,
+    MemberShareScalarFallback,
+    ShareAggregation,
+    FinalBlindSignatureVerification,
+    FinalProofVerification,
+}
+
+impl FederationWalletPerformanceStage {
+    #[cfg(test)]
+    const ALL: [Self; 5] = [
+        Self::MemberShareBatchVerification,
+        Self::MemberShareScalarFallback,
+        Self::ShareAggregation,
+        Self::FinalBlindSignatureVerification,
+        Self::FinalProofVerification,
+    ];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::MemberShareBatchVerification => "member_share_batch_verification",
+            Self::MemberShareScalarFallback => "member_share_scalar_fallback",
+            Self::ShareAggregation => "share_aggregation",
+            Self::FinalBlindSignatureVerification => "final_blind_signature_verification",
+            Self::FinalProofVerification => "final_proof_verification",
+        }
+    }
+}
+
+pub(crate) fn record_wallet_performance_stage(
+    stage: FederationWalletPerformanceStage,
+    started_at: Instant,
+    work_items: usize,
+    success: bool,
+) {
+    tracing::debug!(
+        target: "cdk::wallet::federation_performance",
+        stage = stage.as_str(),
+        work_items,
+        duration_seconds = started_at.elapsed().as_secs_f64(),
+        success,
+        "Federation wallet performance stage completed"
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1359,20 +1405,31 @@ impl FederatedMintConnector {
                 ))
             })?;
 
-        let mut aggregate_signatures = Vec::with_capacity(outputs.len());
-        for (index, (amount, keyset_id)) in metadata.into_iter().enumerate() {
-            let shares = selected_members
-                .iter()
-                .map(|(_, shares)| shares[index])
-                .collect::<Vec<_>>();
-            let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
-            aggregate_signatures.push(BlindSignature {
-                amount,
-                keyset_id,
-                c: aggregate_signature.into(),
-                dleq: None,
-            });
-        }
+        let aggregation_started_at = Instant::now();
+        let aggregate_signatures = metadata
+            .into_iter()
+            .enumerate()
+            .map(|(index, (amount, keyset_id))| {
+                let shares = selected_members
+                    .iter()
+                    .map(|(_, shares)| shares[index])
+                    .collect::<Vec<_>>();
+                let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
+                Ok(BlindSignature {
+                    amount,
+                    keyset_id,
+                    c: aggregate_signature.into(),
+                    dleq: None,
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>();
+        record_wallet_performance_stage(
+            FederationWalletPerformanceStage::ShareAggregation,
+            aggregation_started_at,
+            outputs.len(),
+            aggregate_signatures.is_ok(),
+        );
+        let aggregate_signatures = aggregate_signatures?;
 
         Ok(MintResponse {
             signatures: aggregate_signatures,
@@ -1437,20 +1494,40 @@ impl FederatedMintConnector {
             public_shares.push(*public_share);
         }
 
-        if !batch_verify_blind_signature_shares(&shares, &blinded_messages, &public_shares)? {
-            for (((share, blinded_message), public_share), (amount, keyset_id)) in shares
-                .iter()
-                .zip(&blinded_messages)
-                .zip(&public_shares)
-                .zip(&metadata)
-            {
-                if !verify_blind_signature_share(share, blinded_message, public_share)? {
-                    return Err(Error::InvalidMintResponse(format!(
-                        "member {} returned an invalid signature share for keyset {} amount {}",
-                        member_id, keyset_id, amount
-                    )));
+        let batch_started_at = Instant::now();
+        let batch_verification =
+            batch_verify_blind_signature_shares(&shares, &blinded_messages, &public_shares);
+        record_wallet_performance_stage(
+            FederationWalletPerformanceStage::MemberShareBatchVerification,
+            batch_started_at,
+            shares.len(),
+            batch_verification.as_ref().is_ok_and(|verified| *verified),
+        );
+        if !batch_verification? {
+            let scalar_started_at = Instant::now();
+            let scalar_verification = (|| {
+                for (((share, blinded_message), public_share), (amount, keyset_id)) in shares
+                    .iter()
+                    .zip(&blinded_messages)
+                    .zip(&public_shares)
+                    .zip(&metadata)
+                {
+                    if !verify_blind_signature_share(share, blinded_message, public_share)? {
+                        return Err(Error::InvalidMintResponse(format!(
+                            "member {} returned an invalid signature share for keyset {} amount {}",
+                            member_id, keyset_id, amount
+                        )));
+                    }
                 }
-            }
+                Ok(())
+            })();
+            record_wallet_performance_stage(
+                FederationWalletPerformanceStage::MemberShareScalarFallback,
+                scalar_started_at,
+                shares.len(),
+                scalar_verification.is_ok(),
+            );
+            scalar_verification?;
 
             return Err(Error::InvalidMintResponse(format!(
                 "member {} signature-share batch verification failed",

@@ -32,6 +32,8 @@
 //! | `[skipped]` | Recovery deferred (mint unreachable), will retry on next recovery |
 
 use std::collections::HashMap;
+#[cfg(feature = "federation")]
+use std::time::Instant;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -261,8 +263,19 @@ impl<'a> ReceiveSaga<'a, Initial> {
             .filter(|proof| proof.keyset_id.get_version() == KeySetVersion::Version02)
             .map(|proof| proof.secret.as_bytes())
             .collect::<Vec<_>>();
-        batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
-            .map_err(|_| Error::CouldNotVerifyDleq)?;
+        #[cfg(feature = "federation")]
+        let proof_verification_started_at = Instant::now();
+        let proof_verification =
+            batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
+                .map_err(|_| Error::CouldNotVerifyDleq);
+        #[cfg(feature = "federation")]
+        crate::wallet::federation::record_wallet_performance_stage(
+            crate::wallet::federation::FederationWalletPerformanceStage::FinalProofVerification,
+            proof_verification_started_at,
+            bls_signatures.len(),
+            proof_verification.is_ok(),
+        );
+        proof_verification?;
 
         Ok(ReceiveSaga {
             wallet: self.wallet,

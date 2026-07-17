@@ -1,6 +1,6 @@
 use cdk_common::federation::{
-    FederationCheckpointStatus, FederationId, FederationJournalDigest,
-    FederationMaterializedStateDigest, FederationMaterializedStateRow,
+    FederationCheckpointStatus, FederationFinalizedItemDigest, FederationId,
+    FederationJournalDigest, FederationMaterializedStateDigest, FederationMaterializedStateRow,
     FederationMaterializedStateRowFingerprint, FederationPeerStatus, FEDERATION_REST_API_VERSION,
 };
 
@@ -98,6 +98,12 @@ trait StatusFixtureExt {
         self,
         materialized_state_digest: FederationMaterializedStateDigest,
     ) -> Self;
+
+    fn with_finalized_frontier(
+        self,
+        next_item_index: u64,
+        item_digest: FederationFinalizedItemDigest,
+    ) -> Self;
 }
 
 impl StatusFixtureExt for FederationLocalStatusResponse {
@@ -106,6 +112,16 @@ impl StatusFixtureExt for FederationLocalStatusResponse {
         materialized_state_digest: FederationMaterializedStateDigest,
     ) -> Self {
         self.peer_status.materialized_state_digest = Some(materialized_state_digest);
+        self
+    }
+
+    fn with_finalized_frontier(
+        mut self,
+        next_item_index: u64,
+        item_digest: FederationFinalizedItemDigest,
+    ) -> Self {
+        self.checkpoint.frontier.finalized_next_item_index = next_item_index;
+        self.checkpoint.frontier.finalized_item_digest = item_digest;
         self
     }
 }
@@ -135,10 +151,6 @@ fn digest_comparison_groups_matching_members() {
     report
         .ensure_converged()
         .expect("matching digests converge");
-    assert!(
-        !report.needs_materialized_row_diagnostics(),
-        "matching digests must not request every materialized-state row"
-    );
 }
 
 #[test]
@@ -193,6 +205,59 @@ fn digest_comparison_rejects_divergent_groups() {
         DigestComparisonDiagnosticKind::OrderDigestMismatch
     );
     assert!(digest_diagnostic_line(&report.diagnostics[0]).contains("kind=order_digest_mismatch"));
+}
+
+#[test]
+fn digest_comparison_rejects_finalized_frontier_index_mismatch() {
+    let order_digest = FederationJournalDigest::from_bytes([1; 32]);
+    let materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let first = local_status(1, 4, order_digest, materialized_state_digest)
+        .with_finalized_frontier(4, FederationFinalizedItemDigest::from_bytes([3; 32]));
+    let second = local_status(2, 4, order_digest, materialized_state_digest)
+        .with_finalized_frontier(5, FederationFinalizedItemDigest::from_bytes([4; 32]));
+
+    let report = DigestComparisonReport::from_statuses(&[first, second]);
+    let err = report
+        .ensure_converged()
+        .expect_err("different durable finalized frontiers must fail");
+
+    assert!(err.to_string().contains("finalized_frontier_mismatch"));
+    assert_eq!(
+        report.diagnostics[0].kind,
+        DigestComparisonDiagnosticKind::FinalizedFrontierMismatch
+    );
+    assert!(report.diagnostics[0]
+        .detail
+        .contains("finalized_next_item_indexes=4,5"));
+    assert!(digest_group_line(&report.groups[0]).contains("finalized_next_item_index="));
+    assert!(digest_group_line(&report.groups[0]).contains("finalized_item_digest="));
+}
+
+#[test]
+fn digest_comparison_rejects_finalized_digest_mismatch_at_same_index() {
+    let order_digest = FederationJournalDigest::from_bytes([1; 32]);
+    let materialized_state_digest = FederationMaterializedStateDigest::from_bytes([2; 32]);
+    let first = local_status(1, 4, order_digest, materialized_state_digest)
+        .with_finalized_frontier(4, FederationFinalizedItemDigest::from_bytes([3; 32]));
+    let second = local_status(2, 4, order_digest, materialized_state_digest)
+        .with_finalized_frontier(4, FederationFinalizedItemDigest::from_bytes([4; 32]));
+
+    let report = DigestComparisonReport::from_statuses(&[first, second]);
+    let err = report
+        .ensure_converged()
+        .expect_err("different durable finalized digests must fail");
+
+    assert!(err.to_string().contains("finalized_frontier_mismatch"));
+    assert_eq!(
+        report.diagnostics[0].kind,
+        DigestComparisonDiagnosticKind::FinalizedFrontierMismatch
+    );
+    assert!(report.diagnostics[0]
+        .detail
+        .contains("finalized_next_item_indexes=4"));
+    assert!(report.diagnostics[0]
+        .detail
+        .contains("finalized_item_digests="));
 }
 
 #[test]
@@ -267,7 +332,6 @@ fn digest_comparison_diagnoses_materialized_state_mismatch() {
     assert!(
         digest_diagnostic_line(&report.diagnostics[0]).contains("kind=materialized_state_mismatch")
     );
-    assert!(report.needs_materialized_row_diagnostics());
 }
 
 #[test]

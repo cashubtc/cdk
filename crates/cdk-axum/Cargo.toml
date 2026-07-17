@@ -22,7 +22,7 @@ federation = [
 ]
 redis = ["dep:redis"]
 integration-tests = []
-prometheus = ["dep:cdk-prometheus"]
+prometheus = ["dep:cdk-prometheus", "cdk-common/prometheus"]
 info-page = ["dep:maud"]
 
 [dependencies]

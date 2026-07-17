@@ -3,6 +3,8 @@
 use core::fmt;
 use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "prometheus")]
+use std::time::Instant;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -2208,6 +2210,37 @@ impl FederationDkgTranscript {
     /// flags and append keysets, but may not remove or mutate any immutable
     /// setup key material.
     pub fn validate_setup_lineage_against_config(
+        &self,
+        public_config: &FederationConfig,
+    ) -> Result<()> {
+        #[cfg(feature = "prometheus")]
+        {
+            cdk_prometheus::METRICS.record_federation_performance_work(
+                cdk_prometheus::FederationPerformanceWork::SetupLineageValidationAttempts,
+                1,
+            );
+        }
+        #[cfg(feature = "prometheus")]
+        let started_at = Instant::now();
+        let result = self.validate_setup_lineage_against_config_inner(public_config);
+        #[cfg(feature = "prometheus")]
+        {
+            if result.is_err() {
+                cdk_prometheus::METRICS.record_federation_performance_work(
+                    cdk_prometheus::FederationPerformanceWork::SetupLineageValidationFailures,
+                    1,
+                );
+            }
+            cdk_prometheus::METRICS.record_federation_performance_operation(
+                cdk_prometheus::FederationPerformanceOperation::SetupLineageValidation,
+                cdk_prometheus::FederationPerformanceOutcome::from_success(result.is_ok()),
+                started_at.elapsed().as_secs_f64(),
+            );
+        }
+        result
+    }
+
+    fn validate_setup_lineage_against_config_inner(
         &self,
         public_config: &FederationConfig,
     ) -> Result<()> {

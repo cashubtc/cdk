@@ -38,10 +38,42 @@ pub(super) struct FederationOperationPipeline {
     pub(super) application: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// Held outer operation-application lock with bounded wait/hold instrumentation.
+#[derive(Debug)]
+pub(super) struct FederationOperationPipelineGuard<'a> {
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+    #[cfg(feature = "prometheus")]
+    acquired_at: Instant,
+}
+
+#[cfg(feature = "prometheus")]
+impl Drop for FederationOperationPipelineGuard<'_> {
+    fn drop(&mut self) {
+        cdk_prometheus::METRICS.record_federation_performance_operation(
+            cdk_prometheus::FederationPerformanceOperation::OperationApplicationLockHold,
+            cdk_prometheus::FederationPerformanceOutcome::Success,
+            self.acquired_at.elapsed().as_secs_f64(),
+        );
+    }
+}
+
 impl FederationOperationPipeline {
     /// Acquire the outer mutation lock shared by live finality and catch-up.
-    pub(super) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.application.lock().await
+    pub(super) async fn lock(&self) -> FederationOperationPipelineGuard<'_> {
+        #[cfg(feature = "prometheus")]
+        let wait_started_at = Instant::now();
+        let guard = self.application.lock().await;
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_performance_operation(
+            cdk_prometheus::FederationPerformanceOperation::OperationApplicationLockWait,
+            cdk_prometheus::FederationPerformanceOutcome::Success,
+            wait_started_at.elapsed().as_secs_f64(),
+        );
+        FederationOperationPipelineGuard {
+            _guard: guard,
+            #[cfg(feature = "prometheus")]
+            acquired_at: Instant::now(),
+        }
     }
 }
 

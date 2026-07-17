@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::str::FromStr;
 use std::sync::Arc;
+#[cfg(feature = "federation")]
+use std::time::Instant;
 
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
@@ -1074,8 +1076,19 @@ impl Wallet {
             }
         }
 
-        batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
-            .map_err(|_| Error::CouldNotVerifyDleq)?;
+        #[cfg(feature = "federation")]
+        let proof_verification_started_at = Instant::now();
+        let proof_verification =
+            batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
+                .map_err(|_| Error::CouldNotVerifyDleq);
+        #[cfg(feature = "federation")]
+        self::federation::record_wallet_performance_stage(
+            self::federation::FederationWalletPerformanceStage::FinalProofVerification,
+            proof_verification_started_at,
+            bls_signatures.len(),
+            proof_verification.is_ok(),
+        );
+        proof_verification?;
 
         Ok(())
     }

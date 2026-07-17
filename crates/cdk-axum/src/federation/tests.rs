@@ -9136,6 +9136,41 @@ async fn trusted_checkpoint_restart_replays_rejection_and_later_operation() {
 
 #[tokio::test]
 async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
+    #[cfg(feature = "prometheus")]
+    let capture_attempts_before = prometheus_metric_value(
+        "cdk_federation_performance_work_total",
+        &[("work", "scheduled_capture_attempts")],
+    );
+    #[cfg(feature = "prometheus")]
+    let ineligible_before = prometheus_metric_value(
+        "cdk_federation_performance_work_total",
+        &[("work", "scheduled_capture_skipped_ineligible")],
+    );
+    #[cfg(feature = "prometheus")]
+    let pending_before = prometheus_metric_value(
+        "cdk_federation_performance_work_total",
+        &[("work", "scheduled_capture_skipped_pending_candidate")],
+    );
+    #[cfg(feature = "prometheus")]
+    let created_before = prometheus_metric_value(
+        "cdk_federation_performance_work_total",
+        &[("work", "scheduled_capture_created")],
+    );
+    #[cfg(feature = "prometheus")]
+    let suffix_rows_before = prometheus_metric_value(
+        "cdk_federation_performance_work_total",
+        &[("work", "scheduled_capture_suffix_rows_loaded")],
+    );
+    #[cfg(feature = "prometheus")]
+    let discarded_rows_before = prometheus_metric_value(
+        "cdk_federation_performance_work_total",
+        &[("work", "scheduled_capture_ineligible_rows_discarded")],
+    );
+    #[cfg(feature = "prometheus")]
+    let persistence_before = prometheus_metric_value(
+        "cdk_federation_performance_work_total",
+        &[("work", "checkpoint_persistence_successes")],
+    );
     let (mut public_config, local_private, _) = transport_config();
     public_config.checkpoint_policy =
         FederationCheckpointPolicy::new(2, 2).expect("checkpoint policy");
@@ -9203,6 +9238,51 @@ async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
             .len(),
         1
     );
+    #[cfg(feature = "prometheus")]
+    {
+        assert!(
+            prometheus_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "scheduled_capture_attempts")],
+            ) >= capture_attempts_before + 3.0
+        );
+        assert!(
+            prometheus_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "scheduled_capture_skipped_ineligible")],
+            ) >= ineligible_before + 1.0
+        );
+        assert!(
+            prometheus_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "scheduled_capture_skipped_pending_candidate")],
+            ) >= pending_before + 1.0
+        );
+        assert!(
+            prometheus_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "scheduled_capture_created")],
+            ) >= created_before + 1.0
+        );
+        assert!(
+            prometheus_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "scheduled_capture_suffix_rows_loaded")],
+            ) >= suffix_rows_before + 3.0
+        );
+        assert!(
+            prometheus_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "scheduled_capture_ineligible_rows_discarded")],
+            ) >= discarded_rows_before + 1.0
+        );
+        assert!(
+            prometheus_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "checkpoint_persistence_successes")],
+            ) >= persistence_before + 1.0
+        );
+    }
 }
 
 async fn apply_identical_finalized_unit(
@@ -25019,6 +25099,86 @@ async fn private_local_status_route_returns_consensus_and_sync_state() {
     assert!(
         !status_json.contains("0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41")
     );
+}
+
+#[tokio::test]
+async fn private_local_status_full_rows_replace_stale_cached_audit_digest() {
+    let (state, public_config, local_private, peer_private) =
+        federation_route_state_with_local_private().await;
+    let local_member = local_private.member_id;
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("submit state captured by audit");
+    let checkpoint = recovery_checkpoint_for_state(&state, &public_config, None).await;
+    let checkpoint_id = checkpoint.id().expect("audited checkpoint id");
+    let cached_audit_digest = checkpoint.materialized_state_digest;
+    let mut tx = state
+        .mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("begin cached audit transaction");
+    tx.add_federation_checkpoint_candidate(&checkpoint)
+        .await
+        .expect("persist audited checkpoint candidate");
+    tx.record_federation_materialized_state_audit(&checkpoint)
+        .await
+        .expect("record cached materialized-state audit");
+    tx.commit().await.expect("commit cached audit");
+
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("advance materialized state after audit");
+    let current_digest = materialized_state_digest(&state, &[])
+        .await
+        .expect("current materialized-state digest");
+    assert_ne!(current_digest, cached_audit_digest);
+
+    let cached_request = signed_status_request(&public_config, &peer_private, local_member, 1);
+    let cached_response = post_local_status(State(state.clone()), Json(cached_request))
+        .await
+        .expect("cached local status response")
+        .0;
+    assert_eq!(
+        cached_response.peer_status.materialized_state_digest,
+        Some(cached_audit_digest)
+    );
+    assert_eq!(
+        cached_response.peer_status.latest_audited_checkpoint_id,
+        Some(checkpoint_id)
+    );
+
+    let exact_request = signed_status_request_with_payload(
+        &public_config,
+        &peer_private,
+        local_member,
+        2,
+        FederationPeerStatusRequest::with_materialized_rows(),
+    );
+    let exact_response = post_local_status(State(state), Json(exact_request))
+        .await
+        .expect("exact local status response")
+        .0;
+    assert_eq!(
+        exact_response.peer_status.materialized_state_digest,
+        Some(current_digest),
+        "full-row status must replace the older cached audit digest"
+    );
+    assert_eq!(
+        exact_response.peer_status.latest_audited_checkpoint_id, None,
+        "the current snapshot digest must not be attributed to the cached checkpoint audit"
+    );
+    assert_eq!(
+        exact_response
+            .checkpoint
+            .frontier
+            .latest_audited_checkpoint_id,
+        Some(checkpoint_id),
+        "durable checkpoint status must continue to report the older cached audit"
+    );
+    assert!(!exact_response.materialized_state_rows.is_empty());
 }
 
 #[tokio::test]

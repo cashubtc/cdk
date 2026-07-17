@@ -666,6 +666,27 @@ impl FederationNodeRuntime {
         &self,
         entries: &[FederationJournalEntry],
     ) -> Result<Vec<FederationOperationId>, cdk::Error> {
+        #[cfg(feature = "prometheus")]
+        let started_at = std::time::Instant::now();
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_performance_work(
+            cdk_prometheus::FederationPerformanceWork::JournalEntriesProcessed,
+            u64::try_from(entries.len()).unwrap_or(u64::MAX),
+        );
+        let result = self.apply_journal_entries_inner(entries).await;
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_performance_operation(
+            cdk_prometheus::FederationPerformanceOperation::JournalApplication,
+            cdk_prometheus::FederationPerformanceOutcome::from_success(result.is_ok()),
+            started_at.elapsed().as_secs_f64(),
+        );
+        result
+    }
+
+    async fn apply_journal_entries_inner(
+        &self,
+        entries: &[FederationJournalEntry],
+    ) -> Result<Vec<FederationOperationId>, cdk::Error> {
         let db = self.active_mint()?.localstore();
         let mut applied = Vec::new();
         let mut terminal_applications = Vec::with_capacity(entries.len());

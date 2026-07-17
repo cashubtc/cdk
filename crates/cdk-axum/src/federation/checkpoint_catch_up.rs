@@ -58,6 +58,7 @@ impl FederationNodeRuntime {
             quorum,
             public_config,
             runtime_config.member_id(),
+            super::CheckpointQuorumVerificationContext::StartupCatchUp,
         )?;
         let checkpoint = verified_quorum.checkpoint();
         response.validate_checkpoint_binding(checkpoint)?;
@@ -69,6 +70,7 @@ impl FederationNodeRuntime {
                 current,
                 public_config,
                 runtime_config.member_id(),
+                super::CheckpointQuorumVerificationContext::StartupCatchUp,
             )?),
             None => None,
         };

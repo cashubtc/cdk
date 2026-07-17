@@ -53,6 +53,55 @@ use super::melt::ensure_melt_quote_matches_request;
 use super::verification::{Verification, MAX_PROOF_CONTENT_LEN};
 use super::Mint;
 use super::MintInput;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FederationProofVerificationContext {
+    SwapBuilder,
+    SwapAdmission,
+    SwapApply,
+    MeltBuilder,
+    MeltAdmission,
+    MeltApply,
+}
+
+#[cfg(feature = "prometheus")]
+impl FederationProofVerificationContext {
+    const fn performance_labels(
+        self,
+    ) -> (
+        cdk_prometheus::FederationPerformanceWork,
+        cdk_prometheus::FederationPerformanceOperation,
+    ) {
+        use cdk_prometheus::{FederationPerformanceOperation, FederationPerformanceWork};
+
+        match self {
+            Self::SwapBuilder => (
+                FederationPerformanceWork::SwapBuilderProofsVerified,
+                FederationPerformanceOperation::SwapProofVerificationBuilder,
+            ),
+            Self::SwapAdmission => (
+                FederationPerformanceWork::SwapAdmissionProofsVerified,
+                FederationPerformanceOperation::SwapProofVerificationAdmission,
+            ),
+            Self::SwapApply => (
+                FederationPerformanceWork::SwapApplyProofsVerified,
+                FederationPerformanceOperation::SwapProofVerificationApply,
+            ),
+            Self::MeltBuilder => (
+                FederationPerformanceWork::MeltBuilderProofsVerified,
+                FederationPerformanceOperation::MeltProofVerificationBuilder,
+            ),
+            Self::MeltAdmission => (
+                FederationPerformanceWork::MeltAdmissionProofsVerified,
+                FederationPerformanceOperation::MeltProofVerificationAdmission,
+            ),
+            Self::MeltApply => (
+                FederationPerformanceWork::MeltApplyProofsVerified,
+                FederationPerformanceOperation::MeltProofVerificationApply,
+            ),
+        }
+    }
+}
 use crate::fees::calculate_fee;
 use crate::types::PaymentProcessorKey;
 
@@ -761,6 +810,32 @@ impl FederationRuntimeConfig {
         Ok(())
     }
 
+    fn verify_proofs_with_performance_context(
+        &self,
+        proofs: &Proofs,
+        context: FederationProofVerificationContext,
+    ) -> Result<(), Error> {
+        #[cfg(feature = "prometheus")]
+        let started_at = Instant::now();
+        let result = self.verify_proofs(proofs);
+        #[cfg(feature = "prometheus")]
+        {
+            let (work, operation) = context.performance_labels();
+            cdk_prometheus::METRICS.record_federation_performance_work(
+                work,
+                u64::try_from(proofs.len()).unwrap_or(u64::MAX),
+            );
+            cdk_prometheus::METRICS.record_federation_performance_operation(
+                operation,
+                cdk_prometheus::FederationPerformanceOutcome::from_success(result.is_ok()),
+                started_at.elapsed().as_secs_f64(),
+            );
+        }
+        #[cfg(not(feature = "prometheus"))]
+        let _ = context;
+        result
+    }
+
     /// Build the consensus operation for signing mint outputs.
     pub fn mint_operation(&self, input: MintInput) -> Result<FederationOperationEnvelope, Error> {
         self.validate_federated_mint_submission(&input)?;
@@ -837,7 +912,10 @@ impl FederationRuntimeConfig {
         &self,
         request: MeltRequest<QuoteId>,
     ) -> Result<FederationOperationEnvelope, Error> {
-        self.validate_federated_melt_submission(&request)?;
+        self.validate_federated_melt_submission_with_context(
+            &request,
+            FederationProofVerificationContext::MeltBuilder,
+        )?;
         let mut consensus_request = MeltRequest::new(
             request.quote().to_string(),
             request.inputs().clone(),
@@ -916,10 +994,21 @@ impl FederationRuntimeConfig {
         &self,
         request: &MeltRequest<QuoteId>,
     ) -> Result<(), Error> {
+        self.validate_federated_melt_submission_with_context(
+            request,
+            FederationProofVerificationContext::MeltAdmission,
+        )
+    }
+
+    fn validate_federated_melt_submission_with_context(
+        &self,
+        request: &MeltRequest<QuoteId>,
+        context: FederationProofVerificationContext,
+    ) -> Result<(), Error> {
         self.validate_melt_change_outputs(request)?;
         Self::validate_proof_content_bounds(request.inputs())?;
         Mint::check_inputs_unique(request.inputs())?;
-        self.verify_proofs(request.inputs())?;
+        self.verify_proofs_with_performance_context(request.inputs(), context)?;
         request.verify_spending_conditions()?;
         Ok(())
     }
@@ -938,7 +1027,10 @@ impl FederationRuntimeConfig {
         &self,
         request: SwapRequest,
     ) -> Result<FederationOperationEnvelope, Error> {
-        self.validate_federated_swap_submission(&request)?;
+        self.validate_federated_swap_submission_with_context(
+            &request,
+            FederationProofVerificationContext::SwapBuilder,
+        )?;
         Ok(
             self.operation_envelope(FederationOperation::Swap(FederationSwapOperation {
                 request,
@@ -951,10 +1043,21 @@ impl FederationRuntimeConfig {
     /// This is a pure admission check. It does not inspect or mutate local proof
     /// state; accepted consensus apply is still the authoritative spend gate.
     pub fn validate_federated_swap_submission(&self, request: &SwapRequest) -> Result<(), Error> {
+        self.validate_federated_swap_submission_with_context(
+            request,
+            FederationProofVerificationContext::SwapAdmission,
+        )
+    }
+
+    fn validate_federated_swap_submission_with_context(
+        &self,
+        request: &SwapRequest,
+        context: FederationProofVerificationContext,
+    ) -> Result<(), Error> {
         self.validate_swap_outputs(request)?;
         Self::validate_proof_content_bounds(request.inputs())?;
         Mint::check_inputs_unique(request.inputs())?;
-        self.verify_proofs(request.inputs())?;
+        self.verify_proofs_with_performance_context(request.inputs(), context)?;
         request.verify_spending_conditions()?;
         Ok(())
     }
@@ -2381,8 +2484,11 @@ impl Mint {
             ));
         }
 
-        let input_verification =
-            self.verify_federation_inputs_with_config(&config, input_proofs)?;
+        let input_verification = self.verify_federation_inputs_with_config_and_context(
+            &config,
+            input_proofs,
+            FederationProofVerificationContext::SwapApply,
+        )?;
         operation.request.verify_spending_conditions()?;
         let output_verification =
             self.verify_federation_outputs_with_config(&config, operation.request.outputs())?;
@@ -2806,22 +2912,41 @@ impl Mint {
         finish_federation_apply_transaction(transaction, entry, outcome).await
     }
 
-    /// Verify federated melt or swap inputs against aggregate BLS keysets.
-    pub(crate) async fn verify_federation_inputs(
+    pub(super) async fn verify_federation_inputs_with_context(
         &self,
         inputs: &Proofs,
+        context: FederationProofVerificationContext,
     ) -> Result<Verification, Error> {
         let config = self
             .effective_federation_config()
             .await?
             .ok_or(Error::Internal)?;
-        self.verify_federation_inputs_with_config(&config, inputs)
+        self.verify_federation_inputs_with_config_and_context(&config, inputs, context)
     }
 
+    #[cfg(test)]
     pub(crate) fn verify_federation_inputs_with_config(
         &self,
         config: &FederationRuntimeConfig,
         inputs: &Proofs,
+    ) -> Result<Verification, Error> {
+        self.verify_federation_inputs_with_config_inner(config, inputs, None)
+    }
+
+    fn verify_federation_inputs_with_config_and_context(
+        &self,
+        config: &FederationRuntimeConfig,
+        inputs: &Proofs,
+        context: FederationProofVerificationContext,
+    ) -> Result<Verification, Error> {
+        self.verify_federation_inputs_with_config_inner(config, inputs, Some(context))
+    }
+
+    fn verify_federation_inputs_with_config_inner(
+        &self,
+        config: &FederationRuntimeConfig,
+        inputs: &Proofs,
+        context: Option<FederationProofVerificationContext>,
     ) -> Result<Verification, Error> {
         let inputs_count = inputs.len();
         if inputs_count > self.max_inputs {
@@ -2839,7 +2964,10 @@ impl Mint {
         FederationRuntimeConfig::validate_proof_content_bounds(inputs)?;
 
         Self::check_inputs_unique(inputs)?;
-        config.verify_proofs(inputs)?;
+        match context {
+            Some(context) => config.verify_proofs_with_performance_context(inputs, context)?,
+            None => config.verify_proofs(inputs)?,
+        }
         let mut keyset_units = HashSet::new();
         for proof in inputs {
             let keyset = config
@@ -3408,6 +3536,36 @@ fn mint_quote_state_label(state: MintQuoteState) -> &'static str {
         MintQuoteState::Unpaid => "unpaid",
         MintQuoteState::Paid => "paid",
         MintQuoteState::Issued => "issued",
+    }
+}
+
+#[cfg(all(test, feature = "prometheus"))]
+mod performance_instrumentation_tests {
+    use std::collections::HashSet;
+
+    use super::FederationProofVerificationContext;
+
+    #[test]
+    fn proof_verification_contexts_have_distinct_fixed_metric_labels() {
+        let contexts = [
+            FederationProofVerificationContext::SwapBuilder,
+            FederationProofVerificationContext::SwapAdmission,
+            FederationProofVerificationContext::SwapApply,
+            FederationProofVerificationContext::MeltBuilder,
+            FederationProofVerificationContext::MeltAdmission,
+            FederationProofVerificationContext::MeltApply,
+        ];
+        let mut work = HashSet::new();
+        let mut operations = HashSet::new();
+
+        for context in contexts {
+            let (context_work, context_operation) = context.performance_labels();
+            assert!(work.insert(context_work));
+            assert!(operations.insert(context_operation));
+        }
+
+        assert_eq!(work.len(), contexts.len());
+        assert_eq!(operations.len(), contexts.len());
     }
 }
 

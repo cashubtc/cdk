@@ -1359,7 +1359,12 @@ impl Mint {
             }
         }
 
-        let verification = self.verify_federation_inputs(melt_request.inputs()).await?;
+        let verification = self
+            .verify_federation_inputs_with_context(
+                melt_request.inputs(),
+                super::federation::FederationProofVerificationContext::MeltApply,
+            )
+            .await?;
         let quote_id = melt_request.quote().clone();
         let quote = self
             .localstore

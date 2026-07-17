@@ -344,7 +344,7 @@ pub enum FederationCommand {
     AuditCheckpoint(FederationCheckpointAuditArgs),
     /// Bind a quiesced database backup to its checkpoint and member secrets.
     BackupManifest(FederationBackupManifestArgs),
-    /// Compare signed order and materialized-state digests across federation members.
+    /// Compare signed order and exact current state across quiesced federation members.
     CompareDigests(FederationCompareDigestsArgs),
     /// Generate one member's independent DKG identity enrollment.
     DkgMember(FederationDkgMemberArgs),

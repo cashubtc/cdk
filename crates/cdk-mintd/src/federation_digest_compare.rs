@@ -25,29 +25,20 @@ pub(crate) async fn run_compare_digests_command(
         crate::read_federation_json(&public_config_path, "public federation config")?;
     let private_config: MemberConfigPrivate =
         crate::read_federation_json(&private_config_path, "private federation config")?;
+    // The materialized snapshot and durable frontier are read separately on each member.
+    // Run this exact comparison only after quiescing writes so every signed response
+    // represents one stable verification point rather than an in-flight transition.
     let statuses = query_local_statuses_with_materialized_rows(
         Async::default(),
         &public_config,
         &private_config,
         &args.members,
-        false,
+        true,
     )
     .await
-    .context("failed to query signed federation digest status")?;
+    .context("failed to query exact federation materialized-state digests")?;
 
-    let mut report = DigestComparisonReport::from_statuses(&statuses);
-    if report.needs_materialized_row_diagnostics() {
-        let statuses = query_local_statuses_with_materialized_rows(
-            Async::default(),
-            &public_config,
-            &private_config,
-            &args.members,
-            true,
-        )
-        .await
-        .context("failed to query federation materialized-state row diagnostics")?;
-        report = DigestComparisonReport::from_statuses(&statuses);
-    }
+    let report = DigestComparisonReport::from_statuses(&statuses);
     print_digest_comparison(&public_config, &private_config, &report);
     if !args.allow_divergence {
         report.ensure_converged()?;
@@ -84,9 +75,11 @@ fn print_digest_comparison(
 
 fn digest_group_line(group: &DigestComparisonGroup) -> String {
     format!(
-        "digest_group operations={} order_digest={} materialized_state_digest={} members={} ready={}/{} sync_states={}",
+        "digest_group operations={} order_digest={} finalized_next_item_index={} finalized_item_digest={} materialized_state_digest={} members={} ready={}/{} sync_states={}",
         group.key.operation_count,
         group.key.order_digest,
+        group.key.finalized_next_item_index,
+        group.key.finalized_item_digest,
         group.key.materialized_state_digest,
         display_list(&group.members),
         group.ready_count,
@@ -118,6 +111,8 @@ impl DigestComparisonReport {
             let key = DigestComparisonKey {
                 operation_count: status.peer_status.operation_count,
                 order_digest: status.peer_status.latest_order_digest.to_string(),
+                finalized_next_item_index: status.checkpoint.frontier.finalized_next_item_index,
+                finalized_item_digest: status.checkpoint.frontier.finalized_item_digest.to_string(),
                 materialized_state_digest: status
                     .peer_status
                     .materialized_state_digest
@@ -154,12 +149,6 @@ impl DigestComparisonReport {
 
     fn is_converged(&self) -> bool {
         self.groups.len() <= 1 && self.digest_alert_members.is_empty()
-    }
-
-    fn needs_materialized_row_diagnostics(&self) -> bool {
-        self.diagnostics.iter().any(|diagnostic| {
-            diagnostic.kind == DigestComparisonDiagnosticKind::MaterializedStateMismatch
-        })
     }
 
     fn ensure_converged(&self) -> Result<()> {
@@ -224,6 +213,7 @@ enum DigestComparisonDiagnosticKind {
     DigestAlert,
     HeightMismatch,
     OrderDigestMismatch,
+    FinalizedFrontierMismatch,
     MaterializedStateMismatch,
 }
 
@@ -233,6 +223,7 @@ impl DigestComparisonDiagnosticKind {
             Self::DigestAlert => "digest_alert",
             Self::HeightMismatch => "height_mismatch",
             Self::OrderDigestMismatch => "order_digest_mismatch",
+            Self::FinalizedFrontierMismatch => "finalized_frontier_mismatch",
             Self::MaterializedStateMismatch => "materialized_state_mismatch",
         }
     }
@@ -242,6 +233,8 @@ impl DigestComparisonDiagnosticKind {
 struct DigestComparisonKey {
     operation_count: u64,
     order_digest: String,
+    finalized_next_item_index: u64,
+    finalized_item_digest: String,
     materialized_state_digest: String,
 }
 
@@ -296,6 +289,37 @@ fn digest_comparison_diagnostics(
                 "operation_count={} order_digests={}",
                 operation_count,
                 display_set(&order_digests)
+            ),
+        });
+        return diagnostics;
+    }
+
+    let finalized_next_item_indexes = groups
+        .iter()
+        .map(|group| group.key.finalized_next_item_index)
+        .collect::<BTreeSet<_>>();
+    let finalized_item_digests = groups
+        .iter()
+        .map(|group| group.key.finalized_item_digest.clone())
+        .collect::<BTreeSet<_>>();
+    if finalized_next_item_indexes.len() > 1 || finalized_item_digests.len() > 1 {
+        diagnostics.push(DigestComparisonDiagnostic {
+            kind: DigestComparisonDiagnosticKind::FinalizedFrontierMismatch,
+            members,
+            detail: format!(
+                "operation_count={} order_digest={} finalized_next_item_indexes={} finalized_item_digests={}",
+                operation_count,
+                order_digests
+                    .iter()
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| "none".to_string()),
+                finalized_next_item_indexes
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                display_set(&finalized_item_digests)
             ),
         });
         return diagnostics;

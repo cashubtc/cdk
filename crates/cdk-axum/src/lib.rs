@@ -2815,6 +2815,7 @@ async fn create_federation_runtime_state_with_wallet(
                 &quorum,
                 config.public_config(),
                 config.member_id(),
+                federation::CheckpointQuorumVerificationContext::StartupCatchUp,
             )?;
             let checkpoint = verified_quorum.checkpoint();
             if checkpoint.id()? != trusted_checkpoint_id {

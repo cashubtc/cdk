@@ -327,6 +327,7 @@ where
         let validation = response.validate(&self.public_config, member.member_id, checkpoint_id);
         #[cfg(feature = "prometheus")]
         if let Some(signature_count) = quorum_signature_count {
+            let verification_duration = verification_started_at.elapsed().as_secs_f64();
             let local_member = self.private_config.member_id.to_string();
             cdk_prometheus::METRICS.record_federation_checkpoint_work(
                 &local_member,
@@ -336,7 +337,12 @@ where
             cdk_prometheus::METRICS.record_federation_checkpoint_duration(
                 &local_member,
                 cdk_prometheus::FederationCheckpointOperation::SignatureVerification,
-                verification_started_at.elapsed().as_secs_f64(),
+                verification_duration,
+            );
+            super::record_checkpoint_quorum_verification_performance(
+                super::CheckpointQuorumVerificationContext::PeerFetch,
+                validation.is_ok(),
+                verification_duration,
             );
         }
         validation?;
@@ -386,6 +392,7 @@ where
         let verification = response.validate(&self.public_config, member.member_id, checkpoint);
         #[cfg(feature = "prometheus")]
         if has_signature {
+            let verification_duration = verification_started_at.elapsed().as_secs_f64();
             let local_member = self.private_config.member_id.to_string();
             cdk_prometheus::METRICS.record_federation_checkpoint_work(
                 &local_member,
@@ -395,7 +402,12 @@ where
             cdk_prometheus::METRICS.record_federation_checkpoint_duration(
                 &local_member,
                 cdk_prometheus::FederationCheckpointOperation::SignatureVerification,
-                verification_started_at.elapsed().as_secs_f64(),
+                verification_duration,
+            );
+            super::record_checkpoint_signature_verification_performance(
+                super::CheckpointSignatureVerificationContext::PeerFetch,
+                verification.is_ok(),
+                verification_duration,
             );
         }
         #[cfg(not(feature = "prometheus"))]
@@ -415,6 +427,7 @@ where
             quorum,
             &self.public_config,
             self.private_config.member_id,
+            super::CheckpointQuorumVerificationContext::Publish,
         )?;
         let checkpoint_id = quorum.checkpoint.id()?;
         let request = self.signed_request(

@@ -33,6 +33,8 @@
 //! | `[compensated]` | Minting failed or rolled back, quote released |
 
 use std::collections::HashMap;
+#[cfg(feature = "federation")]
+use std::time::Instant;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::{
@@ -1025,8 +1027,19 @@ impl<'a> MintSaga<'a, Prepared> {
                 .iter()
                 .map(|proof| proof.secret.as_bytes())
                 .collect::<Vec<_>>();
-            batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
-                .map_err(|_| Error::CouldNotVerifyDleq)?;
+            #[cfg(feature = "federation")]
+            let proof_verification_started_at = Instant::now();
+            let proof_verification =
+                batch_verify_bls_messages(&bls_mint_pubkeys, &bls_signatures, &bls_messages)
+                    .map_err(|_| Error::CouldNotVerifyDleq);
+            #[cfg(feature = "federation")]
+            crate::wallet::federation::record_wallet_performance_stage(
+                crate::wallet::federation::FederationWalletPerformanceStage::FinalProofVerification,
+                proof_verification_started_at,
+                bls_signatures.len(),
+                proof_verification.is_ok(),
+            );
+            proof_verification?;
 
             let minted_amount = proofs.total_amount()?;
 

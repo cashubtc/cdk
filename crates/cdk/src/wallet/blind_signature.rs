@@ -1,3 +1,6 @@
+#[cfg(feature = "federation")]
+use std::time::Instant;
+
 use crate::dhke::batch_verify_bls_blind_signatures;
 use crate::nuts::{nut12, BlindSignature, BlindedMessage, KeySetVersion};
 use crate::wallet::Wallet;
@@ -89,8 +92,22 @@ pub(crate) async fn validate_mint_response_signatures<'a>(
         }
     }
 
-    batch_verify_bls_blind_signatures(&bls_mint_pubkeys, &bls_signatures, &bls_blinded_messages)
-        .map_err(|_| Error::CouldNotVerifyDleq)?;
+    #[cfg(feature = "federation")]
+    let verification_started_at = Instant::now();
+    let verification = batch_verify_bls_blind_signatures(
+        &bls_mint_pubkeys,
+        &bls_signatures,
+        &bls_blinded_messages,
+    )
+    .map_err(|_| Error::CouldNotVerifyDleq);
+    #[cfg(feature = "federation")]
+    super::federation::record_wallet_performance_stage(
+        super::federation::FederationWalletPerformanceStage::FinalBlindSignatureVerification,
+        verification_started_at,
+        bls_signatures.len(),
+        verification.is_ok(),
+    );
+    verification?;
 
     Ok(())
 }

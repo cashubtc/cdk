@@ -639,8 +639,12 @@ pub(super) async fn next_local_checkpoint_catch_up_target(
         .get_next_federation_scheduled_checkpoint_quorum(scheduled_sequence)
         .await?
     {
-        let verified_next =
-            super::verify_checkpoint_quorum_with_metrics(&next, public_config, local_member)?;
+        let verified_next = super::verify_checkpoint_quorum_with_metrics(
+            &next,
+            public_config,
+            local_member,
+            super::CheckpointQuorumVerificationContext::StartupCatchUp,
+        )?;
         verified_next
             .checkpoint()
             .validate_promotion_from(current_checkpoint)?;
@@ -668,7 +672,12 @@ pub(super) async fn next_local_checkpoint_catch_up_target(
     {
         return Ok(None);
     }
-    super::verify_checkpoint_quorum_with_metrics(&recovery, public_config, local_member)?;
+    super::verify_checkpoint_quorum_with_metrics(
+        &recovery,
+        public_config,
+        local_member,
+        super::CheckpointQuorumVerificationContext::StartupCatchUp,
+    )?;
     Ok(Some(recovery))
 }
 
@@ -1217,6 +1226,7 @@ where
             quorum,
             public_config,
             runtime_config.member_id(),
+            super::CheckpointQuorumVerificationContext::StartupCatchUp,
         )?;
         let checkpoint = &quorum.checkpoint;
         let current_checkpoint = state

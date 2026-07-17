@@ -58,10 +58,31 @@ pub(super) async fn materialized_state_digest_with_metrics(
 ) -> Result<FederationMaterializedStateDigest, cdk::Error> {
     #[cfg(feature = "prometheus")]
     let started_at = std::time::Instant::now();
-    let digest = mint
-        .federation_materialized_state_snapshot()
-        .await?
-        .digest()?;
+    #[cfg(feature = "prometheus")]
+    let load_started_at = std::time::Instant::now();
+    let snapshot = mint.federation_materialized_state_snapshot().await;
+    #[cfg(feature = "prometheus")]
+    cdk_prometheus::METRICS.record_federation_performance_operation(
+        cdk_prometheus::FederationPerformanceOperation::MaterializedStateLoad,
+        cdk_prometheus::FederationPerformanceOutcome::from_success(snapshot.is_ok()),
+        load_started_at.elapsed().as_secs_f64(),
+    );
+    let snapshot = snapshot?;
+    #[cfg(feature = "prometheus")]
+    cdk_prometheus::METRICS.record_federation_performance_work(
+        cdk_prometheus::FederationPerformanceWork::MaterializedStateRowsLoaded,
+        u64::try_from(snapshot.rows().len()).unwrap_or(u64::MAX),
+    );
+    #[cfg(feature = "prometheus")]
+    let digest_started_at = std::time::Instant::now();
+    let digest = snapshot.digest();
+    #[cfg(feature = "prometheus")]
+    cdk_prometheus::METRICS.record_federation_performance_operation(
+        cdk_prometheus::FederationPerformanceOperation::MaterializedStateDigest,
+        cdk_prometheus::FederationPerformanceOutcome::from_success(digest.is_ok()),
+        digest_started_at.elapsed().as_secs_f64(),
+    );
+    let digest = digest?;
     #[cfg(feature = "prometheus")]
     cdk_prometheus::METRICS.record_federation_checkpoint_duration(
         &member_id.to_string(),
@@ -178,6 +199,7 @@ pub(super) fn verify_checkpoint_signature_with_metrics(
     checkpoint: &FederationCheckpoint,
     signer: &MemberConfigPublic,
     local_member: MemberId,
+    context: super::CheckpointSignatureVerificationContext,
 ) -> Result<(), cdk::Error> {
     #[cfg(feature = "prometheus")]
     let started_at = std::time::Instant::now();
@@ -186,6 +208,7 @@ pub(super) fn verify_checkpoint_signature_with_metrics(
         .map_err(cdk::Error::from);
     #[cfg(feature = "prometheus")]
     {
+        let duration_seconds = started_at.elapsed().as_secs_f64();
         let member = local_member.to_string();
         cdk_prometheus::METRICS.record_federation_checkpoint_work(
             &member,
@@ -195,11 +218,16 @@ pub(super) fn verify_checkpoint_signature_with_metrics(
         cdk_prometheus::METRICS.record_federation_checkpoint_duration(
             &member,
             cdk_prometheus::FederationCheckpointOperation::SignatureVerification,
-            started_at.elapsed().as_secs_f64(),
+            duration_seconds,
+        );
+        super::record_checkpoint_signature_verification_performance(
+            context,
+            result.is_ok(),
+            duration_seconds,
         );
     }
     #[cfg(not(feature = "prometheus"))]
-    let _ = local_member;
+    let _ = (local_member, context);
     result
 }
 

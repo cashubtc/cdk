@@ -358,6 +358,27 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "prometheus")]
+    fn performance_metric_value(metric: &str, labels: &[(&str, &str)]) -> f64 {
+        let scrape = cdk_prometheus::prometheus::TextEncoder::new()
+            .encode_to_string(&cdk_prometheus::METRICS.registry().gather())
+            .expect("encode prometheus metrics");
+        scrape
+            .lines()
+            .find_map(|line| {
+                if !line.starts_with(metric)
+                    || labels
+                        .iter()
+                        .any(|(key, value)| !line.contains(&format!("{key}=\"{value}\"")))
+                {
+                    return None;
+                }
+                line.rsplit_once(' ')
+                    .and_then(|(_, value)| value.parse::<f64>().ok())
+            })
+            .unwrap_or(0.0)
+    }
+
     #[test]
     fn trusted_dealer_generates_public_and_private_configs() {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
@@ -427,6 +448,150 @@ mod tests {
             serde_json::from_str::<MemberConfigPrivate>(&private_json)
                 .expect("private config from json"),
             *bundle.private_configs.get(&member_id(1)).expect("private")
+        );
+    }
+
+    #[cfg(feature = "prometheus")]
+    #[test]
+    fn config_validation_performance_metrics_cover_success_and_failure_branches() {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        let bundle = generate_trusted_dealer_configs_with_options(
+            params,
+            vec![
+                member(member_id(1)),
+                member(member_id(2)),
+                member(member_id(3)),
+            ],
+            vec![keyset_spec()],
+            TrustedDealerGenerationOptions {
+                no_aux_rand_signatures: true,
+                ..TrustedDealerGenerationOptions::default()
+            },
+        )
+        .expect("trusted dealer bundle");
+
+        let config_attempts_before = performance_metric_value(
+            "cdk_federation_performance_work_total",
+            &[("work", "config_validation_attempts")],
+        );
+        let keyset_attempts_before = performance_metric_value(
+            "cdk_federation_performance_work_total",
+            &[("work", "keyset_validation_attempts")],
+        );
+        let interpolation_attempts_before = performance_metric_value(
+            "cdk_federation_performance_work_total",
+            &[("work", "aggregate_key_interpolation_attempts")],
+        );
+        let lineage_attempts_before = performance_metric_value(
+            "cdk_federation_performance_work_total",
+            &[("work", "setup_lineage_validation_attempts")],
+        );
+        let full_config_success_before = performance_metric_value(
+            "cdk_federation_performance_operation_duration_seconds_count",
+            &[
+                ("operation", "full_config_validation"),
+                ("outcome", "success"),
+            ],
+        );
+
+        bundle
+            .public_config
+            .validate()
+            .expect("valid config remains valid");
+
+        assert!(
+            performance_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "config_validation_attempts")],
+            ) >= config_attempts_before + 2.0,
+            "setup lineage performs one nested setup-config validation"
+        );
+        assert!(
+            performance_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "keyset_validation_attempts")],
+            ) >= keyset_attempts_before + 2.0
+        );
+        assert!(
+            performance_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "aggregate_key_interpolation_attempts")],
+            ) >= interpolation_attempts_before + 4.0
+        );
+        assert!(
+            performance_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "setup_lineage_validation_attempts")],
+            ) >= lineage_attempts_before + 1.0
+        );
+        assert!(
+            performance_metric_value(
+                "cdk_federation_performance_operation_duration_seconds_count",
+                &[
+                    ("operation", "full_config_validation"),
+                    ("outcome", "success")
+                ],
+            ) >= full_config_success_before + 2.0
+        );
+
+        let keyset_failures_before = performance_metric_value(
+            "cdk_federation_performance_work_total",
+            &[("work", "keyset_validation_failures")],
+        );
+        let interpolation_failures_before = performance_metric_value(
+            "cdk_federation_performance_work_total",
+            &[("work", "aggregate_key_interpolation_failures")],
+        );
+        let invalid_thresholds = ThresholdParams {
+            member_count: 3,
+            signature_threshold: 4,
+            consensus_threshold: 4,
+        };
+        bundle.public_config.keysets[0]
+            .validate(invalid_thresholds, &bundle.public_config.members)
+            .expect_err("interpolation threshold above share count must fail");
+        assert!(
+            performance_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "keyset_validation_failures")],
+            ) >= keyset_failures_before + 1.0
+        );
+        assert!(
+            performance_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "aggregate_key_interpolation_failures")],
+            ) >= interpolation_failures_before + 1.0
+        );
+
+        let config_failures_before = performance_metric_value(
+            "cdk_federation_performance_work_total",
+            &[("work", "config_validation_failures")],
+        );
+        let lineage_failures_before = performance_metric_value(
+            "cdk_federation_performance_work_total",
+            &[("work", "setup_lineage_validation_failures")],
+        );
+        let mut invalid_lineage = bundle.public_config;
+        invalid_lineage
+            .setup_transcript
+            .as_mut()
+            .expect("setup transcript")
+            .signatures
+            .remove(&member_id(1));
+        invalid_lineage
+            .validate()
+            .expect_err("missing setup signature must fail lineage validation");
+        assert!(
+            performance_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "config_validation_failures")],
+            ) >= config_failures_before + 1.0
+        );
+        assert!(
+            performance_metric_value(
+                "cdk_federation_performance_work_total",
+                &[("work", "setup_lineage_validation_failures")],
+            ) >= lineage_failures_before + 1.0
         );
     }
 

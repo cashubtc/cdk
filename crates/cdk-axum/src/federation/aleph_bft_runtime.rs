@@ -800,6 +800,19 @@ impl UnitFinalizationHandler for CdkAlephBftFinalizationHandler {
     type Hasher = CdkAlephBftHasher;
 
     fn batch_finalized(&mut self, batch: Vec<OrderedUnit<Self::Data, Self::Hasher>>) {
+        #[cfg(feature = "prometheus")]
+        {
+            let units_with_data = batch.iter().filter(|unit| unit.data.is_some()).count();
+            let units_without_data = batch.len().saturating_sub(units_with_data);
+            cdk_prometheus::METRICS.record_federation_performance_work(
+                cdk_prometheus::FederationPerformanceWork::AlephBftFinalizedUnitsWithData,
+                u64::try_from(units_with_data).unwrap_or(u64::MAX),
+            );
+            cdk_prometheus::METRICS.record_federation_performance_work(
+                cdk_prometheus::FederationPerformanceWork::AlephBftFinalizedUnitsWithoutData,
+                u64::try_from(units_without_data).unwrap_or(u64::MAX),
+            );
+        }
         for unit in batch {
             let Some(creator) = self.keychain.member_for_node(unit.creator) else {
                 tracing::warn!(
@@ -1540,6 +1553,26 @@ mod tests {
 
     use super::*;
 
+    #[cfg(feature = "prometheus")]
+    fn performance_work_value(work: &str) -> f64 {
+        let scrape = cdk_prometheus::prometheus::TextEncoder::new()
+            .encode_to_string(&cdk_prometheus::METRICS.registry().gather())
+            .expect("encode prometheus metrics");
+        let label = format!("work=\"{work}\"");
+        scrape
+            .lines()
+            .find_map(|line| {
+                if !line.starts_with("cdk_federation_performance_work_total")
+                    || !line.contains(&label)
+                {
+                    return None;
+                }
+                line.rsplit_once(' ')
+                    .and_then(|(_, value)| value.parse::<f64>().ok())
+            })
+            .unwrap_or(0.0)
+    }
+
     fn federation_id(byte: u8) -> FederationId {
         FederationId::from_bytes([byte; 32])
     }
@@ -2074,6 +2107,10 @@ mod tests {
 
     #[tokio::test]
     async fn cdk_aleph_bft_finalization_handler_forwards_batch_payloads() {
+        #[cfg(feature = "prometheus")]
+        let with_data_before = performance_work_value("aleph_bft_finalized_units_with_data");
+        #[cfg(feature = "prometheus")]
+        let without_data_before = performance_work_value("aleph_bft_finalized_units_without_data");
         let (public_config, private_members) = keychain_fixture();
         let keychain = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
             .expect("keychain");
@@ -2108,6 +2145,17 @@ mod tests {
         assert_eq!(first_finalized.unit_index, 1);
         assert_eq!(second_finalized.unit_index, 2);
         assert!(receiver.try_recv().is_err());
+        #[cfg(feature = "prometheus")]
+        {
+            assert!(
+                performance_work_value("aleph_bft_finalized_units_with_data")
+                    >= with_data_before + 2.0
+            );
+            assert!(
+                performance_work_value("aleph_bft_finalized_units_without_data")
+                    >= without_data_before + 1.0
+            );
+        }
     }
 
     #[tokio::test]

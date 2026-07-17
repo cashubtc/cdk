@@ -1,5 +1,8 @@
 //! Federation threshold BLS signing helpers.
 
+#[cfg(feature = "prometheus")]
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -192,8 +195,33 @@ impl MemberConfigPrivate {
                     member_id: self.member_id,
                     amount: output.amount,
                 })?;
+            #[cfg(feature = "prometheus")]
+            cdk_prometheus::METRICS.record_federation_performance_work(
+                cdk_prometheus::FederationPerformanceWork::MemberBlindedShareOutputs,
+                1,
+            );
+            #[cfg(feature = "prometheus")]
+            let signing_started_at = Instant::now();
             let share = secret_share.blind_sign_share(&blinded_secret);
-            if !verify_blind_signature_share(&share, &blinded_secret, public_share)? {
+            #[cfg(feature = "prometheus")]
+            cdk_prometheus::METRICS.record_federation_performance_operation(
+                cdk_prometheus::FederationPerformanceOperation::MemberBlindedShareSigning,
+                cdk_prometheus::FederationPerformanceOutcome::Success,
+                signing_started_at.elapsed().as_secs_f64(),
+            );
+
+            #[cfg(feature = "prometheus")]
+            let verification_started_at = Instant::now();
+            let verification = verify_blind_signature_share(&share, &blinded_secret, public_share);
+            #[cfg(feature = "prometheus")]
+            cdk_prometheus::METRICS.record_federation_performance_operation(
+                cdk_prometheus::FederationPerformanceOperation::MemberBlindedShareSelfVerification,
+                cdk_prometheus::FederationPerformanceOutcome::from_success(
+                    verification.as_ref().is_ok_and(|verified| *verified),
+                ),
+                verification_started_at.elapsed().as_secs_f64(),
+            );
+            if !verification? {
                 return Err(FederationError::SignatureShareVerificationFailed {
                     keyset_id: keyset.id,
                     member_id: self.member_id,

@@ -25,8 +25,91 @@ use super::node_runtime::{
 
 const RECOVERY_BARRIER_PROPOSAL_LEASE: Duration = Duration::from_secs(30);
 
+#[cfg(feature = "prometheus")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScheduledCheckpointCaptureOutcome {
+    PendingCandidate,
+    NoBoundary,
+    FrontierBehind,
+    Ineligible,
+    #[cfg(test)]
+    Suppressed,
+    Created,
+}
+
+#[cfg(feature = "prometheus")]
+impl ScheduledCheckpointCaptureOutcome {
+    #[cfg(test)]
+    const ALL: [Self; 6] = [
+        Self::PendingCandidate,
+        Self::NoBoundary,
+        Self::FrontierBehind,
+        Self::Ineligible,
+        Self::Suppressed,
+        Self::Created,
+    ];
+
+    const fn work(self) -> cdk_prometheus::FederationPerformanceWork {
+        match self {
+            Self::PendingCandidate => {
+                cdk_prometheus::FederationPerformanceWork::ScheduledCaptureSkippedPendingCandidate
+            }
+            Self::NoBoundary => {
+                cdk_prometheus::FederationPerformanceWork::ScheduledCaptureSkippedNoBoundary
+            }
+            Self::FrontierBehind => {
+                cdk_prometheus::FederationPerformanceWork::ScheduledCaptureSkippedFrontierBehind
+            }
+            Self::Ineligible => {
+                cdk_prometheus::FederationPerformanceWork::ScheduledCaptureSkippedIneligible
+            }
+            #[cfg(test)]
+            Self::Suppressed => {
+                cdk_prometheus::FederationPerformanceWork::ScheduledCaptureSuppressed
+            }
+            Self::Created => cdk_prometheus::FederationPerformanceWork::ScheduledCaptureCreated,
+        }
+    }
+
+    fn record(self) {
+        cdk_prometheus::METRICS.record_federation_performance_work(self.work(), 1);
+    }
+}
+
 impl FederationNodeRuntime {
     pub(super) async fn capture_scheduled_checkpoint_if_eligible_under_application_lock(
+        &self,
+    ) -> Result<(), cdk::Error> {
+        #[cfg(feature = "prometheus")]
+        {
+            cdk_prometheus::METRICS.record_federation_performance_work(
+                cdk_prometheus::FederationPerformanceWork::ScheduledCaptureAttempts,
+                1,
+            );
+        }
+        #[cfg(feature = "prometheus")]
+        let started_at = std::time::Instant::now();
+        let result = self
+            .capture_scheduled_checkpoint_if_eligible_under_application_lock_inner()
+            .await;
+        #[cfg(feature = "prometheus")]
+        {
+            if result.is_err() {
+                cdk_prometheus::METRICS.record_federation_performance_work(
+                    cdk_prometheus::FederationPerformanceWork::ScheduledCaptureFailures,
+                    1,
+                );
+            }
+            cdk_prometheus::METRICS.record_federation_performance_operation(
+                cdk_prometheus::FederationPerformanceOperation::ScheduledCheckpointCapture,
+                cdk_prometheus::FederationPerformanceOutcome::from_success(result.is_ok()),
+                started_at.elapsed().as_secs_f64(),
+            );
+        }
+        result
+    }
+
+    async fn capture_scheduled_checkpoint_if_eligible_under_application_lock_inner(
         &self,
     ) -> Result<(), cdk::Error> {
         let mint = self.active_mint()?;
@@ -45,6 +128,7 @@ impl FederationNodeRuntime {
                     quorum,
                     public_config,
                     runtime_config.member_id(),
+                    super::CheckpointQuorumVerificationContext::Capture,
                 )?;
                 Some(&quorum.checkpoint)
             }
@@ -59,6 +143,8 @@ impl FederationNodeRuntime {
         {
             candidate.validate_against_config(public_config)?;
             if candidate.scheduled_checkpoint_sequence > scheduled_sequence {
+                #[cfg(feature = "prometheus")]
+                ScheduledCheckpointCaptureOutcome::PendingCandidate.record();
                 return Ok(());
             }
         }
@@ -67,6 +153,8 @@ impl FederationNodeRuntime {
             .current_checkpoint_boundary_under_application_lock()
             .await?
         else {
+            #[cfg(feature = "prometheus")]
+            ScheduledCheckpointCaptureOutcome::NoBoundary.record();
             return Ok(());
         };
         let batch_base_finalized_index = latest_scheduled
@@ -78,6 +166,8 @@ impl FederationNodeRuntime {
         else {
             // A lagging member may have learned a newer scheduled quorum before it has
             // caught up to that quorum. It cannot capture another local candidate yet.
+            #[cfg(feature = "prometheus")]
+            ScheduledCheckpointCaptureOutcome::FrontierBehind.record();
             return Ok(());
         };
         if expected_batch_items > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS {
@@ -88,21 +178,53 @@ impl FederationNodeRuntime {
         }
         let batch_item_limit = usize::try_from(expected_batch_items)
             .expect("bounded checkpoint finalized-item count fits in usize");
+        #[cfg(feature = "prometheus")]
+        let suffix_load_started_at = std::time::Instant::now();
         let batch_finalized_items = db
             .get_federation_aleph_bft_finalized_items_range(
                 batch_base_finalized_index,
                 boundary.finalized_next_item_index,
                 batch_item_limit,
             )
-            .await?;
+            .await;
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_performance_operation(
+            cdk_prometheus::FederationPerformanceOperation::ScheduledCheckpointSuffixLoad,
+            cdk_prometheus::FederationPerformanceOutcome::from_success(
+                batch_finalized_items.is_ok(),
+            ),
+            suffix_load_started_at.elapsed().as_secs_f64(),
+        );
+        let batch_finalized_items = batch_finalized_items?;
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_performance_work(
+            cdk_prometheus::FederationPerformanceWork::ScheduledCaptureSuffixRowsLoaded,
+            u64::try_from(batch_finalized_items.len()).unwrap_or(u64::MAX),
+        );
         if batch_finalized_items.len() != batch_item_limit {
             return Err(FederationError::CheckpointInvalid {
                 reason: "scheduled checkpoint batch has missing finalized items".to_string(),
             }
             .into());
         }
+        #[cfg(feature = "prometheus")]
+        let canonical_started_at = std::time::Instant::now();
         let batch_canonical_bytes =
-            cdk::federation::federation_checkpoint_batch_canonical_bytes(&batch_finalized_items)?;
+            cdk::federation::federation_checkpoint_batch_canonical_bytes(&batch_finalized_items);
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_performance_operation(
+            cdk_prometheus::FederationPerformanceOperation::ScheduledCheckpointCanonicalBytes,
+            cdk_prometheus::FederationPerformanceOutcome::from_success(
+                batch_canonical_bytes.is_ok(),
+            ),
+            canonical_started_at.elapsed().as_secs_f64(),
+        );
+        let batch_canonical_bytes = batch_canonical_bytes?;
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_performance_work(
+            cdk_prometheus::FederationPerformanceWork::ScheduledCaptureCanonicalBytesProcessed,
+            batch_canonical_bytes,
+        );
         if batch_canonical_bytes > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES
         {
             return Err(FederationError::CheckpointInvalid {
@@ -115,6 +237,18 @@ impl FederationNodeRuntime {
             latest_scheduled,
             batch_canonical_bytes,
         )? {
+            #[cfg(feature = "prometheus")]
+            {
+                ScheduledCheckpointCaptureOutcome::Ineligible.record();
+                cdk_prometheus::METRICS.record_federation_performance_work(
+                    cdk_prometheus::FederationPerformanceWork::ScheduledCaptureIneligibleRowsDiscarded,
+                    u64::try_from(batch_finalized_items.len()).unwrap_or(u64::MAX),
+                );
+                cdk_prometheus::METRICS.record_federation_performance_work(
+                    cdk_prometheus::FederationPerformanceWork::ScheduledCaptureIneligibleCanonicalBytesDiscarded,
+                    batch_canonical_bytes,
+                );
+            }
             return Ok(());
         }
         #[cfg(test)]
@@ -124,6 +258,8 @@ impl FederationNodeRuntime {
             .suppress_next_scheduled_checkpoint_capture
             .swap(false, Ordering::AcqRel)
         {
+            #[cfg(feature = "prometheus")]
+            ScheduledCheckpointCaptureOutcome::Suppressed.record();
             return Ok(());
         }
 
@@ -141,14 +277,43 @@ impl FederationNodeRuntime {
             &checkpoint,
             runtime_config.private_config(),
         )?;
-        let mut tx = db.begin_transaction().await?;
-        tx.add_federation_checkpoint_candidate(&checkpoint).await?;
-        tx.record_federation_materialized_state_audit(&checkpoint)
-            .await?;
-        tx.add_federation_checkpoint_signature(&signature).await?;
-        tx.commit().await?;
         #[cfg(feature = "prometheus")]
         {
+            cdk_prometheus::METRICS.record_federation_performance_work(
+                cdk_prometheus::FederationPerformanceWork::CheckpointPersistenceAttempts,
+                1,
+            );
+        }
+        #[cfg(feature = "prometheus")]
+        let persistence_started_at = std::time::Instant::now();
+        let persistence = async {
+            let mut tx = db.begin_transaction().await?;
+            tx.add_federation_checkpoint_candidate(&checkpoint).await?;
+            tx.record_federation_materialized_state_audit(&checkpoint)
+                .await?;
+            tx.add_federation_checkpoint_signature(&signature).await?;
+            tx.commit().await?;
+            Ok::<(), cdk::Error>(())
+        }
+        .await;
+        #[cfg(feature = "prometheus")]
+        {
+            let work = if persistence.is_ok() {
+                cdk_prometheus::FederationPerformanceWork::CheckpointPersistenceSuccesses
+            } else {
+                cdk_prometheus::FederationPerformanceWork::CheckpointPersistenceFailures
+            };
+            cdk_prometheus::METRICS.record_federation_performance_work(work, 1);
+            cdk_prometheus::METRICS.record_federation_performance_operation(
+                cdk_prometheus::FederationPerformanceOperation::CheckpointPersistence,
+                cdk_prometheus::FederationPerformanceOutcome::from_success(persistence.is_ok()),
+                persistence_started_at.elapsed().as_secs_f64(),
+            );
+        }
+        persistence?;
+        #[cfg(feature = "prometheus")]
+        {
+            ScheduledCheckpointCaptureOutcome::Created.record();
             let member = runtime_config.member_id().to_string();
             cdk_prometheus::METRICS.record_federation_checkpoint_work(
                 &member,
@@ -266,6 +431,7 @@ impl FederationNodeRuntime {
             &quorum,
             runtime_config.public_config(),
             runtime_config.member_id(),
+            super::CheckpointQuorumVerificationContext::Audit,
         )?;
         let checkpoint = &quorum.checkpoint;
         let checkpoint_id = checkpoint.id()?;
@@ -442,6 +608,7 @@ impl FederationNodeRuntime {
                     quorum,
                     public_config,
                     runtime_config.member_id(),
+                    super::CheckpointQuorumVerificationContext::Capture,
                 )?
                 .checkpoint()
                 .clone(),
@@ -551,6 +718,26 @@ impl FederationNodeRuntime {
         &self,
         finalized_items: &[FederationAlephBftFinalizedItem],
     ) -> Result<Option<FederationCheckpoint>, cdk::Error> {
+        #[cfg(feature = "prometheus")]
+        let started_at = std::time::Instant::now();
+        let result = self
+            .capture_recovery_checkpoint_for_finalized_items_under_application_lock_inner(
+                finalized_items,
+            )
+            .await;
+        #[cfg(feature = "prometheus")]
+        cdk_prometheus::METRICS.record_federation_performance_operation(
+            cdk_prometheus::FederationPerformanceOperation::RecoveryCheckpointCapture,
+            cdk_prometheus::FederationPerformanceOutcome::from_success(result.is_ok()),
+            started_at.elapsed().as_secs_f64(),
+        );
+        result
+    }
+
+    async fn capture_recovery_checkpoint_for_finalized_items_under_application_lock_inner(
+        &self,
+        finalized_items: &[FederationAlephBftFinalizedItem],
+    ) -> Result<Option<FederationCheckpoint>, cdk::Error> {
         let Some(barrier) = finalized_items
             .iter()
             .filter(|item| item.status == FederationAlephBftFinalizedItemStatus::Accepted)
@@ -590,6 +777,7 @@ impl FederationNodeRuntime {
                     quorum,
                     public_config,
                     runtime_config.member_id(),
+                    super::CheckpointQuorumVerificationContext::Capture,
                 )?;
                 Some(&quorum.checkpoint)
             }
@@ -660,6 +848,7 @@ impl FederationNodeRuntime {
                 &quorum,
                 public_config,
                 runtime_config.member_id(),
+                super::CheckpointQuorumVerificationContext::Capture,
             )?;
             if boundary
                 .committed_frontier()
@@ -854,6 +1043,7 @@ impl FederationNodeRuntime {
                 checkpoint,
                 member,
                 runtime_config.member_id(),
+                super::CheckpointSignatureVerificationContext::Publish,
             )?;
         }
         Ok(FederationCheckpointSignatureResponse {
@@ -877,6 +1067,7 @@ impl FederationNodeRuntime {
             quorum,
             runtime_config.public_config(),
             runtime_config.member_id(),
+            super::CheckpointQuorumVerificationContext::Promotion,
         )?;
         let checkpoint = verified_quorum.checkpoint();
         let checkpoint_id = checkpoint.id()?;
@@ -894,6 +1085,7 @@ impl FederationNodeRuntime {
                         &current,
                         runtime_config.public_config(),
                         runtime_config.member_id(),
+                        super::CheckpointQuorumVerificationContext::Promotion,
                     )?;
                     if verified_current.checkpoint().covers(checkpoint) {
                         false
@@ -976,6 +1168,7 @@ impl FederationNodeRuntime {
             &checkpoint,
             member,
             runtime_config.member_id(),
+            super::CheckpointSignatureVerificationContext::Formation,
         )?;
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_checkpoint_signature(signature).await?;
@@ -992,6 +1185,7 @@ impl FederationNodeRuntime {
             &quorum,
             public_config,
             runtime_config.member_id(),
+            super::CheckpointQuorumVerificationContext::Formation,
         )?;
         drop(application);
         self.persist_checkpoint_quorum(&quorum).await?;
@@ -1019,4 +1213,21 @@ pub(super) fn checkpoint_covers_current_recovery_need(
             checkpoint_frontier.journal == boundary_frontier.journal
                 && checkpoint_frontier.application == boundary_frontier.application
         })
+}
+
+#[cfg(all(test, feature = "prometheus"))]
+mod performance_instrumentation_tests {
+    use std::collections::HashSet;
+
+    use super::ScheduledCheckpointCaptureOutcome;
+
+    #[test]
+    fn scheduled_capture_outcomes_have_distinct_fixed_work_labels() {
+        let labels = ScheduledCheckpointCaptureOutcome::ALL
+            .into_iter()
+            .map(ScheduledCheckpointCaptureOutcome::work)
+            .collect::<HashSet<_>>();
+
+        assert_eq!(labels.len(), ScheduledCheckpointCaptureOutcome::ALL.len());
+    }
 }
