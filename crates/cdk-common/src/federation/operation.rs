@@ -8,7 +8,7 @@
 
 use core::fmt;
 use core::str::FromStr;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
@@ -1001,6 +1001,11 @@ pub struct FederationPaymentObservationReport {
 
 impl FederationPaymentObservationReport {
     /// Build a report from stored observations for one quote and context.
+    ///
+    /// On-chain payment amounts can change as accepted wallet outputs are
+    /// reorged or added. For those observations, the latest record from each
+    /// member supersedes that member's earlier evidence, matching the payment
+    /// finalization policy.
     #[must_use]
     pub fn from_records(
         context: FederationPaymentObservationContext,
@@ -1008,12 +1013,34 @@ impl FederationPaymentObservationReport {
         required: u16,
         records: &[FederationPaymentObservationRecord],
     ) -> Self {
-        let matching_records = records
+        let mut matching_records = records
             .iter()
             .filter(|record| {
                 record.observation.context() == context && record.observation.quote() == quote
             })
             .collect::<Vec<_>>();
+        let is_onchain = matching_records.iter().any(|record| match &record.observation {
+            FederationPaymentObservation::MintQuote(observation) => observation.method.is_onchain(),
+            FederationPaymentObservation::MeltQuote(observation) => observation.method.is_onchain(),
+        });
+        if is_onchain {
+            let mut latest_by_observer = BTreeMap::new();
+            for record in matching_records {
+                match latest_by_observer.entry(record.observation.observer()) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(record);
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry)
+                        if record.operation_index > entry.get().operation_index =>
+                    {
+                        entry.insert(record);
+                    }
+                    std::collections::btree_map::Entry::Occupied(_) => {}
+                }
+            }
+            matching_records = latest_by_observer.into_values().collect();
+            matching_records.sort_by_key(|record| record.operation_index);
+        }
         let observations = matching_records
             .iter()
             .map(|record| &record.observation)
@@ -3377,6 +3404,66 @@ mod tests {
         );
         assert!(report.conflicting_observers.is_empty());
         assert!(report.competing_terminal_state_observers.is_empty());
+    }
+
+    #[test]
+    fn payment_observation_report_uses_latest_onchain_evidence_per_observer() {
+        let observation = FederationMintQuotePaymentObservation {
+            quote: "mint-quote".to_string(),
+            observer: member_id(1),
+            method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Onchain),
+            state: MintQuoteState::Paid,
+            amount_paid: Amount::from(10),
+            amount_issued: Amount::ZERO,
+            payment_id: None,
+            payment_proof: None,
+        };
+        let stale = payment_record(
+            0,
+            FederationOperation::MintQuotePayment(observation.clone()),
+        );
+        let current = [
+            (1, member_id(4)),
+            (2, member_id(5)),
+            (3, member_id(2)),
+            (4, member_id(3)),
+            (5, member_id(1)),
+        ]
+        .map(|(operation_index, observer)| {
+            payment_record(
+                operation_index,
+                FederationOperation::MintQuotePayment(
+                    FederationMintQuotePaymentObservation {
+                        observer,
+                        amount_paid: Amount::from(15),
+                        ..observation.clone()
+                    },
+                ),
+            )
+        });
+        let records = std::iter::once(stale)
+            .chain(current)
+            .collect::<Vec<_>>();
+
+        let report = FederationPaymentObservationReport::from_records(
+            FederationPaymentObservationContext::MintQuote,
+            "mint-quote",
+            4,
+            &records,
+        );
+
+        assert_eq!(
+            report.status,
+            FederationPaymentObservationReportStatus::QuorumReached
+        );
+        assert_eq!(report.total_observations, 5);
+        assert_eq!(report.groups.len(), 1);
+        assert_eq!(
+            report.groups[0].operation_indices,
+            vec![1, 2, 3, 4, 5]
+        );
+        assert!(report.groups[0].quorum_reached);
+        assert!(report.conflicting_observers.is_empty());
     }
 
     #[test]
