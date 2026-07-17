@@ -23,7 +23,7 @@ pub enum Error {
 
 const MINT_QUOTE_SIG_DOMAIN_TAG: &[u8] = b"Cashu_MintQuoteSig_v1";
 
-fn amount_to_minimal_bytes(amount: crate::Amount) -> Vec<u8> {
+pub(crate) fn amount_to_minimal_bytes(amount: crate::Amount) -> Vec<u8> {
     let value = u64::from(amount);
     if value == 0 {
         return Vec::new();
@@ -37,7 +37,7 @@ fn amount_to_minimal_bytes(amount: crate::Amount) -> Vec<u8> {
     bytes[first_non_zero..].to_vec()
 }
 
-fn append_len_prefixed(msg: &mut Vec<u8>, bytes: &[u8]) {
+pub(crate) fn append_len_prefixed(msg: &mut Vec<u8>, bytes: &[u8]) {
     msg.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
     msg.extend_from_slice(bytes);
 }
