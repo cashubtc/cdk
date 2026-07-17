@@ -5,6 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -138,6 +139,7 @@ impl WalletRuntime {
 
         public_config.validate()?;
         public_config.validate_wallet_runtime_metadata()?;
+        reject_conflicting_stored_federation(data_dir, &public_config)?;
         let local_mint_url = match discovery_mint_url {
             Some(mint_url) => mint_url,
             None => public_config
@@ -311,6 +313,29 @@ impl StoredFederation {
     }
 }
 
+fn reject_conflicting_stored_federation(
+    data_dir: &Path,
+    public_config: &FederationConfig,
+) -> Result<()> {
+    let config_path = data_dir.join(CONFIG_FILE);
+    if !config_path.exists() {
+        return Ok(());
+    }
+    let encoded = fs::read_to_string(&config_path)
+        .with_context(|| format!("could not read {}", config_path.display()))?;
+    let existing: StoredFederation = serde_json::from_str(&encoded)
+        .with_context(|| format!("could not parse {}", config_path.display()))?;
+    if existing.public_config.federation_id != public_config.federation_id {
+        bail!(
+            "wallet at {} already belongs to federation {}; refusing to join federation {} over it. Use --data-dir for a separate wallet or `reset` to delete this one",
+            data_dir.display(),
+            existing.public_config.federation_id,
+            public_config.federation_id
+        );
+    }
+    Ok(())
+}
+
 fn persist_config(data_dir: &Path, stored: &StoredFederation) -> Result<()> {
     let path = data_dir.join(CONFIG_FILE);
     let temporary = data_dir.join(format!("{CONFIG_FILE}.tmp"));
@@ -351,43 +376,68 @@ fn secure_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn spawn_balance_refresh(runtime: Arc<WalletRuntime>, tx: mpsc::UnboundedSender<AppEvent>) {
+pub fn spawn_balance_refresh(
+    runtime: Arc<WalletRuntime>,
+    tx: mpsc::UnboundedSender<AppEvent>,
+    generation: u64,
+    current_generation: Arc<AtomicU64>,
+) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(4));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
-            let wallet = runtime.wallet();
-            match tokio::try_join!(
-                wallet.total_balance(),
-                wallet.total_pending_balance(),
-                wallet.total_reserved_balance()
-            ) {
-                Ok((available, pending, reserved)) => {
-                    if tx
-                        .send(AppEvent::Balance {
-                            available: u64::from(available),
-                            pending: u64::from(pending),
-                            reserved: u64::from(reserved),
-                        })
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
-                Err(err) => {
-                    if tx
-                        .send(AppEvent::BackgroundError(format!(
-                            "balance refresh failed: {err}"
-                        )))
-                        .is_err()
-                    {
-                        return;
-                    }
-                }
+            if current_generation.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            if !send_wallet_snapshot(&runtime, &tx).await {
+                return;
             }
         }
     });
+}
+
+async fn send_wallet_snapshot(
+    runtime: &WalletRuntime,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) -> bool {
+    let wallet = runtime.wallet();
+    match tokio::try_join!(
+        wallet.total_balance(),
+        wallet.total_pending_balance(),
+        wallet.total_reserved_balance()
+    ) {
+        Ok((available, pending, reserved)) => {
+            if tx
+                .send(AppEvent::Balance {
+                    available: u64::from(available),
+                    pending: u64::from(pending),
+                    reserved: u64::from(reserved),
+                })
+                .is_err()
+            {
+                return false;
+            }
+        }
+        Err(err) => {
+            if tx
+                .send(AppEvent::BackgroundError(format!(
+                    "balance refresh failed: {err}"
+                )))
+                .is_err()
+            {
+                return false;
+            }
+        }
+    }
+    match wallet.list_transactions(None).await {
+        Ok(transactions) => tx.send(AppEvent::Transactions(transactions)).is_ok(),
+        Err(err) => tx
+            .send(AppEvent::BackgroundError(format!(
+                "transaction refresh failed: {err}"
+            )))
+            .is_ok(),
+    }
 }
 
 pub fn spawn_onchain_mint(
@@ -718,19 +768,7 @@ async fn finish_operation(
         }
     }
 
-    let wallet = runtime.wallet();
-    if let Ok((available, pending, reserved)) = tokio::try_join!(
-        wallet.total_balance(),
-        wallet.total_pending_balance(),
-        wallet.total_reserved_balance()
-    ) {
-        tx.send(AppEvent::Balance {
-            available: u64::from(available),
-            pending: u64::from(pending),
-            reserved: u64::from(reserved),
-        })
-        .ok();
-    }
+    send_wallet_snapshot(&runtime, &tx).await;
 }
 
 fn short_id(id: &str) -> &str {
@@ -829,6 +867,10 @@ mod tests {
     }
 
     fn valid_public_config() -> FederationConfig {
+        valid_public_config_seeded(0)
+    }
+
+    fn valid_public_config_seeded(seed: u8) -> FederationConfig {
         let params = ThresholdParams::with_bft_consensus(3, 2).expect("threshold params");
         generate_trusted_dealer_configs(
             params,
@@ -837,6 +879,42 @@ mod tests {
                 member(member_id(2)),
                 member(member_id(3)),
             ],
+            vec![TrustedDealerKeysetSpec::new(
+                CurrencyUnit::Sat,
+                true,
+                0,
+                None,
+                BTreeMap::from([
+                    (
+                        Amount::from(1),
+                        vec![bls_key(seed.wrapping_add(1)), bls_key(seed.wrapping_add(2))],
+                    ),
+                    (
+                        Amount::from(2),
+                        vec![bls_key(seed.wrapping_add(3)), bls_key(seed.wrapping_add(4))],
+                    ),
+                ]),
+            )],
+        )
+        .expect("trusted dealer config")
+        .public_config
+    }
+
+    fn distinct_public_config() -> FederationConfig {
+        let params = ThresholdParams::with_bft_consensus(3, 2).expect("threshold params");
+        let distinct_member = |id: u16| {
+            TrustedDealerMember::new(
+                member_id(id),
+                MintUrl::from_str(&format!("https://mint{}.other-example.com", id))
+                    .expect("public mint url"),
+                MintUrl::from_str(&format!("https://fed{}.other-example.com", id))
+                    .expect("federation api url"),
+                identity_secret(member_id(id)),
+            )
+        };
+        generate_trusted_dealer_configs(
+            params,
+            vec![distinct_member(1), distinct_member(2), distinct_member(3)],
             vec![TrustedDealerKeysetSpec::new(
                 CurrencyUnit::Sat,
                 true,
@@ -925,5 +1003,37 @@ mod tests {
             .expect_err("mismatched digest rejected");
 
         assert!(err.to_string().contains("config digest"));
+    }
+
+    #[test]
+    fn join_rejects_a_different_federation_over_an_existing_wallet() {
+        let data_dir =
+            std::env::temp_dir().join(format!("fed-cdk-tui-test-{}", rand::random::<u64>()));
+        fs::create_dir_all(&data_dir).expect("create test data dir");
+        let stored = StoredFederation {
+            version: CONFIG_VERSION,
+            local_mint_url: valid_public_config()
+                .member(member_id(1))
+                .expect("member")
+                .public_mint_url
+                .clone(),
+            public_config: valid_public_config(),
+        };
+        persist_config(&data_dir, &stored).expect("persist stored federation");
+
+        reject_conflicting_stored_federation(&data_dir, &stored.public_config)
+            .expect("same federation is accepted");
+
+        let other_config = distinct_public_config();
+        assert_ne!(
+            stored.public_config.federation_id, other_config.federation_id,
+            "trusted dealer configs must have distinct federation ids"
+        );
+        let err = reject_conflicting_stored_federation(&data_dir, &other_config)
+            .expect_err("different federation rejected");
+
+        assert!(err.to_string().contains("already belongs to federation"));
+
+        fs::remove_dir_all(&data_dir).expect("remove test data dir");
     }
 }

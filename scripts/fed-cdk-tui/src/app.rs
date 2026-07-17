@@ -5,12 +5,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use arboard::Clipboard;
 use cdk_common::federation::MemberId;
+use cdk_common::wallet::Transaction;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::telemetry::MemberProbe;
 use crate::wallet::{JoinSource, WalletRuntime};
 
 const MAX_ACTIVITIES: usize = 300;
+const MAX_TRANSACTIONS: usize = 300;
 const MAX_LATENCY_SAMPLES: usize = 36;
 
 #[derive(Debug)]
@@ -23,6 +25,7 @@ pub enum AppEvent {
         pending: u64,
         reserved: u64,
     },
+    Transactions(Vec<Transaction>),
     OperationPayload {
         operation: &'static str,
         title: String,
@@ -52,6 +55,7 @@ pub enum AppEvent {
 pub enum AppCommand {
     Quit,
     Join(JoinSource),
+    Leave,
     Bolt11Mint(u64),
     OnchainMint(u64),
     Bolt11Melt(String),
@@ -65,16 +69,18 @@ pub enum Tab {
     Overview,
     Members,
     Activity,
+    History,
 }
 
 impl Tab {
-    pub const ALL: [Self; 3] = [Self::Overview, Self::Members, Self::Activity];
+    pub const ALL: [Self; 4] = [Self::Overview, Self::Members, Self::Activity, Self::History];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
             Self::Members => "Members",
             Self::Activity => "Activity",
+            Self::History => "History",
         }
     }
 }
@@ -147,6 +153,17 @@ pub struct ActivityRecord {
     pub member_id: Option<MemberId>,
     pub member_url: Option<String>,
     pub message: String,
+    pub ok: Option<bool>,
+    pub latency_ms: Option<u64>,
+    pub bytes: Option<usize>,
+}
+
+#[derive(Debug, Default)]
+pub struct ActivityEntry<'a> {
+    pub kind: &'static str,
+    pub member_id: Option<MemberId>,
+    pub member_url: Option<&'a str>,
+    pub message: &'a str,
     pub ok: Option<bool>,
     pub latency_ms: Option<u64>,
     pub bytes: Option<usize>,
@@ -298,6 +315,9 @@ pub struct App {
     pub members: BTreeMap<MemberId, MemberState>,
     pub selected_member: usize,
     pub activities: VecDeque<ActivityRecord>,
+    pub activity_scroll: usize,
+    pub transactions: Vec<Transaction>,
+    pub history_scroll: usize,
     pub available: u64,
     pub pending: u64,
     pub reserved: u64,
@@ -322,6 +342,9 @@ impl App {
             members: BTreeMap::new(),
             selected_member: 0,
             activities: VecDeque::new(),
+            activity_scroll: 0,
+            transactions: Vec::new(),
+            history_scroll: 0,
             available: 0,
             pending: 0,
             reserved: 0,
@@ -339,15 +362,12 @@ impl App {
         if app.runtime.is_some() {
             app.monitor_generation = 1;
             app.rebuild_members();
-            app.push_activity(
-                "system",
-                None,
-                None,
-                "Wallet opened and member probes started",
-                Some(true),
-                None,
-                None,
-            );
+            app.push_activity(ActivityEntry {
+                kind: "system",
+                message: "Wallet opened and member probes started",
+                ok: Some(true),
+                ..ActivityEntry::default()
+            });
         } else {
             app.modal = Some(Modal::Form(join_form()));
         }
@@ -389,8 +409,40 @@ impl App {
         let active = self.active_operations.entry(operation).or_default();
         *active = active.saturating_add(1);
         self.modal = None;
-        self.push_activity(operation, None, member_url, message, None, None, None);
+        self.push_activity(ActivityEntry {
+            kind: operation,
+            member_url,
+            message,
+            ..ActivityEntry::default()
+        });
         self.toast = Some((message.to_string(), true, 24));
+    }
+
+    pub fn leave_federation(&mut self) {
+        if self.runtime.is_none() {
+            return;
+        }
+        self.runtime = None;
+        self.monitor_generation = self.monitor_generation.saturating_add(1);
+        self.members.clear();
+        self.selected_member = 0;
+        self.available = 0;
+        self.pending = 0;
+        self.reserved = 0;
+        self.transactions.clear();
+        self.history_scroll = 0;
+        self.modal = Some(Modal::Form(join_form()));
+        self.push_activity(ActivityEntry {
+            kind: "system",
+            message: "Left federation; seed, proofs, and config preserved on disk",
+            ok: Some(true),
+            ..ActivityEntry::default()
+        });
+        self.toast = Some((
+            "Disconnected from federation; wallet data preserved".to_string(),
+            true,
+            32,
+        ));
     }
 
     pub fn apply_event(&mut self, event: AppEvent) {
@@ -404,18 +456,16 @@ impl App {
                     self.operation_ended("join");
                     self.modal = None;
                     let join_url = runtime.local_mint_url().to_string();
-                    self.push_activity(
-                        "join",
-                        None,
-                        Some(join_url.as_str()),
-                        &format!(
+                    self.push_activity(ActivityEntry {
+                        kind: "join",
+                        member_url: Some(join_url.as_str()),
+                        message: &format!(
                             "Joined federation {} via {join_url}",
                             short(&runtime.federation_id(), 14)
                         ),
-                        Some(true),
-                        None,
-                        None,
-                    );
+                        ok: Some(true),
+                        ..ActivityEntry::default()
+                    });
                     self.toast = Some(("Federation joined".to_string(), true, 32));
                 }
                 Err(error) => self.operation_failed("join", error, None),
@@ -426,9 +476,18 @@ impl App {
                 pending,
                 reserved,
             } => {
-                self.available = available;
-                self.pending = pending;
-                self.reserved = reserved;
+                if self.runtime.is_some() {
+                    self.available = available;
+                    self.pending = pending;
+                    self.reserved = reserved;
+                }
+            }
+            AppEvent::Transactions(mut transactions) => {
+                if self.runtime.is_some() {
+                    transactions.truncate(MAX_TRANSACTIONS);
+                    self.transactions = transactions;
+                    self.clamp_history_scroll();
+                }
             }
             AppEvent::OperationPayload {
                 operation,
@@ -439,15 +498,12 @@ impl App {
             } => {
                 self.last_payload = Some(content.clone());
                 self.modal = Some(Modal::Payload { title, content });
-                self.push_activity(
-                    operation,
-                    None,
-                    member_url.as_deref(),
-                    &message,
-                    None,
-                    None,
-                    None,
-                );
+                self.push_activity(ActivityEntry {
+                    kind: operation,
+                    member_url: member_url.as_deref(),
+                    message: &message,
+                    ..ActivityEntry::default()
+                });
                 self.toast = Some(("Payload ready; press c to copy".to_string(), true, 32));
             }
             AppEvent::OperationProgress {
@@ -455,15 +511,12 @@ impl App {
                 message,
                 member_url,
             } => {
-                self.push_activity(
-                    operation,
-                    None,
-                    member_url.as_deref(),
-                    &message,
-                    None,
-                    None,
-                    None,
-                );
+                self.push_activity(ActivityEntry {
+                    kind: operation,
+                    member_url: member_url.as_deref(),
+                    message: &message,
+                    ..ActivityEntry::default()
+                });
                 self.toast = Some((message, true, 24));
             }
             AppEvent::OperationFinished {
@@ -472,15 +525,13 @@ impl App {
                 member_url,
             } => {
                 self.operation_ended(operation);
-                self.push_activity(
-                    operation,
-                    None,
-                    member_url.as_deref(),
-                    &message,
-                    Some(true),
-                    None,
-                    None,
-                );
+                self.push_activity(ActivityEntry {
+                    kind: operation,
+                    member_url: member_url.as_deref(),
+                    message: &message,
+                    ok: Some(true),
+                    ..ActivityEntry::default()
+                });
                 self.toast = Some((message, true, 36));
             }
             AppEvent::OperationFailed {
@@ -491,7 +542,12 @@ impl App {
                 self.operation_failed(operation, error, member_url.as_deref());
             }
             AppEvent::BackgroundError(error) => {
-                self.push_activity("system", None, None, &error, Some(false), None, None);
+                self.push_activity(ActivityEntry {
+                    kind: "system",
+                    message: &error,
+                    ok: Some(false),
+                    ..ActivityEntry::default()
+                });
                 self.toast = Some((error, false, 36));
             }
         }
@@ -504,15 +560,13 @@ impl App {
         member_url: Option<&str>,
     ) {
         self.operation_ended(operation);
-        self.push_activity(
-            operation,
-            None,
+        self.push_activity(ActivityEntry {
+            kind: operation,
             member_url,
-            &error,
-            Some(false),
-            None,
-            None,
-        );
+            message: &error,
+            ok: Some(false),
+            ..ActivityEntry::default()
+        });
         self.toast = Some((error, false, 48));
     }
 
@@ -563,15 +617,15 @@ impl App {
                 probe.latency_ms
             ),
         };
-        self.push_activity(
-            "probe",
-            Some(probe.member_id),
-            Some(probe.member_url.as_str()),
-            &message,
-            Some(probe.success),
-            Some(probe.latency_ms),
-            Some(probe.response_bytes),
-        );
+        self.push_activity(ActivityEntry {
+            kind: "probe",
+            member_id: Some(probe.member_id),
+            member_url: Some(probe.member_url.as_str()),
+            message: &message,
+            ok: Some(probe.success),
+            latency_ms: Some(probe.latency_ms),
+            bytes: Some(probe.response_bytes),
+        });
     }
 
     fn rebuild_members(&mut self) {
@@ -588,29 +642,39 @@ impl App {
         self.selected_member = 0;
     }
 
-    fn push_activity(
-        &mut self,
-        kind: &'static str,
-        member_id: Option<MemberId>,
-        member_url: Option<&str>,
-        message: &str,
-        ok: Option<bool>,
-        latency_ms: Option<u64>,
-        bytes: Option<usize>,
-    ) {
+    fn push_activity(&mut self, entry: ActivityEntry<'_>) {
         self.activity_sequence = self.activity_sequence.saturating_add(1);
         self.activities.push_front(ActivityRecord {
             sequence: self.activity_sequence,
             at: unix_time(),
-            kind,
-            member_id,
-            member_url: member_url.map(ToOwned::to_owned),
-            message: message.to_string(),
-            ok,
-            latency_ms,
-            bytes,
+            kind: entry.kind,
+            member_id: entry.member_id,
+            member_url: entry.member_url.map(ToOwned::to_owned),
+            message: entry.message.to_string(),
+            ok: entry.ok,
+            latency_ms: entry.latency_ms,
+            bytes: entry.bytes,
         });
         self.activities.truncate(MAX_ACTIVITIES);
+        self.clamp_activity_scroll();
+    }
+
+    fn clamp_activity_scroll(&mut self) {
+        let max_scroll = self.activities.len().saturating_sub(1);
+        self.activity_scroll = self.activity_scroll.min(max_scroll);
+    }
+
+    fn clamp_history_scroll(&mut self) {
+        let max_scroll = self.transactions.len().saturating_sub(1);
+        self.history_scroll = self.history_scroll.min(max_scroll);
+    }
+
+    fn scroll_activity(&mut self, delta: isize) {
+        self.activity_scroll = scrolled(self.activity_scroll, delta, self.activities.len());
+    }
+
+    fn scroll_history(&mut self, delta: isize) {
+        self.history_scroll = scrolled(self.history_scroll, delta, self.transactions.len());
     }
 
     pub fn handle_terminal_event(&mut self, event: Event) -> Vec<AppCommand> {
@@ -652,10 +716,27 @@ impl App {
             KeyCode::Char('1') => self.tab = Tab::Overview,
             KeyCode::Char('2') => self.tab = Tab::Members,
             KeyCode::Char('3') => self.tab = Tab::Activity,
+            KeyCode::Char('4') => self.tab = Tab::History,
             KeyCode::Char('?') => self.modal = Some(Modal::Help),
             KeyCode::Char('f') if self.runtime.is_none() => {
                 self.modal = Some(Modal::Form(join_form()));
             }
+            KeyCode::Char('x') if self.runtime.is_some() => return vec![AppCommand::Leave],
+            KeyCode::PageDown => match self.tab {
+                Tab::Activity => self.scroll_activity(10),
+                Tab::History => self.scroll_history(10),
+                _ => {}
+            },
+            KeyCode::PageUp => match self.tab {
+                Tab::Activity => self.scroll_activity(-10),
+                Tab::History => self.scroll_history(-10),
+                _ => {}
+            },
+            KeyCode::Home => match self.tab {
+                Tab::Activity => self.activity_scroll = 0,
+                Tab::History => self.history_scroll = 0,
+                _ => {}
+            },
             KeyCode::Char('m') if self.can_start_operation() => {
                 let methods = self.supported_mint_methods();
                 self.open_payment_form(
@@ -697,8 +778,16 @@ impl App {
                 }));
             }
             KeyCode::Char('c') => self.copy_last_payload(),
-            KeyCode::Down | KeyCode::Char('j') => self.select_next_member(),
-            KeyCode::Up | KeyCode::Char('k') => self.select_previous_member(),
+            KeyCode::Down | KeyCode::Char('j') => match self.tab {
+                Tab::Activity => self.scroll_activity(1),
+                Tab::History => self.scroll_history(1),
+                _ => self.select_next_member(),
+            },
+            KeyCode::Up | KeyCode::Char('k') => match self.tab {
+                Tab::Activity => self.scroll_activity(-1),
+                Tab::History => self.scroll_history(-1),
+                _ => self.select_previous_member(),
+            },
             _ => {}
         }
         Vec::new()
@@ -1030,6 +1119,11 @@ pub fn short(value: &str, max: usize) -> String {
     }
 }
 
+fn scrolled(current: usize, delta: isize, len: usize) -> usize {
+    let max_scroll = len.saturating_sub(1) as isize;
+    (current as isize + delta).clamp(0, max_scroll) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1155,5 +1249,78 @@ mod tests {
             member_url: None,
         });
         assert_eq!(app.active_operation_count(), 0);
+    }
+
+    #[test]
+    fn scrolled_clamps_to_list_bounds() {
+        assert_eq!(scrolled(0, -1, 10), 0);
+        assert_eq!(scrolled(0, 5, 10), 5);
+        assert_eq!(scrolled(8, 10, 10), 9);
+        assert_eq!(scrolled(3, -10, 10), 0);
+        assert_eq!(scrolled(0, 1, 0), 0);
+    }
+
+    #[test]
+    fn activity_scroll_clamps_when_activities_are_truncated() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.activity_scroll = usize::MAX;
+        app.push_activity(ActivityEntry {
+            kind: "system",
+            message: "entry",
+            ..ActivityEntry::default()
+        });
+
+        assert_eq!(app.activity_scroll, 0);
+    }
+
+    #[test]
+    fn arrows_scroll_activity_feed_on_activity_tab() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.modal = None;
+        app.tab = Tab::Activity;
+        for index in 0..5 {
+            app.push_activity(ActivityEntry {
+                kind: "system",
+                message: &format!("entry {index}"),
+                ..ActivityEntry::default()
+            });
+        }
+
+        app.handle_terminal_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+
+        assert_eq!(app.activity_scroll, 1);
+        assert_eq!(app.selected_member, 0);
+    }
+
+    #[test]
+    fn arrows_select_members_on_overview_tab() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.modal = None;
+        app.tab = Tab::Overview;
+        for index in 0..3_u16 {
+            let member_id = MemberId::new(index + 1).expect("valid member id");
+            app.members.insert(
+                member_id,
+                MemberState::new(member_id, format!("https://mint{index}.example.com")),
+            );
+        }
+
+        app.handle_terminal_event(Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)));
+
+        assert_eq!(app.selected_member, 1);
+        assert_eq!(app.activity_scroll, 0);
+    }
+
+    #[test]
+    fn tab_key_switches_to_history() {
+        let mut app = App::new(PathBuf::from("test-wallet"), None);
+        app.modal = None;
+
+        app.handle_terminal_event(Event::Key(KeyEvent::new(
+            KeyCode::Char('4'),
+            KeyModifiers::NONE,
+        )));
+
+        assert_eq!(app.tab, Tab::History);
     }
 }

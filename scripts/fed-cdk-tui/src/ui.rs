@@ -1,3 +1,4 @@
+use cdk_common::wallet::{Transaction, TransactionDirection};
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -40,6 +41,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         Tab::Overview => render_overview(frame, layout[3], app),
         Tab::Members => render_members(frame, layout[3], app),
         Tab::Activity => render_activity(frame, layout[3], app),
+        Tab::History => render_history(frame, layout[3], app),
     }
     render_footer(frame, layout[4], app);
 
@@ -142,8 +144,12 @@ fn render_summary(frame: &mut Frame<'_>, area: Rect, app: &App) {
         frame,
         chunks[0],
         "AVAILABLE",
-        &format!("{} sat", app.available),
-        &format!("pending {}  reserved {}", app.pending, app.reserved),
+        &format!("{} sat", format_sats(app.available)),
+        &format!(
+            "pending {}  reserved {}",
+            format_sats(app.pending),
+            format_sats(app.reserved)
+        ),
         GREEN,
     );
     let quorum = app
@@ -330,6 +336,7 @@ fn render_member_detail(frame: &mut Frame<'_>, area: Rect, member: Option<&Membe
     let response_data = format_bytes(member.response_bytes);
     let mint_methods = advertised_methods(&member.mint_methods);
     let melt_methods = advertised_methods(&member.melt_methods);
+    let observed = format_age(member.observed_at);
     let lines = vec![
         key_value(
             "State",
@@ -364,6 +371,7 @@ fn render_member_detail(frame: &mut Frame<'_>, area: Rect, member: Option<&Membe
         ),
         key_value("Requests", &request_summary, TEXT),
         key_value("Response data", &response_data, MAGENTA),
+        key_value("Observed", &observed, MUTED),
         key_value(
             "Last error",
             member.last_error.as_deref().unwrap_or("none"),
@@ -392,7 +400,12 @@ fn render_member_detail(frame: &mut Frame<'_>, area: Rect, member: Option<&Membe
 
 fn render_activity(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let max_rows = area.height.saturating_sub(3) as usize;
-    let rows = app.activities.iter().take(max_rows).map(activity_row);
+    let rows = app
+        .activities
+        .iter()
+        .skip(app.activity_scroll)
+        .take(max_rows)
+        .map(activity_row);
     let header = Row::new([
         "SEQ", "UTC", "TYPE", "MEMBER", "URL", "RESULT", "LATENCY", "BYTES", "DETAIL",
     ])
@@ -412,9 +425,104 @@ fn render_activity(frame: &mut Frame<'_>, area: Rect, app: &App) {
         Table::new(rows, widths)
             .header(header)
             .column_spacing(1)
-            .block(panel_block().title(" Live request / response activity ")),
+            .block(panel_block().title(scroll_title(
+                " Live request / response activity ",
+                app.activity_scroll,
+            ))),
         area,
     );
+}
+
+fn render_history(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    if app.runtime().is_none() {
+        render_empty(frame, area);
+        return;
+    }
+    let max_rows = area.height.saturating_sub(3) as usize;
+    let rows = app
+        .transactions
+        .iter()
+        .skip(app.history_scroll)
+        .take(max_rows)
+        .map(transaction_row);
+    let header = Row::new(["UTC", "DIR", "KIND", "METHOD", "AMOUNT", "FEE", "DETAIL"])
+        .style(Style::default().fg(CYAN).bold());
+    let widths = [
+        Constraint::Length(9),
+        Constraint::Length(5),
+        Constraint::Length(8),
+        Constraint::Length(14),
+        Constraint::Length(15),
+        Constraint::Length(10),
+        Constraint::Min(24),
+    ];
+    frame.render_widget(
+        Table::new(rows, widths)
+            .header(header)
+            .column_spacing(1)
+            .block(panel_block().title(scroll_title(" Transaction history ", app.history_scroll))),
+        area,
+    );
+}
+
+fn transaction_row(transaction: &Transaction) -> Row<'static> {
+    let (direction, kind, accent) = match transaction.direction {
+        TransactionDirection::Incoming => (
+            "IN",
+            if transaction.quote_id.is_some() {
+                "mint"
+            } else {
+                "receive"
+            },
+            GREEN,
+        ),
+        TransactionDirection::Outgoing => (
+            "OUT",
+            if transaction.quote_id.is_some() {
+                "melt"
+            } else {
+                "send"
+            },
+            AMBER,
+        ),
+    };
+    let method = transaction
+        .payment_method
+        .as_ref()
+        .map(|method| method.to_string())
+        .unwrap_or_else(|| "--".to_string());
+    let detail = transaction
+        .memo
+        .clone()
+        .or_else(|| transaction.quote_id.as_deref().map(|id| short(id, 12)))
+        .or_else(|| {
+            transaction
+                .payment_request
+                .as_deref()
+                .map(|request| short(request, 32))
+        })
+        .unwrap_or_else(|| "--".to_string());
+    Row::new(vec![
+        Cell::from(format_time(transaction.timestamp)),
+        Cell::from(direction).style(Style::default().fg(accent).bold()),
+        Cell::from(kind).style(Style::default().fg(MAGENTA)),
+        Cell::from(method).style(Style::default().fg(CYAN)),
+        Cell::from(format!(
+            "{} sat",
+            format_sats(u64::from(transaction.amount))
+        )),
+        Cell::from(format_sats(u64::from(transaction.fee))),
+        Cell::from(detail),
+    ])
+    .style(Style::default().fg(TEXT))
+}
+
+fn scroll_title(base: &str, scroll: usize) -> String {
+    if scroll > 0 {
+        format!("{base}(scrolled {scroll}; Home returns to live) ")
+    } else {
+        format!("{base}↑/↓ PgUp/PgDn scroll ")
+    }
 }
 
 fn activity_row(activity: &ActivityRecord) -> Row<'static> {
@@ -514,6 +622,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, app: &App) {
         shortcut("s", "send", command_color),
         shortcut("r", "receive", command_color),
         shortcut("c", "copy", TEXT),
+        shortcut("x", "leave", if connected { TEXT } else { Color::DarkGray }),
         shortcut("?", "help", TEXT),
         shortcut("q", "quit", TEXT),
     ]);
@@ -650,8 +759,12 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
         }
         Modal::Help => {
             let lines = vec![
-                Line::from(vec![key_span("1/2/3"), Span::raw(" switch views")]),
-                Line::from(vec![key_span("↑/↓ j/k"), Span::raw(" select member")]),
+                Line::from(vec![key_span("1/2/3/4"), Span::raw(" switch views")]),
+                Line::from(vec![key_span("↑/↓ j/k"), Span::raw(" select member; scroll feed on Activity/History")]),
+                Line::from(vec![
+                    key_span("PgUp/PgDn"),
+                    Span::raw(" page the Activity/History feed; Home returns to live"),
+                ]),
                 Line::from(vec![
                     key_span("m"),
                     Span::raw(" mint; select advertised method in dialog"),
@@ -667,6 +780,10 @@ fn render_modal(frame: &mut Frame<'_>, area: Rect, modal: &Modal) {
                     Span::raw(" copy latest payment request or token"),
                 ]),
                 Line::from(vec![key_span("f"), Span::raw(" join when disconnected")]),
+                Line::from(vec![
+                    key_span("x"),
+                    Span::raw(" leave federation; wallet data is preserved"),
+                ]),
                 Line::from(vec![key_span("q"), Span::raw(" quit safely")]),
                 Line::from(""),
                 Line::from(Span::styled(
@@ -763,6 +880,36 @@ fn format_time(timestamp: u64) -> String {
         (seconds % 3_600) / 60,
         seconds % 60
     )
+}
+
+fn format_sats(amount: u64) -> String {
+    let digits = amount.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+fn format_age(observed_at: u64) -> String {
+    if observed_at == 0 {
+        return "never".to_string();
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default();
+    let age = now.saturating_sub(observed_at);
+    if age < 60 {
+        format!("{age}s ago")
+    } else if age < 3_600 {
+        format!("{}m ago", age / 60)
+    } else {
+        format!("{}h ago", age / 3_600)
+    }
 }
 
 fn format_bytes(bytes: u64) -> String {

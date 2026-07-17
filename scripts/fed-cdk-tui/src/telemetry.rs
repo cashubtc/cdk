@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cdk::nuts::MintInfo;
@@ -43,6 +45,7 @@ pub fn spawn_member_monitors(
     config: FederationConfig,
     tx: mpsc::UnboundedSender<AppEvent>,
     generation: u64,
+    current_generation: Arc<AtomicU64>,
 ) {
     let expected_federation_id = config.federation_id.to_string();
     let expected_digest = config
@@ -70,6 +73,7 @@ pub fn spawn_member_monitors(
         let tx = tx.clone();
         let federation_id = expected_federation_id.clone();
         let config_digest = expected_digest.clone();
+        let current_generation = current_generation.clone();
         let url = member.public_mint_url.to_string();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis((offset as u64) * 120)).await;
@@ -77,6 +81,9 @@ pub fn spawn_member_monitors(
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
+                if current_generation.load(Ordering::Relaxed) != generation {
+                    return;
+                }
                 let probe = probe_member(
                     &client,
                     member_id,

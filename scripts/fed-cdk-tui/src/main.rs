@@ -8,7 +8,7 @@ mod wallet;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -166,16 +166,22 @@ async fn run_tui(data_dir: PathBuf, runtime: Option<Arc<WalletRuntime>>) -> Resu
     let input_running = Arc::new(AtomicBool::new(true));
     let input_handle = spawn_terminal_input(event_tx.clone(), input_running.clone());
 
-    let mut monitor_generation = 0_u64;
+    let monitor_generation = Arc::new(AtomicU64::new(0));
     let mut app = App::new(data_dir, runtime.clone());
     if let Some(runtime) = runtime {
-        monitor_generation += 1;
+        let generation = monitor_generation.fetch_add(1, Ordering::Relaxed) + 1;
         spawn_member_monitors(
             runtime.public_config(),
             event_tx.clone(),
-            monitor_generation,
+            generation,
+            monitor_generation.clone(),
         );
-        wallet::spawn_balance_refresh(runtime, event_tx.clone());
+        wallet::spawn_balance_refresh(
+            runtime,
+            event_tx.clone(),
+            generation,
+            monitor_generation.clone(),
+        );
     }
 
     let mut tick = tokio::time::interval(Duration::from_millis(250));
@@ -192,7 +198,13 @@ async fn run_tui(data_dir: PathBuf, runtime: Option<Arc<WalletRuntime>>) -> Resu
                     AppEvent::Terminal(event) => {
                         let commands = app.handle_terminal_event(event);
                         for command in commands {
-                            execute_app_command(command, &mut app, event_tx.clone()).await;
+                            execute_app_command(
+                                command,
+                                &mut app,
+                                event_tx.clone(),
+                                monitor_generation.clone(),
+                            )
+                            .await;
                             if app.should_quit() {
                                 break;
                             }
@@ -203,13 +215,20 @@ async fn run_tui(data_dir: PathBuf, runtime: Option<Arc<WalletRuntime>>) -> Resu
                     }
                     AppEvent::Joined(result) => {
                         if let Ok(runtime) = &result {
-                            monitor_generation += 1;
+                            let generation =
+                                monitor_generation.fetch_add(1, Ordering::Relaxed) + 1;
                             spawn_member_monitors(
                                 runtime.public_config(),
                                 event_tx.clone(),
-                                monitor_generation,
+                                generation,
+                                monitor_generation.clone(),
                             );
-                            wallet::spawn_balance_refresh(runtime.clone(), event_tx.clone());
+                            wallet::spawn_balance_refresh(
+                                runtime.clone(),
+                                event_tx.clone(),
+                                generation,
+                                monitor_generation.clone(),
+                            );
                         }
                         app.apply_event(AppEvent::Joined(result));
                     }
@@ -250,9 +269,14 @@ async fn execute_app_command(
     command: AppCommand,
     app: &mut App,
     tx: mpsc::UnboundedSender<AppEvent>,
+    monitor_generation: Arc<AtomicU64>,
 ) {
     match command {
         AppCommand::Quit => app.request_quit(),
+        AppCommand::Leave => {
+            monitor_generation.fetch_add(1, Ordering::Relaxed);
+            app.leave_federation();
+        }
         AppCommand::Join(source) => {
             app.operation_started("join", "Validating federation roster", None);
             let data_dir = app.data_dir().to_path_buf();

@@ -962,12 +962,13 @@ echo "Importing the federation into the funding wallet..."
 add_federation "$FUNDING_DIR" >/dev/null
 
 funding_amount=$((total_tokens * TOKEN_AMOUNT + FUNDING_BUFFER))
-echo "Minting $funding_amount sat for $total_tokens benchmark tokens..."
+echo "Minting $funding_amount sat with $TOKEN_AMOUNT-sat target proofs for $total_tokens benchmark tokens..."
 "$CLI" \
     --work-dir "$FUNDING_DIR" \
     --non-interactive \
     --unit sat \
     mint "$MINT_URL" "$funding_amount" \
+    --split-target "$TOKEN_AMOUNT" \
     --wait-duration 180
 
 prepare_receiver_wallet() {
@@ -1010,34 +1011,40 @@ receive_one() {
 
 prepare_case_tokens() {
     local token_count="$1"
-    local i id token_file send_output token
+    local i id token_file token token_output_file
 
     : >"$CASE_DIR/token-files.txt"
     : >"$CASE_DIR/token-preparation-errors.log"
-    for i in $(seq 1 "$token_count"); do
-        global_token_index=$((global_token_index + 1))
-        id="token-$(printf '%06d' "$global_token_index")"
-        token_file="$CASE_DIR/tokens/$id.cashu"
-        if ! send_output="$(
-            "$CLI" \
-                --work-dir "$FUNDING_DIR" \
-                --non-interactive \
-                --unit sat \
-                send \
-                --mint-url "$MINT_URL" \
-                --amount "$TOKEN_AMOUNT" \
-                2>>"$CASE_DIR/token-preparation-errors.log"
-        )"; then
-            return 1
-        fi
-        token="$(printf '%s\n' "$send_output" | tail -n 1)"
+    token_output_file="$CASE_DIR/prepared-tokens.txt"
+    if ! "$CLI" \
+        --work-dir "$FUNDING_DIR" \
+        --non-interactive \
+        --unit sat \
+        send \
+        --mint-url "$MINT_URL" \
+        --amount "$TOKEN_AMOUNT" \
+        --count "$token_count" \
+        --offline \
+        >"$token_output_file" \
+        2>>"$CASE_DIR/token-preparation-errors.log"
+    then
+        return 1
+    fi
+
+    i=0
+    while IFS= read -r token; do
+        [[ -n "$token" ]] || continue
         case "$token" in
             cashu*) ;;
             *)
-                printf '%s\n' "$send_output" >>"$CASE_DIR/token-preparation-errors.log"
+                printf '%s\n' "$token" >>"$CASE_DIR/token-preparation-errors.log"
                 return 1
                 ;;
         esac
+        i=$((i + 1))
+        global_token_index=$((global_token_index + 1))
+        id="token-$(printf '%06d' "$global_token_index")"
+        token_file="$CASE_DIR/tokens/$id.cashu"
         printf '%s\n' "$token" >"$token_file"
         chmod 600 "$token_file"
         printf '%s\n' "$token_file" >>"$CASE_DIR/token-files.txt"
@@ -1045,7 +1052,14 @@ prepare_case_tokens() {
         if (( i % 10 == 0 || i == token_count )); then
             echo "  prepared $i/$token_count tokens"
         fi
-    done
+    done <"$token_output_file"
+
+    [[ "$i" == "$token_count" ]] || {
+        printf 'expected %s tokens, got %s\n' "$token_count" "$i" \
+            >>"$CASE_DIR/token-preparation-errors.log"
+        return 1
+    }
+    rm -f -- "$token_output_file"
 }
 
 start_profile_hook() {
