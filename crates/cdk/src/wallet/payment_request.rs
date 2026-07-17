@@ -206,6 +206,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn create_request_params_default_is_strict_by_default() {
+        let params = CreateRequestParams::default();
+
+        assert_eq!(params.unit, "sat");
+        assert_eq!(params.num_sigs, 1);
+        assert_eq!(params.transport, "none");
+        assert!(params.amount.is_none());
+        assert!(params.mint_preferred.is_none());
+    }
+
+    #[test]
     fn strict_mint_policy_only_accepts_listed_mints() {
         let listed_mint = MintUrl::from_str("https://listed.example.com").expect("valid URL");
         let unlisted_mint = MintUrl::from_str("https://unlisted.example.com").expect("valid URL");
@@ -466,6 +477,27 @@ pub struct CreateRequestParams {
     pub nostr_relays: Option<Vec<String>>, // when transport == nostr
     /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
     pub mints: Option<Vec<String>>,
+    /// Whether the mint list is preferred rather than required
+    pub mint_preferred: Option<bool>,
+}
+
+impl Default for CreateRequestParams {
+    fn default() -> Self {
+        Self {
+            amount: None,
+            unit: "sat".to_string(),
+            description: None,
+            pubkeys: None,
+            num_sigs: 1,
+            hash: None,
+            preimage: None,
+            transport: "none".to_string(),
+            http_url: None,
+            nostr_relays: None,
+            mints: None,
+            mint_preferred: None,
+        }
+    }
 }
 
 /// Extra information needed to wait for an incoming Nostr payment
@@ -794,7 +826,7 @@ impl WalletRepository {
                             relays,
                             pubkey: nprofile.public_key,
                             mints: mints.clone(),
-                            mint_preferred: None,
+                            mint_preferred: params.mint_preferred,
                         }),
                     )
                 }
@@ -825,7 +857,7 @@ impl WalletRepository {
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
             mints,
-            mint_preferred: None,
+            mint_preferred: params.mint_preferred,
             supported_methods: vec![],
             description: params.description,
             transports,
@@ -896,7 +928,7 @@ impl WalletRepository {
             unit: Some(CurrencyUnit::from_str(&params.unit)?),
             single_use: Some(true),
             mints,
-            mint_preferred: None,
+            mint_preferred: params.mint_preferred,
             supported_methods: vec![],
             description: params.description,
             transports,

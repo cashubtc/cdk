@@ -242,6 +242,8 @@ pub struct CreateRequestParams {
     pub nostr_relays: Option<Vec<String>>,
     /// Optional list of mint URLs the receiver trusts. If not provided, the wallet's current mints for the requested unit will be used.
     pub mints: Option<Vec<String>>,
+    /// Whether the mint list is preferred rather than required
+    pub mint_preferred: Option<bool>,
 }
 
 impl Default for CreateRequestParams {
@@ -258,6 +260,7 @@ impl Default for CreateRequestParams {
             http_url: None,
             nostr_relays: None,
             mints: None,
+            mint_preferred: None,
         }
     }
 }
@@ -276,6 +279,7 @@ impl From<CreateRequestParams> for cdk::wallet::payment_request::CreateRequestPa
             http_url: params.http_url,
             nostr_relays: params.nostr_relays,
             mints: params.mints,
+            mint_preferred: params.mint_preferred,
         }
     }
 }
@@ -294,6 +298,7 @@ impl From<cdk::wallet::payment_request::CreateRequestParams> for CreateRequestPa
             http_url: params.http_url,
             nostr_relays: params.nostr_relays,
             mints: params.mints,
+            mint_preferred: params.mint_preferred,
         }
     }
 }
@@ -555,6 +560,7 @@ mod tests {
         assert_eq!(params.num_sigs, 1);
         assert_eq!(params.transport, "none");
         assert!(params.amount.is_none());
+        assert!(params.mint_preferred.is_none());
     }
 
     #[test]
@@ -565,6 +571,7 @@ mod tests {
             description: Some("Test payment".to_string()),
             transport: "http".to_string(),
             http_url: Some("https://example.com/callback".to_string()),
+            mint_preferred: Some(true),
             ..Default::default()
         };
 
@@ -574,5 +581,10 @@ mod tests {
         assert_eq!(params.amount, decoded.amount);
         assert_eq!(params.unit, decoded.unit);
         assert_eq!(params.description, decoded.description);
+        assert_eq!(params.mint_preferred, decoded.mint_preferred);
+
+        let cdk_params: cdk::wallet::payment_request::CreateRequestParams = decoded.into();
+        let ffi_params: CreateRequestParams = cdk_params.into();
+        assert_eq!(ffi_params.mint_preferred, Some(true));
     }
 }
