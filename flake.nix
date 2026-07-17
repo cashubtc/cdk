@@ -601,7 +601,7 @@
               # Generate Dart bindings via the custom uniffi-bindgen binary
               # Must run from bindings/dart/rust/ so it finds uniffi.toml
               (cd bindings/dart/rust && \
-                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen -- \
+                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen-dart -- \
                   "../../../$CDK_FFI_LIB" --out-dir ../../../target/dart-bindings)
             '';
             doCheck = false;
