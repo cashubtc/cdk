@@ -1,0 +1,29 @@
+[package]
+name = "cdk-enclavia"
+version.workspace = true
+authors = ["CDK Developers"]
+description = "Enclavia-attested transport for CDK wallets"
+edition.workspace = true
+# `enclavia` 0.1.0 requires Rust 1.88. This crate therefore has a higher
+# MSRV than the rest of the CDK workspace until the upstream MSRV is lowered.
+rust-version = "1.88"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+async-trait.workspace = true
+cdk = { workspace = true, default-features = false, features = ["wallet"] }
+cdk-http-client = { workspace = true, default-features = false }
+clap.workspace = true
+enclavia = { version = "0.1.0", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+serde_urlencoded = "0.7"
+thiserror.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

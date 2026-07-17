@@ -53,6 +53,7 @@ jsonwebtoken = "9.2.0"
 cashu = { path = "./crates/cashu", default-features = false, version = "=0.17.0" }
 cdk = { path = "./crates/cdk", default-features = false, version = "=0.17.0" }
 cdk-common = { path = "./crates/cdk-common", default-features = false, version = "=0.17.0" }
+cdk-enclavia = { path = "./crates/cdk-enclavia", default-features = false, version = "=0.17.0" }
 cdk-axum = { path = "./crates/cdk-axum", default-features = false, version = "=0.17.0" }
 cdk-cln = { path = "./crates/cdk-cln", version = "=0.17.0" }
 cdk-lnbits = { path = "./crates/cdk-lnbits", version = "=0.17.0" }

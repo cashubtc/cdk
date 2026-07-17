@@ -522,6 +522,7 @@
                 -p cdk-common \
                 -p cdk-sql-common \
                 -p cdk \
+                -p cdk-enclavia \
                 -p cdk-redb \
                 -p cdk-sqlite \
                 -p cdk-axum \

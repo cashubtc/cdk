@@ -31,6 +31,7 @@ The project is split up into several crates in the `crates/` directory:
     * [**cashu**](./crates/cashu/): Core Cashu protocol implementation.
     * [**cdk**](./crates/cdk/): Rust implementation of Cashu protocol.
     * [**cdk-http-client**](./crates/cdk-http-client/): HTTP client abstraction for wallet-to-mint communication.
+    * [**cdk-enclavia**](./crates/cdk-enclavia/): Enclavia-attested transport for CDK wallets.
     * [**cdk-sqlite**](./crates/cdk-sqlite/): SQLite Storage backend.
     * [**cdk-postgres**](./crates/cdk-postgres/): PostgreSQL Storage backend.
     * [**cdk-redb**](./crates/cdk-redb/): Redb Storage backend.
