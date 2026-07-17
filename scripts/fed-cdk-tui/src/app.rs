@@ -28,18 +28,22 @@ pub enum AppEvent {
         title: String,
         content: String,
         message: String,
+        member_url: Option<String>,
     },
     OperationProgress {
         operation: &'static str,
         message: String,
+        member_url: Option<String>,
     },
     OperationFinished {
         operation: &'static str,
         message: String,
+        member_url: Option<String>,
     },
     OperationFailed {
         operation: &'static str,
         error: String,
+        member_url: Option<String>,
     },
     BackgroundError(String),
 }
@@ -141,6 +145,7 @@ pub struct ActivityRecord {
     pub at: u64,
     pub kind: &'static str,
     pub member_id: Option<MemberId>,
+    pub member_url: Option<String>,
     pub message: String,
     pub ok: Option<bool>,
     pub latency_ms: Option<u64>,
@@ -337,6 +342,7 @@ impl App {
             app.push_activity(
                 "system",
                 None,
+                None,
                 "Wallet opened and member probes started",
                 Some(true),
                 None,
@@ -374,11 +380,16 @@ impl App {
         }
     }
 
-    pub fn operation_started(&mut self, operation: &'static str, message: &str) {
+    pub fn operation_started(
+        &mut self,
+        operation: &'static str,
+        message: &str,
+        member_url: Option<&str>,
+    ) {
         let active = self.active_operations.entry(operation).or_default();
         *active = active.saturating_add(1);
         self.modal = None;
-        self.push_activity(operation, None, message, None, None, None);
+        self.push_activity(operation, None, member_url, message, None, None, None);
         self.toast = Some((message.to_string(), true, 24));
     }
 
@@ -392,17 +403,22 @@ impl App {
                     self.rebuild_members();
                     self.operation_ended("join");
                     self.modal = None;
+                    let join_url = runtime.local_mint_url().to_string();
                     self.push_activity(
                         "join",
                         None,
-                        &format!("Joined federation {}", short(&runtime.federation_id(), 14)),
+                        Some(join_url.as_str()),
+                        &format!(
+                            "Joined federation {} via {join_url}",
+                            short(&runtime.federation_id(), 14)
+                        ),
                         Some(true),
                         None,
                         None,
                     );
                     self.toast = Some(("Federation joined".to_string(), true, 32));
                 }
-                Err(error) => self.operation_failed("join", error),
+                Err(error) => self.operation_failed("join", error, None),
             },
             AppEvent::MemberProbe(probe) => self.apply_probe(probe),
             AppEvent::Balance {
@@ -419,33 +435,84 @@ impl App {
                 title,
                 content,
                 message,
+                member_url,
             } => {
                 self.last_payload = Some(content.clone());
                 self.modal = Some(Modal::Payload { title, content });
-                self.push_activity(operation, None, &message, None, None, None);
+                self.push_activity(
+                    operation,
+                    None,
+                    member_url.as_deref(),
+                    &message,
+                    None,
+                    None,
+                    None,
+                );
                 self.toast = Some(("Payload ready; press c to copy".to_string(), true, 32));
             }
-            AppEvent::OperationProgress { operation, message } => {
-                self.push_activity(operation, None, &message, None, None, None);
+            AppEvent::OperationProgress {
+                operation,
+                message,
+                member_url,
+            } => {
+                self.push_activity(
+                    operation,
+                    None,
+                    member_url.as_deref(),
+                    &message,
+                    None,
+                    None,
+                    None,
+                );
                 self.toast = Some((message, true, 24));
             }
-            AppEvent::OperationFinished { operation, message } => {
+            AppEvent::OperationFinished {
+                operation,
+                message,
+                member_url,
+            } => {
                 self.operation_ended(operation);
-                self.push_activity(operation, None, &message, Some(true), None, None);
+                self.push_activity(
+                    operation,
+                    None,
+                    member_url.as_deref(),
+                    &message,
+                    Some(true),
+                    None,
+                    None,
+                );
                 self.toast = Some((message, true, 36));
             }
-            AppEvent::OperationFailed { operation, error } => {
-                self.operation_failed(operation, error);
+            AppEvent::OperationFailed {
+                operation,
+                error,
+                member_url,
+            } => {
+                self.operation_failed(operation, error, member_url.as_deref());
             }
             AppEvent::BackgroundError(error) => {
-                self.push_activity("system", None, &error, Some(false), None, None);
+                self.push_activity("system", None, None, &error, Some(false), None, None);
+                self.toast = Some((error, false, 36));
             }
         }
     }
 
-    fn operation_failed(&mut self, operation: &'static str, error: String) {
+    fn operation_failed(
+        &mut self,
+        operation: &'static str,
+        error: String,
+        member_url: Option<&str>,
+    ) {
         self.operation_ended(operation);
-        self.push_activity(operation, None, &error, Some(false), None, None);
+        self.push_activity(
+            operation,
+            None,
+            member_url,
+            &error,
+            Some(false),
+            None,
+            None,
+        );
         self.toast = Some((error, false, 48));
     }
 
@@ -485,9 +552,13 @@ impl App {
         member.observed_at = probe.observed_at;
 
         let message = match &probe.error {
-            Some(error) => format!("GET info + keysets failed: {error}"),
+            Some(error) => format!(
+                "GET {}/v1/info + /v1/keysets failed: {error}",
+                probe.member_url.trim_end_matches('/')
+            ),
             None => format!(
-                "GET info + keysets -> {} in {}ms",
+                "GET {}/v1/info + /v1/keysets -> {} in {}ms",
+                probe.member_url.trim_end_matches('/'),
                 probe.status.unwrap_or_default(),
                 probe.latency_ms
             ),
@@ -495,6 +566,7 @@ impl App {
         self.push_activity(
             "probe",
             Some(probe.member_id),
+            Some(probe.member_url.as_str()),
             &message,
             Some(probe.success),
             Some(probe.latency_ms),
@@ -520,6 +592,7 @@ impl App {
         &mut self,
         kind: &'static str,
         member_id: Option<MemberId>,
+        member_url: Option<&str>,
         message: &str,
         ok: Option<bool>,
         latency_ms: Option<u64>,
@@ -531,6 +604,7 @@ impl App {
             at: unix_time(),
             kind,
             member_id,
+            member_url: member_url.map(ToOwned::to_owned),
             message: message.to_string(),
             ok,
             latency_ms,
@@ -1065,18 +1139,20 @@ mod tests {
     #[test]
     fn concurrent_operations_are_counted_until_each_one_finishes() {
         let mut app = App::new(PathBuf::from("test-wallet"), None);
-        app.operation_started("mint-onchain", "first quote");
-        app.operation_started("mint-onchain", "second quote");
+        app.operation_started("mint-onchain", "first quote", None);
+        app.operation_started("mint-onchain", "second quote", None);
 
         assert_eq!(app.active_operation_count(), 2);
         app.apply_event(AppEvent::OperationFinished {
             operation: "mint-onchain",
             message: "first finished".to_string(),
+            member_url: None,
         });
         assert_eq!(app.active_operation_count(), 1);
         app.apply_event(AppEvent::OperationFinished {
             operation: "mint-onchain",
             message: "second finished".to_string(),
+            member_url: None,
         });
         assert_eq!(app.active_operation_count(), 0);
     }

@@ -394,18 +394,19 @@ fn render_activity(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let max_rows = area.height.saturating_sub(3) as usize;
     let rows = app.activities.iter().take(max_rows).map(activity_row);
     let header = Row::new([
-        "SEQ", "UTC", "TYPE", "MEMBER", "RESULT", "LATENCY", "BYTES", "DETAIL",
+        "SEQ", "UTC", "TYPE", "MEMBER", "URL", "RESULT", "LATENCY", "BYTES", "DETAIL",
     ])
     .style(Style::default().fg(CYAN).bold());
     let widths = [
+        Constraint::Length(5),
+        Constraint::Length(9),
+        Constraint::Length(12),
+        Constraint::Length(7),
+        Constraint::Length(28),
         Constraint::Length(6),
         Constraint::Length(9),
-        Constraint::Length(9),
         Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(10),
-        Constraint::Length(9),
-        Constraint::Min(28),
+        Constraint::Min(24),
     ];
     frame.render_widget(
         Table::new(rows, widths)
@@ -422,6 +423,11 @@ fn activity_row(activity: &ActivityRecord) -> Row<'static> {
         Some(false) => Cell::from("FAIL").style(Style::default().fg(RED).bold()),
         None => Cell::from("...").style(Style::default().fg(AMBER)),
     };
+    let member_url = activity
+        .member_url
+        .as_deref()
+        .map(|url| short(url, 28))
+        .unwrap_or_else(|| "--".to_string());
     Row::new(vec![
         Cell::from(activity.sequence.to_string()),
         Cell::from(format_time(activity.at)),
@@ -432,6 +438,7 @@ fn activity_row(activity: &ActivityRecord) -> Row<'static> {
                 .map(|member| format!("#{:02}", member.get()))
                 .unwrap_or_else(|| "--".to_string()),
         ),
+        Cell::from(member_url).style(Style::default().fg(CYAN)),
         result,
         Cell::from(
             activity

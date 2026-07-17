@@ -254,7 +254,7 @@ async fn execute_app_command(
     match command {
         AppCommand::Quit => app.request_quit(),
         AppCommand::Join(source) => {
-            app.operation_started("join", "Validating federation roster");
+            app.operation_started("join", "Validating federation roster", None);
             let data_dir = app.data_dir().to_path_buf();
             tokio::spawn(async move {
                 let result = WalletRuntime::join(&data_dir, source)
@@ -266,43 +266,67 @@ async fn execute_app_command(
         }
         AppCommand::Bolt11Mint(amount) => {
             if let Some(runtime) = app.runtime() {
-                app.operation_started("mint-bolt11", &format!("Requesting {amount} sat invoice"));
+                let member_url = runtime.local_mint_url().to_string();
+                app.operation_started(
+                    "mint-bolt11",
+                    &format!("mint_quote bolt11 amount={amount} via {member_url}"),
+                    Some(&member_url),
+                );
                 wallet::spawn_bolt11_mint(runtime, amount, tx);
             }
         }
         AppCommand::OnchainMint(amount) => {
             if let Some(runtime) = app.runtime() {
+                let member_url = runtime.local_mint_url().to_string();
                 app.operation_started(
                     "mint-onchain",
-                    &format!("Creating a {amount} sat on-chain mint quote"),
+                    &format!("mint_quote onchain amount={amount} via {member_url}"),
+                    Some(&member_url),
                 );
                 wallet::spawn_onchain_mint(runtime, amount, tx);
             }
         }
         AppCommand::Bolt11Melt(invoice) => {
             if let Some(runtime) = app.runtime() {
-                app.operation_started("melt-bolt11", "Requesting Lightning payment quote");
+                let member_url = runtime.local_mint_url().to_string();
+                app.operation_started(
+                    "melt-bolt11",
+                    &format!("melt_quote bolt11 via {member_url}"),
+                    Some(&member_url),
+                );
                 wallet::spawn_bolt11_melt(runtime, invoice, tx);
             }
         }
         AppCommand::OnchainMelt { address, amount } => {
             if let Some(runtime) = app.runtime() {
+                let member_url = runtime.local_mint_url().to_string();
                 app.operation_started(
                     "melt-onchain",
-                    &format!("Creating a {amount} sat on-chain melt quote"),
+                    &format!("melt_quote onchain amount={amount} via {member_url}"),
+                    Some(&member_url),
                 );
                 wallet::spawn_onchain_melt(runtime, address, amount, tx);
             }
         }
         AppCommand::Send(amount) => {
             if let Some(runtime) = app.runtime() {
-                app.operation_started("send", &format!("Preparing {amount} sat token"));
+                let member_url = runtime.local_mint_url().to_string();
+                app.operation_started(
+                    "send",
+                    &format!("Preparing {amount} sat token via {member_url}"),
+                    Some(&member_url),
+                );
                 wallet::spawn_send(runtime, amount, tx);
             }
         }
         AppCommand::Receive(token) => {
             if let Some(runtime) = app.runtime() {
-                app.operation_started("receive", "Validating and swapping incoming token");
+                let member_url = runtime.local_mint_url().to_string();
+                app.operation_started(
+                    "receive",
+                    &format!("Validating and swapping incoming token via {member_url}"),
+                    Some(&member_url),
+                );
                 wallet::spawn_receive(runtime, token, tx);
             }
         }

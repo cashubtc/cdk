@@ -396,8 +396,17 @@ pub fn spawn_onchain_mint(
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
+        let member_url = runtime.local_mint_url().to_string();
         let result = async {
             let wallet = runtime.wallet();
+            tx.send(AppEvent::OperationProgress {
+                operation: "mint-onchain",
+                message: format!(
+                    "POST /v1/mint/quote/onchain amount={amount} via {member_url} (quote coordinator; may fall back)"
+                ),
+                member_url: Some(member_url.clone()),
+            })
+            .ok();
             let quote = wallet
                 .mint_quote(
                     PaymentMethod::Known(KnownMethod::Onchain),
@@ -411,13 +420,25 @@ pub fn spawn_onchain_mint(
                 title: "Fund this on-chain address".to_string(),
                 content: quote.request.clone(),
                 message: format!(
-                    "Quote {} is waiting for an on-chain confirmation",
-                    short_id(&quote.id)
+                    "mint_quote ok id={} amount={} request={} via {member_url}; waiting for confirmation then mint",
+                    short_id(&quote.id),
+                    amount,
+                    short_request(&quote.request)
                 ),
+                member_url: Some(member_url.clone()),
             })
             .ok();
 
             let quote_id = quote.id.clone();
+            tx.send(AppEvent::OperationProgress {
+                operation: "mint-onchain",
+                message: format!(
+                    "POST /v1/mint/onchain poll start quote={} via {member_url}",
+                    short_id(&quote_id)
+                ),
+                member_url: Some(member_url.clone()),
+            })
+            .ok();
             let mut stream = wallet.proof_stream(quote, SplitTarget::default(), None);
             let mut minted = Amount::ZERO;
             loop {
@@ -428,9 +449,11 @@ pub fn spawn_onchain_mint(
                         tx.send(AppEvent::OperationProgress {
                             operation: "mint-onchain",
                             message: format!(
-                                "Aggregated {batch} sat from quote {}",
+                                "mint responses aggregated {} sat from quote {} via {member_url}",
+                                batch,
                                 short_id(&quote_id)
                             ),
+                            member_url: Some(member_url.clone()),
                         })
                         .ok();
                     }
@@ -441,7 +464,10 @@ pub fn spawn_onchain_mint(
             if minted == Amount::ZERO {
                 bail!("mint completed without issuing proofs");
             }
-            Ok(format!("Minted {minted} sat"))
+            Ok(format!(
+                "mint complete:{minted} sat quote={} via {member_url}",
+                short_id(&quote_id)
+            ))
         }
         .await;
         finish_operation("mint-onchain", result, runtime, tx).await;
@@ -454,8 +480,17 @@ pub fn spawn_bolt11_mint(
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
+        let member_url = runtime.local_mint_url().to_string();
         let result = async {
             let wallet = runtime.wallet();
+            tx.send(AppEvent::OperationProgress {
+                operation: "mint-bolt11",
+                message: format!(
+                    "POST /v1/mint/quote/bolt11 amount={amount} via {member_url} (quote coordinator; may fall back)"
+                ),
+                member_url: Some(member_url.clone()),
+            })
+            .ok();
             let quote = wallet
                 .mint_quote(
                     PaymentMethod::BOLT11,
@@ -468,11 +503,26 @@ pub fn spawn_bolt11_mint(
                 operation: "mint-bolt11",
                 title: "Pay mint invoice".to_string(),
                 content: quote.request.clone(),
-                message: format!("Quote {} is waiting for payment", short_id(&quote.id)),
+                message: format!(
+                    "mint_quote ok id={} amount={} invoice={} via {member_url}; waiting for payment then mint",
+                    short_id(&quote.id),
+                    amount,
+                    short_request(&quote.request)
+                ),
+                member_url: Some(member_url.clone()),
             })
             .ok();
 
             let quote_id = quote.id.clone();
+            tx.send(AppEvent::OperationProgress {
+                operation: "mint-bolt11",
+                message: format!(
+                    "POST /v1/mint/bolt11 poll start quote={} via {member_url}",
+                    short_id(&quote_id)
+                ),
+                member_url: Some(member_url.clone()),
+            })
+            .ok();
             let mut stream = wallet.proof_stream(quote, SplitTarget::default(), None);
             let mut minted = Amount::ZERO;
             loop {
@@ -483,9 +533,11 @@ pub fn spawn_bolt11_mint(
                         tx.send(AppEvent::OperationProgress {
                             operation: "mint-bolt11",
                             message: format!(
-                                "Aggregated {batch} sat from quote {}",
+                                "mint responses aggregated {} sat from quote {} via {member_url}",
+                                batch,
                                 short_id(&quote_id)
                             ),
+                            member_url: Some(member_url.clone()),
                         })
                         .ok();
                     }
@@ -497,7 +549,10 @@ pub fn spawn_bolt11_mint(
             if minted == Amount::ZERO {
                 bail!("mint completed without issuing proofs");
             }
-            Ok(format!("Minted {minted} sat"))
+            Ok(format!(
+                "mint complete:{minted} sat quote={} via {member_url}",
+                short_id(&quote_id)
+            ))
         }
         .await;
         finish_operation("mint-bolt11", result, runtime, tx).await;
@@ -506,6 +561,7 @@ pub fn spawn_bolt11_mint(
 
 pub fn spawn_send(runtime: Arc<WalletRuntime>, amount: u64, tx: mpsc::UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
+        let member_url = runtime.local_mint_url().to_string();
         let result = async {
             let wallet = runtime.wallet();
             let options = SendOptions {
@@ -518,10 +574,13 @@ pub fn spawn_send(runtime: Arc<WalletRuntime>, amount: u64, tx: mpsc::UnboundedS
                 operation: "send",
                 title: format!("{amount} sat Cashu token"),
                 content: token,
-                message: "Federated swap complete; copy the token for the receiver".to_string(),
+                message: format!(
+                    "Federated swap complete; copy the token for the receiver via {member_url}"
+                ),
+                member_url: Some(member_url.clone()),
             })
             .ok();
-            Ok(format!("Prepared {amount} sat token"))
+            Ok(format!("Prepared {amount} sat token via {member_url}"))
         }
         .await;
         finish_operation("send", result, runtime, tx).await;
@@ -551,6 +610,7 @@ pub fn spawn_onchain_melt(
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
+        let member_url = runtime.local_mint_url().to_string();
         let result = async {
             let wallet = runtime.wallet();
             let quotes = wallet
@@ -564,12 +624,13 @@ pub fn spawn_onchain_melt(
             tx.send(AppEvent::OperationProgress {
                 operation: "melt-onchain",
                 message: format!(
-                    "Quote {}: {} sat + {} sat reserve, {} block estimate",
+                    "melt_quote ok id={}: {} sat + {} sat reserve, {} block estimate via {member_url}",
                     short_id(&quote.id),
                     quote.amount,
                     quote.fee_reserve,
                     quote.estimated_blocks.unwrap_or_default()
                 ),
+                member_url: Some(member_url.clone()),
             })
             .ok();
             let outcome = wallet
@@ -578,7 +639,7 @@ pub fn spawn_onchain_melt(
                 .confirm()
                 .await?;
             Ok(format!(
-                "Paid {} sat with {} sat fee ({})",
+                "Paid {} sat with {} sat fee ({}) via {member_url}",
                 outcome.amount(),
                 outcome.fee_paid(),
                 outcome.state()
@@ -595,6 +656,7 @@ pub fn spawn_bolt11_melt(
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
     tokio::spawn(async move {
+        let member_url = runtime.local_mint_url().to_string();
         let result = async {
             cdk::Bolt11Invoice::from_str(&invoice)
                 .map_err(|err| anyhow!("invalid BOLT11 invoice: {err}"))?;
@@ -605,11 +667,12 @@ pub fn spawn_bolt11_melt(
             tx.send(AppEvent::OperationProgress {
                 operation: "melt-bolt11",
                 message: format!(
-                    "Quote {}: {} sat + {} sat reserve",
+                    "melt_quote ok id={}: {} sat + {} sat reserve via {member_url}",
                     short_id(&quote.id),
                     quote.amount,
                     quote.fee_reserve
                 ),
+                member_url: Some(member_url.clone()),
             })
             .ok();
             let outcome = wallet
@@ -618,7 +681,7 @@ pub fn spawn_bolt11_melt(
                 .confirm()
                 .await?;
             Ok(format!(
-                "Paid {} sat with {} sat fee ({})",
+                "Paid {} sat with {} sat fee ({}) via {member_url}",
                 outcome.amount(),
                 outcome.fee_paid(),
                 outcome.state()
@@ -635,15 +698,21 @@ async fn finish_operation(
     runtime: Arc<WalletRuntime>,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
+    let member_url = Some(runtime.local_mint_url().to_string());
     match result {
         Ok(message) => {
-            tx.send(AppEvent::OperationFinished { operation, message })
-                .ok();
+            tx.send(AppEvent::OperationFinished {
+                operation,
+                message,
+                member_url,
+            })
+            .ok();
         }
         Err(err) => {
             tx.send(AppEvent::OperationFailed {
                 operation,
                 error: err.to_string(),
+                member_url,
             })
             .ok();
         }
@@ -666,6 +735,22 @@ async fn finish_operation(
 
 fn short_id(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
+}
+
+fn short_request(request: &str) -> String {
+    if request.chars().count() <= 28 {
+        return request.to_string();
+    }
+    let prefix: String = request.chars().take(14).collect();
+    let suffix: String = request
+        .chars()
+        .rev()
+        .take(10)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    format!("{prefix}…{suffix}")
 }
 
 #[cfg(test)]

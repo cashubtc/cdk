@@ -13,6 +13,7 @@ use crate::app::AppEvent;
 pub struct MemberProbe {
     pub generation: u64,
     pub member_id: MemberId,
+    pub member_url: String,
     pub success: bool,
     pub metadata_matches: bool,
     pub status: Option<u16>,
@@ -72,7 +73,7 @@ pub fn spawn_member_monitors(
         let url = member.public_mint_url.to_string();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis((offset as u64) * 120)).await;
-            let mut interval = tokio::time::interval(Duration::from_secs(3));
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
@@ -156,6 +157,7 @@ async fn probe_member(
     MemberProbe {
         generation,
         member_id,
+        member_url: base_url.to_string(),
         success: status_success && metadata_matches,
         metadata_matches,
         status: info.status,
