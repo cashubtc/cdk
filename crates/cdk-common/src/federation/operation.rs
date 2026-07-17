@@ -35,6 +35,10 @@ const FEDERATION_OPERATION_HASH_VERSION: &[u8] = b"cdk-federation-operation-v1";
 const FEDERATION_OPERATION_AUTHORIZATION_VERSION: &[u8] =
     b"cdk-federation-operation-authorization-v1";
 
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 /// Version of the federation operation envelope format.
 pub const FEDERATION_OPERATION_VERSION: u16 = 4;
 
@@ -199,13 +203,19 @@ pub enum FederationOperationConflictKey {
         outpoint: bitcoin::OutPoint,
         /// Zero before confirmation, otherwise the observer's claimed depth.
         confirmation_depth: u32,
+        /// Observation epoch that scopes this evidence revision.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        observation_epoch: u64,
         /// Reporting federation member.
         observer: MemberId,
     },
-    /// One member may report one conservative reorg event per outpoint.
+    /// One member may report one conservative reorg event per outpoint and epoch.
     DepositReorgObservation {
         /// Disconnected transaction output.
         outpoint: bitcoin::OutPoint,
+        /// Observation epoch invalidated by the report.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        observation_epoch: u64,
         /// Reporting federation member.
         observer: MemberId,
     },
@@ -1417,12 +1427,14 @@ impl FederationOperation {
                     confirmation_depth: observation
                         .confirmation
                         .map_or(0, |confirmation| confirmation.confirmation_depth),
+                    observation_epoch: observation.observation_epoch,
                     observer: observation.observer,
                 }]
             }
             Self::ChainObservation(FederationChainObservation::Reorg(observation)) => {
                 vec![FederationOperationConflictKey::DepositReorgObservation {
                     outpoint: observation.outpoint,
+                    observation_epoch: observation.observation_epoch,
                     observer: observation.observer,
                 }]
             }
@@ -1926,12 +1938,15 @@ fn append_hash_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
 mod tests {
     use std::{collections::BTreeMap, str::FromStr};
 
+    use bitcoin::hashes::Hash;
+    use bitcoin::{BlockHash, OutPoint, Txid};
     use serde_json::json;
 
     use super::*;
     use crate::federation::{
-        generate_trusted_dealer_configs, InMemoryFederationJournal, ThresholdParams,
-        TrustedDealerKeysetSpec, TrustedDealerMember,
+        generate_trusted_dealer_configs, FederationChainSourceDescriptor,
+        FederationChainSourceScope, FederationDepositReorgObservation, InMemoryFederationJournal,
+        ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
     use crate::nuts::nut01::BlsSecretKey;
     use crate::{
@@ -2330,6 +2345,50 @@ mod tests {
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
             "01d678fdcaea34b609ebd79940f71c02100e94f731b0ccb174f63e2e5abdc20c"
+        );
+    }
+
+    #[test]
+    fn chain_observation_epoch_zero_is_legacy_compatible_and_later_epochs_are_unique() {
+        let reorg = |observation_epoch| {
+            envelope(FederationOperation::ChainObservation(
+                FederationChainObservation::Reorg(FederationDepositReorgObservation {
+                    outpoint: OutPoint::new(Txid::from_byte_array([8; 32]), 1),
+                    disconnected_block_hash: BlockHash::from_byte_array([9; 32]),
+                    disconnected_block_height: 100,
+                    observation_epoch,
+                    observer: member_id(1),
+                    source: FederationChainSourceDescriptor::new(
+                        FederationChainSourceScope::Shared,
+                        "shared-source",
+                    )
+                    .expect("source"),
+                }),
+            ))
+        };
+        let legacy = reorg(0);
+        let repeated = reorg(1);
+        let legacy_json = String::from_utf8(legacy.canonical_bytes().expect("legacy bytes"))
+            .expect("legacy JSON");
+        let legacy_key_json =
+            serde_json::to_string(&legacy.operation.conflict_keys()).expect("legacy keys");
+        let deposit_key = |observation_epoch| FederationOperationConflictKey::DepositObservation {
+            outpoint: OutPoint::new(Txid::from_byte_array([8; 32]), 1),
+            confirmation_depth: 1,
+            observation_epoch,
+            observer: member_id(1),
+        };
+
+        assert!(!legacy_json.contains("observation_epoch"));
+        assert!(!legacy_key_json.contains("observation_epoch"));
+        assert_ne!(deposit_key(0), deposit_key(1));
+        assert_ne!(
+            legacy.operation.conflict_keys(),
+            repeated.operation.conflict_keys()
+        );
+        assert_ne!(
+            legacy.operation_id().expect("legacy operation ID"),
+            repeated.operation_id().expect("repeated operation ID")
         );
     }
 

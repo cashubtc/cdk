@@ -122,6 +122,7 @@ fn spendable_input(
             block_height: 100 + u32::from(marker),
             confirmation_depth: 2,
         }),
+        observation_epoch: 0,
         observer: runtime.member_id(),
         source: FederationChainSourceDescriptor::new(
             FederationChainSourceScope::Independent,

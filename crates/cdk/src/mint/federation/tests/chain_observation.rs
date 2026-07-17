@@ -50,6 +50,7 @@ fn confirmed_observation(
             block_height: 200,
             confirmation_depth: depth,
         }),
+        observation_epoch: 0,
         observer,
         source: FederationChainSourceDescriptor::new(
             FederationChainSourceScope::Shared,
@@ -104,13 +105,13 @@ async fn accepted_member_quorum_materializes_and_catches_up_identically() {
     let first_entry = appended_entry(
         &mut journal,
         runtime
-            .chain_observation_operation(first_observation)
+            .chain_observation_operation(first_observation.clone())
             .expect("first observation"),
     );
     let second_entry = appended_entry(
         &mut journal,
         second_runtime
-            .chain_observation_operation(second_observation)
+            .chain_observation_operation(second_observation.clone())
             .expect("second observation"),
     );
 
@@ -164,6 +165,7 @@ async fn accepted_member_quorum_materializes_and_catches_up_identically() {
         outpoint,
         disconnected_block_hash: BlockHash::from_byte_array([42; 32]),
         disconnected_block_height: 200,
+        observation_epoch: 0,
         observer: runtime.member_id(),
         source: FederationChainSourceDescriptor::new(
             FederationChainSourceScope::Shared,
@@ -191,8 +193,65 @@ async fn accepted_member_quorum_materializes_and_catches_up_identically() {
         );
     }
 
+    let mut first_reconfirmation = first_observation.clone();
+    let FederationChainObservation::Deposit(first_reconfirmation_deposit) =
+        &mut first_reconfirmation
+    else {
+        panic!("confirmed deposit observation");
+    };
+    first_reconfirmation_deposit.observation_epoch = 1;
+    let mut second_reconfirmation = second_observation.clone();
+    let FederationChainObservation::Deposit(second_reconfirmation_deposit) =
+        &mut second_reconfirmation
+    else {
+        panic!("confirmed deposit observation");
+    };
+    second_reconfirmation_deposit.observation_epoch = 1;
+    let first_reconfirmation_entry = appended_entry(
+        &mut journal,
+        runtime
+            .chain_observation_operation(first_reconfirmation)
+            .expect("first reconfirmation"),
+    );
+    let second_reconfirmation_entry = appended_entry(
+        &mut journal,
+        second_runtime
+            .chain_observation_operation(second_reconfirmation)
+            .expect("second reconfirmation"),
+    );
+    for member in &members {
+        persist_and_apply_entry(member, &first_reconfirmation_entry).await;
+        assert_eq!(
+            member
+                .federation_chain_observation_state()
+                .await
+                .expect("recovering state")
+                .utxo(outpoint)
+                .expect("utxo")
+                .state,
+            FederationWalletUtxoState::Reorged
+        );
+        persist_and_apply_entry(member, &second_reconfirmation_entry).await;
+        let recovered = member
+            .federation_chain_observation_state()
+            .await
+            .expect("recovered state");
+        let recovered_utxo = recovered.utxo(outpoint).expect("utxo");
+        assert_eq!(recovered_utxo.state, FederationWalletUtxoState::Spendable);
+        assert_eq!(recovered_utxo.observation_epoch, 1);
+        assert_eq!(recovered_utxo.matching_confirmed_observers(), 2);
+        assert!(!recovered_utxo.reorg_observations.is_empty());
+    }
+
     let (restart_source, restart_store) = federated_test_mint(runtime.clone()).await;
-    for entry in [&allocation_entry, &first_entry, &second_entry, &reorg_entry] {
+    for entry in [
+        &allocation_entry,
+        &first_entry,
+        &second_entry,
+        &reorg_entry,
+        &first_reconfirmation_entry,
+        &second_reconfirmation_entry,
+    ] {
         persist_and_apply_entry(&restart_source, entry).await;
     }
     let before_restart = restart_source

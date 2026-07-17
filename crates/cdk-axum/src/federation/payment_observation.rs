@@ -20,6 +20,18 @@ const FEDERATION_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
 const FEDERATION_PAYMENT_OBSERVER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const FEDERATION_PAYMENT_OBSERVER_BATCH_SIZE: usize = 100;
 
+fn confirmation_matches_known_anchor(
+    block: Option<(cdk_common::bitcoin::BlockHash, u32)>,
+    confirmation: Option<FederationDepositConfirmation>,
+) -> bool {
+    match (block, confirmation) {
+        (Some(block), Some(confirmation)) => {
+            block == (confirmation.block_hash, confirmation.block_height)
+        }
+        _ => true,
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct FederationPaymentObserver;
 
@@ -102,13 +114,42 @@ impl FederationPaymentObserver {
                                 .confirmation_depth
                                 .min(application.confirmation_policy.minimum_confirmations),
                         });
-                if canonical.utxo(output.outpoint).is_some_and(|utxo| {
+                let canonical_utxo = canonical.utxo(output.outpoint);
+                let observation_epoch = match canonical_utxo {
+                    Some(utxo) => match utxo.next_deposit_observation_epoch()? {
+                        Some(observation_epoch) => observation_epoch,
+                        None => continue,
+                    },
+                    None => 0,
+                };
+                if canonical_utxo.is_some_and(|utxo| {
+                    !confirmation_matches_known_anchor(utxo.block, confirmation)
+                }) {
+                    continue;
+                }
+                if canonical_utxo.is_some_and(|utxo| {
+                    utxo.state == FederationWalletUtxoState::Reorged
+                        && !confirmation.is_some_and(|confirmation| {
+                            confirmation.confirmation_depth >= utxo.minimum_confirmations
+                                && utxo.block
+                                    == Some((confirmation.block_hash, confirmation.block_height))
+                        })
+                }) {
+                    continue;
+                }
+                if canonical_utxo.is_some_and(|utxo| {
                     utxo.observations.get(&observer).is_some_and(|evidence| {
                         matches!(
                             &evidence.observation,
                             FederationChainObservation::Deposit(existing)
                                 if existing.allocation.quote == allocation.quote
                                     && existing.txout == output.txout
+                                    && existing.observation_epoch == observation_epoch
+                                    && existing.confirmation.map(|value| {
+                                        (value.block_hash, value.block_height)
+                                    }) == confirmation.map(|value| {
+                                        (value.block_hash, value.block_height)
+                                    })
                                     && existing.confirmation.map(|value| value.confirmation_depth)
                                         >= confirmation.map(|value| value.confirmation_depth)
                         )
@@ -128,6 +169,7 @@ impl FederationPaymentObserver {
                         outpoint: output.outpoint,
                         txout: output.txout.clone(),
                         confirmation,
+                        observation_epoch,
                         observer,
                         source: source.clone(),
                     });
@@ -139,12 +181,24 @@ impl FederationPaymentObserver {
 
             for utxo in canonical.utxos().filter(|utxo| {
                 utxo.allocation.scope() == scope
-                    && utxo.observations.contains_key(&observer)
-                    && !matches!(
-                        utxo.state,
-                        FederationWalletUtxoState::Reorged | FederationWalletUtxoState::Quarantined
-                    )
-                    && !utxo.reorg_observations.contains_key(&observer)
+                    && utxo.state != FederationWalletUtxoState::Quarantined
+                    && utxo.observations.get(&observer).is_some_and(|evidence| {
+                        matches!(
+                            &evidence.observation,
+                            FederationChainObservation::Deposit(observation)
+                                if observation.observation_epoch == utxo.observation_epoch
+                        )
+                    })
+                    && !utxo
+                        .reorg_observations
+                        .get(&observer)
+                        .is_some_and(|evidence| {
+                            matches!(
+                                &evidence.observation,
+                                FederationChainObservation::Reorg(observation)
+                                    if observation.observation_epoch == utxo.observation_epoch
+                            )
+                        })
             }) {
                 let Some((block_hash, block_height)) = utxo.block else {
                     continue;
@@ -165,6 +219,7 @@ impl FederationPaymentObserver {
                             outpoint: utxo.outpoint,
                             disconnected_block_hash: block_hash,
                             disconnected_block_height: block_height,
+                            observation_epoch: utxo.observation_epoch,
                             observer,
                             source: source.clone(),
                         },
@@ -481,4 +536,35 @@ fn current_unix_time() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::bitcoin::hashes::Hash;
+    use cdk_common::bitcoin::BlockHash;
+
+    use super::*;
+
+    #[test]
+    fn automatic_recovery_rejects_a_different_block_anchor() {
+        let original_block = (BlockHash::from_byte_array([1; 32]), 100);
+        let same_block = FederationDepositConfirmation {
+            block_hash: original_block.0,
+            block_height: original_block.1,
+            confirmation_depth: 1,
+        };
+        let different_block = FederationDepositConfirmation {
+            block_hash: BlockHash::from_byte_array([2; 32]),
+            ..same_block
+        };
+
+        assert!(confirmation_matches_known_anchor(
+            Some(original_block),
+            Some(same_block)
+        ));
+        assert!(!confirmation_matches_known_anchor(
+            Some(original_block),
+            Some(different_block)
+        ));
+    }
 }
