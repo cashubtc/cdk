@@ -44,6 +44,51 @@ attested, encrypted Enclavia channel as wallet HTTP and auth operations. The
 transport rejects WebSocket URLs that do not match the configured mint origin,
 so a subscription is never opened outside the attested tunnel.
 
+## Attestation CLI
+
+The crate includes a small diagnostic binary that verifies the pinned PCRs and
+requests the mint's `/v1/info` endpoint through the attested tunnel:
+
+Pass the endpoint and expected PCR values directly:
+
+```bash
+cargo run -p cdk-enclavia --bin cdk-enclavia-cli -- \
+  --endpoint wss://example.enclaves.beta.enclavia.io \
+  --pcr0 <PCR0> \
+  --pcr1 <PCR1> \
+  --pcr2 <PCR2>
+```
+
+`--endpoint` is the Enclavia WebSocket endpoint for the mint. `--debug-mode` is
+an optional direct argument.
+
+Alternatively, pass an Enclavia JSON config file such as `uuid.json`:
+
+```json
+{
+  "enclave_id": "<uuid>",
+  "endpoint": "wss://<uuid>.enclaves.beta.enclavia.io",
+  "pcrs": { "pcr0": "<hex>", "pcr1": "<hex>", "pcr2": "<hex>" },
+  "debug_mode": true
+}
+```
+
+```bash
+cargo run -p cdk-enclavia --bin cdk-enclavia-cli -- --config uuid.json
+```
+
+When `--config` is used, do not pass `--endpoint`, `--pcr0`, `--pcr1`, `--pcr2`,
+or `--debug-mode`. The `debug_mode` config property is optional and defaults to
+`false`. The `enclave_id` property is accepted but is not used by the CLI.
+
+The command exits without requesting mint information if attestation
+verification fails.
+
+For a debug/QEMU enclave, pass `--debug-mode` with direct arguments or set
+`"debug_mode": true` in the config file. This skips AWS Nitro certificate-chain
+and attestation-signature verification, but still checks the Noise-session nonce
+and the pinned PCR values. Never use it for a production enclave!
+
 ## MSRV
 
 The `enclavia` 0.1.0 dependency requires Rust 1.88, so this crate currently has
