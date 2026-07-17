@@ -2277,9 +2277,7 @@ impl Mint {
             cdk_common::federation::FederationChainObservationState::from_bytes(&bytes)?;
         let payment = state
             .quote_payment_at_or_before(&observation.quote, max_operation_index)?
-            .ok_or_else(|| FederationError::ChainObservationStateInvalid {
-                reason: "on-chain payment observation has no accepted spendable output".to_string(),
-            })?;
+            .ok_or(Error::UnpaidQuote)?;
         if u64::from(observation.amount_paid) != payment.amount_sat
             || observation.payment_id != Some(PaymentIdentifier::PaymentId(payment.payment_id))
         {
