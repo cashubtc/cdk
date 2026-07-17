@@ -32,19 +32,17 @@ let client = EnclaviaClientBuilder::new(
 
 let _builder = WalletBuilder::new()
     .mint_url(mint_url)
-    .client(client)
-    // Enclavia WebSocket upgrades are not adapted to CDK subscriptions yet.
-    .use_http_subscription();
+    .client(client);
 # Ok(())
 # }
 ```
 
 ## WebSocket subscriptions
 
-The initial implementation supports all wallet HTTP and auth operations.
-NUT-17 WebSocket connections are rejected rather than opened outside the
-attested tunnel. Configure the wallet with `use_http_subscription()` until an
-Enclavia upgraded stream adapter is added to `cdk-http-client`.
+On native targets, NUT-17 WebSocket subscriptions are carried through the same
+attested, encrypted Enclavia channel as wallet HTTP and auth operations. The
+transport rejects WebSocket URLs that do not match the configured mint origin,
+so a subscription is never opened outside the attested tunnel.
 
 ## MSRV
 
