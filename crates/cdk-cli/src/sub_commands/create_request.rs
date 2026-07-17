@@ -1,22 +1,35 @@
 use anyhow::Result;
+use cdk::mint_url::MintUrl;
 use cdk::nuts::CurrencyUnit;
 use cdk::wallet::{payment_request as pr, NostrWaitInfo, WalletRepository};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
-struct NostrWaitInfoSerializable {
-    secret_key_hex: String,
-    relays: Vec<String>,
-    pubkey_hex: String,
+pub(super) struct StoredNostrWaitInfo {
+    pub(super) secret_key_hex: String,
+    pub(super) relays: Vec<String>,
+    pub(super) pubkey_hex: String,
+    #[serde(default)]
+    pub(super) mints: Vec<MintUrl>,
+    #[serde(default)]
+    pub(super) mint_preferred: Option<bool>,
 }
 
-impl From<NostrWaitInfo> for NostrWaitInfoSerializable {
+impl StoredNostrWaitInfo {
+    pub(super) fn accepts_mint(&self, mint_url: &MintUrl) -> bool {
+        self.mints.is_empty() || self.mint_preferred == Some(true) || self.mints.contains(mint_url)
+    }
+}
+
+impl From<NostrWaitInfo> for StoredNostrWaitInfo {
     fn from(info: NostrWaitInfo) -> Self {
         Self {
             secret_key_hex: info.keys.secret_key().to_secret_hex(),
             relays: info.relays,
             pubkey_hex: info.pubkey.to_hex(),
+            mints: info.mints,
+            mint_preferred: info.mint_preferred,
         }
     }
 }
@@ -101,7 +114,7 @@ pub async fn create_request(
         let key = info.pubkey.to_string();
 
         if let Some(wallet) = wallet_repository.get_wallets().await.first() {
-            let serializable_info = NostrWaitInfoSerializable::from(info.clone());
+            let serializable_info = StoredNostrWaitInfo::from(info.clone());
             let val = serde_json::to_vec(&serializable_info)?;
             wallet
                 .localstore
@@ -115,4 +128,54 @@ pub async fn create_request(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    #[test]
+    fn stored_nostr_wait_info_enforces_strict_mints() {
+        let listed_mint = MintUrl::from_str("https://listed.example.com").expect("valid mint");
+        let unlisted_mint = MintUrl::from_str("https://unlisted.example.com").expect("valid mint");
+        let info = stored_info(vec![listed_mint.clone()], None);
+
+        assert!(info.accepts_mint(&listed_mint));
+        assert!(!info.accepts_mint(&unlisted_mint));
+    }
+
+    #[test]
+    fn stored_nostr_wait_info_allows_preferred_or_empty_mints() {
+        let listed_mint = MintUrl::from_str("https://listed.example.com").expect("valid mint");
+        let unlisted_mint = MintUrl::from_str("https://unlisted.example.com").expect("valid mint");
+
+        assert!(stored_info(vec![listed_mint], Some(true)).accepts_mint(&unlisted_mint));
+        assert!(stored_info(vec![], None).accepts_mint(&unlisted_mint));
+    }
+
+    #[test]
+    fn old_stored_nostr_wait_info_deserializes_with_empty_policy() {
+        let json = r#"{
+            "secret_key_hex":"secret",
+            "relays":["wss://relay.example.com"],
+            "pubkey_hex":"pubkey"
+        }"#;
+
+        let info: StoredNostrWaitInfo = serde_json::from_str(json).expect("old record");
+
+        assert!(info.mints.is_empty());
+        assert!(info.mint_preferred.is_none());
+    }
+
+    fn stored_info(mints: Vec<MintUrl>, mint_preferred: Option<bool>) -> StoredNostrWaitInfo {
+        StoredNostrWaitInfo {
+            secret_key_hex: "secret".to_string(),
+            relays: vec![],
+            pubkey_hex: "pubkey".to_string(),
+            mints,
+            mint_preferred,
+        }
+    }
 }

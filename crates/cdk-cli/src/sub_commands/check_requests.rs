@@ -6,16 +6,9 @@ use cdk::nuts::Token;
 use cdk::wallet::{ReceiveOptions, WalletRepository};
 use cdk_common::PaymentRequestPayload;
 use nostr_sdk::{Filter, Keys, Kind, PublicKey, SecretKey};
-use serde::{Deserialize, Serialize};
 
+use super::create_request::StoredNostrWaitInfo;
 use crate::utils::get_or_create_wallet;
-
-#[derive(Serialize, Deserialize)]
-struct NostrWaitInfoSerializable {
-    secret_key_hex: String,
-    relays: Vec<String>,
-    pubkey_hex: String,
-}
 
 pub async fn check_requests(wallet_repository: &WalletRepository) -> Result<()> {
     let wallets = wallet_repository.get_wallets().await;
@@ -39,7 +32,7 @@ pub async fn check_requests(wallet_repository: &WalletRepository) -> Result<()> 
                 .kv_read("cdk_cli", "pending_nostr_requests", &key)
                 .await?
             {
-                let info: NostrWaitInfoSerializable = serde_json::from_slice(&val)?;
+                let info: StoredNostrWaitInfo = serde_json::from_slice(&val)?;
 
                 let secret_key = SecretKey::from_str(&info.secret_key_hex)?;
                 let keys = Keys::new(secret_key);
@@ -59,6 +52,15 @@ pub async fn check_requests(wallet_repository: &WalletRepository) -> Result<()> 
                         if let Ok(payload) =
                             serde_json::from_str::<PaymentRequestPayload>(&unwrapped.rumor.content)
                         {
+                            if !info.accepts_mint(&payload.mint) {
+                                tracing::warn!(
+                                    "Ignoring payment for request {} from unaccepted mint {}",
+                                    key,
+                                    payload.mint
+                                );
+                                continue;
+                            }
+
                             let token = Token::new(
                                 payload.mint.clone(),
                                 payload.proofs,
