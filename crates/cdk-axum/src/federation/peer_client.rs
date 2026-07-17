@@ -222,7 +222,7 @@ where
                 self.sync_config.peer_request_timeout,
             )
             .await?;
-        validate_peer_status(self.federation_id, member, &status)?;
+        validate_peer_status(&self.public_config, member, &status)?;
         Ok(status)
     }
 
@@ -1126,7 +1126,7 @@ fn federation_endpoint(member: &MemberConfigPublic, endpoint: &str) -> anyhow::R
 }
 
 fn validate_peer_status(
-    expected_federation_id: FederationId,
+    public_config: &FederationConfig,
     member: &MemberConfigPublic,
     status: &FederationPeerStatus,
 ) -> anyhow::Result<()> {
@@ -1144,9 +1144,9 @@ fn validate_peer_status(
         }
         .into());
     }
-    if status.federation_id != expected_federation_id {
+    if status.federation_id != public_config.federation_id {
         return Err(FederationError::RestFederationMismatch {
-            expected: expected_federation_id,
+            expected: public_config.federation_id,
             found: status.federation_id,
         }
         .into());
@@ -1154,6 +1154,17 @@ fn validate_peer_status(
     if status.aleph_bft_next_item_index.is_none() {
         return Err(FederationError::AlephBftFinalizedCursorMissing {
             member_id: member.member_id,
+        }
+        .into());
+    }
+    if status
+        .aleph_bft_next_unit_index_by_member
+        .keys()
+        .copied()
+        .ne(public_config.members.keys().copied())
+    {
+        return Err(FederationError::CheckpointInvalid {
+            reason: "peer status per-member AlephBFT cursor roster mismatch".to_string(),
         }
         .into());
     }

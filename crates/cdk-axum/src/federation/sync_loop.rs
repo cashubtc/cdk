@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cdk::federation::{
     FederationAlephBftBackupRequest, FederationCheckpoint, FederationCheckpointKind,
@@ -9,6 +9,7 @@ use cdk::federation::{
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_TRANSFER_BYTES,
 };
 use cdk_http_client::{Async, Transport};
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::time::{self, Instant};
 
 use crate::MintState;
@@ -130,9 +131,28 @@ async fn run_federation_peer_sync_attempts<T>(
 where
     T: Transport,
 {
+    if let Some(synced) =
+        reconcile_replayed_live_session_before_checkpoint_exchange(state, client, peers).await
+    {
+        return synced;
+    }
+
+    // Checkpoint discovery is independent of peer status convergence and may unblock the
+    // catch-up attempted below. Run it first so recovery requests, signatures, and quorums do
+    // not wait behind a full round of bounded peer timeouts.
+    let checkpoint_peers = peers.iter().collect::<Vec<_>>();
+    let checkpoint_updates = exchange_checkpoint_round(state, client, &checkpoint_peers).await;
+    if checkpoint_updates > 0 {
+        tracing::debug!(
+            checkpoint_updates,
+            "Federation peer sync exchanged checkpoint evidence"
+        );
+    }
+
+    // Measure freshness only across the status/catch-up phase. The checkpoint exchange above
+    // cannot age the evidence collected after it.
     let round_started_at = Instant::now();
     let mut synced = 0;
-    let mut evidence_peers = Vec::with_capacity(peers.len());
     let mut peer_statuses = Vec::with_capacity(peers.len());
     for peer in peers {
         let now = Instant::now();
@@ -148,7 +168,6 @@ where
         match client.sync_once_from_member(state, peer).await {
             Ok(status) => {
                 synced += 1;
-                evidence_peers.push(peer);
                 peer_statuses.push(status.clone());
                 if let Some(backoff) = backoff.as_mut() {
                     backoff.record_success(peer.member_id);
@@ -185,13 +204,7 @@ where
             }
         }
     }
-    let checkpoint_updates = exchange_checkpoint_round(state, client, &evidence_peers).await;
-    if checkpoint_updates > 0 {
-        tracing::debug!(
-            checkpoint_updates,
-            "Federation peer sync exchanged checkpoint evidence"
-        );
-    }
+    apply_checkpoint_discovered_during_peer_sync(state, client, peers, &peer_statuses).await;
     reconcile_federation_startup_with_quorum(
         state,
         client.sync_config,
@@ -200,6 +213,108 @@ where
     )
     .await;
     synced
+}
+
+async fn reconcile_replayed_live_session_before_checkpoint_exchange<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+) -> Option<usize>
+where
+    T: Transport,
+{
+    if !state.federation.live_session_available().await
+        || !state.federation.live_session_replay_ready().await
+        || matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy | crate::FederationSyncStatus::Halted { .. })
+        )
+    {
+        return None;
+    }
+
+    let observed_at = Instant::now();
+    let mut attempts = peers
+        .iter()
+        .map(|peer| async move { client.peer_status(peer).await })
+        .collect::<FuturesUnordered<_>>();
+    let mut peer_statuses = Vec::with_capacity(peers.len());
+    while let Some(result) = attempts.next().await {
+        match result {
+            Ok(status) => peer_statuses.push(status),
+            Err(err) => tracing::debug!(
+                "Federation replay-ready quorum status request failed: {}",
+                err
+            ),
+        }
+    }
+
+    reconcile_federation_startup_with_quorum(
+        state,
+        client.sync_config,
+        observed_at,
+        &peer_statuses,
+    )
+    .await;
+    matches!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    )
+    .then_some(peer_statuses.len())
+}
+
+async fn apply_checkpoint_discovered_during_peer_sync<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peers: &[MemberConfigPublic],
+    peer_statuses: &[FederationPeerStatus],
+) where
+    T: Transport,
+{
+    let target_available = match next_local_checkpoint_catch_up_target(state).await {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect late federation checkpoint target: {}",
+                err
+            );
+            false
+        }
+    };
+    if !target_available {
+        return;
+    }
+    let local_operation_count = match local_peer_order_status(state).await {
+        Ok(status) => status.operation_count,
+        Err(err) => {
+            tracing::warn!(
+                "Could not inspect local status for late checkpoint catch-up: {}",
+                err
+            );
+            return;
+        }
+    };
+    let Some(source_status) = peer_statuses
+        .iter()
+        .filter(|status| status.operation_count > local_operation_count)
+        .max_by_key(|status| status.operation_count)
+    else {
+        return;
+    };
+    let Some(source) = peers
+        .iter()
+        .find(|peer| peer.member_id == source_status.member_id)
+    else {
+        return;
+    };
+    if let Err(err) = client.sync_once_from_member(state, source).await {
+        tracing::warn!(
+            member_id = %source.member_id,
+            "Federation late checkpoint catch-up failed: {}",
+            err
+        );
+    }
 }
 
 pub(super) async fn exchange_checkpoint_round<T>(
@@ -221,6 +336,16 @@ where
         state.federation.request_recovery_checkpoint().await;
     }
     let request_recovery_checkpoint = state.federation.recovery_checkpoint_is_requested().await;
+    if startup_recovery {
+        match next_local_checkpoint_catch_up_target(state).await {
+            Ok(Some(_)) => return 0,
+            Ok(None) => {}
+            Err(err) => tracing::warn!(
+                "Could not inspect federation checkpoint target before discovery: {}",
+                err
+            ),
+        }
+    }
     let trusted_scheduled_sequence = match state
         .mint
         .localstore()
@@ -238,26 +363,6 @@ where
             return 0;
         }
     };
-    let mut updates = 0;
-    let mut peer_summaries = Vec::with_capacity(peers.len());
-    for &peer in peers {
-        match client
-            .checkpoint_summary(
-                peer,
-                request_recovery_checkpoint,
-                Some(trusted_scheduled_sequence),
-            )
-            .await
-        {
-            Ok(summary) => peer_summaries.push((peer, summary)),
-            Err(err) => tracing::warn!(
-                member_id = %peer.member_id,
-                "Federation checkpoint summary request failed: {}",
-                err
-            ),
-        }
-    }
-
     if let Err(err) = state
         .federation
         .propose_recovery_barrier_if_requested()
@@ -266,54 +371,67 @@ where
         tracing::warn!("Could not propose recovery checkpoint barrier: {}", err);
     }
 
-    for (peer, summary) in &peer_summaries {
-        for (peer_quorum, require_exact_local_copy) in [
-            (summary.next_scheduled_quorum.as_ref(), true),
-            (summary.latest_scheduled_quorum.as_ref(), false),
-            (summary.latest_recovery_quorum.as_ref(), false),
-        ] {
-            let Some(peer_quorum) = peer_quorum else {
-                continue;
-            };
-            let already_stored = if require_exact_local_copy {
-                local_checkpoint_quorum_is_stored(state, peer_quorum.checkpoint_id).await
-            } else {
-                local_checkpoint_quorum_is_current(state, peer_quorum).await
-            };
-            if already_stored {
-                continue;
-            }
-            match client
-                .fetch_checkpoint(peer, peer_quorum.checkpoint_id)
-                .await
-            {
-                Ok(response) => {
-                    let Some(quorum) = response.quorum.as_ref() else {
-                        tracing::warn!(
-                            member_id = %peer.member_id,
-                            checkpoint_id = %peer_quorum.checkpoint_id,
-                            "Federation peer advertised a checkpoint quorum but did not serve it"
-                        );
-                        continue;
-                    };
-                    match state.federation.persist_checkpoint_quorum(quorum).await {
-                        Ok(_) => updates += 1,
+    let mut updates = 0;
+    let mut peer_summaries = Vec::with_capacity(peers.len());
+    let mut summary_attempts = peers
+        .iter()
+        .map(|&peer| async move {
+            (
+                peer,
+                client
+                    .checkpoint_summary(
+                        peer,
+                        request_recovery_checkpoint,
+                        Some(trusted_scheduled_sequence),
+                    )
+                    .await,
+            )
+        })
+        .collect::<FuturesUnordered<_>>();
+    while let Some((peer, result)) = summary_attempts.next().await {
+        match result {
+            Ok(summary) => {
+                updates += fetch_advertised_checkpoint_quorums(
+                    state,
+                    client,
+                    peer,
+                    &summary,
+                    startup_recovery,
+                )
+                .await;
+                peer_summaries.push((peer, summary));
+                if startup_recovery {
+                    match next_local_checkpoint_catch_up_target(state).await {
+                        Ok(Some(_)) => return updates,
+                        Ok(None) => {}
                         Err(err) => tracing::warn!(
-                            member_id = %peer.member_id,
-                            checkpoint_id = %peer_quorum.checkpoint_id,
-                            "Could not persist fetched federation checkpoint quorum: {}",
+                            "Could not inspect federation checkpoint target during discovery: {}",
                             err
                         ),
                     }
                 }
-                Err(err) => tracing::warn!(
-                    member_id = %peer.member_id,
-                    checkpoint_id = %peer_quorum.checkpoint_id,
-                    "Federation checkpoint quorum fetch failed: {}",
-                    err
-                ),
             }
+            Err(err) => tracing::warn!(
+                member_id = %peer.member_id,
+                "Federation checkpoint summary request failed: {}",
+                err
+            ),
         }
+    }
+
+    if startup_recovery {
+        match next_local_checkpoint_catch_up_target(state).await {
+            Ok(Some(_)) => return updates,
+            Ok(None) => {}
+            Err(err) => tracing::warn!(
+                "Could not inspect federation checkpoint target after discovery: {}",
+                err
+            ),
+        }
+    }
+
+    if startup_recovery {
+        updates += adopt_peer_recovery_candidate(state, client, &peer_summaries).await;
     }
 
     for kind in [
@@ -324,6 +442,164 @@ where
     }
 
     disseminate_latest_checkpoint_quorums(state, client, &peer_summaries, &mut updates).await;
+    updates
+}
+
+async fn adopt_peer_recovery_candidate<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peer_summaries: &[(&MemberConfigPublic, FederationCheckpointSummaryResponse)],
+) -> usize
+where
+    T: Transport,
+{
+    let Some(runtime_config) = state.mint.federation_config() else {
+        return 0;
+    };
+    let required = usize::from(
+        runtime_config
+            .public_config()
+            .threshold_params
+            .consensus_threshold,
+    );
+    let mut candidates = BTreeMap::new();
+    for (peer, response) in peer_summaries {
+        let Some(summary) = response.latest_recovery_candidate.as_ref() else {
+            continue;
+        };
+        candidates
+            .entry(summary.checkpoint_id)
+            .or_insert_with(|| (summary, Vec::new()))
+            .1
+            .push(*peer);
+    }
+    let Some((summary, peers)) = candidates
+        .into_values()
+        .find(|(_, peers)| peers.len() >= required)
+    else {
+        return 0;
+    };
+    if local_checkpoint_quorum_is_stored(state, summary.checkpoint_id).await {
+        return 0;
+    }
+    let Some(source) = peers.first() else {
+        return 0;
+    };
+    let response = match client.fetch_checkpoint(source, summary.checkpoint_id).await {
+        Ok(response) => response,
+        Err(err) => {
+            tracing::warn!(
+                member_id = %source.member_id,
+                checkpoint_id = %summary.checkpoint_id,
+                "Federation recovery candidate fetch failed: {}",
+                err
+            );
+            return 0;
+        }
+    };
+    let Some(checkpoint) = response.checkpoint.as_ref() else {
+        tracing::warn!(
+            member_id = %source.member_id,
+            checkpoint_id = %summary.checkpoint_id,
+            "Federation peer advertised a recovery candidate but did not serve it"
+        );
+        return 0;
+    };
+    if let Err(err) = summary.validate_checkpoint(checkpoint) {
+        tracing::warn!(
+            member_id = %source.member_id,
+            checkpoint_id = %summary.checkpoint_id,
+            "Federation recovery candidate did not match its summary: {}",
+            err
+        );
+        return 0;
+    }
+    match state
+        .federation
+        .persist_checkpoint_candidate(checkpoint)
+        .await
+    {
+        Ok(()) => 1,
+        Err(err) => {
+            tracing::warn!(
+                member_id = %source.member_id,
+                checkpoint_id = %summary.checkpoint_id,
+                "Could not persist federation recovery candidate: {}",
+                err
+            );
+            0
+        }
+    }
+}
+
+async fn fetch_advertised_checkpoint_quorums<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    peer: &MemberConfigPublic,
+    summary: &FederationCheckpointSummaryResponse,
+    stop_at_catch_up_target: bool,
+) -> usize
+where
+    T: Transport,
+{
+    let mut updates = 0;
+    for (peer_quorum, require_exact_local_copy) in [
+        (summary.next_scheduled_quorum.as_ref(), true),
+        (summary.latest_scheduled_quorum.as_ref(), false),
+        (summary.latest_recovery_quorum.as_ref(), false),
+    ] {
+        let Some(peer_quorum) = peer_quorum else {
+            continue;
+        };
+        let already_stored = if require_exact_local_copy {
+            local_checkpoint_quorum_is_stored(state, peer_quorum.checkpoint_id).await
+        } else {
+            local_checkpoint_quorum_is_current(state, peer_quorum).await
+        };
+        if already_stored {
+            continue;
+        }
+        match client
+            .fetch_checkpoint(peer, peer_quorum.checkpoint_id)
+            .await
+        {
+            Ok(response) => {
+                let Some(quorum) = response.quorum.as_ref() else {
+                    tracing::warn!(
+                        member_id = %peer.member_id,
+                        checkpoint_id = %peer_quorum.checkpoint_id,
+                        "Federation peer advertised a checkpoint quorum but did not serve it"
+                    );
+                    continue;
+                };
+                match state.federation.persist_checkpoint_quorum(quorum).await {
+                    Ok(_) => {
+                        updates += 1;
+                        if stop_at_catch_up_target
+                            && matches!(
+                                next_local_checkpoint_catch_up_target(state).await,
+                                Ok(Some(_))
+                            )
+                        {
+                            return updates;
+                        }
+                    }
+                    Err(err) => tracing::warn!(
+                        member_id = %peer.member_id,
+                        checkpoint_id = %peer_quorum.checkpoint_id,
+                        "Could not persist fetched federation checkpoint quorum: {}",
+                        err
+                    ),
+                }
+            }
+            Err(err) => tracing::warn!(
+                member_id = %peer.member_id,
+                checkpoint_id = %peer_quorum.checkpoint_id,
+                "Federation checkpoint quorum fetch failed: {}",
+                err
+            ),
+        }
+    }
     updates
 }
 
@@ -350,7 +626,7 @@ async fn local_checkpoint_quorum_is_stored(
     }
 }
 
-async fn next_local_checkpoint_catch_up_target(
+pub(super) async fn next_local_checkpoint_catch_up_target(
     state: &MintState,
 ) -> anyhow::Result<Option<FederationCheckpointQuorum>> {
     let runtime_config =
@@ -394,6 +670,12 @@ async fn next_local_checkpoint_catch_up_target(
     };
     let verified_recovery =
         super::verify_checkpoint_quorum_with_metrics(&recovery, public_config, local_member)?;
+    if recovery_checkpoint_is_superseded(
+        verified_recovery.checkpoint().scheduled_checkpoint_sequence,
+        scheduled_sequence,
+    ) {
+        return Ok(None);
+    }
     verified_recovery.checkpoint().validate_promotion_from(
         verified_current
             .as_ref()
@@ -407,6 +689,13 @@ async fn next_local_checkpoint_catch_up_target(
         return Ok(None);
     }
     Ok(Some(recovery))
+}
+
+pub(super) fn recovery_checkpoint_is_superseded(
+    recovery_scheduled_sequence: u64,
+    trusted_scheduled_sequence: u64,
+) -> bool {
+    recovery_scheduled_sequence < trusted_scheduled_sequence
 }
 
 async fn exchange_checkpoint_candidate<T>(
@@ -448,15 +737,11 @@ where
         }
     };
     let mut updates = 0;
-    for (peer, summary) in peer_summaries {
-        let peer_candidate = match kind {
-            FederationCheckpointKind::Scheduled => summary.latest_scheduled_candidate.as_ref(),
-            FederationCheckpointKind::Recovery => summary.latest_recovery_candidate.as_ref(),
-        };
-        if stored_signers.contains(&peer.member_id)
-            || peer_candidate
-                .is_none_or(|peer_candidate| peer_candidate.checkpoint_id != checkpoint_id)
-        {
+    // The request carries only the checkpoint ID, so a peer returns a signature only when it
+    // independently stored the same candidate. Asking before its summary advertises that
+    // candidate is safe and avoids an extra discovery interval during startup recovery.
+    for (peer, _) in peer_summaries {
+        if stored_signers.contains(&peer.member_id) {
             continue;
         }
         match client.request_checkpoint_signature(peer, &candidate).await {
@@ -605,11 +890,23 @@ async fn disseminate_latest_checkpoint_quorums<T>(
             }
         };
         for (peer, summary) in peer_summaries {
-            let peer_quorum = match kind {
-                FederationCheckpointKind::Scheduled => summary.latest_scheduled_quorum.as_ref(),
-                FederationCheckpointKind::Recovery => summary.latest_recovery_quorum.as_ref(),
+            let (peer_candidate, peer_quorum) = match kind {
+                FederationCheckpointKind::Scheduled => (
+                    summary.latest_scheduled_candidate.as_ref(),
+                    summary.latest_scheduled_quorum.as_ref(),
+                ),
+                FederationCheckpointKind::Recovery => (
+                    summary.latest_recovery_candidate.as_ref(),
+                    summary.latest_recovery_quorum.as_ref(),
+                ),
             };
-            if peer_quorum.is_some_and(|summary| summary.checkpoint_id == checkpoint_id) {
+            // A peer that already has this candidate can collect the same signatures through
+            // the pull-based exchange. Avoid pushing the full quorum back into every member's
+            // application lock during recovery; that duplicate fan-out delays the lagging
+            // member's next discovery round without improving checkpoint availability.
+            if peer_candidate.is_some_and(|summary| summary.checkpoint_id == checkpoint_id)
+                || peer_quorum.is_some_and(|summary| summary.checkpoint_id == checkpoint_id)
+            {
                 continue;
             }
             match client.publish_checkpoint_quorum(peer, &quorum).await {
@@ -625,7 +922,7 @@ async fn disseminate_latest_checkpoint_quorums<T>(
     }
 }
 
-async fn reconcile_federation_startup_with_quorum(
+pub(super) async fn reconcile_federation_startup_with_quorum(
     state: &MintState,
     sync_config: FederationPeerSyncConfig,
     evidence_observed_at: Instant,
@@ -675,7 +972,9 @@ async fn reconcile_federation_startup_with_quorum(
     };
 
     if live_session_active {
-        if target_session == local_status.aleph_bft_session {
+        if target_session == local_status.aleph_bft_session
+            && state.federation.live_session_replay_ready().await
+        {
             state.mark_federation_healthy().await;
         } else {
             state
@@ -700,14 +999,74 @@ async fn reconcile_federation_startup_with_quorum(
         }
     }
 
-    match super::start_federation_aleph_bft_live_session(state, sync_config).await {
-        Ok(Some(_)) => {}
-        Ok(None) if state.federation.live_session_active().await => {}
+    let replay_target_next_unit_index_by_member =
+        quorum_supported_replay_target(&local_status, peer_statuses, target_session, required);
+    match super::start_federation_aleph_bft_live_session(
+        state,
+        sync_config,
+        replay_target_next_unit_index_by_member,
+    )
+    .await
+    {
+        Ok(Some(handle)) if handle.replay_ready() => state.mark_federation_healthy().await,
+        Ok(Some(_)) => {
+            state
+                .mark_federation_awaiting_quorum(local_status.operation_count)
+                .await;
+        }
+        Ok(None)
+            if state.federation.live_session_active().await
+                && state.federation.live_session_replay_ready().await =>
+        {
+            state.mark_federation_healthy().await;
+        }
         Ok(None) => {}
         Err(err) => {
             tracing::warn!("Could not start quorum-validated AlephBFT session: {}", err);
         }
     }
+}
+
+pub(super) fn quorum_supported_replay_target(
+    local_status: &FederationPeerStatus,
+    peer_statuses: &[FederationPeerStatus],
+    target_session: u64,
+    required: usize,
+) -> BTreeMap<MemberId, u64> {
+    let peer_support = required.saturating_sub(1);
+    if peer_support == 0 {
+        return local_status.aleph_bft_next_unit_index_by_member.clone();
+    }
+    let matching = peer_statuses
+        .iter()
+        .filter(|status| {
+            status.aleph_bft_session == target_session
+                && local_status.has_same_application_frontier(status)
+        })
+        .collect::<Vec<_>>();
+    local_status
+        .aleph_bft_next_unit_index_by_member
+        .iter()
+        .map(|(member_id, local_next_unit_index)| {
+            let mut peer_indexes = matching
+                .iter()
+                .filter_map(|status| {
+                    status
+                        .aleph_bft_next_unit_index_by_member
+                        .get(member_id)
+                        .copied()
+                })
+                .collect::<Vec<_>>();
+            if peer_indexes.len() < peer_support {
+                return (*member_id, *local_next_unit_index);
+            }
+            peer_indexes.sort_unstable_by(|left, right| right.cmp(left));
+            (
+                *member_id,
+                (*local_next_unit_index).max(peer_indexes[peer_support - 1]),
+            )
+        })
+        .collect()
 }
 
 pub(super) fn quorum_reconciliation_is_required(
@@ -788,7 +1147,7 @@ pub(super) fn quorum_compatible_session(
         .iter()
         .filter(|candidate| {
             candidate.aleph_bft_session >= local_status.aleph_bft_session
-                && local_status.has_same_committed_history_and_audit(candidate)
+                && local_status.has_same_application_frontier(candidate)
         })
         .map(|candidate| candidate.aleph_bft_session)
         .filter(|candidate_session| {
@@ -796,7 +1155,7 @@ pub(super) fn quorum_compatible_session(
                 .iter()
                 .filter(|status| {
                     status.aleph_bft_session == *candidate_session
-                        && local_status.has_same_committed_history_and_audit(status)
+                        && local_status.has_same_application_frontier(status)
                 })
                 .count();
             matching_peers.saturating_add(1) >= required
@@ -882,7 +1241,7 @@ where
             current_checkpoint.as_ref().map(|quorum| &quorum.checkpoint),
         )?;
         let checkpoint_id = checkpoint.id()?;
-        let consensus = state.federation.consensus.as_ref().ok_or_else(|| {
+        let consensus = state.federation.consensus.as_ref().ok_or({
             FederationError::RuntimeUnavailable {
                 component: "consensus",
             }
@@ -1051,7 +1410,7 @@ where
         state: &MintState,
         member: &MemberConfigPublic,
     ) -> anyhow::Result<FederationPeerStatus> {
-        let peer_status = self.peer_status(member).await?;
+        let mut peer_status = self.peer_status(member).await?;
         let mut local_status = local_peer_order_status(state).await?;
         let mut recovered_from_peer = false;
 
@@ -1129,6 +1488,10 @@ where
             }
         }
 
+        if recovered_from_peer {
+            super::stop_current_federation_aleph_bft_session_for_catch_up(state).await;
+        }
+
         local_status = local_peer_order_status(state).await?;
         let order_digest_mismatch =
             local_status.latest_order_digest != peer_status.latest_order_digest;
@@ -1155,13 +1518,17 @@ where
             && local_full_status.has_same_committed_state(&peer_status)
             && peer_status.aleph_bft_next_item_index.unwrap_or(0) > 0
         {
-            self.recover_aleph_bft_backup_from_member(
-                state,
-                member,
-                peer_status.aleph_bft_session,
-                recovered_from_peer,
-            )
-            .await?;
+            if let Some(recovered_backup_status) = self
+                .recover_aleph_bft_backup_from_member(
+                    state,
+                    member,
+                    peer_status.aleph_bft_session,
+                    recovered_from_peer,
+                )
+                .await?
+            {
+                peer_status = recovered_backup_status;
+            }
         }
 
         Ok(peer_status)
@@ -1173,7 +1540,7 @@ where
         member: &MemberConfigPublic,
         session: u64,
         replace_existing: bool,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<FederationPeerStatus>> {
         let db = state.mint.localstore();
         if !replace_existing
             && !db
@@ -1181,7 +1548,7 @@ where
                 .await?
                 .is_empty()
         {
-            return Ok(());
+            return Ok(None);
         }
 
         let mut chunks = Vec::new();
@@ -1243,7 +1610,14 @@ where
             backup_bytes = total_bytes,
             "Recovered AlephBFT live-session backup from federation peer"
         );
-        Ok(())
+        let recovered_backup_status = self.peer_status(member).await?;
+        if recovered_backup_status.aleph_bft_session != session {
+            anyhow::bail!(
+                "federation member {} advanced AlephBFT session while its backup was recovered",
+                member.member_id
+            );
+        }
+        Ok(Some(recovered_backup_status))
     }
 }
 
@@ -1251,8 +1625,9 @@ fn peer_requires_catch_up(
     local_status: &FederationPeerStatus,
     peer_status: &FederationPeerStatus,
 ) -> anyhow::Result<bool> {
-    Ok(peer_status.operation_count > local_status.operation_count
-        || peer_finalized_cursor_ahead(local_status, peer_status)?)
+    let _ = aleph_bft_next_item_index(local_status)?;
+    let _ = aleph_bft_next_item_index(peer_status)?;
+    Ok(peer_status.operation_count > local_status.operation_count)
 }
 
 async fn should_defer_catch_up_to_live_aleph_bft(state: &MintState) -> bool {
@@ -1272,21 +1647,6 @@ fn status_made_catch_up_progress(
 ) -> anyhow::Result<bool> {
     Ok(after_status.operation_count > before_status.operation_count
         || status_finalized_cursor_increased(before_status, after_status)?)
-}
-
-fn peer_finalized_cursor_ahead(
-    local_status: &FederationPeerStatus,
-    peer_status: &FederationPeerStatus,
-) -> anyhow::Result<bool> {
-    match (
-        aleph_bft_next_item_index(local_status)?,
-        aleph_bft_next_item_index(peer_status)?,
-    ) {
-        (Some(local_next_item_index), Some(peer_next_item_index)) => {
-            Ok(peer_next_item_index > local_next_item_index)
-        }
-        _ => Ok(false),
-    }
 }
 
 fn status_finalized_cursor_increased(

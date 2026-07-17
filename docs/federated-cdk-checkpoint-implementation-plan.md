@@ -1,17 +1,21 @@
 # Federated CDK signed-checkpoint implementation plan
 
-Status: in progress (checkpoint protocol, persistence, exchange, bounded
-page-streamed catch-up, nonzero startup, certificate cut-through,
-checkpoint-native operator tooling, crash-safe checkpoint retention, ordered
-recovery barriers, separated recovery transport, and bounded work
-instrumentation, checkpoint-bound database-backup validation, genesis recovery
-retention, and redacted recovery observability are implemented;
-checkpoint production is event-driven and stable checkpoint polls are work/log
-silent; consolidation and final validation remain)
+Status: implementation complete (checkpoint protocol, persistence, exchange,
+bounded page-streamed catch-up, nonzero startup, certificate cut-through,
+checkpoint-native operator tooling, crash-safe retention, ordered recovery
+barriers, separated recovery transport, bounded work instrumentation,
+checkpoint-bound database-backup validation, genesis recovery retention, and
+redacted recovery observability are implemented; checkpoint production is
+event-driven, stable polls are work/log silent, and final product release
+validation remains tracked by the overarching federation plan)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
 complete lifetime history
+
+Final architecture reference:
+`docs/federated-cashu-checkpoint-architecture.md`. Operator backup and recovery
+procedures: `docs/federated-cashu-backup-recovery.md`.
 
 Compatibility policy: no backward compatibility is required for existing
 experimental federations. All wire, configuration, database, status, and
@@ -1087,14 +1091,15 @@ same boundary locally and perform the existing audit/candidate/signature work.
 
 Admission permits at most one queued or awaiting-finality barrier per runtime.
 A 30-second local proposal lease limits request amplification, while a
-deterministic 64-finalized-item minimum advance reuses a recent checkpoint and
-keeps the uncovered live tail bounded by one maximum-sized unit. Concurrent
-proposals therefore converge to one effective candidate boundary or harmless
-duplicates. A stale scheduled anchor requests a replacement barrier. Startup
-replays an accepted barrier from the last complete durable unit if candidate
-persistence was interrupted. The former two-observation quiet-tip latch and
-peer-summary boundary matching are deleted, so sustained finalization no longer
-starves recovery.
+checkpoint is reused only if it already covers the requested finalized
+frontier. A stale checkpoint cannot authorize its uncertified tail, so a later
+frontier requires a new ordered barrier. Concurrent proposals therefore
+converge to one effective candidate boundary or harmless duplicates without
+allowing request amplification to make work unbounded. A stale scheduled anchor
+requests a replacement barrier. Startup replays an accepted barrier from the
+last complete durable unit if candidate persistence was interrupted. The former
+two-observation quiet-tip latch and peer-summary boundary matching are deleted,
+so sustained finalization no longer starves recovery.
 
 Focused runtime regressions now prove that the interval-crossing unit is the
 captured scheduled boundary, later finalization cannot move a pending
@@ -1270,6 +1275,13 @@ The signed response is bound to federation, serving member, receiver, sequence,
 kind, and body hash. Backup persistence remains atomic and cannot advance the
 journal, application, checkpoint, or trusted frontier.
 
+Checkpoint target selection follows the currently trusted scheduled lineage.
+Once a newer scheduled checkpoint is trusted, a recovery quorum anchored to an
+older scheduled sequence is treated as superseded even if its application
+frontier is later. The member requests a replacement recovery barrier anchored
+to the current scheduled checkpoint instead of failing promotion on stale
+recovery evidence.
+
 The signed checkpoint policy now triggers a scheduled boundary when any of the
 accepted-operation, finalized-item, or canonical-finalized-byte intervals is
 crossed. Defaults are 10,000 / 10,000 / 32 MiB. Fixed protocol caps limit one
@@ -1420,6 +1432,19 @@ journal/application path. After checkpoint and suffix validation succeeds,
 advancing the active-session marker and pruning strictly older backups occur in
 one transaction; no-checkpoint startup retains the legacy backups needed for
 full recovery.
+
+Live-session readiness is also bounded by the active session, not federation
+history. Signed peer status carries a complete per-member AlephBFT next-unit
+index map. Session startup takes the componentwise maximum of the trusted
+checkpoint watermarks and the quorum-supported frontier reported by compatible
+peers for the same session and application state. After a backup download, the
+source status is fetched again so the replay target is not the stale
+pre-transfer snapshot. The replay tracker records every finalized round,
+including empty units, and authoritative routes remain closed until every
+member component reaches its target. The readiness watcher is generation-aware
+and cannot publish healthy after the session has been replaced or halted.
+Automatic session rotation clears the prior session's replay target because
+unit indexes restart in the new session.
 
 Verified with:
 
@@ -2079,6 +2104,19 @@ snapshots observe a moving tip. Finally, checkpoint suffix reconstruction and
 current-session backup replay recognize pre-checkpoint duplicates through
 indexed operation-ID/conflict-key lookups for only the retained suffix or
 finalized unit. Neither fix scans or replays the checkpointed prefix.
+
+Post-consolidation localhost fake-wallet validation exercised both on-chain and
+Lightning payment paths without a remote environment. The checkpoint-critical
+path crossed a long-offline recovery, successful pending melt, member restart,
+and resumed operation sequencing; an earlier run also crossed failed-melt
+recovery and keyset rotation. Those runs exposed and led to fixes for premature
+route readiness and stale recovery lineage selection. Focused regressions cover
+quorum-supported replay targets, empty finalized units, refreshed status after
+backup transfer, replay-target reset on session rotation, and superseded
+recovery proofs. A broader end-to-end smoke remains timing-sensitive in a later
+fake-payment phase unrelated to checkpoint startup; release campaigns remain
+tracked by the overarching federation plan, and no timeout or safety assertion
+was weakened to mask that flake.
 
 ### Local receive-matrix evidence
 

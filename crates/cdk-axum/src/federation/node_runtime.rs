@@ -510,6 +510,14 @@ impl FederationNodeRuntime {
         self.aleph_bft_live_session.read().await.is_some()
     }
 
+    pub(crate) async fn live_session_replay_ready(&self) -> bool {
+        self.aleph_bft_live_session
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|handle| handle.replay_ready())
+    }
+
     pub(crate) async fn live_session_available(&self) -> bool {
         #[cfg(test)]
         if self.local_finality_test || self.manual_finality_test {

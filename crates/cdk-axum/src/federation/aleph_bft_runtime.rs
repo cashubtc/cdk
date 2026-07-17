@@ -5,7 +5,7 @@ use std::future::Future;
 use std::hash::{Hash, Hasher as StdHasher};
 use std::io;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -46,6 +46,76 @@ pub(crate) const MAX_ALEPH_BFT_SESSION_BACKUP_BYTES: usize = 256 * 1024 * 1024;
 /// Hard chunk limit for one active AlephBFT session backup.
 pub(crate) const MAX_ALEPH_BFT_SESSION_BACKUP_CHUNKS: usize = 262_144;
 const ALEPH_BFT_BACKUP_LOAD_PAGE_CHUNKS: usize = 1_024;
+
+/// Tracks when an upstream AlephBFT backup replay has crossed every CDK
+/// checkpoint watermark for the active session.
+#[derive(Debug)]
+pub(crate) struct CdkAlephBftReplayReadiness {
+    remaining_last_finalized_rounds: Mutex<BTreeMap<MemberId, u64>>,
+    ready: AtomicBool,
+    ready_notify: Notify,
+}
+
+impl CdkAlephBftReplayReadiness {
+    fn new(next_unit_index_by_member: BTreeMap<MemberId, u64>) -> Self {
+        let remaining_last_finalized_rounds = next_unit_index_by_member
+            .into_iter()
+            .filter_map(|(member_id, next_unit_index)| {
+                next_unit_index
+                    .checked_sub(1)
+                    .map(|last_finalized_round| (member_id, last_finalized_round))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let ready = remaining_last_finalized_rounds.is_empty();
+        Self {
+            remaining_last_finalized_rounds: Mutex::new(remaining_last_finalized_rounds),
+            ready: AtomicBool::new(ready),
+            ready_notify: Notify::new(),
+        }
+    }
+
+    pub(crate) fn ready() -> Self {
+        Self::new(BTreeMap::new())
+    }
+
+    fn record_finalized_round(&self, member_id: MemberId, round: u64) {
+        if self.is_ready() {
+            return;
+        }
+        let Ok(mut remaining) = self.remaining_last_finalized_rounds.lock() else {
+            tracing::warn!(
+                %member_id,
+                round,
+                "AlephBFT replay readiness state is poisoned"
+            );
+            return;
+        };
+        if remaining
+            .get(&member_id)
+            .is_some_and(|last_finalized_round| round >= *last_finalized_round)
+        {
+            remaining.remove(&member_id);
+        }
+        if remaining.is_empty() {
+            self.ready.store(true, Ordering::Release);
+            self.ready_notify.notify_one();
+        }
+    }
+
+    /// Return whether backup replay has reached the complete checkpoint unit
+    /// frontier for every configured member.
+    #[must_use]
+    pub(crate) fn is_ready(&self) -> bool {
+        self.ready.load(Ordering::Acquire)
+    }
+
+    /// Wait until backup replay has reached every checkpoint unit frontier.
+    pub(crate) async fn wait_until_ready(&self) {
+        while !self.is_ready() {
+            self.ready_notify.notified().await;
+        }
+    }
+}
 
 /// SHA-256 hasher used by CDK's AlephBFT session units.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -659,6 +729,7 @@ pub(crate) struct CdkAlephBftFinalizationHandler {
     activity_hint: CdkAlephBftActivityHint,
     keychain: CdkAlephBftKeychain,
     session: u64,
+    replay_readiness: Arc<CdkAlephBftReplayReadiness>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -683,11 +754,28 @@ impl CdkAlephBftFinalizationHandler {
         keychain: CdkAlephBftKeychain,
         session: u64,
     ) -> Self {
+        Self::with_activity_hint_and_replay_readiness(
+            finalized_units,
+            activity_hint,
+            keychain,
+            session,
+            Arc::new(CdkAlephBftReplayReadiness::ready()),
+        )
+    }
+
+    fn with_activity_hint_and_replay_readiness(
+        finalized_units: mpsc::UnboundedSender<CdkAlephBftFinalizedUnit>,
+        activity_hint: CdkAlephBftActivityHint,
+        keychain: CdkAlephBftKeychain,
+        session: u64,
+        replay_readiness: Arc<CdkAlephBftReplayReadiness>,
+    ) -> Self {
         Self {
             finalized_units,
             activity_hint,
             keychain,
             session,
+            replay_readiness,
         }
     }
 
@@ -713,15 +801,17 @@ impl UnitFinalizationHandler for CdkAlephBftFinalizationHandler {
 
     fn batch_finalized(&mut self, batch: Vec<OrderedUnit<Self::Data, Self::Hasher>>) {
         for unit in batch {
+            let Some(creator) = self.keychain.member_for_node(unit.creator) else {
+                tracing::warn!(
+                    creator_index = unit.creator.0,
+                    "AlephBFT finalized a unit for an unknown creator index"
+                );
+                continue;
+            };
+            self.replay_readiness
+                .record_finalized_round(creator, u64::from(unit.round));
             if let Some(data) = unit.data {
                 self.record_finalized_data(&data);
-                let Some(creator) = self.keychain.member_for_node(unit.creator) else {
-                    tracing::warn!(
-                        creator_index = unit.creator.0,
-                        "AlephBFT finalized a unit for an unknown creator index"
-                    );
-                    continue;
-                };
                 let finalized_unit = CdkAlephBftFinalizedUnit {
                     payload: data.into_payload(),
                     federation_id: self.keychain.federation_id(),
@@ -1231,6 +1321,7 @@ pub(crate) type CdkAlephBftLocalIo = LocalIO<
 pub(crate) struct CdkAlephBftSessionIo {
     local_io: CdkAlephBftLocalIo,
     finalized_units: mpsc::UnboundedReceiver<CdkAlephBftFinalizedUnit>,
+    replay_readiness: Arc<CdkAlephBftReplayReadiness>,
 }
 
 impl fmt::Debug for CdkAlephBftSessionIo {
@@ -1247,9 +1338,22 @@ impl CdkAlephBftSessionIo {
         consensus: Arc<tokio::sync::Mutex<FederationConsensusRuntime>>,
         db: DynMintDatabase,
         session_id: u64,
+        replay_target_next_unit_index_by_member: BTreeMap<MemberId, u64>,
         activity_hint: CdkAlephBftActivityHint,
         keychain: CdkAlephBftKeychain,
     ) -> Result<Self, cdk::Error> {
+        let mut replay_frontier = consensus
+            .lock()
+            .await
+            .aleph_bft_recovery_cursor()?
+            .next_unit_index_by_member;
+        for (member_id, target_next_unit_index) in replay_target_next_unit_index_by_member {
+            replay_frontier
+                .entry(member_id)
+                .and_modify(|current| *current = (*current).max(target_next_unit_index))
+                .or_insert(target_next_unit_index);
+        }
+        let replay_readiness = Arc::new(CdkAlephBftReplayReadiness::new(replay_frontier));
         let backup = CdkAlephBftDbBackup::new(db, session_id);
         let (unit_loader, unit_saver, backup_chunks, backup_bytes) = backup.try_replay_io().await?;
         #[cfg(feature = "prometheus")]
@@ -1271,12 +1375,14 @@ impl CdkAlephBftSessionIo {
         let data_provider =
             CdkAlephBftDataProvider::with_activity_hint(consensus, activity_hint.clone());
         let (sender, finalized_units) = mpsc::unbounded_channel();
-        let finalization_handler = CdkAlephBftFinalizationHandler::with_activity_hint(
-            sender,
-            activity_hint,
-            keychain,
-            session_id,
-        );
+        let finalization_handler =
+            CdkAlephBftFinalizationHandler::with_activity_hint_and_replay_readiness(
+                sender,
+                activity_hint,
+                keychain,
+                session_id,
+                Arc::clone(&replay_readiness),
+            );
         let local_io = LocalIO::new_with_unit_finalization_handler(
             data_provider,
             finalization_handler,
@@ -1287,7 +1393,13 @@ impl CdkAlephBftSessionIo {
         Ok(Self {
             local_io,
             finalized_units,
+            replay_readiness,
         })
+    }
+
+    /// Return the shared checkpoint replay-readiness tracker for this session.
+    pub(crate) fn replay_readiness(&self) -> Arc<CdkAlephBftReplayReadiness> {
+        Arc::clone(&self.replay_readiness)
     }
 
     /// Split the upstream session IO from the receiver consumed by the CDK apply loop.
@@ -1510,6 +1622,33 @@ mod tests {
             creator,
             round,
         }
+    }
+
+    #[tokio::test]
+    async fn aleph_bft_replay_readiness_waits_for_every_checkpoint_member_floor() {
+        let readiness = CdkAlephBftReplayReadiness::new(BTreeMap::from([
+            (member_id(1), 3),
+            (member_id(2), 0),
+            (member_id(3), 5),
+        ]));
+
+        assert!(!readiness.is_ready());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), readiness.wait_until_ready())
+                .await
+                .is_err()
+        );
+        readiness.record_finalized_round(member_id(1), 1);
+        assert!(!readiness.is_ready());
+        readiness.record_finalized_round(member_id(1), 2);
+        assert!(!readiness.is_ready());
+        readiness.record_finalized_round(member_id(3), 3);
+        assert!(!readiness.is_ready());
+        readiness.record_finalized_round(member_id(3), 4);
+        assert!(readiness.is_ready());
+        tokio::time::timeout(Duration::from_secs(1), readiness.wait_until_ready())
+            .await
+            .expect("ready replay waiter");
     }
 
     fn mint_quote_envelope(quote: &str) -> FederationOperationEnvelope {
@@ -1875,6 +2014,30 @@ mod tests {
         assert!(!activity_hint.is_active());
     }
 
+    #[test]
+    fn cdk_aleph_bft_finalization_handler_counts_empty_units_for_replay_readiness() {
+        let (public_config, private_members) = keychain_fixture();
+        let keychain = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
+            .expect("keychain");
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let replay_readiness = Arc::new(CdkAlephBftReplayReadiness::new(BTreeMap::from([(
+            member_id(2),
+            8,
+        )])));
+        let mut handler = CdkAlephBftFinalizationHandler::with_activity_hint_and_replay_readiness(
+            sender,
+            CdkAlephBftActivityHint::default(),
+            keychain,
+            9,
+            Arc::clone(&replay_readiness),
+        );
+
+        handler.batch_finalized(vec![ordered_unit_for_creator(None, NodeIndex(1), 7)]);
+
+        assert!(replay_readiness.is_ready());
+        assert!(receiver.try_recv().is_err());
+    }
+
     #[tokio::test]
     async fn cdk_aleph_bft_finalization_shortens_operation_activity_tail() {
         let (public_config, private_members) = keychain_fixture();
@@ -2082,6 +2245,7 @@ mod tests {
             Arc::clone(&consensus),
             Arc::clone(&db),
             103,
+            BTreeMap::new(),
             activity_hint.clone(),
             keychain,
         )
@@ -2147,6 +2311,7 @@ mod tests {
             consensus,
             Arc::clone(&db),
             104,
+            BTreeMap::new(),
             CdkAlephBftActivityHint::default(),
             keychain,
         )
@@ -2207,6 +2372,7 @@ mod tests {
             consensus,
             db,
             105,
+            BTreeMap::new(),
             CdkAlephBftActivityHint::default(),
             keychain,
         )

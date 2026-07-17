@@ -2823,7 +2823,7 @@ async fn federated_mint_connector_returns_threshold_pending_without_slow_surplus
 }
 
 #[tokio::test]
-async fn federated_mint_connector_uses_threshold_mint_quote_status() {
+async fn federated_mint_connector_uses_threshold_mint_quote_status_ignoring_updated_at() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);
     let status = mint_quote_status_response(MintQuoteState::Paid);
@@ -2839,10 +2839,12 @@ async fn federated_mint_connector_uses_threshold_mint_quote_status() {
         Arc::new(failing_member) as Arc<dyn MintConnector + Send + Sync>,
     );
 
-    for member_id in [member_id(2), member_id(3)] {
+    for (member_id, updated_at) in [(member_id(2), 10), (member_id(3), 20)] {
         let connector = MockMintConnector::new();
         connector.set_active_keyset(advertised.clone());
-        connector.set_mint_quote_status_response(Ok(status.clone()));
+        let mut member_status = status.clone();
+        member_status.updated_at = updated_at;
+        connector.set_mint_quote_status_response(Ok(member_status));
         connectors.insert(
             member_id,
             Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
@@ -4802,7 +4804,7 @@ async fn federated_mint_connector_does_not_retry_definitive_quote_errors() {
 }
 
 #[tokio::test]
-async fn federated_mint_connector_uses_threshold_batch_mint_quote_status() {
+async fn federated_mint_connector_uses_threshold_batch_mint_quote_status_ignoring_updated_at() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);
     let statuses = vec![
@@ -4827,10 +4829,17 @@ async fn federated_mint_connector_uses_threshold_batch_mint_quote_status() {
         Arc::new(failing_member) as Arc<dyn MintConnector + Send + Sync>,
     );
 
-    for member_id in [member_id(2), member_id(3)] {
+    for (member_id, updated_at) in [(member_id(2), 10), (member_id(3), 20)] {
         let connector = MockMintConnector::new();
         connector.set_active_keyset(advertised.clone());
-        connector.set_batch_mint_quote_status_response(Ok(statuses.clone()));
+        let mut member_statuses = statuses.clone();
+        for response in &mut member_statuses {
+            let MintQuoteResponse::Bolt11(response) = response else {
+                panic!("test response must be bolt11");
+            };
+            response.updated_at = updated_at;
+        }
+        connector.set_batch_mint_quote_status_response(Ok(member_statuses));
         connectors.insert(
             member_id,
             Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,

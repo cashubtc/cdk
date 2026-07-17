@@ -1,6 +1,6 @@
 # Federated Cashu checkpoint and catch-up consolidation plan
 
-Status: in progress (milestones 0-10 complete; milestone 11 next)
+Status: in progress (milestones 0-10 complete; milestone 11 in progress)
 Scope: federation-only checkpoint, catch-up, startup recovery, and related
 AlephBFT runtime consolidation
 Primary goal: simplify the checkpoint and catch-up implementation without
@@ -364,7 +364,7 @@ Update this table whenever a milestone changes state.
 | 8 | Transport and request-state consolidation | Complete | `refactor: separate federation recovery transport` | Checkpoint-history and AlephBFT-backup traffic use distinct signed message kinds, wire types, routes, clients, size limits, and mutation paths; recovery demand and its proposal lease are one explicit state machine. |
 | 9 | Remove whole-runtime cloning | Complete | `refactor: replace federation runtime clones with deltas` | Submission and finalization prepare bounded non-mutating deltas, persist first, and commit under the existing serialized runtime lock; injected persistence failures leave published state unchanged and clone-path growth is removed from both production hot paths. |
 | 10 | Bootstrap, backup, operator, and retention contract | Complete | `feat: define federation backup recovery contract` | A versioned checkpoint-bound backup manifest gates restore before runtime startup; v1 retains recovery bodies from genesis, protects the active backup, exposes bounded redacted status, and documents operator-only audit recovery and deferred peer snapshots. |
-| 11 | Adversarial integration, performance, and final cleanup | Not started | — | — |
+| 11 | Adversarial integration, performance, and final cleanup | In progress | — | Running final architecture cleanup, adversarial review, local fake-wallet campaigns, and the required validation matrix. |
 
 ## Milestone 0: Baseline, invariants, and fault reproduction
 
@@ -1211,13 +1211,13 @@ recovery through the existing private summary request, but only a locally
 healthy member with a live AlephBFT session may propose the item.
 
 Each member admits at most one queued or awaiting-finality barrier and reserves
-a 30-second local proposal lease before constructing it. A deterministic
-64-finalized-item minimum advance reuses a recent checkpoint while the
-uncovered live tail remains bounded by one maximum-sized AlephBFT unit. This
-prevents repeated requests from turning into unbounded audit/signature work
-without making restart cost depend on federation age. Concurrent proposers may
-still order harmless barriers, but one complete finalized unit produces at
-most one effective candidate boundary.
+a 30-second local proposal lease before constructing it. A checkpoint is reused
+only when it already covers the requested finalized frontier; otherwise a new
+ordered barrier is required because catch-up may not apply an uncertified tail.
+The lease and one-pending admission prevent repeated requests from turning into
+unbounded audit/signature work without making restart cost depend on federation
+age. Concurrent proposers may still order harmless barriers, but one complete
+finalized unit produces at most one effective candidate boundary.
 
 Finalization durably records the barrier through the ordinary item pipeline.
 A cursor beyond the barrier's own ordered position is terminally rejected
@@ -1233,7 +1233,7 @@ The former two-identical-observation latch and quorum matching of peer
 `stable_tip` summaries have been removed. Traffic-before/barrier/traffic-after
 tests prove the entire unit is captured without reordering or loss; concurrent
 proposal, replay, minority non-promotion, one-unavailable-member quorum, local
-lease, recent-checkpoint suppression, and idle-no-work tests cover the bounded
+lease, covered-frontier suppression, and idle-no-work tests cover the bounded
 protocol. The pre-existing long-offline checkpoint catch-up and live-tail tests
 continue to cover promotion and readiness from the ordered recovery proof.
 
@@ -1523,7 +1523,7 @@ no warning reported a milestone-10 changed path.
 
 ## Milestone 11: Adversarial integration, performance, and final cleanup
 
-Status: not started
+Status: in progress
 
 ### Objective
 

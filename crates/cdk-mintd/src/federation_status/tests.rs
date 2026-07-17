@@ -824,7 +824,7 @@ fn status_convergence_guard_accepts_missing_materialized_state_digest() {
 }
 
 #[test]
-fn status_convergence_guard_rejects_materialized_state_digest_mismatch() {
+fn status_convergence_guard_accepts_different_local_checkpoint_audits() {
     let (public_config, _) = status_fixture();
     let first = local_status(&public_config, 1, 0);
     let mut second = local_status(&public_config, 2, 0);
@@ -832,9 +832,8 @@ fn status_convergence_guard_rejects_materialized_state_digest_mismatch() {
         Some(FederationMaterializedStateDigest::genesis());
     let statuses = vec![first, second];
 
-    let err = ensure_statuses_converged(&statuses).expect_err("state digest mismatch should fail");
-
-    assert!(err.to_string().contains("state digest"));
+    ensure_statuses_converged(&statuses)
+        .expect("local checkpoint candidate audits do not define application convergence");
 }
 
 #[test]
@@ -852,8 +851,12 @@ fn status_digest_alert_guard_accepts_height_mismatch() {
 #[test]
 fn status_digest_alert_guard_rejects_materialized_state_digest_mismatch() {
     let (public_config, _) = status_fixture();
-    let first = local_status(&public_config, 1, 2);
+    let mut first = local_status(&public_config, 1, 2);
     let mut second = local_status(&public_config, 2, 2);
+    first.peer_status.latest_audited_checkpoint_id =
+        Some(FederationCheckpointId::from_bytes([7; 32]));
+    second.peer_status.latest_audited_checkpoint_id =
+        first.peer_status.latest_audited_checkpoint_id;
     second.peer_status.materialized_state_digest =
         Some(FederationMaterializedStateDigest::genesis());
     let statuses = vec![first, second];
@@ -861,7 +864,7 @@ fn status_digest_alert_guard_rejects_materialized_state_digest_mismatch() {
     let err = ensure_statuses_no_digest_alerts(&statuses).expect_err("state digest mismatch fails");
 
     assert!(err.to_string().contains("digest alert"));
-    assert!(err.to_string().contains("state digest"));
+    assert!(err.to_string().contains("same checkpoint audit"));
 }
 
 #[test]

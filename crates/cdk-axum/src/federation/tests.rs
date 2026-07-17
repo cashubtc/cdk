@@ -26,15 +26,16 @@ use cdk::federation::{
     FederationCheckpointBoundary, FederationCheckpointKind, FederationCheckpointPolicy,
     FederationCheckpointQuorum, FederationCheckpointSignature, FederationCheckpointSummaryRequest,
     FederationCheckpointSummaryResponse, FederationConfigSnapshot, FederationConsensusItem,
-    FederationConsensusItemAdmission, FederationConsensusRuntime, FederationDatabaseBackupManifest,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgMemberKeysetShare,
-    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
-    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMeltQuoteMetadata, FederationMintQuotePaymentObservation, FederationOperation,
-    FederationOperationEnvelope, FederationOperationId, FederationOperationKind,
-    FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationConsensusItemAdmission, FederationConsensusModuleFact, FederationConsensusRuntime,
+    FederationDatabaseBackupManifest, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
+    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
+    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMeltQuoteMetadata, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
+    FederationOperationId, FederationOperationKind, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationPolicy, FederationPaymentObservationRecord,
     FederationPaymentObservationReportAction, FederationPaymentVerificationPolicy,
     FederationRecoveryBarrier, FederationRestMessageKind, FederationSignedRequest,
@@ -356,7 +357,7 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
     assert_eq!(checkpoint.journal_next_index, 2);
     assert_eq!(checkpoint.finalized_next_item_index, 3);
     assert_eq!(checkpoint.next_unit_finalization_index, 1);
-    let checkpoint_id = checkpoint.id().expect("recovery checkpoint id");
+    let checkpoint_id = checkpoint.id().expect("initial recovery checkpoint id");
     assert!(state
         .mint
         .localstore()
@@ -364,6 +365,80 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
         .await
         .expect("trusted checkpoint lookup")
         .is_none());
+
+    let finality_only_unit = {
+        let consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            vec![FederationConsensusItem::ModuleFact(
+                FederationConsensusModuleFact::new(
+                    "checkpoint-test",
+                    "finality-only",
+                    serde_json::json!({}),
+                ),
+            )],
+        )
+        .expect("finality-only unit")
+    };
+    state
+        .federation
+        .apply_finalized_unit(finality_only_unit)
+        .await
+        .expect("finalize non-application item");
+    let redundant_barrier = {
+        let consensus = state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("consensus")
+            .lock()
+            .await;
+        let status = consensus.status();
+        FederationAlephBftUnitPayload::new(
+            status.federation_id,
+            status.local_member,
+            status.session,
+            consensus.next_unit_index(),
+            vec![FederationConsensusItem::recovery_barrier(
+                FederationRecoveryBarrier::new(
+                    public_config.federation_id,
+                    0,
+                    None,
+                    status.next_item_index,
+                )
+                .expect("redundant recovery barrier"),
+            )],
+        )
+        .expect("redundant barrier unit")
+    };
+    state
+        .federation
+        .apply_finalized_unit(redundant_barrier)
+        .await
+        .expect("finalize redundant barrier");
+    let retained_checkpoint = state
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(FederationCheckpointKind::Recovery)
+        .await
+        .expect("retained recovery checkpoint lookup")
+        .expect("retained recovery checkpoint");
+    assert_eq!(
+        retained_checkpoint
+            .id()
+            .expect("retained recovery checkpoint id"),
+        checkpoint_id
+    );
 
     state
         .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
@@ -402,18 +477,21 @@ async fn ordered_recovery_barrier_captures_complete_unit_without_stopping_traffi
         .apply_finalized_unit(repeated_barrier)
         .await
         .expect("finalize repeated barrier");
-    assert_eq!(
-        state
-            .mint
-            .localstore()
-            .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
-            .await
-            .expect("retained recovery checkpoint lookup")
-            .expect("retained recovery checkpoint")
+    let advanced_checkpoint = state
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .await
+        .expect("advanced recovery checkpoint lookup")
+        .expect("advanced recovery checkpoint");
+    assert_ne!(
+        advanced_checkpoint
             .id()
-            .expect("retained recovery checkpoint id"),
+            .expect("advanced recovery checkpoint id"),
         checkpoint_id
     );
+    assert_eq!(advanced_checkpoint.journal_next_index, 3);
+    assert_eq!(advanced_checkpoint.finalized_next_item_index, 7);
 }
 
 #[tokio::test]
@@ -500,6 +578,68 @@ async fn concurrent_recovery_requests_queue_one_effective_barrier() {
         .mint
         .localstore()
         .get_latest_federation_checkpoint(cdk::federation::FederationCheckpointKind::Recovery)
+        .await
+        .expect("recovery checkpoint lookup")
+        .is_some());
+}
+
+#[tokio::test]
+async fn stale_pending_barrier_does_not_block_current_recovery_request() {
+    let (public_config, first_private, second_private) = transport_config();
+    let state = federation_route_state_for_private(public_config.clone(), first_private).await;
+    let stale = FederationRecoveryBarrier::new(public_config.federation_id, 0, None, 0)
+        .expect("stale recovery barrier");
+    state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .submit_aleph_bft_recovery_barrier(stale)
+        .expect("queue stale recovery barrier");
+
+    let advancing_unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        second_private.member_id,
+        0,
+        0,
+        vec![FederationConsensusItem::operation(mint_quote_envelope(
+            &state,
+            &QuoteId::new(),
+        ))],
+    )
+    .expect("advancing unit");
+    state
+        .federation
+        .apply_finalized_unit(advancing_unit)
+        .await
+        .expect("advance finalized frontier");
+
+    state.federation.request_recovery_checkpoint().await;
+    assert!(state
+        .federation
+        .propose_recovery_barrier_if_requested()
+        .await
+        .expect("current recovery proposal"));
+
+    let finalized_barriers = state
+        .federation
+        .consensus
+        .as_ref()
+        .expect("consensus")
+        .lock()
+        .await
+        .aleph_bft_finalized_items()
+        .expect("finalized items")
+        .iter()
+        .filter(|item| matches!(item.item, FederationConsensusItem::RecoveryBarrier(_)))
+        .count();
+    assert_eq!(finalized_barriers, 2);
+    assert!(state
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(FederationCheckpointKind::Recovery)
         .await
         .expect("recovery checkpoint lookup")
         .is_some());
@@ -2077,6 +2217,15 @@ fn member_id(value: u16) -> MemberId {
     MemberId::new(value).expect("member id")
 }
 
+fn zero_aleph_bft_unit_cursor(config: &FederationConfig) -> BTreeMap<MemberId, u64> {
+    config
+        .members
+        .keys()
+        .copied()
+        .map(|member| (member, 0))
+        .collect()
+}
+
 #[test]
 fn quorum_startup_requires_threshold_matching_views() {
     let (public_config, _, _) = transport_config();
@@ -2136,6 +2285,92 @@ fn quorum_startup_adopts_only_a_matching_later_session() {
 }
 
 #[test]
+fn quorum_startup_ignores_non_application_finality_and_local_candidate_audits() {
+    let (public_config, _, _) = transport_config();
+    let mut local = FederationPeerStatus::new(
+        public_config.federation_id,
+        member_id(1),
+        7,
+        Some(6),
+        FederationJournalDigest::genesis(),
+    )
+    .with_aleph_bft_next_item_index(40);
+    local.application_digest = Some(cdk::federation::FederationApplicationDigest::genesis());
+    local.latest_audited_checkpoint_id =
+        Some(cdk::federation::FederationCheckpointId::from_bytes([1; 32]));
+    local.materialized_state_digest =
+        Some(cdk::federation::FederationMaterializedStateDigest::from_bytes([2; 32]));
+
+    let mut peer = local.clone();
+    peer.member_id = member_id(2);
+    peer.aleph_bft_next_item_index = Some(44);
+    peer.latest_audited_checkpoint_id =
+        Some(cdk::federation::FederationCheckpointId::from_bytes([3; 32]));
+    peer.materialized_state_digest =
+        Some(cdk::federation::FederationMaterializedStateDigest::from_bytes([4; 32]));
+
+    assert_eq!(
+        sync_loop::quorum_compatible_session(&local, &[peer.clone()], 2),
+        Some(0)
+    );
+
+    peer.application_digest = Some(cdk::federation::FederationApplicationDigest::from_bytes(
+        [5; 32],
+    ));
+    assert_eq!(
+        sync_loop::quorum_compatible_session(&local, &[peer], 2),
+        None
+    );
+}
+
+#[test]
+fn quorum_replay_target_uses_supported_current_session_frontier() {
+    let (public_config, _) = transport_config_five_with_threshold(
+        ThresholdParams::new(5, 3, 4).expect("threshold params"),
+    );
+    let members = public_config.members.keys().copied().collect::<Vec<_>>();
+    let local_member = members[0];
+    let tracked_member = members[1];
+    let local_cursor = members.iter().copied().map(|member| (member, 5)).collect();
+    let local = FederationPeerStatus::new(
+        public_config.federation_id,
+        local_member,
+        7,
+        Some(6),
+        FederationJournalDigest::genesis(),
+    )
+    .with_aleph_bft_session(3)
+    .with_aleph_bft_next_unit_index_by_member(local_cursor);
+    let peer = |member: MemberId, tracked_next_unit_index: u64| {
+        let mut status = local.clone();
+        status.member_id = member;
+        status
+            .aleph_bft_next_unit_index_by_member
+            .insert(tracked_member, tracked_next_unit_index);
+        status
+    };
+    let mut stale_session = peer(members[4], 100);
+    stale_session.aleph_bft_session = 2;
+    let peer_statuses = vec![
+        peer(members[1], 11),
+        peer(members[2], 10),
+        peer(members[3], 9),
+        peer(members[4], 1),
+        stale_session,
+    ];
+
+    let target = sync_loop::quorum_supported_replay_target(
+        &local,
+        &peer_statuses,
+        3,
+        usize::from(public_config.threshold_params.consensus_threshold),
+    );
+
+    assert_eq!(target.get(&tracked_member), Some(&9));
+    assert_eq!(target.get(&local_member), Some(&5));
+}
+
+#[test]
 fn quorum_startup_rejects_stale_round_evidence() {
     let observed_at = tokio::time::Instant::now();
     let max_age = std::time::Duration::from_secs(10);
@@ -2150,6 +2385,104 @@ fn quorum_startup_rejects_stale_round_evidence() {
         observed_at + max_age + std::time::Duration::from_millis(1),
         max_age,
     ));
+}
+
+#[test]
+fn recovery_target_ignores_proof_superseded_by_scheduled_checkpoint() {
+    assert!(sync_loop::recovery_checkpoint_is_superseded(1, 2));
+    assert!(!sync_loop::recovery_checkpoint_is_superseded(2, 2));
+    assert!(!sync_loop::recovery_checkpoint_is_superseded(3, 2));
+}
+
+#[tokio::test]
+async fn checkpoint_target_ignores_newer_frontier_on_superseded_recovery_lineage() {
+    let (state, public_config, peer_private) = federation_route_state().await;
+    let local_private = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .private_config()
+        .clone();
+    let signers = [&local_private, &peer_private];
+
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("first scheduled operation");
+    let mut first_scheduled = recovery_checkpoint_for_state(&state, &public_config, None).await;
+    first_scheduled.kind = FederationCheckpointKind::Scheduled;
+    first_scheduled.scheduled_checkpoint_sequence = 1;
+    let first_quorum = FederationCheckpointQuorum::new(
+        first_scheduled.clone(),
+        signers
+            .iter()
+            .map(|signer| {
+                FederationCheckpointSignature::new_signed_no_aux_rand(&first_scheduled, signer)
+                    .expect("first scheduled signature")
+            })
+            .collect(),
+    );
+
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("second scheduled operation");
+    let mut second_scheduled =
+        recovery_checkpoint_for_state(&state, &public_config, Some(&first_scheduled)).await;
+    second_scheduled.kind = FederationCheckpointKind::Scheduled;
+    second_scheduled.scheduled_checkpoint_sequence = 2;
+    let second_quorum = FederationCheckpointQuorum::new(
+        second_scheduled.clone(),
+        signers
+            .iter()
+            .map(|signer| {
+                FederationCheckpointSignature::new_signed_no_aux_rand(&second_scheduled, signer)
+                    .expect("second scheduled signature")
+            })
+            .collect(),
+    );
+
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("stale-lineage recovery operation");
+    let (stale_recovery, stale_recovery_quorum) = recovery_checkpoint_quorum_for_state(
+        &state,
+        &public_config,
+        Some(&first_scheduled),
+        &signers,
+    )
+    .await;
+    assert!(stale_recovery.journal_next_index > second_scheduled.journal_next_index);
+
+    let db = state.mint.localstore();
+    let mut tx = db
+        .begin_transaction()
+        .await
+        .expect("begin checkpoint setup");
+    tx.promote_verified_federation_checkpoint(
+        &first_quorum
+            .verify(&public_config)
+            .expect("first scheduled quorum"),
+    )
+    .await
+    .expect("promote first scheduled checkpoint");
+    tx.promote_verified_federation_checkpoint(
+        &second_quorum
+            .verify(&public_config)
+            .expect("second scheduled quorum"),
+    )
+    .await
+    .expect("promote second scheduled checkpoint");
+    tx.add_federation_checkpoint_quorum(&stale_recovery_quorum)
+        .await
+        .expect("store stale recovery quorum");
+    tx.commit().await.expect("commit checkpoint setup");
+
+    assert!(sync_loop::next_local_checkpoint_catch_up_target(&state)
+        .await
+        .expect("inspect next checkpoint target")
+        .is_none());
 }
 
 #[test]
@@ -3539,6 +3872,12 @@ async fn aleph_bft_peer_status_with_materialized_digest(
     consensus: &FederationConsensusRuntime,
 ) -> FederationPeerStatus {
     let mut status = consensus.peer_status_for(public_config.federation_id, member_id);
+    for configured_member in public_config.members.keys() {
+        status
+            .aleph_bft_next_unit_index_by_member
+            .entry(*configured_member)
+            .or_insert(0);
+    }
     let frontier = state
         .mint
         .localstore()
@@ -4138,7 +4477,39 @@ fn test_operation_envelope_for_config(
     config: &FederationConfig,
     label: &str,
 ) -> FederationOperationEnvelope {
-    test_operation_envelope(config.federation_id, label)
+    let hash = BlsG1PublicKey::hash_to_curve(label.as_bytes()).to_bytes();
+    let mut quote_bytes = [0u8; 16];
+    quote_bytes.copy_from_slice(&hash[..16]);
+    let quote_id = QuoteId::from(uuid::Uuid::from_bytes(quote_bytes));
+    let quote = quote_id.to_string();
+    FederationOperationEnvelope::new(
+        config.federation_id,
+        FederationOperation::MintQuote(FederationMintQuoteOperation {
+            quote: quote.clone(),
+            request_lookup_id: PaymentIdentifier::QuoteId(quote_id),
+            request: cdk::mint::MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+                amount: Amount::from(1),
+                unit: CurrencyUnit::Sat,
+                description: None,
+                pubkey: None,
+            }),
+            response: cdk::mint::MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
+                quote,
+                request: format!("invoice-{label}"),
+                amount: Some(Amount::from(1)),
+                unit: Some(CurrencyUnit::Sat),
+                method: PaymentMethod::Known(KnownMethod::Bolt11),
+                amount_paid: Amount::ZERO,
+                amount_issued: Amount::ZERO,
+                updated_at: 0,
+                state: MintQuoteState::Unpaid,
+                expiry: Some(10_000),
+                pubkey: None,
+            }),
+        }),
+    )
+    .authorize(&private_member(1))
+    .expect("authorize valid test operation")
 }
 
 fn restore_request_for_config(config: &FederationConfig, label: &str) -> RestoreRequest {
@@ -4162,7 +4533,8 @@ async fn rest_peer_client_validates_peer_status() {
         0,
         None,
         cdk::federation::FederationJournalDigest::genesis(),
-    );
+    )
+    .with_aleph_bft_next_unit_index_by_member(zero_aleph_bft_unit_cursor(&public_config));
     let transport = MockFederationTransport::default().with_status_response(status.clone());
     let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
         .expect("client");
@@ -4177,6 +4549,32 @@ async fn rest_peer_client_validates_peer_status() {
         .expect("signed status request");
     assert_eq!(requests[0].sender, member_id(1));
     assert_eq!(requests[0].kind, FederationRestMessageKind::Status);
+}
+
+#[tokio::test]
+async fn rest_peer_client_rejects_partial_per_member_unit_cursor() {
+    let (public_config, local_private, _) = transport_config();
+    let member = public_config.member(member_id(2)).expect("peer member");
+    let status = FederationPeerStatus::new(
+        public_config.federation_id,
+        member.member_id,
+        0,
+        None,
+        cdk::federation::FederationJournalDigest::genesis(),
+    )
+    .with_aleph_bft_next_unit_index_by_member(BTreeMap::from([(member.member_id, 1)]));
+    let transport = MockFederationTransport::default().with_status_response(status);
+    let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+        .expect("peer client");
+
+    let err = client
+        .peer_status(member)
+        .await
+        .expect_err("partial unit cursor must fail");
+
+    assert!(err
+        .to_string()
+        .contains("per-member AlephBFT cursor roster mismatch"));
 }
 
 #[tokio::test(start_paused = true)]
@@ -4281,7 +4679,8 @@ async fn rest_peer_client_rejects_outbound_overflow_before_transport_request() {
         0,
         None,
         cdk::federation::FederationJournalDigest::genesis(),
-    );
+    )
+    .with_aleph_bft_next_unit_index_by_member(zero_aleph_bft_unit_cursor(&public_config));
     let transport = MockFederationTransport::default().with_status_response(status);
     let client = FederationRestPeerClient::new_with_config(
         transport.clone(),
@@ -4328,7 +4727,8 @@ async fn rest_peer_client_initial_sequence_advances_across_clients() {
         0,
         None,
         cdk::federation::FederationJournalDigest::genesis(),
-    );
+    )
+    .with_aleph_bft_next_unit_index_by_member(zero_aleph_bft_unit_cursor(&public_config));
     let transport = MockFederationTransport::default().with_status_response(status);
     let first_client =
         FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
@@ -4366,7 +4766,8 @@ async fn rest_peer_client_older_client_sequence_catches_up_after_newer_client() 
         0,
         None,
         cdk::federation::FederationJournalDigest::genesis(),
-    );
+    )
+    .with_aleph_bft_next_unit_index_by_member(zero_aleph_bft_unit_cursor(&public_config));
     let transport = MockFederationTransport::default().with_status_response(status);
     let older_client =
         FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
@@ -5141,7 +5542,8 @@ async fn peer_sync_round_catches_up_from_configured_peer() {
     assert_eq!(discovery, 1);
     assert_eq!(
         local_consensus.lock().await.peer_status().operation_count,
-        0
+        1,
+        "checkpoint discovery must unblock catch-up in the same sync round"
     );
     let peer_status = client
         .sync_once_from_member(&state, peer_member)
@@ -5186,7 +5588,8 @@ async fn equal_height_peer_sync_does_not_enter_catch_up() {
         None,
         FederationJournalDigest::genesis(),
         cdk::federation::FederationMaterializedStateDigest::genesis(),
-    );
+    )
+    .with_aleph_bft_next_unit_index_by_member(zero_aleph_bft_unit_cursor(&public_config));
     let transport = MockFederationTransport::default().with_status_response(status);
     let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
         .expect("peer client");
@@ -5614,6 +6017,11 @@ async fn rest_peer_client_recovers_complete_aleph_bft_backup_pages_atomically() 
         .map(|request| request.payload.next_chunk)
         .collect::<Vec<_>>();
     assert_eq!(backup_offsets, vec![0, 1]);
+    assert_eq!(
+        transport.status_requests().len(),
+        2,
+        "backup recovery must refresh the replay frontier after the final page"
+    );
 }
 
 #[tokio::test]
@@ -5681,7 +6089,8 @@ async fn rest_peer_client_uses_status_as_cheap_order_status() {
         None,
         cdk::federation::FederationJournalDigest::genesis(),
         cdk::federation::FederationMaterializedStateDigest::from_bytes([9; 32]),
-    );
+    )
+    .with_aleph_bft_next_unit_index_by_member(zero_aleph_bft_unit_cursor(&public_config));
     let transport = MockFederationTransport::default().with_status_response(status);
     let client =
         FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");
@@ -8960,6 +9369,57 @@ async fn startup_recovers_an_interrupted_eligible_checkpoint_capture_once() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn startup_checkpoint_capture_skips_scheduled_quorum_ahead_of_local_frontier() {
+    let (mut public_config, first_private, second_private) = transport_config();
+    public_config.checkpoint_policy =
+        FederationCheckpointPolicy::new(1, 1).expect("checkpoint policy");
+    let source =
+        federation_route_state_for_private(public_config.clone(), first_private.clone()).await;
+    source
+        .submit_federation_envelope(mint_quote_envelope(&source, &QuoteId::new()))
+        .await
+        .expect("source checkpointed operation");
+    let checkpoint = source
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+        .await
+        .expect("source scheduled checkpoint lookup")
+        .expect("source scheduled checkpoint");
+    let signatures = [&first_private, &second_private]
+        .into_iter()
+        .map(|signer| {
+            FederationCheckpointSignature::new_signed(&checkpoint, signer)
+                .expect("scheduled checkpoint signature")
+        })
+        .collect();
+    let quorum = FederationCheckpointQuorum::new(checkpoint, signatures);
+    quorum
+        .verify(&public_config)
+        .expect("scheduled checkpoint quorum");
+
+    let lagging = federation_route_state_for_private(public_config, second_private.clone()).await;
+    lagging
+        .federation
+        .persist_checkpoint_quorum(&quorum)
+        .await
+        .expect("persist ahead scheduled quorum");
+    let frontier = lagging
+        .mint
+        .localstore()
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("lagging frontier");
+    assert_eq!(frontier.journal_next_index, 0);
+
+    lagging
+        .federation
+        .recover_scheduled_checkpoint_candidate_at_startup()
+        .await
+        .expect("ahead scheduled quorum is not a startup error");
 }
 
 #[cfg(feature = "prometheus")]
@@ -18799,42 +19259,46 @@ async fn sync_and_certify_partitioned_member(
     peer: &MemberConfigPublic,
     public_config: &FederationConfig,
 ) {
-    let catch_up_deadline = time::Instant::now() + Duration::from_secs(15);
+    let local_member = state
+        .mint
+        .federation_config()
+        .expect("partitioned member federation config")
+        .member_id();
+    let mut peers = vec![peer.clone()];
+    peers.extend(
+        public_config
+            .members
+            .values()
+            .filter(|member| member.member_id != local_member && member.member_id != peer.member_id)
+            .cloned(),
+    );
+
+    let required_remote_quorum =
+        usize::from(public_config.threshold_params.consensus_threshold) - 1;
+    let catch_up_deadline = time::Instant::now() + Duration::from_secs(90);
+    let mut maximum_synced = 0;
     loop {
-        match client.sync_once_from_member(state, peer).await {
-            Ok(_) => break,
+        maximum_synced =
+            maximum_synced.max(run_federation_peer_sync_round(state, client, &peers).await);
+        match state
+            .ensure_federation_ready_for_authoritative_read()
+            .await
+        {
+            Ok(()) => {
+                assert!(
+                    maximum_synced >= required_remote_quorum,
+                    "catch-up certification must reach a remote BFT quorum"
+                );
+                return;
+            }
             Err(_) if time::Instant::now() < catch_up_deadline => {
                 time::sleep(Duration::from_millis(20)).await;
             }
-            Err(err) => panic!("partitioned member finalized-item catch-up: {err}"),
+            Err(err) => panic!(
+                "partitioned member did not become ready after ordered recovery; maximum synced peers: {maximum_synced}; required remote quorum: {required_remote_quorum}; readiness error: {err}"
+            ),
         }
     }
-    if state
-        .ensure_federation_ready_for_authoritative_read()
-        .await
-        .is_err()
-    {
-        let local_member = state
-            .mint
-            .federation_config()
-            .expect("partitioned member federation config")
-            .member_id();
-        let peers = public_config
-            .members
-            .values()
-            .filter(|member| member.member_id != local_member)
-            .cloned()
-            .collect::<Vec<_>>();
-        let synced = run_federation_peer_sync_round(state, client, &peers).await;
-        assert!(
-            synced >= usize::from(public_config.threshold_params.consensus_threshold) - 1,
-            "catch-up certification must reach a remote BFT quorum"
-        );
-    }
-    state
-        .ensure_federation_ready_for_authoritative_read()
-        .await
-        .expect("certified caught-up member is ready");
 }
 
 const LATENCY_EXPECTED_STAGES: &[CdkAlephBftLatencyStage] = &[
@@ -19234,8 +19698,10 @@ async fn run_five_member_partition_and_heal(partition_size: usize, finalizes_whi
         .submit_federation_envelope_to_consensus(partitioned.clone())
         .await;
     if finalizes_while_split {
-        let response = result.expect("above-threshold side finalizes while partitioned");
-        assert_eq!(response.operation_id, partitioned_operation_id);
+        match result {
+            Ok(response) => assert_eq!(response.operation_id, partitioned_operation_id),
+            Err(err) => assert_pending_finalization_error(&err, partitioned_operation_id, 500),
+        }
         for state in &session.states[..partition_size] {
             wait_for_applied_operation(state, partitioned_operation_id).await;
         }
@@ -19897,7 +20363,7 @@ async fn aleph_bft_public_submit_is_not_ready_until_live_session_is_started() {
 
     assert!(matches!(
         err,
-        cdk::Error::Federation(FederationError::NodeHalted { .. })
+        cdk::Error::Federation(FederationError::NodeAwaitingQuorum { .. })
     ));
     assert!(state
         .mint
@@ -20765,6 +21231,37 @@ async fn aleph_bft_startup_restore_requires_quorum_even_with_manual_live_session
     assert_eq!(consensus.queued_len(), 0);
     assert_eq!(consensus.peer_status().operation_count, 0);
     drop(handle);
+}
+
+#[tokio::test]
+async fn quorum_reconciliation_marks_new_live_session_healthy() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config,
+        local_private,
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let mut peer_status = local_peer_status(&state).await.expect("local peer status");
+    peer_status.member_id = peer_private.member_id;
+
+    sync_loop::reconcile_federation_startup_with_quorum(
+        &state,
+        FederationPeerSyncConfig::default(),
+        tokio::time::Instant::now(),
+        &[peer_status],
+    )
+    .await;
+
+    assert_eq!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    );
+    assert!(state.federation.live_session_active().await);
+    halt_current_federation_aleph_bft_session(&state, "test complete").await;
 }
 
 #[tokio::test]
@@ -22054,6 +22551,10 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
     let control_status = local_peer_status(&control_state)
         .await
         .expect("control status");
+    let control_digest = materialized_state_digest(&control_state, &[])
+        .await
+        .expect("control materialized-state digest");
+    assert!(control_status.materialized_state_digest.is_none());
 
     let crashed_history =
         finalized_aleph_bft_history(&public_config, local_private.member_id, [envelope]);
@@ -22069,9 +22570,13 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
     let missing_status = local_peer_status(&restarted_state)
         .await
         .expect("missing materialized status");
+    let missing_digest = materialized_state_digest(&restarted_state, &[])
+        .await
+        .expect("missing materialized-state digest");
+    assert!(missing_status.materialized_state_digest.is_none());
     assert_ne!(
-        missing_status.materialized_state_digest,
-        control_status.materialized_state_digest
+        missing_digest, control_digest,
+        "the explicit operator-style digest must detect the unapplied state"
     );
 
     let (replayed_consensus, replayed_sequences) =
@@ -22105,9 +22610,13 @@ async fn startup_replays_accepted_but_unapplied_journal_entry_to_same_state_dige
         .await
         .expect("replayed status");
     assert_eq!(replayed_status.operation_count, 1);
+    assert!(replayed_status.materialized_state_digest.is_none());
+    let replayed_digest = materialized_state_digest(&restarted_state, &replayed_entries)
+        .await
+        .expect("replayed materialized-state digest");
     assert_eq!(
-        replayed_status.materialized_state_digest,
-        control_status.materialized_state_digest
+        replayed_digest, control_digest,
+        "startup replay must restore the same explicit materialized-state digest"
     );
     let replayed_consensus = restarted_state
         .federation
@@ -22136,9 +22645,9 @@ async fn router_startup_replays_accepted_journal_before_serving_local_status() {
         .submit_federation_envelope(envelope.clone())
         .await
         .expect("control submit");
-    let control_status = local_peer_status(&control_state)
+    let control_digest = materialized_state_digest(&control_state, &[])
         .await
-        .expect("control status");
+        .expect("control materialized-state digest");
 
     let crashed_history =
         finalized_aleph_bft_history(&public_config, local_private.member_id, [envelope]);
@@ -22187,7 +22696,7 @@ async fn router_startup_replays_accepted_journal_before_serving_local_status() {
     assert_eq!(local_status.peer_status.operation_count, 1);
     assert_eq!(
         local_status.peer_status.materialized_state_digest,
-        control_status.materialized_state_digest
+        Some(control_digest)
     );
     assert!(
         local_status
@@ -23994,6 +24503,7 @@ async fn measure_synthetic_checkpoint_startup(
             Arc::clone(&consensus),
             Arc::clone(&db),
             session,
+            BTreeMap::new(),
             CdkAlephBftActivityHint::default(),
             keychain,
         )
@@ -24555,31 +25065,10 @@ async fn private_local_status_route_reports_stale_payment_observations() {
         federation_route_state_for_private(public_config.clone(), local_private.clone()).await;
     let local_member = local_private.member_id;
     let quote_id = QuoteId::new();
-    let old_quote = MintQuote::new(
-        Some(quote_id.clone()),
-        format!("invoice-{quote_id}"),
-        CurrencyUnit::Sat,
-        Some(Amount::from(1).with_unit(CurrencyUnit::Sat)),
-        10_000,
-        PaymentIdentifier::QuoteId(quote_id.clone()),
-        None,
-        Amount::ZERO.with_unit(CurrencyUnit::Sat),
-        Amount::ZERO.with_unit(CurrencyUnit::Sat),
-        PaymentMethod::Known(KnownMethod::Bolt11),
-        1,
-        1,
-        Vec::new(),
-        Vec::new(),
-        None,
-    );
-    let mut tx = state
-        .mint
-        .localstore()
-        .begin_transaction()
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &quote_id))
         .await
-        .expect("begin transaction");
-    tx.add_mint_quote(old_quote).await.expect("add old quote");
-    tx.commit().await.expect("commit old quote");
+        .expect("submit old mint quote");
 
     state
         .submit_federation_envelope(mint_payment_observation_envelope_for_member(
@@ -24651,7 +25140,10 @@ async fn private_status_routes_read_persisted_journal_after_runtime_reset() {
     assert_eq!(status.operation_count, 1);
     assert_eq!(status.latest_index, Some(0));
     assert_eq!(status.latest_order_digest, entries[0].order_digest);
-    assert!(status.materialized_state_digest.is_some());
+    assert!(
+        status.materialized_state_digest.is_none(),
+        "ordinary peer status must not perform a full materialized-state audit"
+    );
 
     let local_status_request = signed_status_request_with_payload(
         &public_config,

@@ -2537,6 +2537,8 @@ pub struct FederationPeerStatus {
     /// Next AlephBFT finalized-item index required by this peer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aleph_bft_next_item_index: Option<u64>,
+    /// Per-member next finalized unit indexes represented by this peer.
+    pub aleph_bft_next_unit_index_by_member: BTreeMap<MemberId, u64>,
     /// AlephBFT session represented by this peer status.
     pub aleph_bft_session: u64,
     /// Number of accepted operations in the local journal.
@@ -2558,6 +2560,28 @@ pub struct FederationPeerStatus {
 }
 
 impl FederationPeerStatus {
+    /// Return whether both members report the same authoritative application frontier.
+    ///
+    /// This deliberately ignores the AlephBFT finalized-item cursor and latest local
+    /// checkpoint audit. Empty/default consensus items may advance the former without
+    /// changing mint state, while honest members may have audited different unpromoted
+    /// checkpoint candidates.
+    #[must_use]
+    pub fn has_same_application_frontier(&self, other: &Self) -> bool {
+        self.federation_id == other.federation_id
+            && self.operation_count == other.operation_count
+            && self.latest_index == other.latest_index
+            && self.latest_order_digest == other.latest_order_digest
+            && self.application_digest == other.application_digest
+    }
+
+    /// Return whether both members report the same session and application frontier.
+    #[must_use]
+    pub fn has_same_application_state(&self, other: &Self) -> bool {
+        self.aleph_bft_session == other.aleph_bft_session
+            && self.has_same_application_frontier(other)
+    }
+
     /// Return whether both members report the same committed and audited state.
     #[must_use]
     pub fn has_same_committed_state(&self, other: &Self) -> bool {
@@ -2592,6 +2616,7 @@ impl FederationPeerStatus {
             federation_id,
             member_id,
             aleph_bft_next_item_index: Some(0),
+            aleph_bft_next_unit_index_by_member: BTreeMap::new(),
             aleph_bft_session: 0,
             operation_count,
             latest_index,
@@ -2617,6 +2642,7 @@ impl FederationPeerStatus {
             federation_id,
             member_id,
             aleph_bft_next_item_index: Some(0),
+            aleph_bft_next_unit_index_by_member: BTreeMap::new(),
             aleph_bft_session: 0,
             operation_count,
             latest_index,
@@ -2631,6 +2657,16 @@ impl FederationPeerStatus {
     #[must_use]
     pub fn with_aleph_bft_next_item_index(mut self, next_item_index: u64) -> Self {
         self.aleph_bft_next_item_index = Some(next_item_index);
+        self
+    }
+
+    /// Return this status with explicit per-member finalized-unit cursors.
+    #[must_use]
+    pub fn with_aleph_bft_next_unit_index_by_member(
+        mut self,
+        next_unit_index_by_member: BTreeMap<MemberId, u64>,
+    ) -> Self {
+        self.aleph_bft_next_unit_index_by_member = next_unit_index_by_member;
         self
     }
 
@@ -3552,12 +3588,20 @@ mod tests {
             None,
             FederationJournalDigest::genesis(),
         )
-        .with_aleph_bft_next_item_index(7);
+        .with_aleph_bft_next_item_index(7)
+        .with_aleph_bft_next_unit_index_by_member(BTreeMap::from([
+            (member_id(), 5),
+            (MemberId::new(2).expect("member id"), 8),
+        ]));
 
         let json = serde_json::to_string(&status).expect("status json");
         let decoded: FederationPeerStatus = serde_json::from_str(&json).expect("status");
 
         assert_eq!(decoded.aleph_bft_next_item_index, Some(7));
+        assert_eq!(
+            decoded.aleph_bft_next_unit_index_by_member,
+            BTreeMap::from([(member_id(), 5), (MemberId::new(2).expect("member id"), 8),])
+        );
     }
 
     #[test]

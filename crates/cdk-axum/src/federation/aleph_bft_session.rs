@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::AssertUnwindSafe;
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
@@ -32,8 +32,8 @@ use super::aleph_bft_network::{
 };
 use super::aleph_bft_runtime::{
     CdkAlephBftActivityHint, CdkAlephBftFinalizedUnit, CdkAlephBftKeychain, CdkAlephBftNetwork,
-    CdkAlephBftNetworkData, CdkAlephBftSessionIo, CdkAlephBftTokioSpawnHandle,
-    CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE,
+    CdkAlephBftNetworkData, CdkAlephBftReplayReadiness, CdkAlephBftSessionIo,
+    CdkAlephBftTokioSpawnHandle, CDK_ALEPH_BFT_NETWORK_ACTIVITY_GRACE,
 };
 use super::peer_client::FederationRestPeerClient;
 use super::sync_config::{federation_peer_sync_interval, FederationPeerSyncConfig};
@@ -68,6 +68,7 @@ pub(crate) struct FederationAlephBftLiveSessionOptions {
     time_to_reach_max_round: Duration,
     delay_config: Option<DelayConfig>,
     automatic_rotation_limit: Option<usize>,
+    replay_target_next_unit_index_by_member: BTreeMap<MemberId, u64>,
     #[cfg(test)]
     panic_session_task: bool,
     #[cfg(test)]
@@ -129,6 +130,14 @@ impl FederationAlephBftLiveSessionOptions {
         self
     }
 
+    pub(crate) fn with_replay_target_next_unit_index_by_member(
+        mut self,
+        replay_target_next_unit_index_by_member: BTreeMap<MemberId, u64>,
+    ) -> Self {
+        self.replay_target_next_unit_index_by_member = replay_target_next_unit_index_by_member;
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn automatic_rotation_limit(&self) -> Option<usize> {
         self.automatic_rotation_limit
@@ -186,6 +195,7 @@ impl FederationAlephBftLiveSessionOptions {
 
     pub(crate) fn after_automatic_rotation(&self) -> Self {
         let mut next = self.clone();
+        next.replay_target_next_unit_index_by_member.clear();
         #[cfg(test)]
         {
             next.fail_before_task_spawn = next.fail_automatic_rotation_start;
@@ -220,6 +230,7 @@ impl Default for FederationAlephBftLiveSessionOptions {
             time_to_reach_max_round: Duration::from_secs(0),
             delay_config: None,
             automatic_rotation_limit: None,
+            replay_target_next_unit_index_by_member: BTreeMap::new(),
             #[cfg(test)]
             panic_session_task: false,
             #[cfg(test)]
@@ -341,6 +352,7 @@ pub(crate) struct AlephBftSessionSupervisor {
     state: Mutex<AlephBftSessionSupervisorState>,
     exit: Mutex<Option<oneshot::Sender<()>>>,
     activity_hint: CdkAlephBftActivityHint,
+    replay_readiness: Arc<CdkAlephBftReplayReadiness>,
     spawn_handle: CdkAlephBftTokioSpawnHandle,
     activity_sender: mpsc::UnboundedSender<FederationOperationId>,
     tasks: Mutex<Option<AlephBftSessionTasks>>,
@@ -394,6 +406,14 @@ impl std::fmt::Debug for AlephBftSessionSupervisor {
 impl AlephBftSessionSupervisor {
     pub(crate) fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub(crate) fn replay_ready(&self) -> bool {
+        self.replay_readiness.is_ready()
+    }
+
+    pub(crate) async fn wait_until_replay_ready(&self) {
+        self.replay_readiness.wait_until_ready().await;
     }
 
     fn activate(&self) -> Result<(), cdk::Error> {
@@ -530,11 +550,17 @@ async fn await_aleph_bft_session_activation(mut activation: watch::Receiver<bool
 pub(crate) async fn start_federation_aleph_bft_live_session(
     state: &MintState,
     sync_config: FederationPeerSyncConfig,
+    replay_target_next_unit_index_by_member: BTreeMap<MemberId, u64>,
 ) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error> {
-    start_federation_aleph_bft_live_session_with_config(
+    start_federation_aleph_bft_live_session_with_options_and_transport(
         state,
         sync_config,
-        CdkAlephBftNetworkPumpConfig::default(),
+        FederationAlephBftLiveSessionOptions::from_sync_config(
+            CdkAlephBftNetworkPumpConfig::default(),
+            sync_config,
+        )
+        .with_replay_target_next_unit_index_by_member(replay_target_next_unit_index_by_member),
+        Async::default(),
     )
     .await
 }
@@ -676,10 +702,12 @@ where
         Arc::clone(&consensus),
         Arc::clone(&db),
         session_id,
+        options.replay_target_next_unit_index_by_member.clone(),
         activity_hint.clone(),
         keychain.clone(),
     )
     .await?;
+    let replay_readiness = session_io.replay_readiness();
     let pending_activity_operation_ids = pending_aleph_bft_operation_ids(&db, session_id).await?;
     let (local_io, finalized_units) = session_io.into_parts();
     let (network, mut network_handle) = CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair();
@@ -922,6 +950,7 @@ where
         state: Mutex::new(AlephBftSessionSupervisorState::Constructing),
         exit: Mutex::new(Some(exit_sender)),
         activity_hint,
+        replay_readiness,
         spawn_handle,
         activity_sender,
         tasks: Mutex::new(Some(AlephBftSessionTasks {
@@ -962,10 +991,33 @@ where
     *live_session = Some(Arc::clone(&handle));
     drop(network_inbound);
     drop(live_session);
+    spawn_federation_aleph_bft_replay_readiness_watcher(state.clone(), Arc::clone(&handle));
     let _ = published_sender.send(());
     activation_sender.send_replace(true);
 
     Ok(Some(handle))
+}
+
+fn spawn_federation_aleph_bft_replay_readiness_watcher(
+    state: MintState,
+    handle: Arc<AlephBftSessionSupervisor>,
+) {
+    tokio::spawn(async move {
+        handle.wait_until_replay_ready().await;
+        let live_session = state.federation.aleph_bft_live_session.read().await;
+        if live_session
+            .as_ref()
+            .is_none_or(|current| current.generation() != handle.generation())
+            || matches!(
+                state.federation_sync_status().await,
+                Some(crate::FederationSyncStatus::Halted { .. })
+            )
+        {
+            return;
+        }
+        state.mark_federation_healthy().await;
+        drop(live_session);
+    });
 }
 
 async fn pending_aleph_bft_operation_ids(
@@ -1437,6 +1489,26 @@ pub(crate) async fn halt_current_federation_aleph_bft_session(state: &MintState,
     .await;
 }
 
+pub(crate) async fn stop_current_federation_aleph_bft_session_for_catch_up(state: &MintState) {
+    let mut live_session = state.federation.aleph_bft_live_session.write().await;
+    let supervisor = live_session.take();
+    let mut network_inbound = state.federation.aleph_bft_network_inbound.write().await;
+    *network_inbound = None;
+    state
+        .federation
+        .aleph_bft_halt_epoch
+        .fetch_add(1, Ordering::SeqCst);
+    drop(network_inbound);
+    drop(live_session);
+    if let Some(supervisor) = supervisor {
+        tracing::info!(
+            session_id = supervisor.session_id,
+            "Stopping stale AlephBFT live session before checkpoint catch-up"
+        );
+        supervisor.shutdown().await;
+    }
+}
+
 #[cfg(test)]
 pub(crate) async fn halt_federation_aleph_bft_generation_for_test(
     state: &MintState,
@@ -1781,6 +1853,7 @@ mod tests {
             state: Mutex::new(AlephBftSessionSupervisorState::Running),
             exit: Mutex::new(Some(exit_sender)),
             activity_hint: CdkAlephBftActivityHint::default(),
+            replay_readiness: Arc::new(CdkAlephBftReplayReadiness::ready()),
             spawn_handle: CdkAlephBftTokioSpawnHandle::default(),
             activity_sender,
             tasks: Mutex::new(Some(AlephBftSessionTasks {
@@ -1904,11 +1977,18 @@ mod tests {
     fn aleph_bft_live_session_options_restore_unlimited_rotation_after_sync_warmup() {
         let options = FederationAlephBftLiveSessionOptions::default()
             .with_max_round(8)
-            .with_automatic_rotation_limit(2);
+            .with_automatic_rotation_limit(2)
+            .with_replay_target_next_unit_index_by_member(BTreeMap::from([(
+                MemberId::new(1).expect("valid member ID"),
+                7,
+            )]));
 
         let first_rotation = options.after_automatic_rotation();
         assert_eq!(first_rotation.max_round(), 8);
         assert_eq!(first_rotation.automatic_rotation_limit(), Some(1));
+        assert!(first_rotation
+            .replay_target_next_unit_index_by_member
+            .is_empty());
 
         let second_rotation = first_rotation.after_automatic_rotation();
         assert_eq!(second_rotation.max_round(), CDK_ALEPH_BFT_MAX_ROUND);

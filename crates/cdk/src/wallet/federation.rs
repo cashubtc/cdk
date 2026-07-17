@@ -1627,12 +1627,7 @@ impl FederatedMintConnector {
             Vec::<(serde_json::Value, MintQuoteResponse<String>, Vec<MemberId>)>::new();
 
         for (member_id, response) in member_responses {
-            let view = serde_json::to_value(response).map_err(|err| {
-                Error::InvalidMintResponse(format!(
-                    "member {} returned unserializable mint quote status response: {}",
-                    member_id, err
-                ))
-            })?;
+            let view = mint_quote_status_consensus_view(*member_id, response)?;
 
             match matching_views
                 .iter_mut()
@@ -1682,7 +1677,11 @@ impl FederatedMintConnector {
                     expected_count
                 )));
             }
-            let view = serde_json::to_value(response).map_err(|err| {
+            let view = response
+                .iter()
+                .map(|response| mint_quote_status_consensus_view(*member_id, response))
+                .collect::<Result<Vec<_>, _>>()?;
+            let view = serde_json::to_value(view).map_err(|err| {
                 Error::InvalidMintResponse(format!(
                     "member {} returned unserializable batch mint quote status response: {}",
                     member_id, err
@@ -1907,6 +1906,25 @@ impl FederatedMintConnector {
                 ))
             })
     }
+}
+
+fn mint_quote_status_consensus_view(
+    member_id: MemberId,
+    response: &MintQuoteResponse<String>,
+) -> Result<serde_json::Value, Error> {
+    let mut response = response.clone();
+    match &mut response {
+        MintQuoteResponse::Bolt11(response) => response.updated_at = 0,
+        MintQuoteResponse::Bolt12(response) => response.updated_at = 0,
+        MintQuoteResponse::Onchain(response) => response.updated_at = 0,
+        MintQuoteResponse::Custom { response, .. } => response.updated_at = 0,
+    }
+    serde_json::to_value(response).map_err(|err| {
+        Error::InvalidMintResponse(format!(
+            "member {} returned unserializable mint quote status response: {}",
+            member_id, err
+        ))
+    })
 }
 
 fn validate_assigned_mint_quote_response(

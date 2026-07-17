@@ -2305,7 +2305,7 @@ mod tests {
     }
 
     #[cfg(feature = "federation")]
-    async fn create_federation_observed_paid_bolt11_quote(state: &MintState) -> QuoteId {
+    async fn create_federation_paid_bolt11_quote(state: &MintState) -> QuoteId {
         let quote_id = QuoteId::new();
         let request = cdk::mint::MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
             amount: Amount::from(2u64),
@@ -2325,19 +2325,32 @@ mod tests {
             mint_quote_response_to_string(&response),
         );
         finalize_local_test_operation(state, envelope).await;
-        let mut observation = None;
         for _ in 0..100 {
-            observation = state
+            if state
                 .mint
                 .probe_federation_mint_quote_payment(&quote_id)
                 .await
-                .expect("mint payment probe");
-            if observation.is_some() {
-                break;
+                .expect("mint payment probe")
+                .is_some()
+            {
+                return quote_id;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let observation = observation.expect("paid mint payment observation");
+
+        panic!("federation bolt11 quote was not paid by the fake wallet");
+    }
+
+    #[cfg(feature = "federation")]
+    async fn create_federation_observed_paid_bolt11_quote(state: &MintState) -> QuoteId {
+        let quote_id = create_federation_paid_bolt11_quote(state).await;
+        let observation = state
+            .mint
+            .probe_federation_mint_quote_payment(&quote_id)
+            .await
+            .expect("mint payment probe")
+            .expect("paid mint payment observation");
+        let config = state.mint.federation_config().expect("federation config");
         let envelope = config.mint_quote_payment_observation_with_metadata(
             observation.quote,
             observation.method,
@@ -3279,6 +3292,15 @@ mod tests {
 
     #[cfg(feature = "federation")]
     async fn persist_and_apply_entry(mint: &Mint, entry: &FederationJournalEntry) {
+        if mint
+            .localstore()
+            .get_federation_journal_entry_by_operation_id(entry.operation_id)
+            .await
+            .expect("load existing journal entry")
+            .is_some()
+        {
+            return;
+        }
         let runtime_config = mint.federation_config().expect("federation config");
         let retained_items = mint
             .localstore()
@@ -3428,66 +3450,6 @@ mod tests {
         }
 
         quote_id
-    }
-
-    #[cfg(feature = "federation")]
-    async fn replicate_terminal_melt_observation(mints: &[Arc<Mint>], quote_id: &QuoteId) {
-        let mut observation = None;
-        for mint in mints {
-            let records = mint
-                .localstore()
-                .get_federation_payment_observations(
-                    cdk::federation::FederationPaymentObservationContext::MeltQuote,
-                    &quote_id.to_string(),
-                )
-                .await
-                .expect("melt payment observations");
-            if let Some(record) = records
-                .into_iter()
-                .find(|record| record.observation.is_terminal_state())
-            {
-                observation = Some(record.observation);
-                break;
-            }
-        }
-        let Some(cdk::federation::FederationPaymentObservation::MeltQuote(observation)) =
-            observation
-        else {
-            panic!("operation author did not record a terminal melt observation");
-        };
-        let observer = mints
-            .iter()
-            .find(|mint| {
-                mint.federation_config()
-                    .is_some_and(|config| config.member_id() == observation.observer)
-            })
-            .expect("terminal melt observer belongs to the federation");
-        let envelope = observer
-            .federation_config()
-            .expect("observer federation config")
-            .operation_envelope(FederationOperation::MeltQuotePayment(observation.clone()));
-        let entry = appended_entry(&mut InMemoryFederationJournal::new(), envelope);
-
-        for mint in mints {
-            let records = mint
-                .localstore()
-                .get_federation_payment_observations(
-                    cdk::federation::FederationPaymentObservationContext::MeltQuote,
-                    &quote_id.to_string(),
-                )
-                .await
-                .expect("member melt payment observations");
-            if records.iter().any(|record| {
-                matches!(
-                    &record.observation,
-                    cdk::federation::FederationPaymentObservation::MeltQuote(existing)
-                        if existing == &observation
-                )
-            }) {
-                continue;
-            }
-            persist_and_apply_entry(mint, &entry).await;
-        }
     }
 
     #[cfg(feature = "federation")]
@@ -4239,7 +4201,7 @@ mod tests {
     #[tokio::test]
     async fn post_batch_check_mint_quote_records_federation_payment_observation() {
         let state = create_federated_test_state().await;
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_paid_bolt11_quote(&state).await;
 
         let result = post_batch_check_mint_quote(
             AuthHeader::None,
@@ -4254,7 +4216,10 @@ mod tests {
         assert!(result.is_ok(), "mint quote check should succeed");
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+            vec![
+                cdk::federation::FederationOperationKind::MintQuote,
+                cdk::federation::FederationOperationKind::MintQuotePayment,
+            ]
         );
     }
 
@@ -4262,7 +4227,7 @@ mod tests {
     #[tokio::test]
     async fn post_batch_check_mint_quote_skips_duplicate_federation_payment_observation() {
         let state = create_federated_test_state().await;
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_paid_bolt11_quote(&state).await;
 
         let result = post_batch_check_mint_quote(
             AuthHeader::None,
@@ -4292,7 +4257,10 @@ mod tests {
         );
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+            vec![
+                cdk::federation::FederationOperationKind::MintQuote,
+                cdk::federation::FederationOperationKind::MintQuotePayment,
+            ]
         );
     }
 
@@ -4347,21 +4315,7 @@ mod tests {
     #[tokio::test]
     async fn mint_payment_observer_round_submits_paid_quote_observation() {
         let state = create_federated_test_state().await;
-        let quote: MintQuoteBolt11Response<QuoteId> = state
-            .mint
-            .get_mint_quote(
-                MintQuoteBolt11Request {
-                    amount: Amount::from(2u64),
-                    unit: CurrencyUnit::Sat,
-                    description: None,
-                    pubkey: None,
-                }
-                .into(),
-            )
-            .await
-            .expect("mint quote")
-            .try_into()
-            .expect("bolt11 quote");
+        let quote_id = create_federation_paid_bolt11_quote(&state).await;
 
         let mut submitted = 0;
         for _ in 0..10 {
@@ -4380,11 +4334,14 @@ mod tests {
         assert_eq!(submitted, 1);
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+            vec![
+                cdk::federation::FederationOperationKind::MintQuote,
+                cdk::federation::FederationOperationKind::MintQuotePayment,
+            ]
         );
         let checked = state
             .mint
-            .check_mint_quotes(std::slice::from_ref(&quote.quote))
+            .check_mint_quotes(std::slice::from_ref(&quote_id))
             .await
             .expect("stored quote status");
         assert_eq!(checked[0].state(), Some(cdk::nuts::MintQuoteState::Paid));
@@ -4398,7 +4355,10 @@ mod tests {
         assert_eq!(duplicate, 0);
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+            vec![
+                cdk::federation::FederationOperationKind::MintQuote,
+                cdk::federation::FederationOperationKind::MintQuotePayment,
+            ]
         );
     }
 
@@ -4407,21 +4367,7 @@ mod tests {
     async fn payment_notification_wakes_observer_without_direct_quote_mutation() {
         let state = create_federated_test_state().await;
         let mut payment_events = state.mint.subscribe_federation_payment_events();
-        let quote: MintQuoteBolt11Response<QuoteId> = state
-            .mint
-            .get_mint_quote(
-                MintQuoteBolt11Request {
-                    amount: Amount::from(2u64),
-                    unit: CurrencyUnit::Sat,
-                    description: None,
-                    pubkey: None,
-                }
-                .into(),
-            )
-            .await
-            .expect("mint quote")
-            .try_into()
-            .expect("bolt11 quote");
+        let quote_id = create_federation_paid_bolt11_quote(&state).await;
 
         let event = tokio::time::timeout(Duration::from_secs(1), payment_events.recv())
             .await
@@ -4430,7 +4376,7 @@ mod tests {
         let stored_before_consensus = state
             .mint
             .localstore()
-            .get_mint_quote(&quote.quote)
+            .get_mint_quote(&quote_id)
             .await
             .expect("quote lookup")
             .expect("quote");
@@ -4446,12 +4392,15 @@ mod tests {
         assert_eq!(submitted, 1);
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+            vec![
+                cdk::federation::FederationOperationKind::MintQuote,
+                cdk::federation::FederationOperationKind::MintQuotePayment,
+            ]
         );
         let stored_after_consensus = state
             .mint
             .localstore()
-            .get_mint_quote(&quote.quote)
+            .get_mint_quote(&quote_id)
             .await
             .expect("quote lookup")
             .expect("quote");
@@ -4529,7 +4478,7 @@ mod tests {
     #[tokio::test]
     async fn post_batch_check_mint_quote_records_observation_while_sync_not_ready() {
         let state = create_federated_test_state().await;
-        let quote_id = create_paid_bolt11_quote(&state).await;
+        let quote_id = create_federation_paid_bolt11_quote(&state).await;
         state.mark_federation_awaiting_quorum(1).await;
 
         let result = post_batch_check_mint_quote(
@@ -4548,7 +4497,10 @@ mod tests {
         );
         assert_eq!(
             federation_operation_kinds(&state).await,
-            vec![cdk::federation::FederationOperationKind::MintQuotePayment]
+            vec![
+                cdk::federation::FederationOperationKind::MintQuote,
+                cdk::federation::FederationOperationKind::MintQuotePayment,
+            ]
         );
     }
 
@@ -6135,7 +6087,7 @@ mod tests {
                 cdk::federation::FederationOperationKind::MeltQuotePayment,
             ]
         );
-        assert_eq!(state.federation_response_cache_entry_count(), 6);
+        assert_eq!(state.federation_response_cache_entry_count(), 7);
         assert_eq!(
             payment_calls.load(Ordering::SeqCst),
             1,
@@ -7723,7 +7675,7 @@ mod tests {
         .await
         .expect_err("melt should fail while catching up");
         assert_catching_up_error(&melt_error);
-        assert_no_federation_public_submit_work(&state, 2).await;
+        assert_no_federation_public_submit_work(&state, 3).await;
 
         let quote = state
             .mint
@@ -7776,6 +7728,7 @@ mod tests {
         assert_eq!(
             federation_operation_kinds(&state).await,
             vec![
+                cdk::federation::FederationOperationKind::MintQuote,
                 cdk::federation::FederationOperationKind::MintQuotePayment,
                 cdk::federation::FederationOperationKind::MeltQuote,
                 cdk::federation::FederationOperationKind::Mint,
@@ -8395,6 +8348,7 @@ mod tests {
             assert_eq!(
                 federation_operation_kinds(state).await,
                 vec![
+                    cdk::federation::FederationOperationKind::MintQuote,
                     cdk::federation::FederationOperationKind::MintQuotePayment,
                     cdk::federation::FederationOperationKind::MintQuotePayment,
                     cdk::federation::FederationOperationKind::MintQuotePayment,
@@ -8679,7 +8633,7 @@ mod tests {
         let melt_input = proof_for_keyset(keyset, 4, "melt-input");
         let melt_y = melt_input.y().expect("melt proof y");
         let melt_change_outputs = vec![blinded_change_output(keyset, "axum-http-melt-change")];
-        let pending_melt = connector
+        let melt_result = connector
             .post_melt(
                 &PaymentMethod::Known(KnownMethod::Bolt11),
                 MeltRequest::new(
@@ -8690,9 +8644,13 @@ mod tests {
             )
             .await
             .expect("threshold HTTP melt");
-        assert_eq!(pending_melt.state(), MeltQuoteState::Pending);
+        assert_eq!(melt_result.state(), MeltQuoteState::Paid);
+        assert_aggregate_signatures_verify(
+            &bundle.public_config,
+            &melt_change_outputs,
+            melt_result.change().expect("immediate melt change"),
+        );
 
-        replicate_terminal_melt_observation(&mints, &melt_quote_id).await;
         let melt_response = connector
             .get_melt_quote_status(
                 PaymentMethod::Known(KnownMethod::Bolt11),
@@ -8881,7 +8839,7 @@ mod tests {
             &new_keyset,
             "axum-http-rotated-melt-change",
         )];
-        let pending_melt = connector
+        let melt_result = connector
             .post_melt(
                 &PaymentMethod::Known(KnownMethod::Bolt11),
                 MeltRequest::new(
@@ -8892,9 +8850,13 @@ mod tests {
             )
             .await
             .expect("rotated threshold HTTP melt");
-        assert_eq!(pending_melt.state(), MeltQuoteState::Pending);
+        assert_eq!(melt_result.state(), MeltQuoteState::Paid);
+        assert_aggregate_signatures_verify(
+            &rotated_public_config,
+            &melt_change_outputs,
+            melt_result.change().expect("immediate rotated melt change"),
+        );
 
-        replicate_terminal_melt_observation(&mints, &melt_quote_id).await;
         let melt_response = connector
             .get_melt_quote_status(
                 PaymentMethod::Known(KnownMethod::Bolt11),

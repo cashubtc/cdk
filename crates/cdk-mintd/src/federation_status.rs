@@ -606,10 +606,10 @@ fn ensure_statuses_converged(statuses: &[FederationLocalStatusResponse]) -> Resu
     for status in statuses.iter().skip(1) {
         if !status
             .peer_status
-            .has_same_committed_state(&first.peer_status)
+            .has_same_application_state(&first.peer_status)
         {
             bail!(
-                "federation status is not converged: member {} differs from member {} in operation height, AlephBFT session, order digest, application digest, materialized state digest, or audited checkpoint state",
+                "federation status is not converged: member {} differs from member {} in operation height, AlephBFT session, order digest, or application digest",
                 status.peer_status.member_id,
                 first.peer_status.member_id,
             );
@@ -677,13 +677,13 @@ fn ensure_statuses_no_digest_alerts(statuses: &[FederationLocalStatusResponse]) 
                     status.peer_status.operation_count
                 );
             }
-            if status.peer_status.materialized_state_digest
-                != other.peer_status.materialized_state_digest
-                || status.peer_status.latest_audited_checkpoint_id
-                    != other.peer_status.latest_audited_checkpoint_id
+            if status.peer_status.latest_audited_checkpoint_id
+                == other.peer_status.latest_audited_checkpoint_id
+                && status.peer_status.materialized_state_digest
+                    != other.peer_status.materialized_state_digest
             {
                 bail!(
-                    "federation digest alert: members {} and {} disagree on materialized state digest at operation count {}",
+                    "federation digest alert: members {} and {} disagree on the same checkpoint audit at operation count {}",
                     status.peer_status.member_id,
                     other.peer_status.member_id,
                     status.peer_status.operation_count

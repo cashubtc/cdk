@@ -68,7 +68,7 @@ use self::aleph_bft_session::{
 };
 pub(crate) use self::aleph_bft_session::{
     halt_current_federation_aleph_bft_session, start_federation_aleph_bft_live_session,
-    AlephBftSessionSupervisor,
+    stop_current_federation_aleph_bft_session_for_catch_up, AlephBftSessionSupervisor,
 };
 use self::backup_routes::post_aleph_bft_backup;
 pub(crate) use self::broadcast::FederationTransactionBroadcaster;
@@ -616,16 +616,20 @@ async fn local_peer_order_status_with_latest_operation_status(
         ),
     };
     let next_item_index = local_finalized_item_cursor(state).await?;
-    let session = state
-        .federation_aleph_bft_status()
-        .await
+    let recovery_cursor = state
+        .federation
+        .consensus
+        .as_ref()
         .ok_or(FederationError::RuntimeUnavailable {
-            component: "AlephBFT consensus status",
+            component: "AlephBFT consensus",
         })?
-        .session;
+        .lock()
+        .await
+        .aleph_bft_recovery_cursor()?;
     status = status
         .with_aleph_bft_next_item_index(next_item_index)
-        .with_aleph_bft_session(session);
+        .with_aleph_bft_next_unit_index_by_member(recovery_cursor.next_unit_index_by_member)
+        .with_aleph_bft_session(recovery_cursor.session);
     Ok((status, latest_operation_status))
 }
 

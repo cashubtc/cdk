@@ -171,7 +171,7 @@ impl FederationSuffixVerifier {
     pub fn from_durable_runtime(
         runtime: FederationConsensusRuntime,
         active_session: u64,
-        base_journal_next_index: u64,
+        base_journal_frontier: FederationJournalFrontier,
         frontier: FederationCommittedFrontier,
     ) -> Result<Self> {
         frontier.validate_shape()?;
@@ -182,11 +182,17 @@ impl FederationSuffixVerifier {
         }
         let retained_journal_entries = u64::try_from(runtime.journal().entries().len())
             .map_err(|_| suffix_mismatch("retained journal length does not fit in u64"))?;
-        let expected_journal_next_index = base_journal_next_index
-            .checked_add(retained_journal_entries)
-            .ok_or_else(|| suffix_mismatch("retained journal cursor overflow"))?;
+        let runtime_journal_base = runtime
+            .journal()
+            .next_index()
+            .checked_sub(retained_journal_entries)
+            .ok_or_else(|| suffix_mismatch("retained journal cursor underflow"))?;
         if runtime.journal().next_index() != frontier.journal.next_index
-            || expected_journal_next_index != frontier.journal.next_index
+            || runtime_journal_base > base_journal_frontier.next_index
+            || runtime
+                .journal()
+                .order_digest_before(base_journal_frontier.next_index)
+                != Some(base_journal_frontier.order_digest)
             || runtime.journal().latest_order_digest() != frontier.journal.order_digest
         {
             return Err(suffix_mismatch(
@@ -205,7 +211,7 @@ impl FederationSuffixVerifier {
         Ok(Self {
             runtime,
             active_session,
-            base_journal_next_index,
+            base_journal_next_index: base_journal_frontier.next_index,
             journal_frontier: frontier.journal,
             finalized_frontier: frontier.finalized,
             application_frontier: frontier.application,
@@ -829,6 +835,48 @@ mod tests {
             .finish_for_durable_frontier(&fixture.target)
             .expect("paged suffix");
         assert_eq!(whole.frontier(), paged.frontier());
+    }
+
+    #[test]
+    fn durable_resume_accepts_runtime_retaining_pre_checkpoint_history() {
+        let fixture = fixture();
+        let verified = verify_full(&fixture, &[]).expect("verified durable history");
+        let runtime = FederationConsensusRuntime::recover_verified_suffix(verified);
+        let committed_frontier = fixture
+            .target
+            .committed_frontier(
+                runtime
+                    .aleph_bft_recovery_cursor()
+                    .expect("runtime recovery cursor"),
+            )
+            .expect("committed frontier");
+        let checkpoint_journal_frontier = FederationJournalFrontier {
+            next_index: 1,
+            order_digest: fixture.journal[0].order_digest,
+        };
+
+        let resumed = FederationSuffixVerifier::from_durable_runtime(
+            runtime,
+            0,
+            checkpoint_journal_frontier,
+            committed_frontier,
+        )
+        .expect("resume from a checkpoint inside retained live history")
+        .finish_for_durable_frontier(&fixture.target)
+        .expect("finish retained live history");
+
+        assert_eq!(
+            resumed
+                .journal_entries()
+                .iter()
+                .map(|entry| (entry.index, entry.operation_id, entry.order_digest))
+                .collect::<Vec<_>>(),
+            fixture
+                .journal
+                .iter()
+                .map(|entry| (entry.index, entry.operation_id, entry.order_digest))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

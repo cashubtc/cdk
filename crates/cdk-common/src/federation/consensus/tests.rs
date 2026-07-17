@@ -614,7 +614,7 @@ fn recovery_barrier_is_bound_to_its_aleph_bft_federation() {
 }
 
 #[test]
-fn consensus_runtime_allows_only_one_pending_recovery_barrier() {
+fn consensus_runtime_allows_current_barrier_to_supersede_stale_pending_work() {
     let federation_id = federation_id(34);
     let mut runtime = FederationConsensusRuntime::new(federation_id, member_id(), 0);
 
@@ -622,24 +622,41 @@ fn consensus_runtime_allows_only_one_pending_recovery_barrier() {
         .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 0))
         .expect("submit first barrier"));
     assert!(!runtime
+        .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 0))
+        .expect("deduplicate covered barrier"));
+    assert!(!runtime
         .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 1))
-        .expect("deduplicate queued barrier"));
+        .expect("reject future replacement barrier"));
     assert!(runtime.has_pending_aleph_bft_recovery_barrier());
+
+    let advancing_unit = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![module_fact_item("advance-before-stale-barrier")],
+    )
+    .expect("advancing unit");
+    runtime
+        .finalize_aleph_bft_unit(advancing_unit)
+        .expect("advance finalized cursor");
+
+    assert!(runtime
+        .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 1))
+        .expect("submit current replacement barrier"));
+    assert!(!runtime
+        .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 1))
+        .expect("deduplicate replacement barrier"));
 
     let unit = runtime
         .next_aleph_bft_unit_payload()
         .expect("next unit")
         .expect("barrier unit");
-    assert!(!runtime
-        .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 1))
-        .expect("deduplicate barrier awaiting finality"));
+    assert_eq!(unit.items.len(), 2);
     runtime
         .finalize_aleph_bft_unit(unit)
         .expect("finalize barrier unit");
     assert!(!runtime.has_pending_aleph_bft_recovery_barrier());
-    assert!(runtime
-        .submit_aleph_bft_recovery_barrier(recovery_barrier(federation_id, 1))
-        .expect("submit after finality"));
 }
 
 #[test]

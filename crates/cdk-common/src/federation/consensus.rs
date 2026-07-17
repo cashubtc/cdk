@@ -595,6 +595,17 @@ impl FederationRecoveryBarrier {
     }
 }
 
+fn recovery_barrier_covers(
+    pending: &FederationRecoveryBarrier,
+    requested: &FederationRecoveryBarrier,
+) -> bool {
+    pending.federation_id == requested.federation_id
+        && pending.scheduled_checkpoint_sequence == requested.scheduled_checkpoint_sequence
+        && pending.scheduled_anchor_id == requested.scheduled_anchor_id
+        && pending.requested_after_finalized_item_index
+            >= requested.requested_after_finalized_item_index
+}
+
 /// One item that can enter the federation consensus pipeline.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -985,6 +996,17 @@ impl FederationConsensusItemQueue {
             .any(|item| matches!(item, FederationConsensusItem::RecoveryBarrier(_)))
     }
 
+    fn has_recovery_barrier_covering(&self, requested: &FederationRecoveryBarrier) -> bool {
+        self.pending.iter().any(|item| match item {
+            FederationConsensusItem::RecoveryBarrier(pending) => {
+                recovery_barrier_covers(pending, requested)
+            }
+            FederationConsensusItem::Operation(_)
+            | FederationConsensusItem::ModuleFact(_)
+            | FederationConsensusItem::Default(_) => false,
+        })
+    }
+
     /// Return true when the queue has no pending items.
     #[must_use]
     #[cfg(test)]
@@ -1213,6 +1235,10 @@ impl FederationAlephBftUnitDataProvider {
     #[must_use]
     pub fn has_recovery_barrier(&self) -> bool {
         self.queue.has_recovery_barrier()
+    }
+
+    fn has_recovery_barrier_covering(&self, requested: &FederationRecoveryBarrier) -> bool {
+        self.queue.has_recovery_barrier_covering(requested)
     }
 
     /// Return true when the provider has no queued consensus items.
@@ -2351,6 +2377,7 @@ impl FederationConsensusRuntime {
     ) -> FederationPeerStatus {
         FederationPeerStatus::from_journal(federation_id, member_id, &self.journal)
             .with_aleph_bft_next_item_index(self.next_item_index())
+            .with_aleph_bft_next_unit_index_by_member(self.next_unit_index_by_member().clone())
             .with_aleph_bft_session(self.session())
     }
 
@@ -2445,7 +2472,7 @@ impl FederationConsensusRuntime {
         self.data_provider.commit_operation(prepared.item)
     }
 
-    /// Queue one recovery barrier when none is already queued or awaiting finality.
+    /// Queue one recovery barrier unless pending work already covers its frontier.
     pub fn submit_recovery_barrier(&mut self, barrier: FederationRecoveryBarrier) -> Result<bool> {
         barrier.ensure_supported_version()?;
         if barrier.federation_id != self.data_provider.federation_id {
@@ -2453,7 +2480,21 @@ impl FederationConsensusRuntime {
                 reason: "recovery barrier federation does not match consensus runtime".to_string(),
             });
         }
-        if self.has_pending_recovery_barrier() {
+        let pending_covers_request = self.data_provider.has_recovery_barrier_covering(&barrier)
+            || self.pending_finalization_units.values().any(|items| {
+                items.iter().any(|item| match item {
+                    FederationConsensusItem::RecoveryBarrier(pending) => {
+                        recovery_barrier_covers(pending, &barrier)
+                    }
+                    FederationConsensusItem::Operation(_)
+                    | FederationConsensusItem::ModuleFact(_)
+                    | FederationConsensusItem::Default(_) => false,
+                })
+            });
+        if pending_covers_request
+            || (self.has_pending_recovery_barrier()
+                && barrier.requested_after_finalized_item_index != self.next_item_index())
+        {
             return Ok(false);
         }
 

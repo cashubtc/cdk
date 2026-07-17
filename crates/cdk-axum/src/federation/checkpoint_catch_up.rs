@@ -15,7 +15,8 @@ use cdk::federation::FederationCatchUpOperation;
 use cdk::federation::{
     FederationCheckpointFrontier, FederationCheckpointQuorum, FederationConsensusRecoveryBase,
     FederationConsensusRuntime, FederationError, FederationJournalCatchUpResponse,
-    FederationJournalEntry, FederationSuffixVerifier, VerifiedFederationCheckpointQuorum,
+    FederationJournalEntry, FederationJournalFrontier, FederationSuffixVerifier,
+    VerifiedFederationCheckpointQuorum,
 };
 
 use super::node_runtime::{runtime_unavailable, FederationNodeRuntime};
@@ -222,8 +223,10 @@ impl FederationNodeRuntime {
             .as_ref()
             .ok_or_else(|| runtime_unavailable("consensus"))?;
         let mut consensus = consensus.lock().await;
-        let base_journal_next_index =
-            base_checkpoint.map_or(0, |checkpoint| checkpoint.checkpoint().journal_next_index);
+        let base_journal_frontier = base_checkpoint
+            .map_or_else(FederationJournalFrontier::genesis, |checkpoint| {
+                checkpoint.checkpoint().committed_frontier().journal
+            });
         let status = consensus.aleph_bft_status()?;
         if response.from_index != consensus.journal().next_index()
             || response.aleph_bft_from_item_index != status.next_item_index
@@ -238,7 +241,7 @@ impl FederationNodeRuntime {
         let historical_entries = crate::historical_entries_referenced_by_finalized_items(
             self.active_mint()?,
             &response.aleph_bft_finalized_items,
-            base_journal_next_index,
+            base_journal_frontier.next_index,
         )
         .await?;
         let target_session = target_checkpoint.checkpoint().aleph_bft_session;
@@ -248,7 +251,7 @@ impl FederationNodeRuntime {
         let mut verifier = FederationSuffixVerifier::from_durable_runtime(
             consensus.clone(),
             target_session,
-            base_journal_next_index,
+            base_journal_frontier,
             committed_frontier,
         )?;
         verifier.register_historical_entries(historical_entries)?;
