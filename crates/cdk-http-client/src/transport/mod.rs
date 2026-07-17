@@ -12,10 +12,14 @@ use url::Url;
 use crate::{HttpClient, HttpClientBuilder};
 use crate::{HttpError, RawResponse};
 
-/// Expected HTTP transport
+/// Expected HTTP transport.
+///
+/// Callers that construct a transport implicitly may add a [`Default`] bound,
+/// while configured transports can be supplied directly without implementing
+/// a meaningless default configuration.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait Transport: Default + Send + Sync + Debug + Clone {
+pub trait Transport: Send + Sync + Debug + Clone {
     /// Connect to a WebSocket endpoint using this transport.
     async fn ws_connect(
         &self,
