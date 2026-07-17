@@ -269,7 +269,10 @@ pub(crate) fn extract_signatures_from_witness(
 /// Per NUT-11, there are two spending pathways after locktime:
 /// 1. Primary path (data + pubkeys): ALWAYS available
 /// 2. Refund path (refund keys): available AFTER locktime
-pub(crate) fn verify_sig_all_p2pk(first_input: &Proof, msgs_to_sign: &[Vec<u8>]) -> Result<(), Error> {
+pub(crate) fn verify_sig_all_p2pk(
+    first_input: &Proof,
+    msgs_to_sign: &[Vec<u8>],
+) -> Result<(), Error> {
     // Get the first input, as it's the one with the signatures
     let first_secret =
         Nut10Secret::try_from(&first_input.secret).map_err(|_| Error::IncorrectSecretKind)?;

@@ -351,8 +351,11 @@ pub(crate) fn verify_sig_all_htlc(
         }
 
         let signatures = extract_signatures_from_witness(first_witness)?;
-        let valid_sig_count =
-            super::nut11::valid_signatures_any_msg(msgs_to_sign, &requirements.pubkeys, &signatures);
+        let valid_sig_count = super::nut11::valid_signatures_any_msg(
+            msgs_to_sign,
+            &requirements.pubkeys,
+            &signatures,
+        );
 
         if valid_sig_count >= requirements.required_sigs {
             Ok(())
