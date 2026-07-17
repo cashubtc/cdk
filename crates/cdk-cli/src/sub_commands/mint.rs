@@ -44,6 +44,9 @@ pub struct MintSubCommand {
     /// (0 = wait indefinitely; use this for onchain or slow payments)
     #[arg(long, default_value = "30")]
     wait_duration: u64,
+    /// Prefer proofs whose denominations add up to this amount
+    #[arg(long)]
+    split_target: Option<u64>,
 }
 
 pub async fn mint(
@@ -58,6 +61,11 @@ pub async fn mint(
 
     let payment_method = PaymentMethod::from_str(&sub_command_args.method)?;
     let requested_amount = sub_command_args.amount.map(Amount::from);
+    let split_target = match sub_command_args.split_target {
+        Some(0) => bail!("Split target must be greater than zero"),
+        Some(amount) => SplitTarget::Value(Amount::from(amount)),
+        None => SplitTarget::default(),
+    };
 
     let quote = match &sub_command_args.quote_id {
         None => match payment_method {
@@ -178,7 +186,7 @@ pub async fn mint(
 
     let mut amount_minted = Amount::ZERO;
 
-    let mut proof_streams = wallet.proof_stream(quote, SplitTarget::default(), None);
+    let mut proof_streams = wallet.proof_stream(quote, split_target, None);
 
     // `wait_duration` is an *idle* timeout: it bounds how long we wait without
     // any new proofs being issued, and resets each time a batch arrives. A

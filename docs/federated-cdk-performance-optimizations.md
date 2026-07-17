@@ -1,6 +1,6 @@
 # Federated CDK Performance Optimizations
 
-Status: Milestone 4 rejected; Milestone 5 next
+Status: Milestone 5 in progress
 First recorded: 2026-07-17
 
 ## Purpose
@@ -458,8 +458,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 1 | Remove repeated full federation-config validation from confirmed checkpoint hot paths | Complete | `887e5a49ea1b31bf72d0290eab25799b10f6567c` |
 | 2 | Verify each unchanged checkpoint signature/quorum only at required trust boundaries | Rejected | `81014e7ed963bf0c7cfe968b026c64fa0ab04332` |
 | 3 | Make scheduled-checkpoint eligibility and suffix accounting linear | Complete | `9ea5d80fbd862b35a44ecb77f53d0202af5de729` |
-| 4 | Remove duplicate same-request swap/melt proof verification | Rejected | This milestone commit; hash recorded at Milestone 5 start |
-| 5 | Batch federated input-proof verification where volume proves value | Not started | - |
+| 4 | Remove duplicate same-request swap/melt proof verification | Rejected | `0986b2a0a0aa96f138cf0f4c0a565d44178b1c60` |
+| 5 | Batch federated input-proof verification where volume proves value | In progress | - |
 | 6 | Batch or remove redundant member signature-share self-verification where proven safe | Not started | - |
 | 7 | Re-profile the remaining consensus and transaction lifecycle | Not started | - |
 | 8 | Tune only measured AlephBFT batching, scheduling, or federation transport limits | Not started | - |
@@ -1696,6 +1696,15 @@ material value.
 - Milestone 4 leaves scalar verification as a measured material cost at realistic
   input counts.
 
+Milestone 5 starts from the Milestone 4 evidence commit
+`0986b2a0a0aa96f138cf0f4c0a565d44178b1c60`. The retained four-proof baseline
+measured scalar aggregate-BLS proof verification at 7.871 seconds across
+builder and apply in the 100-operation window, or 21.5% of aggregate member CPU,
+after excluding the rejected duplicate-admission opportunity. The first task is
+therefore a release microbenchmark of the existing scalar verifier against the
+repository's existing deterministic BLS batch primitive; no production path is
+changed until the 1/4/14/64 proof crossover is measured.
+
 ### Todos
 
 - [ ] Add scalar-versus-batch microbenchmarks for 1, 4, 14, and 64 proofs using
@@ -2022,4 +2031,4 @@ Add future measurements here rather than rewriting earlier results.
 | 2026-07-17 | `887e5a49ea1b31bf72d0290eab25799b10f6567c` | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix | CPU 3.77s / 3.39s / 9.54s; success 10/10 / 20/20 / 100/100; 0 full config, keyset, interpolation, or setup-lineage validations in every window | Kept: validated-config checkpoint paths remove the confirmed sink; sequential CPU -92.8% versus baseline median and realistic `100:20` reaches 7.736 confirmed TPS with exact convergence |
 | 2026-07-17 | This Milestone 2 commit; hash recorded at Milestone 3 start | Same Milestone 1 release matrix | Post-fix verification materiality gate | 298 / 248 / 250 wrappers and 1,190 / 921 / 1,050 signatures consumed only 0.108802s / 0.067253s / 0.079927s aggregate | Rejected before implementation: even eliminating all measured signature/quorum verification cannot meet the 15% CPU gate; no production change or extra run |
 | 2026-07-17 | `9ea5d80fbd862b35a44ecb77f53d0202af5de729` | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix plus deterministic 20/200/2,000/10,000-item test | Success 10/10 / 20/20 / 100/100; CPU 3.07s / 3.14s / 9.44s; ordinary scheduled eligibility loaded 0 suffix rows and reserialized 0 historical bytes in every case | Kept: prefix accounting removes the confirmed quadratic work; sequential CPU -18.6%, wall -15.4%, direct counters reach zero, and 10,000-item range queries remain O(1) |
-| 2026-07-17 | This Milestone 4 commit; hash recorded at Milestone 5 start | Local release, 5 members, SQLite, fakewallet, `20/20`; 4-proof and matched 1-proof | One retained `10:1`, `20:5`, `100:20` multi-proof matrix and one matched fresh `10:1` one-proof sample per build | Multi-proof CPU -32.8% / -29.1% / -20.5% with admission proofs reduced exactly to zero; matched one-proof wall +8.7%, TPS -8.0%, p50 +17.4% | Rejected and reverted: the compute win is real, but the mandatory one-proof latency/throughput budget failed and no repeat was authorized |
+| 2026-07-17 | `0986b2a0a0aa96f138cf0f4c0a565d44178b1c60` | Local release, 5 members, SQLite, fakewallet, `20/20`; 4-proof and matched 1-proof | One retained `10:1`, `20:5`, `100:20` multi-proof matrix and one matched fresh `10:1` one-proof sample per build | Multi-proof CPU -32.8% / -29.1% / -20.5% with admission proofs reduced exactly to zero; matched one-proof wall +8.7%, TPS -8.0%, p50 +17.4% | Rejected and reverted: the compute win is real, but the mandatory one-proof latency/throughput budget failed and no repeat was authorized |

@@ -2993,6 +2993,59 @@ non-retryable apply, network/root panic, stale generation, failed automatic
 rotation, peer-sync teardown, normal shutdown, natural rotation, and durable
 pending/restart recovery.
 
+## 48. Allow pre-liability recovery from federated BDK reorg stickiness
+
+**Status:** Open (observed on nocean Mutinynet, 2026-07-17)
+
+**Detailed write-up:**
+[`docs/federated-cashu-bdk-reorg-problem.md`](federated-cashu-bdk-reorg-problem.md)
+
+### Problem
+
+A deposit can be confirmed and unspent on Bitcoin while the federated wallet
+permanently classifies the same outpoint as `reorged`. On-chain mint quotes
+then never credit. Member restarts do not help: reorg evidence is accepted
+consensus state.
+
+Root cause (layered):
+
+1. `payment_observation` emits `Reorg` when local BDK no longer shows the
+   outpoint confirmed at the stored `(block_hash, height)`—including temporary
+   `Unconfirmed` / missing views, not only proven disconnects.
+2. `apply_reorg` flips global state to `Reorged` on **one** accepted Reorg
+   (no observation quorum), while spendability requires consensus threshold
+   (4 of 5 on nocean).
+3. `apply_deposit` never leaves `Reorged`, even when every member later
+   re-deposits the same confirmation.
+
+### Live example (nocean journal + chain_observation state)
+
+- Federation: `f412e564…3153a4` (2026-07-17 federated-bdk)
+- Quote `019f7193-bc27-7e01-a50d-219e5a9c8e5f`, outpoint
+  `66b5e65c…dbce:0` (11111 sat), still best-chain at height 3269886
+- Timeline: unconfirmed deposits (2–4) → confirmed deposits by members 4,2
+  (5–6) → **Reorg by members 3, then 1, then 5** (7–9, disconnecting that same
+  block) → reconfirm deposits by 1,3,5 (10–12) while state stays `reorged`
+- Client (`~/.fed-cdk-tui`): quote stayed `UNPAID`
+
+### Minimal fix
+
+- Pre-liability only (`!liability_issued`): on sufficient reconfirm deposit,
+  clear `reorg_observations` and recompute spendable/confirmed state in
+  `apply_deposit`.
+- Keep post-liability reorg sticky with liability alarm.
+- Do **not** require reorg-emission redesign for the first fix (optional
+  follow-up).
+- Tests: pre-liability reconfirm recovery; post-liability remains fail-closed;
+  restart freeze of recovered state.
+
+### Known locations
+
+- `crates/cdk-common/src/federation/chain_observation.rs`
+- `crates/cdk-axum/src/federation/payment_observation.rs`
+- `crates/cdk/src/mint/federation/tests/chain_observation.rs`
+- `docs/federated-cashu-bdk-reorg-problem.md`
+
 ## Cleanup safety guardrails
 
 The following mechanisms may look similar to cleanup candidates but carry

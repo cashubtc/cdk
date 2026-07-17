@@ -60,6 +60,9 @@ pub struct SendSubCommand {
     /// single frame, one static QR is shown instead.
     #[arg(long)]
     animate: bool,
+    /// Number of equal-value tokens to create
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..))]
+    count: u64,
 }
 
 pub async fn send(
@@ -117,11 +120,14 @@ pub async fn send(
 
     // Check wallet balance
     let balance = wallet.total_balance().await?;
-    if balance < token_amount {
+    let total_amount = token_amount
+        .checked_mul(Amount::from(sub_command_args.count))
+        .ok_or(anyhow!("Total send amount overflow"))?;
+    if balance < total_amount {
         return Err(anyhow!(
             "Insufficient funds. Wallet balance: {}, Required: {}",
             balance,
-            token_amount
+            total_amount
         ));
     }
 
@@ -258,19 +264,19 @@ pub async fn send(
         ..Default::default()
     };
 
-    // Prepare and confirm the send using the individual wallet
-    let prepared = wallet
-        .prepare_send(token_amount, send_options.clone())
-        .await?;
-    let memo = send_options.memo;
-    let token = prepared.confirm(memo).await?;
+    for _ in 0..sub_command_args.count {
+        let prepared = wallet
+            .prepare_send(token_amount, send_options.clone())
+            .await?;
+        let token = prepared.confirm(send_options.memo.clone()).await?;
 
-    match sub_command_args.v3 {
-        true => {
-            println!("{}", token.to_v3_string());
-        }
-        false => {
-            println!("{token}");
+        match sub_command_args.v3 {
+            true => {
+                println!("{}", token.to_v3_string());
+            }
+            false => {
+                println!("{token}");
+            }
         }
     }
 
@@ -372,6 +378,7 @@ mod federation_tests {
                 mint_url: Some(fixture.mint_url.to_string()),
                 use_p2bk: false,
                 amount: Some(1),
+                count: 1,
             },
             &CurrencyUnit::Sat,
         )
