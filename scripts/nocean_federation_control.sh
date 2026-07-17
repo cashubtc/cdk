@@ -12,6 +12,7 @@ FEE_POLICY_VERSION="${FEE_POLICY_VERSION:-1}"
 APPLICATION_KEY_EPOCH="${APPLICATION_KEY_EPOCH:-1}"
 ESPLORA_URL="${ESPLORA_URL:-https://mutinynet.com/api}"
 CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-mutinynet-public-esplora}"
+PAYMENT_MODE="${PAYMENT_MODE:-federated-bdk}"
 CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS:-20}"
 CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
 STATUS_TIMEOUT_SECS="${STATUS_TIMEOUT_SECS:-900}"
@@ -70,6 +71,8 @@ require_commands() {
     done
     [[ "$NETWORK" =~ ^(bitcoin|testnet|signet|regtest)$ ]] \
         || die "NETWORK must be bitcoin, testnet, signet, or regtest"
+    [[ "$PAYMENT_MODE" =~ ^(federated-bdk|fakewallet)$ ]] \
+        || die "PAYMENT_MODE must be federated-bdk or fakewallet"
     [[ "$CHAIN_SOURCE_ID" =~ ^[A-Za-z0-9._-]+$ ]] \
         || die "CHAIN_SOURCE_ID contains unsupported characters"
     [[ "$ESPLORA_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
@@ -80,11 +83,35 @@ require_commands() {
 
 generate_member() {
     local member="$1"
-    local dir url port prometheus_port
+    local dir url port prometheus_port ln_backend onchain_backend
+    local wallet_config development_policy_config
     dir="$(member_dir "$member")"
     url="$(member_url "$member")"
     port=$((PORT_START + member - 1))
     prometheus_port=$((PROMETHEUS_PORT_START + member - 1))
+    if [[ "$PAYMENT_MODE" == "fakewallet" ]]; then
+        ln_backend="fakewallet"
+        onchain_backend="fakewallet"
+        wallet_config="enabled = false"
+        development_policy_config="allow_development_payment_observation_policy = true"
+    else
+        ln_backend="none"
+        onchain_backend="federated-bdk"
+        development_policy_config=""
+        wallet_config="$(printf '%s\n' \
+            'enabled = true' \
+            "network = \"$NETWORK\"" \
+            "minimum_confirmations = $MINIMUM_CONFIRMATIONS" \
+            "fee_policy_version = $FEE_POLICY_VERSION" \
+            'chain_source_type = "esplora"' \
+            'chain_source_scope = "shared"' \
+            "chain_source_id = \"$CHAIN_SOURCE_ID\"" \
+            "esplora_url = \"$ESPLORA_URL\"" \
+            'esplora_parallel_requests = 1' \
+            'request_timeout_secs = 30' \
+            'esplora_max_retries = 3' \
+            'sync_interval_secs = 15')"
+    fi
     mkdir -p "$dir/work"
 
     "$MINTD" federation dkg-member \
@@ -137,6 +164,7 @@ max_delay_time = 0
 
 [federation]
 enabled = true
+$development_policy_config
 public_config_path = "$SETUP_PUBLIC"
 private_config_path = "$(private_setup_config "$member")"
 EOF
@@ -167,7 +195,7 @@ port = $prometheus_port
 engine = "sqlite"
 
 [ln]
-ln_backend = "none"
+ln_backend = "$ln_backend"
 unit = "sat"
 min_mint = 1
 max_mint = 50000000
@@ -175,30 +203,27 @@ min_melt = 1
 max_melt = 50000000
 
 [onchain]
-onchain_backend = "federated-bdk"
+onchain_backend = "$onchain_backend"
 min_mint = 1
 max_mint = 50000000
 min_melt = 1
 max_melt = 50000000
 
+[fake_wallet]
+supported_units = ["sat"]
+fee_percent = 0.0
+reserve_fee_min = 1
+min_delay_time = 0
+max_delay_time = 0
+
 [federation]
 enabled = true
+$development_policy_config
 public_config_path = "$(member_dir "$member")/dkg-final/federation-public.json"
 private_config_path = "$(private_final_config "$member")"
 
 [federation.onchain_wallet]
-enabled = true
-network = "$NETWORK"
-minimum_confirmations = $MINIMUM_CONFIRMATIONS
-fee_policy_version = $FEE_POLICY_VERSION
-chain_source_type = "esplora"
-chain_source_scope = "shared"
-chain_source_id = "$CHAIN_SOURCE_ID"
-esplora_url = "$ESPLORA_URL"
-esplora_parallel_requests = 1
-request_timeout_secs = 30
-esplora_max_retries = 3
-sync_interval_secs = 15
+$wallet_config
 EOF
 }
 
@@ -229,6 +254,17 @@ initialize() {
         --public-output "$SETUP_PUBLIC" \
         --ceremony-config-output "$CEREMONY_CONFIG" \
         --force
+
+    if [[ "$PAYMENT_MODE" == "fakewallet" ]]; then
+        local policy_config="$SETUP_PUBLIC.tmp"
+        jq '
+            .payment_observation_policy.mint_quotes =
+                {"type":"development_single_observation"}
+            | .payment_observation_policy.melt_quotes =
+                {"type":"development_single_observation"}
+        ' "$SETUP_PUBLIC" >"$policy_config"
+        mv "$policy_config" "$SETUP_PUBLIC"
+    fi
 
     for member in $(seq 1 "$MEMBERS"); do
         "$MINTD" federation dkg-bind \
@@ -283,6 +319,15 @@ export_member() {
     local final_dir
     final_dir="$(member_dir "$member")/dkg-final"
     mkdir -p "$final_dir"
+    local -a frost_args=()
+    if [[ "$PAYMENT_MODE" == "federated-bdk" ]]; then
+        frost_args=(
+            --frost-cdk-network "$NETWORK"
+            --frost-cdk-minimum-confirmations "$MINIMUM_CONFIRMATIONS"
+            --frost-cdk-fee-policy-version "$FEE_POLICY_VERSION"
+            --frost-cdk-application-key-epoch "$APPLICATION_KEY_EPOCH"
+        )
+    fi
     "$MINTD" \
         --work-dir "$(work_dir "$member")" \
         --config "$(setup_config "$member")" \
@@ -292,10 +337,7 @@ export_member() {
         --from-database \
         --require-ready \
         --final-config-dir "$final_dir" \
-        --frost-cdk-network "$NETWORK" \
-        --frost-cdk-minimum-confirmations "$MINIMUM_CONFIRMATIONS" \
-        --frost-cdk-fee-policy-version "$FEE_POLICY_VERSION" \
-        --frost-cdk-application-key-epoch "$APPLICATION_KEY_EPOCH" \
+        "${frost_args[@]}" \
         --force
 }
 
@@ -424,10 +466,15 @@ orchestrate() {
         cmp -s "$FINAL_PUBLIC" "$(member_dir "$member")/dkg-final/federation-public.json" \
             || die "member $member exported a different public config"
     done
-    jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null \
-        || die "final public config does not contain an active FROST wallet"
+    if [[ "$PAYMENT_MODE" == "federated-bdk" ]]; then
+        jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null \
+            || die "final public config does not contain an active FROST wallet"
+    else
+        jq -e '.frost_wallet == null' "$FINAL_PUBLIC" >/dev/null \
+            || die "fakewallet public config unexpectedly contains an active FROST wallet"
+    fi
 
-    echo "Starting finalized federated-BDK runtimes..."
+    echo "Starting finalized $PAYMENT_MODE runtimes..."
     for member in $(seq 1 "$MEMBERS"); do
         pane="$(member_pane "$member")"
         [[ -n "$pane" ]] || die "could not find tmux pane for member $member"
@@ -464,8 +511,13 @@ start_fresh() {
 
 restart_runtime() {
     [[ -f "$FINAL_PUBLIC" ]] || die "finalized public config is missing; run fresh first"
-    jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null \
-        || die "finalized public config does not contain a FROST wallet"
+    if [[ "$PAYMENT_MODE" == "federated-bdk" ]]; then
+        jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null \
+            || die "finalized public config does not contain a FROST wallet"
+    else
+        jq -e '.frost_wallet == null' "$FINAL_PUBLIC" >/dev/null \
+            || die "fakewallet public config unexpectedly contains a FROST wallet"
+    fi
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     local member
     tmux new-session -d -s "$SESSION" -n federation -x 240 -y 80 -c "$PWD" \
@@ -485,8 +537,16 @@ restart_runtime() {
 
 status() {
     [[ -f "$FINAL_PUBLIC" ]] || return 1
-    jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null || return 1
-    "$MINTD" federation wallet-status \
+    if [[ "$PAYMENT_MODE" == "federated-bdk" ]]; then
+        jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null || return 1
+        "$MINTD" federation wallet-status \
+            --public-config "$FINAL_PUBLIC" \
+            --private-config "$(private_final_config 1)" \
+            --require-ready >/dev/null
+        return
+    fi
+    jq -e '.frost_wallet == null' "$FINAL_PUBLIC" >/dev/null || return 1
+    "$MINTD" federation status \
         --public-config "$FINAL_PUBLIC" \
         --private-config "$(private_final_config 1)" \
         --require-ready >/dev/null
@@ -496,10 +556,17 @@ status_loop() {
     while true; do
         clear
         date -u
-        "$MINTD" federation wallet-status \
-            --public-config "$FINAL_PUBLIC" \
-            --private-config "$(private_final_config 1)" \
-            --require-ready || true
+        if [[ "$PAYMENT_MODE" == "federated-bdk" ]]; then
+            "$MINTD" federation wallet-status \
+                --public-config "$FINAL_PUBLIC" \
+                --private-config "$(private_final_config 1)" \
+                --require-ready || true
+        else
+            "$MINTD" federation status \
+                --public-config "$FINAL_PUBLIC" \
+                --private-config "$(private_final_config 1)" \
+                --require-ready || true
+        fi
         sleep 10
     done
 }

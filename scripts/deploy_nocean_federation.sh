@@ -19,6 +19,7 @@ FEE_POLICY_VERSION="${FEE_POLICY_VERSION:-1}"
 APPLICATION_KEY_EPOCH="${APPLICATION_KEY_EPOCH:-1}"
 ESPLORA_URL="${ESPLORA_URL:-https://mutinynet.com/api}"
 CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-mutinynet-public-esplora}"
+PAYMENT_MODE="${PAYMENT_MODE:-federated-bdk}"
 PROMETHEUS_PORT_START="${PROMETHEUS_PORT_START:-21985}"
 CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS:-20}"
 CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
@@ -36,13 +37,14 @@ Usage:
 
 Modes:
   fresh    Erase all member databases and configs, run a new BLS+FROST DKG,
-           and start a Mutinynet federated-BDK federation.
+           and start the selected payment runtime.
   restart  Preserve an existing finalized FROST federation and replace only
            the binaries before restarting it. This is the default.
 
 Relevant environment overrides:
   SSH_HOST, REMOTE_DIR, PUBLIC_BASE_DOMAIN
   DEPLOY_MODE=fresh|restart
+  PAYMENT_MODE=federated-bdk|fakewallet
   STATUS_TIMEOUT_SECS, STATUS_POLL_SECS
   DOCKER_PLATFORM, CARGO_REGISTRY_VOLUME, RUST_IMAGE
   NETWORK, MINIMUM_CONFIRMATIONS, FEE_POLICY_VERSION
@@ -80,6 +82,8 @@ for command in docker scp ssh awk; do
 done
 [[ "$DEPLOY_MODE" == "fresh" || "$DEPLOY_MODE" == "restart" ]] \
     || die "DEPLOY_MODE must be fresh or restart"
+[[ "$PAYMENT_MODE" == "federated-bdk" || "$PAYMENT_MODE" == "fakewallet" ]] \
+    || die "PAYMENT_MODE must be federated-bdk or fakewallet"
 [[ -f "$CONTROL_SCRIPT" ]] || die "missing deployment control script: $CONTROL_SCRIPT"
 [[ "$REMOTE_DIR" =~ ^[A-Za-z0-9._/-]+$ && "$REMOTE_DIR" != /* ]] \
     || die "REMOTE_DIR must be a safe path relative to the remote home"
@@ -147,7 +151,7 @@ ssh "$SSH_HOST" bash -s -- \
     "$STATUS_TIMEOUT_SECS" "$STATUS_POLL_SECS" \
     "$PROMETHEUS_PORT_START" \
     "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
-    "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" <<'REMOTE_SCRIPT'
+    "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" "$PAYMENT_MODE" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 
 REMOTE_DIR="$1"
@@ -168,6 +172,7 @@ export STATUS_POLL_SECS="${15}"
 export PROMETHEUS_PORT_START="${16}"
 export CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${17}"
 export CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${18}"
+export PAYMENT_MODE="${19}"
 
 cd "$HOME/$REMOTE_DIR"
 for command in sha256sum tmux curl timeout awk find jq; do
@@ -215,13 +220,17 @@ private_state_is_healthy() {
     local public_config="member-1/dkg-final/federation-public.json"
     local private_config="member-1/dkg-final/federation-private.json"
     [[ -f "$public_config" && -f "$private_config" ]] || return 1
-    jq -e \
-        --arg network "$NETWORK" \
-        --argjson confirmations "$MINIMUM_CONFIRMATIONS" \
-        '.frost_wallet != null
-         and .frost_wallet.cdk_onchain_application.network == $network
-         and .frost_wallet.cdk_onchain_application.confirmation_policy.minimum_confirmations == $confirmations' \
-        "$public_config" >/dev/null || return 1
+    if [[ "$PAYMENT_MODE" == "fakewallet" ]]; then
+        jq -e '.frost_wallet == null' "$public_config" >/dev/null || return 1
+    else
+        jq -e \
+            --arg network "$NETWORK" \
+            --argjson confirmations "$MINIMUM_CONFIRMATIONS" \
+            '.frost_wallet != null
+             and .frost_wallet.cdk_onchain_application.network == $network
+             and .frost_wallet.cdk_onchain_application.confirmation_policy.minimum_confirmations == $confirmations' \
+            "$public_config" >/dev/null || return 1
+    fi
     timeout 45 bin/cdk-mintd federation status \
         --public-config "$public_config" \
         --private-config "$private_config" \
@@ -232,6 +241,21 @@ private_state_is_healthy() {
         --require-no-payment-observation-alerts \
         --require-no-invalid-operation-alerts >"$status_output" 2>&1 || return 1
     [[ "$(grep -c '^member ' "$status_output")" == "5" ]] || return 1
+    if [[ "$PAYMENT_MODE" == "fakewallet" ]]; then
+        local methods
+        methods="$(curl -fsS --max-time 10 "https://cdk-1.$PUBLIC_BASE_DOMAIN/v1/info" \
+            | jq -r '
+                def benchmark_methods($nut):
+                    [.nuts[$nut].methods[].method
+                     | select(. == "bolt11" or . == "bolt12" or . == "onchain")]
+                    | unique | sort | join(",");
+                benchmark_methods("4") + "|" + benchmark_methods("5")
+            ')" \
+            || return 1
+        [[ "$methods" == "bolt11,bolt12,onchain|bolt11,bolt12,onchain" ]] || return 1
+        printf 'payment_methods=%s\n' "$methods" >"$wallet_output"
+        return 0
+    fi
     timeout 45 bin/cdk-mintd federation wallet-status \
         --public-config "$public_config" \
         --private-config "$private_config" \
@@ -239,7 +263,7 @@ private_state_is_healthy() {
 }
 
 attempt=0
-echo "Waiting up to $STATUS_TIMEOUT_SECS seconds for dual DKG and runtime readiness..."
+echo "Waiting up to $STATUS_TIMEOUT_SECS seconds for dual DKG and $PAYMENT_MODE readiness..."
 while ((SECONDS < deadline)); do
     attempt=$((attempt + 1))
     if tmux_is_healthy && public_routes_are_healthy && private_state_is_healthy; then
@@ -252,7 +276,7 @@ while ((SECONDS < deadline)); do
         exit 0
     fi
     if ((attempt % 10 == 0)); then
-        echo "Still waiting for finalized FROST config and five ready on-chain members..."
+        echo "Still waiting for finalized config and five ready $PAYMENT_MODE members..."
     fi
     sleep "$STATUS_POLL_SECS"
 done
