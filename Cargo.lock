@@ -1478,6 +1478,7 @@ dependencies = [
  "serde_json",
  "serde_urlencoded",
  "thiserror 2.0.18",
+ "tokio-tungstenite 0.26.2",
  "url",
  "uuid",
 ]

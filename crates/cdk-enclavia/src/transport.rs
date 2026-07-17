@@ -9,9 +9,58 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::{Origin, Url};
 
+#[cfg(not(target_arch = "wasm32"))]
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio_tungstenite::tungstenite::http::header::{HeaderName, HeaderValue, HOST};
+#[cfg(not(target_arch = "wasm32"))]
+use tokio_tungstenite::tungstenite::protocol::Role;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio_tungstenite::WebSocketStream;
+
 use crate::error::{Error, Result};
 
-const WEBSOCKET_UNSUPPORTED: &str = "cdk-enclavia does not yet support NUT-17 WebSocket subscriptions; configure WalletBuilder::use_http_subscription()";
+#[cfg(not(target_arch = "wasm32"))]
+fn websocket_upgrade_headers(
+    url: &str,
+    headers: &[(&str, &str)],
+) -> std::result::Result<Vec<(String, String)>, cdk_http_client::ws::WsError> {
+    let mut request = url.into_client_request().map_err(|error| {
+        cdk_http_client::ws::WsError::Connection(format!(
+            "could not construct WebSocket upgrade request: {error}"
+        ))
+    })?;
+
+    for &(name, value) in headers {
+        let header_name = name.parse::<HeaderName>().map_err(|error| {
+            cdk_http_client::ws::WsError::Connection(format!(
+                "invalid WebSocket header name `{name}`: {error}"
+            ))
+        })?;
+        let header_value = value.parse::<HeaderValue>().map_err(|error| {
+            cdk_http_client::ws::WsError::Connection(format!(
+                "invalid value for WebSocket header `{name}`: {error}"
+            ))
+        })?;
+        request.headers_mut().insert(header_name, header_value);
+    }
+
+    request
+        .headers()
+        .iter()
+        .filter(|(name, _)| *name != HOST)
+        .map(|(name, value)| {
+            value
+                .to_str()
+                .map(|value| (name.to_string(), value.to_owned()))
+                .map_err(|error| {
+                    cdk_http_client::ws::WsError::Connection(format!(
+                        "WebSocket header `{name}` is not valid text: {error}"
+                    ))
+                })
+        })
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct MintTarget {
@@ -45,6 +94,20 @@ impl MintTarget {
 
     fn contains(&self, url: &Url) -> bool {
         url.origin() == self.origin
+    }
+
+    fn contains_websocket(&self, url: &Url) -> bool {
+        let expected_scheme = match self.base_url.scheme() {
+            "http" => "ws",
+            "https" => "wss",
+            _ => return false,
+        };
+
+        url.scheme() == expected_scheme
+            && url.host() == self.base_url.host()
+            && url.port_or_known_default() == self.base_url.port_or_known_default()
+            && url.username().is_empty()
+            && url.password().is_none()
     }
 
     fn request_target(&self, url: &Url) -> String {
@@ -138,6 +201,41 @@ impl EnclaviaTransport {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl Transport for EnclaviaTransport {
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn ws_connect(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> std::result::Result<
+        (
+            cdk_http_client::ws::WsSender,
+            cdk_http_client::ws::WsReceiver,
+        ),
+        cdk_http_client::ws::WsError,
+    > {
+        let parsed_url = Url::parse(url).map_err(|error| {
+            cdk_http_client::ws::WsError::Connection(format!("invalid WebSocket URL: {error}"))
+        })?;
+
+        if !self.target.contains_websocket(&parsed_url) {
+            return Err(cdk_http_client::ws::WsError::Connection(
+                "refusing to open an Enclavia stream outside the configured mint origin".to_owned(),
+            ));
+        }
+
+        let upgrade_headers = websocket_upgrade_headers(url, headers)?;
+        let target = self.target.request_target(&parsed_url);
+        let stream = self
+            .client
+            .upgrade(Method::Get, &target, &upgrade_headers)
+            .await
+            .map_err(|error| cdk_http_client::ws::WsError::Connection(error.to_string()))?;
+        let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Client, None).await;
+
+        Ok(cdk_http_client::ws::from_websocket_stream(ws_stream))
+    }
+
+    #[cfg(target_arch = "wasm32")]
     async fn ws_connect(
         &self,
         _url: &str,
@@ -150,7 +248,7 @@ impl Transport for EnclaviaTransport {
         cdk_http_client::ws::WsError,
     > {
         Err(cdk_http_client::ws::WsError::Connection(
-            WEBSOCKET_UNSUPPORTED.to_owned(),
+            "Enclavia WebSocket subscriptions require a native target".to_owned(),
         ))
     }
 
