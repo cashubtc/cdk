@@ -151,13 +151,6 @@ impl<T> HttpClient<T>
 where
     T: Transport + Send + Sync + 'static,
 {
-    fn append_federation_quote_id(url: &mut Url, quote_id: Option<&cdk_common::QuoteId>) {
-        if let Some(quote_id) = quote_id {
-            url.query_pairs_mut()
-                .append_pair("federation_quote_id", &quote_id.to_string());
-        }
-    }
-
     fn map_http_error(err: HttpError) -> Error {
         match err {
             HttpError::Status { status, message } => {
@@ -223,15 +216,13 @@ where
     async fn post_mint_quote_inner(
         &self,
         request: MintQuoteRequest,
-        quote_id: Option<&cdk_common::QuoteId>,
     ) -> Result<MintQuoteResponse<String>, Error> {
         let method = request.method();
         let method_name = payment_method_path_segment(&method)?;
 
-        let mut url = self
+        let url = self
             .mint_url
             .join_paths(&["v1", "mint", "quote", method_name])?;
-        Self::append_federation_quote_id(&mut url, quote_id);
 
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::MintQuote(method.to_string()))
@@ -266,15 +257,13 @@ where
     async fn post_melt_quote_inner(
         &self,
         request: MeltQuoteRequest,
-        quote_id: Option<&cdk_common::QuoteId>,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
         let method = request.method();
         let method_name = payment_method_path_segment(&method)?;
 
-        let mut url = self
+        let url = self
             .mint_url
             .join_paths(&["v1", "melt", "quote", method_name])?;
-        Self::append_federation_quote_id(&mut url, quote_id);
         let auth_token = self
             .get_auth_token(Method::Post, RoutePath::MeltQuote(method.to_string()))
             .await?;
@@ -634,15 +623,7 @@ where
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        self.post_mint_quote_inner(request, None).await
-    }
-
-    async fn post_mint_quote_with_id(
-        &self,
-        request: MintQuoteRequest,
-        quote_id: &cdk_common::QuoteId,
-    ) -> Result<MintQuoteResponse<String>, Error> {
-        self.post_mint_quote_inner(request, Some(quote_id)).await
+        self.post_mint_quote_inner(request).await
     }
 
     /// Mint Quote status with payment method
@@ -835,15 +816,7 @@ where
         &self,
         request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        self.post_melt_quote_inner(request, None).await
-    }
-
-    async fn post_melt_quote_with_id(
-        &self,
-        request: MeltQuoteRequest,
-        quote_id: &cdk_common::QuoteId,
-    ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        self.post_melt_quote_inner(request, Some(quote_id)).await
+        self.post_melt_quote_inner(request).await
     }
 
     /// Melt Quote Status
@@ -1410,6 +1383,7 @@ mod tests {
             post_delay: None,
         };
         let captured = transport.captured_payload.clone();
+        let post_urls = transport.post_urls.clone();
 
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
         let client = HttpClient::with_transport(mint_url, transport, None);
@@ -1461,114 +1435,15 @@ mod tests {
         let parsed = parsed.expect("already checked");
         assert_eq!(parsed.amount, Some(cdk_common::Amount::from(1000)));
         assert_eq!(parsed.unit, cdk_common::CurrencyUnit::Sat);
-    }
-
-    #[tokio::test]
-    async fn federation_quote_methods_send_the_assigned_id_as_query_parameter() {
-        let quote_id = cdk_common::QuoteId::new();
-        let mint_response = MintQuoteCustomResponse::<String> {
-            quote: quote_id.to_string(),
-            request: "paypal://incoming".to_string(),
-            method: PaymentMethod::Custom("paypal".to_string()),
-            amount: Some(cdk_common::Amount::from(1000)),
-            amount_paid: cdk_common::Amount::ZERO,
-            amount_issued: cdk_common::Amount::ZERO,
-            updated_at: 0,
-            unit: Some(cdk_common::CurrencyUnit::Sat),
-            expiry: Some(9999999),
-            pubkey: None,
-            extra: serde_json::Value::Null,
-        };
-        let transport = MockTransport {
-            post_response: Arc::new(Mutex::new(Some(
-                serde_json::to_string(&mint_response).expect("serialize mint response"),
-            ))),
-            ..MockTransport::default()
-        };
-        let post_urls = transport.post_urls.clone();
-        let client = HttpClient::with_transport(
-            MintUrl::from_str("https://mint.example.com").expect("parse url"),
-            transport,
-            None,
-        );
-        client
-            .post_mint_quote_with_id(
-                MintQuoteRequest::Custom {
-                    method: PaymentMethod::Custom("paypal".to_string()),
-                    request: MintQuoteCustomRequest {
-                        amount: Some(cdk_common::Amount::from(1000)),
-                        unit: cdk_common::CurrencyUnit::Sat,
-                        description: None,
-                        pubkey: None,
-                        extra: serde_json::Value::Null,
-                    },
-                },
-                &quote_id,
-            )
-            .await
-            .expect("federation mint quote request");
-
-        let mint_url = Url::parse(
+        let url = Url::parse(
             post_urls
                 .lock()
                 .expect("lock")
                 .first()
                 .expect("mint quote URL"),
         )
-        .expect("parse captured mint URL");
-        assert!(mint_url
-            .query_pairs()
-            .any(|(key, value)| key == "federation_quote_id" && value == quote_id.to_string()));
-
-        let melt_response = cdk_common::nut05::MeltQuoteCustomResponse::<String> {
-            quote: quote_id.to_string(),
-            method: PaymentMethod::Custom("paypal".to_string()),
-            amount: cdk_common::Amount::from(1000),
-            fee_reserve: Some(cdk_common::Amount::ZERO),
-            state: cdk_common::MeltQuoteState::Unpaid,
-            expiry: 9999999,
-            payment_preimage: None,
-            change: None,
-            request: Some("paypal://outgoing".to_string()),
-            unit: Some(cdk_common::CurrencyUnit::Sat),
-            extra: serde_json::Value::Null,
-        };
-        let transport = MockTransport {
-            post_response: Arc::new(Mutex::new(Some(
-                serde_json::to_string(&melt_response).expect("serialize melt response"),
-            ))),
-            ..MockTransport::default()
-        };
-        let post_urls = transport.post_urls.clone();
-        let client = HttpClient::with_transport(
-            MintUrl::from_str("https://mint.example.com").expect("parse url"),
-            transport,
-            None,
-        );
-        client
-            .post_melt_quote_with_id(
-                MeltQuoteRequest::Custom(MeltQuoteCustomRequest {
-                    method: "paypal".to_string(),
-                    request: "paypal://outgoing".to_string(),
-                    unit: cdk_common::CurrencyUnit::Sat,
-                    amount: Some(cdk_common::Amount::from(1000)),
-                    extra: serde_json::Value::Null,
-                }),
-                &quote_id,
-            )
-            .await
-            .expect("federation melt quote request");
-        let melt_url = Url::parse(
-            post_urls
-                .lock()
-                .expect("lock")
-                .first()
-                .expect("melt quote URL"),
-        )
-        .expect("parse captured melt URL");
-        assert!(melt_url
-            .query_pairs()
-            .any(|(key, value)| key == "federation_quote_id" && value == quote_id.to_string()));
+        .expect("parse mint quote URL");
+        assert!(url.query().is_none());
     }
 
     #[tokio::test]
@@ -2025,6 +1900,7 @@ mod tests {
             post_response: Arc::new(Mutex::new(Some(canned_json))),
             ..Default::default()
         };
+        let post_urls = transport.post_urls.clone();
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("parse url");
         let client = HttpClient::with_transport(mint_url, transport, None);
 
@@ -2047,6 +1923,15 @@ mod tests {
             }
             _ => panic!("expected custom response"),
         }
+        let url = Url::parse(
+            post_urls
+                .lock()
+                .expect("lock")
+                .first()
+                .expect("melt quote URL"),
+        )
+        .expect("parse melt quote URL");
+        assert!(url.query().is_none());
     }
 
     #[tokio::test]

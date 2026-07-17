@@ -1086,48 +1086,6 @@ impl Mint {
         })
     }
 
-    /// Return a previously ordered mint-quote response for an idempotent
-    /// wallet retry, while rejecting reuse of the assigned ID for another
-    /// request.
-    pub async fn ordered_federation_mint_quote_response(
-        &self,
-        quote_id: &QuoteId,
-        request: &MintQuoteRequest,
-    ) -> Result<Option<(MintQuoteResponse<QuoteId>, PaymentIdentifier)>, Error> {
-        let quote_id = quote_id.to_string();
-        let entries = self.localstore.get_federation_journal_entries().await?;
-        let Some(entry) = entries.iter().rev().find(|entry| {
-            matches!(
-                &entry.envelope.operation,
-                FederationOperation::MintQuote(operation) if operation.quote == quote_id
-            )
-        }) else {
-            return Ok(None);
-        };
-        let FederationOperation::MintQuote(operation) = &entry.envelope.operation else {
-            return Ok(None);
-        };
-
-        if &operation.request != request {
-            return Err(Error::Custom(
-                "federation mint quote id was reused with a different request".to_string(),
-            ));
-        }
-        if matches!(
-            entry.status(),
-            FederationOperationStatus::Rejected | FederationOperationStatus::Failed
-        ) {
-            return Err(FederationError::RejectedOperation {
-                operation_id: entry.operation_id,
-                status: entry.status(),
-            }
-            .into());
-        }
-
-        let response = serde_json::from_value(serde_json::to_value(&operation.response)?)?;
-        Ok(Some((response, operation.request_lookup_id.clone())))
-    }
-
     /// Probe an incoming payment backend without mutating federated quote state.
     pub async fn probe_federation_mint_quote_payment(
         &self,

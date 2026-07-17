@@ -827,7 +827,7 @@ fn melt_response_without_change_with_state(
 
 fn melt_quote_create_response() -> MeltQuoteCreateResponse<String> {
     MeltQuoteCreateResponse::Bolt11(MeltQuoteBolt11Response {
-        quote: "melt-quote".to_string(),
+        quote: QuoteId::new().to_string(),
         amount: Amount::from(1),
         fee_reserve: Amount::ZERO,
         state: MeltQuoteState::Unpaid,
@@ -849,20 +849,13 @@ fn melt_quote_status_from_create_response(
     }
 }
 
-fn assert_melt_quote_matches_except_assigned_id(
+fn assert_melt_quote_matches_expected(
     response: &MeltQuoteCreateResponse<String>,
     expected: &MeltQuoteCreateResponse<String>,
 ) {
-    let assigned_id = response.quote().expect("assigned melt quote id");
-    QuoteId::from_str(assigned_id).expect("valid assigned melt quote id");
-    let mut expected = expected.clone();
-    match &mut expected {
-        MeltQuoteCreateResponse::Bolt11(response) => response.quote = assigned_id.clone(),
-        MeltQuoteCreateResponse::Bolt12(response) => response.quote = assigned_id.clone(),
-        MeltQuoteCreateResponse::Onchain(response) => response.quote = assigned_id.clone(),
-        MeltQuoteCreateResponse::Custom((_, response)) => response.quote = assigned_id.clone(),
-    }
-    assert_eq!(response, &expected);
+    let quote_id = response.quote().expect("melt quote id");
+    QuoteId::from_str(quote_id).expect("valid melt quote id");
+    assert_eq!(response, expected);
 }
 
 fn mint_quote_status_response(state: MintQuoteState) -> MintQuoteBolt11Response<String> {
@@ -2988,16 +2981,11 @@ async fn federated_mint_connector_creates_mint_quote_with_first_healthy_member()
         .expect("mint quote");
 
     assert!(started.elapsed() < fallback_timeout);
-    QuoteId::from_str(response.quote()).expect("valid assigned mint quote id");
+    QuoteId::from_str(response.quote()).expect("valid mint quote id");
     assert_eq!(response.request(), expected.request());
     assert_eq!(response.method(), expected.method());
-    assert_eq!(unavailable_member.assigned_mint_quote_ids().len(), 1);
-    assert_eq!(healthy_member.assigned_mint_quote_ids().len(), 1);
-    assert_eq!(
-        unavailable_member.assigned_mint_quote_ids(),
-        healthy_member.assigned_mint_quote_ids(),
-        "fallback must reuse the same assigned mint quote id"
-    );
+    assert_eq!(unavailable_member.post_mint_quote_call_count(), 1);
+    assert_eq!(healthy_member.post_mint_quote_call_count(), 1);
 }
 
 #[tokio::test]
@@ -4179,7 +4167,7 @@ async fn federated_mint_connector_uses_threshold_live_members_for_wallet_operati
 }
 
 #[tokio::test(start_paused = true)]
-async fn federated_mint_quote_recovers_timed_out_submission_without_duplicate_fallback() {
+async fn federated_mint_quote_timeout_falls_back_to_next_member() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);
     let stalled_quote = bolt11_quote_response(&QuoteId::new(), 3);
@@ -4234,11 +4222,11 @@ async fn federated_mint_quote_recovers_timed_out_submission_without_duplicate_fa
         .expect("mint quote task")
         .expect("mint quote");
 
-    QuoteId::from_str(response.quote()).expect("valid assigned mint quote id");
+    QuoteId::from_str(response.quote()).expect("valid mint quote id");
     assert_eq!(response.request(), expected.request());
     assert_eq!(response.method(), expected.method());
-    assert_eq!(stalled_member.assigned_mint_quote_ids().len(), 1);
-    assert!(healthy_member.assigned_mint_quote_ids().is_empty());
+    assert_eq!(stalled_member.post_mint_quote_call_count(), 1);
+    assert_eq!(healthy_member.post_mint_quote_call_count(), 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -4296,14 +4284,9 @@ async fn federated_mint_quote_timeout_falls_back_when_quote_is_not_visible() {
         .expect("mint quote task")
         .expect("fallback mint quote");
 
-    QuoteId::from_str(response.quote()).expect("valid assigned mint quote id");
-    assert_eq!(stalled_member.assigned_mint_quote_ids().len(), 1);
-    assert_eq!(healthy_member.assigned_mint_quote_ids().len(), 1);
-    assert_eq!(
-        stalled_member.assigned_mint_quote_ids(),
-        healthy_member.assigned_mint_quote_ids(),
-        "fallback must reuse the same assigned mint quote id"
-    );
+    QuoteId::from_str(response.quote()).expect("valid mint quote id");
+    assert_eq!(stalled_member.post_mint_quote_call_count(), 1);
+    assert_eq!(healthy_member.post_mint_quote_call_count(), 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -4472,18 +4455,13 @@ async fn federated_mint_connector_creates_melt_quote_with_first_healthy_member()
         .expect("melt quote");
 
     assert!(started.elapsed() < fallback_timeout);
-    assert_melt_quote_matches_except_assigned_id(&response, &expected);
-    assert_eq!(unavailable_member.assigned_melt_quote_ids().len(), 1);
-    assert_eq!(healthy_member.assigned_melt_quote_ids().len(), 1);
-    assert_eq!(
-        unavailable_member.assigned_melt_quote_ids(),
-        healthy_member.assigned_melt_quote_ids(),
-        "fallback must reuse the same assigned melt quote id"
-    );
+    assert_melt_quote_matches_expected(&response, &expected);
+    assert_eq!(unavailable_member.post_melt_quote_call_count(), 1);
+    assert_eq!(healthy_member.post_melt_quote_call_count(), 1);
 }
 
 #[tokio::test]
-async fn federated_melt_quote_recovers_pending_submission_without_duplicate_fallback() {
+async fn federated_melt_quote_pending_submission_falls_back_to_next_member() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);
     let expected = melt_quote_create_response();
@@ -4495,6 +4473,7 @@ async fn federated_melt_quote_recovers_pending_submission_without_duplicate_fall
 
     let second = Arc::new(MockMintConnector::new());
     second.set_active_keyset(advertised.clone());
+    second.set_post_melt_quote_response(Ok(expected.clone()));
     second.set_melt_quote_status_response(Ok(status.clone()));
 
     let third = Arc::new(MockMintConnector::new());
@@ -4530,14 +4509,14 @@ async fn federated_melt_quote_recovers_pending_submission_without_duplicate_fall
         .await
         .expect("threshold-visible pending quote");
 
-    assert_melt_quote_matches_except_assigned_id(&response, &expected);
-    assert_eq!(quote_coordinator.assigned_melt_quote_ids().len(), 1);
-    assert!(second.assigned_melt_quote_ids().is_empty());
-    assert!(third.assigned_melt_quote_ids().is_empty());
+    assert_melt_quote_matches_expected(&response, &expected);
+    assert_eq!(quote_coordinator.post_melt_quote_call_count(), 1);
+    assert_eq!(second.post_melt_quote_call_count(), 1);
+    assert_eq!(third.post_melt_quote_call_count(), 0);
 }
 
 #[tokio::test(start_paused = true)]
-async fn federated_melt_quote_recovers_timed_out_submission_without_duplicate_fallback() {
+async fn federated_melt_quote_timeout_falls_back_to_next_member() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);
     let expected = melt_quote_create_response();
@@ -4590,9 +4569,9 @@ async fn federated_melt_quote_recovers_timed_out_submission_without_duplicate_fa
         .expect("melt quote task")
         .expect("threshold-visible melt quote");
 
-    assert_melt_quote_matches_except_assigned_id(&response, &expected);
-    assert_eq!(stalled_member.assigned_melt_quote_ids().len(), 1);
-    assert!(second.assigned_melt_quote_ids().is_empty());
+    assert_melt_quote_matches_expected(&response, &expected);
+    assert_eq!(stalled_member.post_melt_quote_call_count(), 1);
+    assert_eq!(second.post_melt_quote_call_count(), 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -4651,14 +4630,9 @@ async fn federated_melt_quote_timeout_falls_back_when_quote_is_not_visible() {
         .expect("melt quote task")
         .expect("fallback melt quote");
 
-    assert_melt_quote_matches_except_assigned_id(&response, &expected);
-    assert_eq!(stalled_member.assigned_melt_quote_ids().len(), 1);
-    assert_eq!(healthy_member.assigned_melt_quote_ids().len(), 1);
-    assert_eq!(
-        stalled_member.assigned_melt_quote_ids(),
-        healthy_member.assigned_melt_quote_ids(),
-        "fallback must reuse the same assigned melt quote id"
-    );
+    assert_melt_quote_matches_expected(&response, &expected);
+    assert_eq!(stalled_member.post_melt_quote_call_count(), 1);
+    assert_eq!(healthy_member.post_melt_quote_call_count(), 1);
 }
 
 #[tokio::test]
@@ -4760,7 +4734,7 @@ async fn federated_mint_connector_retries_melt_quote_visibility_after_creation()
         .await
         .expect("melt quote should become threshold visible");
 
-    assert_melt_quote_matches_except_assigned_id(&response, &expected);
+    assert_melt_quote_matches_expected(&response, &expected);
 }
 
 #[tokio::test]

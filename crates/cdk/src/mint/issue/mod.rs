@@ -202,13 +202,11 @@ impl Mint {
         &self,
         mint_quote_request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<QuoteId>, Error> {
-        let (response, _) = self
-            .create_mint_quote(mint_quote_request, QuoteId::new(), true)
-            .await?;
+        let (response, _) = self.create_mint_quote(mint_quote_request, true).await?;
         Ok(response)
     }
 
-    /// Prepare a mint quote with the wallet-assigned federation quote ID.
+    /// Prepare a mint quote without persisting proposer-local state.
     ///
     /// The payment request is deliberately not persisted here. The accepted
     /// mint-quote consensus operation is the only path that may publish it to
@@ -216,9 +214,8 @@ impl Mint {
     /// invoice in local state.
     #[cfg(feature = "federation")]
     #[instrument(skip_all)]
-    pub async fn prepare_federation_mint_quote(
+    pub async fn prepare_mint_quote(
         &self,
-        quote_id: QuoteId,
         mint_quote_request: MintQuoteRequest,
     ) -> Result<
         (
@@ -227,8 +224,7 @@ impl Mint {
         ),
         Error,
     > {
-        self.create_mint_quote(mint_quote_request, quote_id, false)
-            .await
+        self.create_mint_quote(mint_quote_request, false).await
     }
 
     /// Prepare a federation on-chain quote from a consensus-allocated address.
@@ -238,7 +234,7 @@ impl Mint {
     /// mint-quote operation remains the sole persistence boundary.
     #[cfg(feature = "federation")]
     #[instrument(skip_all)]
-    pub async fn prepare_federation_onchain_mint_quote(
+    pub async fn prepare_onchain_mint_quote(
         &self,
         quote_id: QuoteId,
         mint_quote_request: MintQuoteRequest,
@@ -265,7 +261,6 @@ impl Mint {
     async fn create_mint_quote(
         &self,
         mint_quote_request: MintQuoteRequest,
-        quote_id: QuoteId,
         persist_immediately: bool,
     ) -> Result<
         (
@@ -276,7 +271,7 @@ impl Mint {
     > {
         self.create_mint_quote_with_incoming_response(
             mint_quote_request,
-            quote_id,
+            QuoteId::new(),
             persist_immediately,
             None,
         )
@@ -1427,7 +1422,7 @@ mod batch_mint_tests {
             });
         let address = "bcrt1-consensus-allocated-test-address".to_string();
         let (response, lookup_id) = mint
-            .prepare_federation_onchain_mint_quote(quote_id.clone(), request, address.clone())
+            .prepare_onchain_mint_quote(quote_id.clone(), request, address.clone())
             .await
             .expect("prepared federation quote");
         let super::MintQuoteResponse::Onchain(response) = response else {

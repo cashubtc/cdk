@@ -275,48 +275,14 @@ impl MintConnector for LocalFederatedMemberConnector {
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, crate::Error> {
-        let response: MintQuoteResponse<String> =
-            self.mint.get_mint_quote(request.clone()).await?.into();
-        let method = request.method();
-        let amount = request.amount();
-        let config = self.effective_federation_config().await?;
-        let quote = Self::quote_id(response.quote())?;
-        let envelope = config.mint_quote_operation(quote.clone(), request, response.clone());
-        self.append_and_apply_to_federation(envelope).await?;
-        if self.federation_mints.is_some() {
-            if let Some(amount_paid) = amount.filter(|amount| *amount > Amount::ZERO) {
-                let payment_proof = self.mint_quote_payment_proof(&quote).await?;
-                self.append_paid_mint_quote_observation(&quote, method, amount_paid, payment_proof)
-                    .await?;
-            }
-        }
-
-        Ok(response)
-    }
-
-    async fn post_mint_quote_with_id(
-        &self,
-        request: MintQuoteRequest,
-        quote_id: &QuoteId,
-    ) -> Result<MintQuoteResponse<String>, crate::Error> {
-        if let Some((response, _)) = self
-            .mint
-            .ordered_federation_mint_quote_response(quote_id, &request)
-            .await?
-        {
-            return Ok(response.into());
-        }
-
-        let (response, request_lookup_id) = self
-            .mint
-            .prepare_federation_mint_quote(quote_id.clone(), request.clone())
-            .await?;
+        let (response, request_lookup_id) = self.mint.prepare_mint_quote(request.clone()).await?;
         let response: MintQuoteResponse<String> = response.into();
         let method = request.method();
         let amount = request.amount();
         let config = self.effective_federation_config().await?;
+        let quote = Self::quote_id(response.quote())?;
         let envelope = config.mint_quote_operation_with_lookup_id(
-            quote_id.clone(),
+            quote.clone(),
             request_lookup_id,
             request,
             response.clone(),
@@ -324,14 +290,9 @@ impl MintConnector for LocalFederatedMemberConnector {
         self.append_and_apply_to_federation(envelope).await?;
         if self.federation_mints.is_some() {
             if let Some(amount_paid) = amount.filter(|amount| *amount > Amount::ZERO) {
-                let payment_proof = self.mint_quote_payment_proof(quote_id).await?;
-                self.append_paid_mint_quote_observation(
-                    quote_id,
-                    method,
-                    amount_paid,
-                    payment_proof,
-                )
-                .await?;
+                let payment_proof = self.mint_quote_payment_proof(&quote).await?;
+                self.append_paid_mint_quote_observation(&quote, method, amount_paid, payment_proof)
+                    .await?;
             }
         }
 
@@ -431,29 +392,15 @@ impl MintConnector for LocalFederatedMemberConnector {
         &self,
         request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, crate::Error> {
-        Ok(self.mint.get_melt_quote(request).await?.into())
-    }
-
-    async fn post_melt_quote_with_id(
-        &self,
-        request: MeltQuoteRequest,
-        quote_id: &QuoteId,
-    ) -> Result<MeltQuoteCreateResponse<String>, crate::Error> {
-        if let Some(response) = self
-            .mint
-            .existing_federation_melt_quote(quote_id, &request)
-            .await?
-        {
-            return Ok(response.into());
-        }
-
-        let (response, metadata) = self
-            .mint
-            .prepare_federation_melt_quote(quote_id.clone(), request.clone())
-            .await?;
+        let (response, metadata) = self.mint.prepare_melt_quote(request.clone()).await?;
+        let quote_id = response
+            .quote()
+            .ok_or(crate::Error::InvalidMintResponse(
+                "melt quote response did not contain a quote ID".to_string(),
+            ))?
+            .clone();
         let config = self.effective_federation_config().await?;
-        let envelope =
-            config.melt_quote_operation(quote_id.clone(), request, response.clone(), metadata);
+        let envelope = config.melt_quote_operation(quote_id, request, response.clone(), metadata);
         self.append_and_apply_to_federation(envelope).await?;
         Ok(response.into())
     }

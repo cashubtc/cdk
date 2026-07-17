@@ -620,10 +620,10 @@ probe the backend using the consensus-carried lookup data.
 
 ### Resolved: Mint Quote Persistence Before Consensus Finality
 
-`prepare_federation_mint_quote` creates the payment request without persisting
-or publishing the quote. Durable quote materialization now occurs from the
-accepted `MintQuote` operation. Pending AlephBFT quote tests verify that quote
-state is absent before finality.
+The shared mint-quote preparation path creates the payment request without
+persisting or publishing the quote when federation mode invokes it. Durable
+quote materialization occurs from the accepted `MintQuote` operation. Pending
+AlephBFT quote tests verify that quote state is absent before finality.
 
 ### Resolved: Single-Member Quote Status Fallback
 
@@ -636,9 +636,9 @@ attempt.
 ### Resolved: Melt Quote Threshold Visibility
 
 Melt quote creation now calls `verify_melt_quote_visible_to_threshold` before
-returning a usable quote. Ambiguous creation recovery also requires a matching
-threshold-visible response, and visibility timeout occurs before wallet proofs
-are reserved.
+returning a usable quote. If a member's creation response is lost, the wallet
+may try another member as a new quote creation; it cannot recover an unknown
+quote ID. Visibility timeout occurs before wallet proofs are reserved.
 
 ### Resolved: Signing Fanout Stopping Before Share Validation
 

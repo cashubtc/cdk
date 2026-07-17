@@ -308,12 +308,6 @@ async fn concurrent_same_federation_melt_quote_apply_is_idempotent() {
         .expect("persisted melt quote");
     assert_eq!(persisted_quote.id, quote);
     assert_eq!(persisted_quote.state, MeltQuoteState::Unpaid);
-
-    let mismatch = mint
-        .existing_federation_melt_quote(&quote, &pending_melt_quote_request(2_000))
-        .await
-        .expect_err("same quote id with another request must be rejected");
-    assert!(mismatch.to_string().contains("mismatched local quote"));
 }
 
 #[tokio::test]
@@ -322,11 +316,11 @@ async fn accepted_melt_quote_materializes_canonical_terms_without_follower_backe
     let (proposer, proposer_store) =
         federated_test_mint_with_backend_agnostic_payment(runtime_config.clone()).await;
     let request = pending_melt_quote_request(1_000);
-    let quote = QuoteId::new();
     let (response, metadata) = proposer
-        .prepare_federation_melt_quote(quote.clone(), request.clone())
+        .prepare_melt_quote(request.clone())
         .await
         .expect("prepare canonical melt quote");
+    let quote = response.quote().expect("melt quote id").clone();
     assert_eq!(response.quote(), Some(&quote));
     assert!(proposer_store
         .get_melt_quote(&quote)

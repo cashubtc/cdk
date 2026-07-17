@@ -14,7 +14,7 @@ use cdk_common::federation::{
 };
 use cdk_common::{
     MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
-    MintQuoteResponse, QuoteId,
+    MintQuoteResponse,
 };
 use futures::future::join_all;
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -1121,63 +1121,10 @@ impl FederatedMintConnector {
         )))
     }
 
-    async fn threshold_visible_mint_quote_after_ambiguous_creation(
-        &self,
-        request: &MintQuoteRequest,
-        quote_id: &QuoteId,
-    ) -> Result<Option<MintQuoteResponse<String>>, Error> {
-        let method = request.method();
-        let quote = quote_id.to_string();
-        let member_responses = match self
-            .collect_mint_quote_status_responses(|connector| {
-                let method = method.clone();
-                let quote = quote.clone();
-                async move { connector.get_mint_quote_status(method, &quote).await }
-            })
-            .await
-        {
-            Ok(responses) => responses,
-            Err(_) => return Ok(None),
-        };
-        let response = match self.aggregate_mint_quote_status_response(&member_responses) {
-            Ok(response) => response,
-            Err(_) => return Ok(None),
-        };
-        validate_assigned_mint_quote_response(request, quote_id, &response)?;
-        Ok(Some(response))
-    }
-
-    async fn threshold_visible_melt_quote_after_ambiguous_creation(
-        &self,
-        request: &MeltQuoteRequest,
-        quote_id: &QuoteId,
-    ) -> Result<Option<MeltQuoteCreateResponse<String>>, Error> {
-        let method = request.method();
-        let quote = quote_id.to_string();
-        let member_responses = match self
-            .collect_melt_quote_status_responses(|connector| {
-                let method = method.clone();
-                let quote = quote.clone();
-                async move { connector.get_melt_quote_status(method, &quote).await }
-            })
-            .await
-        {
-            Ok(responses) => responses,
-            Err(_) => return Ok(None),
-        };
-        let response = match self.aggregate_melt_quote_status_response(&member_responses) {
-            Ok(response) => melt_quote_create_response_from_status(response),
-            Err(_) => return Ok(None),
-        };
-        validate_assigned_melt_quote_response(request, quote_id, &response)?;
-        Ok(Some(response))
-    }
-
     async fn create_mint_quote(
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error> {
-        let quote_id = QuoteId::new();
         let mut failures = Vec::new();
 
         for (member_id, connector) in
@@ -1185,41 +1132,25 @@ impl FederatedMintConnector {
         {
             let result = tokio::time::timeout(
                 self.config.member_fallback_timeout,
-                connector.post_mint_quote_with_id(request.clone(), &quote_id),
+                connector.post_mint_quote(request.clone()),
             )
             .await;
             match result {
-                Ok(Ok(response)) => {
-                    match validate_assigned_mint_quote_response(&request, &quote_id, &response) {
-                        Ok(()) => {
-                            self.verify_mint_quote_visible_to_threshold(&response)
-                                .await?;
-                            return Ok(response);
-                        }
-                        Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+                Ok(Ok(response)) => match validate_mint_quote_response(&request, &response) {
+                    Ok(()) => {
+                        self.verify_mint_quote_visible_to_threshold(&response)
+                            .await?;
+                        return Ok(response);
                     }
-                }
+                    Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+                },
                 Ok(Err(err)) if err.is_definitive_failure() => {
                     return Err(into_wallet_error(err));
                 }
                 Ok(Err(err)) => {
-                    // Quote IDs are assigned once and reused across members, so
-                    // retrying after one visibility check remains idempotent.
-                    if let Some(response) = self
-                        .threshold_visible_mint_quote_after_ambiguous_creation(&request, &quote_id)
-                        .await?
-                    {
-                        return Ok(response);
-                    }
                     failures.push(format!("member {}: {}", member_id, err));
                 }
                 Err(_) => {
-                    if let Some(response) = self
-                        .threshold_visible_mint_quote_after_ambiguous_creation(&request, &quote_id)
-                        .await?
-                    {
-                        return Ok(response);
-                    }
                     failures.push(format!(
                         "member {}: timed out after {}s",
                         member_id,
@@ -1239,7 +1170,6 @@ impl FederatedMintConnector {
         &self,
         request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        let quote_id = QuoteId::new();
         let mut failures = Vec::new();
 
         for (member_id, connector) in
@@ -1247,41 +1177,25 @@ impl FederatedMintConnector {
         {
             let result = tokio::time::timeout(
                 self.config.member_fallback_timeout,
-                connector.post_melt_quote_with_id(request.clone(), &quote_id),
+                connector.post_melt_quote(request.clone()),
             )
             .await;
             match result {
-                Ok(Ok(response)) => {
-                    match validate_assigned_melt_quote_response(&request, &quote_id, &response) {
-                        Ok(()) => {
-                            self.verify_melt_quote_visible_to_threshold(&response)
-                                .await?;
-                            return Ok(response);
-                        }
-                        Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+                Ok(Ok(response)) => match validate_melt_quote_response(&request, &response) {
+                    Ok(()) => {
+                        self.verify_melt_quote_visible_to_threshold(&response)
+                            .await?;
+                        return Ok(response);
                     }
-                }
+                    Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+                },
                 Ok(Err(err)) if err.is_definitive_failure() => {
                     return Err(into_wallet_error(err));
                 }
                 Ok(Err(err)) => {
-                    // Quote IDs are assigned once and reused across members, so
-                    // retrying after one visibility check remains idempotent.
-                    if let Some(response) = self
-                        .threshold_visible_melt_quote_after_ambiguous_creation(&request, &quote_id)
-                        .await?
-                    {
-                        return Ok(response);
-                    }
                     failures.push(format!("member {}: {}", member_id, err));
                 }
                 Err(_) => {
-                    if let Some(response) = self
-                        .threshold_visible_melt_quote_after_ambiguous_creation(&request, &quote_id)
-                        .await?
-                    {
-                        return Ok(response);
-                    }
                     failures.push(format!(
                         "member {}: timed out after {}s",
                         member_id,
@@ -1927,44 +1841,29 @@ fn mint_quote_status_consensus_view(
     })
 }
 
-fn validate_assigned_mint_quote_response(
+fn validate_mint_quote_response(
     request: &MintQuoteRequest,
-    quote_id: &QuoteId,
     response: &MintQuoteResponse<String>,
 ) -> Result<(), Error> {
-    if response.quote() != &quote_id.to_string() || response.method() != request.method() {
+    if response.quote().is_empty() || response.method() != request.method() {
         return Err(Error::InvalidMintResponse(
-            "federation member returned a mint quote for a different assigned ID or method"
-                .to_string(),
+            "federation member returned an unusable mint quote or a different method".to_string(),
         ));
     }
     Ok(())
 }
 
-fn validate_assigned_melt_quote_response(
+fn validate_melt_quote_response(
     request: &MeltQuoteRequest,
-    quote_id: &QuoteId,
     response: &MeltQuoteCreateResponse<String>,
 ) -> Result<(), Error> {
-    if response.quote() != Some(&quote_id.to_string()) || response.method() != request.method() {
+    if response.quote().is_none_or(String::is_empty) || response.method() != request.method() {
         return Err(Error::InvalidMintResponse(
-            "federation member returned a melt quote for a different assigned ID or method"
-                .to_string(),
+            "federation member returned an unusable melt quote or a different method".to_string(),
         ));
     }
 
     Ok(())
-}
-
-fn melt_quote_create_response_from_status(
-    response: MeltQuoteResponse<String>,
-) -> MeltQuoteCreateResponse<String> {
-    match response {
-        MeltQuoteResponse::Bolt11(response) => MeltQuoteCreateResponse::Bolt11(response),
-        MeltQuoteResponse::Bolt12(response) => MeltQuoteCreateResponse::Bolt12(response),
-        MeltQuoteResponse::Onchain(response) => MeltQuoteCreateResponse::Onchain(response),
-        MeltQuoteResponse::Custom(response) => MeltQuoteCreateResponse::Custom(response),
-    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]

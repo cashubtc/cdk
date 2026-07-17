@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use cdk_common::{
     AuthToken, MeltQuoteCreateResponse, MeltQuoteRequest, MeltQuoteResponse, MintQuoteRequest,
-    MintQuoteResponse, QuoteId,
+    MintQuoteResponse,
 };
 
 use super::Error;
@@ -110,18 +110,6 @@ pub trait MintConnector: Debug {
         &self,
         request: MintQuoteRequest,
     ) -> Result<MintQuoteResponse<String>, Error>;
-    /// Mint Quote with a caller-assigned ID for federation retry idempotency.
-    ///
-    /// Standalone connectors may use the default implementation. Federation
-    /// member connectors must preserve `quote_id` across ambiguous retries.
-    async fn post_mint_quote_with_id(
-        &self,
-        request: MintQuoteRequest,
-        quote_id: &QuoteId,
-    ) -> Result<MintQuoteResponse<String>, Error> {
-        let _ = quote_id;
-        self.post_mint_quote(request).await
-    }
     /// Mint Tokens [NUT-04]
     async fn post_mint(
         &self,
@@ -152,19 +140,6 @@ pub trait MintConnector: Debug {
         &self,
         request: MeltQuoteRequest,
     ) -> Result<MeltQuoteCreateResponse<String>, Error>;
-    /// Melt Quote with a caller-assigned ID for federation retry idempotency.
-    ///
-    /// Standalone connectors may use the default implementation. Federation
-    /// member connectors must preserve `quote_id` across ambiguous retries.
-    async fn post_melt_quote_with_id(
-        &self,
-        request: MeltQuoteRequest,
-        quote_id: &QuoteId,
-    ) -> Result<MeltQuoteCreateResponse<String>, Error> {
-        let _ = quote_id;
-        self.post_melt_quote(request).await
-    }
-
     /// Mint Quote status with payment method
     async fn get_mint_quote_status(
         &self,
