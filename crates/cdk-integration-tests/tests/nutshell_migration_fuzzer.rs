@@ -641,14 +641,6 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
         .update_proofs_state(vec![forced_pending_y], State::Pending)
         .await?;
 
-    // Record total balance of each wallet before migration
-    let mut balances_before = Vec::new();
-    for (i, wallet) in wallets.iter().enumerate() {
-        let bal = wallet.total_balance().await?;
-        println!("Wallet {} balance before migration: {}", i, bal);
-        balances_before.push(bal);
-    }
-
     // 3. Stop nutshell mint process
     println!("Stopping nutshell mint python process...");
     cleanup_guard.stop_nutshell();
@@ -687,6 +679,40 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
 
     // Read the seed from nutshell's database directly
     let conn = rusqlite::Connection::open(&nutshell_db_path)?;
+
+    // Fault-injected melts can leave the test wallet's local proof state stale
+    // even though Nutshell committed the proof as spent. Reconcile against the
+    // source of truth before capturing the pre-migration balance baseline.
+    let mut stmt = conn.prepare("SELECT y FROM proofs_used")?;
+    let spent_ys: std::collections::HashSet<cdk::nuts::PublicKey> = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(Result::ok)
+        .filter_map(|y| cdk::nuts::PublicKey::from_hex(&y).ok())
+        .collect();
+    for store in &wallet_stores {
+        let local_spent_ys = store
+            .get_proofs(None, None, None, None)
+            .await?
+            .into_iter()
+            .filter_map(|proof_info| {
+                let y = proof_info.proof.y().ok()?;
+                (spent_ys.contains(&y) && proof_info.state != State::Spent).then_some(y)
+            })
+            .collect::<Vec<_>>();
+        if !local_spent_ys.is_empty() {
+            store
+                .update_proofs_state(local_spent_ys, State::Spent)
+                .await?;
+        }
+    }
+
+    let mut balances_before = Vec::new();
+    for (i, wallet) in wallets.iter().enumerate() {
+        let balance = wallet.total_balance().await?;
+        println!("Wallet {i} balance before migration: {balance}");
+        balances_before.push(balance);
+    }
+
     conn.execute(
         "INSERT INTO proofs_pending (amount, id, c, secret, y, witness, created, melt_quote) VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch(), NULL)",
         rusqlite::params![
