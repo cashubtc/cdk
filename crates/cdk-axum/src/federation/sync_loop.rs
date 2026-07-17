@@ -105,7 +105,7 @@ pub(super) async fn run_federation_peer_sync_round<T>(
     peers: &[MemberConfigPublic],
 ) -> usize
 where
-    T: Transport,
+    T: Transport + 'static,
 {
     run_federation_peer_sync_attempts(state, client, peers, None).await
 }
@@ -117,7 +117,7 @@ pub(super) async fn run_federation_peer_sync_round_with_backoff<T>(
     backoff: &mut FederationPeerReconnectBackoff,
 ) -> usize
 where
-    T: Transport,
+    T: Transport + 'static,
 {
     run_federation_peer_sync_attempts(state, client, peers, Some(backoff)).await
 }
@@ -129,7 +129,7 @@ async fn run_federation_peer_sync_attempts<T>(
     mut backoff: Option<&mut FederationPeerReconnectBackoff>,
 ) -> usize
 where
-    T: Transport,
+    T: Transport + 'static,
 {
     if let Some(synced) =
         reconcile_replayed_live_session_before_checkpoint_exchange(state, client, peers).await
@@ -205,13 +205,7 @@ where
         }
     }
     apply_checkpoint_discovered_during_peer_sync(state, client, peers, &peer_statuses).await;
-    reconcile_federation_startup_with_quorum(
-        state,
-        client.sync_config,
-        round_started_at,
-        &peer_statuses,
-    )
-    .await;
+    reconcile_federation_startup_with_quorum(state, client, round_started_at, &peer_statuses).await;
     synced
 }
 
@@ -221,7 +215,7 @@ async fn reconcile_replayed_live_session_before_checkpoint_exchange<T>(
     peers: &[MemberConfigPublic],
 ) -> Option<usize>
 where
-    T: Transport,
+    T: Transport + 'static,
 {
     if !state.federation.live_session_available().await
         || !state.federation.live_session_replay_ready().await
@@ -249,13 +243,7 @@ where
         }
     }
 
-    reconcile_federation_startup_with_quorum(
-        state,
-        client.sync_config,
-        observed_at,
-        &peer_statuses,
-    )
-    .await;
+    reconcile_federation_startup_with_quorum(state, client, observed_at, &peer_statuses).await;
     matches!(
         state.federation_sync_status().await,
         Some(crate::FederationSyncStatus::Healthy)
@@ -922,12 +910,14 @@ async fn disseminate_latest_checkpoint_quorums<T>(
     }
 }
 
-pub(super) async fn reconcile_federation_startup_with_quorum(
+pub(super) async fn reconcile_federation_startup_with_quorum<T>(
     state: &MintState,
-    sync_config: FederationPeerSyncConfig,
+    client: &FederationRestPeerClient<T>,
     evidence_observed_at: Instant,
     peer_statuses: &[FederationPeerStatus],
-) {
+) where
+    T: Transport + 'static,
+{
     let Some(sync_status) = state.federation_sync_status().await else {
         return;
     };
@@ -954,9 +944,12 @@ pub(super) async fn reconcile_federation_startup_with_quorum(
             .threshold_params
             .consensus_threshold,
     );
-    let max_evidence_age = sync_config.peer_request_timeout.saturating_mul(u32::from(
-        runtime_config.public_config().threshold_params.member_count,
-    ));
+    let max_evidence_age = client
+        .sync_config
+        .peer_request_timeout
+        .saturating_mul(u32::from(
+            runtime_config.public_config().threshold_params.member_count,
+        ));
     if !quorum_evidence_is_current(evidence_observed_at, Instant::now(), max_evidence_age) {
         state
             .mark_federation_awaiting_quorum(local_status.operation_count)
@@ -1001,10 +994,11 @@ pub(super) async fn reconcile_federation_startup_with_quorum(
 
     let replay_target_next_unit_index_by_member =
         quorum_supported_replay_target(&local_status, peer_statuses, target_session, required);
-    match super::start_federation_aleph_bft_live_session(
+    match super::start_federation_aleph_bft_live_session_with_replay_target_and_transport(
         state,
-        sync_config,
+        client.sync_config,
         replay_target_next_unit_index_by_member,
+        client.cloned_transport(),
     )
     .await
     {
@@ -1033,8 +1027,7 @@ pub(super) fn quorum_supported_replay_target(
     target_session: u64,
     required: usize,
 ) -> BTreeMap<MemberId, u64> {
-    let peer_support = required.saturating_sub(1);
-    if peer_support == 0 {
+    if required <= 1 {
         return local_status.aleph_bft_next_unit_index_by_member.clone();
     }
     let matching = peer_statuses
@@ -1048,7 +1041,7 @@ pub(super) fn quorum_supported_replay_target(
         .aleph_bft_next_unit_index_by_member
         .iter()
         .map(|(member_id, local_next_unit_index)| {
-            let mut peer_indexes = matching
+            let mut supported_indexes = matching
                 .iter()
                 .filter_map(|status| {
                     status
@@ -1057,13 +1050,14 @@ pub(super) fn quorum_supported_replay_target(
                         .copied()
                 })
                 .collect::<Vec<_>>();
-            if peer_indexes.len() < peer_support {
+            supported_indexes.push(*local_next_unit_index);
+            if supported_indexes.len() < required {
                 return (*member_id, *local_next_unit_index);
             }
-            peer_indexes.sort_unstable_by(|left, right| right.cmp(left));
+            supported_indexes.sort_unstable_by(|left, right| right.cmp(left));
             (
                 *member_id,
-                (*local_next_unit_index).max(peer_indexes[peer_support - 1]),
+                (*local_next_unit_index).max(supported_indexes[required - 1]),
             )
         })
         .collect()
@@ -1514,8 +1508,7 @@ where
 
         let local_full_status = local_peer_status(state).await?;
         if !state.federation.live_session_active().await
-            && peer_status.aleph_bft_session == local_full_status.aleph_bft_session
-            && local_full_status.has_same_committed_state(&peer_status)
+            && local_full_status.has_same_application_state(&peer_status)
             && peer_status.aleph_bft_next_item_index.unwrap_or(0) > 0
         {
             if let Some(recovered_backup_status) = self

@@ -150,6 +150,15 @@ pub(super) async fn post_checkpoint_audit(
     let kind = FederationRestMessageKind::CheckpointAudit;
     let _permit = acquire_private_rest_admission(&state, kind)?;
     let verified = verify_federation_request(&state, &payload, kind).await?;
+    let local_member = federation_runtime_config(&state)?.member_id();
+    if verified.sender != local_member {
+        return Err(federation_error_response(
+            cdk::federation::FederationError::CheckpointAuditNotLocal {
+                expected: local_member,
+                found: verified.sender,
+            },
+        ));
+    }
     payload
         .payload
         .validate()

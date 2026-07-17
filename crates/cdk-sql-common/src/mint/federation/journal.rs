@@ -998,6 +998,46 @@ where
         let previous_checkpoint_id =
             latest_federation_checkpoint_id_for_kind(self, checkpoint.kind).await?;
         let checkpoint_id = insert_federation_checkpoint(self, checkpoint).await?;
+        if let Some(previous_checkpoint_id) = previous_checkpoint_id {
+            if previous_checkpoint_id != checkpoint_id {
+                prune_unreferenced_nonquorum_checkpoint(self, previous_checkpoint_id).await?;
+            }
+        }
+        self.prune_federation_checkpoints().await?;
+        Ok(())
+    }
+
+    async fn record_federation_materialized_state_audit(
+        &mut self,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<(), Self::Err> {
+        let frontier = ensure_checkpoint_not_ahead_of_local_state(self, checkpoint).await?;
+        if !frontier.is_at_checkpoint_position(checkpoint) {
+            return Err(Error::Internal(
+                "Federation materialized-state audit does not equal the current durable frontier"
+                    .to_string(),
+            ));
+        }
+        let checkpoint_id = checkpoint
+            .id()
+            .map_err(|e| Error::Internal(format!("Invalid federation checkpoint: {e}")))?;
+        let stored = query(
+            r#"
+            SELECT checkpoint_id, checkpoint_json
+            FROM federation_checkpoints
+            WHERE checkpoint_id = :checkpoint_id
+            "#,
+        )?
+        .bind("checkpoint_id", checkpoint_id.to_string())
+        .fetch_one(&self.inner)
+        .await?
+        .map(sql_row_to_federation_checkpoint)
+        .transpose()?;
+        if stored.as_ref() != Some(checkpoint) {
+            return Err(Error::Internal(
+                "Federation materialized-state audit checkpoint is not stored exactly".to_string(),
+            ));
+        }
         query(
             r#"
             UPDATE federation_checkpoint_state
@@ -1015,12 +1055,6 @@ where
         .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
         .execute(&self.inner)
         .await?;
-        if let Some(previous_checkpoint_id) = previous_checkpoint_id {
-            if previous_checkpoint_id != checkpoint_id {
-                prune_unreferenced_nonquorum_checkpoint(self, previous_checkpoint_id).await?;
-            }
-        }
-        self.prune_federation_checkpoints().await?;
         Ok(())
     }
 
@@ -1148,10 +1182,7 @@ where
                 query(
                     r#"
                     UPDATE federation_checkpoint_state
-                    SET
-                        trusted_checkpoint_id = :trusted_checkpoint_id,
-                        latest_audited_checkpoint_id = :trusted_checkpoint_id,
-                        latest_materialized_state_digest = :materialized_state_digest
+                    SET trusted_checkpoint_id = :trusted_checkpoint_id
                     WHERE state_key = :state_key
                     "#,
                 )?
@@ -1164,10 +1195,6 @@ where
                             Error::Internal(format!("Invalid federation checkpoint: {e}"))
                         })?
                         .to_string(),
-                )
-                .bind(
-                    "materialized_state_digest",
-                    quorum.checkpoint.materialized_state_digest.to_string(),
                 )
                 .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
                 .execute(&self.inner)
@@ -1183,10 +1210,7 @@ where
         query(
             r#"
             UPDATE federation_checkpoint_state
-            SET
-                trusted_checkpoint_id = :trusted_checkpoint_id,
-                latest_audited_checkpoint_id = :trusted_checkpoint_id,
-                latest_materialized_state_digest = :materialized_state_digest
+            SET trusted_checkpoint_id = :trusted_checkpoint_id
             WHERE state_key = :state_key
             "#,
         )?
@@ -1197,10 +1221,6 @@ where
                 .id()
                 .map_err(|e| Error::Internal(format!("Invalid federation checkpoint: {e}")))?
                 .to_string(),
-        )
-        .bind(
-            "materialized_state_digest",
-            quorum.checkpoint.materialized_state_digest.to_string(),
         )
         .bind("state_key", FEDERATION_CHECKPOINT_STATE_KEY)
         .execute(&self.inner)

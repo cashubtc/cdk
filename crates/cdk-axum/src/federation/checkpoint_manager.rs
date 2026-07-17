@@ -143,6 +143,8 @@ impl FederationNodeRuntime {
         )?;
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_checkpoint_candidate(&checkpoint).await?;
+        tx.record_federation_materialized_state_audit(&checkpoint)
+            .await?;
         tx.add_federation_checkpoint_signature(&signature).await?;
         tx.commit().await?;
         #[cfg(feature = "prometheus")]
@@ -291,6 +293,11 @@ impl FederationNodeRuntime {
             }
             .into());
         }
+
+        let mut tx = db.begin_transaction().await?;
+        tx.record_federation_materialized_state_audit(checkpoint)
+            .await?;
+        tx.commit().await?;
 
         Ok(FederationCheckpointAuditResponse {
             version: FEDERATION_REST_API_VERSION,
@@ -451,18 +458,6 @@ impl FederationNodeRuntime {
         let mut consensus = consensus.lock().await;
         let requested_after = consensus.next_item_index();
 
-        if self
-            .checkpoint_candidate_covers_recovery_need(
-                public_config,
-                requested_after,
-                boundary.as_ref(),
-            )
-            .await?
-        {
-            self.clear_recovery_checkpoint_request().await;
-            return Ok(false);
-        }
-
         let (scheduled_sequence, scheduled_anchor_id) = match latest_scheduled.as_ref() {
             Some(checkpoint) => (
                 checkpoint.scheduled_checkpoint_sequence,
@@ -470,6 +465,21 @@ impl FederationNodeRuntime {
             ),
             None => (0, None),
         };
+
+        if self
+            .checkpoint_candidate_covers_recovery_need(
+                public_config,
+                requested_after,
+                boundary.as_ref(),
+                scheduled_sequence,
+                scheduled_anchor_id,
+            )
+            .await?
+        {
+            self.clear_recovery_checkpoint_request().await;
+            return Ok(false);
+        }
+
         let barrier = FederationRecoveryBarrier::new(
             runtime_config.federation_id(),
             scheduled_sequence,
@@ -501,6 +511,8 @@ impl FederationNodeRuntime {
         public_config: &cdk::federation::FederationConfig,
         requested_after: u64,
         current_boundary: Option<&FederationCheckpointBoundary>,
+        scheduled_sequence: u64,
+        scheduled_anchor_id: Option<FederationCheckpointId>,
     ) -> Result<bool, cdk::Error> {
         let db = self.active_mint()?.localstore();
         for kind in [
@@ -509,16 +521,24 @@ impl FederationNodeRuntime {
         ] {
             if let Some(checkpoint) = db.get_latest_federation_checkpoint(kind).await? {
                 checkpoint.validate_against_config(public_config)?;
-                if checkpoint_covers_recovery_need(&checkpoint, requested_after, current_boundary) {
+                if checkpoint_covers_current_recovery_need(
+                    &checkpoint,
+                    requested_after,
+                    current_boundary,
+                    scheduled_sequence,
+                    scheduled_anchor_id,
+                ) {
                     return Ok(true);
                 }
             }
             if let Some(quorum) = db.get_latest_federation_checkpoint_quorum(kind).await? {
                 let verified = quorum.verify(public_config)?;
-                if checkpoint_covers_recovery_need(
+                if checkpoint_covers_current_recovery_need(
                     verified.checkpoint(),
                     requested_after,
                     current_boundary,
+                    scheduled_sequence,
+                    scheduled_anchor_id,
                 ) {
                     return Ok(true);
                 }
@@ -561,16 +581,6 @@ impl FederationNodeRuntime {
         let public_config = runtime_config.public_config();
         boundary.validate_against_config(public_config)?;
         let db = mint.localstore();
-        if self
-            .checkpoint_candidate_covers_recovery_need(
-                public_config,
-                barrier.requested_after_finalized_item_index,
-                Some(&boundary),
-            )
-            .await?
-        {
-            return Ok(None);
-        }
         let latest_scheduled_quorum = db
             .get_latest_federation_checkpoint_quorum(FederationCheckpointKind::Scheduled)
             .await?;
@@ -605,6 +615,18 @@ impl FederationNodeRuntime {
             ),
             None => (0, None),
         };
+        if self
+            .checkpoint_candidate_covers_recovery_need(
+                public_config,
+                barrier.requested_after_finalized_item_index,
+                Some(&boundary),
+                scheduled_sequence,
+                scheduled_anchor_id,
+            )
+            .await?
+        {
+            return Ok(None);
+        }
         if barrier.scheduled_checkpoint_sequence != scheduled_sequence
             || barrier.scheduled_anchor_id != scheduled_anchor_id
         {
@@ -731,6 +753,8 @@ impl FederationNodeRuntime {
         )?;
         let mut tx = db.begin_transaction().await?;
         tx.add_federation_checkpoint_candidate(&checkpoint).await?;
+        tx.record_federation_materialized_state_audit(&checkpoint)
+            .await?;
         tx.add_federation_checkpoint_signature(&signature).await?;
         tx.commit().await?;
         #[cfg(feature = "prometheus")]
@@ -975,11 +999,19 @@ impl FederationNodeRuntime {
     }
 }
 
-fn checkpoint_covers_recovery_need(
+pub(super) fn checkpoint_covers_current_recovery_need(
     checkpoint: &FederationCheckpoint,
     requested_after: u64,
     current_boundary: Option<&FederationCheckpointBoundary>,
+    scheduled_sequence: u64,
+    scheduled_anchor_id: Option<FederationCheckpointId>,
 ) -> bool {
+    if checkpoint.kind == FederationCheckpointKind::Recovery
+        && (checkpoint.scheduled_checkpoint_sequence != scheduled_sequence
+            || checkpoint.scheduled_anchor_id != scheduled_anchor_id)
+    {
+        return false;
+    }
     checkpoint.finalized_next_item_index >= requested_after
         || current_boundary.is_some_and(|boundary| {
             let checkpoint_frontier = checkpoint.committed_frontier();

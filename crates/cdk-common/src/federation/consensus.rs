@@ -1426,6 +1426,7 @@ impl FederationAlephBftFinalizationHandler {
         })
     }
 
+    #[cfg(any(test, feature = "test"))]
     fn reconstruct_retained_items(
         federation_id: FederationId,
         session: u64,
@@ -2076,6 +2077,7 @@ impl FederationConsensusRuntime {
     }
 
     /// Raw-history reconstruction used only by crate-local fault-injection tests.
+    #[cfg(any(test, feature = "test"))]
     #[doc(hidden)]
     pub fn recover_raw_for_test(
         federation_id: FederationId,
@@ -2094,6 +2096,7 @@ impl FederationConsensusRuntime {
         )
     }
 
+    #[cfg(any(test, feature = "test"))]
     fn reconstruct_authenticated_test_history(
         public_config: FederationConfig,
         local_member: MemberId,
@@ -2204,6 +2207,7 @@ impl FederationConsensusRuntime {
         })
     }
 
+    #[cfg(any(test, feature = "test"))]
     fn reconstruct_raw_test_history(
         federation_id: FederationId,
         local_member: MemberId,
@@ -2695,6 +2699,7 @@ impl FederationConsensusRuntime {
     }
 }
 
+#[cfg(any(test, feature = "test"))]
 fn next_local_unit_index_after_recovery(
     local_member: MemberId,
     session: u64,
@@ -2819,6 +2824,7 @@ impl FederationConsensusRuntime {
     /// Construct an unverified checkpoint base for cross-crate test fixtures.
     ///
     /// Production recovery must use [`Self::recover_verified_suffix`].
+    #[cfg(any(test, feature = "test"))]
     #[doc(hidden)]
     pub fn checkpoint_base_for_test(
         public_config: &FederationConfig,
@@ -2861,6 +2867,7 @@ impl FederationConsensusRuntime {
     /// Reconstruct raw genesis history for cross-crate test fixtures.
     ///
     /// Production recovery must use [`Self::recover_verified_suffix`].
+    #[cfg(any(test, feature = "test"))]
     #[doc(hidden)]
     pub fn recover_finalized_items_for_test(
         public_config: &FederationConfig,

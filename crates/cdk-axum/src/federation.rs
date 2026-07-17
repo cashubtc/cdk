@@ -67,7 +67,8 @@ use self::aleph_bft_session::{
     FederationAlephBftLiveSessionStartupDecision,
 };
 pub(crate) use self::aleph_bft_session::{
-    halt_current_federation_aleph_bft_session, start_federation_aleph_bft_live_session,
+    halt_current_federation_aleph_bft_session,
+    start_federation_aleph_bft_live_session_with_replay_target_and_transport,
     stop_current_federation_aleph_bft_session_for_catch_up, AlephBftSessionSupervisor,
 };
 use self::backup_routes::post_aleph_bft_backup;
@@ -514,6 +515,7 @@ fn federation_error_response(err: FederationError) -> Response {
 fn federation_error_status(err: &FederationError) -> StatusCode {
     match err {
         FederationError::ConflictingOperation { .. } => StatusCode::CONFLICT,
+        FederationError::CheckpointAuditNotLocal { .. } => StatusCode::FORBIDDEN,
         FederationError::PendingConsensusMempoolFull { .. }
         | FederationError::ResponseWaiterLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
         FederationError::ConsensusQuorumUnavailable { .. }

@@ -485,6 +485,10 @@ impl FederationNodeRuntime {
         self.components.readiness.mark_healthy().await
     }
 
+    pub(crate) async fn mark_healthy_after_replay(&self) {
+        self.components.readiness.mark_healthy_after_replay().await
+    }
+
     pub(crate) async fn mark_halted(&self, reason: String) {
         self.components.readiness.mark_halted(reason).await
     }

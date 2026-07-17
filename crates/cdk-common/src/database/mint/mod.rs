@@ -791,8 +791,18 @@ pub trait FederationJournalTransaction {
         sequence: u64,
     ) -> Result<(), Self::Err>;
 
-    /// Persist a locally derived checkpoint candidate at the exact current durable frontier.
+    /// Persist a local or peer-derived checkpoint candidate at the exact current durable frontier.
     async fn add_federation_checkpoint_candidate(
+        &mut self,
+        checkpoint: &FederationCheckpoint,
+    ) -> Result<(), Self::Err>;
+
+    /// Record a successful local full-state audit for an already stored checkpoint.
+    ///
+    /// The caller must have recomputed the complete materialized-state digest while
+    /// holding its application mutation lock. The checkpoint must equal the current
+    /// durable frontier.
+    async fn record_federation_materialized_state_audit(
         &mut self,
         checkpoint: &FederationCheckpoint,
     ) -> Result<(), Self::Err>;

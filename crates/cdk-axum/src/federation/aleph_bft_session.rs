@@ -546,12 +546,16 @@ async fn await_aleph_bft_session_activation(mut activation: watch::Receiver<bool
     }
 }
 
-/// Start the live upstream AlephBFT session and install its inbound network queue.
-pub(crate) async fn start_federation_aleph_bft_live_session(
+/// Start the live upstream AlephBFT session with its quorum-supported replay target.
+pub(crate) async fn start_federation_aleph_bft_live_session_with_replay_target_and_transport<T>(
     state: &MintState,
     sync_config: FederationPeerSyncConfig,
     replay_target_next_unit_index_by_member: BTreeMap<MemberId, u64>,
-) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error> {
+    transport: T,
+) -> Result<Option<Arc<AlephBftSessionSupervisor>>, cdk::Error>
+where
+    T: Transport + 'static,
+{
     start_federation_aleph_bft_live_session_with_options_and_transport(
         state,
         sync_config,
@@ -560,7 +564,7 @@ pub(crate) async fn start_federation_aleph_bft_live_session(
             sync_config,
         )
         .with_replay_target_next_unit_index_by_member(replay_target_next_unit_index_by_member),
-        Async::default(),
+        transport,
     )
     .await
 }
@@ -1015,7 +1019,7 @@ fn spawn_federation_aleph_bft_replay_readiness_watcher(
         {
             return;
         }
-        state.mark_federation_healthy().await;
+        state.federation.mark_healthy_after_replay().await;
         drop(live_session);
     });
 }

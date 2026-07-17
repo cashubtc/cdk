@@ -1090,6 +1090,12 @@ impl FederationSyncState {
         self.status = FederationSyncStatus::Healthy;
     }
 
+    fn mark_healthy_after_replay(&mut self) {
+        if matches!(self.status, FederationSyncStatus::AwaitingQuorum { .. }) {
+            self.status = FederationSyncStatus::Healthy;
+        }
+    }
+
     fn mark_halted(&mut self, reason: String) {
         let reason = redact_federation_operator_message(&reason);
         self.status = FederationSyncStatus::Halted { reason };

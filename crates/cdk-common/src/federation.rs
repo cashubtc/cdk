@@ -561,6 +561,16 @@ pub enum FederationError {
         /// Stable validation reason without operation payloads.
         reason: String,
     },
+    /// A checkpoint audit was not authorized by the member whose state would be scanned.
+    #[error(
+        "Federation checkpoint audit must be authorized by local member {expected}, found {found}"
+    )]
+    CheckpointAuditNotLocal {
+        /// Member whose local database would be audited.
+        expected: MemberId,
+        /// Authenticated member that requested the audit.
+        found: MemberId,
+    },
     /// A checkpoint-bound database backup manifest failed validation.
     #[error("Federation database backup manifest is invalid: {reason}")]
     BackupManifestInvalid {

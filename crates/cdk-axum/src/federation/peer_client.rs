@@ -72,6 +72,10 @@ impl<T> FederationRestPeerClient<T>
 where
     T: Transport,
 {
+    pub(super) fn cloned_transport(&self) -> T {
+        self.transport.clone()
+    }
+
     pub(crate) fn new(
         transport: T,
         public_config: &FederationConfig,

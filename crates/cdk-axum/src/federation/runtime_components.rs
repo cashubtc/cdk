@@ -154,6 +154,11 @@ impl FederationReadinessCoordinator {
         self.update(FederationSyncState::mark_healthy).await;
     }
 
+    pub(super) async fn mark_healthy_after_replay(&self) {
+        self.update(FederationSyncState::mark_healthy_after_replay)
+            .await;
+    }
+
     pub(super) async fn mark_halted(&self, reason: String) {
         self.update(|sync| sync.mark_halted(reason)).await;
     }

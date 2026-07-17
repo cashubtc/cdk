@@ -25,8 +25,10 @@ Every safety-critical operation must be ordered, durably journaled, replayable, 
   quorums authenticate recovery frontiers; normal restart validates only the
   suffix after the trusted checkpoint. The final object model, ownership, lock
   order, and recovery sequences are documented in
-  `docs/federated-cashu-checkpoint-architecture.md`; the implementation record
-  remains in `docs/federated-cdk-checkpoint-implementation-plan.md`.
+  `docs/federated-cashu-checkpoint-architecture.md`; the original implementation
+  record remains in `docs/federated-cdk-checkpoint-implementation-plan.md`, and
+  the completed consolidation and final verification record is in
+  `docs/federated-cashu-checkpoint-consolidation-plan.md`.
 - Mint, swap, and melt flows are serialized before signing or payment side effects. Payment observations require quorum evidence and deterministic journal-time materialization.
 - Federation-aware wallets require threshold-consistent views, reject invalid shares, aggregate BLS shares, and preserve ambiguous or unavailable outcomes in existing recoverable wallet flows.
 - Keyset and session rotation, pending-operation recovery, restart/catch-up, member fault handling, and fail-closed readiness gates are implemented.
@@ -34,6 +36,11 @@ Every safety-critical operation must be ordered, durably journaled, replayable, 
   operator-only materialized-state audit recovery are documented in
   `docs/federated-cashu-backup-recovery.md`. No background full-state audit or
   peer physical-state snapshot protocol is part of version 1.
+- Exact-checkpoint startup reads no historical journal/finalized prefix and
+  performs no full materialized-state scan. Checkpoint-tail startup and peer
+  catch-up use the same bounded suffix verifier. AlephBFT backup transfer is a
+  separate, current-session, size-bounded recovery path and cannot advance mint
+  state or checkpoint trust.
 - The local harness starts a configurable number of members, completes real DKG, restarts into consensus, checks configuration and state convergence, and exercises mint, send/receive, restore, and melt flows.
 - Standalone CDK remains available without federation features. Federation keysets are v3/BLS-only.
 

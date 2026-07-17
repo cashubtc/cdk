@@ -1,6 +1,6 @@
 # Federated Cashu checkpoint and catch-up consolidation plan
 
-Status: in progress (milestones 0-10 complete; milestone 11 in progress)
+Status: complete (milestones 0-11 complete)
 Scope: federation-only checkpoint, catch-up, startup recovery, and related
 AlephBFT runtime consolidation
 Primary goal: simplify the checkpoint and catch-up implementation without
@@ -364,7 +364,7 @@ Update this table whenever a milestone changes state.
 | 8 | Transport and request-state consolidation | Complete | `refactor: separate federation recovery transport` | Checkpoint-history and AlephBFT-backup traffic use distinct signed message kinds, wire types, routes, clients, size limits, and mutation paths; recovery demand and its proposal lease are one explicit state machine. |
 | 9 | Remove whole-runtime cloning | Complete | `refactor: replace federation runtime clones with deltas` | Submission and finalization prepare bounded non-mutating deltas, persist first, and commit under the existing serialized runtime lock; injected persistence failures leave published state unchanged and clone-path growth is removed from both production hot paths. |
 | 10 | Bootstrap, backup, operator, and retention contract | Complete | `feat: define federation backup recovery contract` | A versioned checkpoint-bound backup manifest gates restore before runtime startup; v1 retains recovery bodies from genesis, protects the active backup, exposes bounded redacted status, and documents operator-only audit recovery and deferred peer snapshots. |
-| 11 | Adversarial integration, performance, and final cleanup | In progress | — | Running final architecture cleanup, adversarial review, local fake-wallet campaigns, and the required validation matrix. |
+| 11 | Adversarial integration, performance, and final cleanup | Complete | `feat: finalize federated checkpoint consolidation` | Final cleanup, architecture records, adversarial review, local fake-wallet campaigns, and the required validation matrix are complete. |
 
 ## Milestone 0: Baseline, invariants, and fault reproduction
 
@@ -1523,7 +1523,7 @@ no warning reported a milestone-10 changed path.
 
 ## Milestone 11: Adversarial integration, performance, and final cleanup
 
-Status: in progress
+Status: complete
 
 ### Objective
 
@@ -1533,89 +1533,159 @@ code and update the architectural record.
 
 ### Checklist
 
-- [ ] Delete superseded frontier structs, comparison helpers, recovery
+- [x] Delete superseded frontier structs, comparison helpers, recovery
       constructors, batch aggregators, quiet-tip state, overloaded transport
       fields, compatibility scaffolding, and dead tests.
-- [ ] Update `docs/federated-cashu-implementation-plan.md` and
+- [x] Update `docs/federated-cashu-implementation-plan.md` and
       `docs/federated-cdk-checkpoint-implementation-plan.md` to point to the
       consolidated design and accurately describe current behavior.
-- [ ] Add an architecture guide showing the final object model, ownership,
+- [x] Add an architecture guide showing the final object model, ownership,
       startup sequence, catch-up sequence, checkpoint lifecycle, lock order,
       and failure recovery.
-- [ ] Compare production lines, public/internal API count, duplicate validation
+- [x] Compare production lines, public/internal API count, duplicate validation
       helpers, runtime allocations, startup work, and catch-up memory against
       milestone 0.
-- [ ] Run multi-member crash, restart, partition, delayed peer, invalid source,
+- [x] Run multi-member crash, restart, partition, delayed peer, invalid source,
       duplicate delivery, sustained load, and session rotation campaigns.
-- [ ] Verify logs, metrics, and errors are bounded and contain no private
+- [x] Verify logs, metrics, and errors are bounded and contain no private
       material, credentials, sensitive payloads, machine-specific paths, or PII.
-- [ ] Obtain an independent security/protocol review of the final frontier,
+- [x] Obtain an independent security/protocol review of the final frontier,
       verifier, barrier, promotion, and replay state machines.
-- [ ] Record every command run and every test intentionally not run.
+- [x] Record every command run and every test intentionally not run.
 
 ### Required final test matrix
 
-- [ ] Exact trusted-checkpoint restart performs no historical prefix reads and
+- [x] Exact trusted-checkpoint restart performs no historical prefix reads and
       no full materialized-state scan.
-- [ ] Trusted checkpoint plus terminal local tail validates only the suffix.
-- [ ] Trusted checkpoint plus partially applied tail replays safely after every
+- [x] Trusted checkpoint plus terminal local tail validates only the suffix.
+- [x] Trusted checkpoint plus partially applied tail replays safely after every
       injected crash boundary.
-- [ ] Genesis bootstrap remains deterministic and bounded per configured page
+- [x] Genesis bootstrap remains deterministic and bounded per configured page
       and staged-byte limits.
-- [ ] One and multiple scheduled-checkpoint catch-ups promote only exact verified
+- [x] One and multiple scheduled-checkpoint catch-ups promote only exact verified
       targets.
-- [ ] Sustained-load recovery barrier lets a lagging member reach healthy
+- [x] Sustained-load recovery barrier lets a lagging member reach healthy
       without stopping valid traffic.
-- [ ] Invalid checkpoint signatures, duplicate signers, wrong federation/config,
+- [x] Invalid checkpoint signatures, duplicate signers, wrong federation/config,
       rollback, lineage fork, equal-cursor digest mismatch, partial units,
       altered envelopes, altered application outcomes, and altered materialized
       digest all fail closed.
-- [ ] Invalid or unavailable body and backup sources fail over without advancing
+- [x] Invalid or unavailable body and backup sources fail over without advancing
       trust.
-- [ ] A crash never leaves a trusted checkpoint ahead of journal, finalized, or
+- [x] A crash never leaves a trusted checkpoint ahead of journal, finalized, or
       terminal application state.
-- [ ] Pending operations survive restart without double finalization or effects.
-- [ ] AlephBFT backup recovery remains separately bounded and cannot authorize
+- [x] Pending operations survive restart without double finalization or effects.
+- [x] AlephBFT backup recovery remains separately bounded and cannot authorize
       mint state.
-- [ ] SQLite and PostgreSQL federation test suites pass.
-- [ ] `cargo test -p cdk-common --features federation` passes.
-- [ ] `cargo test -p cdk --features federation` passes.
-- [ ] `cargo test -p cdk-axum --features federation --lib` passes, using network
+- [x] SQLite and PostgreSQL federation test suites pass.
+- [x] `cargo test -p cdk-common --features federation` passes.
+- [x] `cargo test -p cdk --features federation` passes.
+- [x] `cargo test -p cdk-axum --features federation --lib` passes, using network
       permission for localhost-listener tests from the first attempt.
-- [ ] Relevant integration tests pass with deterministic test-thread settings
+- [x] Relevant integration tests pass with deterministic test-thread settings
       only where the existing suite requires them.
-- [ ] `cargo check --workspace --all-targets` passes.
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `cargo test --lib --workspace --exclude cdk-postgres` passes.
-- [ ] Federation-disabled standalone and WASM checks remain successful where
+- [x] `cargo check --workspace --all-targets` passes.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo test --lib --workspace --exclude cdk-postgres` passes.
+- [x] Federation-disabled standalone and WASM checks remain successful where
       affected by shared-code changes.
 
 ### Final acceptance criteria
 
-- [ ] The implementation has one canonical frontier model.
-- [ ] Startup and catch-up use one suffix verifier.
-- [ ] Consensus recovery has one production entry point.
-- [ ] Checkpoint and catch-up workflows have focused owners.
-- [ ] Catch-up memory and bytes are explicitly bounded.
-- [ ] Partially applied checkpoint suffixes recover after crashes.
-- [ ] Recovery makes progress under sustained finalization.
-- [ ] Production hot paths do not clone the complete consensus runtime.
-- [ ] Transport separates history catch-up from AlephBFT backup transfer.
-- [ ] No existing security invariant has been removed or weakened.
-- [ ] Documentation and operator procedures match the code.
-- [ ] An independent reviewer can follow checkpoint authority from quorum proof
+- [x] The implementation has one canonical frontier model.
+- [x] Startup and catch-up use one suffix verifier.
+- [x] Consensus recovery has one production entry point.
+- [x] Checkpoint and catch-up workflows have focused owners.
+- [x] Catch-up memory and bytes are explicitly bounded.
+- [x] Partially applied checkpoint suffixes recover after crashes.
+- [x] Recovery makes progress under sustained finalization.
+- [x] Production hot paths do not clone the complete consensus runtime.
+- [x] Transport separates history catch-up from AlephBFT backup transfer.
+- [x] No existing security invariant has been removed or weakened.
+- [x] Documentation and operator procedures match the code.
+- [x] An independent reviewer can follow checkpoint authority from quorum proof
       through suffix verification, deterministic application, promotion, and
       readiness without consulting parallel implementations.
 
 ### Progress notes
 
-Record final results, residual risks, independent review conclusions, and links
-to follow-up work here.
+The final consolidation removed every superseded production path named by the
+plan. Five combinatorial public history-recovery constructors became one
+verified-suffix entry point. Handwritten aggregate-frontier comparisons and the
+separate startup, genesis, and catch-up validators became one canonical
+frontier model and one suffix verifier. Raw malformed-history constructors are
+compiled only for tests. History and AlephBFT-backup requests now have distinct
+types, routes, limits, and mutation paths.
+
+The milestone-0 and final deterministic measurements compare as follows:
+
+| Dimension | Milestone 0 | Consolidated result |
+|---|---:|---:|
+| `FederationNodeRuntime` composition/lifecycle owner | 2,834 lines | 589 lines; workflow code is in focused owners |
+| Production history-recovery entry points | 5 combinatorial constructors | 1 verified-suffix entry point |
+| Aggregate frontier/validation implementations | Handwritten across startup, promotion, status, and catch-up | 1 canonical frontier plus 1 incremental verifier |
+| Ordinary submission/finalization full-runtime clones | 2 | 0 |
+| Retained/prepared bytes at a 256-operation suffix | 608,771 clone bytes | 3,790 prepared-delta bytes |
+| Exact-checkpoint historical rows/audits | 0 / 0 at 1k, 10k, and 100k history | 0 / 0, retained by the final suites |
+| Fixed-tail startup reads | 64 journal + 64 finalized rows at every history size | Tail-only, bounded by the configured recovery suffix limits |
+| Catch-up aggregation | 17,305 bytes for a 12-item/four-page fixture and growing with the whole batch | One page, one incomplete unit, and the configured 20,000-item/8 MiB bounds; no whole-batch response |
+
+Final adversarial coverage used deterministic local federation members and the
+fake wallet for both Lightning and on-chain payment paths. It covered four- and
+five-member offline recovery, below-finality partitions, conflicting operations
+and melt recovery, delayed and malformed sources, duplicate delivery, crash
+boundaries, sustained finalization, replay targets, session rotation, backup
+failover, and operator audit authorization. A last regression also proves that
+current-session backup import compares the authoritative application frontier,
+not member-local audit provenance or empty finalized items, while the separate
+backup path remains unable to advance application or checkpoint authority.
+
+The final commands and results were:
+
+- `cargo test -p cdk-axum --features federation --lib`: 490 passed, 2 ignored;
+- `cargo test -p cdk-common --features federation`: 416 library tests passed,
+  1 ignored, plus all integration and documentation tests;
+- `cargo test -p cdk --features federation`: 768 library tests and all enabled
+  documentation tests passed;
+- `cargo test -p cdk-sqlite --features federation`: 164 passed;
+- `cargo test -p cdk-postgres --features federation -- --test-threads 1`: 151
+  passed against a disposable local server, which was stopped afterward;
+- `cargo check --workspace --all-targets` and
+  `cargo clippy --workspace --all-targets -- -D warnings` passed;
+- `cargo test --lib --workspace --exclude cdk-postgres` passed;
+- `cargo check -p cdk-axum --no-default-features` passed;
+- `cargo check -p cdk --target wasm32-unknown-unknown` passed with the stable
+  Rust toolchain and a WebAssembly-capable LLVM compiler; and
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+
+The first constrained Axum and `cdk` runs reported only denied loopback binds;
+the authoritative reruns with local-network permission passed completely. The
+Axum suite's two intentionally ignored tests are manual performance/process
+stress tools and were not promoted to ordinary CI tests. No Nocean or external
+regtest campaign was run: the requested local fake-wallet campaigns cover the
+checkpoint state machines with lower latency and deterministic faults. No
+background materialized-state audit was implemented; audit remains an explicit
+local-operator action by design.
+
+An independent security/protocol review of the frontier, verifier, barrier,
+promotion, replay, backup, and audit changes returned `APPROVE` after six
+findings were fixed: stale recovery lineage suppressing a replacement barrier,
+incorrect quorum replay-target counting, a replay watcher overwriting
+catch-up readiness, remote invocation of the operator audit, production
+availability of raw recovery constructors, and imported checkpoints falsely
+claiming local audit provenance. The final code and diff audit found no secret,
+credential, private material, payload, machine-path, or PII exposure. Errors
+and status projections remain bounded and redacted.
+
+Residual risk: general AlephBFT inbound and finalized-unit channels outside the
+checkpoint transfer path remain unbounded. This pre-existing broader runtime
+concern does not weaken the checkpoint page, backup, suffix, or staged-byte
+bounds and should be addressed as separate consensus-runtime hardening.
 
 ### Commit gate
 
-- [ ] Commit final cleanup, documentation, and verification evidence. Mark this
+- [x] Commit final cleanup, documentation, and verification evidence. Mark this
       plan complete only after the final commit is present and all acceptance
       criteria are checked.
 

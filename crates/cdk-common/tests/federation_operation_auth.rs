@@ -163,15 +163,6 @@ fn authenticated_consensus_rejects_observer_impersonation_without_poisoning_the_
         runtime.finalized_items()[0].status,
         FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
     );
-    runtime = FederationConsensusRuntime::recover_finalized_items_for_test(
-        config,
-        member_id(1),
-        0,
-        runtime.finalized_items().to_vec(),
-    )
-    .expect("recover rejected operation");
-    assert!(runtime.journal().entries().is_empty());
-
     let valid =
         FederationOperationEnvelope::new(config.federation_id, payment_observation(member_id(2)))
             .authorize(

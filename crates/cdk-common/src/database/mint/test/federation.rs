@@ -920,6 +920,12 @@ where
     tx.commit()
         .await
         .expect("commit superseded recovery candidate");
+    let frontier = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("peer-derived candidate frontier");
+    assert_eq!(frontier.latest_audited_checkpoint_id, None);
+    assert_eq!(frontier.latest_materialized_state_digest, None);
 
     let mut tx = Database::begin_transaction(&db)
         .await
@@ -955,6 +961,9 @@ where
     tx.add_federation_checkpoint_candidate(&checkpoint)
         .await
         .expect("persist checkpoint candidate");
+    tx.record_federation_materialized_state_audit(&checkpoint)
+        .await
+        .expect("record local checkpoint audit");
     tx.add_federation_checkpoint_signature(&first_signature)
         .await
         .expect("persist checkpoint signature");
@@ -1102,6 +1111,15 @@ where
             .expect("recovery checkpoint frontier")
             .trusted_checkpoint_id,
         Some(recovery_id)
+    );
+    let frontier = db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("recovery checkpoint audit frontier");
+    assert_eq!(frontier.latest_audited_checkpoint_id, Some(checkpoint_id));
+    assert_eq!(
+        frontier.latest_materialized_state_digest,
+        Some(checkpoint.materialized_state_digest)
     );
 
     let second_scheduled = FederationCheckpoint {

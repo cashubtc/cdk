@@ -5,9 +5,10 @@ bounded page-streamed catch-up, nonzero startup, certificate cut-through,
 checkpoint-native operator tooling, crash-safe retention, ordered recovery
 barriers, separated recovery transport, bounded work instrumentation,
 checkpoint-bound database-backup validation, genesis recovery retention, and
-redacted recovery observability are implemented; checkpoint production is
-event-driven, stable polls are work/log silent, and final product release
-validation remains tracked by the overarching federation plan)
+redacted recovery observability are implemented and consolidated; checkpoint
+production is event-driven, stable polls are work/log silent, exact-checkpoint
+startup is history-independent, and final product release validation remains
+tracked by the overarching federation plan)
 Scope: federation-only, cut-through replacement of catch-up certificates  
 Primary goals: remove history-proportional steady-state work and make restart
 recovery proportional to the uncertified tail rather than the federation's
@@ -16,6 +17,18 @@ complete lifetime history
 Final architecture reference:
 `docs/federated-cashu-checkpoint-architecture.md`. Operator backup and recovery
 procedures: `docs/federated-cashu-backup-recovery.md`.
+
+Consolidation is complete. Its milestone-by-milestone implementation and final
+verification record is
+`docs/federated-cashu-checkpoint-consolidation-plan.md`. The resulting design
+uses one canonical committed frontier, one incremental suffix verifier, and one
+production history-recovery entry point. Exact-checkpoint startup reads no
+historical prefix and performs no full-state audit; a restart with a local tail
+verifies and repairs only that suffix. Catch-up processes one bounded page at a
+time. Current-session AlephBFT backup import is separately bounded, requires the
+same authoritative application state, and cannot authorize mint state.
+Materialized-state verification outside checkpoint creation remains an
+explicit local-operator audit. Version 1 intentionally has no background audit.
 
 Compatibility policy: no backward compatibility is required for existing
 experimental federations. All wire, configuration, database, status, and

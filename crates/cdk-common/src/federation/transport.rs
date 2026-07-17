@@ -3622,6 +3622,28 @@ mod tests {
     }
 
     #[test]
+    fn application_state_ignores_finality_and_local_audit_provenance() {
+        let local = FederationPeerStatus::new(
+            federation_id(),
+            member_id(),
+            4,
+            Some(3),
+            FederationJournalDigest::genesis(),
+        )
+        .with_aleph_bft_next_item_index(7)
+        .with_aleph_bft_session(2);
+        let mut peer = local.clone();
+        peer.aleph_bft_next_item_index = Some(11);
+        peer.latest_audited_checkpoint_id = Some(FederationCheckpointId::from_bytes([41; 32]));
+        peer.materialized_state_digest =
+            Some(FederationMaterializedStateDigest::from_bytes([42; 32]));
+
+        assert!(local.has_same_application_state(&peer));
+        assert!(!local.has_same_committed_history_and_audit(&peer));
+        assert!(!local.has_same_committed_state(&peer));
+    }
+
+    #[test]
     fn local_status_wire_fixture_round_trips_every_current_field() {
         let member = member_id();
         let status = FederationLocalStatusResponse {
