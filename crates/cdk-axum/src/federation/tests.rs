@@ -9157,16 +9157,6 @@ async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
         &[("work", "scheduled_capture_created")],
     );
     #[cfg(feature = "prometheus")]
-    let suffix_rows_before = prometheus_metric_value(
-        "cdk_federation_performance_work_total",
-        &[("work", "scheduled_capture_suffix_rows_loaded")],
-    );
-    #[cfg(feature = "prometheus")]
-    let discarded_rows_before = prometheus_metric_value(
-        "cdk_federation_performance_work_total",
-        &[("work", "scheduled_capture_ineligible_rows_discarded")],
-    );
-    #[cfg(feature = "prometheus")]
     let persistence_before = prometheus_metric_value(
         "cdk_federation_performance_work_total",
         &[("work", "checkpoint_persistence_successes")],
@@ -9267,22 +9257,38 @@ async fn scheduled_checkpoint_captures_first_complete_eligible_boundary() {
         assert!(
             prometheus_metric_value(
                 "cdk_federation_performance_work_total",
-                &[("work", "scheduled_capture_suffix_rows_loaded")],
-            ) >= suffix_rows_before + 3.0
-        );
-        assert!(
-            prometheus_metric_value(
-                "cdk_federation_performance_work_total",
-                &[("work", "scheduled_capture_ineligible_rows_discarded")],
-            ) >= discarded_rows_before + 1.0
-        );
-        assert!(
-            prometheus_metric_value(
-                "cdk_federation_performance_work_total",
                 &[("work", "checkpoint_persistence_successes")],
             ) >= persistence_before + 1.0
         );
     }
+}
+
+#[tokio::test]
+async fn scheduled_checkpoint_preserves_the_canonical_byte_trigger() {
+    let (mut public_config, local_private, _) = transport_config();
+    public_config.checkpoint_policy = FederationCheckpointPolicy {
+        checkpoint_interval_journal_operations:
+            cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_JOURNAL_OPERATIONS,
+        checkpoint_interval_finalized_items:
+            cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_FINALIZED_ITEMS,
+        checkpoint_interval_canonical_bytes: 1,
+    };
+    let state = federation_route_state_for_private(public_config, local_private).await;
+
+    state
+        .submit_federation_envelope(mint_quote_envelope(&state, &QuoteId::new()))
+        .await
+        .expect("byte-triggered finalized operation");
+
+    let candidate = state
+        .mint
+        .localstore()
+        .get_latest_federation_checkpoint(FederationCheckpointKind::Scheduled)
+        .await
+        .expect("byte-triggered checkpoint lookup")
+        .expect("byte-triggered scheduled checkpoint");
+    assert_eq!(candidate.journal_next_index, 1);
+    assert_eq!(candidate.finalized_next_item_index, 1);
 }
 
 async fn apply_identical_finalized_unit(

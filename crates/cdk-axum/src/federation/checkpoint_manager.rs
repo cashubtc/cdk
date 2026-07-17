@@ -22,6 +22,7 @@ use super::node_runtime::{
     runtime_unavailable, stored_checkpoint_quorum_summary,
     verify_checkpoint_signature_with_metrics, FederationNodeRuntime,
 };
+use super::runtime_components::ScheduledCheckpointCanonicalByteBase;
 
 const RECOVERY_BARRIER_PROPOSAL_LEASE: Duration = Duration::from_secs(30);
 
@@ -176,41 +177,113 @@ impl FederationNodeRuntime {
             }
             .into());
         }
-        let batch_item_limit = usize::try_from(expected_batch_items)
-            .expect("bounded checkpoint finalized-item count fits in usize");
-        #[cfg(feature = "prometheus")]
-        let suffix_load_started_at = std::time::Instant::now();
-        let batch_finalized_items = db
-            .get_federation_aleph_bft_finalized_items_range(
-                batch_base_finalized_index,
-                boundary.finalized_next_item_index,
-                batch_item_limit,
-            )
-            .await;
-        #[cfg(feature = "prometheus")]
-        cdk_prometheus::METRICS.record_federation_performance_operation(
-            cdk_prometheus::FederationPerformanceOperation::ScheduledCheckpointSuffixLoad,
-            cdk_prometheus::FederationPerformanceOutcome::from_success(
-                batch_finalized_items.is_ok(),
-            ),
-            suffix_load_started_at.elapsed().as_secs_f64(),
-        );
-        let batch_finalized_items = batch_finalized_items?;
-        #[cfg(feature = "prometheus")]
-        cdk_prometheus::METRICS.record_federation_performance_work(
-            cdk_prometheus::FederationPerformanceWork::ScheduledCaptureSuffixRowsLoaded,
-            u64::try_from(batch_finalized_items.len()).unwrap_or(u64::MAX),
-        );
-        if batch_finalized_items.len() != batch_item_limit {
-            return Err(FederationError::CheckpointInvalid {
-                reason: "scheduled checkpoint batch has missing finalized items".to_string(),
-            }
-            .into());
-        }
         #[cfg(feature = "prometheus")]
         let canonical_started_at = std::time::Instant::now();
-        let batch_canonical_bytes =
-            cdk::federation::federation_checkpoint_batch_canonical_bytes(&batch_finalized_items);
+        let batch_canonical_bytes = async {
+            let consensus = self
+                .consensus
+                .as_ref()
+                .ok_or_else(|| runtime_unavailable("consensus"))?
+                .lock()
+                .await;
+            let retained_from_finalized_index =
+                consensus.status().retained_finalized_item_from_index;
+            let retained_batch_base =
+                batch_base_finalized_index.max(retained_from_finalized_index);
+            let retained_canonical_bytes = consensus
+                .retained_finalized_canonical_bytes_for_range(
+                    retained_batch_base,
+                    boundary.finalized_next_item_index,
+                )?;
+            drop(consensus);
+
+            let base_canonical_bytes = if batch_base_finalized_index
+                < retained_from_finalized_index
+            {
+                let cached = *self
+                    .components
+                    .checkpoint
+                    .scheduled_canonical_byte_base
+                    .lock()
+                    .await;
+                match cached {
+                    Some(cached)
+                        if cached.batch_base_finalized_index == batch_base_finalized_index
+                            && cached.retained_from_finalized_index
+                                == retained_from_finalized_index =>
+                    {
+                        cached.canonical_bytes
+                    }
+                    _ => {
+                        let base_item_count = retained_from_finalized_index
+                            .checked_sub(batch_base_finalized_index)
+                            .expect("scheduled checkpoint retained base is ahead of its anchor");
+                        let base_item_limit = usize::try_from(base_item_count)
+                            .expect("bounded checkpoint finalized-item count fits in usize");
+                        #[cfg(feature = "prometheus")]
+                        let suffix_load_started_at = std::time::Instant::now();
+                        let base_finalized_items = db
+                            .get_federation_aleph_bft_finalized_items_range(
+                                batch_base_finalized_index,
+                                retained_from_finalized_index,
+                                base_item_limit,
+                            )
+                            .await;
+                        #[cfg(feature = "prometheus")]
+                        cdk_prometheus::METRICS.record_federation_performance_operation(
+                            cdk_prometheus::FederationPerformanceOperation::ScheduledCheckpointSuffixLoad,
+                            cdk_prometheus::FederationPerformanceOutcome::from_success(
+                                base_finalized_items.is_ok(),
+                            ),
+                            suffix_load_started_at.elapsed().as_secs_f64(),
+                        );
+                        let base_finalized_items = base_finalized_items?;
+                        if base_finalized_items.len() != base_item_limit {
+                            return Err(FederationError::CheckpointInvalid {
+                                reason: "scheduled checkpoint byte-accounting base has missing finalized items"
+                                    .to_string(),
+                            }
+                            .into());
+                        }
+                        #[cfg(feature = "prometheus")]
+                        cdk_prometheus::METRICS.record_federation_performance_work(
+                            cdk_prometheus::FederationPerformanceWork::ScheduledCaptureSuffixRowsLoaded,
+                            base_item_count,
+                        );
+                        let canonical_bytes =
+                            cdk::federation::federation_checkpoint_batch_canonical_bytes(
+                                &base_finalized_items,
+                            )?;
+                        #[cfg(feature = "prometheus")]
+                        cdk_prometheus::METRICS.record_federation_performance_work(
+                            cdk_prometheus::FederationPerformanceWork::ScheduledCaptureCanonicalBytesProcessed,
+                            canonical_bytes,
+                        );
+                        *self
+                            .components
+                            .checkpoint
+                            .scheduled_canonical_byte_base
+                            .lock()
+                            .await = Some(ScheduledCheckpointCanonicalByteBase {
+                            batch_base_finalized_index,
+                            retained_from_finalized_index,
+                            canonical_bytes,
+                        });
+                        canonical_bytes
+                    }
+                }
+            } else {
+                0
+            };
+
+            base_canonical_bytes
+                .checked_add(retained_canonical_bytes)
+                .ok_or_else(|| FederationError::CheckpointInvalid {
+                    reason: "scheduled checkpoint canonical byte count overflow".to_string(),
+                })
+                .map_err(cdk::Error::from)
+        }
+        .await;
         #[cfg(feature = "prometheus")]
         cdk_prometheus::METRICS.record_federation_performance_operation(
             cdk_prometheus::FederationPerformanceOperation::ScheduledCheckpointCanonicalBytes,
@@ -220,11 +293,6 @@ impl FederationNodeRuntime {
             canonical_started_at.elapsed().as_secs_f64(),
         );
         let batch_canonical_bytes = batch_canonical_bytes?;
-        #[cfg(feature = "prometheus")]
-        cdk_prometheus::METRICS.record_federation_performance_work(
-            cdk_prometheus::FederationPerformanceWork::ScheduledCaptureCanonicalBytesProcessed,
-            batch_canonical_bytes,
-        );
         if batch_canonical_bytes > cdk::federation::FEDERATION_MAX_CHECKPOINT_BATCH_CANONICAL_BYTES
         {
             return Err(FederationError::CheckpointInvalid {
@@ -238,17 +306,7 @@ impl FederationNodeRuntime {
             batch_canonical_bytes,
         )? {
             #[cfg(feature = "prometheus")]
-            {
-                ScheduledCheckpointCaptureOutcome::Ineligible.record();
-                cdk_prometheus::METRICS.record_federation_performance_work(
-                    cdk_prometheus::FederationPerformanceWork::ScheduledCaptureIneligibleRowsDiscarded,
-                    u64::try_from(batch_finalized_items.len()).unwrap_or(u64::MAX),
-                );
-                cdk_prometheus::METRICS.record_federation_performance_work(
-                    cdk_prometheus::FederationPerformanceWork::ScheduledCaptureIneligibleCanonicalBytesDiscarded,
-                    batch_canonical_bytes,
-                );
-            }
+            ScheduledCheckpointCaptureOutcome::Ineligible.record();
             return Ok(());
         }
         #[cfg(test)]

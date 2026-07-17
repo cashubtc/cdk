@@ -2055,6 +2055,27 @@ fn consensus_runtime_starts_at_a_trusted_checkpoint_without_prefix_rows() {
     assert_eq!(runtime.finalized_items()[0].accepted_item_index, 1_200);
     assert_eq!(runtime.status().finalized_item_count, 1_201);
     assert_eq!(runtime.status().next_unit_finalization_index, 10);
+    let suffix_canonical_bytes = u64::try_from(
+        runtime.finalized_items()[0]
+            .canonical_size()
+            .expect("suffix canonical size"),
+    )
+    .expect("suffix canonical size fits u64");
+    assert_eq!(
+        runtime
+            .retained_finalized_canonical_bytes_for_range(1_200, 1_201)
+            .expect("suffix canonical byte range"),
+        suffix_canonical_bytes
+    );
+    assert_eq!(
+        runtime
+            .retained_finalized_canonical_bytes_for_range(1_201, 1_201)
+            .expect("empty canonical byte range"),
+        0
+    );
+    assert!(runtime
+        .retained_finalized_canonical_bytes_for_range(1_199, 1_201)
+        .is_err());
 
     let recovered = FederationConsensusRuntime::recover_checkpoint_suffix_for_test(
         &config,
@@ -2073,6 +2094,78 @@ fn consensus_runtime_starts_at_a_trusted_checkpoint_without_prefix_rows() {
         6
     );
     assert_eq!(recovered.finalized_items().len(), 1);
+    assert_eq!(
+        recovered
+            .retained_finalized_canonical_bytes_for_range(1_200, 1_201)
+            .expect("recovered suffix canonical byte range"),
+        suffix_canonical_bytes
+    );
+}
+
+#[test]
+fn consensus_runtime_canonical_byte_ranges_remain_exact_at_large_history() {
+    let federation_id = federation_id(44);
+    let member_id = member_id_value(1);
+    let mut runtime = FederationConsensusRuntime::new(federation_id, member_id, 0);
+    let mut expected_canonical_bytes = 0_u64;
+    let history_sizes = [20_u64, 200, 2_000, 10_000];
+
+    for item_index in 0..10_000_u64 {
+        let payload = FederationAlephBftUnitPayload::new(
+            federation_id,
+            member_id,
+            0,
+            item_index,
+            vec![module_fact_item(&format!(
+                "canonical-byte-item-{item_index}"
+            ))],
+        )
+        .expect("large-history finalized payload");
+        runtime
+            .finalize_unit(payload)
+            .expect("large-history finalized unit");
+        expected_canonical_bytes = expected_canonical_bytes
+            .checked_add(
+                u64::try_from(
+                    runtime
+                        .finalized_items()
+                        .last()
+                        .expect("newly finalized item")
+                        .canonical_size()
+                        .expect("newly finalized item canonical size"),
+                )
+                .expect("canonical size fits u64"),
+            )
+            .expect("test canonical byte count does not overflow");
+
+        let finalized_count = item_index + 1;
+        if history_sizes.contains(&finalized_count) {
+            assert_eq!(
+                runtime
+                    .retained_finalized_canonical_bytes_for_range(0, finalized_count)
+                    .expect("large-history canonical byte range"),
+                expected_canonical_bytes
+            );
+        }
+    }
+
+    let last_item_bytes = u64::try_from(
+        runtime
+            .finalized_items()
+            .last()
+            .expect("last large-history item")
+            .canonical_size()
+            .expect("last large-history item canonical size"),
+    )
+    .expect("last canonical size fits u64");
+    for _ in 0..10_000 {
+        assert_eq!(
+            runtime
+                .retained_finalized_canonical_bytes_for_range(9_999, 10_000)
+                .expect("constant-work tail canonical byte range"),
+            last_item_bytes
+        );
+    }
 }
 
 #[test]

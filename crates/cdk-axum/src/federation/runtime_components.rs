@@ -86,10 +86,19 @@ enum FederationRecoveryRequestState {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ScheduledCheckpointCanonicalByteBase {
+    pub(super) batch_base_finalized_index: u64,
+    pub(super) retained_from_finalized_index: u64,
+    pub(super) canonical_bytes: u64,
+}
+
 /// Owns checkpoint demand and the bounded local barrier-proposal lease.
 #[derive(Debug, Clone, Default)]
 pub(super) struct FederationCheckpointManager {
     recovery: Arc<tokio::sync::Mutex<FederationRecoveryRequestState>>,
+    pub(super) scheduled_canonical_byte_base:
+        Arc<tokio::sync::Mutex<Option<ScheduledCheckpointCanonicalByteBase>>>,
 }
 
 impl FederationCheckpointManager {

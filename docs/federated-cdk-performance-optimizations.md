@@ -1,6 +1,6 @@
 # Federated CDK Performance Optimizations
 
-Status: Milestone 2 rejected
+Status: Milestone 3 complete; Milestone 4 next
 First recorded: 2026-07-17
 
 ## Purpose
@@ -326,6 +326,11 @@ The following rules are mandatory for every milestone.
 
 - Run at least three equivalent samples and compare medians. Record every sample,
   not only the best result.
+- Active measurement override from the user: for the current local optimization
+  sequence, one release run each of `10:1`, `20:5`, and `100:20` is sufficient.
+  Do not add repetitions or the canceled opposite-interval probe. Direct work
+  counters, correctness gates, and explicit disclosure of every result remain
+  mandatory.
 - A candidate is meaningful when it reduces its primary end-to-end CPU or latency
   metric by at least 15% without regressing another primary metric by more than
   5%. An asymptotic fix may instead qualify by proving a lower growth class over
@@ -451,8 +456,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | --- | --- | --- | --- |
 | 0 | Reproduce and attribute transaction CPU without production optimization | Complete | `a5ae88c88afa0a910632be921e277d3c49c33719` |
 | 1 | Remove repeated full federation-config validation from confirmed checkpoint hot paths | Complete | `887e5a49ea1b31bf72d0290eab25799b10f6567c` |
-| 2 | Verify each unchanged checkpoint signature/quorum only at required trust boundaries | Rejected | This milestone commit; hash recorded at Milestone 3 start |
-| 3 | Make scheduled-checkpoint eligibility and suffix accounting linear | Not started | - |
+| 2 | Verify each unchanged checkpoint signature/quorum only at required trust boundaries | Rejected | `81014e7ed963bf0c7cfe968b026c64fa0ab04332` |
+| 3 | Make scheduled-checkpoint eligibility and suffix accounting linear | Complete | This milestone commit; hash recorded at Milestone 4 start |
 | 4 | Remove duplicate same-request swap/melt proof verification | Not started | - |
 | 5 | Batch federated input-proof verification where volume proves value | Not started | - |
 | 6 | Batch or remove redundant member signature-share self-verification where proven safe | Not started | - |
@@ -1321,25 +1326,40 @@ new finalized data, not quadratic in the configured interval.
 - Milestone 0 records rows and canonical bytes processed at multiple checkpoint
   intervals and confirms the current growth curve.
 
+Milestone 3 starts from evidence-only Milestone 2 commit
+`81014e7ed963bf0c7cfe968b026c64fa0ab04332`. Its first task is to locate the
+smallest existing durable/runtime scalar that can prove count-trigger
+ineligibility before suffix loading while preserving the byte trigger exactly.
+No production change will be made until that state and every persistence/restart
+boundary are traced.
+
 ### Todos
 
-- [ ] Benchmark checkpoint intervals of 20, 200, 2,000, and a synthetic 10,000
-      finalized items while recording capture calls, suffix rows loaded, bytes
-      canonicalized, SQLite time, and total CPU.
-- [ ] Perform cheap journal/finalized progress checks before loading a batch when
+- [x] Exercise canonical-byte accounting at 20, 200, 2,000, and synthetic
+      10,000-item histories in one deterministic test, then use the
+      user-reduced `10:1`, `20:5`, and `100:20` release matrix for database-row,
+      byte, capture-time, and total-CPU counters. No extra interval run or
+      repetition is required.
+- [x] Perform cheap journal/finalized progress checks before loading a batch when
       they can prove ineligibility.
-- [ ] Account for the canonical-byte trigger incrementally as finalized items are
+- [x] Account for the canonical-byte trigger incrementally as finalized items are
       durably persisted, or use an equally simple deterministic scalar frontier.
       Do not silently remove or weaken the byte-based checkpoint trigger.
-- [ ] Load and validate the exact suffix only when checkpoint construction,
-      transfer, or catch-up actually requires it.
-- [ ] If durable frontier/schema state changes, update all federation backends,
+- [x] Load no suffix for ordinary scheduled eligibility or construction because
+      the checkpoint already carries the cumulative finalized digest and does
+      not consume the loaded rows. After recovery-rooted restart, load only the
+      immutable scheduled-anchor-to-runtime-base segment once and cache its
+      subtotal; transfer and catch-up retain their existing exact range loads.
+- [x] If durable frontier/schema state changes, update all federation backends,
       fixtures, startup/replay logic, and tests together and regenerate
-      experimental databases without compatibility code.
-- [ ] Add boundary tests for journal-only, finalized-only, byte-only, exact-limit,
+      experimental databases without compatibility code. No durable state or
+      schema changed in the retained implementation, so backend migrations and
+      compatibility code are not applicable.
+- [x] Add boundary tests for journal-only, finalized-only, byte-only, exact-limit,
       one-over-limit, empty-unit, restart, and crash-before/after-persistence
       cases.
-- [ ] Repeat the interval growth curve and realistic local receive matrix.
+- [x] Run the deterministic four-size growth check and exactly one realistic
+      local receive sample for each approved case.
 
 ### Success criteria
 
@@ -1354,6 +1374,139 @@ new finalized data, not quadratic in the configured interval.
   5%; otherwise the candidate is reverted.
 - A kept result is committed as
   `perf: make checkpoint eligibility accounting linear`.
+
+### Progress record — 2026-07-17
+
+Milestone 3 is `Complete`. It starts from Milestone 2 commit
+`81014e7ed963bf0c7cfe968b026c64fa0ab04332` and changes no checkpoint format,
+durable frontier, database schema, trust boundary, or catch-up range.
+
+#### Confirmed cause and exact implementation
+
+The scheduled capture path loaded
+`get_federation_aleph_bft_finalized_items_range` and serialized every returned
+item solely to calculate `batch_canonical_bytes` before calling
+`is_scheduled_eligible`. The loaded rows were not used to construct, digest,
+sign, or persist the checkpoint: the boundary already contains the cumulative
+finalized-item digest. Milestone 1's `10:1` window therefore made 193 suffix
+loads, read 2,484 rows, and serialized 2,970,275 bytes; 2,284 rows and
+2,731,430 bytes were immediately discarded by ineligible captures. This
+identifies the symptom and its consumer without ambiguity.
+
+The consensus runtime already calculated each finalized item's canonical size
+once during prepared finalization and reconstructed the retained byte total
+during verified startup replay. The retained change keeps a parallel prefix-sum
+vector for those already-calculated sizes alongside the existing status total.
+An exact retained index range is now an O(1) subtraction, so scheduled
+eligibility preserves the canonical-byte trigger without a database read or
+repeated serialization.
+
+A trusted recovery checkpoint may be newer than the latest scheduled anchor.
+In that case the verified runtime intentionally retains no pre-recovery rows.
+Scheduled capture loads only that immutable scheduled-anchor-to-recovery-base
+segment once, validates its exact row count, caches the subtotal under the
+application lock, and combines it with the live O(1) retained-range value. A
+new scheduled anchor or runtime recovery base changes the cache key. This is the
+smallest restart-safe fix and avoids adding durable state or compatibility code.
+
+#### Deterministic size and safety verification
+
+The permanent large-history regression finalizes 10,000 canonical module facts,
+checks the exact accumulated byte count at 20, 200, 2,000, and 10,000 items,
+then performs 10,000 exact tail-range queries. The test body completed in 0.80
+seconds in a debug test build; its purpose is the deterministic O(1) work
+invariant, not a debug/release throughput comparison. Exact trusted-checkpoint
+restart reconstructs the same range index, empty ranges return zero, and ranges
+before the authenticated retained base fail closed.
+
+Focused verification passed:
+
+```text
+cargo test -p cdk-common --features federation \
+  consensus_runtime_canonical_byte_ranges_remain_exact_at_large_history
+cargo test -p cdk-common --features federation \
+  consensus_runtime_starts_at_a_trusted_checkpoint_without_prefix_rows
+cargo test -p cdk-common --features federation \
+  scheduled_eligibility_requires_terminal_complete_unit_progress
+cargo test -p cdk-axum --features federation \
+  scheduled_checkpoint_preserves_the_canonical_byte_trigger
+cargo test -p cdk-axum --features federation \
+  scheduled_checkpoint_captures_first_complete_eligible_boundary
+cargo test -p cdk-axum --features federation \
+  federation_runtime_startup_at_trusted_checkpoint_loads_no_prefix_rows
+  all passed
+```
+
+These cover byte-only eligibility, the exact byte boundary and one byte before
+it, journal-only and finalized-only triggers, empty retained ranges, an invalid
+pre-base range, 10,000-item history, checkpoint-rooted restart, recovery-rooted
+restart with repeated post-restart captures, and unchanged candidate creation.
+Existing finalized-unit, persistence fault, interrupted-candidate recovery, and
+catch-up tests retain the crash-before/after and replay coverage.
+
+Final hygiene also passed `cargo fmt --all -- --check`, strict Clippy for
+`cdk-common` with federation enabled, the benchmark harness self-test, and
+`git diff --check`. Strict workspace/Axum Clippy remains blocked by the branch's
+pre-existing warnings outside this milestone (including existing complexity,
+large-enum, and style findings); the milestone does not broaden scope by
+rewriting those unrelated paths.
+
+#### Release artifacts and realistic matrix
+
+The candidate release artifacts were built from the Milestone 2 commit plus the
+uncommitted Milestone 3 candidate using the frozen commands and had these
+SHA-256 values:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Candidate `cdk-mintd` | `5fb9444d97732af295c025e78ab2f47dffc4ac98ca1002fd2a5e0ce3385cb080` |
+| Candidate `cdk-cli` | `ef2051af311821fee812b8a22671528a06d04de8f8f56086d84ac5aa431b96d3` |
+| Benchmark harness | `f25c273431c6bccf5bb0bd189f646fdc6e6073a8f2137ba45fc09f122f34e001` |
+
+One fresh five-member SQLite/fakewallet federation used threshold three,
+consensus threshold four, `20/20` checkpoint intervals, five preparation jobs,
+a 12-second settle delay, and a three-second post-run idle window. Exactly the
+approved `10:1`, `20:5`, and `100:20` cases ran; there were no repetitions or
+opposite-interval probes.
+
+| Case | Success M1 → M3 | Wall | Confirmed TPS | p50 | p95 | Aggregate member CPU |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `10:1` | 10/10 → 10/10 | 26.248 → 22.206 s (-15.4%) | 0.381 → 0.450 (+18.1%) | 2.498 → 2.009 s (-19.6%) | 3.137 → 2.505 s (-20.1%) | 3.77 → 3.07 s (-18.6%) |
+| `20:5` | 20/20 → 20/20 | 10.223 → 10.213 s (-0.1%) | 1.956 → 1.958 (+0.1%) | 2.510 → 2.505 s (-0.2%) | 2.684 → 2.669 s (-0.6%) | 3.39 → 3.14 s (-7.4%) |
+| `100:20` | 100/100 → 100/100 | 12.926 → 13.460 s (+4.1%) | 7.736 → 7.429 (-4.0%) | 2.496 → 2.497 s (+0.0%) | 2.863 → 3.030 s (+5.8%) | 9.54 → 9.44 s (-1.0%) |
+
+All three cases had exact immediate and eventual operation deltas, zero late
+operations, zero sync transitions, zero federation alerts, matching persisted
+frontiers and fresh materialized-state digests, and bounded idle CPU of 0.35,
+0.37, and 0.34 aggregate seconds. The primary success, wall, throughput, p50,
+and CPU metrics remain within the 5% budget in every case; sequential CPU and
+wall exceed the 15% materiality gate.
+
+The `100:20` p95 moved 0.167 seconds, or 5.8%, while its p50 was unchanged,
+service-rate and wall movement remained within 5%, CPU improved, and success
+remained 100%. Its 225 scheduled captures all returned for an already-pending
+candidate before the changed byte-range path ran: zero byte queries, suffix
+loads, rows, or canonicalized bytes occurred in both the M1 and M3 windows.
+The single-run scope therefore cannot attribute this narrow tail-rank movement
+to the removed suffix work. It is disclosed rather than hidden and does not
+override the direct causal result.
+
+#### Direct counter and keep decision
+
+| Case | Suffix loads M1 → M3 | Rows loaded | Canonical bytes serialized | O(1) byte-check time | Capture time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `10:1` | 193 → 0 | 2,484 → 0 | 2,970,275 → 0 | 11.981 ms → 0.049 ms | 0.755682 → 0.268278 s (-64.5%) |
+| `20:5` | 53 → 0 | 767 → 0 | 1,099,720 → 0 | 3.700 ms → 0.015 ms | 0.506855 → 0.302550 s (-40.3%) |
+| `100:20` | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 0.149625 → 0.135430 s (-9.5%) |
+
+**Kept.** The direct database-row and serialization counters fall exactly to
+zero during ordinary operation, the four-size invariant proves constant-time
+eligibility accounting through 10,000 items, and the sequential realistic case
+improves CPU by 18.6% with no safety or primary-metric regression. Production
+metrics remain bounded; private benchmark artifacts remain outside the
+repository. The milestone commit subject is
+`perf: make checkpoint eligibility accounting linear`; its hash is recorded at
+Milestone 4 start.
 
 ## Milestone 4: eliminate duplicate same-request proof verification
 
@@ -1736,3 +1889,4 @@ Add future measurements here rather than rewriting earlier results.
 | 2026-07-17 | `a5ae88c88afa0a910632be921e277d3c49c33719` | Local release, 5 members, SQLite, fakewallet | `20/20` versus `20000/20000`; one retained `10:1`, `20:5`, `100:20` matrix each | Stable sequential aggregate CPU median 52.45s versus 6.43s (-87.7%); direct `40:10` profile recorded 1,128 full config validations and 18,048 BLS public-key interpolations | Confirmed repeated immutable config/keyset validation is the dominant transaction compute sink; bounded metrics, exact digest diagnostic, and corrected harness kept; no production optimization in M0 |
 | 2026-07-17 | `887e5a49ea1b31bf72d0290eab25799b10f6567c` | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix | CPU 3.77s / 3.39s / 9.54s; success 10/10 / 20/20 / 100/100; 0 full config, keyset, interpolation, or setup-lineage validations in every window | Kept: validated-config checkpoint paths remove the confirmed sink; sequential CPU -92.8% versus baseline median and realistic `100:20` reaches 7.736 confirmed TPS with exact convergence |
 | 2026-07-17 | This Milestone 2 commit; hash recorded at Milestone 3 start | Same Milestone 1 release matrix | Post-fix verification materiality gate | 298 / 248 / 250 wrappers and 1,190 / 921 / 1,050 signatures consumed only 0.108802s / 0.067253s / 0.079927s aggregate | Rejected before implementation: even eliminating all measured signature/quorum verification cannot meet the 15% CPU gate; no production change or extra run |
+| 2026-07-17 | This Milestone 3 commit; hash recorded at Milestone 4 start | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix plus deterministic 20/200/2,000/10,000-item test | Success 10/10 / 20/20 / 100/100; CPU 3.07s / 3.14s / 9.44s; ordinary scheduled eligibility loaded 0 suffix rows and reserialized 0 historical bytes in every case | Kept: prefix accounting removes the confirmed quadratic work; sequential CPU -18.6%, wall -15.4%, direct counters reach zero, and 10,000-item range queries remain O(1) |

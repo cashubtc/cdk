@@ -2107,6 +2107,13 @@ mod tests {
                 DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES,
             )
             .expect("canonical byte eligibility"));
+        assert!(!before
+            .is_scheduled_eligible(
+                config.checkpoint_policy,
+                None,
+                DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES - 1,
+            )
+            .expect("canonical bytes immediately before eligibility"));
 
         let mut oversized = checkpoint(&config);
         oversized.journal_next_index =
