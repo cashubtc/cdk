@@ -1,6 +1,6 @@
 # Federated CDK Performance Optimizations
 
-Status: Milestone 5 in progress
+Status: Milestone 5 in progress; Milestone 8 static-cadence sweep rejected
 First recorded: 2026-07-17
 
 ## Purpose
@@ -462,7 +462,7 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 5 | Batch federated input-proof verification where volume proves value | In progress | - |
 | 6 | Batch or remove redundant member signature-share self-verification where proven safe | Not started | - |
 | 7 | Re-profile the remaining consensus and transaction lifecycle | Not started | - |
-| 8 | Tune only measured AlephBFT batching, scheduling, or federation transport limits | Not started | - |
+| 8 | Tune only measured AlephBFT batching, scheduling, or federation transport limits | Rejected | This milestone commit; hash recorded by the next milestone update |
 | 9 | Pass sustained local fakewallet and final Nocean verification | Not started | - |
 
 ## Milestone 0: causal baseline and bounded instrumentation
@@ -1831,9 +1831,11 @@ The current values are intentional baselines, not defaults to replace wholesale:
 - AlephBFT 0.45.4 recommends a 20 ms task-queue tick, a 5-second round-zero unit
   delay, and a 500 ms unit delay for subsequent production rounds. CDK uses that
   round-aware schedule while work is active and changes only inactive tail rounds
-  after round 64 to two seconds. The former fixed 100 ms active cadence created
-  roughly five times the supported steady unit rate, amplified empty units and
-  CPU, and was removed. It must not be reintroduced.
+  after round 64 to two seconds. A former fixed 100 ms cadence created roughly
+  five times the supported steady unit rate, amplified empty units and CPU, and
+  was removed. The 2026-07-18 sweep below retests 100 ms and faster values only
+  behind the repaired activity-aware idle policy; it does not restore the former
+  always-on cap.
 - The data provider drains immediately, in FIFO order, up to 64 items and up to
   four maximum-sized consensus items' worth of canonical body bytes per unit. A
   short coalescing window is eligible only when concurrent load leaves most units
@@ -1869,52 +1871,148 @@ The current values are intentional baselines, not defaults to replace wholesale:
 
 ### Todos
 
-- [ ] Add or enable bounded instrumentation for proposal queue depth and item
-      arrival spacing; items and canonical bytes per unit; item-count and byte-cap
-      hits; empty and payload-bearing units; proposal-to-finality duration and
-      Aleph round; outbound queue age/depth; per-message quorum-completion time;
-      time spent in the 25 ms surplus-peer grace; per-peer delivery latency;
-      retry enqueue/drain/drop counts; private REST semaphore wait; and messages,
-      bytes, and finalized units per committed operation.
-- [ ] From those measurements, mark every control above `Eligible` or `Excluded`
-      with the exact symptom and threshold. An excluded control is not swept just
-      because it is configurable.
-- [ ] If units are sparse under sustained concurrent load, test bounded proposal
-      coalescing windows of 0, 1, 5, 10, and 25 ms. Measure the gain in items per
-      unit against added low-load p95 latency. Do not wait when the queue has
-      already reached an item or byte cap. Test a larger item or body-byte cap
-      separately, and only after cap-hit plus backlog evidence.
-- [ ] If dissemination is material, sweep the surplus-peer completion grace at
-      0, 5, 25, and 50 ms under normal and deliberately slow-surplus-peer shapes.
-      Count added retry deliveries and total private REST bytes. Test pump drain
-      widths or bounded cross-message concurrency of 1, 2, 4, and 8 only if
-      outbound queue age remains material; preserve per-peer ordering and bound
-      all in-flight work.
-- [ ] If consensus scheduling remains material after batching and dissemination
-      experiments, keep the upstream round-aware schedule as the baseline and
-      test one field at a time. For steady active rounds, bracket the current
-      500 ms value with conservative 375 ms and 250 ms candidates while retaining
-      the round-zero behavior, idle-tail slowdown, and bounded round semantics.
-      Test the 20 ms Aleph task tick at 10, 20, and 40 ms only when task-queue wait
-      is visible. Treat round zero separately as cold-session latency; changing
-      its five-second delay cannot establish a sustained-throughput win.
-- [ ] Tune coordinate/parent/newest request or rebroadcast delays only for a
+- [x] Use the existing bounded release instrumentation for the eligible active
+      cadence control: payload-bearing and empty finalized units, durable unit
+      and item counts, CPU, idle CPU, latency, success, late commits, sync
+      transitions, checkpoint work, and exact convergence. Do not add the wider
+      queue, retry, or permit telemetry until Milestone 7 makes its corresponding
+      control eligible.
+- [x] Classify every other control in this milestone. Proposal coalescing, item
+      and byte caps, pump width, surplus grace, Aleph task tick, repair delays,
+      queue capacities, and private REST limits are `Excluded`: Milestone 7 has
+      not identified their direct symptom, and this cadence experiment produced
+      no evidence that would make them eligible.
+- [x] Defer the broader proposal-queue, batch-cardinality, finality-round,
+      outbound-queue, quorum-grace, peer-latency, retry, semaphore-wait, and byte
+      metrics until the corresponding control becomes eligible. Existing bounded
+      unit and lifecycle counters are sufficient for this active-cadence sweep.
+- [x] Exclude proposal coalescing windows and larger item/body-byte caps because
+      no cap-hit-plus-backlog or queue-sparsity evidence exists yet.
+- [x] Exclude surplus-peer grace, pump width, and cross-message concurrency
+      because no outbound queue-age, grace-wait, retry, or private-REST byte
+      symptom was measured.
+- [x] Keep the upstream round-aware schedule as the baseline and test only its
+      steady active-round delay. The release sweep covered 500, 450, 375, 250,
+      100, 50, 30, 25, 20, 15, and 10 ms while preserving the five-second round
+      zero delay, two-second inactive tail, and bounded round semantics. The
+      Aleph task tick remained at 20 ms because task-queue wait was not visible.
+- [x] Do not tune coordinate/parent/newest request or rebroadcast delays without a
       measured missing-unit repair stall. Tune private REST inbound/outbound
       concurrency only for measured permit wait. Do not increase queue capacities
       or timeouts to hide backpressure.
-- [ ] Change one control per experiment, restore the baseline between candidates,
-      and run at least three interleaved baseline/candidate release samples. Only
-      after independent candidates pass may their simplest compatible combination
-      be tested as a new candidate.
-- [ ] For every eligible candidate, run a warm five-member local SQLite
-      federation with fakewallet through 100 sequential swaps, at least 1,000
-      swaps at parallelism 20, one saturation step above 20, 100 complete mint
-      lifecycles, and 100 complete melt lifecycles. Repeat the retained candidate
-      with one slow surplus member, one offline surplus member, restart/replay,
-      and a 30-second idle cool-down.
-- [ ] Remove experiment-only configuration and instrumentation, keep only bounded
+- [x] Change only the active delay in each experiment and use a fresh federation
+      for every row. At user direction, retain one release sample per shape rather
+      than three interleaved repetitions. The 50 and 100 ms transport-delay rows
+      are matched baseline/candidate pairs from the same binary.
+- [x] Stop before the 1,000-swap, mint, melt, slow/offline-member, and restart
+      campaign because no static delay passed the screening contract across
+      loopback and both realistic-delay brackets. Spending the final-gate volume
+      on a rejected candidate would violate the evidence-first contract.
+- [x] Remove experiment-only configuration and instrumentation, keep only bounded
       generally useful metrics, and record every rejected and retained candidate
       in this document before the milestone commit.
+
+### Execution result (2026-07-18): Rejected
+
+The static active-round-delay sweep is complete and every production change was
+reverted. The experiment used one instrumented release binary for every row. A
+temporary delay override applied only while the activity hint was active and
+only after round zero; AlephBFT's five-second round-zero delay, CDK's inactive
+two-second tail after round 64, the 20 ms task tick, all repair schedules, and all
+network-pump controls stayed unchanged. A second temporary hook added a fixed
+delay before outbound private REST requests for the matched 50 and 100 ms
+transport rows. Both hooks and their guard test were removed after measurement.
+
+| Reproduction item | Value |
+| --- | --- |
+| Source commit | `06575053ba680fba0a1183c127877bad76a7ba5c` plus the two temporary hooks described above |
+| Instrumented `cdk-mintd` SHA-256 | `5c7d06415f7fabda91602660f0686a3d65f30941107857536ad5c59c296f81f4` |
+| `cdk-cli` SHA-256 | `19a899ee0ec78b6c6c07fc92495739aea793605a02c6561bea3c2b4727b7ef28` |
+| Benchmark harness SHA-256 | `93025c159b9d9b498946840c1fa2cf93406caab85dee7e6cf7e35b030a7d95c8` |
+| Build | Locked release; mint features `federation-test-utils,sqlite,prometheus`; CLI feature `federation`; Rust 1.95.0 |
+| Federation | Fresh five-member SQLite/fakewallet federation per row; BLS threshold 3, consensus threshold 4, `20/20` checkpoint policy |
+| Measurement scope | One sample per shape at user direction; isolated one-sat proof swaps; 100-swap sweep at parallelism 20 |
+
+The first combined baseline run completed its `10:1` case but the funding wallet
+aborted the next offline token batch before another operation was submitted. To
+remove that wallet-recovery confounder, every subsequent shape used a fresh
+federation and funding wallet. This produced the requested single clean `10:1`,
+`20:5`, and `100:20` baseline samples. Every listed workload had exact wallet and
+committed-operation counts, zero late commits, zero sync transitions, and exact
+current-state convergence. Private run state and bearer tokens remain outside
+the repository.
+
+#### Loopback active-delay sweep
+
+CPU and idle CPU are aggregate seconds across all five members. `Data / empty`
+is the existing bounded AlephBFT finalized-unit counter summed across members;
+it is the direct work-amplification signal. Deltas use the `500 ms`, `100:20`
+row as the matched loopback saturation baseline.
+
+| Active delay | Case | Success | TPS | TPS delta | p50 | p95 | CPU | CPU delta | Idle CPU | Data / empty units | Total units | Decision |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 500 ms | `10:1` | 10/10 | 0.413 | - | 2.499s | 2.507s | 3.03s | - | 0.45s | 250 / 1,025 | 1,275 | Baseline low load |
+| 500 ms | `20:5` | 20/20 | 1.962 | - | 2.497s | 2.683s | 3.05s | - | 0.43s | 200 / 375 | 575 | Baseline medium load |
+| 500 ms | `100:20` | 100/100 | 6.840 | - | 2.944s | 3.084s | 10.74s | - | 0.32s | 415 / 385 | 800 | Saturation baseline |
+| 375 ms | `100:20` | 100/100 | 9.454 | +38.2% | 2.131s | 2.319s | 10.78s | +0.4% | 0.48s | 270 / 725 | 995 | Best conservative loopback row; rejected by 100 ms transport CPU |
+| 250 ms | `100:20` | 100/100 | 11.370 | +66.2% | 1.684s | 1.848s | 11.30s | +5.2% | 0.36s | 305 / 650 | 955 | Reaches the 10 TPS target; narrowly misses loopback CPU budget and fails 100 ms transport CPU |
+| 100 ms | `100:20` | 100/100 | 17.848 | +160.9% | 0.976s | 1.267s | 14.00s | +30.4% | 0.91s | 910 / 1,754 | 2,664 | Rejected: helper-unit and CPU amplification |
+| 50 ms | `100:20` | 100/100 | 18.900 | +176.3% | 0.895s | 1.411s | 16.61s | +54.7% | 1.69s | 1,085 / 3,556 | 4,641 | Rejected: little gain over 100 ms for much more work |
+| 30 ms | `100:20` | 100/100 | 31.536 | +361.1% | 0.552s | 0.731s | 16.72s | +55.7% | 2.61s | 1,050 / 4,278 | 5,328 | Diagnostic only; fails CPU and idle gates |
+| 25 ms | `100:20` | 100/100 | 32.960 | +381.9% | 0.535s | 0.754s | 17.25s | +60.6% | 2.24s | 1,205 / 6,431 | 7,636 | Diagnostic only; fails CPU and idle gates |
+| 20 ms | `100:20` | 100/100 | 36.049 | +427.0% | 0.506s | 0.646s | 16.24s | +51.2% | 2.95s | 1,180 / 5,536 | 6,716 | Diagnostic only; fails CPU and idle gates |
+| 15 ms | `100:20` | 100/100 | **38.625** | **+464.7%** | 0.460s | 0.595s | 16.89s | +57.3% | 4.33s | 1,400 / 7,375 | 8,775 | Raw loopback TPS peak; diagnostic only |
+| 10 ms | `100:20` | 100/100 | 16.455 | +140.6% | 1.051s | 1.763s | 23.58s | +119.6% | 6.52s | 1,400 / 17,401 | 18,801 | Contention collapse below the 15-20 ms knee |
+
+The repaired activity-aware implementation changes the interpretation of the
+old fixed-100 ms experiment. It no longer loses operations or drives full-core
+CPU for the whole run: 100/100 operations committed and the process returned
+toward idle. It still creates 3.33 times the baseline finalized units and uses
+30.4% more transaction-window CPU, so retaining 100 ms would repeat the same
+underlying work-amplification mistake in a less catastrophic form. Below 15 ms,
+throughput reverses while empty units reach 17,401, proving self-induced
+consensus/network contention rather than useful capacity.
+
+#### Simulated transport-delay brackets
+
+The transport hook adds the stated delay to every outbound private REST request;
+the value is an added request delay, not a claim about a specific Internet RTT.
+Each candidate is compared only with the baseline carrying the same delay.
+
+| Added request delay | Active delay | Success | TPS | TPS delta | p95 | CPU | CPU delta | Idle CPU | Data / empty units | Total units | Decision |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 50 ms | 500 ms | 100/100 | 6.535 | - | 3.231s | 13.73s | - | 0.50s | 235 / 760 | 995 | Matched baseline |
+| 50 ms | 375 ms | 100/100 | 7.742 | +18.5% | 2.766s | 13.59s | -1.0% | 0.35s | 285 / 640 | 925 | Passes this bracket |
+| 50 ms | 250 ms | 100/100 | 12.404 | +89.8% | 2.013s | 12.98s | -5.5% | 0.65s | 280 / 939 | 1,219 | Fastest 50 ms row; idle screen is above the final 2% target |
+| 100 ms | 500 ms | 100/100 | 7.439 | - | 2.982s | 9.84s | - | 0.48s | 350 / 375 | 725 | Matched baseline |
+| 100 ms | 450 ms | 100/100 | 7.088 | -4.7% | 3.113s | 15.25s | +55.0% | 0.60s | 250 / 800 | 1,050 | Rejected |
+| 100 ms | 375 ms | 100/100 | 8.639 | +16.1% | 2.578s | 13.31s | +35.3% | 0.48s | 420 / 410 | 830 | Throughput gate passes; CPU gate fails |
+| 100 ms | 250 ms | 100/100 | 12.160 | +63.5% | 1.763s | 12.01s | +22.1% | 0.67s | 275 / 910 | 1,185 | Throughput target passes; CPU and idle gates fail |
+
+#### Decision and follow-up
+
+The active unit-creation delay is unquestionably a normal-transaction latency
+control: changing only that field moves loopback throughput from 6.84 TPS to
+11.37 TPS at 250 ms, while the direct finalized-unit counter moves in the
+predicted direction. It is also unquestionably a compute and network-work
+control: increasingly aggressive values amplify empty helper units, and the
+10 ms row collapses after producing 18,801 total finalized units.
+
+No single static value is retained. `375 ms` is the safest loopback and 50 ms
+candidate but exceeds the 100 ms matched-baseline CPU budget by 35.3%. `250 ms`
+reaches the release TPS target on loopback and both delayed shapes, but exceeds
+the loopback CPU budget by 5.2% and the 100 ms CPU budget by 22.1%. Faster values
+fail bounded-work and idle criteria by much larger margins. Because no candidate
+passed screening, the expensive 1,000-swap, mint/melt, fault, restart, and
+30-second idle final gates were correctly not run.
+
+Milestone 7 should next attribute the helper-unit tail before another scheduling
+change. The specific evidence-backed hypothesis is the amount of time members
+remain on active cadence after payload finality; measure that duration and its
+empty-unit/network-byte cost directly before testing an activity-tail reduction
+or a latency-aware cadence. Do not add adaptive scheduling or an RTT estimator
+until those measurements prove that the added state is necessary. The simple
+upstream 500 ms active schedule remains production code.
 
 ### Success criteria
 
@@ -2032,3 +2130,4 @@ Add future measurements here rather than rewriting earlier results.
 | 2026-07-17 | This Milestone 2 commit; hash recorded at Milestone 3 start | Same Milestone 1 release matrix | Post-fix verification materiality gate | 298 / 248 / 250 wrappers and 1,190 / 921 / 1,050 signatures consumed only 0.108802s / 0.067253s / 0.079927s aggregate | Rejected before implementation: even eliminating all measured signature/quorum verification cannot meet the 15% CPU gate; no production change or extra run |
 | 2026-07-17 | `9ea5d80fbd862b35a44ecb77f53d0202af5de729` | Local release, 5 members, SQLite, fakewallet, `20/20` | One retained `10:1`, `20:5`, `100:20` candidate matrix plus deterministic 20/200/2,000/10,000-item test | Success 10/10 / 20/20 / 100/100; CPU 3.07s / 3.14s / 9.44s; ordinary scheduled eligibility loaded 0 suffix rows and reserialized 0 historical bytes in every case | Kept: prefix accounting removes the confirmed quadratic work; sequential CPU -18.6%, wall -15.4%, direct counters reach zero, and 10,000-item range queries remain O(1) |
 | 2026-07-17 | `0986b2a0a0aa96f138cf0f4c0a565d44178b1c60` | Local release, 5 members, SQLite, fakewallet, `20/20`; 4-proof and matched 1-proof | One retained `10:1`, `20:5`, `100:20` multi-proof matrix and one matched fresh `10:1` one-proof sample per build | Multi-proof CPU -32.8% / -29.1% / -20.5% with admission proofs reduced exactly to zero; matched one-proof wall +8.7%, TPS -8.0%, p50 +17.4% | Rejected and reverted: the compute win is real, but the mandatory one-proof latency/throughput budget failed and no repeat was authorized |
+| 2026-07-18 | This Milestone 8 commit; hash recorded by the next milestone update | Local release, 5 members, SQLite, fakewallet, `20/20`; matched 0/50/100 ms added private-REST delay | One clean `10:1`, `20:5`, `100:20` baseline plus active-delay sweep from 500 ms through 10 ms | 250 ms reached 11.370 TPS on loopback and 12.404/12.160 TPS with 50/100 ms added delay; raw peak 38.625 TPS at 15 ms; 10 ms regressed to 16.455 TPS with 18,801 finalized units | Rejected and reverted: 375/250 ms fail the 100 ms CPU budget; 100 ms and faster amplify helper units, CPU, and idle work; production remains at the upstream 500 ms schedule |
