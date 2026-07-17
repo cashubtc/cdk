@@ -1127,7 +1127,7 @@ impl Mint {
                         || !supports_nut342
                         || cdk_common::nuts::nut342::validate_metadata(value).is_err()
                     {
-                        return Err(Error::SignatureMissingOrInvalid);
+                        return Err(Error::InvalidOutputMetadata);
                     }
                 }
             }
