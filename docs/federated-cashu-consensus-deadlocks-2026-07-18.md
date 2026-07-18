@@ -49,7 +49,7 @@ is well established but its root cause is not.
 | 1 | `F1` | A single peer's equal-height status is treated as halt authority | Critical | 99% | Session/global if repeated against all honest members | Completed |
 | 2 | `F2` | Semantically invalid Byzantine operations halt finalized application | Critical | 99% | Session/global | Completed |
 | 3 | `P4` | Recovery-critical outgoing lookup ID is persisted after the side effect | Critical safety / High liveness | 99% | Quote/proofs and possible external-payment double spend | Completed |
-| 4 | `P5` | One member can reorg or quarantine accepted on-chain funds | Critical | 99% | On-chain quote/funds; all on-chain liquidity if repeated | Not started |
+| 4 | `P5` | One member can reorg or quarantine accepted on-chain funds | Critical | 99% | On-chain quote/funds; all on-chain liquidity if repeated | Completed |
 | 5 | `P1` | Accepted melt author has a permanent payment veto | High | 99% | Quote/proofs; malicious or failed author veto | Not started |
 | 6 | `P2` | One backend call or poison quote blocks the single observer worker | High | 99% | All payment repair on one member; quorum loss if shared | Not started |
 | 7 | `S1` | DKG availability is all-member, not Byzantine-threshold | High availability | 99% | Federation setup/key ceremony | Not started |
@@ -69,6 +69,7 @@ is well established but its root cause is not.
 | 21 | `A2` | Payment-observation submit readiness remains implicit | Medium | 85% | Consensus backlog and invalid-state amplification | Not started |
 | 22 | `DB-001` | Stateful apply-time content errors remain ambiguous and halt the session | Critical | 99% | Session/global | Not started |
 | 23 | `DB-002` | Payment backends do not uniformly honor a caller-supplied recovery key | Medium liveness | 95% | Quote liveness; standalone follow-up | Not started |
+| 24 | `DB-003` | First observer can fix incorrect immutable deposit fields permanently | Critical | 99% | On-chain quote/funds | Not started |
 
 Discovered bugs are appended after the existing ranked milestones in discovery
 order with their legacy IDs preserved; `DB-001` was recorded on 2026-07-18
@@ -445,6 +446,45 @@ legacy ID and discovery history.
   the attempt.
 - **Proposed position in the milestone order:** after `DB-001` (position 23);
   recorded for completeness and for upstream standalone CDK follow-up.
+
+### DB-003 — First observer can fix incorrect immutable deposit fields permanently
+
+- **Discovery date and originating milestone:** 2026-07-18, milestone 4 (`P5`)
+  confirmation.
+- **Status:** Queued
+- **Proposed severity and confidence:** Critical; 99% source-proven and
+  demonstrated.
+- **Faulty/Byzantine actor or backend precondition:** one Byzantine observer
+  is the first to report a real public outpoint but claims an incorrect value
+  or block while keeping the correct allocated script.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** the first deposit observation fixes the UTXO's immutable
+  txout/allocation/block fields
+  (`crates/cdk-common/src/federation/chain_observation.rs:635-658`); every
+  later honest observation then mismatches and quarantines the deposit
+  (`:660-669`), and `Quarantined` has no recovery epoch (`:415-435`).
+  Executed pre-fix demonstration on 2026-07-18 (harness removed after the
+  run): `first_lying_observer_cannot_brick_deposit_fields` FAILED with
+  `left: Quarantined, right: Spendable` after three honest members reported
+  the true fields against one first liar.
+- **Why distinct from an existing finding:** milestone 4 fixes
+  single-observer reorg authority and makes one-observer quarantines
+  repairable by the honest quorum when the recorded fields are honest
+  (liar-later). The liar-first case cannot be repaired that way because the
+  recorded fields themselves are the liar's and honest evidence is never
+  stored once conflicting
+  (`FederationChainObservationState::validate` enforces evidence/field
+  identity at `:958-1010`). Repair requires quorum-gated field establishment
+  or quorum-authorized field adoption with conflicting-evidence retention —
+  a different serialization/validation surface.
+- **Likely simplest federation-only correction and required proof:** retain
+  per-observer field votes (including conflicting evidence), fix fields only
+  once `required_observers` agree on one set, and adopt a quorum-backed set
+  over a minority-fixed one while keeping the recorded conflict diagnostic;
+  post-liability remains sticky. Required proof: the removed harness above
+  plus adversarial ordering (liar first/last, liar changing story, quorum
+  splitting across two false sets) and restart/replay convergence.
+- **Proposed position in the milestone order:** after `DB-002` (position 24).
 
 No other additional bugs have yet been recorded through this milestone workflow.
 
@@ -1033,24 +1073,151 @@ Bolt12/Custom) and the analogous standalone-branch ordering are `DB-002`.
 
 ### 4. One member can reorg or quarantine accepted on-chain funds (`P5`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with three executed focused
+harnesses against the unmodified pre-fix worktree, driving the exact cited
+apply paths (`FederationChainObservationState::apply_deposit` /
+`apply_reorg`) with the nocean incident's policy profile
+(`required_observers = 4`, `minimum_confirmations = 1`):
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-common --features federation --lib single_observer_reorg_does_not_reorg_or_block_credit_without_quorum -- --nocapture`
 
-**Fix check and evaluation:** Not run
+FAILED: `assertion failed: one observer must not reorg a quorum-established
+UTXO — left: Reorged, right: Spendable`. A quorum-established, liability-
+issued UTXO transitioned to `Reorged` (with the liability alarm raised and
+quote credit blocked downstream) from a single observer's reorg report —
+the same authority that the 2026-07-17 nocean incident reproduced
+accidentally.
 
-**Commit subject:** Not assigned
+`cargo test -p cdk-common --features federation --lib single_conflicting_observer_cannot_permanently_quarantine_established_utxo -- --nocapture`
 
-**Milestone observations:** None yet
+FAILED: `assertion failed: an honest quorum must repair a one-observer
+quarantine — left: Quarantined, right: Spendable`. One conflicting deposit
+(value mismatch) permanently quarantined a quorum-established UTXO; three
+honest members resubmitting the true fields with deeper confirmations did
+not recover it.
+
+A third temporary harness (removed after the run, to be re-created as
+`DB-003`'s own milestone regression) also FAILED pre-fix:
+`first_lying_observer_cannot_brick_deposit_fields` — `left: Quarantined,
+right: Spendable` — one first observer fixed incorrect immutable fields and
+the honest quorum's true evidence only quarantined the deposit. No
+production code had been edited; only the two retained harness tests in
+`crates/cdk-common/src/federation/chain_observation.rs` were added.
+
+**Minimal fix:** One federation-only change in
+`crates/cdk-common/src/federation/chain_observation.rs` making failure and
+recovery authority symmetric with spendability authority:
+
+1. `apply_reorg` records reorg evidence but transitions to `Reorged` (and
+   raises the post-liability alarm) only when distinct current-epoch reorg
+   observers reach the UTXO's `required_observers`; minority evidence is
+   diagnostic only.
+2. `has_current_epoch_reorg` now reports that quorum (new helper
+   `matching_current_epoch_reorg_observers`), so the deposit-path state
+   recompute and recovery-epoch logic use the same threshold.
+3. `utxo_is_spendable_at_or_before` blocks quote credit on a reorg-evidence
+   quorum instead of on any single reorg report.
+4. Pre-liability quarantines self-repair: after matching deposit evidence is
+   inserted, a `Quarantined` UTXO with no issued liability whose matching
+   confirmed observers reach `required_observers` recomputes state normally;
+   post-liability quarantines stay sticky with the alarm.
+5. `next_deposit_observation_epoch` keeps the current epoch for
+   pre-liability quarantines so honest observers keep reporting (they
+   previously stopped, making repair impossible).
+
+No standalone code, backend, emission logic, wire format, or schema changed;
+three existing cdk-common tests and two mint-level tests that encoded the
+single-observer authority were updated to the corrected quorum semantics and
+now also pin the minority-no-transition behavior. The liar-first variant
+(incorrect immutable fields fixed before honest evidence exists) is `DB-003`.
+
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact two
+retained confirmation scenarios. Pre-fix runs (recorded above): both FAILED
+with the violation evidence. Post-fix:
+
+`cargo test -p cdk-common --features federation --lib single_ -- --nocapture`
+
+`2 passed; 0 failed` (`single_observer_reorg_does_not_reorg_or_block_credit_without_quorum`,
+`single_conflicting_observer_cannot_permanently_quarantine_established_utxo`).
+The reorg scenario proves one reorg report neither transitions nor alarms
+nor blocks credit, while a full reorg quorum still fails closed; the
+quarantine scenario proves one conflict still fails closed but three honest
+members resubmitting the true fields repair the UTXO and restore credit.
+
+Broader evaluation on 2026-07-18:
+
+- `cargo fmt -p cdk-common -p cdk -- --check` — clean for the milestone's
+  code; only the pre-existing `operation.rs` regions recorded in milestone 2
+  remain (verified identical to the pristine baseline; a write-mode fmt run
+  that churned them was reverted).
+- `cargo test -p cdk-common --features federation` — `424 passed; 0 failed`,
+  including both new harnesses and the three quorum-updated existing tests.
+- `cargo test -p cdk --features federation,mint --lib` — `775 passed; 0
+  failed`, including the two quorum-updated mint-level chain-observation
+  tests (minority reorg no-transition, quorum transition, restart replay,
+  materialized-state digest convergence).
+- `cargo test -p cdk --lib` (default features, no federation) — `540
+  passed; 0 failed`, standalone unchanged.
+- `cargo test -p cdk-axum --features federation` — `494 passed; 0 failed; 2
+  ignored` on the final run. One earlier run failed
+  `aleph_bft_live_session_latency_probe_records_seven_member_bft_operation`
+  (a latency timing assertion unrelated to chain observation); it passed
+  standalone (7.69s) and in the final full run.
+- `cargo check -p cdk-common --no-default-features` and `cargo check -p cdk
+  --no-default-features` — passed.
+- `cargo clippy -p cdk-common --features federation --all-targets -- -D
+  warnings` — passed.
+
+Not run: the multi-process BDK/Esplora regtest deployment. The defect and
+fix live in the consensus chain-observation state machine (observer-quorum
+authority at the apply boundary), independent of any chain backend; the
+harnesses drive the exact apply paths that failed on nocean, and the
+false-negative emission path (`payment_observation.rs`) is intentionally
+unchanged because a single false emission is now harmless diagnostic
+evidence.
+
+**Commit subject:** `fix: require observer quorum for reorg and repair quarantine`
+
+**Milestone observations:** 2026-07-18 — Milestone 3 is committed
+(`2001841d0`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the reorg/quarantine authority
+boundary, the normal observer's false-negative reorg path, and the BDK reorg
+incident report are inspected.
+
+2026-07-18 — Confirmation recorded above. Scope decision: the confirmed
+mechanism for this milestone is (a) single-observer reorg authority
+(transition, liability alarm, and the `utxo_is_spendable_at_or_before`
+credit veto) and (b) permanent one-observer quarantine with no recovery
+path. The liar-first variant — a Byzantine observer fixing incorrect
+immutable fields before honest evidence exists — needs quorum-gated or
+adoptive field establishment, a different evidence-model change with its own
+serialization/validation surface; it is recorded as discovered bug `DB-003`
+with the executed demonstration above and queued after this milestone.
+
+2026-07-18 — Fix and evaluation complete; milestone kept. Observations
+during the fix: (1) `reorg_observations` holds one evidence slot per member,
+so a member re-reporting in a newer epoch replaces its older vote and each
+epoch needs its own quorum — the updated repeat test pins this. (2) The
+deposit recompute keeps `Reorged` while recovering below the matching
+quorum, so epoch-advance recovery is unchanged. (3) Quarantine-on-conflict
+was intentionally retained (fail-closed while truth is undecided); only the
+recovery side changed for the pre-liability case. (4) Three pre-existing
+cdk-common tests and two mint-level tests encoded the single-observer
+authority and were updated to assert both the new minority-no-transition
+invariant and the retained quorum fail-closed behavior — no assertion was
+weakened toward the old authority. (5) The cdk-axum observer emission loops
+needed no change: they consume `next_deposit_observation_epoch`, which now
+keeps pre-liability quarantines reportable.
 
 **Severity:** Critical
 
 **Confidence:** 99% — source-proven; accidental variant previously reported
 
-**Finding status:** Open, source-proven; accidental false-reorg variant previously
-observed
+**Finding status:** Resolved for the confirmed reorg and established-UTXO
+quarantine mechanisms on 2026-07-18 with red-before-green runtime proof; the
+liar-first field-establishment variant is tracked as discovered bug `DB-003`
 
 **Attacker/fault:** One Byzantine chain observer, lagging Esplora/BDK source, or
 inconsistent chain view
@@ -1094,14 +1261,30 @@ This explains the previously observed accidental version: a backend false
 negative or lagging chain source has the same authority as a real reorg. See
 [BDK reorg incident](federated-cashu-bdk-reorg-problem.md).
 
+The corrected state machine now makes failure and recovery authority
+symmetric with spendability authority: `Reorged` transitions, the liability
+alarm, and the quote-credit reorg veto each require the UTXO's
+`required_observers` in current-epoch reorg evidence, and pre-liability
+quarantines self-repair once the matching honest quorum resubmits, while
+conflicts still fail closed and post-liability states stay sticky. A single
+false emission — Byzantine or accidental — is now diagnostic evidence only.
+The retained regressions prove one report cannot reorg, alarm, block credit,
+or permanently quarantine, that full quorums still fail closed, and that
+restart replay and materialized digests converge.
+
 **Most likely cause when observed:** in an honest deployment, chain-source lag
 or inconsistent results; under the stated Byzantine threat model, a deliberate
-single-member veto.
+single-member veto. On a post-fix build a single report can no longer reorg,
+alarm, block credit, or permanently quarantine; a UTXO stuck `Quarantined`
+after first observations points to `DB-003`.
 
 **Required correction:** require threshold observations or independently
 verified chain evidence for reorg/quarantine; make recovery authority symmetric
 with failure authority; retain a sticky liability alarm for safety, but add a
-quorum-authorized repair path.
+quorum-authorized repair path. The quorum and symmetry clauses are implemented
+and proven by this milestone; the liar-first field-establishment case is
+`DB-003`, and a post-liability quorum-authorized manual repair path remains
+future work recorded in `DB-003`'s correction sketch.
 
 ### 5. Accepted melt author has a permanent payment veto (`P1`)
 
@@ -1938,7 +2121,7 @@ not currently classified as an open deadlock.
 | Session remains live but application index/backlog stops growing | 10 (`F4`) / 13 (`A1`) | Blocked operation index, DB lock age, queue depth/bytes |
 | Melt proofs stay pending with healthy consensus | 5 (`P1`), then 6 (`P2`), 11 (`P3`), or `DB-002` | Accepted envelope author, saga state, lookup ID, per-member backend observations |
 | Mint quote is paid externally but never becomes paid in federation | 11 (`P3`), then 6 (`P2`) | Per-member lookup visibility and exact evidence group differences |
-| UTXO changes to `Reorged`/`Quarantined` | 4 (`P5`) | First observation author, block/txout fields, every member's raw chain-source result |
+| UTXO changes to `Reorged`/`Quarantined` | Post-fix: quorum evidence or 24 (`DB-003`); pre-fix builds: 4 (`P5`) | Every member's reorg/deposit evidence, first observation author, block/txout fields, every member's raw chain-source result |
 | Restarted member never adopts a known checkpoint | 12 (`R1`), 15 (`R2`), or 14 (`R4`) | Advertising peers, selected source, transferred bytes, page cursors/counts |
 | Wallet hangs before sending value operation | 17 (`W1`) | In-flight `get_mint_info`/`get_mint_keys` member calls and fanout slots |
 | Melt succeeded but wallet cannot recover change | 9 (`W2`) | All raw member shares, selected metadata group, original blinded outputs |

@@ -6,6 +6,19 @@
 `docs/federated-cashu-bdk-frost-implementation-plan.md` (Milestone 9),  
 `docs/federation-cleanup-todo.md` item 48
 
+> **Update 2026-07-18:** the follow-up "require a reorg observation quorum"
+> is now implemented. Reorg transitions, the post-liability alarm, and the
+> quote-credit reorg veto all require the UTXO's `required_observers` in
+> current-epoch reorg evidence, and pre-liability quarantines self-repair
+> through the matching honest quorum (milestone `P5` in
+> `docs/federated-cashu-consensus-deadlocks-2026-07-18.md`, with
+> red-before-green regressions in
+> `crates/cdk-common/src/federation/chain_observation.rs`). A single false
+> emission like the one journal'd below can no longer reorg, alarm, block
+> credit, or permanently quarantine. Emitting reorg only on proven
+> disconnect and the liar-first field-establishment case (`DB-003`) remain
+> open follow-ups.
+
 ## Summary
 
 A deposit can be **confirmed and unspent on Bitcoin** while the federated

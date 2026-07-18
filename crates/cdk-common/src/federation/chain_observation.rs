@@ -400,22 +400,40 @@ impl FederationWalletUtxo {
         }
     }
 
+    /// Number of distinct members reporting a reorg for the current epoch.
+    #[must_use]
+    pub fn matching_current_epoch_reorg_observers(&self) -> u16 {
+        self.reorg_observations
+            .values()
+            .filter(|evidence| {
+                matches!(
+                    &evidence.observation,
+                    FederationChainObservation::Reorg(observation)
+                        if observation.observation_epoch == self.observation_epoch
+                )
+            })
+            .count()
+            .try_into()
+            .unwrap_or(u16::MAX)
+    }
+
     /// Return whether accepted reorg evidence invalidates the current epoch.
+    ///
+    /// One member cannot reorg accepted funds: the current epoch is
+    /// invalidated only when the accepted reorg evidence reaches the same
+    /// observer quorum that spendability requires.
     #[must_use]
     pub fn has_current_epoch_reorg(&self) -> bool {
-        self.reorg_observations.values().any(|evidence| {
-            matches!(
-                &evidence.observation,
-                FederationChainObservation::Reorg(observation)
-                    if observation.observation_epoch == self.observation_epoch
-            )
-        })
+        usize::from(self.required_observers)
+            <= usize::from(self.matching_current_epoch_reorg_observers())
     }
 
     /// Return the epoch a new local deposit observation should use.
     ///
     /// A pre-liability reorg requires a new epoch. Once one recovery
     /// observation advances the UTXO, the remaining members join that epoch.
+    /// Pre-liability quarantines keep the current epoch so honest observers
+    /// keep reporting and can repair the UTXO through the matching quorum.
     pub fn next_deposit_observation_epoch(&self) -> Result<Option<u64>> {
         match self.state {
             FederationWalletUtxoState::Reorged if self.liability_issued => Ok(None),
@@ -425,9 +443,9 @@ impl FederationWalletUtxo {
                 .map(Some)
                 .ok_or_else(|| invalid_state("wallet observation epoch overflow")),
             FederationWalletUtxoState::Reorged => Ok(Some(self.observation_epoch)),
-            FederationWalletUtxoState::Quarantined
-            | FederationWalletUtxoState::Reserved
-            | FederationWalletUtxoState::Spent => Ok(None),
+            FederationWalletUtxoState::Quarantined if self.liability_issued => Ok(None),
+            FederationWalletUtxoState::Quarantined => Ok(Some(self.observation_epoch)),
+            FederationWalletUtxoState::Reserved | FederationWalletUtxoState::Spent => Ok(None),
             FederationWalletUtxoState::Observed
             | FederationWalletUtxoState::Confirmed
             | FederationWalletUtxoState::Spendable => Ok(Some(self.observation_epoch)),
@@ -733,12 +751,20 @@ impl FederationChainObservationState {
         utxo.observations.insert(observation.observer, evidence);
         utxo.observation_epoch = observation.observation_epoch;
 
+        // One member cannot permanently quarantine accepted funds: while no
+        // liability is issued, a matching observer quorum repairs the UTXO
+        // and recomputes its state. Post-liability quarantines remain sticky.
+        let repair_quarantine = utxo.state == FederationWalletUtxoState::Quarantined
+            && !utxo.liability_issued
+            && usize::from(utxo.required_observers)
+                <= usize::from(utxo.matching_confirmed_observers());
         if !(matches!(
             utxo.state,
             FederationWalletUtxoState::Quarantined
                 | FederationWalletUtxoState::Reserved
                 | FederationWalletUtxoState::Spent
         ) || utxo.state == FederationWalletUtxoState::Reorged && utxo.liability_issued)
+            || repair_quarantine
         {
             utxo.state = if utxo.has_current_epoch_reorg() {
                 FederationWalletUtxoState::Reorged
@@ -805,8 +831,14 @@ impl FederationChainObservationState {
                 operation_index,
             },
         );
-        utxo.state = FederationWalletUtxoState::Reorged;
-        utxo.liability_alarm |= utxo.liability_issued;
+        // One member cannot reorg or alarm accepted funds: the fail-closed
+        // transition and the post-liability alarm require the same observer
+        // quorum that spendability requires. Minority reorg evidence is
+        // retained as diagnostic only.
+        if utxo.has_current_epoch_reorg() {
+            utxo.state = FederationWalletUtxoState::Reorged;
+            utxo.liability_alarm |= utxo.liability_issued;
+        }
         let outcome_state = utxo.state;
         self.validate()?;
         Ok(FederationChainObservationOutcome::Updated(outcome_state))
@@ -1034,8 +1066,10 @@ fn confirmation_depth(observation: &FederationDepositObservation) -> u32 {
 }
 
 fn utxo_is_spendable_at_or_before(utxo: &FederationWalletUtxo, max_operation_index: u64) -> bool {
-    if utxo.state == FederationWalletUtxoState::Quarantined
-        || utxo.reorg_observations.values().any(|evidence| {
+    let current_epoch_reorg_observers = utxo
+        .reorg_observations
+        .values()
+        .filter(|evidence| {
             evidence.operation_index <= max_operation_index
                 && matches!(
                     &evidence.observation,
@@ -1043,6 +1077,9 @@ fn utxo_is_spendable_at_or_before(utxo: &FederationWalletUtxo, max_operation_ind
                         if observation.observation_epoch == utxo.observation_epoch
                 )
         })
+        .count();
+    if utxo.state == FederationWalletUtxoState::Quarantined
+        || current_epoch_reorg_observers >= usize::from(utxo.required_observers)
     {
         return false;
     }
@@ -1317,21 +1354,31 @@ mod tests {
             .expect("liability output")
             .liability_issued));
 
-        let reorg = FederationDepositReorgObservation {
+        let reorg = |observer: u16| FederationDepositReorgObservation {
             outpoint: outpoint(4),
             disconnected_block_hash: BlockHash::from_byte_array([10; 32]),
             disconnected_block_height: 101,
             observation_epoch: 0,
-            observer: member(1),
+            observer: member(observer),
             source: FederationChainSourceDescriptor::new(
                 FederationChainSourceScope::Independent,
-                "source-1",
+                format!("source-{observer}"),
             )
             .expect("source"),
         };
         state
-            .apply_reorg(&reorg, FederationOperationId::from_bytes([6; 32]), 6)
-            .expect("reorg");
+            .apply_reorg(&reorg(1), FederationOperationId::from_bytes([6; 32]), 6)
+            .expect("minority reorg evidence");
+        assert!(
+            !state
+                .utxo(outpoint(4))
+                .expect("output after one reorg")
+                .liability_alarm,
+            "one observer's reorg evidence must not raise the alarm"
+        );
+        state
+            .apply_reorg(&reorg(2), FederationOperationId::from_bytes([7; 32]), 7)
+            .expect("reorg quorum");
         assert!(state
             .quote_payment_at_or_before("quote-1", u64::MAX)
             .is_err());
@@ -1448,7 +1495,7 @@ mod tests {
                     .mark_liability_issued(outpoint(3))
                     .expect("liability issued");
             }
-            let reorg = FederationDepositReorgObservation {
+            let first_reorg = FederationDepositReorgObservation {
                 outpoint: outpoint(3),
                 disconnected_block_hash: BlockHash::from_byte_array([9; 32]),
                 disconnected_block_height: 100,
@@ -1461,8 +1508,26 @@ mod tests {
                 .expect("source"),
             };
             state
-                .apply_reorg(&reorg, FederationOperationId::from_bytes([8; 32]), 8)
-                .expect("reorg");
+                .apply_reorg(&first_reorg, FederationOperationId::from_bytes([8; 32]), 8)
+                .expect("first reorg");
+            let utxo = state.utxo(outpoint(3)).expect("utxo");
+            assert_eq!(
+                utxo.state,
+                FederationWalletUtxoState::Spendable,
+                "one observer's reorg evidence must not transition the UTXO"
+            );
+            assert!(
+                !utxo.liability_alarm,
+                "one observer's reorg evidence must not raise the alarm"
+            );
+
+            let second_reorg = FederationDepositReorgObservation {
+                observer: member(2),
+                ..first_reorg
+            };
+            state
+                .apply_reorg(&second_reorg, FederationOperationId::from_bytes([9; 32]), 9)
+                .expect("quorum reorg");
             let utxo = state.utxo(outpoint(3)).expect("utxo");
             assert_eq!(utxo.state, FederationWalletUtxoState::Reorged);
             assert_eq!(utxo.liability_alarm, liability);
@@ -1481,8 +1546,8 @@ mod tests {
                         ScriptBuf::from_bytes(vec![0x51]).as_script(),
                         2,
                         2,
-                        FederationOperationId::from_bytes([9; 32]),
-                        9,
+                        FederationOperationId::from_bytes([10; 32]),
+                        10,
                     )
                     .is_err());
                 let utxo = state.utxo(outpoint(3)).expect("sticky liability UTXO");
@@ -1529,6 +1594,28 @@ mod tests {
                 )
                 .expect("accepted reorg");
         }
+        let minority_reorged = state.utxo(outpoint(3)).expect("minority reorg UTXO");
+        assert_eq!(
+            minority_reorged.state,
+            FederationWalletUtxoState::Spendable,
+            "three of four required observers must not reorg the UTXO"
+        );
+
+        let quorum_reorg = FederationDepositReorgObservation {
+            outpoint: outpoint(3),
+            disconnected_block_hash: BlockHash::from_byte_array([9; 32]),
+            disconnected_block_height: 100,
+            observation_epoch: 0,
+            observer: member(2),
+            source: FederationChainSourceDescriptor::new(
+                FederationChainSourceScope::Shared,
+                "shared-source",
+            )
+            .expect("source"),
+        };
+        state
+            .apply_reorg(&quorum_reorg, FederationOperationId::from_bytes([9; 32]), 9)
+            .expect("quorum reorg");
         let reorged = state.utxo(outpoint(3)).expect("reorged UTXO");
         assert_eq!(reorged.state, FederationWalletUtxoState::Reorged);
         assert_eq!(
@@ -1553,7 +1640,7 @@ mod tests {
         let threshold_minus_one = state.utxo(outpoint(3)).expect("recovering UTXO");
         assert_eq!(threshold_minus_one.observation_epoch, 1);
         assert_eq!(threshold_minus_one.matching_confirmed_observers(), 3);
-        assert_eq!(threshold_minus_one.reorg_observations.len(), 3);
+        assert_eq!(threshold_minus_one.reorg_observations.len(), 4);
         assert!(state
             .quote_payment_at_or_before("quote-1", u64::MAX)
             .expect("recovering quote")
@@ -1571,7 +1658,7 @@ mod tests {
         );
         let recovered = state.utxo(outpoint(3)).expect("recovered UTXO");
         assert_eq!(recovered.matching_confirmed_observers(), 4);
-        assert_eq!(recovered.reorg_observations.len(), 3);
+        assert_eq!(recovered.reorg_observations.len(), 4);
         assert_eq!(
             state
                 .quote_payment_at_or_before("quote-1", u64::MAX)
@@ -1630,12 +1717,12 @@ mod tests {
             )
             .is_err());
 
-        let repeated_reorg = FederationDepositReorgObservation {
+        let repeated_reorg = |observer: u16| FederationDepositReorgObservation {
             outpoint: outpoint(3),
             disconnected_block_hash: BlockHash::from_byte_array([9; 32]),
             disconnected_block_height: 100,
             observation_epoch: 1,
-            observer: member(1),
+            observer: member(observer),
             source: FederationChainSourceDescriptor::new(
                 FederationChainSourceScope::Shared,
                 "shared-source",
@@ -1645,14 +1732,31 @@ mod tests {
         assert_eq!(
             state
                 .apply_reorg(
-                    &repeated_reorg,
+                    &repeated_reorg(1),
                     FederationOperationId::from_bytes([16; 32]),
                     16,
                 )
                 .expect("repeated reorg"),
-            FederationChainObservationOutcome::Updated(FederationWalletUtxoState::Reorged)
+            FederationChainObservationOutcome::Updated(FederationWalletUtxoState::Spendable)
         );
+        assert!(
+            !state
+                .utxo(outpoint(3))
+                .expect("one repeated reorg")
+                .has_current_epoch_reorg(),
+            "one observer's repeated reorg must not invalidate the epoch"
+        );
+        for (operation, observer) in [(17, 2), (18, 3), (19, 5)] {
+            state
+                .apply_reorg(
+                    &repeated_reorg(observer),
+                    FederationOperationId::from_bytes([operation; 32]),
+                    u64::from(operation),
+                )
+                .expect("repeated reorg quorum");
+        }
         let reorged_again = state.utxo(outpoint(3)).expect("reorged again");
+        assert_eq!(reorged_again.state, FederationWalletUtxoState::Reorged);
         assert!(reorged_again.has_current_epoch_reorg());
         assert_eq!(
             reorged_again
@@ -1663,15 +1767,17 @@ mod tests {
 
         let mut overflow = reorged_again.clone();
         overflow.observation_epoch = u64::MAX;
-        let FederationChainObservation::Reorg(overflow_reorg) = &mut overflow
-            .reorg_observations
-            .get_mut(&member(1))
-            .expect("latest reorg")
-            .observation
-        else {
-            panic!("reorg evidence");
-        };
-        overflow_reorg.observation_epoch = u64::MAX;
+        for reorg_member in [member(1), member(2), member(3), member(5)] {
+            let FederationChainObservation::Reorg(overflow_reorg) = &mut overflow
+                .reorg_observations
+                .get_mut(&reorg_member)
+                .expect("reorg evidence")
+                .observation
+            else {
+                panic!("reorg evidence");
+            };
+            overflow_reorg.observation_epoch = u64::MAX;
+        }
         assert!(overflow.next_deposit_observation_epoch().is_err());
     }
 
@@ -1721,6 +1827,154 @@ mod tests {
             rows,
             changed.materialized_rows().expect("changed rows"),
             "state digest inputs cover policy and evidence"
+        );
+    }
+
+    fn reorg_observation(
+        observer: u16,
+        observation_epoch: u64,
+    ) -> FederationDepositReorgObservation {
+        FederationDepositReorgObservation {
+            outpoint: outpoint(3),
+            disconnected_block_hash: BlockHash::from_byte_array([9; 32]),
+            disconnected_block_height: 100,
+            observation_epoch,
+            observer: member(observer),
+            source: FederationChainSourceDescriptor::new(
+                FederationChainSourceScope::Shared,
+                "shared-source",
+            )
+            .expect("source"),
+        }
+    }
+
+    #[test]
+    fn single_observer_reorg_does_not_reorg_or_block_credit_without_quorum() {
+        // required_observers = 4 of 5 with one confirmation (the nocean profile).
+        let mut state = FederationChainObservationState::new();
+        for observer in 1..=5 {
+            let evidence = observation(
+                observer,
+                Some(block(9, 100, 1)),
+                FederationChainSourceScope::Shared,
+            );
+            apply_with_policy(&mut state, &evidence, 4, 1, observer as u8);
+        }
+        assert_eq!(
+            state.utxo(outpoint(3)).expect("spendable UTXO").state,
+            FederationWalletUtxoState::Spendable
+        );
+        state
+            .mark_liability_issued(outpoint(3))
+            .expect("liability issued");
+
+        // One observer (a Byzantine member or one lagging/inconsistent chain
+        // backend) reports the recorded confirmation block as disconnected.
+        state
+            .apply_reorg(
+                &reorg_observation(5, 0),
+                FederationOperationId::from_bytes([6; 32]),
+                6,
+            )
+            .expect("reorg evidence accepted");
+
+        let utxo = state.utxo(outpoint(3)).expect("UTXO after one reorg");
+        assert_eq!(
+            utxo.state,
+            FederationWalletUtxoState::Spendable,
+            "one observer must not reorg a quorum-established UTXO"
+        );
+        assert!(
+            !utxo.liability_alarm,
+            "one observer must not raise the liability alarm"
+        );
+        assert!(
+            state
+                .quote_payment_at_or_before("quote-1", u64::MAX)
+                .expect("credit query")
+                .is_some(),
+            "one reorg report must not block quote credit"
+        );
+
+        // A full observer quorum reporting the same reorg still fails closed.
+        for (operation, observer) in [(7, 1), (8, 2), (9, 3)] {
+            state
+                .apply_reorg(
+                    &reorg_observation(observer, 0),
+                    FederationOperationId::from_bytes([operation; 32]),
+                    u64::from(operation),
+                )
+                .expect("reorg evidence accepted");
+        }
+        let utxo = state.utxo(outpoint(3)).expect("UTXO after reorg quorum");
+        assert_eq!(utxo.state, FederationWalletUtxoState::Reorged);
+        assert!(utxo.liability_alarm);
+    }
+
+    #[test]
+    fn single_conflicting_observer_cannot_permanently_quarantine_established_utxo() {
+        let mut state = FederationChainObservationState::new();
+        for observer in 1..=4 {
+            let evidence = observation(
+                observer,
+                Some(block(9, 100, 2)),
+                FederationChainSourceScope::Independent,
+            );
+            apply_with_policy(&mut state, &evidence, 3, 2, observer as u8);
+        }
+        assert_eq!(
+            state.utxo(outpoint(3)).expect("spendable UTXO").state,
+            FederationWalletUtxoState::Spendable
+        );
+
+        // One Byzantine observer reports a conflicting value for the same
+        // public outpoint. The conflict still fails closed.
+        let mut conflict = observation(
+            5,
+            Some(block(9, 100, 2)),
+            FederationChainSourceScope::Independent,
+        );
+        conflict.txout.value = Amount::from_sat(49_999);
+        let outcome = state
+            .apply_deposit(
+                &conflict,
+                &allocation().0,
+                ScriptBuf::from_bytes(vec![0x51]).as_script(),
+                3,
+                2,
+                FederationOperationId::from_bytes([5; 32]),
+                5,
+            )
+            .expect("conflict materializes");
+        assert_eq!(outcome, FederationChainObservationOutcome::Quarantined);
+        assert_eq!(
+            state.utxo(outpoint(3)).expect("quarantined UTXO").state,
+            FederationWalletUtxoState::Quarantined
+        );
+
+        // Honest observers keep reporting the true fields with deepening
+        // confirmations; the honest quorum must repair the UTXO.
+        for (operation, observer) in [(6, 1), (7, 2), (8, 3)] {
+            let evidence = observation(
+                observer,
+                Some(block(9, 100, 3)),
+                FederationChainSourceScope::Independent,
+            );
+            apply_with_policy(&mut state, &evidence, 3, 2, operation);
+        }
+        let utxo = state.utxo(outpoint(3)).expect("repaired UTXO");
+        assert_eq!(
+            utxo.state,
+            FederationWalletUtxoState::Spendable,
+            "an honest quorum must repair a one-observer quarantine"
+        );
+        assert!(utxo.conflicting_observers.contains(&member(5)));
+        assert!(
+            state
+                .quote_payment_at_or_before("quote-1", u64::MAX)
+                .expect("credit query")
+                .is_some(),
+            "a repaired UTXO must fund quote credit again"
         );
     }
 }

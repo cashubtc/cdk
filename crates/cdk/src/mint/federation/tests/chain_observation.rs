@@ -185,6 +185,42 @@ async fn accepted_member_quorum_materializes_and_catches_up_identically() {
             member
                 .federation_chain_observation_state()
                 .await
+                .expect("minority reorg state")
+                .utxo(outpoint)
+                .expect("utxo")
+                .state,
+            FederationWalletUtxoState::Spendable,
+            "one observer's reorg evidence must not transition the UTXO"
+        );
+    }
+
+    let second_reorg = FederationChainObservation::Reorg(FederationDepositReorgObservation {
+        observer: second_runtime.member_id(),
+        ..FederationDepositReorgObservation {
+            outpoint,
+            disconnected_block_hash: BlockHash::from_byte_array([42; 32]),
+            disconnected_block_height: 200,
+            observation_epoch: 0,
+            observer: runtime.member_id(),
+            source: FederationChainSourceDescriptor::new(
+                FederationChainSourceScope::Shared,
+                "shared-regtest-source",
+            )
+            .expect("source"),
+        }
+    });
+    let second_reorg_entry = appended_entry(
+        &mut journal,
+        second_runtime
+            .chain_observation_operation(second_reorg)
+            .expect("second reorg operation"),
+    );
+    for member in &members {
+        persist_and_apply_entry(member, &second_reorg_entry).await;
+        assert_eq!(
+            member
+                .federation_chain_observation_state()
+                .await
                 .expect("reorg state")
                 .utxo(outpoint)
                 .expect("utxo")
@@ -249,6 +285,7 @@ async fn accepted_member_quorum_materializes_and_catches_up_identically() {
         &first_entry,
         &second_entry,
         &reorg_entry,
+        &second_reorg_entry,
         &first_reconfirmation_entry,
         &second_reconfirmation_entry,
     ] {
@@ -422,6 +459,27 @@ async fn paid_observation_after_pre_liability_reorg_is_definitively_unpaid() {
             .expect("reorg operation"),
     );
     persist_and_apply_entry(&mint, &reorg_entry).await;
+
+    let second_reorg_entry = appended_entry(
+        &mut journal,
+        second_runtime
+            .chain_observation_operation(FederationChainObservation::Reorg(
+                FederationDepositReorgObservation {
+                    outpoint: OutPoint::new(Txid::from_byte_array([41; 32]), 1),
+                    disconnected_block_hash: BlockHash::from_byte_array([42; 32]),
+                    disconnected_block_height: 200,
+                    observation_epoch: 0,
+                    observer: second_runtime.member_id(),
+                    source: FederationChainSourceDescriptor::new(
+                        FederationChainSourceScope::Shared,
+                        "shared-regtest-source",
+                    )
+                    .expect("source"),
+                },
+            ))
+            .expect("second reorg operation"),
+    );
+    persist_and_apply_entry(&mint, &second_reorg_entry).await;
 
     let second_payment_entry = appended_entry(
         &mut journal,
