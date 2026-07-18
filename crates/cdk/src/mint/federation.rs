@@ -2900,7 +2900,7 @@ impl Mint {
             .map_err(|_| Error::UnknownQuote)?;
         self.require_prior_applied_melt_quote(request.quote(), entry.index)
             .await?;
-        match self
+        let melt_remains_pending = match self
             .melt_federation_with_accepted_time(
                 &request,
                 operation_id,
@@ -2908,9 +2908,16 @@ impl Mint {
             )
             .await
         {
-            Ok(_) | Err(Error::PaymentFailed) => {}
+            Ok(response) => match response.state() {
+                cdk_common::MeltQuoteState::Pending => true,
+                cdk_common::MeltQuoteState::Paid => false,
+                cdk_common::MeltQuoteState::Unpaid
+                | cdk_common::MeltQuoteState::Failed
+                | cdk_common::MeltQuoteState::Unknown => return Err(Error::Internal),
+            },
+            Err(Error::PaymentFailed) => true,
             Err(err) => return Err(err),
-        }
+        };
 
         let mut transaction = self.localstore.begin_transaction().await?;
         let outcome = async {
@@ -2918,15 +2925,21 @@ impl Mint {
                 .get_melt_quote(request.quote())
                 .await?
                 .ok_or(Error::UnknownQuote)?;
-            let runtime = self.federation_config().ok_or(Error::Internal)?;
-            persist_pending_onchain_intent(
-                &mut transaction,
-                runtime,
-                &quote,
-                operation_id,
-                federation_accepted_logical_time(entry),
-            )
-            .await
+            if melt_remains_pending {
+                let runtime = self.federation_config().ok_or(Error::Internal)?;
+                persist_pending_onchain_intent(
+                    &mut transaction,
+                    runtime,
+                    &quote,
+                    operation_id,
+                    federation_accepted_logical_time(entry),
+                )
+                .await
+            } else if quote.state == cdk_common::MeltQuoteState::Paid {
+                Ok(())
+            } else {
+                Err(Error::Internal)
+            }
         }
         .await;
         finish_federation_apply_transaction(transaction, entry, outcome).await

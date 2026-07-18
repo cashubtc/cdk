@@ -2491,6 +2491,293 @@ async fn internal_melt_to_mint_settlement_updates_both_quotes_in_accepted_melt()
     );
 }
 
+struct FrostOnchainInternalMeltFixture {
+    runtime_config: FederationRuntimeConfig,
+    mint: Mint,
+    localstore: Arc<MintSqliteDatabase>,
+    mint_quote: QuoteId,
+    melt_quote: QuoteId,
+    input_ys: Vec<PublicKey>,
+    melt_request: MeltRequest<QuoteId>,
+    melt_entry: FederationJournalEntry,
+}
+
+async fn frost_onchain_internal_melt_fixture() -> FrostOnchainInternalMeltFixture {
+    use cdk_common::bitcoin::Address;
+    use cdk_common::federation::{FederationAddressAllocationScope, FederationAddressKeychain};
+    use cdk_common::nuts::nut30::{
+        MeltQuoteOnchainFeeOption, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse,
+        MintQuoteOnchainRequest, MintQuoteOnchainResponse,
+    };
+
+    let (runtime_config, application_id) =
+        super::address_allocation::runtime_with_address_application();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let mint_quote = QuoteId::new();
+
+    let allocation_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .address_allocation_operation(
+                mint_quote.to_string(),
+                application_id,
+                3,
+                FederationAddressKeychain::External,
+            )
+            .expect("allocation operation"),
+    );
+    persist_and_apply_entry(&mint, &allocation_entry).await;
+    let allocation = mint
+        .federation_address_allocation(
+            FederationAddressAllocationScope {
+                application_id,
+                application_key_epoch: 3,
+            },
+            &mint_quote.to_string(),
+        )
+        .await
+        .expect("allocation lookup")
+        .expect("allocation");
+    let application = runtime_config
+        .cdk_onchain_application()
+        .expect("active application");
+    let script = runtime_config
+        .public_config()
+        .frost_wallet
+        .as_ref()
+        .expect("FROST wallet")
+        .derive_cdk_onchain_script(
+            runtime_config.public_config(),
+            application_id,
+            3,
+            allocation.keychain,
+            allocation.derivation_index,
+        )
+        .expect("allocated script");
+    let address = Address::from_script(script.as_script(), application.network)
+        .expect("allocated address")
+        .to_string();
+    let wallet_key = SecretKey::from_slice(&[24; 32]).expect("wallet key");
+    let mint_quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::MintQuote(
+            FederationMintQuoteOperation {
+                quote: mint_quote.to_string(),
+                request_lookup_id: PaymentIdentifier::QuoteId(mint_quote.clone()),
+                request: MintQuoteRequest::Onchain(MintQuoteOnchainRequest {
+                    unit: CurrencyUnit::Sat,
+                    pubkey: wallet_key.public_key(),
+                }),
+                response: MintQuoteResponse::Onchain(MintQuoteOnchainResponse {
+                    quote: mint_quote.to_string(),
+                    request: address.clone(),
+                    unit: CurrencyUnit::Sat,
+                    method: PaymentMethod::Known(KnownMethod::Onchain),
+                    expiry: None,
+                    pubkey: wallet_key.public_key(),
+                    amount_paid: Amount::ZERO,
+                    amount_issued: Amount::ZERO,
+                    updated_at: 0,
+                }),
+            },
+        )),
+    );
+    persist_and_apply_entry(&mint, &mint_quote_entry).await;
+
+    let melt_quote = QuoteId::new();
+    let fee_option = MeltQuoteOnchainFeeOption {
+        fee_index: 7,
+        fee_reserve: Amount::from(1),
+        estimated_blocks: 6,
+    };
+    let melt_quote_entry = appended_entry(
+        &mut journal,
+        runtime_config.melt_quote_operation(
+            melt_quote.clone(),
+            MeltQuoteRequest::Onchain(MeltQuoteOnchainRequest {
+                request: address.clone(),
+                unit: CurrencyUnit::Sat,
+                amount: Amount::from(1),
+            }),
+            MeltQuoteCreateResponse::Onchain(MeltQuoteOnchainResponse {
+                quote: melt_quote.clone(),
+                amount: Amount::from(1),
+                unit: CurrencyUnit::Sat,
+                method: PaymentMethod::Known(KnownMethod::Onchain),
+                state: MeltQuoteState::Unpaid,
+                expiry: 4_000_000_000,
+                request: address,
+                fee_options: vec![fee_option],
+                selected_fee_index: None,
+                outpoint: None,
+                change: None,
+            }),
+            FederationMeltQuoteMetadata {
+                request_lookup_id: Some(PaymentIdentifier::QuoteId(melt_quote.clone())),
+                extra_json: None,
+                estimated_blocks: Some(6),
+            },
+        ),
+    );
+    persist_and_apply_entry(&mint, &melt_quote_entry).await;
+
+    let proofs = vec![
+        proof_for_runtime(&runtime_config, "onchain-internal-input-one"),
+        proof_for_runtime(&runtime_config, "onchain-internal-input-two"),
+    ];
+    let input_ys = proofs.ys().expect("input ys");
+    let melt_request = MeltRequest::new(melt_quote.clone(), proofs, None).fee_index(7);
+    let melt_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(melt_request.clone())
+            .expect("melt operation"),
+    );
+
+    FrostOnchainInternalMeltFixture {
+        runtime_config,
+        mint,
+        localstore,
+        mint_quote,
+        melt_quote,
+        input_ys,
+        melt_request,
+        melt_entry,
+    }
+}
+
+async fn assert_frost_onchain_internal_melt_finalized(
+    fixture: &FrostOnchainInternalMeltFixture,
+    mint: &Mint,
+) {
+    assert_eq!(
+        fixture
+            .localstore
+            .get_mint_quote(&fixture.mint_quote)
+            .await
+            .expect("mint quote lookup")
+            .expect("mint quote")
+            .state(),
+        MintQuoteState::Paid
+    );
+    assert_eq!(
+        fixture
+            .localstore
+            .get_melt_quote(&fixture.melt_quote)
+            .await
+            .expect("melt quote lookup")
+            .expect("melt quote")
+            .state,
+        MeltQuoteState::Paid
+    );
+    assert_eq!(
+        fixture
+            .localstore
+            .get_proofs_states(&fixture.input_ys)
+            .await
+            .expect("proof states"),
+        vec![Some(State::Spent), Some(State::Spent)]
+    );
+    assert!(fixture
+        .localstore
+        .get_melt_saga_by_quote_id(&fixture.melt_quote)
+        .await
+        .expect("melt saga lookup")
+        .is_none());
+    let mut tx = fixture.localstore.begin_transaction().await.expect("begin");
+    assert!(tx
+        .get_melt_request_and_blinded_messages(&fixture.melt_quote)
+        .await
+        .expect("melt request lookup")
+        .is_none());
+    tx.rollback().await.expect("rollback read transaction");
+    assert!(fixture
+        .localstore
+        .get_federation_payment_observations(
+            FederationPaymentObservationContext::MeltQuote,
+            &fixture.melt_quote.to_string(),
+        )
+        .await
+        .expect("melt payment observations")
+        .is_empty());
+    assert!(fixture
+        .localstore
+        .get_completed_operation(&super::super::federation_operation_uuid(
+            fixture.melt_entry.operation_id,
+        ))
+        .await
+        .expect("completed operation lookup")
+        .is_some());
+    assert!(mint
+        .federation_transaction_state()
+        .await
+        .expect("transaction state")
+        .intent_for_quote(&fixture.melt_quote.to_string())
+        .is_none());
+    assert_eq!(
+        fixture
+            .localstore
+            .get_federation_journal_entry_by_operation_id(fixture.melt_entry.operation_id)
+            .await
+            .expect("journal lookup")
+            .expect("journal entry")
+            .status(),
+        FederationOperationStatus::Applied
+    );
+}
+
+#[tokio::test]
+async fn accepted_frost_onchain_internal_melt_finalizes_without_pending_intent() {
+    let fixture = frost_onchain_internal_melt_fixture().await;
+    persist_and_apply_entry(&fixture.mint, &fixture.melt_entry).await;
+    assert_frost_onchain_internal_melt_finalized(&fixture, &fixture.mint).await;
+    assert!(!fixture
+        .mint
+        .apply_accepted_federation_operation(&fixture.melt_entry)
+        .await
+        .expect("terminal internal melt replay"));
+}
+
+#[tokio::test]
+async fn failed_frost_onchain_internal_melt_replays_after_restart() {
+    let fixture = frost_onchain_internal_melt_fixture().await;
+    persist_journal_entry(&fixture.localstore, &fixture.melt_entry).await;
+    let response = fixture
+        .mint
+        .melt_federation_with_accepted_time(
+            &fixture.melt_request,
+            fixture.melt_entry.operation_id,
+            super::super::federation_accepted_logical_time(&fixture.melt_entry),
+        )
+        .await
+        .expect("commit internal settlement before application status");
+    assert_eq!(response.state(), MeltQuoteState::Paid);
+
+    let mut tx = fixture.localstore.begin_transaction().await.expect("begin");
+    tx.set_federation_operation_application_state(
+        fixture.melt_entry.operation_id,
+        &FederationApplicationState::Failed {},
+    )
+    .await
+    .expect("mark interrupted journal application failed");
+    tx.commit().await.expect("commit failed application status");
+
+    let restarted = restart_federated_test_mint(
+        fixture.runtime_config.clone(),
+        Arc::clone(&fixture.localstore),
+    )
+    .await;
+    assert_eq!(
+        restarted
+            .apply_federation_journal_entries(std::slice::from_ref(&fixture.melt_entry))
+            .await
+            .expect("replay terminal internal melt"),
+        vec![fixture.melt_entry.operation_id]
+    );
+    assert_frost_onchain_internal_melt_finalized(&fixture, &restarted).await;
+}
+
 #[tokio::test]
 async fn real_policy_melt_payment_observations_finalize_from_stored_quorum() {
     let policy = FederationPaymentObservationPolicy::member_quorum(2);

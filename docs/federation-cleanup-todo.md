@@ -3050,6 +3050,85 @@ Root cause (layered):
 - `crates/cdk/src/mint/federation/tests/chain_observation.rs`
 - `docs/federated-cashu-bdk-reorg-problem.md`
 
+## 49. Route terminal FROST on-chain internal melts around pending batching
+
+**Status:** Implemented locally; coordinated deployment pending (2026-07-18)
+
+**Detailed write-up:**
+[`docs/federated-cashu-frost-onchain-internal-settlement-halt.md`](federated-cashu-frost-onchain-internal-settlement-halt.md)
+
+### Problem
+
+A FROST on-chain melt whose destination matches an active same-mint on-chain
+mint quote is correctly finalized as an internal settlement, but accepted-melt
+application then unconditionally tries to persist a pending external FROST
+payment intent. The quote is already `Paid`, so the pending-intent invariant
+returns `TransactionProposalInvalid`. AlephBFT treats that finalized-payload
+apply failure as definitive and halts every member.
+
+Internal settlement commits before the pending-intent transaction begins. The
+live five-member failure therefore left the mint quote credited, the melt quote
+paid, the proofs spent, change and a completed operation stored, and the saga
+deleted on every member while the accepted journal melt remained `Failed`.
+Restarting unchanged code repeats the same error after validating the terminal
+operation; it does not heal the deployment.
+
+### Result
+
+- `apply_federation_melt` now retains the returned quote state instead of
+  discarding every successful response through `Ok(_)`.
+- Only a `Pending` result enters the existing strict FROST pending-intent path.
+  A terminal result must agree with a persisted `Paid` quote and marks the
+  journal operation applied without an intent. Other successful response
+  states fail closed.
+- The paid replay path still verifies the exact request, inputs, change,
+  selected fee, federation operation ID, and completed-operation kind before
+  terminal routing can succeed. `persist_pending_onchain_intent` was not
+  weakened.
+- A restart regression materializes the live split state (`Paid` business
+  state plus `Failed` journal application), recreates the mint, and proves the
+  accepted operation replays once to `Applied` without duplicate effects.
+- The implementation adds no Nocean-specific condition, address exception,
+  database repair, backend check, or batching delay.
+
+### Known locations
+
+- `crates/cdk/src/mint/federation.rs`: `apply_federation_melt` routes `Pending`
+  and `Paid` results to pending-intent and terminal-application paths.
+- `crates/cdk/src/mint/melt/mod.rs`:
+  `melt_federation_with_accepted_time` returns the terminal or pending quote
+  state now consumed by accepted-melt routing.
+- `crates/cdk/src/mint/melt/shared.rs`:
+  `finalize_federation_internal_melt_quote` commits both quote transitions,
+  proof spending, change, completed-operation storage, and saga deletion.
+- `crates/cdk/src/mint/federation/transaction_state.rs`:
+  `persist_pending_onchain_intent` enforces `Pending` and maps the invariant to
+  `TransactionProposalInvalid`.
+- `crates/cdk-axum/src/federation/aleph_bft_session.rs` and
+  `crates/cdk-axum/src/lib.rs`: non-retryable finalized-payload failure and
+  generation-scoped halt policy.
+- `crates/cdk/src/mint/federation/tests/melt.rs`: combined FROST on-chain
+  internal-settlement and failed-operation restart regressions.
+
+### Completion checks
+
+- [x] A FROST on-chain melt to an active same-mint on-chain quote completes
+  internally, creates no wallet intent or Bitcoin transaction, and leaves its
+  journal entry `Applied`.
+- [x] The mint quote is credited once; proofs, change, completed operation, melt
+  request, and saga all have the expected terminal state.
+- [x] Exact replay and restart after the internal commit converge to `Applied`
+  without duplicating any materialized effect.
+- [x] External FROST on-chain melts still remain `Pending`, create exactly one
+  batchable intent, and complete through the existing signing/broadcast path.
+- [x] Mismatched terminal requests or completed-operation provenance remain
+  rejected fail-closed.
+- [x] Bolt11 internal settlement, standalone mint behavior, and all existing
+  finalized-payload halt safety tests remain unchanged.
+- [ ] All five members catch up from the current Nocean databases, replay the
+  failed operation successfully, and report identical journal and materialized
+  digests before public traffic is re-enabled.
+
 ## Cleanup safety guardrails
 
 The following mechanisms may look similar to cleanup candidates but carry
