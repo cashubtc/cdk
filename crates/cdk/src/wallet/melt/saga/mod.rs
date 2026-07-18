@@ -1131,10 +1131,10 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 // (Onchain: mempool replacement, reorg). Never revert
                 // proofs while a payment proof is present — keep them
                 // pending instead.
-                if melt_response.payment_proof().is_some() {
+                if melt_response.payment_proof().is_some() || !self.proofs_can_be_released().await {
                     tracing::warn!(
-                        "Melt quote {} reported Failed state but mint holds a \
-                         payment proof; keeping proofs pending to avoid loss",
+                        "Melt quote {} reported Failed state but settlement is not \
+                         safely reversible; keeping proofs pending to avoid loss",
                         quote_info.id
                     );
                     self.handle_pending().await;
@@ -1153,10 +1153,10 @@ impl<'a> MeltSaga<'a, MeltRequested> {
                 Err(Error::PaymentFailed)
             }
             MeltQuoteState::Unpaid => {
-                if melt_response.payment_proof().is_some() {
+                if melt_response.payment_proof().is_some() || !self.proofs_can_be_released().await {
                     tracing::warn!(
-                        "Melt quote {} reported Unpaid state but mint holds a \
-                         payment proof; keeping proofs pending to avoid loss",
+                        "Melt quote {} reported Unpaid state but settlement is not \
+                         safely reversible; keeping proofs pending to avoid loss",
                         quote_info.id
                     );
                     self.handle_pending().await;
@@ -1209,6 +1209,27 @@ impl<'a> MeltSaga<'a, MeltRequested> {
         );
     }
 
+    /// A failed/unpaid quote is safe to compensate only when NUT-07 confirms
+    /// that every submitted input is still unspent. A transport error or any
+    /// non-unspent state is ambiguous and must remain recoverable by the saga.
+    async fn proofs_can_be_released(&self) -> bool {
+        match self
+            .wallet
+            .check_proofs_spent(self.state_data.final_proofs.clone())
+            .await
+        {
+            Ok(states) => states.iter().all(|proof| proof.state == State::Unspent),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    quote_id = %self.state_data.quote.id,
+                    "Could not verify melt inputs before compensation"
+                );
+                false
+            }
+        }
+    }
+
     /// Handle failed payment - release proofs and clean up.
     async fn handle_failure(&self) {
         let operation_id = self.state_data.operation_id;
@@ -1226,7 +1247,10 @@ impl<'a> MeltSaga<'a, MeltRequested> {
             .localstore
             .release_melt_quote(&operation_id)
             .await;
-        let _ = self.wallet.localstore.delete_saga(&operation_id).await;
+        tracing::info!(
+            %operation_id,
+            "Keeping failed melt saga for a later authoritative recovery check"
+        );
     }
 }
 
@@ -1288,7 +1312,10 @@ impl<'a> MeltSaga<'a, PaymentPending> {
             .localstore
             .release_melt_quote(&operation_id)
             .await;
-        let _ = self.wallet.localstore.delete_saga(&operation_id).await;
+        tracing::info!(
+            %operation_id,
+            "Keeping failed melt saga for a later authoritative recovery check"
+        );
     }
 }
 
@@ -1332,7 +1359,7 @@ mod tests {
     use cdk_common::amount::{FeeAndAmounts, SplitTarget};
     use cdk_common::nut00::KnownMethod;
     use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
-    use cdk_common::nuts::{CurrencyUnit, State};
+    use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, ProofState, State};
     use cdk_common::wallet::{KeysetLoadPolicy, OperationData};
     use cdk_common::{MeltQuoteOnchainResponse, MeltQuoteResponse, MeltQuoteState, PaymentMethod};
     use uuid::Uuid;
@@ -1668,6 +1695,13 @@ mod tests {
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.reset_default_mint_state();
         mock_client.set_post_melt_response(Ok(onchain_melt_response(&quote, state)));
+        mock_client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y: proof_y,
+                state: State::Unspent,
+                witness: None,
+            }],
+        }));
         let wallet = Box::leak(Box::new(
             create_test_wallet_with_mock(db.clone(), mock_client).await,
         ));
@@ -1696,8 +1730,8 @@ mod tests {
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].state, State::Unspent);
         assert!(
-            db.get_saga(&operation_id).await.unwrap().is_none(),
-            "compensated melt saga should be deleted"
+            db.get_saga(&operation_id).await.unwrap().is_some(),
+            "failed melt saga should remain available for recovery"
         );
     }
 

@@ -681,34 +681,27 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     let conn = rusqlite::Connection::open(&nutshell_db_path)?;
 
     // Fault-injected melts can leave the test wallet's local proof state stale
-    // even though Nutshell committed the proof as spent. Reconcile against the
-    // source of truth before capturing the pre-migration balance baseline.
+    // even though Nutshell committed the proof as spent. Derive the authoritative
+    // balance from the source database without repairing the wallet store; saga
+    // recovery after migration must reconcile the stale state through public APIs.
     let mut stmt = conn.prepare("SELECT y FROM proofs_used")?;
     let spent_ys: std::collections::HashSet<cdk::nuts::PublicKey> = stmt
         .query_map([], |row| row.get::<_, String>(0))?
         .filter_map(Result::ok)
         .filter_map(|y| cdk::nuts::PublicKey::from_hex(&y).ok())
         .collect();
-    for store in &wallet_stores {
-        let local_spent_ys = store
-            .get_proofs(None, None, None, None)
-            .await?
-            .into_iter()
-            .filter_map(|proof_info| {
-                let y = proof_info.proof.y().ok()?;
-                (spent_ys.contains(&y) && proof_info.state != State::Spent).then_some(y)
-            })
-            .collect::<Vec<_>>();
-        if !local_spent_ys.is_empty() {
-            store
-                .update_proofs_state(local_spent_ys, State::Spent)
-                .await?;
-        }
-    }
-
     let mut balances_before = Vec::new();
-    for (i, wallet) in wallets.iter().enumerate() {
-        let balance = wallet.total_balance().await?;
+    for (i, store) in wallet_stores.iter().enumerate() {
+        let balance = Amount::try_sum(
+            store
+                .get_proofs(None, None, None, None)
+                .await?
+                .into_iter()
+                .filter(|proof_info| {
+                    proof_info.state == State::Unspent && !spent_ys.contains(&proof_info.y)
+                })
+                .map(|proof_info| proof_info.proof.amount),
+        )?;
         println!("Wallet {i} balance before migration: {balance}");
         balances_before.push(balance);
     }
@@ -982,48 +975,6 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     println!("CDK Mint is online on port 4444.");
 
-    // Reconcile only spent wallet proofs. Pending proofs must remain pending: deleting
-    // or rewriting them here would mask a migration failure in the exact state that is
-    // most important for interrupted-operation recovery.
-    {
-        let conn = rusqlite::Connection::open(&cdk_db_path)?;
-        let mut stmt = conn.prepare("SELECT y FROM proof WHERE state = 'SPENT';")?;
-        let spent_ys_iter = stmt.query_map([], |row| {
-            let y_bytes: Vec<u8> = row.get(0)?;
-            Ok(cdk::nuts::PublicKey::from_slice(&y_bytes).unwrap())
-        })?;
-        let mut spent_ys = std::collections::HashSet::new();
-        for y in spent_ys_iter.flatten() {
-            spent_ys.insert(y);
-        }
-
-        println!("CDK Mint spent_ys length: {}", spent_ys.len());
-        for y in &spent_ys {
-            println!("CDK Mint spent y: {}", y);
-        }
-
-        for (w_idx, store) in wallet_stores.iter().enumerate() {
-            let proofs_info = store.get_proofs(None, None, None, None).await.unwrap();
-
-            let mut local_spent_ys = Vec::new();
-
-            for p in proofs_info {
-                let y = p.proof.y().unwrap();
-                println!("Wallet {} proof: y={}, state={:?}", w_idx, y, p.state);
-                if spent_ys.contains(&y) && p.state != State::Spent {
-                    local_spent_ys.push(y);
-                }
-            }
-
-            if !local_spent_ys.is_empty() {
-                store
-                    .update_proofs_state(local_spent_ys, State::Spent)
-                    .await
-                    .unwrap();
-            }
-        }
-    }
-
     // 6. Point wallets to the migrated CDK mint on port 4444 and verify!
     println!("Verifying wallet balances and spendability on migrated CDK mint...");
     let mut ported_wallets = Vec::new();
@@ -1036,6 +987,12 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
             None,
         )
         .unwrap();
+
+        let recovery = wallet_ported.recover_incomplete_sagas().await?;
+        assert_eq!(
+            recovery.failed, 0,
+            "Wallet {i} had saga recovery failures: {recovery:?}"
+        );
 
         // Check if balance is successfully recovered
         let bal_after = wallet_ported.total_balance().await.unwrap();
