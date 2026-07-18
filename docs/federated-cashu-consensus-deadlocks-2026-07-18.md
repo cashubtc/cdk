@@ -2,11 +2,12 @@
 
 ## Audit scope and terminology
 
-This is the current open-issue ledger for federation failures that can stop a
-live AlephBFT session, keep an accepted value operation pending indefinitely,
-prevent a member from recovering, or starve required federation work. It
-combines the previously reported incidents with a source review of the current
-federation, wallet, FROST/BDK, payment-observation, recovery, and worker code.
+This is the remediation ledger for federation failures that can stop a live
+AlephBFT session, keep an accepted value operation pending indefinitely,
+prevent a member from recovering, or starve required federation work. It keeps
+completed milestone evidence alongside open findings and combines previously
+reported incidents with a source review of the current federation, wallet,
+FROST/BDK, payment-observation, recovery, and worker code.
 
 In this document, **deadlock** includes:
 
@@ -36,15 +37,16 @@ state-machine, scheduling, or recovery-source problems.
 
 ## Ranked findings
 
-The 21 open findings are sorted first by highest applicable severity and then by
-confidence. Ties are ordered by blast radius and exploitability. Confidence
-measures the documented failure mechanism, not whether it has already occurred
-in a particular deployment. For finding 14 (`R4`), the failure is well
-established but its root cause is not.
+The 21 remediation milestones were initially sorted by highest applicable
+severity and then by confidence. Completed and skipped milestones retain their
+rank for audit history. Ties are ordered by blast radius and exploitability.
+Confidence measures the documented failure mechanism, not whether it has
+already occurred in a particular deployment. For finding 14 (`R4`), the failure
+is well established but its root cause is not.
 
 | Rank | Legacy ID | Finding | Severity | Confidence | Reach | Milestone status |
 |---:|---|---|---|---:|---|---|
-| 1 | `F1` | A single peer's status is treated as halt authority | Critical | 99% | Session/global if repeated against all honest members | Not started |
+| 1 | `F1` | A single peer's equal-height status is treated as halt authority | Critical | 99% | Session/global if repeated against all honest members | Completed |
 | 2 | `F2` | Semantically invalid Byzantine operations halt finalized application | Critical | 99% | Session/global | Not started |
 | 3 | `P4` | Recovery-critical outgoing lookup ID is persisted after the side effect | Critical safety / High liveness | 99% | Quote/proofs and possible external-payment double spend | Not started |
 | 4 | `P5` | One member can reorg or quarantine accepted on-chain funds | Critical | 99% | On-chain quote/funds; all on-chain liquidity if repeated | Not started |
@@ -76,12 +78,12 @@ boundary and the application failure policy:
 > the local node is corrupt. They then halt the node instead of rejecting the
 > member's item or isolating the member/source.
 
-That pattern directly explains findings 1 and 2 and amplifies finding 8. For
-unexplained payment stalls while consensus stays healthy, findings 5, 6, and 11
-are more likely than an AlephBFT failure. For on-chain outputs becoming stuck,
-finding 4 is the most likely cause; the accidental version is a
-lagging/inconsistent chain backend, while a Byzantine member can deliberately
-create the same state.
+That pattern explains the pre-fix form of finding 1, directly explains open
+finding 2, and amplifies finding 8. For unexplained payment stalls while
+consensus stays healthy, findings 5, 6, and 11 are more likely than an AlephBFT
+failure. For on-chain outputs becoming stuck, finding 4 is the most likely
+cause; the accidental version is a lagging/inconsistent chain backend, while a
+Byzantine member can deliberately create the same state.
 
 ## Binding development contract
 
@@ -363,32 +365,100 @@ No additional bugs have yet been recorded through this milestone workflow.
 
 ## Detailed findings in ranked order
 
-### 1. A single peer's status is treated as halt authority (`F1`)
+### 1. A single peer's equal-height status is treated as halt authority (`F1`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with an executed five-member
+federation harness. First, the pre-existing behavior harness was run unchanged:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-axum --features federation rest_peer_client_halts_on_equal_height_digest_mismatch -- --nocapture`
 
-**Fix check and evaluation:** Not run
+It passed (`1 passed`) by observing that one peer's incompatible equal-height
+digest changed the honest member to `Halted` and stopped its live session and
+inbound network. The harness was then converted into the required desired-
+behavior regression with a five-member BFT configuration, one liar, and four
+honest member states. The pre-fix command was:
 
-**Commit subject:** Not assigned
+`cargo test -p cdk-axum --features federation single_equal_height_digest_liar_does_not_halt_four_honest_members -- --nocapture`
 
-**Milestone observations:** None yet
+It failed with exit code 101 at the first honest member: `one liar halted honest
+member 1`. This is direct red evidence through `sync_once_from_member`; no
+production code had been edited.
+
+**Minimal fix:** Implemented one federation-only change in
+`crates/cdk-axum/src/federation/sync_loop.rs`: retain the typed
+`CatchUpDigestMismatch` error for peer isolation, reconnect backoff, and
+diagnostics, but remove the terminal AlephBFT halt side effect from the
+equal-height single-peer mismatch branch. The existing outer sync round already
+continues to other members after this error. Only the sync loop, its federation
+regression, and this ledger changed; no standalone path changed.
+
+**Fix check and evaluation:** Exact fix check passed on 2026-07-18:
+
+`cargo test -p cdk-axum --features federation single_equal_height_digest_liar_does_not_halt_four_honest_members -- --nocapture`
+
+Result: `1 passed; 0 failed`. All four honest five-member states returned the
+typed mismatch error while their AlephBFT live sessions and inbound networks
+remained active, and a neighboring valid mint-quote operation was materialized
+after each rejected liar response.
+
+Evaluation passed:
+
+- `cargo fmt -p cdk-axum -- --check` — passed. Stable rustfmt reported only the
+  repository's existing warnings for nightly-only formatting options.
+- `cargo test -p cdk-axum --features federation equal_height -- --nocapture` —
+  `2 passed; 0 failed`.
+- `cargo test -p cdk-axum --features federation peer_sync_round -- --nocapture`
+  — `4 passed; 0 failed`, including failed-peer backoff and configured-peer
+  catch-up.
+- `cargo test -p cdk-axum --features federation` — `493 passed; 0 failed; 2
+  ignored`, including five-member faults, restart/replay, checkpoint catch-up,
+  and session lifecycle tests. It was run with localhost-listener permission.
+- `cargo check -p cdk-axum --no-default-features` — passed, proving the
+  standalone/no-federation build remains unchanged.
+
+A local fakewallet deployment was not run because the accepted focused harness
+directly exercised the faulty peer status, live-session teardown, five-member
+BFT configuration, and neighboring progress without a payment-backend
+precondition.
+
+**Commit subject:** `fix: prevent single-peer digest mismatch halt`
+
+**Milestone observations:** 2026-07-18 — Planning baseline committed as
+`docs: add federation deadlock remediation milestones`. The existing runtime
+harness `rest_peer_client_halts_on_equal_height_digest_mismatch` exercises
+`sync_once_from_member` with one authenticated peer reporting an incompatible
+equal-height digest while an AlephBFT live session is active. It was selected
+for the mandatory pre-fix run. The five-member red regression confirms the
+finding's equal-height attack.
+
+The separate terminal branch after a successful checkpoint catch-up with no
+operation or finalized-cursor progress was audited but not changed. Unlike the
+confirmed path, it is downstream of a locally stored, signature-verified
+checkpoint quorum and strict catch-up page validation. Empty/no-progress pages
+are rejected earlier by `checked_checkpoint_page_cursors`; invalid source
+history is rejected before mutation and another source can be used. The full
+suite's `checkpoint_page_cursor_checks_reject_no_progress_and_overflow` and
+`checkpoint_catch_up_rejects_bad_source_then_uses_second_source` tests passed.
+No executed harness demonstrated that one peer can reach the later terminal
+branch. It is therefore not claimed as a confirmed part of `F1` and was not
+modified. If runtime evidence later demonstrates peer-only reachability, append
+it as a discovered bug and give it an independent milestone.
 
 **Severity:** Critical
 
 **Confidence:** 99% — source-proven
 
-**Finding status:** Open, source-proven
+**Finding status:** Resolved on 2026-07-18 with red-before-green runtime proof
 
 **Attacker/fault:** One authenticated Byzantine peer, or one faulty peer status
 implementation
 
-`sync_once_from_member` compares the local order status with one peer at a time.
-When the operation counts are equal and the peer reports another order digest,
-the receiver immediately calls the full Aleph halt helper:
+At the planning baseline, `sync_once_from_member` compared the local order
+status with one peer at a time. When operation counts were equal and the peer
+reported another order digest, the receiver immediately called the full Aleph
+halt helper:
 
 - `crates/cdk-axum/src/federation/sync_loop.rs:1492-1509`
 - `crates/cdk-axum/src/federation/sync_loop.rs:157-205` iterates every peer
@@ -400,8 +470,8 @@ count/digest is true:
 
 - `crates/cdk-axum/src/federation/peer_client.rs:1159-1203`
 
-The halt is not a diagnostic flag. It removes the live session and inbound
-queue, increments the halt epoch, marks the member `Halted`, and shuts down the
+That halt was not a diagnostic flag. It removed the live session and inbound
+queue, incremented the halt epoch, marked the member `Halted`, and shut down the
 supervisor:
 
 - `crates/cdk-axum/src/federation/aleph_bft_session.rs:1457-1475`
@@ -410,32 +480,27 @@ supervisor:
 
 - `crates/cdk-axum/src/federation/sync_loop.rs:1068-1078`
 
-A Byzantine peer can therefore report the honest member's current operation
-count with any other digest and halt it. The same peer can do this to every
-honest member as their sync loops contact it. No quorum, checkpoint, or local DB
-invariant is required.
+A Byzantine peer could therefore report the honest member's current operation
+count with any other digest and halt it. The five-member pre-fix harness
+demonstrated that authority against the first honest member.
 
-There is a second single-peer halt branch after checkpoint catch-up. A peer that
-claims a higher frontier and leads the receiver through a catch-up attempt that
-makes no local progress also causes an immediate halt:
+The corrected branch now returns the typed `CatchUpDigestMismatch` without
+calling the halt helper. The outer peer-sync round records the failed source,
+applies bounded reconnect backoff, and continues its member loop. A minority
+source remains diagnostic while the honest member's live consensus resources
+stay available.
 
-- `crates/cdk-axum/src/federation/sync_loop.rs:1414-1483`
+**Most likely cause when observed on a pre-fix build:** if the halt reason
+contains `peer ... digest mismatch`, this path is definitive. In a non-
+adversarial deployment, the trigger is more likely a stale/incorrect status
+projection or prior divergence than a forged response.
 
-This branch has more preconditions because a local checkpoint target must be
-available, but it has the same root error: a peer-local liveness failure is
-escalated into a receiver-local terminal safety state.
-
-**Most likely cause when observed:** if the halt reason contains `peer ...
-digest mismatch`, this path is definitive. In a non-adversarial deployment, the
-underlying trigger is more likely a stale/incorrect status projection or prior
-divergence than a forged response. The code nevertheless gives one malicious
-peer the same authority.
-
-**Required correction:** collect quorum-supported status/checkpoint evidence;
-mark a minority source suspect; halt only when local durable verification or a
-quorum certificate proves the local state incompatible. Add a five-member test
-where one peer lies about both equal-height digest and higher-height progress and
-all honest members remain live.
+**Correction and proof:** a single equal-height peer mismatch is now rejected as
+source-local evidence and cannot halt the receiver. The retained five-member
+regression injects one liar against all four honest member states, verifies each
+live session and inbound network remains active, and verifies a neighboring
+operation progresses. A terminal divergence decision remains reserved for
+independently verified local or quorum evidence.
 
 ### 2. Semantically invalid Byzantine operations halt finalized application (`F2`)
 
@@ -1477,7 +1542,8 @@ not currently classified as an open deadlock.
 | Symptom | Most likely finding | First evidence to capture |
 |---|---|---|
 | All members halt at the same operation index | 2 (`F2`) | Finalized item, journal application state, exact typed apply error |
-| One or more members halt with `peer ... digest mismatch` | 1 (`F1`) | Signed peer statuses from the entire roster at the same frontier |
+| A peer sync rejects an equal-height digest mismatch but the member stays live | Completed 1 (`F1`) | Signed peer statuses from the entire roster at the same frontier; confirm the source enters backoff |
+| A member still halts with `peer ... digest mismatch` | Pre-fix build or regression of 1 (`F1`) | Build/commit identity, signed peer statuses, live-session teardown state |
 | One member halts after an on-chain operation; peers continue | 8 (`F3`) | BDK reconciliation error and local BDK DB state |
 | Session remains live but application index/backlog stops growing | 10 (`F4`) / 13 (`A1`) | Blocked operation index, DB lock age, queue depth/bytes |
 | Melt proofs stay pending with healthy consensus | 5 (`P1`), then 6 (`P2`), 11 (`P3`), or 3 (`P4`) | Accepted envelope author, saga state, lookup ID, per-member backend observations |

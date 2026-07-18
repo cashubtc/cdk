@@ -1493,14 +1493,6 @@ where
         let order_digest_mismatch =
             local_status.latest_order_digest != peer_status.latest_order_digest;
         if local_status.operation_count == peer_status.operation_count && order_digest_mismatch {
-            super::halt_current_federation_aleph_bft_session(
-                state,
-                &format!(
-                    "peer {} digest mismatch at operation count {}",
-                    member.member_id, peer_status.operation_count
-                ),
-            )
-            .await;
             return Err(FederationError::CatchUpDigestMismatch {
                 index: peer_status.operation_count.saturating_sub(1),
                 expected: local_status.latest_order_digest,

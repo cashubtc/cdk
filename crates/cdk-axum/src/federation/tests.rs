@@ -5881,45 +5881,73 @@ async fn peer_sync_round_does_not_clear_higher_known_lag_with_lower_peer() {
 }
 
 #[tokio::test]
-async fn rest_peer_client_halts_on_equal_height_digest_mismatch() {
-    let (mut state, public_config, local_private, _) =
-        federation_route_state_with_local_private().await;
-    let supervisor = start_federation_aleph_bft_live_session_with_options_and_transport(
-        &mut state,
-        FederationPeerSyncConfig::default(),
-        FederationAlephBftLiveSessionOptions::default(),
-        RouterFederationTransportRegistry::default(),
-    )
-    .await
-    .expect("start live session before digest mismatch")
-    .expect("live session supervisor");
-    assert!(state.federation_aleph_bft_live_session_active().await);
-    assert!(state.federation_aleph_bft_network_inbound_active().await);
-    let peer_member = public_config.member(member_id(2)).expect("peer member");
-    let peer_entry = mint_quote_envelope(&state, &QuoteId::new());
-    let local_entry = mint_quote_envelope(&state, &QuoteId::new());
-    let peer_consensus =
-        finalized_aleph_bft_history(&public_config, peer_member.member_id, [peer_entry]);
-    state
-        .submit_federation_envelope(local_entry)
-        .await
-        .expect("local accepted operation");
-    let transport = MockFederationTransport::default().with_status_response(
-        peer_consensus.peer_status_for(public_config.federation_id, peer_member.member_id),
+async fn single_equal_height_digest_liar_does_not_halt_four_honest_members() {
+    let (public_config, private_configs) = transport_config_five_with_threshold(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
     );
-    let client =
-        FederationRestPeerClient::new(transport, &public_config, local_private).expect("client");
+    let liar = private_configs.last().expect("liar config");
+    let liar_member = public_config.member(liar.member_id).expect("liar member");
 
-    let sync = client.sync_once_from_member(&state, peer_member).await;
+    for honest_private in private_configs.iter().take(4) {
+        let mut state =
+            federation_route_state_for_private(public_config.clone(), honest_private.clone()).await;
+        let supervisor = start_federation_aleph_bft_live_session_with_options_and_transport(
+            &mut state,
+            FederationPeerSyncConfig::default(),
+            FederationAlephBftLiveSessionOptions::default(),
+            RouterFederationTransportRegistry::default(),
+        )
+        .await
+        .expect("start honest live session before digest mismatch")
+        .expect("honest live session supervisor");
+        assert!(state.federation_aleph_bft_live_session_active().await);
+        assert!(state.federation_aleph_bft_network_inbound_active().await);
 
-    assert!(sync.is_err());
-    assert!(matches!(
-        state.federation_sync_status().await,
-        Some(crate::FederationSyncStatus::Halted { .. })
-    ));
-    assert!(!state.federation_aleph_bft_live_session_active().await);
-    assert!(!state.federation_aleph_bft_network_inbound_active().await);
-    assert_eq!(supervisor.state(), AlephBftSessionSupervisorState::Stopped);
+        let liar_entry = mint_quote_envelope(&state, &QuoteId::new());
+        let local_entry = mint_quote_envelope(&state, &QuoteId::new());
+        let liar_consensus =
+            finalized_aleph_bft_history(&public_config, liar.member_id, [liar_entry]);
+        state
+            .submit_federation_envelope(local_entry)
+            .await
+            .expect("honest member accepted local operation");
+        let transport = MockFederationTransport::default().with_status_response(
+            liar_consensus.peer_status_for(public_config.federation_id, liar.member_id),
+        );
+        let client =
+            FederationRestPeerClient::new(transport, &public_config, honest_private.clone())
+                .expect("honest peer client");
+
+        let sync = client.sync_once_from_member(&state, liar_member).await;
+
+        assert!(sync.is_err());
+        assert!(
+            !matches!(
+                state.federation_sync_status().await,
+                Some(crate::FederationSyncStatus::Halted { .. })
+            ),
+            "one liar halted honest member {}",
+            honest_private.member_id
+        );
+        assert!(state.federation_aleph_bft_live_session_active().await);
+        assert!(state.federation_aleph_bft_network_inbound_active().await);
+
+        let neighboring_quote_id = QuoteId::new();
+        state
+            .submit_federation_envelope(mint_quote_envelope(&state, &neighboring_quote_id))
+            .await
+            .expect("honest neighboring operation progresses after liar rejection");
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&neighboring_quote_id)
+            .await
+            .expect("neighboring quote lookup")
+            .is_some());
+
+        super::halt_current_federation_aleph_bft_session(&state, "test cleanup").await;
+        assert_eq!(supervisor.state(), AlephBftSessionSupervisorState::Stopped);
+    }
 }
 
 #[tokio::test]
