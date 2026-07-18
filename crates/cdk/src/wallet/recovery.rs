@@ -717,7 +717,10 @@ mod tests {
     use std::sync::Arc;
 
     use cdk_common::mint_url::MintUrl;
-    use cdk_common::nuts::{MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod, State};
+    use cdk_common::nuts::{
+        CheckStateResponse, MeltQuoteBolt11Response, MeltQuoteState, PaymentMethod, ProofState,
+        State,
+    };
     use cdk_common::wallet::{
         IssueSagaState, MeltOperationData, MeltSagaState, MintOperationData, OperationData,
         ReceiveOperationData, ReceiveSagaState, TransactionDirection, WalletSaga, WalletSagaState,
@@ -1001,6 +1004,7 @@ mod tests {
         let mut proof_info = test_proof_info(keyset_id, 100, mint_url.clone());
         proof_info.state = State::Pending;
         proof_info.used_by_operation = Some(saga_id);
+        let proof_y = proof_info.y;
         db.update_proofs(vec![proof_info], vec![]).await.unwrap();
 
         // Create a melt quote
@@ -1032,6 +1036,15 @@ mod tests {
 
         // Mock: quote is Failed
         let mock_client = Arc::new(MockMintConnector::new());
+        // Recovery verifies via NUT-07 that the melt inputs are still unspent
+        // before compensating.
+        mock_client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y: proof_y,
+                state: State::Unspent,
+                witness: None,
+            }],
+        }));
         mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
@@ -1182,6 +1195,15 @@ mod tests {
 
         // Mock: quote is Unpaid (payment was never initiated or was rolled back)
         let mock_client = Arc::new(MockMintConnector::new());
+        // Recovery verifies via NUT-07 that the melt inputs are still unspent
+        // before compensating.
+        mock_client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y: proof_y,
+                state: State::Unspent,
+                witness: None,
+            }],
+        }));
         mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id.clone(),
             amount: Amount::from(100),
