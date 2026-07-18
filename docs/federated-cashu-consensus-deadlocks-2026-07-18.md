@@ -50,7 +50,7 @@ is well established but its root cause is not.
 | 2 | `F2` | Semantically invalid Byzantine operations halt finalized application | Critical | 99% | Session/global | Completed |
 | 3 | `P4` | Recovery-critical outgoing lookup ID is persisted after the side effect | Critical safety / High liveness | 99% | Quote/proofs and possible external-payment double spend | Completed |
 | 4 | `P5` | One member can reorg or quarantine accepted on-chain funds | Critical | 99% | On-chain quote/funds; all on-chain liquidity if repeated | Completed |
-| 5 | `P1` | Accepted melt author has a permanent payment veto | High | 99% | Quote/proofs; malicious or failed author veto | Not started |
+| 5 | `P1` | Accepted melt author has a permanent payment veto | High | 99% | Quote/proofs; malicious or failed author veto | Completed |
 | 6 | `P2` | One backend call or poison quote blocks the single observer worker | High | 99% | All payment repair on one member; quorum loss if shared | Not started |
 | 7 | `S1` | DKG availability is all-member, not Byzantine-threshold | High availability | 99% | Federation setup/key ceremony | Not started |
 | 8 | `F3` | Local BDK reconciliation is inside the fatal apply boundary | High | 98% | Session/member; quorum loss if repeated | Not started |
@@ -1288,23 +1288,129 @@ future work recorded in `DB-003`'s correction sketch.
 
 ### 5. Accepted melt author has a permanent payment veto (`P1`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with an executed focused harness
+against the unmodified pre-fix worktree, driving the exact cited probe path
+(`Mint::probe_federation_melt_quote_payment`,
+`crates/cdk/src/mint/federation.rs:1359-1413`) with a two-member runtime:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk --features federation,mint --lib offline_melt_author_cannot_veto_payment_beyond_bounded_lease -- --nocapture`
 
-**Fix check and evaluation:** Not run
+FAILED with the veto evidence in one assertion message:
 
-**Commit subject:** Not assigned
+`the accepted author's offline veto left the quote pending: follower payment
+calls 0, follower probe returned None`
 
-**Milestone observations:** None yet
+The harness accepted a melt quote and a melt operation authored by member 1
+on both members, then took member 1 (the accepted author) offline — it never
+probes. The follower's consensus frontier was advanced 8 journal items past
+the accepted melt. The follower — with a healthy fake payment backend and
+the pending quote/saga fully materialized — made 0 backend calls and its
+probe returned `None`: only the envelope author may transition the saga, and
+no failover exists. The quote and proofs cannot reach a terminal state
+despite a full payment-capable member being online, which is the reported
+permanent veto. No production code had been edited; only the regression test
+in `crates/cdk/src/mint/federation/tests/melt.rs` was added.
+
+**Minimal fix:** One federation-only change in
+`crates/cdk/src/mint/federation.rs`. A durable, consensus-visible attempt
+lease replaces the permanent author veto:
+`FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS` (8 accepted journal items)
+bounds the accepted envelope author's exclusive payment authority, and
+`Mint::federation_melt_payment_lease_actor` derives the current actor from
+consensus-ordered state only — the melt operation's journal index, the
+member's journal tip, and the roster — so every member with the same
+frontier computes the same single actor. `probe_federation_melt_quote_payment`
+now treats the computed lease actor (not always the envelope author) as the
+only member allowed to claim and attempt the external payment or report its
+own outcome; all other members keep polling. Takeover is safe because the
+caller-supplied idempotency key is durable before any external I/O
+(milestone 3), Bolt11 attempts reuse the same invoice payment hash, and
+contract-honoring backends deduplicate by the caller key. No standalone
+code, wire format, schema, or config changed; on-chain FROST settlement and
+the member-local active-payment guard are untouched.
+
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact two
+retained scenarios. Pre-fix runs (production change stashed): both FAILED —
+`offline_melt_author_cannot_veto_payment_beyond_bounded_lease` with the
+recorded veto message, and
+`lease_takeover_after_author_backend_success_keeps_matching_paid_evidence`
+at its takeover expectation. Post-fix:
+
+`cargo test -p cdk --features federation,mint --lib offline_melt_author_cannot_veto -- --nocapture`
+`cargo test -p cdk --features federation,mint --lib lease_takeover_after_author_backend_success -- --nocapture`
+
+Both `1 passed`. The first proves the author alone holds the first lease
+epoch (follower probe `None`, zero attempts) and that after 8 journal items
+the follower claims the lease, attempts the payment, and reports `Paid`
+under the durable payment hash with its saga at `PaymentAttempted`. The
+second proves a takeover after the author's successful backend call reports
+matching `Paid` evidence under the same payment id instead of splitting the
+observation quorum. The author-crash-after-claim and during-backend-I/O
+points are locally equivalent to crash-before-claim because each member owns
+its saga row and compare-and-set claim; they are covered by the same code
+path.
+
+Broader evaluation on 2026-07-18:
+
+- `cargo fmt -p cdk -- --check` — clean for the milestone's code.
+- `cargo test -p cdk --features federation,mint --lib` — `777 passed; 0
+  failed`, including both new regressions and the pre-existing
+  `accepted_melt_author_is_the_only_payment_actor` (author-only within the
+  first lease epoch is pinned).
+- `cargo test -p cdk --lib` (default features, no federation) — `540
+  passed; 0 failed`, standalone unchanged.
+- `cargo test -p cdk-axum --features federation` — `494 passed; 0 failed; 2
+  ignored`, including the below-finality melt recovery test (exactly one
+  payment actor and one backend call while the author completes within its
+  lease epoch).
+- `cargo check -p cdk --no-default-features` — passed.
+- `cargo clippy -p cdk --features federation --all-targets -- -D warnings` —
+  fails only on the same 9 pre-existing lints recorded in milestone 2 (none
+  in the changed code).
+
+Not run: the multi-process CLN/LND regtest deployment. The defect and fix
+live in member-local actor election from consensus-ordered state; the
+harnesses drive the exact probe path with a faithful backend double. A
+bounded residual remains: if the author completes its backend payment but
+dies before its observation is accepted, a later lease actor can pay the
+same invoice externally a second time (the observation evidence still
+matches on the payment id, and the quote finalizes once). This is the
+inherent cross-node cost of lease-based takeover for Lightning and is
+bounded by the lease; it is recorded in the finding text.
+
+**Commit subject:** `fix: rotate federation melt payment authority after bounded lease`
+
+**Milestone observations:** 2026-07-18 — Milestone 4 is committed
+(`7a6960cca`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the accepted-author payment
+ownership boundary, author-selection races, and the performance plan's
+Issue 6 history are inspected.
+
+2026-07-18 — Confirmation recorded above. (1) The lease is deliberately
+measured in consensus-ordered journal positions, not wall time: deterministic
+application cannot consume local clocks, and a fully idle federation has no
+concurrent work competing for the same payment, so expiry on the next
+journal item is sufficient. (2) The first fix iteration used the counting
+backend double, which always returns `Pending`; the harnesses now use
+fakewallet-backed mints whose invoice settles `Paid`, and red evidence was
+re-captured against the final harness. (3) The takeover reuses the same
+durable idempotency key, so takeover and author evidence match on payment
+id for Bolt11 and for contract-honoring backends; mismatched fake/custom
+backend ids remain finding 11's (`P3`) exact-matching surface, not a new
+one. (4) The quiet-frontend stall trade-off and the bounded cross-node
+double-pay residual for Lightning (author succeeds but dies before
+observing) are recorded in the evaluation; no smaller safe variant exists
+without a new consensus operation type, which would exceed a minimal fix.
 
 **Severity:** High
 
 **Confidence:** 99% — source-proven
 
-**Finding status:** Open, source-proven
+**Finding status:** Resolved on 2026-07-18 with red-before-green runtime
+proof for off-chain/custom melts; the bounded Lightning cross-node residual
+is recorded in the milestone evaluation
 
 **Attacker/fault:** Byzantine accepted author, author crash after finality, or
 author payment backend permanently unavailable
@@ -1347,7 +1453,18 @@ author is offline, Byzantine, or cannot use the payment backend.
 with a backend idempotency key fixed before external I/O. Rotate authority after
 a bounded lease only when another member can safely query/continue the same
 payment. Test author crash before claim, after claim, during backend I/O, and
-after backend success.
+after backend success. This is implemented and proven by this milestone:
+`FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS` (8 accepted journal items) bounds
+the author's exclusive epoch, the actor rotates deterministically through the
+roster from consensus-ordered state, and the takeover continues under the
+durable caller-supplied key persisted before external I/O (milestone 3). The
+retained regressions prove crash before claim (offline author vetoed, then the
+follower paid under the lease) and crash after backend success (matching paid
+evidence); crash after claim and during backend I/O share the same local
+claim path. A bounded residual remains for Lightning: if the author completes
+its backend payment but dies before its observation is accepted, a later lease
+actor can pay the same invoice externally a second time; evidence still
+matches on the payment id and the quote finalizes once.
 
 ### 6. One backend call or poison quote blocks the single observer worker (`P2`)
 
@@ -2119,7 +2236,7 @@ not currently classified as an open deadlock.
 | A member still halts with `peer ... digest mismatch` | Pre-fix build or regression of 1 (`F1`) | Build/commit identity, signed peer statuses, live-session teardown state |
 | One member halts after an on-chain operation; peers continue | 8 (`F3`) | BDK reconciliation error and local BDK DB state |
 | Session remains live but application index/backlog stops growing | 10 (`F4`) / 13 (`A1`) | Blocked operation index, DB lock age, queue depth/bytes |
-| Melt proofs stay pending with healthy consensus | 5 (`P1`), then 6 (`P2`), 11 (`P3`), or `DB-002` | Accepted envelope author, saga state, lookup ID, per-member backend observations |
+| Melt proofs stay pending with healthy consensus | 6 (`P2`), 11 (`P3`), or `DB-002`; pre-fix builds: 5 (`P1`) | Accepted envelope author, lease epoch vs journal tip, saga state, lookup ID, per-member backend observations |
 | Mint quote is paid externally but never becomes paid in federation | 11 (`P3`), then 6 (`P2`) | Per-member lookup visibility and exact evidence group differences |
 | UTXO changes to `Reorged`/`Quarantined` | Post-fix: quorum evidence or 24 (`DB-003`); pre-fix builds: 4 (`P5`) | Every member's reorg/deposit evidence, first observation author, block/txout fields, every member's raw chain-source result |
 | Restarted member never adopts a known checkpoint | 12 (`R1`), 15 (`R2`), or 14 (`R4`) | Advertising peers, selected source, transferred bytes, page cursors/counts |

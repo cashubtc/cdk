@@ -113,6 +113,18 @@ use self::transaction_state::persist_pending_onchain_intent;
 
 const FEDERATION_BLS_PROOF_BATCH_MIN: usize = 8;
 
+/// Number of accepted journal items for which the accepted melt author holds
+/// exclusive payment-attempt authority before it rotates to the next roster
+/// member.
+///
+/// The lease is measured in consensus-ordered journal positions, not wall
+/// time, so every member with the same journal frontier deterministically
+/// computes the same single actor. A federation whose frontier never
+/// advances has no concurrent work competing for the same payment anyway;
+/// the first later operation expires the lease and lets the next member
+/// safely continue with the already-durable caller-supplied idempotency key.
+pub(crate) const FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS: u64 = 8;
+
 pub use self::transaction_policy::{
     FederationCpfpPolicy, FederationFeeRateSource, FederationOnchainTransactionPolicy,
 };
@@ -1211,6 +1223,40 @@ impl Mint {
         })
     }
 
+    /// Compute the current payment-attempt lease actor for an accepted melt.
+    ///
+    /// The accepted envelope author holds the first lease epoch. Authority
+    /// then rotates deterministically through the roster every
+    /// [`FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS`] accepted journal items,
+    /// so an offline or Byzantine author cannot veto the payment forever.
+    /// The lease is derived only from consensus-ordered state (the melt
+    /// operation's journal index and the roster), so every member with the
+    /// same journal frontier computes the same single actor, and takeover is
+    /// safe because the caller-supplied idempotency key is durable before any
+    /// external I/O and contract-honoring backends deduplicate by it.
+    async fn federation_melt_payment_lease_actor(
+        &self,
+        config: &FederationRuntimeConfig,
+        author: MemberId,
+        operation_index: u64,
+    ) -> Result<MemberId, Error> {
+        let members: Vec<MemberId> = config.public_config().members.keys().copied().collect();
+        let author_position = members
+            .iter()
+            .position(|member| *member == author)
+            .ok_or(Error::Internal)?;
+        let journal_frontier = self
+            .localstore
+            .get_federation_journal_tip()
+            .await?
+            .map_or(0, |tip| tip.index.saturating_add(1));
+        let lease_epoch = journal_frontier.saturating_sub(operation_index.saturating_add(1))
+            / FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS;
+        let epoch_steps = usize::try_from(lease_epoch % members.len() as u64).unwrap_or_default();
+        let actor_position = (author_position + epoch_steps) % members.len();
+        Ok(members[actor_position])
+    }
+
     /// Probe an incoming payment backend without mutating federated quote state.
     pub async fn probe_federation_mint_quote_payment(
         &self,
@@ -1361,10 +1407,13 @@ impl Mint {
             .get_federation_journal_entry_by_operation_id(operation_id)
             .await?
             .ok_or(Error::Internal)?;
-        let is_payment_actor = entry
+        let author = entry
             .envelope
-            .verify_authorization(config.public_config())?
-            == config.member_id();
+            .verify_authorization(config.public_config())?;
+        let lease_actor = self
+            .federation_melt_payment_lease_actor(&config, author, entry.index)
+            .await?;
+        let is_payment_actor = lease_actor == config.member_id();
         let _active_payment = if is_payment_actor {
             let Some(active_payment) = self.claim_active_federation_melt_payment(quote_id) else {
                 return Ok(None);

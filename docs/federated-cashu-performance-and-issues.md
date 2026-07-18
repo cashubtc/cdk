@@ -2385,6 +2385,16 @@ timeouts.
 **Severity:** High for federation melt availability  
 **Status:** Resolved and verified in Milestone 3
 
+> **Update 2026-07-18:** the residual accepted-author veto noted below ("no
+> member was permitted to call the backend" when the accepted author is
+> offline) is now resolved. Payment authority rotates through the roster
+> after a bounded, consensus-derived attempt lease
+> (`FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS`), and the takeover member
+> safely continues the same payment under the durable caller-supplied
+> idempotency key. See milestone `P1` in
+> `docs/federated-cashu-consensus-deadlocks-2026-07-18.md` for the
+> red-before-green evidence.
+
 Ten concurrent standard-operation workers each completed one full mint, swap,
 melt, and restore batch. During the second batch:
 

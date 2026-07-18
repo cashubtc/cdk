@@ -3376,3 +3376,199 @@ async fn real_policy_failed_melt_observations_rollback_from_stored_quorum() {
         .expect("conflicting melt observation rows");
     assert_eq!(observations_after_conflict.len(), 3);
 }
+
+#[tokio::test]
+async fn offline_melt_author_cannot_veto_payment_beyond_bounded_lease() {
+    let mut configs = runtime_configs();
+    let author_config = configs.remove(0);
+    let follower_config = configs.remove(0);
+    let (author, _author_store) = federated_test_mint(author_config.clone()).await;
+    let (follower, follower_store) = federated_test_mint(follower_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_request = fake_melt_quote_request(1_000, MeltQuoteState::Paid);
+    let MeltQuoteRequest::Bolt11(bolt11_request) = &quote_request else {
+        panic!("bolt11 quote request");
+    };
+    let quote_entry = appended_entry(
+        &mut journal,
+        author_config.melt_quote_operation(
+            quote.clone(),
+            quote_request.clone(),
+            test_melt_quote_response(&quote, &quote_request),
+            cdk_common::federation::FederationMeltQuoteMetadata {
+                request_lookup_id: Some(cdk_common::payment::PaymentIdentifier::PaymentHash(
+                    *bolt11_request.request.payment_hash().as_ref(),
+                )),
+                extra_json: None,
+                estimated_blocks: None,
+            },
+        ),
+    );
+    persist_and_apply_entry(&author, &quote_entry).await;
+    persist_and_apply_entry(&follower, &quote_entry).await;
+
+    let melt_entry = appended_entry(
+        &mut journal,
+        author_config
+            .melt_operation(MeltRequest::new(
+                quote.clone(),
+                vec![
+                    proof_for_runtime(&author_config, "author-veto-input-one"),
+                    proof_for_runtime(&author_config, "author-veto-input-two"),
+                ],
+                None,
+            ))
+            .expect("melt operation"),
+    );
+    persist_and_apply_entry(&author, &melt_entry).await;
+    persist_and_apply_entry(&follower, &melt_entry).await;
+    assert_eq!(
+        follower
+            .localstore
+            .get_melt_quote(&quote)
+            .await
+            .expect("follower quote lookup")
+            .expect("follower quote")
+            .state,
+        MeltQuoteState::Pending
+    );
+
+    // The accepted author is offline: it never probes. While the lease has
+    // not expired, the follower still cannot pay.
+    assert!(follower
+        .probe_federation_melt_quote_payment(&quote)
+        .await
+        .expect("follower probe before lease expiry")
+        .is_none());
+
+    // Advance the follower's consensus frontier beyond the bounded actor
+    // lease with unrelated operations.
+    for nonce in 0..8_u64 {
+        let filler_entry = appended_entry(
+            &mut journal,
+            melt_quote_op(
+                &author_config,
+                QuoteId::new(),
+                pending_melt_quote_request(2_000 + nonce),
+            ),
+        );
+        persist_and_apply_entry(&follower, &filler_entry).await;
+    }
+
+    // With the author still offline past the bounded lease, the follower must
+    // be able to continue the same payment safely and the quote must reach a
+    // paid observation instead of remaining vetoed.
+    let takeover = follower
+        .probe_federation_melt_quote_payment(&quote)
+        .await
+        .expect("follower takeover probe");
+    assert!(
+        takeover.is_some(),
+        "the accepted author's offline veto left the quote pending: follower \
+         probe returned None"
+    );
+    let takeover = takeover.expect("takeover observation");
+    assert_eq!(takeover.state, MeltQuoteState::Paid);
+    assert_eq!(
+        takeover.payment_id,
+        Some(cdk_common::payment::PaymentIdentifier::PaymentHash(
+            *bolt11_request.request.payment_hash().as_ref()
+        )),
+        "the takeover must continue the same payment under its durable key"
+    );
+    let saga_after = follower_store
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("follower saga lookup")
+        .expect("follower saga");
+    assert_eq!(
+        saga_after.state,
+        cdk_common::mint::SagaStateEnum::Melt(cdk_common::mint::MeltSagaState::PaymentAttempted)
+    );
+}
+
+#[tokio::test]
+async fn lease_takeover_after_author_backend_success_keeps_matching_paid_evidence() {
+    let mut configs = runtime_configs();
+    let author_config = configs.remove(0);
+    let follower_config = configs.remove(0);
+    let (author, _author_store) = federated_test_mint(author_config.clone()).await;
+    let (follower, _follower_store) = federated_test_mint(follower_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let quote = QuoteId::new();
+    let quote_request = fake_melt_quote_request(1_000, MeltQuoteState::Paid);
+    let MeltQuoteRequest::Bolt11(bolt11_request) = &quote_request else {
+        panic!("bolt11 quote request");
+    };
+    let expected_payment_id = cdk_common::payment::PaymentIdentifier::PaymentHash(
+        *bolt11_request.request.payment_hash().as_ref(),
+    );
+    let quote_entry = appended_entry(
+        &mut journal,
+        author_config.melt_quote_operation(
+            quote.clone(),
+            quote_request.clone(),
+            test_melt_quote_response(&quote, &quote_request),
+            cdk_common::federation::FederationMeltQuoteMetadata {
+                request_lookup_id: Some(expected_payment_id.clone()),
+                extra_json: None,
+                estimated_blocks: None,
+            },
+        ),
+    );
+    persist_and_apply_entry(&author, &quote_entry).await;
+    persist_and_apply_entry(&follower, &quote_entry).await;
+
+    let melt_entry = appended_entry(
+        &mut journal,
+        author_config
+            .melt_operation(MeltRequest::new(
+                quote.clone(),
+                vec![
+                    proof_for_runtime(&author_config, "author-success-input-one"),
+                    proof_for_runtime(&author_config, "author-success-input-two"),
+                ],
+                None,
+            ))
+            .expect("melt operation"),
+    );
+    persist_and_apply_entry(&author, &melt_entry).await;
+    persist_and_apply_entry(&follower, &melt_entry).await;
+
+    // The author pays while it holds the first lease epoch, then crashes
+    // before its observation can help the quote finalize.
+    let author_observation = author
+        .probe_federation_melt_quote_payment(&quote)
+        .await
+        .expect("author probe")
+        .expect("author paid observation");
+    assert_eq!(author_observation.state, MeltQuoteState::Paid);
+    assert_eq!(
+        author_observation.payment_id,
+        Some(expected_payment_id.clone())
+    );
+
+    for nonce in 0..8_u64 {
+        let filler_entry = appended_entry(
+            &mut journal,
+            melt_quote_op(
+                &author_config,
+                QuoteId::new(),
+                pending_melt_quote_request(2_000 + nonce),
+            ),
+        );
+        persist_and_apply_entry(&follower, &filler_entry).await;
+    }
+
+    // The takeover member continues the same payment under the same durable
+    // key, so the paid evidence it reports matches the author's instead of
+    // splitting the observation quorum.
+    let takeover = follower
+        .probe_federation_melt_quote_payment(&quote)
+        .await
+        .expect("follower takeover probe")
+        .expect("follower takeover observation");
+    assert_eq!(takeover.state, MeltQuoteState::Paid);
+    assert_eq!(takeover.payment_id, Some(expected_payment_id));
+}
