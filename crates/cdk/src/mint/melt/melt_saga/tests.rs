@@ -4954,3 +4954,348 @@ async fn test_different_lookup_ids_allow_concurrent_pending() {
 
     // SUCCESS: Different lookup_ids allow concurrent pending!
 }
+
+// ============================================================================
+// Federation recovery-handle ordering tests (P4)
+// ============================================================================
+
+#[cfg(feature = "federation")]
+struct FederationBolt12SagaFixture {
+    mint: crate::mint::Mint,
+    quote: MeltQuote,
+    saga: Saga,
+    input_ys: Vec<cdk_common::PublicKey>,
+    operation_id: uuid::Uuid,
+    db_path: std::path::PathBuf,
+}
+
+/// Build a mint on a file-backed SQLite database with a Bolt12 fake wallet,
+/// then persist a Bolt12 melt quote with no `request_lookup_id`, pending
+/// proofs, and a `SetupComplete` federation melt saga for it.
+#[cfg(feature = "federation")]
+async fn federation_bolt12_saga_fixture() -> FederationBolt12SagaFixture {
+    use bip39::Mnemonic;
+    use cdk_common::federation::FederationOperationId;
+    use cdk_fake_wallet::FakeWallet;
+    use lightning::offers::offer::OfferBuilder;
+
+    use super::federation_operation_uuid;
+    use crate::mint::{MintBuilder, MintMeltLimits};
+    use crate::types::FeeReserve;
+
+    let db_path = std::env::temp_dir().join(format!(
+        "cdk-federation-p4-test-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let db = std::sync::Arc::new(
+        cdk_sqlite::mint::MintSqliteDatabase::new(
+            db_path.to_str().expect("database path must be valid UTF-8"),
+        )
+        .await
+        .expect("file-backed mint database"),
+    );
+
+    let fee_reserve = FeeReserve {
+        min_fee_reserve: 1.into(),
+        percent_fee_reserve: 1.0,
+    };
+    let ln_fake_backend = FakeWallet::new(
+        fee_reserve.clone(),
+        std::collections::HashMap::default(),
+        std::collections::HashSet::default(),
+        0,
+        CurrencyUnit::Sat,
+    );
+
+    let mut mint_builder = MintBuilder::new(db.clone());
+    mint_builder
+        .add_payment_processor(
+            CurrencyUnit::Sat,
+            PaymentMethod::Known(KnownMethod::Bolt12),
+            MintMeltLimits::new(1, 10_000),
+            std::sync::Arc::new(ln_fake_backend),
+        )
+        .await
+        .expect("Bolt12 payment processor");
+
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    mint_builder = mint_builder
+        .with_name("p4 test mint".to_string())
+        .with_description("p4 lookup id ordering test mint".to_string())
+        .with_urls(vec!["https://p4-test-mint".to_string()]);
+    let mint = mint_builder
+        .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+        .await
+        .expect("mint build");
+    mint.start().await.expect("mint start");
+
+    let secp = cdk_common::bitcoin::secp256k1::Secp256k1::new();
+    let offer_secret = cdk_common::bitcoin::secp256k1::SecretKey::from_slice(&[0xcd; 32])
+        .expect("offer secret key");
+    let offer_pubkey =
+        cdk_common::bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &offer_secret);
+    let offer = OfferBuilder::new(offer_pubkey)
+        .amount_msats(9_000)
+        .build()
+        .expect("offer with amount");
+    let quote = MeltQuote::new(
+        None,
+        MeltPaymentRequest::Bolt12 {
+            offer: Box::new(offer),
+        },
+        CurrencyUnit::Sat,
+        Amount::new(9_000, CurrencyUnit::Sat),
+        Amount::new(100, CurrencyUnit::Sat),
+        unix_time() + 3_600,
+        None,
+        None,
+        PaymentMethod::Known(KnownMethod::Bolt12),
+        None,
+        None,
+    );
+    assert!(quote.request_lookup_id.is_none());
+
+    let federation_operation_id = FederationOperationId::from_bytes([7; 32]);
+    let operation_id = federation_operation_uuid(federation_operation_id);
+    let mut saga = Saga::new_melt(
+        operation_id,
+        MeltSagaState::SetupComplete,
+        quote.id.to_string(),
+    );
+    saga.federation_operation_id = Some(federation_operation_id.to_string());
+
+    let keyset_id = *mint
+        .get_active_keysets()
+        .get(&CurrencyUnit::Sat)
+        .expect("active sat keyset");
+    let proofs: cdk_common::Proofs = (0..3)
+        .map(|index| cdk_common::nuts::Proof {
+            amount: Amount::from(4_000),
+            keyset_id,
+            secret: cdk_common::secret::Secret::new(format!(
+                "p4 federation lookup-id test proof {index}"
+            )),
+            c: cdk_common::PublicKey::from_hex(
+                "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+            )
+            .expect("proof public key"),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        })
+        .collect();
+    let input_ys = proofs.ys().expect("proof ys");
+    let operation = cdk_common::mint::Operation::new(
+        operation_id,
+        OperationKind::Melt,
+        Amount::from(12_000),
+        Amount::ZERO,
+        Amount::ZERO,
+        None,
+        Some(PaymentMethod::Known(KnownMethod::Bolt12)),
+    );
+
+    let mut tx = mint
+        .localstore()
+        .begin_transaction()
+        .await
+        .expect("fixture transaction");
+    tx.add_melt_quote(quote.clone())
+        .await
+        .expect("persist quote");
+    let mut persisted_proofs = tx
+        .add_proofs(proofs.clone(), None, &operation)
+        .await
+        .expect("persist proofs");
+    tx.update_proofs_state(&mut persisted_proofs, State::Pending)
+        .await
+        .expect("pending proofs");
+    tx.add_saga(&saga).await.expect("persist saga");
+    tx.commit().await.expect("fixture transaction commit");
+
+    FederationBolt12SagaFixture {
+        mint,
+        quote,
+        saga,
+        input_ys,
+        operation_id,
+        db_path,
+    }
+}
+
+/// Fail every `UPDATE ... request_lookup_id` on `melt_quote` in the fixture's
+/// file-backed database. This is the controlled fault injection for the
+/// recovery-handle write.
+#[cfg(feature = "federation")]
+async fn install_lookup_id_write_failure(db_path: &std::path::Path) {
+    use cdk_sql_common::pool::Pool;
+    use cdk_sql_common::stmt::query;
+
+    let pool = Pool::<cdk_sqlite::SqliteConnectionManager>::new(
+        db_path
+            .to_str()
+            .expect("database path must be valid UTF-8")
+            .into(),
+    );
+    let conn = pool.get().await.expect("trigger connection");
+    query(
+        "CREATE TRIGGER p4_fail_lookup_id_write \
+         BEFORE UPDATE OF request_lookup_id ON melt_quote \
+         BEGIN SELECT RAISE(ABORT, 'p4 injected lookup id write failure'); END;",
+    )
+    .expect("trigger statement")
+    .execute(&*conn)
+    .await
+    .expect("install lookup-id write failure trigger");
+}
+
+#[cfg(feature = "federation")]
+async fn federation_fixture_saga_state(
+    mint: &crate::mint::Mint,
+    operation_id: &uuid::Uuid,
+) -> Option<SagaStateEnum> {
+    mint.localstore
+        .get_incomplete_sagas(OperationKind::Melt)
+        .await
+        .expect("saga lookup")
+        .into_iter()
+        .find(|saga| saga.operation_id == *operation_id)
+        .map(|saga| saga.state)
+}
+
+#[cfg(feature = "federation")]
+async fn remove_fixture_db(db_path: &std::path::Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let path = format!("{}{}", db_path.display(), suffix);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Pre-fix violation: the saga claims `PaymentAttempted`, performs the
+/// external payment, and only then tries to persist the returned lookup ID.
+/// When that write fails, startup recovery treats the missing handle as
+/// "payment never sent" and compensates even though the payment settled.
+///
+/// Desired behavior: a failed recovery-handle write fails closed before any
+/// external side effect, so later compensation is legitimate.
+#[cfg(feature = "federation")]
+#[tokio::test]
+async fn federation_lookup_id_write_failure_never_authorizes_side_effect_or_compensation() {
+    let fixture = federation_bolt12_saga_fixture().await;
+    let mint = &fixture.mint;
+    install_lookup_id_write_failure(&fixture.db_path).await;
+
+    let attempt = mint
+        .attempt_federation_external_melt_payment(fixture.quote.clone(), fixture.saga.clone())
+        .await;
+    let attempt_status = attempt
+        .as_ref()
+        .ok()
+        .and_then(|response| response.as_ref().map(|response| response.status));
+    let saga_state_after = federation_fixture_saga_state(mint, &fixture.operation_id).await;
+    let lookup_id_after = mint
+        .localstore
+        .get_melt_quote(&fixture.quote.id)
+        .await
+        .expect("quote lookup after attempt")
+        .and_then(|quote| quote.request_lookup_id);
+
+    mint.recover_from_incomplete_melt_sagas()
+        .await
+        .expect("startup recovery must complete");
+    let proofs_after = mint
+        .localstore
+        .get_proofs_states(&fixture.input_ys)
+        .await
+        .expect("proof states after recovery");
+    let saga_exists_after = federation_fixture_saga_state(mint, &fixture.operation_id)
+        .await
+        .is_some();
+
+    assert!(
+        attempt.is_err(),
+        "P4 violated: external payment proceeded without a durable recovery \
+         handle (payment status: {attempt_status:?}, quote lookup id: \
+         {lookup_id_after:?}, saga after attempt: {saga_state_after:?}); \
+         startup recovery then compensated (proof states: {proofs_after:?}, \
+         saga present: {saga_exists_after})"
+    );
+    let attempt_err = attempt.expect_err("attempt must fail closed");
+    assert!(
+        attempt_err
+            .to_string()
+            .contains("p4 injected lookup id write failure"),
+        "attempt must fail at the recovery-handle write, got: {attempt_err}"
+    );
+    assert_eq!(
+        saga_state_after,
+        Some(SagaStateEnum::Melt(MeltSagaState::SetupComplete)),
+        "a failed recovery-handle write must roll back the payment-attempt claim"
+    );
+    assert!(
+        lookup_id_after.is_none(),
+        "no lookup id may be persisted when the handle write fails"
+    );
+
+    // The payment was provably never sent, so recovery's compensation of the
+    // un-attempted setup is legitimate: proofs are released and the saga and
+    // quote are rolled back.
+    assert_proofs_state(mint, &fixture.input_ys, None).await;
+    assert_saga_not_exists(mint, &fixture.operation_id).await;
+    let quote_after = mint
+        .localstore
+        .get_melt_quote(&fixture.quote.id)
+        .await
+        .expect("quote lookup after recovery")
+        .expect("quote must remain in database");
+    assert_eq!(quote_after.state, MeltQuoteState::Unpaid);
+    assert!(quote_after.request_lookup_id.is_none());
+
+    remove_fixture_db(&fixture.db_path).await;
+}
+
+/// The recovery handle must be caller-supplied and durable before the
+/// external side effect, and startup recovery must not compensate a
+/// `PaymentAttempted` federation saga whose handle is present.
+#[cfg(feature = "federation")]
+#[tokio::test]
+async fn federation_lookup_id_is_durable_before_external_payment() {
+    let fixture = federation_bolt12_saga_fixture().await;
+    let mint = &fixture.mint;
+
+    let response = mint
+        .attempt_federation_external_melt_payment(fixture.quote.clone(), fixture.saga.clone())
+        .await
+        .expect("attempt must succeed with a writable database")
+        .expect("uncontested claim must attempt the payment");
+    assert_eq!(response.status, MeltQuoteState::Paid);
+
+    let quote_after = mint
+        .localstore
+        .get_melt_quote(&fixture.quote.id)
+        .await
+        .expect("quote lookup after attempt")
+        .expect("quote must remain in database");
+    assert_eq!(
+        quote_after.request_lookup_id,
+        Some(PaymentIdentifier::QuoteId(fixture.quote.id.clone())),
+        "the caller-supplied quote id must be the durable recovery handle \
+         recorded before the external side effect"
+    );
+
+    mint.recover_from_incomplete_melt_sagas()
+        .await
+        .expect("startup recovery must complete");
+
+    // The fake backend cannot resolve the caller-supplied handle, so the saga
+    // stays pending; critically, recovery must not compensate while a durable
+    // recovery handle exists.
+    assert_proofs_state(mint, &fixture.input_ys, Some(State::Pending)).await;
+    let saga_after = assert_saga_exists(mint, &fixture.operation_id).await;
+    assert_eq!(
+        saga_after.state,
+        SagaStateEnum::Melt(MeltSagaState::PaymentAttempted)
+    );
+
+    remove_fixture_db(&fixture.db_path).await;
+}

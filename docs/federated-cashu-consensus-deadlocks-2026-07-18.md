@@ -48,7 +48,7 @@ is well established but its root cause is not.
 |---:|---|---|---|---:|---|---|
 | 1 | `F1` | A single peer's equal-height status is treated as halt authority | Critical | 99% | Session/global if repeated against all honest members | Completed |
 | 2 | `F2` | Semantically invalid Byzantine operations halt finalized application | Critical | 99% | Session/global | Completed |
-| 3 | `P4` | Recovery-critical outgoing lookup ID is persisted after the side effect | Critical safety / High liveness | 99% | Quote/proofs and possible external-payment double spend | Not started |
+| 3 | `P4` | Recovery-critical outgoing lookup ID is persisted after the side effect | Critical safety / High liveness | 99% | Quote/proofs and possible external-payment double spend | Completed |
 | 4 | `P5` | One member can reorg or quarantine accepted on-chain funds | Critical | 99% | On-chain quote/funds; all on-chain liquidity if repeated | Not started |
 | 5 | `P1` | Accepted melt author has a permanent payment veto | High | 99% | Quote/proofs; malicious or failed author veto | Not started |
 | 6 | `P2` | One backend call or poison quote blocks the single observer worker | High | 99% | All payment repair on one member; quorum loss if shared | Not started |
@@ -68,6 +68,7 @@ is well established but its root cause is not.
 | 20 | `R3` | Retry queue is serviced only when fresh traffic is idle | Medium | 95% | Network/rejoining member | Not started |
 | 21 | `A2` | Payment-observation submit readiness remains implicit | Medium | 85% | Consensus backlog and invalid-state amplification | Not started |
 | 22 | `DB-001` | Stateful apply-time content errors remain ambiguous and halt the session | Critical | 99% | Session/global | Not started |
+| 23 | `DB-002` | Payment backends do not uniformly honor a caller-supplied recovery key | Medium liveness | 95% | Quote liveness; standalone follow-up | Not started |
 
 Discovered bugs are appended after the existing ranked milestones in discovery
 order with their legacy IDs preserved; `DB-001` was recorded on 2026-07-18
@@ -407,6 +408,43 @@ legacy ID and discovery history.
   rejection while later items and honest members continue.
 - **Proposed position in the milestone order:** immediately after the current
   ranked milestones (position 22), preserving legacy IDs.
+
+### DB-002 — Payment backends do not uniformly honor a caller-supplied recovery key
+
+- **Discovery date and originating milestone:** 2026-07-18, milestone 3 (`P4`)
+  confirmation.
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium liveness; 95% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** a payment backend whose
+  Bolt12/Custom `make_payment` does not treat the caller-supplied `quote_id`
+  as a durable lookup key (fake wallet returns a random `CustomId`), or a
+  crash after the external call before any secondary handle write.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** milestone 3's fix persists `PaymentIdentifier::QuoteId` before
+  the external side effect so a failed handle write can never authorize a
+  payment or compensation. For backends that do not resolve `QuoteId`, an
+  in-flight payment remains unobservable after a crash (liveness dead end,
+  not a safety failure). The fake wallet's Bolt12/Custom `make_payment`
+  returns `PaymentIdentifier::CustomId(Uuid::new_v4())`
+  (`crates/cdk-fake-wallet/src/lib.rs:787-832`), while CLN already persists
+  and echoes the caller's `quote_id` (`crates/cdk-cln/src/lib.rs:450-504`,
+  `:774-778`) and the on-chain contract documents the echo
+  (`crates/cdk-common/src/payment.rs:330-337`). The standalone
+  (non-federation) melt payment flow has the same side-effect-first ordering
+  question as the fixed federation branch; it is read-only under the
+  milestone scope boundary.
+- **Why distinct from an existing finding:** `P4` (milestone 3) fixes the
+  mint-side ordering so safety never depends on a post-side-effect write.
+  This bug tracks the remaining backend-contract and standalone-flow work,
+  which cannot be done federation-only.
+- **Likely simplest federation-only correction and required proof:** none —
+  aligning backend behavior (fake wallet Bolt12/Custom echoing `QuoteId` as
+  CLN does) and the standalone melt flow is shared-code work outside the
+  federation scope boundary. Required proof if ever scheduled: per-backend
+  crash-after-payment recovery tests showing the caller key always resolves
+  the attempt.
+- **Proposed position in the milestone order:** after `DB-001` (position 23);
+  recorded for completeness and for upstream standalone CDK follow-up.
 
 No other additional bugs have yet been recorded through this milestone workflow.
 
@@ -813,23 +851,145 @@ and [July 13 review R2](federated-cashu-security-review-jul-13.md#r2-byzantine-f
 
 ### 3. Recovery-critical outgoing lookup ID is persisted after the side effect (`P4`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with two executed focused harnesses
+against the unmodified pre-fix worktree, using a file-backed SQLite mint
+database and a SQLite trigger as the bounded fault injection
+(`BEFORE UPDATE OF request_lookup_id ON melt_quote ... RAISE(ABORT, 'p4
+injected lookup id write failure')`), plus a Bolt12 fake-wallet payment
+processor whose returned lookup ID is a random backend-generated
+`CustomId`:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk --features federation,mint --lib federation_lookup_id_write_failure_never_authorizes_side_effect_or_compensation -- --nocapture`
 
-**Fix check and evaluation:** Not run
+FAILED with the full violation chain in one assertion message:
 
-**Commit subject:** Not assigned
+`P4 violated: external payment proceeded without a durable recovery handle
+(payment status: Some(Paid), quote lookup id: None, saga after attempt:
+Some(Melt(PaymentAttempted))); startup recovery then compensated (proof
+states: [None, None, None], saga present: false)`
 
-**Milestone observations:** None yet
+This exhibits the exact reported failure end to end on the unmodified code:
+the saga claimed `PaymentAttempted`, the external payment settled (`Paid`),
+the best-effort lookup-ID write failed and was ignored, and
+`recover_from_incomplete_melt_sagas` treated the missing handle as
+"payment never sent", releasing all three pending proofs and deleting the
+saga while the external payment kept the funds. The companion regression
+also failed pre-fix:
+
+`cargo test -p cdk --features federation,mint --lib federation_lookup_id_is_durable_before_external_payment -- --nocapture`
+
+FAILED: the durable handle recorded for the settled payment was a
+backend-generated `CustomId(76fd9294-...)`, not a caller-supplied key
+(`QuoteId(019f7658-...)`) recorded before the side effect. No production
+code had been edited; only the test harnesses and a test-only
+`cdk-sql-common` dev-dependency were added.
+
+**Minimal fix:** One federation-only change in
+`crates/cdk/src/mint/melt/melt_saga/mod.rs`
+(`attempt_external_payment_for_federation_observation`, `#[cfg(feature =
+"federation")]`). The claim transaction now atomically compares-and-sets
+`SetupComplete -> PaymentAttempted` AND persists the caller-supplied
+`PaymentIdentifier::QuoteId(quote.id)` as `quote.request_lookup_id` when the
+quote has none (Bolt12/custom quotes; Bolt11 already carries its payment
+hash). If that write fails, the whole claim rolls back and no external
+payment is attempted, so a failed recovery-handle write can never authorize
+a side effect or a later "never sent" compensation. The post-payment
+best-effort write of the backend-native lookup id was removed from this
+branch: the durable handle is now fixed before the side effect, and the
+response's backend-native id remains observation evidence only.
+`persist_pending_payment_lookup_id` is unchanged for its two standalone
+callers. No standalone code or behavior changed; no backend, trait, schema,
+or wire format changed. Contract-honoring backends (CLN) already resolve
+`QuoteId` back to the attempt; the fake backend's remaining
+contract-violation liveness gap is `DB-002`.
+
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact two
+confirmation scenarios. Pre-fix runs (recorded above): both FAILED with the
+violation evidence. Post-fix runs:
+
+`cargo test -p cdk --features federation,mint --lib federation_lookup_id -- --nocapture`
+
+`2 passed; 0 failed`. The trap scenario now fails closed at the
+recovery-handle write (`p4 injected lookup id write failure`), rolls the
+claim back to `SetupComplete`, performs no payment, and recovery's
+`SetupComplete` compensation is then legitimate (proofs released, saga
+deleted, quote unpaid). The durable-handle scenario now records
+`PaymentIdentifier::QuoteId(quote.id)` before the side effect, settles
+`Paid`, and recovery does not compensate (proofs stay pending, saga remains
+`PaymentAttempted`).
+
+Broader evaluation on 2026-07-18:
+
+- `cargo fmt -p cdk -- --check` — clean for the milestone's code after
+  formatting the new tests; no pre-existing lines churned.
+- `cargo test -p cdk --features federation,mint --lib` — `775 passed; 0
+  failed`, including both new harnesses and the full melt-saga test file.
+- `cargo test -p cdk --lib` (default features: mint+wallet, no federation)
+  — `540 passed; 0 failed`, proving standalone melt sagas unchanged.
+- `cargo test -p cdk-axum --features federation` — `494 passed; 0 failed; 2
+  ignored`, including below-finality melt recovery through the changed
+  branch (exactly one payment actor, one backend call).
+- `CDK_TEST_DB_TYPE=memory cargo test -p cdk-integration-tests --test
+  wallet_saga -- --test-threads 1` — `9 passed; 0 failed`. An earlier
+  invocation without `CDK_TEST_DB_TYPE` failed every test at the harness's
+  environment check (`Database type set: NotPresent`); that is the documented
+  harness requirement, not a regression.
+- `cargo check -p cdk --no-default-features` — passed.
+- `cargo clippy -p cdk --features federation --all-targets -- -D warnings` —
+  fails only on the same 9 pre-existing lints recorded in milestone 2 (none
+  in the changed code).
+
+Not run: the CLN/LND regtest deployment. The defect is mint-side
+claim/persist ordering, not backend-behavior-specific; the fake backend
+faithfully models the contract-violating case (random native id, `Paid`),
+and CLN's contract-honoring behavior (persists `quote_id -> payment_hash`,
+echoes `PaymentIdentifier::QuoteId`) is source-verified at
+`crates/cdk-cln/src/lib.rs:450-504` and `:774-778`.
+
+**Commit subject:** `fix: persist federation melt recovery handle before payment`
+
+**Milestone observations:** 2026-07-18 — Milestone 2 is committed
+(`d1e560db9`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the melt-saga claim/persist ordering,
+the startup-recovery compensation path, and the standalone/federation sharing
+boundary are inspected.
+
+2026-07-18 — Confirmation recorded above. Scope analysis: the vulnerable
+flow is the federation-gated branch
+(`MeltSaga::attempt_external_payment_for_federation_observation`,
+`#[cfg(feature = "federation")]`), so a federation-only fix is possible
+without touching standalone behavior. The CLN backend already treats the
+caller-supplied `quote_id` as a durable recovery handle for Bolt12 (it
+persists `quote_id -> payment_hash` and echoes `PaymentIdentifier::QuoteId`),
+and the on-chain backend contract documents the same echo; the fake wallet
+does not for Bolt12/Custom. Backend-contract alignment and the analogous
+standalone-branch ordering question are out of scope here and recorded as
+`DB-002`.
+
+2026-07-18 — Fix and evaluation complete; milestone kept. Observations during
+the fix: (1) the first fix iteration kept the post-payment best-effort write,
+but it overwrote the caller key with the fake backend's random `CustomId`;
+the write was removed from the federation branch instead, leaving
+`persist_pending_payment_lookup_id` untouched for its two standalone callers
+(lines 802/814). (2) With the claim-transaction handle, federation
+`PaymentAttempted` sagas always carry a lookup id, so the startup-recovery
+"no lookup id -> compensate" branch cannot fire for them; no shared
+startup-recovery change was needed. (3) The actor's melt-payment observation
+still carries the backend-native payment id, matching pre-fix behavior for
+both fake and CLN backends; no observation-semantics change. (4) The
+harness's SQLite trigger fault injection requires a file-backed database
+(the in-memory pool is single-connection); the test-only `cdk-sql-common`
+dev-dependency drives DDL through the public `Pool`/`query` helpers.
 
 **Severity:** Critical safety / High liveness
 
 **Confidence:** 99% — source-proven
 
-**Finding status:** Open, source-proven
+**Finding status:** Resolved on 2026-07-18 with red-before-green runtime
+proof; the remaining backend-contract and standalone-flow work is tracked as
+discovered bug `DB-002`
 
 **Fault:** Database failure after an external payment call, especially Bolt12
 
@@ -852,10 +1012,24 @@ The result is both a liveness dead end (the backend can no longer be polled) and
 a safety failure (proofs can be released while the external payment later
 settles).
 
+The corrected federation claim transaction now persists the caller-supplied
+`PaymentIdentifier::QuoteId(quote.id)` atomically with the
+`SetupComplete -> PaymentAttempted` compare-and-set whenever the quote has no
+lookup id. A failed handle write rolls the whole claim back before any external
+payment, and a federation `PaymentAttempted` saga therefore always carries a
+durable handle, so startup recovery's "never sent" compensation can no longer
+fire for it. The retained harnesses prove both directions: with the write
+fault-injected, the attempt fails closed, no payment occurs, and the later
+`SetupComplete` compensation is legitimate; with a writable database, the
+caller key is durable before the `Paid` response and recovery does not
+compensate.
+
 **Required correction:** persist an idempotency/lookup key before the external
 side effect, or require a backend API whose caller-supplied durable key can
 always recover the attempt. A failed recovery-handle write must never authorize
-compensation.
+compensation. The first and third clauses are implemented and proven by this
+milestone; uniform backend honoring of the caller key (fake wallet
+Bolt12/Custom) and the analogous standalone-branch ordering are `DB-002`.
 
 ### 4. One member can reorg or quarantine accepted on-chain funds (`P5`)
 
@@ -1762,7 +1936,7 @@ not currently classified as an open deadlock.
 | A member still halts with `peer ... digest mismatch` | Pre-fix build or regression of 1 (`F1`) | Build/commit identity, signed peer statuses, live-session teardown state |
 | One member halts after an on-chain operation; peers continue | 8 (`F3`) | BDK reconciliation error and local BDK DB state |
 | Session remains live but application index/backlog stops growing | 10 (`F4`) / 13 (`A1`) | Blocked operation index, DB lock age, queue depth/bytes |
-| Melt proofs stay pending with healthy consensus | 5 (`P1`), then 6 (`P2`), 11 (`P3`), or 3 (`P4`) | Accepted envelope author, saga state, lookup ID, per-member backend observations |
+| Melt proofs stay pending with healthy consensus | 5 (`P1`), then 6 (`P2`), 11 (`P3`), or `DB-002` | Accepted envelope author, saga state, lookup ID, per-member backend observations |
 | Mint quote is paid externally but never becomes paid in federation | 11 (`P3`), then 6 (`P2`) | Per-member lookup visibility and exact evidence group differences |
 | UTXO changes to `Reorged`/`Quarantined` | 4 (`P5`) | First observation author, block/txout fields, every member's raw chain-source result |
 | Restarted member never adopts a known checkpoint | 12 (`R1`), 15 (`R2`), or 14 (`R4`) | Advertising peers, selected source, transferred bytes, page cursors/counts |

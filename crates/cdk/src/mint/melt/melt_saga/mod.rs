@@ -7,7 +7,7 @@ use cdk_common::federation::FederationOperationId;
 use cdk_common::mint::{MeltFinalizationData, MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
-use cdk_common::payment::{DynMintPayment, OutgoingPaymentOptions};
+use cdk_common::payment::{DynMintPayment, OutgoingPaymentOptions, PaymentIdentifier};
 use cdk_common::{
     Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, SpendingConditionVerification,
     State,
@@ -546,6 +546,26 @@ impl MeltSaga<SetupComplete> {
                     SagaStateEnum::Melt(MeltSagaState::PaymentAttempted),
                 )
                 .await?;
+            if claimed {
+                // The caller-supplied quote id must be a durable recovery
+                // handle before any external side effect. Bolt12 and custom
+                // quotes have no request lookup id until now; bolt11 quotes
+                // already carry their payment hash. Contract-honoring
+                // backends (for example CLN) resolve this key back to the
+                // attempt after a crash. If this write fails, the whole claim
+                // rolls back and no payment is attempted.
+                let mut quote = tx
+                    .get_melt_quote(&self.state_data.quote.id)
+                    .await?
+                    .ok_or(Error::UnknownQuote)?;
+                if quote.request_lookup_id.is_none() {
+                    tx.update_melt_quote_request_lookup_id(
+                        &mut quote,
+                        &PaymentIdentifier::QuoteId(self.state_data.quote.id.clone()),
+                    )
+                    .await?;
+                }
+            }
             tx.commit().await?;
             claimed
         };
@@ -554,8 +574,10 @@ impl MeltSaga<SetupComplete> {
         }
 
         let response = self.execute_payment_and_verify(ln).await?;
-        self.persist_pending_payment_lookup_id(&response.payment_lookup_id)
-            .await;
+        // The durable recovery handle is the caller-supplied quote id recorded
+        // in the claim transaction above. The response's backend-native lookup
+        // id is observation evidence only; it must not replace the durable
+        // handle, and no post-side-effect write is safety-critical.
         Ok(Some(response))
     }
 
