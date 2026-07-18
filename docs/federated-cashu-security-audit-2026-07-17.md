@@ -267,6 +267,23 @@ author can halt the whole federation rather than merely its own node.
 - Catch-up and restart reproduce the rejection without retry loops or session
   termination.
 
+**Status update 2026-07-18:** the pure-content mechanism is resolved. Finalized
+classification now runs all pure, deterministic, operation-local validation
+(`FederationOperation::validate_pure()` in
+`crates/cdk-common/src/federation/operation.rs`) when assigning the finalized
+item status, so a member-signed balance-overflow or otherwise pure-invalid
+operation is recorded as a canonical per-item `RejectedInvalidOperation`
+instead of aborting the containing unit. The executed five-member regression
+`byzantine_balance_overflow_operation_does_not_halt_finalized_application`
+(`crates/cdk-axum/src/federation/tests.rs`) demonstrated the halt pre-fix and
+now proves per-item rejection, same-unit/next-unit progress, and
+live/restart/catch-up convergence; a cdk-common unit test pins the
+classification statuses. The remaining apply-time items — deterministic
+stateful business failures that still return ambiguous `Custom`, `Internal`,
+`InvalidPaymentRequest`, or federation errors and halt the session, including
+the inconsistent-quote case above — are tracked as discovered bug `DB-001` in
+`docs/federated-cashu-consensus-deadlocks-2026-07-18.md` and remain open.
+
 ### SEC-2026-07-17-04 — Byzantine-unsafe threshold profiles are accepted
 
 **Severity: Warning**

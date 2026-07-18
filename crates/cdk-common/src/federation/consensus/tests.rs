@@ -1336,6 +1336,102 @@ fn aleph_bft_finalization_handler_emits_ordered_items_with_unit_metadata() {
 }
 
 #[test]
+fn aleph_bft_finalization_handler_rejects_balance_overflow_operation_per_item() {
+    let federation_id = federation_id(13);
+    let overflow_output = |hex: &str| {
+        BlindedMessage::new(
+            Amount::from(u64::MAX),
+            keyset_id(),
+            PublicKey::from_hex(hex).expect("public key"),
+        )
+    };
+    let invalid = FederationOperationEnvelope::new(
+        federation_id,
+        super::super::FederationOperation::Mint(super::super::FederationMintOperation {
+            request: super::super::FederationMintRequest::Single(MintRequest {
+                quote: "overflow-quote".to_string(),
+                outputs: vec![
+                    overflow_output(
+                        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+                    ),
+                    overflow_output(
+                        "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+                    ),
+                ],
+                signature: None,
+            }),
+        }),
+    );
+    let invalid_operation_id = invalid.operation_id().expect("invalid operation id");
+    let same_unit_valid = mint_envelope(
+        federation_id,
+        "quote-1",
+        "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+    );
+    let same_unit_valid_operation_id = same_unit_valid.operation_id().expect("operation id");
+    let payload = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(invalid),
+            FederationConsensusItem::operation(same_unit_valid),
+        ],
+    )
+    .expect("payload");
+    let mut handler = FederationAlephBftFinalizationHandler::new(federation_id);
+
+    let outcome = handler
+        .finalize_next_unit(payload)
+        .expect("unit with one invalid item still finalizes");
+
+    assert_eq!(outcome.items.len(), 2);
+    assert_eq!(outcome.items[0].operation_id, Some(invalid_operation_id));
+    assert_eq!(
+        outcome.items[0].status,
+        FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
+    );
+    assert_eq!(
+        outcome.items[1].operation_id,
+        Some(same_unit_valid_operation_id)
+    );
+    assert_eq!(
+        outcome.items[1].status,
+        FederationAlephBftFinalizedItemStatus::Accepted
+    );
+
+    let next_unit_valid = mint_envelope(
+        federation_id,
+        "quote-2",
+        "025f0615ccba96f810582a6885ffdb04bd57c96dbc590f5aa560447b31258988d7",
+    );
+    let next_unit_valid_operation_id = next_unit_valid.operation_id().expect("operation id");
+    let next_payload = FederationAlephBftUnitPayload::new(
+        federation_id,
+        member_id_value(2),
+        0,
+        1,
+        vec![FederationConsensusItem::operation(next_unit_valid)],
+    )
+    .expect("next payload");
+
+    let next_outcome = handler
+        .finalize_next_unit(next_payload)
+        .expect("next unit finalizes after the rejected item");
+
+    assert_eq!(
+        next_outcome.items[0].operation_id,
+        Some(next_unit_valid_operation_id)
+    );
+    assert_eq!(
+        next_outcome.items[0].status,
+        FederationAlephBftFinalizedItemStatus::Accepted
+    );
+    assert_eq!(next_outcome.items[0].accepted_item_index, 2);
+}
+
+#[test]
 fn aleph_bft_finalization_handler_rejects_wrong_federation_and_session() {
     let expected_federation_id = federation_id(13);
     let wrong_federation_payload =

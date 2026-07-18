@@ -1835,6 +1835,17 @@ impl FederationAlephBftFinalizationHandler {
         Ok(outcome)
     }
 
+    /// Return true when a finalized operation envelope fails member
+    /// authorization or pure operation-local validation. Such untrusted
+    /// contents are rejected per item so one Byzantine operation cannot abort
+    /// the containing unit.
+    fn is_invalid_finalized_operation(&self, envelope: &FederationOperationEnvelope) -> bool {
+        self.operation_config
+            .as_ref()
+            .is_some_and(|config| envelope.verify_authorization(config).is_err())
+            || envelope.operation.validate_pure().is_err()
+    }
+
     fn prepare_next_unit(
         &self,
         payload: &FederationAlephBftUnitPayload,
@@ -1904,10 +1915,7 @@ impl FederationAlephBftFinalizationHandler {
                     FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier
                 }
                 (FederationConsensusItem::Operation(envelope), Some(_))
-                    if self
-                        .operation_config
-                        .as_ref()
-                        .is_some_and(|config| envelope.verify_authorization(config).is_err()) =>
+                    if self.is_invalid_finalized_operation(envelope) =>
                 {
                     FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation
                 }

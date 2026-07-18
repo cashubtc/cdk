@@ -13728,6 +13728,389 @@ async fn aleph_bft_non_retryable_finalized_payload_failure_halts_exact_generatio
     let _ = submit_task.await;
 }
 
+async fn assert_balance_overflow_rejection_converged(
+    state: &MintState,
+    invalid_operation_id: FederationOperationId,
+    quote_ids: &[QuoteId],
+) {
+    assert!(
+        state
+            .mint
+            .localstore()
+            .get_federation_journal_entry_by_operation_id(invalid_operation_id)
+            .await
+            .expect("invalid operation journal lookup")
+            .is_none(),
+        "invalid operation must not become a journal entry"
+    );
+    let invalid_status = state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_finalized_items()
+        .await
+        .expect("finalized items lookup")
+        .into_iter()
+        .find(|item| item.operation_id == Some(invalid_operation_id))
+        .map(|item| item.status);
+    assert_eq!(
+        invalid_status,
+        Some(FederationAlephBftFinalizedItemStatus::RejectedInvalidOperation),
+        "invalid operation must be recorded as a per-item rejection"
+    );
+    for quote_id in quote_ids {
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(quote_id)
+            .await
+            .expect("mint quote lookup")
+            .is_some());
+    }
+}
+
+#[tokio::test]
+async fn byzantine_balance_overflow_operation_does_not_halt_finalized_application() {
+    let live_options = fast_aleph_bft_live_session_options(
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 0,
+            max_messages_per_tick: 256,
+            max_peer_deliveries_per_message: 256,
+        },
+        500,
+    );
+    let mut session = start_five_member_aleph_bft_live_session(live_options.clone())
+        .await
+        .expect("start five-member live session");
+
+    // Partition the fifth member before any operation so that its later rejoin
+    // is a genuine catch-up of the Byzantine unit from peer history.
+    *session.states[4]
+        .federation
+        .aleph_bft_network_inbound
+        .write()
+        .await = None;
+    *session.states[4]
+        .federation
+        .aleph_bft_live_session
+        .write()
+        .await = None;
+    session.transport.insert(
+        session.federation_api_urls[4].clone(),
+        Router::new()
+            .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+            .with_state(session.states[0].clone()),
+    );
+    let fifth_handle = session._handles.remove(4);
+    drop(fifth_handle);
+
+    let byzantine_state = session.states[0].clone();
+    let honest_states: Vec<MintState> = session.states[1..4].to_vec();
+
+    // One Byzantine member signs a structurally valid mint operation whose
+    // output amounts overflow the operation-local balance audit, then queues it
+    // directly into its own AlephBFT data provider, bypassing public admission
+    // validation. A valid mint quote operation queued behind it in the same
+    // atomic batch lands in the same unit.
+    let config = byzantine_state
+        .mint
+        .federation_config()
+        .expect("federation config");
+    let keyset_id = config.public_config().keysets[0].id;
+    let overflow_output = |label: &[u8]| {
+        BlindedMessage::new(
+            Amount::from(u64::MAX),
+            keyset_id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(label)),
+        )
+    };
+    let invalid_envelope = config.operation_envelope(FederationOperation::Mint(
+        cdk::federation::FederationMintOperation {
+            request: cdk::federation::FederationMintRequest::Single(MintRequest {
+                quote: QuoteId::new().to_string(),
+                outputs: vec![
+                    overflow_output(b"byzantine balance overflow output 1"),
+                    overflow_output(b"byzantine balance overflow output 2"),
+                ],
+                signature: None,
+            }),
+        },
+    ));
+    let invalid_operation_id = invalid_envelope
+        .operation_id()
+        .expect("invalid operation id");
+    let same_unit_quote_id = QuoteId::new();
+    let same_unit_envelope = mint_quote_envelope(&byzantine_state, &same_unit_quote_id);
+    let same_unit_operation_id = same_unit_envelope
+        .operation_id()
+        .expect("same-unit operation id");
+    {
+        let consensus = byzantine_state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("consensus");
+        let mut consensus = consensus.lock().await;
+        assert_eq!(
+            consensus
+                .submit_operation(invalid_envelope)
+                .expect("queue Byzantine overflow operation"),
+            FederationConsensusItemAdmission::Accepted
+        );
+        assert_eq!(
+            consensus
+                .submit_operation(same_unit_envelope)
+                .expect("queue same-unit valid operation"),
+            FederationConsensusItemAdmission::Accepted
+        );
+    }
+
+    // An honest member submits one valid operation through the public path so
+    // it lands in a unit after the Byzantine unit. The submit may return a
+    // bounded pending-finalization timeout under load; per-member terminal
+    // waits below are the application proof.
+    let next_unit_quote_id = QuoteId::new();
+    let honest_submit_state = honest_states[0].clone();
+    let next_unit_envelope = mint_quote_envelope(&honest_submit_state, &next_unit_quote_id);
+    let next_unit_operation_id = next_unit_envelope
+        .operation_id()
+        .expect("next-unit operation id");
+    let next_unit_submit = tokio::spawn(async move {
+        submit_live_operation_allowing_pending_timeout(&honest_submit_state, next_unit_envelope)
+            .await
+    });
+
+    // Wait until the valid same-unit operation reaches a terminal state on the
+    // first honest member, or any honest member halts first.
+    let mut same_unit_status = None;
+    let mut halt_reason = None;
+    time::timeout(Duration::from_secs(20), async {
+        loop {
+            for state in &honest_states {
+                if let Some(crate::FederationSyncStatus::Halted { reason }) =
+                    state.federation_sync_status().await
+                {
+                    halt_reason = Some(reason);
+                    break;
+                }
+            }
+            if halt_reason.is_some() {
+                break;
+            }
+            if let Some(entry) = honest_states[0]
+                .mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(same_unit_operation_id)
+                .await
+                .expect("same-unit journal lookup")
+            {
+                if matches!(
+                    entry.status(),
+                    FederationOperationStatus::Applied | FederationOperationStatus::Rejected
+                ) {
+                    same_unit_status = Some(entry.status());
+                    break;
+                }
+            }
+            time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("Byzantine unit reached a decision before timeout");
+
+    assert!(
+        halt_reason.is_none(),
+        "one Byzantine balance-overflow operation halted an honest member: {}",
+        halt_reason.as_deref().unwrap_or("unknown halt")
+    );
+    assert_eq!(
+        same_unit_status,
+        Some(FederationOperationStatus::Applied),
+        "valid operation in the Byzantine unit must still apply"
+    );
+
+    let submitted_next_unit_operation_id = time::timeout(Duration::from_secs(30), next_unit_submit)
+        .await
+        .expect("next-unit submission completed before timeout")
+        .expect("next-unit submit task");
+    assert_eq!(submitted_next_unit_operation_id, next_unit_operation_id);
+
+    let live_quote_ids = [same_unit_quote_id.clone(), next_unit_quote_id.clone()];
+    for state in &honest_states {
+        assert_eq!(
+            wait_for_terminal_operation(state, same_unit_operation_id).await,
+            FederationOperationStatus::Applied,
+            "honest member must apply the valid same-unit operation"
+        );
+        assert_eq!(
+            wait_for_terminal_operation(state, next_unit_operation_id).await,
+            FederationOperationStatus::Applied,
+            "honest member must apply the valid next-unit operation"
+        );
+        assert!(!matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Halted { .. })
+        ));
+        assert!(state.federation_aleph_bft_live_session_active().await);
+        assert!(state.federation_aleph_bft_network_inbound_active().await);
+        assert_balance_overflow_rejection_converged(state, invalid_operation_id, &live_quote_ids)
+            .await;
+    }
+
+    let reference_journal = journal_convergence_projection(
+        &session.states[0]
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("reference journal lookup"),
+    );
+    for state in &honest_states {
+        assert_eq!(
+            journal_convergence_projection(
+                &state
+                    .mint
+                    .localstore()
+                    .get_federation_journal_entries()
+                    .await
+                    .expect("honest journal lookup"),
+            ),
+            reference_journal,
+            "honest members must converge on the same journal"
+        );
+    }
+
+    // Restart one honest member from its durable state and prove the rejection
+    // and journal survive replay before it rejoins live consensus.
+    *session.states[3]
+        .federation
+        .aleph_bft_network_inbound
+        .write()
+        .await = None;
+    *session.states[3]
+        .federation
+        .aleph_bft_live_session
+        .write()
+        .await = None;
+    session.transport.insert(
+        session.federation_api_urls[3].clone(),
+        Router::new()
+            .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+            .with_state(session.states[0].clone()),
+    );
+    let third_handle = session._handles.remove(3);
+    drop(third_handle);
+    replay_aleph_bft_runtime_after_test_process_restart(&mut session.states[3]).await;
+    assert_balance_overflow_rejection_converged(
+        &session.states[3],
+        invalid_operation_id,
+        &live_quote_ids,
+    )
+    .await;
+    let third_handle = start_federation_aleph_bft_live_session_with_options_and_transport(
+        &mut session.states[3],
+        session.sync_config,
+        live_options.clone(),
+        session.transport.clone(),
+    )
+    .await
+    .expect("restart honest member after Byzantine rejection")
+    .expect("restarted honest live session handle");
+    session._handles.push(third_handle);
+    session.transport.insert(
+        session.federation_api_urls[3].clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(session.states[3].clone()),
+    );
+    for state in &mut session.states[..4] {
+        state.federation.peer_sync_config = Some(session.sync_config);
+    }
+
+    let post_restart_quote_id = QuoteId::new();
+    let post_restart_envelope = mint_quote_envelope(&session.states[1], &post_restart_quote_id);
+    let post_restart_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[1], post_restart_envelope)
+            .await;
+    for state in &session.states[..4] {
+        assert_eq!(
+            wait_for_terminal_operation(state, post_restart_operation_id).await,
+            FederationOperationStatus::Applied,
+            "restarted member and peers must apply a post-restart operation"
+        );
+    }
+
+    // Rejoin the partitioned member through peer catch-up and prove it
+    // reproduces the same rejection, journal, and materialized quotes.
+    session.states[4]
+        .mark_federation_catching_up(member_id(1))
+        .await;
+    session.states[4]
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .expect_err("lagging member must fail closed before catch-up");
+    replay_aleph_bft_runtime_after_test_process_restart(&mut session.states[4]).await;
+    session.transport.insert(
+        session.federation_api_urls[4].clone(),
+        Router::new()
+            .nest("/federation/v1", create_federation_router())
+            .with_state(session.states[4].clone()),
+    );
+    sync_and_certify_partitioned_member(&session, 4, live_options).await;
+    session.states[4]
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .expect("caught-up member is ready");
+
+    let all_operation_ids = [
+        same_unit_operation_id,
+        next_unit_operation_id,
+        post_restart_operation_id,
+    ];
+    for operation_id in all_operation_ids {
+        assert_eq!(
+            wait_for_terminal_operation(&session.states[4], operation_id).await,
+            FederationOperationStatus::Applied,
+            "caught-up member must apply every valid neighboring operation"
+        );
+    }
+    let all_quote_ids = [
+        same_unit_quote_id,
+        next_unit_quote_id,
+        post_restart_quote_id,
+    ];
+    assert_balance_overflow_rejection_converged(
+        &session.states[4],
+        invalid_operation_id,
+        &all_quote_ids,
+    )
+    .await;
+
+    let reference_journal = journal_convergence_projection(
+        &session.states[0]
+            .mint
+            .localstore()
+            .get_federation_journal_entries()
+            .await
+            .expect("final reference journal lookup"),
+    );
+    for state in &session.states {
+        assert_eq!(
+            journal_convergence_projection(
+                &state
+                    .mint
+                    .localstore()
+                    .get_federation_journal_entries()
+                    .await
+                    .expect("converged journal lookup"),
+            ),
+            reference_journal,
+            "all members must converge on the same journal after catch-up"
+        );
+        assert_balance_overflow_rejection_converged(state, invalid_operation_id, &all_quote_ids)
+            .await;
+    }
+}
+
 #[tokio::test]
 async fn aleph_bft_automatic_rotation_failure_halts_without_live_resources() {
     let options = fast_aleph_bft_live_session_options(

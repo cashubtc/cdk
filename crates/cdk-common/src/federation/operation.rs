@@ -1566,6 +1566,37 @@ impl FederationOperation {
         }
     }
 
+    /// Validate pure, deterministic, operation-local consensus payload rules.
+    ///
+    /// This runs every validity rule that depends only on the canonical
+    /// operation contents: bounded per-payload fields and the operation-local
+    /// balance audit. Checks that require the effective keyset configuration,
+    /// which keyset rotation can change within a session, or ordered journal
+    /// state are deliberately excluded; those remain in admission validation
+    /// and accepted-state application. Finalized classification uses this to
+    /// reject untrusted Byzantine contents per item instead of aborting the
+    /// containing unit.
+    pub fn validate_pure(&self) -> Result<()> {
+        match self {
+            Self::AddressAllocation(operation) => operation.validate()?,
+            Self::ChainObservation(observation) => observation.validate()?,
+            Self::TransactionProposal(proposal) => proposal.validate()?,
+            Self::TransactionBroadcastIntent(intent) => intent.settlement_policy.validate()?,
+            Self::TransactionBroadcastObservation(observation) => observation.validate()?,
+            Self::MintQuote(_)
+            | Self::MintQuotePayment(_)
+            | Self::Mint(_)
+            | Self::MeltQuote(_)
+            | Self::MeltQuotePayment(_)
+            | Self::Melt(_)
+            | Self::Swap(_)
+            | Self::KeysetRotation(_)
+            | Self::TransactionSigned(_) => {}
+        }
+        self.balance_audit()?;
+        Ok(())
+    }
+
     /// Compute the operation-local balance audit for this consensus payload.
     ///
     /// This audit intentionally only checks value scopes available in the

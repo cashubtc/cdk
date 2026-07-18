@@ -47,7 +47,7 @@ is well established but its root cause is not.
 | Rank | Legacy ID | Finding | Severity | Confidence | Reach | Milestone status |
 |---:|---|---|---|---:|---|---|
 | 1 | `F1` | A single peer's equal-height status is treated as halt authority | Critical | 99% | Session/global if repeated against all honest members | Completed |
-| 2 | `F2` | Semantically invalid Byzantine operations halt finalized application | Critical | 99% | Session/global | Not started |
+| 2 | `F2` | Semantically invalid Byzantine operations halt finalized application | Critical | 99% | Session/global | Completed |
 | 3 | `P4` | Recovery-critical outgoing lookup ID is persisted after the side effect | Critical safety / High liveness | 99% | Quote/proofs and possible external-payment double spend | Not started |
 | 4 | `P5` | One member can reorg or quarantine accepted on-chain funds | Critical | 99% | On-chain quote/funds; all on-chain liquidity if repeated | Not started |
 | 5 | `P1` | Accepted melt author has a permanent payment veto | High | 99% | Quote/proofs; malicious or failed author veto | Not started |
@@ -67,6 +67,11 @@ is well established but its root cause is not.
 | 19 | `P6` | Unbounded pending-quote population amplifies wallet-request DoS | Medium | 97% | Resource starvation | Not started |
 | 20 | `R3` | Retry queue is serviced only when fresh traffic is idle | Medium | 95% | Network/rejoining member | Not started |
 | 21 | `A2` | Payment-observation submit readiness remains implicit | Medium | 85% | Consensus backlog and invalid-state amplification | Not started |
+| 22 | `DB-001` | Stateful apply-time content errors remain ambiguous and halt the session | Critical | 99% | Session/global | Not started |
+
+Discovered bugs are appended after the existing ranked milestones in discovery
+order with their legacy IDs preserved; `DB-001` was recorded on 2026-07-18
+from milestone 2.
 
 ### Most likely common cause
 
@@ -78,12 +83,14 @@ boundary and the application failure policy:
 > the local node is corrupt. They then halt the node instead of rejecting the
 > member's item or isolating the member/source.
 
-That pattern explains the pre-fix form of finding 1, directly explains open
-finding 2, and amplifies finding 8. For unexplained payment stalls while
-consensus stays healthy, findings 5, 6, and 11 are more likely than an AlephBFT
-failure. For on-chain outputs becoming stuck, finding 4 is the most likely
-cause; the accidental version is a lagging/inconsistent chain backend, while a
-Byzantine member can deliberately create the same state.
+That pattern explains the pre-fix form of finding 1, directly explains the
+confirmed pure-content mechanism of finding 2 (now resolved; its stateful
+apply-time residual is `DB-001`), and amplifies finding 8. For unexplained
+payment stalls while consensus stays healthy, findings 5, 6, and 11 are more
+likely than an AlephBFT failure. For on-chain outputs becoming stuck, finding
+4 is the most likely cause; the accidental version is a lagging/inconsistent
+chain backend, while a Byzantine member can deliberately create the same
+state.
 
 ## Binding development contract
 
@@ -361,7 +368,47 @@ the discovered bug to the next milestone. Otherwise queue it by severity and
 confidence after the existing ranked milestones. Renumbering must preserve the
 legacy ID and discovery history.
 
-No additional bugs have yet been recorded through this milestone workflow.
+### DB-001 — Stateful apply-time content errors remain ambiguous and halt the session
+
+- **Discovery date and originating milestone:** 2026-07-18, milestone 2 (`F2`)
+  confirmation.
+- **Status:** Queued
+- **Proposed severity and confidence:** Critical; 99% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** one Byzantine member
+  places an authorized operation whose pure content is valid but whose ordered
+  state dependencies are invalid in its own Aleph unit.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** the milestone 2 confirmation harness proved that one invalid
+  finalized operation aborts whole-unit application and halts honest members.
+  The pure-content variant is addressed by milestone 2's classification fix.
+  The stateful variant remains: apply paths return ambiguous (non-definitive)
+  errors for deterministic untrusted-content failures, which persist `Failed`
+  and halt the essential finalized-unit task. Cited paths: chain-observation
+  deposit/trap errors (`crates/cdk/src/mint/federation/chain_observation.rs:40-142`,
+  `FederationError::ChainObservationInvalid`), on-chain quote validation
+  (`crates/cdk/src/mint/federation.rs:2011-2078`), and melt state traps
+  (`crates/cdk/src/mint/federation.rs:2788-2814` returning `Custom`,
+  `crates/cdk/src/mint/federation.rs:2893-2945` returning `Internal` and
+  `InvalidPaymentRequest`). `Error::is_definitive_failure`
+  (`crates/cdk-common/src/error.rs:785-950`) recognizes only
+  `InactiveFederatedKeyset` and `RejectedOperation` among federation errors.
+- **Why distinct from an existing finding:** milestone 2 covers pure
+  operation-local validation moved into finalized classification. This bug is
+  the remaining error-semantics surface: deterministic stateful content
+  failures must become typed, definitive per-item rejections while genuine
+  local corruption (`Internal`, `Custom`, `Database`) must stay halt-worthy.
+  It requires its own confirmation harness per operation family and an audit
+  of each `Custom`/`Internal` apply error at the consensus boundary.
+- **Likely simplest federation-only correction and required proof:** replace
+  free-form `Custom`/`Internal` errors at federation apply boundaries with
+  typed content errors, extend the federation definitive-failure set to cover
+  them, and prove with one harness per affected operation family that a
+  Byzantine stateful-invalid operation is persisted as a canonical per-item
+  rejection while later items and honest members continue.
+- **Proposed position in the milestone order:** immediately after the current
+  ranked milestones (position 22), preserving legacy IDs.
+
+No other additional bugs have yet been recorded through this milestone workflow.
 
 ## Detailed findings in ranked order
 
@@ -504,23 +551,174 @@ independently verified local or quorum evidence.
 
 ### 2. Semantically invalid Byzantine operations halt finalized application (`F2`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with an executed five-member BFT
+federation harness (threshold 3, one Byzantine injector, four honest members)
+run against the unmodified pre-fix worktree:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-axum --features federation byzantine_balance_overflow_operation_does_not_halt_finalized_application -- --nocapture`
 
-**Fix check and evaluation:** Not run
+The harness signs a structurally valid mint operation whose two outputs are
+`u64::MAX` each (balance-audit overflow) with the Byzantine member's own key,
+then queues it plus a valid mint quote operation atomically through
+`FederationConsensusRuntime::submit_operation` on that member's own consensus
+data provider. That is the exact Byzantine capability: public admission
+(`submit_federation_envelope*`) validates and rejects the operation, but a
+member can place application data in its own Aleph unit without admission. A
+fourth valid operation was submitted by an honest member through the public
+path for the next unit.
 
-**Commit subject:** Not assigned
+Pre-fix result: exit code 101, `FAILED` in 3-4s. The first honest member
+halted with the recorded reason:
 
-**Milestone observations:** None yet
+`AlephBFT live session 0 stopped after a non-retryable finalized-payload apply
+failure: Federation operation balance audit amount overflow for mint`
+
+This is direct red evidence of the full reported path: finalized
+classification accepted the authorized operation, journal preparation aborted
+the whole unit at `envelope.operation.balance_audit()?`
+(`crates/cdk-common/src/federation/journal.rs:1164`), the non-retryable error
+escaped the finalized-unit apply loop, and the essential-task supervisor
+halted the session. The valid same-unit and next-unit operations never became
+journal entries. No production code had been edited; only the regression test
+in `crates/cdk-axum/src/federation/tests.rs` was added.
+
+**Minimal fix:** One federation-only change in cdk-common. A new pure,
+config-free operation validator `FederationOperation::validate_pure()`
+(`crates/cdk-common/src/federation/operation.rs`) runs every validity rule
+that depends only on canonical operation contents: per-payload `validate()`
+for address allocations, chain observations, transaction proposals, and
+broadcast intents/observations, plus the existing operation-local
+`balance_audit()`. Checks requiring the effective keyset configuration (which
+keyset rotation changes mid-session) or ordered journal state are
+deliberately excluded and remain in admission and accepted-state apply.
+Finalized classification
+(`crates/cdk-common/src/federation/consensus.rs`,
+`FederationAlephBftFinalizationHandler::is_invalid_finalized_operation`) now
+assigns the pre-existing canonical per-item status
+`RejectedInvalidOperation` to any operation failing member authorization or
+`validate_pure()`, instead of letting it reach journal preparation. Rejected
+items are already excluded from journal appends, persist as finalized items,
+and replay identically; no standalone code, wire format, or error semantics
+changed. This is the least complex correction: it reuses the existing
+rejection status and downstream filtering, and removes the halt by moving
+validation earlier rather than by reclassifying errors.
+
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact final
+three-phase scenario. Red runs (production fix stashed,
+`git stash push` of only `operation.rs` + `consensus.rs`):
+
+`cargo test -p cdk-axum --features federation byzantine_balance_overflow_operation_does_not_halt_finalized_application -- --nocapture`
+
+FAILED each time at the halt assertion in 10-11s with the same reason
+(`AlephBFT live session 0 stopped after a non-retryable finalized-payload
+apply failure: Federation operation balance audit amount overflow for mint`),
+verified against the final harness after its synchronization hardening. Green
+runs (fix restored): three consecutive `1 passed` (~32-41s each). The green
+scenario proves, in one test: the invalid item is recorded
+`RejectedInvalidOperation` on every member with no journal entry; the valid
+same-unit mint quote applies on all online members; the valid next-unit
+operation applies; no honest member halts and live sessions/inbound networks
+stay active; a restarted member replays its durable state with the rejection
+intact and applies a post-restart operation; the partitioned fifth member
+catches up from peers, fails closed before catch-up, becomes ready, and
+reproduces the same rejection, journal digests, and materialized quotes; all
+five members converge on the same journal projection. A cdk-common
+classification unit test
+(`aleph_bft_finalization_handler_rejects_balance_overflow_operation_per_item`)
+pins the same-unit/next-unit per-item statuses deterministically.
+
+Broader evaluation on 2026-07-18, all against the post-fix worktree:
+
+- `cargo fmt -p cdk-common -p cdk-axum -- --check` — stable rustfmt reported
+  the repository's existing nightly-only option warnings plus three
+  pre-existing unformatted regions in
+  `crates/cdk-common/src/federation/operation.rs` (verified identical at the
+  pristine milestone baseline by stashing all changes and re-running the
+  check). The milestone's added code is format-clean; the pre-existing
+  regions were reverted out of this milestone's diff to avoid unrelated
+  cleanup.
+- `cargo test -p cdk-common --features federation` — `422 passed; 0 failed`
+  lib plus integration targets, including the new classification unit test and
+  neighboring finalization, journal, catch-up, and duplicate/replay tests.
+- `cargo test -p cdk-axum --features federation` — `494 passed; 0 failed; 2
+  ignored` on each of the last two consecutive runs, including the new
+  regression, five-member faults, below-finality conflict/recovery,
+  restart/replay, checkpoint and suffix catch-up, session lifecycle, and
+  private-route negative cases. One earlier pre-hardening run failed a single
+  test (identity not captured); the only suite delta is the new regression,
+  whose assertions originally raced per-member finalization lag and the
+  submit-waiter timeout. The regression was synchronized (per-member terminal
+  waits, tolerant submission helper), after which it passed three focused
+  runs and both full-suite runs.
+- `cargo check -p cdk-common --no-default-features` and `cargo check -p
+  cdk-axum --no-default-features` — passed; the changed module is entirely
+  `#[cfg(feature = "federation")]`-gated, so standalone/no-federation builds
+  exclude it by construction and standalone behavior is unchanged.
+- `cargo clippy -p cdk-common --features federation --all-targets -- -D
+  warnings` — passed. `cargo clippy -p cdk -p cdk-axum --features federation
+  --all-targets -- -D warnings` fails on 9 pre-existing lints inside `crates/cdk`
+  sources (`mint/federation.rs`, `wallet/federation.rs`, `melt/`) that this
+  milestone does not touch; none are in the changed files.
+
+Not run: a local fakewallet multi-process deployment (the accepted focused
+harness exercised the exact finalized-application boundary, five-member BFT
+fault, restart replay, and peer catch-up without a payment-backend
+precondition), and real CLN/LND/BDK backend paths (the defect is in the
+consensus classification boundary, not backend-dependent).
+
+**Commit subject:** `fix: reject semantically invalid finalized operations per item`
+
+**Milestone observations:** 2026-07-18 — Milestone 1 is committed and the
+worktree was clean before starting confirmation. Production code remains
+untouched while the finalized-unit admission/application boundary and existing
+Byzantine-operation harnesses are inspected.
+
+2026-07-18 — Confirmation harness recorded above. Scope decision: the
+confirmed mechanism is the pure-content variant (operation-local validation
+such as `balance_audit()` aborting whole-unit finalized preparation). The
+finding text also lists stateful apply-time traps (unknown allocation, melt
+saga state, inconsistent on-chain quote) whose ambiguous error types
+(`FederationError`, `InvalidPaymentRequest`, `Internal`, `Custom`) feed the
+same halt boundary. Making those untrusted content errors definitive is a
+separate error-semantics change; it is recorded as discovered bug `DB-001`
+and queued after this milestone rather than folded into this fix.
+
+2026-07-18 — Fix and evaluation complete; milestone kept. Observations during
+the fix: (1) `verify_authorization` already binds claimed observer/proposer
+identity to the envelope author at classification, so no additional identity
+check was needed. (2) Keyset-version and rotation checks must stay out of
+classification because keyset rotation changes the effective configuration
+mid-session; misclassifying them as ambiguous apply errors is part of
+`DB-001`. (3) The journal's retained `balance_audit()?` on the catch-up entry
+path is defense-in-depth: honest journals can no longer contain pure-invalid
+operations, and a forged peer journal fails with a typed catch-up error that
+moves to another source (the milestone-1 audited behavior). (4) Public
+admission does not run `balance_audit()` for mint/melt/swap requests, so an
+honest member can still enqueue a pure-invalid operation that classification
+later rejects; the impact is bounded by the pending-mempool limit and the
+submitter's waiter timeout, and unifying admission with `validate_pure()` was
+left out of scope as non-minimal. (5) The audit's required test "inconsistent
+mint and melt quote operations are rejected without halting" is not covered by
+this milestone; it depends on `DB-001`'s definiteness work. (6) Nine
+pre-existing clippy lints in `crates/cdk` sources fail `-D warnings` with the
+federation feature set; they are unrelated to this change and were left
+untouched. (7) The first green regression version asserted finalized-item
+statuses on members whose apply loop could still lag the Byzantine unit; one
+focused run exposed that race. Assertions now synchronize each member on the
+terminal status of every neighboring operation first, and the next-unit
+submission uses the tolerant pending-timeout helper. Red evidence was
+re-captured against the hardened harness, and all later focused and
+full-suite runs are green.
 
 **Severity:** Critical
 
 **Confidence:** 99% — source-proven and previously reported
 
-**Finding status:** Open, source-proven and previously reported
+**Finding status:** Resolved for the confirmed pure-content mechanism on
+2026-07-18 with red-before-green runtime proof; the remaining stateful
+apply-time definiteness surface is tracked as discovered bug `DB-001`
 
 **Attacker/fault:** One Byzantine member able to place application data in its
 own Aleph unit
@@ -582,15 +780,33 @@ Because all honest members finalize the same item, deterministic content errors
 can halt all of them. This is an application-layer Byzantine-tolerance failure,
 not failed Aleph finality.
 
+The corrected classification now runs every pure, deterministic, operation-local
+check (`FederationOperation::validate_pure()`: per-payload `validate()` rules
+plus `balance_audit()`) when assigning the finalized item status, so untrusted
+pure-invalid contents become a canonical per-item `RejectedInvalidOperation`
+and the containing unit and later units continue. The retained five-member
+regression injects one member-signed balance-overflow operation before a valid
+operation in the same unit plus another valid operation in the next unit, and
+proves per-item rejection, neighboring progress, session survival, journal
+convergence, restart-replay preservation, and peer catch-up reproduction. A
+cdk-common unit test pins the same classification statuses deterministically.
+Deterministic apply-time business failures that still return ambiguous
+`FederationError`, `InvalidPaymentRequest`, `Internal`, or `Custom` (for
+example the chain-observation, on-chain-quote, and melt-saga traps above)
+remain open as `DB-001`.
+
 **Most likely cause when observed:** all members halt at the same accepted
 operation index and that operation is `Failed`, with a chain-observation,
 transaction-policy, balance-audit, `InvalidPaymentRequest`, or saga-state error.
+On a post-fix build a balance-audit or other pure-content payload no longer
+halts; a same-index halt with a stateful apply error indicates `DB-001`.
 
 **Required correction:** run all pure deterministic validation during finalized
 classification; persist a canonical per-item rejection; make untrusted content
 errors definitive; continue with later items. Tests must put an invalid item
 before a valid item in the same unit and another valid item in the next unit,
-then prove live/restart/catch-up convergence.
+then prove live/restart/catch-up convergence. The first two clauses are
+implemented and proven by this milestone; the definiteness clause is `DB-001`.
 
 References: [2026-07-17 security audit](federated-cashu-security-audit-2026-07-17.md#sec-2026-07-17-03--semantically-invalid-finalized-operations-halt-the-session)
 and [July 13 review R2](federated-cashu-security-review-jul-13.md#r2-byzantine-finalized-aleph-unit-can-halt-honest-members).
@@ -1541,7 +1757,7 @@ not currently classified as an open deadlock.
 
 | Symptom | Most likely finding | First evidence to capture |
 |---|---|---|
-| All members halt at the same operation index | 2 (`F2`) | Finalized item, journal application state, exact typed apply error |
+| All members halt at the same operation index | `DB-001` (pre-fix builds: 2 (`F2`)) | Finalized item, journal application state, exact typed apply error |
 | A peer sync rejects an equal-height digest mismatch but the member stays live | Completed 1 (`F1`) | Signed peer statuses from the entire roster at the same frontier; confirm the source enters backoff |
 | A member still halts with `peer ... digest mismatch` | Pre-fix build or regression of 1 (`F1`) | Build/commit identity, signed peer statuses, live-session teardown state |
 | One member halts after an on-chain operation; peers continue | 8 (`F3`) | BDK reconciliation error and local BDK DB state |

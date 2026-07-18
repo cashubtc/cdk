@@ -30,7 +30,7 @@ example demonstrates the claimed behavior.
 | ID | Finding | Initial severity | Confidence | Status | Reproduction evidence |
 |---|---|---:|---:|---|---|
 | R1 | Signed member can impersonate payment observers | Critical | 99% | Pending | — |
-| R2 | Byzantine finalized Aleph unit can halt honest members | High | 99% | Pending | — |
+| R2 | Byzantine finalized Aleph unit can halt honest members | High | 99% | Resolved 2026-07-18 (ledger `F2`); residual apply-time definiteness tracked as `DB-001` | `byzantine_balance_overflow_operation_does_not_halt_finalized_application` |
 | R3 | One member can permanently quarantine arbitrary quotes | High | 97% | Pending | — |
 | R4 | Melt status recovery aggregates unverified BLS shares | Medium | 99% | Pending | — |
 | R5 | Member validation can wait indefinitely | Medium | 98% | Pending | — |
@@ -106,6 +106,18 @@ into a federation-wide availability failure.
 **Required remediation:** Derive proposal identity and ordering metadata from
 the authenticated `OrderedUnit`. Deterministically reject or ignore invalid
 Byzantine application data and continue processing later finalized units.
+
+**Resolution update 2026-07-18:** the structural variant (self-reported unit
+metadata) was corrected earlier by reconstructing payload metadata from the
+authenticated Aleph unit. The semantic variant is now corrected for pure
+operation content: finalized classification runs all pure, deterministic,
+operation-local validation and records untrusted contents as per-item
+`RejectedInvalidOperation` without aborting the containing unit, with
+red-before-green five-member evidence in
+`byzantine_balance_overflow_operation_does_not_halt_finalized_application`
+(milestone `F2` in `docs/federated-cashu-consensus-deadlocks-2026-07-18.md`).
+Deterministic apply-time business failures that still return ambiguous errors
+remain open as discovered bug `DB-001` in that ledger.
 
 ### R3: One Member Can Permanently Quarantine Arbitrary Quotes
 
