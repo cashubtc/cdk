@@ -44,7 +44,7 @@ enabled = false
 #[prometheus]
 #enabled = true
 #address = "127.0.0.1"
-#port = 9090
+#port = 9000
 # 
 [info.http_cache]
 # memory or redis

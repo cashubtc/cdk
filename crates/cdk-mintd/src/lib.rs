@@ -61,6 +61,29 @@ pub mod config;
 pub mod env_vars;
 pub mod setup;
 
+#[cfg(test)]
+pub(crate) mod test_utils {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    pub(crate) fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(crate) fn unique_temp_path(name: &str) -> PathBuf {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        std::env::temp_dir().join(format!(
+            "{name}_{}_{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+}
+
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
@@ -243,6 +266,16 @@ pub async fn get_work_directory(args: &CLIArgs) -> Result<PathBuf> {
 
 /// Loads the application settings based on a configuration file and environment variables.
 pub fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<config::Settings> {
+    let settings = load_settings_from_sources(work_dir, config_path)?;
+    validate_settings(&settings)?;
+
+    Ok(settings)
+}
+
+fn load_settings_from_sources(
+    work_dir: &Path,
+    config_path: Option<PathBuf>,
+) -> Result<config::Settings> {
     // get config file name from args
     let config_file_arg = match config_path {
         Some(c) => c,
@@ -261,13 +294,308 @@ pub fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<co
     settings.from_env()
 }
 
+fn validate_settings(settings: &config::Settings) -> Result<()> {
+    validate_listen_config(settings)?;
+    validate_signing_config(settings)?;
+    validate_lightning_config(settings)?;
+    validate_onchain_config(settings)?;
+    validate_database_config(settings)?;
+    validate_auth_config(settings)?;
+    validate_management_rpc_config(settings)?;
+    validate_prometheus_config(settings)?;
+
+    Ok(())
+}
+
+fn validate_database_config(settings: &config::Settings) -> Result<()> {
+    if settings.database.engine == DatabaseEngine::Postgres {
+        let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+            anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+        })?;
+
+        if pg_config.url.is_empty() {
+            bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_listen_config(settings: &config::Settings) -> Result<()> {
+    format!(
+        "{}:{}",
+        settings.info.listen_host, settings.info.listen_port
+    )
+    .parse::<SocketAddr>()
+    .map_err(|err| {
+        anyhow!(
+            "Invalid mint listen address [info].listen_host/[info].listen_port ({}:{}): {err}",
+            settings.info.listen_host,
+            settings.info.listen_port
+        )
+    })?;
+
+    Ok(())
+}
+
+fn validate_signing_config(settings: &config::Settings) -> Result<()> {
+    const MIN_SEED_BYTES: usize = 32;
+
+    if let Some(signatory) = settings.enabled_signatory() {
+        if signatory.tls_dir.is_none() && !signatory.allow_insecure {
+            bail!(
+                "gRPC signatory TLS is not configured. Set [signatory].tls_dir or \
+                 [signatory].allow_insecure = true to connect without TLS"
+            );
+        }
+
+        return Ok(());
+    }
+
+    let seed = settings.info.seed.as_ref();
+    let mnemonic = settings
+        .info
+        .mnemonic
+        .as_ref()
+        .filter(|value| !value.is_empty());
+
+    if let Some(seed) = seed {
+        if seed.is_empty() {
+            bail!("Seed in [info].seed/CDK_MINTD_SEED must not be empty");
+        }
+        if seed.len() < MIN_SEED_BYTES {
+            bail!(
+                "Seed in [info].seed/CDK_MINTD_SEED is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes",
+                seed.len()
+            );
+        }
+        return Ok(());
+    }
+
+    if let Some(mnemonic) = mnemonic {
+        Mnemonic::from_str(mnemonic).map_err(|err| {
+            anyhow!("Invalid mnemonic in [info].mnemonic/CDK_MINTD_MNEMONIC: {err}")
+        })?;
+        return Ok(());
+    }
+
+    bail!("No signing source configured. Set one of [info].mnemonic/CDK_MINTD_MNEMONIC, [info].seed/CDK_MINTD_SEED, or [signatory] with enabled = true");
+}
+
+fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
+    // No emptiness check here: `from_env` already guarantees at least one
+    // payment backend (Lightning *or* on-chain), so requiring `[[ln]]` here
+    // would wrongly reject valid on-chain-only configs. An empty `ln` simply
+    // skips the loop below.
+    for ln in &settings.ln {
+        if ln.min_mint > ln.max_mint {
+            bail!("Lightning min_mint cannot be greater than max_mint");
+        }
+        if ln.min_melt > ln.max_melt {
+            bail!("Lightning min_melt cannot be greater than max_melt");
+        }
+
+        match ln.ln_backend {
+            LnBackend::None => {}
+            #[cfg(feature = "cln")]
+            LnBackend::Cln => {
+                let default_cln;
+                let cln = match settings.cln.as_ref() {
+                    Some(c) => c,
+                    None => {
+                        default_cln = config::Cln::default();
+                        &default_cln
+                    }
+                };
+                if cln.rpc_path.as_os_str().is_empty() {
+                    bail!("CLN rpc_path must be set via [cln].rpc_path or CDK_MINTD_CLN_RPC_PATH");
+                }
+            }
+            #[cfg(feature = "lnbits")]
+            LnBackend::LNbits => {
+                let default_lnbits;
+                let lnbits = match settings.lnbits.as_ref() {
+                    Some(l) => l,
+                    None => {
+                        default_lnbits = config::LNbits::default();
+                        &default_lnbits
+                    }
+                };
+                if lnbits.admin_api_key.is_empty() {
+                    bail!("LNbits admin_api_key must be set via [lnbits].admin_api_key or CDK_MINTD_LNBITS_ADMIN_API_KEY");
+                }
+                if lnbits.invoice_api_key.is_empty() {
+                    bail!("LNbits invoice_api_key must be set via [lnbits].invoice_api_key or CDK_MINTD_LNBITS_INVOICE_API_KEY");
+                }
+                if lnbits.lnbits_api.is_empty() {
+                    bail!(
+                        "LNbits lnbits_api must be set via [lnbits].lnbits_api or CDK_MINTD_LNBITS_API"
+                    );
+                }
+            }
+            #[cfg(feature = "lnd")]
+            LnBackend::Lnd => {
+                let default_lnd;
+                let lnd = match settings.lnd.as_ref() {
+                    Some(l) => l,
+                    None => {
+                        default_lnd = config::Lnd::default();
+                        &default_lnd
+                    }
+                };
+                if lnd.address.is_empty() {
+                    bail!("LND address must be set via [lnd].address or CDK_MINTD_LND_ADDRESS");
+                }
+                if lnd.cert_file.as_os_str().is_empty() {
+                    bail!(
+                        "LND cert_file must be set via [lnd].cert_file or CDK_MINTD_LND_CERT_FILE"
+                    );
+                }
+                if lnd.macaroon_file.as_os_str().is_empty() {
+                    bail!("LND macaroon_file must be set via [lnd].macaroon_file or CDK_MINTD_LND_MACAROON_FILE");
+                }
+            }
+            #[cfg(feature = "fakewallet")]
+            LnBackend::FakeWallet => {
+                let default_fake_wallet;
+                let fake_wallet = match settings.fake_wallet.as_ref() {
+                    Some(f) => f,
+                    None => {
+                        default_fake_wallet = config::FakeWallet::default();
+                        &default_fake_wallet
+                    }
+                };
+                if fake_wallet.supported_units.is_empty() {
+                    bail!("Fake wallet supported_units must contain at least one unit via [fake_wallet].supported_units or CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS");
+                }
+                if fake_wallet.min_delay_time > fake_wallet.max_delay_time {
+                    bail!("Fake wallet min_delay_time cannot be greater than max_delay_time");
+                }
+            }
+            #[cfg(feature = "grpc-processor")]
+            LnBackend::GrpcProcessor => {
+                let default_grpc_processor;
+                let grpc_processor = match settings.grpc_processor.as_ref() {
+                    Some(g) => g,
+                    None => {
+                        default_grpc_processor = config::GrpcProcessor::default();
+                        &default_grpc_processor
+                    }
+                };
+                if grpc_processor.supported_units.is_empty() {
+                    bail!("gRPC payment processor supported_units must contain at least one unit via [grpc_processor].supported_units or CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS");
+                }
+                if grpc_processor.address.is_empty() {
+                    bail!("gRPC payment processor address must be set via [grpc_processor].address or CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS");
+                }
+            }
+            #[cfg(feature = "ldk-node")]
+            // LDK node has no required-field validation; defaults are usable.
+            LnBackend::LdkNode => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_onchain_config(settings: &config::Settings) -> Result<()> {
+    let Some(onchain) = settings.onchain.as_ref() else {
+        return Ok(());
+    };
+
+    if onchain.min_mint > onchain.max_mint {
+        bail!("On-chain min_mint cannot be greater than max_mint");
+    }
+    if onchain.min_melt > onchain.max_melt {
+        bail!("On-chain min_melt cannot be greater than max_melt");
+    }
+
+    Ok(())
+}
+
+fn validate_auth_config(settings: &config::Settings) -> Result<()> {
+    let Some(auth) = settings.auth.as_ref() else {
+        return Ok(());
+    };
+
+    if auth.openid_discovery.is_empty() {
+        bail!("Auth openid_discovery must be set via [auth].openid_discovery or CDK_MINTD_AUTH_OPENID_DISCOVERY");
+    }
+    if auth.openid_client_id.is_empty() {
+        bail!("Auth openid_client_id must be set via [auth].openid_client_id or CDK_MINTD_AUTH_OPENID_CLIENT_ID");
+    }
+
+    if settings.database.engine == DatabaseEngine::Postgres {
+        let auth_db_config = settings.auth_database.as_ref().ok_or_else(|| {
+            anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database] section or CDK_MINTD_AUTH_POSTGRES_URL")
+        })?;
+        let auth_pg_config = auth_db_config.postgres.as_ref().ok_or_else(|| {
+            anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres] section or CDK_MINTD_AUTH_POSTGRES_URL")
+        })?;
+        if auth_pg_config.url.is_empty() {
+            bail!("Auth database PostgreSQL URL is required. Set [auth_database.postgres].url or CDK_MINTD_AUTH_POSTGRES_URL");
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_management_rpc_config(settings: &config::Settings) -> Result<()> {
+    #[cfg(not(feature = "management-rpc"))]
+    let _ = settings;
+
+    #[cfg(feature = "management-rpc")]
+    if let Some(rpc_settings) = settings.mint_management_rpc.as_ref() {
+        if rpc_settings.enabled {
+            let address = rpc_settings.address.as_deref().unwrap_or("127.0.0.1");
+            let port = rpc_settings.port.unwrap_or(8086);
+            format!("{address}:{port}")
+                .parse::<SocketAddr>()
+                .map_err(|err| {
+                    anyhow!(
+                        "Invalid mint management RPC address [mint_management_rpc].address/[mint_management_rpc].port ({address}:{port}): {err}"
+                    )
+                })?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_prometheus_config(settings: &config::Settings) -> Result<()> {
+    #[cfg(not(feature = "prometheus"))]
+    let _ = settings;
+
+    #[cfg(feature = "prometheus")]
+    if let Some(prometheus_settings) = settings.prometheus.as_ref() {
+        if prometheus_settings.enabled {
+            let address = prometheus_settings
+                .address
+                .as_deref()
+                .unwrap_or("127.0.0.1");
+            let port = prometheus_settings.port.unwrap_or(9000);
+            format!("{address}:{port}")
+                .parse::<SocketAddr>()
+                .map_err(|err| {
+                    anyhow!(
+                        "Invalid Prometheus address [prometheus].address/[prometheus].port ({address}:{port}): {err}"
+                    )
+                })?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Loads settings from command line arguments, environment variables, and optional seed file.
 pub fn load_settings_from_args(work_dir: &Path, args: &CLIArgs) -> Result<config::Settings> {
-    let mut settings = load_settings(work_dir, args.config.clone())?;
+    let mut settings = load_settings_from_sources(work_dir, args.config.clone())?;
 
     if let Some(seed_file) = args.seed_file.as_deref() {
         apply_seed_file(&mut settings, seed_file)?;
     }
+
+    validate_settings(&settings)?;
 
     Ok(settings)
 }
@@ -1235,7 +1563,7 @@ async fn build_mint(
                     .await?,
             ))
             .await?)
-    } else if let Some(seed) = settings.info.seed.clone() {
+    } else if let Some(seed) = settings.info.seed.clone().filter(|seed| !seed.is_empty()) {
         let seed_bytes: Vec<u8> = seed.into();
         Ok(mint_builder.build_with_seed(keystore, &seed_bytes).await?)
     } else if let Some(mnemonic) = settings
@@ -1575,9 +1903,9 @@ async fn start_services_with_shutdown(
                     .unwrap_or("127.0.0.1".to_string());
                 let port = prometheus_settings.port.unwrap_or(9000);
 
-                let address = format!("{}:{}", addr, port)
+                let address = format!("{addr}:{port}")
                     .parse()
-                    .expect("Invalid prometheus address");
+                    .with_context(|| format!("Invalid Prometheus address {addr}:{port}"))?;
 
                 let server = cdk_prometheus::PrometheusBuilder::new()
                     .bind_address(address)
@@ -1933,6 +2261,46 @@ mod tests {
         assert_eq!(settings.info.mnemonic, None);
 
         let _ = fs::remove_file(&seed_file);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn load_settings_from_args_applies_seed_file_before_validation() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+
+        let temp_dir = crate::test_utils::unique_temp_path("seed_file_only_signing");
+        fs::create_dir_all(&temp_dir).expect("temp directory should be created");
+        let config_path = temp_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#,
+        )
+        .expect("config file should be written");
+        let seed_file = temp_dir.join("seed.txt");
+        fs::write(&seed_file, TEST_MNEMONIC).expect("seed file should be written");
+
+        let args = CLIArgs {
+            work_dir: None,
+            #[cfg(feature = "sqlcipher")]
+            password: "test-password".to_string(),
+            config: Some(config_path),
+            seed_file: Some(seed_file),
+            enable_logging: false,
+        };
+
+        let settings = load_settings_from_args(&temp_dir, &args)
+            .expect("seed-file-only signing should pass validation");
+
+        assert_eq!(settings.info.mnemonic.as_deref(), Some(TEST_MNEMONIC));
+        let _ = fs::remove_dir_all(&temp_dir);
+        clear_mintd_env();
     }
 
     #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
@@ -2483,5 +2851,1007 @@ mod tests {
         let methods = extract_supported_payment_methods(&mint_info);
 
         assert_eq!(methods, vec!["bolt11", "bolt12", "paypal"]);
+    }
+
+    fn clear_mintd_env() {
+        for var in [
+            "CDK_MINTD_DATABASE",
+            "CDK_MINTD_DATABASE_URL",
+            "CDK_MINTD_POSTGRES_URL",
+            "CDK_MINTD_POSTGRES_TLS_MODE",
+            "CDK_MINTD_POSTGRES_MAX_CONNECTIONS",
+            "CDK_MINTD_POSTGRES_CONNECTION_TIMEOUT_SECONDS",
+            "CDK_MINTD_SEED",
+            "CDK_MINTD_MNEMONIC",
+            "CDK_MINTD_SIGNATORY_ENABLED",
+            "CDK_MINTD_SIGNATORY_ADDRESS",
+            "CDK_MINTD_SIGNATORY_PORT",
+            "CDK_MINTD_SIGNATORY_TLS_DIR",
+            "CDK_MINTD_SIGNATORY_ALLOW_INSECURE",
+            "CDK_MINTD_LISTEN_HOST",
+            "CDK_MINTD_LISTEN_PORT",
+            "CDK_MINTD_LN_BACKEND",
+            "CDK_MINTD_LN_MIN_MINT",
+            "CDK_MINTD_LN_MAX_MINT",
+            "CDK_MINTD_LN_MIN_MELT",
+            "CDK_MINTD_LN_MAX_MELT",
+            "CDK_MINTD_AUTH_ENABLED",
+            "CDK_MINTD_AUTH_OPENID_DISCOVERY",
+            "CDK_MINTD_AUTH_OPENID_CLIENT_ID",
+            "CDK_MINTD_AUTH_POSTGRES_URL",
+            "CDK_MINTD_AUTH_POSTGRES_TLS_MODE",
+            "CDK_MINTD_AUTH_POSTGRES_MAX_CONNECTIONS",
+            "CDK_MINTD_AUTH_POSTGRES_CONNECTION_TIMEOUT_SECONDS",
+            "CDK_MINTD_CLN_RPC_PATH",
+            "CDK_MINTD_LNBITS_ADMIN_API_KEY",
+            "CDK_MINTD_LNBITS_INVOICE_API_KEY",
+            "CDK_MINTD_LNBITS_API",
+            "CDK_MINTD_LND_ADDRESS",
+            "CDK_MINTD_LND_CERT_FILE",
+            "CDK_MINTD_LND_MACAROON_FILE",
+            "CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS",
+            "CDK_MINTD_FAKE_WALLET_FEE_PERCENT",
+            "CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN",
+            "CDK_MINTD_FAKE_WALLET_MIN_DELAY",
+            "CDK_MINTD_FAKE_WALLET_MAX_DELAY",
+            "CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS",
+            "CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS",
+            "CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT",
+            "CDK_MINTD_PROMETHEUS_ENABLED",
+            "CDK_MINTD_PROMETHEUS_ADDRESS",
+            "CDK_MINTD_PROMETHEUS_PORT",
+            "CDK_MINTD_MINT_MANAGEMENT_ENABLED",
+            "CDK_MINTD_MANAGEMENT_ADDRESS",
+            "CDK_MINTD_MANAGEMENT_PORT",
+        ] {
+            std::env::remove_var(var);
+        }
+    }
+
+    fn load_settings_from_toml(name: &str, config_content: &str) -> Result<config::Settings> {
+        use std::fs;
+
+        let temp_dir = crate::test_utils::unique_temp_path(name);
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let result = load_settings(&temp_dir, Some(config_path));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+
+        result
+    }
+
+    fn assert_load_settings_error(config_content: &str, expected: &str) {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        let err = load_settings_from_toml("cdk_mintd_invalid_config", config_content)
+            .expect_err("Settings should fail validation");
+        assert!(
+            err.to_string().contains(expected),
+            "expected error containing `{expected}`, got `{err}`"
+        );
+    }
+
+    #[cfg(all(feature = "prometheus", feature = "fakewallet"))]
+    #[test]
+    fn test_load_settings_merges_partial_postgres_toml_with_env() {
+        use std::{env, fs};
+
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        env::remove_var(crate::env_vars::DATABASE_URL_ENV_VAR);
+        env::remove_var(crate::env_vars::ENV_POSTGRES_URL);
+        env::remove_var(crate::env_vars::ENV_PROMETHEUS_ENABLED);
+        env::remove_var(crate::env_vars::ENV_PROMETHEUS_ADDRESS);
+        env::remove_var(crate::env_vars::ENV_PROMETHEUS_PORT);
+
+        let postgres_url = "postgresql://user:password@localhost:5432/cdk_mint";
+        env::set_var(crate::env_vars::ENV_POSTGRES_URL, postgres_url);
+
+        let temp_dir = crate::test_utils::unique_temp_path("cdk_mintd_partial_config");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[info]
+mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+[database]
+engine = "postgres"
+
+[database.postgres]
+tls_mode = "require"
+max_connections = 30
+connection_timeout_seconds = 15
+
+[ln]
+ln_backend = "fakewallet"
+
+[prometheus]
+enabled = true
+address = "0.0.0.0"
+port = 9090
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let settings =
+            load_settings(&temp_dir, Some(config_path)).expect("Failed to load settings");
+
+        let postgres = settings
+            .database
+            .postgres
+            .as_ref()
+            .expect("Postgres config should be present");
+        assert_eq!(postgres.url, postgres_url);
+        assert_eq!(postgres.tls_mode.as_deref(), Some("require"));
+
+        let prometheus = settings
+            .prometheus
+            .as_ref()
+            .expect("Prometheus config should be loaded from TOML");
+        assert!(prometheus.enabled);
+        assert_eq!(prometheus.address.as_deref(), Some("0.0.0.0"));
+        assert_eq!(prometheus.port, Some(9090));
+
+        env::remove_var(crate::env_vars::ENV_POSTGRES_URL);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_missing_postgres_url_after_merge() {
+        use std::{env, fs};
+
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        env::remove_var(crate::env_vars::DATABASE_URL_ENV_VAR);
+        env::remove_var(crate::env_vars::ENV_POSTGRES_URL);
+
+        let temp_dir = crate::test_utils::unique_temp_path("cdk_mintd_invalid_config");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[info]
+mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+
+[database]
+engine = "postgres"
+
+[database.postgres]
+tls_mode = "require"
+
+[ln]
+ln_backend = "fakewallet"
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let err = load_settings(&temp_dir, Some(config_path))
+            .expect_err("Settings should fail validation without a Postgres URL");
+        assert!(err.to_string().contains("PostgreSQL URL is required"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_short_seed() {
+        assert_load_settings_error(
+            r#"
+[info]
+seed = "tooshort"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#,
+            "Seed in [info].seed/CDK_MINTD_SEED is too short",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_missing_signing_source() {
+        assert_load_settings_error(
+            r#"
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#,
+            "No signing source configured",
+        );
+    }
+
+    #[test]
+    fn test_load_settings_reports_missing_ln_backend() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+"#
+            ),
+            "At least one payment backend",
+        );
+    }
+
+    #[cfg(feature = "cln")]
+    #[test]
+    fn test_load_settings_reports_missing_cln_rpc_path() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "cln"
+"#
+            ),
+            "CLN rpc_path must be set",
+        );
+    }
+
+    #[cfg(feature = "lnbits")]
+    #[test]
+    fn test_load_settings_reports_missing_lnbits_credentials() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "lnbits"
+"#
+            ),
+            "LNbits admin_api_key must be set",
+        );
+    }
+
+    #[cfg(feature = "lnd")]
+    #[test]
+    fn test_load_settings_reports_missing_lnd_address() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "lnd"
+"#
+            ),
+            "LND address must be set",
+        );
+    }
+
+    #[cfg(feature = "grpc-processor")]
+    #[test]
+    fn test_load_settings_reports_missing_grpc_supported_units() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "grpcprocessor"
+
+[grpc_processor]
+addr = "http://127.0.0.1"
+"#
+            ),
+            "gRPC payment processor supported_units must contain at least one unit",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_invalid_fakewallet_delay_range() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+min_delay_time = 10
+max_delay_time = 1
+"#
+            ),
+            "Fake wallet min_delay_time cannot be greater than max_delay_time",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_missing_auth_openid_config() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+
+[auth]
+auth_enabled = true
+"#
+            ),
+            "Auth openid_discovery must be set",
+        );
+    }
+
+    #[test]
+    fn test_load_settings_reports_toml_parse_errors() {
+        assert_load_settings_error(
+            r#"
+[info
+mnemonic = "not valid toml"
+"#,
+            "Failed to read config file",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_invalid_ln_limit_range() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+min_mint = 10
+max_mint = 1
+"#
+            ),
+            "Lightning min_mint cannot be greater than max_mint",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_merges_partial_onchain_config_with_defaults() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+
+        let settings = load_settings_from_toml(
+            "cdk_mintd_partial_onchain_config",
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[onchain]
+onchain_backend = "fakewallet"
+"#
+            ),
+        )
+        .expect("partial on-chain config should use defaults");
+
+        let onchain = settings.onchain.expect("on-chain config should be present");
+        assert_eq!(onchain.min_mint, 1.into());
+        assert_eq!(onchain.max_mint, 500_000.into());
+        assert_eq!(onchain.min_melt, 1.into());
+        assert_eq!(onchain.max_melt, 500_000.into());
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_invalid_onchain_mint_limit_range() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[onchain]
+onchain_backend = "fakewallet"
+min_mint = 10
+max_mint = 1
+"#
+            ),
+            "On-chain min_mint cannot be greater than max_mint",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_invalid_onchain_melt_limit_range() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[onchain]
+onchain_backend = "fakewallet"
+min_melt = 10
+max_melt = 1
+"#
+            ),
+            "On-chain min_melt cannot be greater than max_melt",
+        );
+    }
+
+    #[cfg(all(feature = "prometheus", feature = "fakewallet"))]
+    #[test]
+    fn test_load_settings_reports_invalid_prometheus_address() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+
+[prometheus]
+enabled = true
+address = "localhost"
+port = 9090
+"#
+            ),
+            "Invalid Prometheus address",
+        );
+    }
+
+    #[cfg(all(feature = "management-rpc", feature = "fakewallet"))]
+    #[test]
+    fn test_load_settings_reports_invalid_management_rpc_address() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+
+[mint_management_rpc]
+enabled = true
+address = "localhost"
+port = 8086
+"#
+            ),
+            "Invalid mint management RPC address",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_valid_config() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        load_settings_from_toml(
+            "cdk_mintd_valid",
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#
+            ),
+        )
+        .expect("valid config should load without error");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_valid_config_with_insecure_signatory() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        load_settings_from_toml(
+            "cdk_mintd_valid_signatory",
+            r#"
+[signatory]
+enabled = true
+allow_insecure = true
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#,
+        )
+        .expect("valid config with an insecure signatory should load without error");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_rejects_signatory_without_tls() {
+        assert_load_settings_error(
+            r#"
+[signatory]
+enabled = true
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#,
+            "gRPC signatory TLS is not configured",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_rejects_empty_seed_before_mnemonic() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+seed = ""
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#
+            ),
+            "Seed in [info].seed/CDK_MINTD_SEED must not be empty",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_invalid_mnemonic() {
+        assert_load_settings_error(
+            r#"
+[info]
+mnemonic = "not a valid mnemonic phrase at all"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#,
+            "Invalid mnemonic",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_invalid_listen_address() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+listen_host = "999.999.999.999"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#
+            ),
+            "Invalid mint listen address",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_missing_auth_openid_client_id() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+
+[auth]
+auth_enabled = true
+openid_discovery = "https://issuer.example.com/.well-known/openid-configuration"
+"#
+            ),
+            "Auth openid_client_id must be set",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_invalid_melt_limit_range() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+min_melt = 10
+max_melt = 1
+"#
+            ),
+            "Lightning min_melt cannot be greater than max_melt",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_missing_fakewallet_supported_units() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+supported_units = []
+"#
+            ),
+            "Fake wallet supported_units must contain at least one unit",
+        );
+    }
+
+    #[cfg(feature = "lnd")]
+    #[test]
+    fn test_load_settings_reports_missing_lnd_cert_file() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "lnd"
+
+[lnd]
+address = "127.0.0.1:10009"
+"#
+            ),
+            "LND cert_file must be set",
+        );
+    }
+
+    #[cfg(feature = "lnd")]
+    #[test]
+    fn test_load_settings_reports_missing_lnd_macaroon_file() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "lnd"
+
+[lnd]
+address = "127.0.0.1:10009"
+cert_file = "/path/to/tls.cert"
+"#
+            ),
+            "LND macaroon_file must be set",
+        );
+    }
+
+    #[cfg(feature = "lnbits")]
+    #[test]
+    fn test_load_settings_reports_missing_lnbits_invoice_api_key() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "lnbits"
+
+[lnbits]
+admin_api_key = "admin123"
+"#
+            ),
+            "LNbits invoice_api_key must be set",
+        );
+    }
+
+    #[cfg(feature = "lnbits")]
+    #[test]
+    fn test_load_settings_reports_missing_lnbits_api_url() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "lnbits"
+
+[lnbits]
+admin_api_key = "admin123"
+invoice_api_key = "inv123"
+"#
+            ),
+            "LNbits lnbits_api must be set",
+        );
+    }
+
+    #[cfg(feature = "grpc-processor")]
+    #[test]
+    fn test_load_settings_reports_missing_grpc_processor_address() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "grpcprocessor"
+
+[grpc_processor]
+supported_units = ["sat"]
+address = ""
+"#
+            ),
+            "gRPC payment processor address must be set",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_load_settings_reports_missing_auth_postgres_url() {
+        assert_load_settings_error(
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "postgres"
+
+[database.postgres]
+url = "postgresql://user:password@localhost:5432/cdk_mint"
+
+[ln]
+ln_backend = "fakewallet"
+
+[auth]
+auth_enabled = true
+openid_discovery = "https://issuer.example.com/.well-known/openid-configuration"
+openid_client_id = "mintd"
+"#
+            ),
+            "Auth database PostgreSQL URL is required",
+        );
+    }
+
+    fn load_settings_with_env(
+        name: &str,
+        config_content: &str,
+        setup_env: impl FnOnce(),
+    ) -> Result<config::Settings> {
+        use std::fs;
+
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+
+        let temp_dir = crate::test_utils::unique_temp_path(name);
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        setup_env();
+
+        let result = load_settings(&temp_dir, Some(config_path));
+        let _ = fs::remove_dir_all(&temp_dir);
+        clear_mintd_env();
+        result
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_env_var_provides_mnemonic_when_toml_has_none() {
+        let settings = load_settings_with_env(
+            "cdk_mintd_env_mnemonic",
+            r#"
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#,
+            || std::env::set_var("CDK_MINTD_MNEMONIC", TEST_MNEMONIC),
+        )
+        .expect("valid config with env mnemonic should load");
+
+        let mnemonic = settings
+            .info
+            .mnemonic
+            .expect("mnemonic should be set from env");
+        assert_eq!(mnemonic, TEST_MNEMONIC);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_env_var_provides_seed_when_toml_has_none() {
+        let seed = "a".repeat(32);
+        let settings = load_settings_with_env(
+            "cdk_mintd_env_seed",
+            r#"
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#,
+            || std::env::set_var("CDK_MINTD_SEED", &seed),
+        )
+        .expect("valid config with env seed should load");
+
+        let loaded_seed = settings.info.seed.expect("seed should be set from env");
+        assert_eq!(loaded_seed, seed);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_env_var_provides_ln_backend_when_toml_has_none() {
+        let settings = load_settings_with_env(
+            "cdk_mintd_env_ln_only",
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+
+[database]
+engine = "sqlite"
+"#
+            ),
+            || {
+                std::env::set_var("CDK_MINTD_LN_BACKEND", "fakewallet");
+                std::env::set_var("CDK_MINTD_LN_MIN_MINT", "10");
+            },
+        )
+        .expect("env-only LN config should load");
+
+        assert_eq!(settings.ln.len(), 1);
+        assert_eq!(settings.ln[0].ln_backend, config::LnBackend::FakeWallet);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_env_var_overrides_toml_listen_host() {
+        let settings = load_settings_with_env(
+            "cdk_mintd_env_override_listen",
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+listen_host = "127.0.0.1"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#
+            ),
+            || std::env::set_var("CDK_MINTD_LISTEN_HOST", "0.0.0.0"),
+        )
+        .expect("config with env override should load");
+
+        assert_eq!(settings.info.listen_host, "0.0.0.0");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_env_var_overrides_toml_listen_port() {
+        let settings = load_settings_with_env(
+            "cdk_mintd_env_override_port",
+            &format!(
+                r#"
+[info]
+mnemonic = "{TEST_MNEMONIC}"
+listen_port = 8080
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+"#
+            ),
+            || std::env::set_var("CDK_MINTD_LISTEN_PORT", "9090"),
+        )
+        .expect("config with env port override should load");
+
+        assert_eq!(settings.info.listen_port, 9090);
     }
 }
