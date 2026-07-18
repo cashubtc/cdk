@@ -3052,7 +3052,7 @@ Root cause (layered):
 
 ## 49. Route terminal FROST on-chain internal melts around pending batching
 
-**Status:** Implemented locally; coordinated deployment pending (2026-07-18)
+**Status:** Completed; deployed and verified on all five members (2026-07-18)
 
 **Detailed write-up:**
 [`docs/federated-cashu-frost-onchain-internal-settlement-halt.md`](federated-cashu-frost-onchain-internal-settlement-halt.md)
@@ -3125,9 +3125,10 @@ operation; it does not heal the deployment.
   rejected fail-closed.
 - [x] Bolt11 internal settlement, standalone mint behavior, and all existing
   finalized-payload halt safety tests remain unchanged.
-- [ ] All five members catch up from the current Nocean databases, replay the
-  failed operation successfully, and report identical journal and materialized
-  digests before public traffic is re-enabled.
+- [x] All five members restarted from the existing Nocean databases, replayed
+  operation 144 from `Failed` to `Applied`, and reported identical journal,
+  order, application, and materialized-state digests before the deployment was
+  declared healthy.
 
 ## Cleanup safety guardrails
 
