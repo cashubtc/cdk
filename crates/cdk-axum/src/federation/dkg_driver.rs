@@ -516,7 +516,7 @@ where
     delivery
 }
 
-async fn wait_for_federation_dkg_readiness<T>(
+pub(crate) async fn wait_for_federation_dkg_readiness<T>(
     client: &FederationRestPeerClient<T>,
     public_config: &FederationConfig,
     request: &FederationDkgReadinessRequest,
@@ -543,7 +543,10 @@ where
     }
 
     Err(cdk::Error::Custom(format!(
-        "federation DKG readiness exhausted after {} attempts with {}/{} members ready",
+        "federation DKG readiness exhausted after {} attempts with {}/{} members ready; \
+         DKG requires all configured roster members to be online and reachable for the \
+         entire ceremony — recover by operator roster reconfiguration and a new ceremony \
+         with a new ceremony id, not by indefinite retry",
         driver_config.max_ticks,
         acknowledged_members.len(),
         public_config.members.len()

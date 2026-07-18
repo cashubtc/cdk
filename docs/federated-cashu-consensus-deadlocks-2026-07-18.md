@@ -52,7 +52,7 @@ is well established but its root cause is not.
 | 4 | `P5` | One member can reorg or quarantine accepted on-chain funds | Critical | 99% | On-chain quote/funds; all on-chain liquidity if repeated | Completed |
 | 5 | `P1` | Accepted melt author has a permanent payment veto | High | 99% | Quote/proofs; malicious or failed author veto | Completed |
 | 6 | `P2` | One backend call or poison quote blocks the single observer worker | High | 99% | All payment repair on one member; quorum loss if shared | Completed |
-| 7 | `S1` | DKG availability is all-member, not Byzantine-threshold | High availability | 99% | Federation setup/key ceremony | Not started |
+| 7 | `S1` | DKG availability is all-member, not Byzantine-threshold | High availability | 99% | Federation setup/key ceremony | Completed |
 | 8 | `F3` | Local BDK reconciliation is inside the fatal apply boundary | High | 98% | Session/member; quorum loss if repeated | Not started |
 | 9 | `W2` | Melt-status recovery lets one invalid share poison an honest threshold | High availability / Medium scope | 98% | Wallet melt recovery | Not started |
 | 10 | `F4` | Apply and backup retries have no terminal budget | High | 97% | Session/member starvation | Not started |
@@ -1632,23 +1632,110 @@ work as recorded in the milestone record.
 
 ### 7. DKG availability is all-member, not Byzantine-threshold (`S1`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with an executed three-member DKG
+harness against the unmodified pre-fix worktree, using the repository's
+authenticated-route driver federation with member 3's route replaced by a
+503 fallback:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-axum --features federation dkg_cannot_complete_while_one_configured_member_withholds -- --nocapture`
 
-**Fix check and evaluation:** Not run
+The run exhibits the reported boundary end to end on the unmodified code:
 
-**Commit subject:** Not assigned
+1. `wait_for_federation_dkg_readiness` (called directly with the mock
+   transport client, `max_ticks: 3`, `retry_delay: 10ms`) returned
+   `federation DKG readiness exhausted after 3 attempts with 2/3 members
+   ready` — the all-member readiness barrier fails boundedly with two of
+   three members acknowledging and one withholding.
+2. The error message carries the counts but no operator remedy; the
+   regression fails at `readiness error must name the operator roster
+   remedy`, because no actionable guidance exists.
+3. Driving every tick for the two online members for four rounds never
+   reached `Complete`, and each tick's progress stalled below the
+   all-member counts (`commitment_count 2 < member_count 3`), confirming the
+   ceremony phases themselves require all configured members.
 
-**Milestone observations:** None yet
+No production code had been edited; only the regression test in
+`crates/cdk-axum/src/federation/tests/dkg_driver.rs` was added
+(`wait_for_federation_dkg_readiness` was made `pub(crate)` so the harness
+could exercise the exact barrier with the mock transport).
+
+**Minimal fix:** The finding's documentation correction, not the
+exclusion/restart protocol (a new consensus-visible roster-change subsystem,
+explicitly not minimal). Two parts: (1) the bounded readiness exhaustion
+error in `crates/cdk-axum/src/federation/dkg_driver.rs` now carries the
+operator remedy — DKG requires all configured roster members for the entire
+ceremony, and recovery is operator roster reconfiguration plus a new
+ceremony with a new ceremony id, not indefinite retry; (2) a new operator
+section "All-member availability is an operator-mediated setup requirement"
+in `docs/federated-cashu-dkg-implementation-plan.md` documenting the
+requirement, why it is inherent to the protocol, the recovery procedure
+(drain failure, agree/sign a replacement roster, fresh ceremony id, no
+roster reuse across ceremonies), and that the signed in-band
+exclusion/restart protocol remains future work. The all-member ceremony
+design is unchanged. `wait_for_federation_dkg_readiness` was made
+`pub(crate)` so the harness exercises the exact barrier.
+
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact
+confirmation scenario. Pre-fix run (recorded above): FAILED at the missing
+remedy guidance while the boundary behavior was demonstrated. Post-fix:
+
+`cargo test -p cdk-axum --features federation dkg_cannot_complete_while_one_configured_member_withholds -- --nocapture`
+
+`1 passed`: the readiness barrier still fails boundedly at `2/3` with no
+completion path for the online members, and the error now names the roster
+remedy. The all-member boundary is pinned as intended behavior, not
+weakened.
+
+Broader evaluation on 2026-07-18:
+
+- `cargo fmt -p cdk-axum -- --check` — clean.
+- `cargo test -p cdk-axum --features federation dkg_` — `57 passed; 0
+  failed`, including the neighboring readiness, restart-at-every-phase,
+  partition-resume, and timeout tests.
+- `cargo test -p cdk-axum --features federation` — `496 passed; 0 failed; 2
+  ignored`.
+- `cargo check -p cdk-axum --no-default-features` — passed; the changed
+  code is entirely federation-gated.
+
+Not run: a live multi-process DKG ceremony (the accepted harness drives the
+real readiness barrier and tick state machine over authenticated routes;
+the finding's confidence was already source-proven and the correction is
+documentation plus error text).
+
+**Commit subject:** `fix: surface all-member DKG roster remedy in readiness errors`
+
+**Milestone observations:** 2026-07-18 — Milestone 6 is committed
+(`a105c4582`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the DKG readiness gate, ceremony
+state machine, and exhaustion behavior are inspected.
+
+2026-07-18 — Confirmation recorded above. Correction choice: the finding
+explicitly offers two corrections — document the all-member requirement as
+an operator-mediated setup requirement with roster reconfiguration, or
+implement a signed exclusion/restart protocol. The exclusion/restart
+protocol is a new consensus-visible roster-change subsystem and is not a
+minimal fix; the documentation-plus-actionable-error correction is attempted
+first, as the finding allows. The all-member ceremony design itself is
+retained (a DKG cannot produce a member's key share without that member's
+contribution, so the boundary is inherent to the protocol, not an
+implementation accident).
+
+2026-07-18 — Fix and evaluation complete; milestone kept. The production
+`run_federation_dkg_driver` builds its own real network transport, so the
+harness drives `wait_for_federation_dkg_readiness` directly with the mock
+transport client (newly `pub(crate)`) and the tick loop through the existing
+driver-federation harness. The pinned regression now guards both the
+bounded all-member failure and the presence of the operator remedy.
 
 **Severity:** High availability
 
 **Confidence:** 99% — source-proven design limitation
 
-**Finding status:** Open design limitation, source-proven
+**Finding status:** Addressed as documented operator requirement on
+2026-07-18 with runtime confirmation; the signed exclusion/restart protocol
+remains future work as recorded in the milestone record
 
 **Attacker/fault:** Any one offline or Byzantine configured member
 
@@ -1669,10 +1756,20 @@ setup or a required new ceremony cannot complete while one member withholds.
 That is an explicit `n-of-n` availability boundary inside a system otherwise
 designed to tolerate `f` faults.
 
+The boundary is now confirmed by an executed harness and documented as an
+operator-mediated setup requirement: the bounded readiness exhaustion error
+names the remedy (operator roster reconfiguration plus a fresh ceremony id,
+not indefinite retry), and
+`docs/federated-cashu-dkg-implementation-plan.md` carries the operational
+requirement and recovery procedure. The signed in-band exclusion/restart
+protocol remains future work; the retained regression pins both the bounded
+all-member failure and the presence of the remedy.
+
 **Required correction/design decision:** either document all-member DKG as an
 operator-mediated setup requirement with roster reconfiguration, or implement
 an exclusion/restart protocol whose final roster and threshold are agreed and
-signed before activation.
+signed before activation. The first option is implemented and proven by this
+milestone; the second remains future work.
 
 ### 8. Local BDK reconciliation is inside the fatal apply boundary (`F3`)
 

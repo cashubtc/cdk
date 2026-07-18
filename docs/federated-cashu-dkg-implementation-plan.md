@@ -92,6 +92,42 @@ The first production DKG should use an abort-on-valid-complaint policy:
 
 Disqualifying bad dealers and continuing with a reduced participant set is a later enhancement. It complicates config semantics, threshold assumptions, and auditability. The first CDK version should favor a clean abort over ambiguous recovery.
 
+### All-member availability is an operator-mediated setup requirement
+
+The ceremony is `n-of-n` by design: every configured roster member must be
+online and mutually reachable for the entire ceremony. The all-member
+readiness barrier fails boundedly when any configured member withholds
+(`federation DKG readiness exhausted after N attempts with X/Y members
+ready`), and every ceremony phase — commitments, reveals, secret shares,
+transcript signatures, and activations — requires all configured members.
+This is inherent to the protocol, not an implementation accident: a member's
+key share cannot be produced without that member's contribution, so a
+`t-of-n` fault-tolerant federation still needs `n-of-n` availability during
+setup.
+
+Operators must not treat a stuck ceremony as retryable forever. When a
+member is permanently unavailable:
+
+1. Drain the failure from the bounded readiness/tick errors and per-member
+   progress (`commitment/reveal/share/signature/activation counts` below the
+   roster size).
+2. Reconfigure the roster out-of-band: all remaining operators agree on a
+   replacement public config whose `members` list excludes or replaces the
+   failed member, with thresholds sized for the new roster.
+3. Distribute and sign the new roster per the normal config process, then
+   run a **new** ceremony with a **new ceremony id** and fresh participant
+   state. Never re-run the stuck ceremony id against a silently changed
+   roster: config, transcript, and roster mismatches must keep failing
+   closed.
+4. Keep the failed member's prior DKG artifacts only for incident analysis;
+   they are never reused across rosters.
+
+A signed in-band exclusion/restart protocol (the remaining members agree
+and sign a reduced roster before activation) remains future work tracked as
+finding `S1` in `docs/federated-cashu-consensus-deadlocks-2026-07-18.md`.
+Until it exists, roster reconfiguration followed by a fresh ceremony is the
+only supported recovery from a permanently unavailable DKG member.
+
 ## DKG data model
 
 Add a new feature-gated module, preferably under `crates/cdk-common/src/federation/dkg/`, with narrowly scoped types:

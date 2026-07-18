@@ -343,6 +343,80 @@ async fn dkg_driver_completes_over_authenticated_member_routes() {
 }
 
 #[tokio::test]
+async fn dkg_cannot_complete_while_one_configured_member_withholds() {
+    let federation = DkgDriverTestFederation::new().await;
+
+    // Take member 3 offline: its peers cannot reach it and its own
+    // contributions never flow.
+    let third_member = federation
+        .public_config
+        .member(member_id(3))
+        .expect("third member");
+    federation.transport.insert(
+        third_member.federation_api_url.clone(),
+        Router::new().fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+    );
+
+    // The all-member readiness barrier must exhaust with a bounded error
+    // that tells the operator why the ceremony cannot start and what the
+    // recovery path is.
+    let readiness = FederationDkgReadinessRequest::new(
+        federation.public_config.federation_id,
+        federation.ceremony_id,
+        federation.keyset_spec.clone(),
+    );
+    let readiness_outcome = super::super::dkg_driver::wait_for_federation_dkg_readiness(
+        &federation.members[0].client,
+        &federation.public_config,
+        &readiness,
+        FederationDkgDriverRunConfig {
+            max_ticks: 3,
+            retry_delay: std::time::Duration::from_millis(10),
+            ..FederationDkgDriverRunConfig::default()
+        },
+    )
+    .await;
+    let readiness_err =
+        readiness_outcome.expect_err("one withholding member must fail the readiness barrier");
+    let readiness_message = readiness_err.to_string();
+    assert!(
+        readiness_message.contains("exhausted") && readiness_message.contains("2/3"),
+        "readiness error must report the bounded member counts: {readiness_message}"
+    );
+    assert!(
+        readiness_message.contains("roster"),
+        "readiness error must name the operator roster remedy: {readiness_message}"
+    );
+
+    // Even with the online members driving every tick, no member may reach
+    // Complete while any configured member withholds, and progress must
+    // stall below the all-member counts.
+    for _ in 0..4 {
+        for member in &federation.members[..2] {
+            let mut delivery_tracker = member.delivery_tracker.lock().await;
+            let outcome = run_federation_dkg_driver_tick(
+                &member.state,
+                &member.client,
+                &member.participant,
+                FederationDkgSecretShareTransportPolicy::RequireHttps,
+                &mut delivery_tracker,
+            )
+            .await
+            .expect("DKG driver tick");
+            assert!(
+                !outcome.is_complete(),
+                "ceremony must not complete while a configured member withholds"
+            );
+            let progress = outcome.progress;
+            assert!(
+                progress.commitment_count < progress.member_count,
+                "progress must stall below the all-member counts: {progress:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn dkg_finalized_config_cache_is_seeded_by_driver_and_reused() {
     let federation = DkgDriverTestFederation::new().await;
     let state = &federation.members[0].state;
