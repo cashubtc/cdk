@@ -105,8 +105,15 @@ key share cannot be produced without that member's contribution, so a
 `t-of-n` fault-tolerant federation still needs `n-of-n` availability during
 setup.
 
-Operators must not treat a stuck ceremony as retryable forever. When a
-member is permanently unavailable:
+Operators must not treat a stuck ceremony as retryable forever. The driver
+runs every ceremony inside a bounded budget (`max_ticks`, `retry_delay`,
+and an overall `ceremony_timeout` — generous by default in production,
+small in tests). When one or more members become unavailable mid-ceremony,
+each remaining member's driver aborts after the timeout and logs a clean
+error naming the phase and the members it is still waiting on
+(`federation DKG ceremony <id> aborted after <t>s in phase <P> without
+completion (still waiting on member(s): …)`). When a member is permanently
+unavailable:
 
 1. Drain the failure from the bounded readiness/tick errors and per-member
    progress (`commitment/reveal/share/signature/activation counts` below the

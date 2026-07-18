@@ -53,7 +53,7 @@ is well established but its root cause is not.
 | 5 | `P1` | Accepted melt author has a permanent payment veto | High | 99% | Quote/proofs; malicious or failed author veto | Completed |
 | 6 | `P2` | One backend call or poison quote blocks the single observer worker | High | 99% | All payment repair on one member; quorum loss if shared | Completed |
 | 7 | `S1` | DKG availability is all-member, not Byzantine-threshold | High availability | 99% | Federation setup/key ceremony | Completed |
-| 8 | `F3` | Local BDK reconciliation is inside the fatal apply boundary | High | 98% | Session/member; quorum loss if repeated | Not started |
+| 8 | `F3` | Local BDK reconciliation is inside the fatal apply boundary | High | 98% | Session/member; quorum loss if repeated | Confirming |
 | 9 | `W2` | Melt-status recovery lets one invalid share poison an honest threshold | High availability / Medium scope | 98% | Wallet melt recovery | Not started |
 | 10 | `F4` | Apply and backup retries have no terminal budget | High | 97% | Session/member starvation | Not started |
 | 11 | `P3` | Exact evidence quorum is not backed by an enforced evidence model | High | 97% | Quote/proofs | Not started |
@@ -1729,6 +1729,20 @@ transport client (newly `pub(crate)`) and the tick loop through the existing
 driver-federation harness. The pinned regression now guards both the
 bounded all-member failure and the presence of the operator remedy.
 
+2026-07-18 — Follow-up to the same finding: mid-ceremony member loss now
+aborts the other members' drivers with a bounded, actionable timeout. The
+run config gained an overall `ceremony_timeout` (600s production default,
+small values in tests), and ending the bounded tick loop without completion
+now returns an error naming the phase and the members still awaited
+(`missing_federation_dkg_members_for_phase`) with the roster remedy,
+logged as a clean abort, instead of returning an ambiguous incomplete
+outcome. The loop was extracted into
+`run_federation_dkg_driver_loop_with_client` so the harness drives it with
+the mock transport;
+`dkg_mid_ceremony_member_loss_aborts_others_with_timeout_naming_missing_members`
+pins the abort with a 100ms test timeout. The all-member requirement and
+the documented recovery procedure are unchanged.
+
 **Severity:** High availability
 
 **Confidence:** 99% — source-proven design limitation
@@ -1773,7 +1787,7 @@ milestone; the second remains future work.
 
 ### 8. Local BDK reconciliation is inside the fatal apply boundary (`F3`)
 
-**Milestone status:** Not started
+**Milestone status:** Confirming
 
 **Confirmation:** Pending
 
@@ -1783,7 +1797,10 @@ milestone; the second remains future work.
 
 **Commit subject:** Not assigned
 
-**Milestone observations:** None yet
+**Milestone observations:** 2026-07-18 — Milestone 7 is committed
+(`16d8e3842`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the reconciliation call sites,
+error erasure, and startup recovery shape are inspected.
 
 **Severity:** High
 

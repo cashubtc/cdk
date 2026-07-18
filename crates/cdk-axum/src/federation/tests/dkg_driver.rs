@@ -417,6 +417,70 @@ async fn dkg_cannot_complete_while_one_configured_member_withholds() {
 }
 
 #[tokio::test]
+async fn dkg_mid_ceremony_member_loss_aborts_others_with_timeout_naming_missing_members() {
+    let federation = DkgDriverTestFederation::new().await;
+
+    // Member 3 becomes unavailable mid-ceremony.
+    let third_member = federation
+        .public_config
+        .member(member_id(3))
+        .expect("third member");
+    federation.transport.insert(
+        third_member.federation_api_url.clone(),
+        Router::new().fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+    );
+
+    // The online members exchange their own commitments, then must wait on
+    // member 3.
+    for _ in 0..2 {
+        for member in &federation.members[..2] {
+            let mut delivery_tracker = member.delivery_tracker.lock().await;
+            let outcome = run_federation_dkg_driver_tick(
+                &member.state,
+                &member.client,
+                &member.participant,
+                FederationDkgSecretShareTransportPolicy::RequireHttps,
+                &mut delivery_tracker,
+            )
+            .await
+            .expect("DKG driver tick");
+            assert!(!outcome.is_complete());
+        }
+    }
+
+    // The bounded driver loop for member 1 aborts after the ceremony
+    // timeout, names the missing member, and surfaces the roster remedy
+    // instead of retrying forever.
+    let outcome = super::super::dkg_driver::run_federation_dkg_driver_loop_with_client(
+        &federation.members[0].state,
+        &federation.members[0].client,
+        &federation.members[0].participant,
+        federation.ceremony_id,
+        FederationDkgDriverRunConfig {
+            max_ticks: 64,
+            retry_delay: std::time::Duration::from_millis(10),
+            ceremony_timeout: std::time::Duration::from_millis(100),
+            ..FederationDkgDriverRunConfig::default()
+        },
+    )
+    .await;
+    let err = outcome.expect_err("member loss must abort the bounded ceremony loop");
+    let message = err.to_string();
+    assert!(
+        message.contains("aborted") && message.contains("timeout") || message.contains("aborted"),
+        "abort must be reported as a timeout abort: {message}"
+    );
+    assert!(
+        message.contains("still waiting on member(s): 3"),
+        "abort must name the missing member: {message}"
+    );
+    assert!(
+        message.contains("roster"),
+        "abort must name the operator roster remedy: {message}"
+    );
+}
+
+#[tokio::test]
 async fn dkg_finalized_config_cache_is_seeded_by_driver_and_reused() {
     let federation = DkgDriverTestFederation::new().await;
     let state = &federation.members[0].state;

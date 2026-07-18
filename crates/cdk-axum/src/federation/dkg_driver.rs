@@ -69,6 +69,15 @@ pub struct FederationDkgDriverRunConfig {
     pub max_ticks: usize,
     /// Delay between incomplete ticks.
     pub retry_delay: Duration,
+    /// Overall time budget for one ceremony driver run.
+    ///
+    /// DKG requires all configured roster members for the entire ceremony.
+    /// When one or more members become unavailable mid-ceremony, the driver
+    /// aborts once this budget elapses and reports the members it is still
+    /// waiting on, instead of occupying the member with unbounded retry.
+    /// Production deployments should keep this generous enough for slow
+    /// networks; tests should choose small values.
+    pub ceremony_timeout: Duration,
     /// Confidentiality policy applied before any ceremony message is sent.
     pub secret_share_transport: FederationDkgSecretShareTransportPolicy,
     /// Number of authenticated DKG requests one member may burst per receiver.
@@ -82,6 +91,7 @@ impl Default for FederationDkgDriverRunConfig {
         Self {
             max_ticks: 64,
             retry_delay: Duration::from_secs(1),
+            ceremony_timeout: Duration::from_secs(600),
             secret_share_transport: FederationDkgSecretShareTransportPolicy::RequireHttps,
             member_request_burst: 16,
             member_request_refill_interval: Duration::from_millis(250),
@@ -140,6 +150,11 @@ impl FederationDkgDriverRunConfig {
         if self.retry_delay.is_zero() {
             return Err(cdk::Error::Custom(
                 "federation DKG driver retry delay must be greater than zero".to_string(),
+            ));
+        }
+        if self.ceremony_timeout.is_zero() {
+            return Err(cdk::Error::Custom(
+                "federation DKG driver ceremony timeout must be greater than zero".to_string(),
             ));
         }
         if !(1..=64).contains(&self.member_request_burst) {
@@ -514,6 +529,120 @@ where
     let acknowledged = record_delivery_results("readiness", results, &mut delivery);
     acknowledged_members.extend(acknowledged);
     delivery
+}
+
+/// Return the roster members whose artifacts are still missing for one DKG
+/// phase, so a timed-out ceremony can name who it is waiting on.
+async fn missing_federation_dkg_members_for_phase(
+    state: &MintState,
+    ceremony_id: FederationDkgCeremonyId,
+    phase: FederationDkgDriverPhase,
+) -> Result<Vec<MemberId>, cdk::Error> {
+    let runtime_config = state.mint.federation_config().ok_or_else(|| {
+        cdk::Error::Custom("federation mint is missing its runtime config".to_string())
+    })?;
+    let members: Vec<MemberId> = runtime_config
+        .public_config()
+        .members
+        .keys()
+        .copied()
+        .collect();
+    let local_member = runtime_config.member_id();
+    let db = state.mint.localstore();
+    let missing = match phase {
+        FederationDkgDriverPhase::Commitment => {
+            let records = db.get_federation_dkg_commitments().await?;
+            members
+                .into_iter()
+                .filter(|member| {
+                    !records.iter().any(|record| {
+                        record.ceremony_id == ceremony_id && record.member_id == *member
+                    })
+                })
+                .collect()
+        }
+        FederationDkgDriverPhase::Reveal => {
+            let records = db.get_federation_dkg_reveals().await?;
+            members
+                .into_iter()
+                .filter(|member| {
+                    !records.iter().any(|record| {
+                        record.ceremony_id == ceremony_id && record.member_id == *member
+                    })
+                })
+                .collect()
+        }
+        FederationDkgDriverPhase::SecretShares => {
+            let records = db.get_federation_dkg_secret_share_contributions().await?;
+            members
+                .into_iter()
+                .filter(|member| {
+                    !records.iter().any(|record| {
+                        record.ceremony_id == ceremony_id
+                            && record.sender == *member
+                            && record.receiver == local_member
+                    })
+                })
+                .collect()
+        }
+        FederationDkgDriverPhase::TranscriptSignature => {
+            let records = db.get_federation_dkg_transcript_signatures().await?;
+            members
+                .into_iter()
+                .filter(|member| !records.iter().any(|record| record.signer == *member))
+                .collect()
+        }
+        FederationDkgDriverPhase::Activation => {
+            let records = db.get_federation_dkg_activations().await?;
+            members
+                .into_iter()
+                .filter(|member| {
+                    !records
+                        .iter()
+                        .any(|record| record.ceremony_id == ceremony_id && record.signer == *member)
+                })
+                .collect()
+        }
+        FederationDkgDriverPhase::FrostRound1 => {
+            let records = db.get_federation_frost_dkg_round1().await?;
+            members
+                .into_iter()
+                .filter(|member| {
+                    !records.iter().any(|record| {
+                        record.context.ceremony_id == ceremony_id && record.sender == *member
+                    })
+                })
+                .collect()
+        }
+        FederationDkgDriverPhase::FrostRound2 => {
+            let records = db.get_federation_frost_dkg_round2().await?;
+            members
+                .into_iter()
+                .filter(|member| {
+                    !records.iter().any(|record| {
+                        record.context.ceremony_id == ceremony_id
+                            && record.sender == *member
+                            && record.receiver == local_member
+                    })
+                })
+                .collect()
+        }
+        FederationDkgDriverPhase::FrostConfirmation => {
+            let records = db.get_federation_frost_dkg_confirmations().await?;
+            members
+                .into_iter()
+                .filter(|member| {
+                    !records.iter().any(|record| {
+                        record.context.ceremony_id == ceremony_id && record.member_id == *member
+                    })
+                })
+                .collect()
+        }
+        FederationDkgDriverPhase::LocalKeysetShare | FederationDkgDriverPhase::Complete => {
+            Vec::new()
+        }
+    };
+    Ok(missing)
 }
 
 pub(crate) async fn wait_for_federation_dkg_readiness<T>(
@@ -1261,12 +1390,43 @@ pub async fn run_federation_dkg_driver(
     let participant =
         prepare_federation_dkg_participant_state(state, ceremony_id, keyset_spec).await?;
 
-    let mut plan_cache = None;
-    let mut delivery_tracker = FederationDkgDeliveryTracker::default();
-    let mut last_tick = run_federation_dkg_driver_tick_with_cache(
+    run_federation_dkg_driver_loop_with_client(
         state,
         &client,
         &participant,
+        ceremony_id,
+        driver_config,
+    )
+    .await
+}
+
+/// Run the bounded DKG tick loop with an injected authenticated client.
+///
+/// DKG requires all configured roster members for the entire ceremony: the
+/// loop stops after `max_ticks` or `ceremony_timeout`, and ending without
+/// completion aborts with an error naming the members it is still waiting
+/// on plus the roster-reconfiguration remedy.
+pub(crate) async fn run_federation_dkg_driver_loop_with_client<T>(
+    state: &MintState,
+    client: &FederationRestPeerClient<T>,
+    participant: &ValidatedFederationDkgParticipantState,
+    ceremony_id: FederationDkgCeremonyId,
+    driver_config: FederationDkgDriverRunConfig,
+) -> Result<FederationDkgDriverRunOutcome, cdk::Error>
+where
+    T: Transport,
+{
+    let runtime_config = state.mint.federation_config().ok_or_else(|| {
+        cdk::Error::Custom("federation mint is missing its runtime config".to_string())
+    })?;
+    let local_member = runtime_config.member_id();
+    let mut plan_cache = None;
+    let mut delivery_tracker = FederationDkgDeliveryTracker::default();
+    let ceremony_started_at = tokio::time::Instant::now();
+    let mut last_tick = run_federation_dkg_driver_tick_with_cache(
+        state,
+        client,
+        participant,
         driver_config.secret_share_transport,
         &mut plan_cache,
         &mut delivery_tracker,
@@ -1276,7 +1436,10 @@ pub async fn run_federation_dkg_driver(
     let mut delivery_totals = FederationDkgDeliveryTotals::default();
     delivery_totals.record(&last_tick);
     trace_federation_dkg_driver_tick(local_member, &ceremony_id, ticks, &last_tick);
-    while !last_tick.is_complete() && ticks < driver_config.max_ticks {
+    while !last_tick.is_complete()
+        && ticks < driver_config.max_ticks
+        && ceremony_started_at.elapsed() < driver_config.ceremony_timeout
+    {
         tokio::time::sleep(driver_config.retry_delay).await;
         last_tick = run_federation_dkg_driver_tick_with_cache(
             state,
@@ -1294,15 +1457,50 @@ pub async fn run_federation_dkg_driver(
 
     if last_tick.is_complete() {
         complete_federation_dkg_ceremony(state, ceremony_id).await?;
+        return Ok(FederationDkgDriverRunOutcome {
+            ticks,
+            attempted_deliveries: delivery_totals.attempted,
+            successful_deliveries: delivery_totals.successful,
+            failed_deliveries: delivery_totals.failed,
+            last_tick,
+        });
     }
 
-    Ok(FederationDkgDriverRunOutcome {
+    // DKG requires all configured roster members for the entire ceremony.
+    // A bounded run that ends without completion must name the members the
+    // ceremony is still waiting on so the operator can reconfigure the
+    // roster instead of retrying forever.
+    let missing_members =
+        missing_federation_dkg_members_for_phase(state, ceremony_id, last_tick.phase_after).await?;
+    let elapsed = ceremony_started_at.elapsed();
+    let missing_display = missing_members
+        .iter()
+        .map(MemberId::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let abort_reason = if missing_members.is_empty() {
+        "no outstanding member artifacts (delivery in flight)".to_string()
+    } else {
+        format!("still waiting on member(s): {missing_display}")
+    };
+    let abort_message = format!(
+        "federation DKG ceremony {ceremony_id} aborted after {:.1}s in phase {:?} without \
+         completion ({abort_reason}); DKG requires all configured roster members for the \
+         entire ceremony — recover by operator roster reconfiguration and a new ceremony \
+         with a new ceremony id, not by indefinite retry",
+        elapsed.as_secs_f64(),
+        last_tick.phase_after,
+    );
+    tracing::error!(
+        member_id = %local_member,
+        %ceremony_id,
+        phase = ?last_tick.phase_after,
+        missing_members = %missing_display,
         ticks,
-        attempted_deliveries: delivery_totals.attempted,
-        successful_deliveries: delivery_totals.successful,
-        failed_deliveries: delivery_totals.failed,
-        last_tick,
-    })
+        "Federation DKG ceremony aborted: {}",
+        abort_message
+    );
+    Err(cdk::Error::Custom(abort_message))
 }
 
 pub(crate) fn spawn_federation_dkg_driver(
