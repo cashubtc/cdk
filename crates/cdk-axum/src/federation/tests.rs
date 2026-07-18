@@ -26458,3 +26458,171 @@ async fn private_journal_route_rejects_wrong_message_kind_before_sequence_persis
         "wrong-kind catch-up requests must not persist the sender sequence"
     );
 }
+
+fn melt_quote_operation_with_lookup_id(
+    config: &cdk::mint::FederationRuntimeConfig,
+    quote: QuoteId,
+    request: cdk::MeltQuoteRequest,
+    request_lookup_id: cdk::cdk_payment::PaymentIdentifier,
+) -> FederationOperationEnvelope {
+    let cdk::MeltQuoteRequest::Bolt11(bolt11) = &request else {
+        panic!("federation route tests only construct bolt11 melt quotes");
+    };
+    let response = cdk::MeltQuoteCreateResponse::Bolt11(MeltQuoteBolt11Response {
+        quote: quote.clone(),
+        amount: Amount::from(
+            bolt11
+                .request
+                .amount_milli_satoshis()
+                .unwrap_or(1_000)
+                .div_ceil(1_000),
+        ),
+        fee_reserve: Amount::from(1),
+        state: MeltQuoteState::Unpaid,
+        expiry: 4_000_000_000,
+        payment_preimage: None,
+        change: None,
+        request: Some(bolt11.request.to_string()),
+        unit: Some(bolt11.unit.clone()),
+        method: PaymentMethod::Known(KnownMethod::Bolt11),
+    });
+    config.melt_quote_operation(
+        quote,
+        request,
+        response,
+        cdk::federation::FederationMeltQuoteMetadata {
+            request_lookup_id: Some(request_lookup_id),
+            extra_json: None,
+            estimated_blocks: None,
+        },
+    )
+}
+
+async fn submit_observer_test_melt(
+    state: &MintState,
+    description: FakeInvoiceDescription,
+    label: &str,
+) {
+    let quote_id = QuoteId::new();
+    let request = cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+        request: create_fake_invoice(
+            1_000,
+            serde_json::to_string(&description).expect("description"),
+        ),
+        unit: CurrencyUnit::Sat,
+        options: None,
+    });
+    let cdk::MeltQuoteRequest::Bolt11(bolt11) = &request else {
+        panic!("bolt11 request");
+    };
+    let request_lookup_id =
+        cdk::cdk_payment::PaymentIdentifier::PaymentHash(*bolt11.request.payment_hash().as_ref());
+    let config = state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    let quote_envelope =
+        melt_quote_operation_with_lookup_id(&config, quote_id.clone(), request, request_lookup_id);
+    state
+        .submit_federation_envelope(quote_envelope)
+        .await
+        .expect("submit melt quote");
+
+    let proofs = vec![
+        proof_for_amount(state, 1, &format!("{label}-one")),
+        proof_for_amount(state, 1, &format!("{label}-two")),
+    ];
+    let melt_envelope = config
+        .melt_operation(cdk::nuts::MeltRequest::new(quote_id, proofs, None))
+        .expect("melt operation");
+    state
+        .submit_federation_envelope(melt_envelope)
+        .await
+        .expect("submit melt");
+}
+
+#[tokio::test]
+async fn poisoned_melt_quote_cannot_starve_observer_round() {
+    let (state, _, _) = federation_route_state().await;
+
+    // The first quote's backend rejects every attempt and every status check.
+    submit_observer_test_melt(
+        &state,
+        FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Paid,
+            check_payment_state: MeltQuoteState::Paid,
+            pay_err: true,
+            check_err: true,
+        },
+        "poisoned",
+    )
+    .await;
+    // The second quote's backend settles normally.
+    submit_observer_test_melt(
+        &state,
+        FakeInvoiceDescription {
+            pay_invoice_state: MeltQuoteState::Paid,
+            check_payment_state: MeltQuoteState::Paid,
+            pay_err: false,
+            check_err: false,
+        },
+        "healthy",
+    )
+    .await;
+
+    let pending_quotes = state
+        .mint
+        .localstore()
+        .get_melt_quotes()
+        .await
+        .expect("melt quotes")
+        .into_iter()
+        .filter(|quote| quote.state == MeltQuoteState::Pending)
+        .map(|quote| quote.id)
+        .collect::<Vec<_>>();
+    assert_eq!(pending_quotes.len(), 2);
+    let poisoned_quote = pending_quotes[0].clone();
+    let healthy_quote = pending_quotes[1].clone();
+
+    // The single sequential observer worker must isolate the poisoned quote
+    // and still observe the healthy one; the poisoned quote must remain
+    // pending rather than being translated into a terminal failure.
+    let observer = super::payment_observation::FederationPaymentObserver::default();
+    let submitted = observer
+        .run_round(&state)
+        .await
+        .expect("poisoned quote must not abort the observer round");
+    assert!(submitted >= 1, "healthy quote must be observed");
+
+    let healthy_observations = state
+        .mint
+        .localstore()
+        .get_federation_payment_observations(
+            cdk::federation::FederationPaymentObservationContext::MeltQuote,
+            &healthy_quote.to_string(),
+        )
+        .await
+        .expect("healthy observation rows");
+    assert!(
+        healthy_observations.iter().any(|record| matches!(
+            &record.observation,
+            cdk::federation::FederationPaymentObservation::MeltQuote(observation)
+                if observation.state == MeltQuoteState::Paid
+        )),
+        "healthy quote must have a paid observation"
+    );
+
+    let poisoned_after = state
+        .mint
+        .localstore()
+        .get_melt_quote(&poisoned_quote)
+        .await
+        .expect("poisoned quote lookup")
+        .expect("poisoned quote");
+    assert_eq!(
+        poisoned_after.state,
+        MeltQuoteState::Pending,
+        "the poisoned quote must remain pending, never a terminal failure"
+    );
+}

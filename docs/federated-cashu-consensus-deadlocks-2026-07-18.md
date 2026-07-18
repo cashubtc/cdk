@@ -51,7 +51,7 @@ is well established but its root cause is not.
 | 3 | `P4` | Recovery-critical outgoing lookup ID is persisted after the side effect | Critical safety / High liveness | 99% | Quote/proofs and possible external-payment double spend | Completed |
 | 4 | `P5` | One member can reorg or quarantine accepted on-chain funds | Critical | 99% | On-chain quote/funds; all on-chain liquidity if repeated | Completed |
 | 5 | `P1` | Accepted melt author has a permanent payment veto | High | 99% | Quote/proofs; malicious or failed author veto | Completed |
-| 6 | `P2` | One backend call or poison quote blocks the single observer worker | High | 99% | All payment repair on one member; quorum loss if shared | Not started |
+| 6 | `P2` | One backend call or poison quote blocks the single observer worker | High | 99% | All payment repair on one member; quorum loss if shared | Completed |
 | 7 | `S1` | DKG availability is all-member, not Byzantine-threshold | High availability | 99% | Federation setup/key ceremony | Not started |
 | 8 | `F3` | Local BDK reconciliation is inside the fatal apply boundary | High | 98% | Session/member; quorum loss if repeated | Not started |
 | 9 | `W2` | Melt-status recovery lets one invalid share poison an honest threshold | High availability / Medium scope | 98% | Wallet melt recovery | Not started |
@@ -1468,23 +1468,113 @@ matches on the payment id and the quote finalizes once.
 
 ### 6. One backend call or poison quote blocks the single observer worker (`P2`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with an executed focused harness
+against the unmodified pre-fix worktree, driving the real
+`FederationPaymentObserver::run_round` on a local-finality federation mint
+state whose fake backend rejects every attempt and every status check for
+the first pending melt quote (fake-invoice `pay_err` + `check_err`) while
+settling the second quote normally:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-axum --features federation poisoned_melt_quote_cannot_starve_observer_round -- --nocapture`
 
-**Fix check and evaluation:** Not run
+FAILED with `poisoned quote must not abort the observer round: Internal`.
+An instrumented run of the identical scenario recorded the full head-of-line
+shape: `first=Err("Internal Error") second=Err("Internal Error")
+healthy_observations=0` — two consecutive rounds aborted on the same
+poisoned quote (`?` propagation out of the sequential melt scan), and the
+healthy quote queued behind it collected zero paid observations. This is the
+reported starvation: one poison quote blocks all payment repair on the
+member, and if the backend fault is shared, payment quorum is lost. No
+production code had been edited; only the regression test and fixture
+helpers in `crates/cdk-axum/src/federation/tests.rs` were added.
 
-**Commit subject:** Not assigned
+**Minimal fix:** One federation-only change in
+`crates/cdk-axum/src/federation/payment_observation.rs`:
 
-**Milestone observations:** None yet
+1. Per-quote probe deadline and isolation: every mint/melt quote payment
+   probe is wrapped in `tokio::time::timeout`
+   (`FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE`, 10s) and
+   `AssertUnwindSafe::catch_unwind`. A backend error, deadline expiry, or
+   panic is logged (bounded, per quote) and the quote is skipped pending —
+   never translated into a terminal failure and always retried next round
+   through its durable idempotency handle. Consensus-submission and local
+   database errors on the round's own path still propagate for the outer
+   loop's bounded retry.
+2. Worker supervision: the spawned loop wraps each tick/event iteration in
+   `catch_unwind`, so a panicking round or backend future is logged and the
+   worker continues instead of dying silently until process restart.
+
+No standalone code, probe semantics, wire format, or config changed; the
+on-chain scan's existing readiness isolation and the quote-scoped
+active-payment guard are untouched. Per-quote bounded concurrency,
+circuit-breaker/oldest-pending metrics, and the remaining sequential
+scan-cost surface are deferred (see milestone observations).
+
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact
+confirmation scenario. Pre-fix run (recorded above): FAILED with the abort
+and `healthy_observations=0`. Post-fix:
+
+`cargo test -p cdk-axum --features federation poisoned_melt_quote_cannot_starve_observer_round -- --nocapture`
+
+`1 passed`: the round isolates the poisoned quote (backend attempt and
+status checks all rejected), still submits the healthy quote's paid
+observation, and the poisoned quote remains `Pending` (never a terminal
+failure).
+
+Broader evaluation on 2026-07-18:
+
+- `cargo fmt -p cdk-axum -- --check` — clean for the milestone's code.
+- `cargo test -p cdk-axum --features federation poisoned_melt` and
+  `catching_up_member_blocks` — both `1 passed`; the fail-closed readiness
+  gate while catching up is unchanged.
+- `cargo test -p cdk-axum --features federation` — `495 passed; 0 failed; 2
+  ignored`, including the new regression and all neighboring observation,
+  below-finality, and event-repair tests.
+- `cargo check -p cdk-axum --no-default-features` — passed; the changed
+  module is entirely federation-gated.
+- `cargo clippy -p cdk-axum --features federation --all-targets -- -D
+  warnings` — fails only on the same 9 pre-existing `crates/cdk` lints
+  recorded in milestone 2 (none in the changed code).
+
+Not run: a deliberately hung backend wall-clock demonstration (the deadline
+is pinned structurally by the timeout wrapper and the error/panic isolation
+is demonstrated; the CLN/LND regtest deployment is unchanged by this
+member-local worker behavior).
+
+**Commit subject:** `fix: isolate per-quote observer probe failures behind deadlines`
+
+**Milestone observations:** 2026-07-18 — Milestone 5 is committed
+(`0878cae32`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the observer worker's scan,
+deadline, error-isolation, and supervision structure is inspected.
+
+2026-07-18 — Confirmation recorded above.
+
+2026-07-18 — Fix and evaluation complete; milestone kept. Observations
+during the fix: (1) the harness's poison shape uses the fake invoice's
+`pay_err` + `check_err`, which fails both the attempt and every later status
+check — the finding's "repeatable backend error" shape; a single
+`pay_err`-only quote only costs one aborted round, because the later poll
+returns `Unknown`. (2) Consensus-submission and local database errors still
+propagate to the outer loop's bounded retry rather than being skipped;
+only per-quote probe failures, timeouts, and panics are isolated. (3)
+Per-quote bounded concurrency (parallel scans), circuit-breaker and
+oldest-pending metrics, and the growing scan-set cost of finding 19 (`P6`)
+were left out as non-minimal; the sequential scan remains, now with
+per-quote isolation. (4) The panicking-backend case is covered structurally
+by `catch_unwind` at both the probe and the loop level; no separate panic
+regression was added since a panicking backend double would exercise the
+same isolation branch as the timeout.
 
 **Severity:** High
 
 **Confidence:** 99% — source-proven
 
-**Finding status:** Open, source-proven
+**Finding status:** Resolved on 2026-07-18 with red-before-green runtime
+proof; per-quote bounded concurrency and metrics remain future work as
+recorded in the milestone record
 
 **Fault:** Hung backend future, repeatable backend error, poison quote, or panic
 inside a backend implementation
@@ -1522,11 +1612,23 @@ One affected member is tolerable only if enough other members can observe the
 same backend. A shared backend bug or enough independently hung members prevents
 payment quorum and leaves all dependent proofs pending.
 
+The corrected observer now bounds every per-quote probe with a deadline and
+`catch_unwind`, isolates a backend error, timeout, or panic to that quote
+(which stays pending and is retried through its durable idempotency handle),
+and supervises the worker loop with per-iteration panic recovery, so one
+poison quote can no longer abort a round, starve later quotes, or kill the
+worker. The retained regression proves two consecutive aborted rounds and
+zero healthy observations pre-fix become one isolated skip, a submitted
+healthy paid observation, and a pending poisoned quote post-fix.
+
 **Required correction:** per-call deadlines with ambiguity-preserving results,
 per-quote bounded concurrency, error isolation so one quote cannot abort a
 round, circuit-breaker/oldest-pending metrics, and worker supervision. A timeout
 must never be translated into `Failed`; it must remain pending/unknown and be
-polled through a durable idempotency handle.
+polled through a durable idempotency handle. The deadline, ambiguity-preserving
+skip, per-quote error isolation, and worker supervision clauses are implemented
+and proven by this milestone; bounded concurrency and metrics remain future
+work as recorded in the milestone record.
 
 ### 7. DKG availability is all-member, not Byzantine-threshold (`S1`)
 
@@ -2236,7 +2338,7 @@ not currently classified as an open deadlock.
 | A member still halts with `peer ... digest mismatch` | Pre-fix build or regression of 1 (`F1`) | Build/commit identity, signed peer statuses, live-session teardown state |
 | One member halts after an on-chain operation; peers continue | 8 (`F3`) | BDK reconciliation error and local BDK DB state |
 | Session remains live but application index/backlog stops growing | 10 (`F4`) / 13 (`A1`) | Blocked operation index, DB lock age, queue depth/bytes |
-| Melt proofs stay pending with healthy consensus | 6 (`P2`), 11 (`P3`), or `DB-002`; pre-fix builds: 5 (`P1`) | Accepted envelope author, lease epoch vs journal tip, saga state, lookup ID, per-member backend observations |
+| Melt proofs stay pending with healthy consensus | 11 (`P3`), 19 (`P6`), or `DB-002`; pre-fix builds: 5 (`P1`), 6 (`P2`) | Accepted envelope author, lease epoch vs journal tip, saga state, lookup ID, per-member backend observations |
 | Mint quote is paid externally but never becomes paid in federation | 11 (`P3`), then 6 (`P2`) | Per-member lookup visibility and exact evidence group differences |
 | UTXO changes to `Reorged`/`Quarantined` | Post-fix: quorum evidence or 24 (`DB-003`); pre-fix builds: 4 (`P5`) | Every member's reorg/deposit evidence, first observation author, block/txout fields, every member's raw chain-source result |
 | Restarted member never adopts a known checkpoint | 12 (`R1`), 15 (`R2`), or 14 (`R4`) | Advertising peers, selected source, transferred bytes, page cursors/counts |

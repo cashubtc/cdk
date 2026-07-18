@@ -13,12 +13,21 @@ use cdk::federation::{
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
+use futures::FutureExt as _;
 
 use crate::MintState;
 
 const FEDERATION_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
 const FEDERATION_PAYMENT_OBSERVER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const FEDERATION_PAYMENT_OBSERVER_BATCH_SIZE: usize = 100;
+/// Per-quote backend probe deadline.
+///
+/// One hung or slow backend call must never occupy the sequential observer
+/// worker. A deadline expiry leaves the quote pending/unknown and it is
+/// polled again next round through its durable idempotency handle; it is
+/// never translated into a terminal failure.
+const FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(10);
 
 fn confirmation_matches_known_anchor(
     block: Option<(cdk_common::bitcoin::BlockHash, u32)>,
@@ -247,11 +256,41 @@ impl FederationPaymentObserver {
             if quote.state() == MintQuoteState::Issued {
                 continue;
             }
-            let Some(observation) = state
-                .mint
-                .probe_federation_mint_quote_payment(quote_id)
-                .await?
-            else {
+            let Some(observation) = ({
+                let probe = std::panic::AssertUnwindSafe(async {
+                    state
+                        .mint
+                        .probe_federation_mint_quote_payment(quote_id)
+                        .await
+                })
+                .catch_unwind();
+                match tokio::time::timeout(FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE, probe).await
+                {
+                    Ok(Ok(Ok(observation))) => observation,
+                    Ok(Ok(Err(err))) => {
+                        tracing::debug!(
+                            quote = %quote_id,
+                            error = %err,
+                            "mint quote payment probe failed; quote left pending"
+                        );
+                        continue;
+                    }
+                    Ok(Err(_panic)) => {
+                        tracing::warn!(
+                            quote = %quote_id,
+                            "mint quote payment probe panicked; quote left pending"
+                        );
+                        continue;
+                    }
+                    Err(_) => {
+                        tracing::debug!(
+                            quote = %quote_id,
+                            "mint quote payment probe timed out; quote left pending"
+                        );
+                        continue;
+                    }
+                }
+            }) else {
                 continue;
             };
             if submit_observation(state, FederationPaymentObservation::MintQuote(observation))
@@ -268,11 +307,40 @@ impl FederationPaymentObserver {
         state: &MintState,
         quote_id: &QuoteId,
     ) -> Result<bool, cdk::Error> {
-        let Some(observation) = state
-            .mint
-            .probe_federation_melt_quote_payment(quote_id)
-            .await?
-        else {
+        let Some(observation) = ({
+            let probe = std::panic::AssertUnwindSafe(async {
+                state
+                    .mint
+                    .probe_federation_melt_quote_payment(quote_id)
+                    .await
+            })
+            .catch_unwind();
+            match tokio::time::timeout(FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE, probe).await {
+                Ok(Ok(Ok(observation))) => observation,
+                Ok(Ok(Err(err))) => {
+                    tracing::debug!(
+                        quote = %quote_id,
+                        error = %err,
+                        "melt quote payment probe failed; quote left pending"
+                    );
+                    return Ok(false);
+                }
+                Ok(Err(_panic)) => {
+                    tracing::warn!(
+                        quote = %quote_id,
+                        "melt quote payment probe panicked; quote left pending"
+                    );
+                    return Ok(false);
+                }
+                Err(_) => {
+                    tracing::debug!(
+                        quote = %quote_id,
+                        "melt quote payment probe timed out; quote left pending"
+                    );
+                    return Ok(false);
+                }
+            }
+        }) else {
             return Ok(false);
         };
         submit_observation(state, FederationPaymentObservation::MeltQuote(observation)).await
@@ -366,20 +434,39 @@ impl FederationPaymentObserver {
             interval.tick().await;
 
             loop {
-                let result = tokio::select! {
-                    _ = interval.tick() => self.run_round(&state).await,
-                    event = payment_events.recv() => match event {
-                        Ok(event) => self.observe_event(&state, event).await,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                            tracing::warn!(
-                                skipped,
-                                "Federation payment observer lagged; running repair scan"
-                            );
-                            self.run_round(&state).await
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    },
+                // One panicking round, event, or backend future must not kill
+                // the only observation worker; it is logged and the loop
+                // continues so remaining quotes keep being repaired.
+                let (result, closed) = match std::panic::AssertUnwindSafe(async {
+                    tokio::select! {
+                        _ = interval.tick() => (self.run_round(&state).await, false),
+                        event = payment_events.recv() => match event {
+                            Ok(event) => (self.observe_event(&state, event).await, false),
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                tracing::warn!(
+                                    skipped,
+                                    "Federation payment observer lagged; running repair scan"
+                                );
+                                (self.run_round(&state).await, false)
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => (Ok(0), true),
+                        },
+                    }
+                })
+                .catch_unwind()
+                .await
+                {
+                    Ok(inner) => inner,
+                    Err(_) => {
+                        tracing::error!(
+                            "Federation payment observer round panicked; continuing observation"
+                        );
+                        continue;
+                    }
                 };
+                if closed {
+                    break;
+                }
                 match result {
                     Ok(submitted) if submitted > 0 => {
                         tracing::debug!(
