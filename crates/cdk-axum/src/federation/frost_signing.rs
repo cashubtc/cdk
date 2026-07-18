@@ -196,6 +196,17 @@ where
         state
             .ensure_federation_ready_for_authoritative_read()
             .await?;
+        if let Some(reason) = state
+            .federation
+            .components
+            .wallet
+            .bdk_degraded_reason()
+            .await
+        {
+            anyhow::bail!(
+                "federation local signing is blocked while the member is BDK-degraded: {reason}"
+            );
+        }
         let transaction_state = state.mint.federation_transaction_state().await?;
         let existing = transaction_state
             .accepted_transaction(proposal_id)

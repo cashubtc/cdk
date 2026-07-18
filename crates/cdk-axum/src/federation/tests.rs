@@ -22486,6 +22486,152 @@ async fn aleph_bft_finalization_persistence_failure_leaves_runtime_unchanged() {
 }
 
 #[tokio::test]
+async fn onchain_reconciliation_failure_does_not_halt_finalized_application() {
+    let session = start_two_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 0,
+            max_messages_per_tick: 128,
+            max_peer_deliveries_per_message: 128,
+        },
+        500,
+    ))
+    .await
+    .expect("start two-member live session");
+
+    // A local BDK/projection failure strikes the reconciliation step of the
+    // next finalized-unit application on both members.
+    session
+        .first_state
+        .federation
+        .fail_next_onchain_reconciliation_for_test();
+    session
+        .second_state
+        .federation
+        .fail_next_onchain_reconciliation_for_test();
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&session.first_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let submit_state = session.first_state.clone();
+    let submit_task = tokio::spawn(async move {
+        submit_state
+            .submit_federation_envelope_to_consensus(envelope)
+            .await
+    });
+
+    // Wait until the operation applies on the second member, or any member
+    // halts at the reconciliation boundary first.
+    let mut applied = false;
+    let mut halt_reason = None;
+    time::timeout(Duration::from_secs(20), async {
+        loop {
+            for state in [&session.first_state, &session.second_state] {
+                if let Some(crate::FederationSyncStatus::Halted { reason }) =
+                    state.federation_sync_status().await
+                {
+                    halt_reason = Some(reason);
+                    break;
+                }
+            }
+            if halt_reason.is_some() {
+                break;
+            }
+            if let Some(entry) = session
+                .second_state
+                .mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(operation_id)
+                .await
+                .expect("journal lookup")
+            {
+                if entry.status() == FederationOperationStatus::Applied {
+                    applied = true;
+                    break;
+                }
+            }
+            time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("finalized unit reached a decision before timeout");
+
+    assert!(
+        halt_reason.is_none(),
+        "a local BDK reconciliation failure halted a member: {}",
+        halt_reason.as_deref().unwrap_or("unknown halt")
+    );
+    assert!(
+        applied,
+        "the accepted operation must apply despite the reconciliation failure"
+    );
+
+    for state in [&session.first_state, &session.second_state] {
+        assert!(!matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Halted { .. })
+        ));
+        assert!(state.federation_aleph_bft_live_session_active().await);
+        assert!(state.federation_aleph_bft_network_inbound_active().await);
+        assert!(state
+            .mint
+            .localstore()
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .is_some());
+        assert!(
+            state
+                .federation
+                .bdk_degraded_reason_for_test()
+                .await
+                .is_some(),
+            "member must report BDK-degraded after the reconciliation failure"
+        );
+    }
+
+    // Replaying the runtime state (the restart path) must not fail and must
+    // preserve the BDK-degraded state instead of halting the member again.
+    let mut first_state = session.first_state.clone();
+    replay_aleph_bft_runtime_after_test_process_restart(&mut first_state).await;
+    assert!(
+        first_state
+            .federation
+            .bdk_degraded_reason_for_test()
+            .await
+            .is_some(),
+        "the BDK-degraded state must survive restart replay"
+    );
+
+    // A follow-up application reconciles healthily and clears the degraded
+    // state.
+    let second_quote_id = QuoteId::new();
+    let second_envelope = mint_quote_envelope(&session.second_state, &second_quote_id);
+    let second_operation_id = second_envelope.operation_id().expect("operation id");
+    session
+        .second_state
+        .submit_federation_envelope_to_consensus(second_envelope)
+        .await
+        .expect("second operation submit");
+    for state in [&session.first_state, &session.second_state] {
+        assert_eq!(
+            wait_for_terminal_operation(state, second_operation_id).await,
+            FederationOperationStatus::Applied
+        );
+        assert!(
+            state
+                .federation
+                .bdk_degraded_reason_for_test()
+                .await
+                .is_none(),
+            "a healthy reconciliation must clear the degraded state"
+        );
+    }
+
+    let _ = submit_task.abort();
+    let _ = submit_task.await;
+}
+
+#[tokio::test]
 async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeuing() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));

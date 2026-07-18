@@ -414,6 +414,19 @@ impl FederationNodeRuntime {
             .store(true, Ordering::Release);
     }
 
+    #[cfg(test)]
+    pub(crate) fn fail_next_onchain_reconciliation_for_test(&self) {
+        self.components
+            .faults
+            .fail_next_onchain_reconciliation
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn bdk_degraded_reason_for_test(&self) -> Option<String> {
+        self.components.wallet.bdk_degraded_reason().await
+    }
+
     pub(crate) async fn sync_status(&self) -> Option<FederationSyncStatus> {
         self.components.readiness.status().await
     }

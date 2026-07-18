@@ -53,7 +53,7 @@ is well established but its root cause is not.
 | 5 | `P1` | Accepted melt author has a permanent payment veto | High | 99% | Quote/proofs; malicious or failed author veto | Completed |
 | 6 | `P2` | One backend call or poison quote blocks the single observer worker | High | 99% | All payment repair on one member; quorum loss if shared | Completed |
 | 7 | `S1` | DKG availability is all-member, not Byzantine-threshold | High availability | 99% | Federation setup/key ceremony | Completed |
-| 8 | `F3` | Local BDK reconciliation is inside the fatal apply boundary | High | 98% | Session/member; quorum loss if repeated | Confirming |
+| 8 | `F3` | Local BDK reconciliation is inside the fatal apply boundary | High | 98% | Session/member; quorum loss if repeated | Completed |
 | 9 | `W2` | Melt-status recovery lets one invalid share poison an honest threshold | High availability / Medium scope | 98% | Wallet melt recovery | Not started |
 | 10 | `F4` | Apply and backup retries have no terminal budget | High | 97% | Session/member starvation | Not started |
 | 11 | `P3` | Exact evidence quorum is not backed by an enforced evidence model | High | 97% | Quote/proofs | Not started |
@@ -1787,26 +1787,119 @@ milestone; the second remains future work.
 
 ### 8. Local BDK reconciliation is inside the fatal apply boundary (`F3`)
 
-**Milestone status:** Confirming
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with an executed two-member live
+AlephBFT session harness against the unmodified pre-fix worktree. A bounded
+test fault flag (`fail_next_onchain_reconciliation`, same `#[cfg(test)]`
+fault-harness pattern as the existing persistence-failure injections) was
+armed on both members, then a valid mint quote operation was submitted
+through the real consensus path:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-axum --features federation onchain_reconciliation_failure_does_not_halt_finalized_application -- --nocapture`
 
-**Fix check and evaluation:** Not run
+FAILED with the reported halt in one assertion message:
 
-**Commit subject:** Not assigned
+`a local BDK reconciliation failure halted a member: AlephBFT live session 0
+stopped after a non-retryable finalized-payload apply failure: accepted
+federation on-chain state could not be reconciled locally`
+
+The accepted operation's business application had already completed, the
+reconciliation error was erased to `Custom` (non-definitive,
+non-retryable), it escaped the finalized-unit apply loop, and the
+essential-task supervisor halted the member — the exact finding. No
+production behavior had been changed; only the test-only fault flag, its
+consumption point, and the regression in
+`crates/cdk-axum/src/federation/tests.rs` were added.
+
+**Minimal fix:** Federation-only changes separating local BDK projection
+health from the consensus state-machine decision:
+
+1. `crates/cdk-axum/src/federation/operation_pipeline.rs`: the finalized-unit
+   application no longer erases reconciliation errors to `Custom` and
+   returns them. A reconciliation failure is logged with the typed reason
+   and the member continues as BDK-degraded; deterministic application
+   completes and the session stays live. The reconciliation still runs on
+   every finalized-unit application, so a healthy later reconcile clears the
+   degraded state (bounded natural retry).
+2. `crates/cdk-axum/src/federation/runtime_components.rs`:
+   `FederationWalletReconciler` owns a typed BDK-degraded reason, set on
+   failure and cleared on recovery.
+3. `crates/cdk-axum/src/federation/frost_signing.rs`: local FROST signing
+   (`sign_accepted_transaction`) refuses to sign while the member is
+   BDK-degraded, so a stale/corrupt local projection cannot authorize
+   signatures.
+4. `crates/cdk-axum/src/lib.rs`: startup reconciliation now degrades instead
+   of failing — the reason is returned with the runtime state and seeded
+   into the components, so the member starts BDK-degraded with local signing
+   blocked rather than failing to boot.
+
+No standalone code, consensus application semantics, wire format, or config
+changed. A typed `FederationError` variant was deliberately not added: the
+reconciliation failure is member-local projection health, not a consensus
+result, and the typed reason is preserved in the degraded state and logs.
+
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact
+confirmation scenario. Pre-fix run (recorded above): FAILED with the halt
+message. Post-fix:
+
+`cargo test -p cdk-axum --features federation onchain_reconciliation_failure_does_not_halt_finalized_application -- --nocapture`
+
+`1 passed`: both members stay live with sessions and inbound networks
+active, the accepted mint quote applies on both, each member reports
+BDK-degraded after the failure, the degraded state survives restart replay,
+and the next healthy application reconciles and clears it.
+
+Broader evaluation on 2026-07-18:
+
+- `cargo fmt -p cdk-axum -- --check` — clean for the milestone's code.
+- `cargo test -p cdk-axum --features federation` — `498 passed; 0 failed; 2
+  ignored`, including the new regression and neighboring
+  finalization-persistence, session-lifecycle, and observation tests.
+- `cargo check -p cdk-axum --no-default-features` — passed; all changed
+  code is federation-gated.
+- `cargo clippy -p cdk-axum --features federation --all-targets -- -D
+  warnings` — fails only on the same 9 pre-existing `crates/cdk` lints
+  recorded in milestone 2 (none in the changed code).
+
+Not run: a startup demonstration with a real corrupt BDK wallet database.
+The route-state wallets are empty by construction, so the startup reconcile
+cannot fail in the mock harness; the startup path uses the identical
+degrade-not-fail handling and is code-complete, but its runtime proof needs
+a real BDK environment. The finding's headline path (apply halt plus
+re-reconcile on later applications and replay) is runtime-proven.
+
+**Commit subject:** `fix: degrade local BDK health without halting finalized application`
 
 **Milestone observations:** 2026-07-18 — Milestone 7 is committed
 (`16d8e3842`) and the worktree was clean before starting confirmation.
 Production code remains untouched while the reconciliation call sites,
 error erasure, and startup recovery shape are inspected.
 
+2026-07-18 — Confirmation recorded above.
+
+2026-07-18 — Fix and evaluation complete; milestone kept. Observations
+during the fix: (1) the reconciliation runs after
+`mark_operation_applications`, so the business application is already
+terminal when the failure strikes — degrading cannot corrupt consensus
+history, it can only preserve it. (2) The degraded state lives on the
+wallet reconciler and is rebuilt (cleared) by component reconstruction;
+restart replay preserves it because replay replaces consensus and
+sequences, not the components. (3) Bounded retry is natural: every
+finalized-unit application re-runs reconciliation and a healthy one clears
+the degraded state; no separate timer was added. (4) The first harness
+draft asserted a degraded startup through the empty-wallet replay path,
+which cannot fail by construction; it was corrected to assert persistence
+through replay plus clearing on the next healthy apply, and the
+real-database startup demonstration is recorded as not run.
+
 **Severity:** High
 
 **Confidence:** 98% — source-proven
 
-**Finding status:** Open, source-proven
+**Finding status:** Resolved on 2026-07-18 with red-before-green runtime
+proof; a real-database startup demonstration is recorded as not run in the
+milestone record
 
 **Fault:** Local BDK database/engine failure, incompatible accepted transaction,
 or persistent local projection corruption
@@ -1836,6 +1929,15 @@ reconciliation runs again and can fail at the same point. A disk/BDK failure can
 halt one member; a deterministic incompatibility in an accepted transaction can
 halt every member.
 
+The corrected boundary now separates local projection health from the
+consensus decision: a reconciliation failure marks the member BDK-degraded
+with the typed reason, blocks local FROST signing, and is retried on later
+applications instead of halting the session or aborting startup; a healthy
+reconcile clears it. The retained regression proves two members stay live
+and apply the accepted operation through an injected reconciliation failure,
+that the degraded state survives restart replay, and that the next healthy
+application clears it.
+
 **Most likely cause when observed:** one member halts immediately after an
 on-chain allocation or signed transaction while peers remain healthy, and the
 halt follows `accepted federation on-chain state could not be reconciled
@@ -1844,7 +1946,11 @@ locally`.
 **Required correction:** preserve typed reconciliation errors; separate local
 projection health from the consensus state-machine decision; provide bounded
 retry/rebuild and a BDK-degraded state that blocks local signing without
-misclassifying deterministic consensus history.
+misclassifying deterministic consensus history. All clauses are implemented
+and proven by this milestone: typed reasons are preserved in the degraded
+state and logs, reconciliation no longer aborts deterministic application or
+startup, the member becomes BDK-degraded with local signing blocked, and
+healthy re-reconciliation on later applications clears it.
 
 ### 9. Melt-status recovery lets one invalid share poison an honest threshold (`W2`)
 
@@ -2450,7 +2556,7 @@ not currently classified as an open deadlock.
 | All members halt at the same operation index | `DB-001` (pre-fix builds: 2 (`F2`)) | Finalized item, journal application state, exact typed apply error |
 | A peer sync rejects an equal-height digest mismatch but the member stays live | Completed 1 (`F1`) | Signed peer statuses from the entire roster at the same frontier; confirm the source enters backoff |
 | A member still halts with `peer ... digest mismatch` | Pre-fix build or regression of 1 (`F1`) | Build/commit identity, signed peer statuses, live-session teardown state |
-| One member halts after an on-chain operation; peers continue | 8 (`F3`) | BDK reconciliation error and local BDK DB state |
+| One member halts after an on-chain operation; peers continue | `DB-001` or 24 (`DB-003`); pre-fix builds: 8 (`F3`) | BDK reconciliation error, BDK-degraded reason, local BDK DB state |
 | Session remains live but application index/backlog stops growing | 10 (`F4`) / 13 (`A1`) | Blocked operation index, DB lock age, queue depth/bytes |
 | Melt proofs stay pending with healthy consensus | 11 (`P3`), 19 (`P6`), or `DB-002`; pre-fix builds: 5 (`P1`), 6 (`P2`) | Accepted envelope author, lease epoch vs journal tip, saga state, lookup ID, per-member backend observations |
 | Mint quote is paid externally but never becomes paid in federation | 11 (`P3`), then 6 (`P2`) | Per-member lookup visibility and exact evidence group differences |

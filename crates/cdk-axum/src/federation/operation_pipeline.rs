@@ -730,11 +730,36 @@ impl FederationNodeRuntime {
         self.mark_operation_applications(&terminal_applications)
             .await?;
         let mint = self.active_mint()?;
-        self.components.wallet.reconcile(mint).await.map_err(|_| {
-            cdk::Error::Custom(
-                "accepted federation on-chain state could not be reconciled locally".to_string(),
-            )
-        })?;
+        #[cfg(test)]
+        let reconcile_result = if self
+            .components
+            .faults
+            .fail_next_onchain_reconciliation
+            .swap(false, Ordering::SeqCst)
+        {
+            self.components
+                .wallet
+                .set_bdk_degraded_reason(Some(
+                    "injected on-chain reconciliation failure".to_string(),
+                ))
+                .await;
+            Err(anyhow::anyhow!("injected on-chain reconciliation failure"))
+        } else {
+            self.components.wallet.reconcile(mint).await
+        };
+        #[cfg(not(test))]
+        let reconcile_result = self.components.wallet.reconcile(mint).await;
+        // Local BDK projection health is separate from the consensus
+        // state-machine decision: a reconciliation failure marks this member
+        // BDK-degraded (blocking local signing) and is retried on later
+        // applications, but it never aborts deterministic application or
+        // halts the session.
+        if let Err(err) = reconcile_result {
+            tracing::error!(
+                reason = %format!("{err:#}"),
+                "federation local BDK reconciliation failed after deterministic application; member continues BDK-degraded"
+            );
+        }
         Ok(applied)
     }
 

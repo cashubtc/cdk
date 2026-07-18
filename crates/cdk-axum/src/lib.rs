@@ -2371,6 +2371,7 @@ async fn create_mint_router_with_custom_cache_inner(
         federation_sequences,
         federation_onchain_wallets,
         federation_frost_signing,
+        federation_startup_bdk_degraded_reason,
     ) = create_federation_runtime_state_with_wallet(&mint, federation_bdk_config).await?;
     #[cfg(feature = "federation")]
     let federation_sync = federation_consensus
@@ -2420,6 +2421,12 @@ async fn create_mint_router_with_custom_cache_inner(
             manual_finality_test: false,
         },
     };
+    #[cfg(feature = "federation")]
+    state
+        .federation
+        .components
+        .set_startup_bdk_degraded_reason(federation_startup_bdk_degraded_reason)
+        .await;
     #[cfg(all(test, feature = "federation"))]
     if state.federation.local_finality_test {
         state.federation.set_sync_handle(
@@ -2761,6 +2768,7 @@ async fn create_federation_runtime_state_with_wallet(
     Option<FederationSequenceHandle>,
     Vec<FederatedBdkWallet>,
     Option<federation::frost_signing::FederationFrostSigningRuntime>,
+    Option<String>,
 )> {
     let Some(config) = mint.federation_config() else {
         if local_wallet_config.is_some() {
@@ -2768,7 +2776,7 @@ async fn create_federation_runtime_state_with_wallet(
                 "federated BDK configuration requires an active federation mint"
             ));
         }
-        return Ok((None, None, Vec::new(), None));
+        return Ok((None, None, Vec::new(), None, None));
     };
     let db = mint.localstore();
     validate_and_materialize_frost_wallet_config(mint).await?;
@@ -3001,7 +3009,22 @@ async fn create_federation_runtime_state_with_wallet(
             consensus.update_status(operation_id, FederationOperationStatus::Applied)?;
         }
     }
-    reconcile_federation_onchain_wallets(mint, &onchain_wallets).await?;
+    let startup_bdk_degraded_reason = match reconcile_federation_onchain_wallets(
+        mint,
+        &onchain_wallets,
+    )
+    .await
+    {
+        Ok(()) => None,
+        Err(err) => {
+            let reason = format!("{err:#}");
+            tracing::error!(
+                reason = %reason,
+                "federation local BDK reconciliation failed during startup; member starts BDK-degraded and local signing is blocked"
+            );
+            Some(reason)
+        }
+    };
     let sequences = FederationRestSequenceTracker::from_dkg_sequences(dkg_sequences);
 
     Ok((
@@ -3009,6 +3032,7 @@ async fn create_federation_runtime_state_with_wallet(
         Some(Arc::new(tokio::sync::Mutex::new(sequences))),
         onchain_wallets,
         frost_signing,
+        startup_bdk_degraded_reason,
     ))
 }
 
@@ -3080,7 +3104,7 @@ async fn create_federation_runtime_state(
     Option<FederationConsensusHandle>,
     Option<FederationSequenceHandle>,
 )> {
-    let (consensus, sequences, _, _) =
+    let (consensus, sequences, _, _, _) =
         create_federation_runtime_state_with_wallet(mint, None).await?;
     Ok((consensus, sequences))
 }

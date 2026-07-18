@@ -218,11 +218,46 @@ pub(super) struct FederationDkgCoordinator {
 pub(super) struct FederationWalletReconciler {
     pub(super) onchain_wallets: Vec<cdk_bdk::FederatedBdkWallet>,
     pub(super) frost_signing: Option<FederationFrostSigningRuntime>,
+    bdk_degraded_reason: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
 impl FederationWalletReconciler {
+    /// Reconcile the accepted on-chain projection into member-local BDK
+    /// state. A failure marks this member BDK-degraded with the typed reason
+    /// and is returned so the caller can log it; a success clears the
+    /// degraded state. The degraded state never participates in the
+    /// deterministic consensus application decision.
     pub(super) async fn reconcile(&self, mint: &Mint) -> anyhow::Result<()> {
-        crate::reconcile_federation_onchain_wallets(mint, &self.onchain_wallets).await
+        match crate::reconcile_federation_onchain_wallets(mint, &self.onchain_wallets).await {
+            Ok(()) => {
+                if self.bdk_degraded_reason.write().await.take().is_some() {
+                    tracing::info!("federation local BDK projection recovered from degraded state");
+                }
+                Ok(())
+            }
+            Err(err) => {
+                let reason = format!("{err:#}");
+                tracing::error!(
+                    reason = %reason,
+                    "federation local BDK reconciliation failed; member is BDK-degraded and local signing is blocked"
+                );
+                self.set_bdk_degraded_reason(Some(reason)).await;
+                Err(err)
+            }
+        }
+    }
+
+    /// Typed reason this member is BDK-degraded, when reconciliation last
+    /// failed. While set, local FROST signing must stay blocked; it never
+    /// affects the deterministic consensus application decision.
+    pub(super) async fn bdk_degraded_reason(&self) -> Option<String> {
+        self.bdk_degraded_reason.read().await.clone()
+    }
+
+    /// Record or clear the BDK-degraded reason after a reconciliation
+    /// failure or recovery.
+    pub(super) async fn set_bdk_degraded_reason(&self, reason: Option<String>) {
+        *self.bdk_degraded_reason.write().await = reason;
     }
 }
 
@@ -257,9 +292,17 @@ impl FederationRuntimeComponents {
             wallet: FederationWalletReconciler {
                 onchain_wallets,
                 frost_signing,
+                bdk_degraded_reason: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             },
             ..Default::default()
         }
+    }
+
+    /// Seed the startup BDK-degraded reason after a failed startup
+    /// reconciliation; the member starts degraded with local signing blocked
+    /// instead of failing startup.
+    pub(crate) async fn set_startup_bdk_degraded_reason(&self, reason: Option<String>) {
+        self.wallet.set_bdk_degraded_reason(reason).await;
     }
 }
 
@@ -269,6 +312,7 @@ impl FederationRuntimeComponents {
 pub(super) struct FederationRuntimeFaultHarness {
     pub(super) fail_next_pending_operation_persistence: Arc<AtomicBool>,
     pub(super) fail_next_finalization_persistence: Arc<AtomicBool>,
+    pub(super) fail_next_onchain_reconciliation: Arc<AtomicBool>,
     pub(super) suppress_next_terminal_response_publication: Arc<AtomicBool>,
     pub(super) suppress_next_scheduled_checkpoint_capture: Arc<AtomicBool>,
     pub(super) suppress_next_recovery_checkpoint_capture: Arc<AtomicBool>,
