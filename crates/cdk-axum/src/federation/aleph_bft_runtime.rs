@@ -149,11 +149,22 @@ pub(crate) struct CdkAlephBftOutboundMessage<D> {
     pub recipient: Recipient,
 }
 
+/// Inbound network message with its encoded byte length for the bounded
+/// inbound byte budget.
+#[derive(Debug, Clone)]
+pub(crate) struct CdkAlephBftInboundEnvelope<D> {
+    /// Decoded AlephBFT payload.
+    pub data: D,
+    /// Encoded size in bytes at admission time.
+    pub byte_len: usize,
+}
+
 /// Channel-backed AlephBFT network implementation.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftNetwork<D> {
-    incoming: mpsc::UnboundedReceiver<D>,
-    outgoing: mpsc::UnboundedSender<CdkAlephBftOutboundMessage<D>>,
+    incoming: mpsc::Receiver<CdkAlephBftInboundEnvelope<D>>,
+    outgoing: mpsc::Sender<CdkAlephBftOutboundMessage<D>>,
+    buffered_inbound_bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl<D> fmt::Debug for CdkAlephBftNetwork<D> {
@@ -165,8 +176,9 @@ impl<D> fmt::Debug for CdkAlephBftNetwork<D> {
 /// Test and transport bridge handle for a [`CdkAlephBftNetwork`].
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftNetworkHandle<D> {
-    incoming: mpsc::UnboundedSender<D>,
-    outgoing: mpsc::UnboundedReceiver<CdkAlephBftOutboundMessage<D>>,
+    incoming: mpsc::Sender<CdkAlephBftInboundEnvelope<D>>,
+    outgoing: mpsc::Receiver<CdkAlephBftOutboundMessage<D>>,
+    buffered_inbound_bytes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl<D> fmt::Debug for CdkAlephBftNetworkHandle<D> {
@@ -180,16 +192,24 @@ impl<D> fmt::Debug for CdkAlephBftNetworkHandle<D> {
 impl<D> CdkAlephBftNetwork<D> {
     /// Create a network plus bridge handle for injecting inbound and draining outbound messages.
     pub(crate) fn new_pair() -> (Self, CdkAlephBftNetworkHandle<D>) {
-        let (incoming_sender, incoming_receiver) = mpsc::unbounded_channel();
-        let (outgoing_sender, outgoing_receiver) = mpsc::unbounded_channel();
+        Self::new_pair_with_capacity(crate::federation_aleph_bft_channel_capacity())
+    }
+
+    /// Create a network plus bridge handle with an explicit bounded channel capacity.
+    pub(crate) fn new_pair_with_capacity(capacity: usize) -> (Self, CdkAlephBftNetworkHandle<D>) {
+        let (incoming_sender, incoming_receiver) = mpsc::channel(capacity);
+        let (outgoing_sender, outgoing_receiver) = mpsc::channel(capacity);
+        let buffered_inbound_bytes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         (
             Self {
                 incoming: incoming_receiver,
                 outgoing: outgoing_sender,
+                buffered_inbound_bytes: buffered_inbound_bytes.clone(),
             },
             CdkAlephBftNetworkHandle {
                 incoming: incoming_sender,
                 outgoing: outgoing_receiver,
+                buffered_inbound_bytes,
             },
         )
     }
@@ -199,12 +219,24 @@ impl<D> CdkAlephBftNetwork<D> {
 impl<D> CdkAlephBftNetworkHandle<D> {
     /// Queue an inbound message as if it arrived from the federation transport.
     pub(crate) fn queue_incoming(&self, data: D) -> Result<(), mpsc::error::SendError<D>> {
-        self.incoming.send(data)
+        self.incoming
+            .try_send(CdkAlephBftInboundEnvelope { data, byte_len: 0 })
+            .map_err(|err| match err {
+                mpsc::error::TrySendError::Full(envelope)
+                | mpsc::error::TrySendError::Closed(envelope) => {
+                    mpsc::error::SendError(envelope.data)
+                }
+            })
     }
 
     /// Return a cloneable sender for wiring authenticated inbound transport messages.
-    pub(crate) fn incoming_sender(&self) -> mpsc::UnboundedSender<D> {
+    pub(crate) fn incoming_sender(&self) -> mpsc::Sender<CdkAlephBftInboundEnvelope<D>> {
         self.incoming.clone()
+    }
+
+    /// Shared buffered-byte counter for the bounded inbound byte budget.
+    pub(crate) fn buffered_inbound_bytes(&self) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        self.buffered_inbound_bytes.clone()
     }
 
     /// Receive the next outbound message produced by AlephBFT.
@@ -224,17 +256,28 @@ where
     D: Send + 'static,
 {
     fn send(&self, data: D, recipient: Recipient) {
-        if self
+        if let Err(err) = self
             .outgoing
-            .send(CdkAlephBftOutboundMessage { data, recipient })
-            .is_err()
+            .try_send(CdkAlephBftOutboundMessage { data, recipient })
         {
-            tracing::warn!("AlephBFT network outbound bridge is closed");
+            match err {
+                mpsc::error::TrySendError::Full(_) => {
+                    tracing::debug!(
+                        "AlephBFT network outbound queue is full; dropping message, rebroadcast will cover"
+                    );
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    tracing::warn!("AlephBFT network outbound bridge is closed");
+                }
+            }
         }
     }
 
     async fn next_event(&mut self) -> Option<D> {
-        self.incoming.recv().await
+        let envelope = self.incoming.recv().await?;
+        self.buffered_inbound_bytes
+            .fetch_sub(envelope.byte_len, std::sync::atomic::Ordering::Relaxed);
+        Some(envelope.data)
     }
 }
 
@@ -728,12 +771,11 @@ impl CdkAlephBftFinalizedUnit {
         Ok(payload)
     }
 }
-
 /// Finalization handler that hands ordered CDK units back to the mint runtime.
 #[derive(Debug)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftFinalizationHandler {
-    finalized_units: mpsc::UnboundedSender<CdkAlephBftFinalizedUnit>,
+    finalized_units: mpsc::Sender<CdkAlephBftFinalizedUnit>,
     activity_hint: CdkAlephBftActivityHint,
     keychain: CdkAlephBftKeychain,
     session: u64,
@@ -744,7 +786,7 @@ pub(crate) struct CdkAlephBftFinalizationHandler {
 impl CdkAlephBftFinalizationHandler {
     /// Create a handler that forwards finalized unit payloads to an async apply loop.
     pub(crate) fn new(
-        finalized_units: mpsc::UnboundedSender<CdkAlephBftFinalizedUnit>,
+        finalized_units: mpsc::Sender<CdkAlephBftFinalizedUnit>,
         keychain: CdkAlephBftKeychain,
         session: u64,
     ) -> Self {
@@ -757,7 +799,7 @@ impl CdkAlephBftFinalizationHandler {
     }
 
     fn with_activity_hint(
-        finalized_units: mpsc::UnboundedSender<CdkAlephBftFinalizedUnit>,
+        finalized_units: mpsc::Sender<CdkAlephBftFinalizedUnit>,
         activity_hint: CdkAlephBftActivityHint,
         keychain: CdkAlephBftKeychain,
         session: u64,
@@ -772,7 +814,7 @@ impl CdkAlephBftFinalizationHandler {
     }
 
     fn with_activity_hint_and_replay_readiness(
-        finalized_units: mpsc::UnboundedSender<CdkAlephBftFinalizedUnit>,
+        finalized_units: mpsc::Sender<CdkAlephBftFinalizedUnit>,
         activity_hint: CdkAlephBftActivityHint,
         keychain: CdkAlephBftKeychain,
         session: u64,
@@ -800,6 +842,26 @@ impl CdkAlephBftFinalizationHandler {
                     .map(|operation_id| operation_id.to_bytes()),
             ),
         );
+    }
+
+    /// Queue one finalized unit into the bounded apply channel. When the
+    /// channel is full the session task panics so the supervisor tears the
+    /// generation down and rotates instead of growing memory without limit;
+    /// rotation replays the durable AlephBFT backup and journal, so no
+    /// finalized work is lost.
+    fn queue_finalized_unit(&mut self, finalized_unit: CdkAlephBftFinalizedUnit) {
+        match self.finalized_units.try_send(finalized_unit) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                panic!(
+                    "AlephBFT finalized-unit apply backlog exceeded the bounded channel budget; \
+                     stopping the session so rotation can replay from durable history"
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::warn!("AlephBFT finalized CDK unit receiver is closed");
+            }
+        }
     }
 }
 
@@ -841,9 +903,7 @@ impl UnitFinalizationHandler for CdkAlephBftFinalizationHandler {
                     round: unit.round,
                     unit_hash: unit.hash,
                 };
-                if self.finalized_units.send(finalized_unit).is_err() {
-                    tracing::warn!("AlephBFT finalized CDK unit receiver is closed");
-                }
+                self.queue_finalized_unit(finalized_unit);
             }
         }
     }
@@ -1357,7 +1417,7 @@ pub(crate) type CdkAlephBftLocalIo = LocalIO<
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftSessionIo {
     local_io: CdkAlephBftLocalIo,
-    finalized_units: mpsc::UnboundedReceiver<CdkAlephBftFinalizedUnit>,
+    finalized_units: mpsc::Receiver<CdkAlephBftFinalizedUnit>,
     replay_readiness: Arc<CdkAlephBftReplayReadiness>,
 }
 
@@ -1378,6 +1438,7 @@ impl CdkAlephBftSessionIo {
         replay_target_next_unit_index_by_member: BTreeMap<MemberId, u64>,
         activity_hint: CdkAlephBftActivityHint,
         keychain: CdkAlephBftKeychain,
+        channel_capacity: usize,
     ) -> Result<Self, cdk::Error> {
         let mut replay_frontier = consensus
             .lock()
@@ -1411,7 +1472,7 @@ impl CdkAlephBftSessionIo {
         let _ = (backup_chunks, backup_bytes);
         let data_provider =
             CdkAlephBftDataProvider::with_activity_hint(consensus, activity_hint.clone());
-        let (sender, finalized_units) = mpsc::unbounded_channel();
+        let (sender, finalized_units) = mpsc::channel(channel_capacity);
         let finalization_handler =
             CdkAlephBftFinalizationHandler::with_activity_hint_and_replay_readiness(
                 sender,
@@ -1442,10 +1503,7 @@ impl CdkAlephBftSessionIo {
     /// Split the upstream session IO from the receiver consumed by the CDK apply loop.
     pub(crate) fn into_parts(
         self,
-    ) -> (
-        CdkAlephBftLocalIo,
-        mpsc::UnboundedReceiver<CdkAlephBftFinalizedUnit>,
-    ) {
+    ) -> (CdkAlephBftLocalIo, mpsc::Receiver<CdkAlephBftFinalizedUnit>) {
         (self.local_io, self.finalized_units)
     }
 }
@@ -2040,7 +2098,7 @@ mod tests {
             .expect("keychain");
         let payload = module_fact_payload(2);
         let data = CdkAlephBftData::try_from_payload(payload.clone()).expect("data");
-        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (sender, mut receiver) = mpsc::channel(crate::federation_aleph_bft_channel_capacity());
         let activity_hint = CdkAlephBftActivityHint::default();
         activity_hint.mark_network_activity([payload.body_hash.to_bytes()]);
         let mut handler = CdkAlephBftFinalizationHandler::with_activity_hint(
@@ -2076,7 +2134,7 @@ mod tests {
         let (public_config, private_members) = keychain_fixture();
         let keychain = CdkAlephBftKeychain::try_new(&public_config, private_members[0].clone())
             .expect("keychain");
-        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (sender, mut receiver) = mpsc::channel(crate::federation_aleph_bft_channel_capacity());
         let replay_readiness = Arc::new(CdkAlephBftReplayReadiness::new(BTreeMap::from([(
             member_id(2),
             8,
@@ -2111,7 +2169,7 @@ mod tests {
         )
         .expect("operation payload");
         let data = CdkAlephBftData::try_from_payload(payload).expect("data");
-        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (sender, mut receiver) = mpsc::channel(crate::federation_aleph_bft_channel_capacity());
         let activity_hint = CdkAlephBftActivityHint::default();
         activity_hint.mark_network_activity([operation_id.to_bytes()]);
         let mut handler = CdkAlephBftFinalizationHandler::with_activity_hint(
@@ -2142,7 +2200,7 @@ mod tests {
         let second = module_fact_payload(4);
         let first_data = CdkAlephBftData::try_from_payload(first.clone()).expect("first data");
         let second_data = CdkAlephBftData::try_from_payload(second.clone()).expect("second data");
-        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (sender, mut receiver) = mpsc::channel(crate::federation_aleph_bft_channel_capacity());
         let mut handler = CdkAlephBftFinalizationHandler::new(sender, keychain, 11);
 
         handler.batch_finalized(vec![
@@ -2191,7 +2249,7 @@ mod tests {
             FederationAlephBftUnitPayload::new(federation_id(99), member_id(4), 88, 77, Vec::new())
                 .expect("empty payload");
         let valid = module_fact_payload(6);
-        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let (sender, mut receiver) = mpsc::channel(crate::federation_aleph_bft_channel_capacity());
         let mut handler = CdkAlephBftFinalizationHandler::new(sender, keychain, 12);
 
         handler.batch_finalized(vec![
@@ -2320,6 +2378,7 @@ mod tests {
             BTreeMap::new(),
             activity_hint.clone(),
             keychain,
+            crate::federation_aleph_bft_channel_capacity(),
         )
         .await
         .expect("session io");
@@ -2386,6 +2445,7 @@ mod tests {
             BTreeMap::new(),
             CdkAlephBftActivityHint::default(),
             keychain,
+            crate::federation_aleph_bft_channel_capacity(),
         )
         .await
         .expect("session io");
@@ -2447,6 +2507,7 @@ mod tests {
             BTreeMap::new(),
             CdkAlephBftActivityHint::default(),
             keychain,
+            crate::federation_aleph_bft_channel_capacity(),
         )
         .await
         .expect("session io");

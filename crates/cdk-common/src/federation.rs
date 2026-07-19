@@ -748,6 +748,14 @@ pub enum FederationError {
         /// Maximum pending item count.
         max: usize,
     },
+    /// Inbound AlephBFT network admission exceeded the bounded queue budget.
+    #[error("AlephBFT inbound queue backpressure: session={session_id}, {detail}")]
+    AlephBftBackpressure {
+        /// AlephBFT session whose inbound queue is full.
+        session_id: u64,
+        /// Which bounded budget was exceeded.
+        detail: String,
+    },
     /// Waiting for an accepted operation response would exceed the configured limit.
     #[error("Federation response waiter limit exceeded: waiting={waiting}, max={max}")]
     ResponseWaiterLimitExceeded {

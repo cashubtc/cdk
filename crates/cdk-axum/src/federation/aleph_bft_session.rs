@@ -69,6 +69,7 @@ pub(crate) struct FederationAlephBftLiveSessionOptions {
     delay_config: Option<DelayConfig>,
     automatic_rotation_limit: Option<usize>,
     replay_target_next_unit_index_by_member: BTreeMap<MemberId, u64>,
+    aleph_bft_channel_capacity: usize,
     #[cfg(test)]
     panic_session_task: bool,
     #[cfg(test)]
@@ -91,6 +92,14 @@ impl FederationAlephBftLiveSessionOptions {
             pump_config,
             ..Self::default()
         }
+    }
+
+    /// Override the bounded AlephBFT channel capacity for this session
+    /// (tests use small values; production keeps the default).
+    #[cfg(test)]
+    pub(crate) fn with_aleph_bft_channel_capacity(mut self, capacity: usize) -> Self {
+        self.aleph_bft_channel_capacity = capacity;
+        self
     }
 
     pub(crate) fn from_sync_config(
@@ -231,6 +240,7 @@ impl Default for FederationAlephBftLiveSessionOptions {
             delay_config: None,
             automatic_rotation_limit: None,
             replay_target_next_unit_index_by_member: BTreeMap::new(),
+            aleph_bft_channel_capacity: crate::FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY,
             #[cfg(test)]
             panic_session_task: false,
             #[cfg(test)]
@@ -354,7 +364,7 @@ pub(crate) struct AlephBftSessionSupervisor {
     activity_hint: CdkAlephBftActivityHint,
     replay_readiness: Arc<CdkAlephBftReplayReadiness>,
     spawn_handle: CdkAlephBftTokioSpawnHandle,
-    activity_sender: mpsc::UnboundedSender<FederationOperationId>,
+    activity_sender: mpsc::Sender<FederationOperationId>,
     tasks: Mutex<Option<AlephBftSessionTasks>>,
 }
 
@@ -452,10 +462,10 @@ impl AlephBftSessionSupervisor {
         if !broadcast {
             return;
         }
-        if self.activity_sender.send(operation_id).is_err() {
-            tracing::warn!(
+        if self.activity_sender.try_send(operation_id).is_err() {
+            tracing::debug!(
                 %operation_id,
-                "AlephBFT activity broadcaster is not available"
+                "AlephBFT activity broadcast queue is full or closed; dropping activity hint"
             );
         }
     }
@@ -710,12 +720,16 @@ where
         options.replay_target_next_unit_index_by_member.clone(),
         activity_hint.clone(),
         keychain.clone(),
+        options.aleph_bft_channel_capacity,
     )
     .await?;
     let replay_readiness = session_io.replay_readiness();
     let pending_activity_operation_ids = pending_aleph_bft_operation_ids(&db, session_id).await?;
     let (local_io, finalized_units) = session_io.into_parts();
-    let (network, mut network_handle) = CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair();
+    let (network, mut network_handle) =
+        CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair_with_capacity(
+            options.aleph_bft_channel_capacity,
+        );
     let inbound = Arc::new(CdkAlephBftNetworkInboundHandle::with_activity_hint(
         session_id,
         &network_handle,
@@ -751,7 +765,7 @@ where
     let terminator = Terminator::create_root(exit_receiver, "cdk-aleph-bft-session");
     let spawn_handle = CdkAlephBftTokioSpawnHandle::default();
     let generation = next_aleph_bft_session_generation()?;
-    let (essential_event_sender, essential_event_receiver) = mpsc::unbounded_channel();
+    let (essential_event_sender, essential_event_receiver) = mpsc::channel(64);
     let (published_sender, published_receiver) = oneshot::channel();
     let (activation_sender, activation_receiver) = watch::channel(false);
 
@@ -790,9 +804,11 @@ where
             Ok(()) => AlephBftSessionCompletion::Completed,
             Err(_) => AlephBftSessionCompletion::Panicked,
         };
-        let _ = root_event_sender.send(AlephBftEssentialTaskEvent::Root(completion));
+        let _ = root_event_sender
+            .send(AlephBftEssentialTaskEvent::Root(completion))
+            .await;
     });
-    let (activity_sender, activity_receiver) = mpsc::unbounded_channel();
+    let (activity_sender, activity_receiver) = mpsc::channel(64);
     let activity_activation = activation_receiver.clone();
     let activity_client = client.clone();
     let activity_db = Arc::clone(&db);
@@ -893,10 +909,14 @@ where
         };
         match AssertUnwindSafe(pump).catch_unwind().await {
             Ok(()) => {
-                let _ = network_event_sender.send(AlephBftEssentialTaskEvent::NetworkPumpStopped);
+                let _ = network_event_sender
+                    .send(AlephBftEssentialTaskEvent::NetworkPumpStopped)
+                    .await;
             }
             Err(_) => {
-                let _ = network_event_sender.send(AlephBftEssentialTaskEvent::NetworkPumpPanicked);
+                let _ = network_event_sender
+                    .send(AlephBftEssentialTaskEvent::NetworkPumpPanicked)
+                    .await;
             }
         }
     });
@@ -920,20 +940,24 @@ where
         match AssertUnwindSafe(apply_loop).catch_unwind().await {
             Ok(Ok(())) => {
                 let _ = apply_event_sender
-                    .send(AlephBftEssentialTaskEvent::FinalizedPayloadApplyStopped);
+                    .send(AlephBftEssentialTaskEvent::FinalizedPayloadApplyStopped)
+                    .await;
             }
             Ok(Err(err)) => {
                 tracing::error!(
                     "AlephBFT finalized-payload apply task stopped after a non-retryable error: {}",
                     err
                 );
-                let _ = apply_event_sender.send(
-                    AlephBftEssentialTaskEvent::FinalizedPayloadApplyFailed(err.to_string()),
-                );
+                let _ = apply_event_sender
+                    .send(AlephBftEssentialTaskEvent::FinalizedPayloadApplyFailed(
+                        err.to_string(),
+                    ))
+                    .await;
             }
             Err(_) => {
                 let _ = apply_event_sender
-                    .send(AlephBftEssentialTaskEvent::FinalizedPayloadApplyPanicked);
+                    .send(AlephBftEssentialTaskEvent::FinalizedPayloadApplyPanicked)
+                    .await;
             }
         }
     });
@@ -1044,7 +1068,7 @@ async fn run_aleph_bft_activity_broadcast_loop<T>(
     db: DynMintDatabase,
     activity_hint: CdkAlephBftActivityHint,
     mut pending_operation_ids: BTreeSet<FederationOperationId>,
-    mut activity_receiver: mpsc::UnboundedReceiver<FederationOperationId>,
+    mut activity_receiver: mpsc::Receiver<FederationOperationId>,
 ) where
     T: Transport + 'static,
 {
@@ -1279,7 +1303,7 @@ fn spawn_federation_aleph_bft_session_completion_watcher<T>(
     completed_session: u64,
     generation: u64,
     published_receiver: oneshot::Receiver<()>,
-    mut essential_event_receiver: mpsc::UnboundedReceiver<AlephBftEssentialTaskEvent>,
+    mut essential_event_receiver: mpsc::Receiver<AlephBftEssentialTaskEvent>,
 ) -> JoinHandle<()>
 where
     T: Transport + 'static,
@@ -1728,7 +1752,7 @@ where
 
 async fn run_federation_aleph_bft_finalized_unit_apply_loop(
     state: MintState,
-    mut finalized_units: tokio::sync::mpsc::UnboundedReceiver<CdkAlephBftFinalizedUnit>,
+    mut finalized_units: tokio::sync::mpsc::Receiver<CdkAlephBftFinalizedUnit>,
     fail_next_finalized_payload_apply: bool,
 ) -> Result<(), cdk::Error> {
     while let Some(finalized_unit) = finalized_units.recv().await {
@@ -1866,7 +1890,7 @@ mod tests {
         let stopped = Arc::new(AtomicUsize::new(0));
         let task = || pending_supervised_task(Arc::clone(&started), Arc::clone(&stopped));
         let (exit_sender, _exit_receiver) = oneshot::channel();
-        let (activity_sender, _activity_receiver) = mpsc::unbounded_channel();
+        let (activity_sender, _activity_receiver) = mpsc::channel(64);
         let supervisor = AlephBftSessionSupervisor {
             session_id: 0,
             generation: 1,

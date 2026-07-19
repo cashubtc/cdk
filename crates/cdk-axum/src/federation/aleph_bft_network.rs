@@ -14,8 +14,8 @@ use parity_scale_codec::{Decode, Encode};
 use tokio::sync::mpsc;
 
 use super::aleph_bft_runtime::{
-    CdkAlephBftActivityHint, CdkAlephBftKeychain, CdkAlephBftNetworkData, CdkAlephBftNetworkHandle,
-    CdkAlephBftOutboundMessage,
+    CdkAlephBftActivityHint, CdkAlephBftInboundEnvelope, CdkAlephBftKeychain,
+    CdkAlephBftNetworkData, CdkAlephBftNetworkHandle, CdkAlephBftOutboundMessage,
 };
 use super::peer_client::FederationRestPeerClient;
 
@@ -82,7 +82,8 @@ pub(crate) trait CdkAlephBftNetworkInboundQueue: fmt::Debug + Send + Sync {
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct CdkAlephBftNetworkInboundHandle<D> {
     session_id: u64,
-    incoming: mpsc::UnboundedSender<D>,
+    incoming: mpsc::Sender<CdkAlephBftInboundEnvelope<D>>,
+    buffered_inbound_bytes: Arc<std::sync::atomic::AtomicUsize>,
     activity_hint: CdkAlephBftActivityHint,
     seen_consensus_activity: Arc<Mutex<CdkAlephBftSeenConsensusActivity>>,
     _message: PhantomData<fn() -> D>,
@@ -112,6 +113,7 @@ impl<D> CdkAlephBftNetworkInboundHandle<D> {
         Self {
             session_id,
             incoming: handle.incoming_sender(),
+            buffered_inbound_bytes: handle.buffered_inbound_bytes(),
             activity_hint,
             seen_consensus_activity: Arc::new(Mutex::new(
                 CdkAlephBftSeenConsensusActivity::default(),
@@ -182,9 +184,38 @@ where
             ));
         }
         let activity_ids = message.consensus_activity_ids();
-        self.incoming.send(message).map_err(|_| {
-            cdk::Error::Custom("AlephBFT network message receiver is closed".to_string())
-        })?;
+        let byte_budget = crate::federation_aleph_bft_inbound_byte_budget();
+        let buffered = self
+            .buffered_inbound_bytes
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if buffered.saturating_add(actual) > byte_budget {
+            return Err(cdk::Error::from(
+                cdk::federation::FederationError::AlephBftBackpressure {
+                    session_id: self.session_id,
+                    detail: format!(
+                        "inbound byte budget {byte_budget} exceeded (buffered={buffered}, incoming={actual})"
+                    ),
+                },
+            ));
+        }
+        self.incoming
+            .try_send(CdkAlephBftInboundEnvelope {
+                data: message,
+                byte_len: actual,
+            })
+            .map_err(|err| match err {
+                mpsc::error::TrySendError::Full(_) => {
+                    cdk::Error::from(cdk::federation::FederationError::AlephBftBackpressure {
+                        session_id: self.session_id,
+                        detail: "inbound queue is at the bounded message-count budget".to_string(),
+                    })
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    cdk::Error::Custom("AlephBFT network message receiver is closed".to_string())
+                }
+            })?;
+        self.buffered_inbound_bytes
+            .fetch_add(actual, std::sync::atomic::Ordering::Relaxed);
         self.mark_new_consensus_activity(activity_ids);
 
         Ok(actual)

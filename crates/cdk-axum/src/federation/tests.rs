@@ -21721,9 +21721,11 @@ async fn aleph_bft_network_retry_queue_evicts_oldest_delivery_at_bound() {
     let client =
         FederationRestPeerClient::new(transport.clone(), &public_config, local_private.clone())
             .expect("peer client");
-    let (network, mut handle) = CdkAlephBftNetwork::<u64>::new_pair();
-    let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
+    // This test exercises the retry-queue bound, not the bounded session
+    // channel, so give the pair enough capacity to hold every message.
     let message_count = CDK_ALEPH_BFT_NETWORK_RETRY_QUEUE_LIMIT + 1;
+    let (network, mut handle) = CdkAlephBftNetwork::<u64>::new_pair_with_capacity(message_count);
+    let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
 
     for payload in 0..message_count as u64 {
         network.send(payload, Recipient::Everyone);
@@ -22647,6 +22649,10 @@ impl Drop for ApplyRetryBudgetOverrideGuard {
             .store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }
+
+/// Test-scale inbound channel budget used by the backpressure regression so
+/// the flood stays small and deterministic.
+const FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY_TEST: u64 = 128;
 
 #[tokio::test]
 async fn recovery_candidate_fetch_falls_back_from_withholding_first_source() {
@@ -26271,6 +26277,177 @@ async fn private_status_routes_read_persisted_journal_after_runtime_reset() {
     );
     assert!(local_status.peer_status.materialized_state_digest.is_some());
     assert!(!local_status.materialized_state_rows.is_empty());
+}
+
+#[test]
+fn aleph_bft_inbound_network_queue_rejects_flood_beyond_bounded_budget() {
+    crate::FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY_OVERRIDE.store(
+        FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY_TEST,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let _guard = AlephBftChannelCapacityOverrideGuard;
+    let (_network, handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    let inbound = CdkAlephBftNetworkInboundHandle::<u64>::new(0, &handle);
+    let request =
+        |sequence: u64| FederationAlephBftNetworkMessageRequest::new(0, sequence.encode());
+
+    // An authenticated member flooding the private REST admission path must
+    // be rejected with bounded backpressure instead of growing the inbound
+    // queue without limit.
+    let mut rejection = None;
+    for sequence in 0..=FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY_TEST {
+        match inbound.queue_request(&request(sequence)) {
+            Ok(_) => {}
+            Err(err) => {
+                rejection = Some(err);
+                break;
+            }
+        }
+    }
+    let err = rejection.expect("flood beyond the bounded budget must be rejected");
+    assert!(
+        err.to_string().contains("backpressure"),
+        "rejection must name bounded backpressure: {err}"
+    );
+}
+
+struct AlephBftChannelCapacityOverrideGuard;
+
+impl Drop for AlephBftChannelCapacityOverrideGuard {
+    fn drop(&mut self) {
+        crate::FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY_OVERRIDE
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[tokio::test]
+async fn aleph_bft_finalized_channel_backpressure_never_drops_and_overflow_halts_bounded() {
+    let _budget_guard = ApplyRetryBudgetOverrideGuard::set(60_000);
+    let session = start_two_member_aleph_bft_live_session(
+        fast_aleph_bft_live_session_options(
+            CdkAlephBftNetworkPumpConfig {
+                session_id: 0,
+                max_messages_per_tick: 128,
+                max_peer_deliveries_per_message: 128,
+            },
+            500,
+        )
+        .with_aleph_bft_channel_capacity(32),
+    )
+    .await
+    .expect("start two-member live session");
+
+    // Member 1's finalized-unit application stays contended: its bounded
+    // channel must hold the finalized work without loss while apply is stuck.
+    session
+        .first_state
+        .federation
+        .permanent_federation_apply_contention_for_test();
+    let mut operation_ids = Vec::new();
+    for _ in 0..24 {
+        let envelope = mint_quote_envelope(&session.second_state, &QuoteId::new());
+        let operation_id = envelope.operation_id().expect("operation id");
+        session
+            .second_state
+            .submit_federation_envelope_to_consensus(envelope)
+            .await
+            .expect("submit operation");
+        operation_ids.push(operation_id);
+    }
+    for operation_id in &operation_ids {
+        assert_eq!(
+            wait_for_terminal_operation(&session.second_state, *operation_id).await,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    // With the backlog below the bounded budget, no finalized unit is
+    // dropped: after the contention clears, every unit applies in order.
+    session
+        .first_state
+        .federation
+        .components
+        .faults
+        .permanent_federation_apply_contention
+        .store(false, Ordering::Release);
+    for operation_id in &operation_ids {
+        assert_eq!(
+            wait_for_terminal_operation(&session.first_state, *operation_id).await,
+            FederationOperationStatus::Applied,
+            "no finalized unit may be dropped while apply is behind"
+        );
+    }
+
+    // Exceed the bounded budget: the session must tear down with a bounded
+    // transition instead of growing memory without limit. The supervisor
+    // rotates the session from durable history, so no finalized work is
+    // lost.
+    session
+        .first_state
+        .federation
+        .permanent_federation_apply_contention_for_test();
+    let overflow_state = session.second_state.clone();
+    let mut overflow_operation_ids = Vec::new();
+    let overflow_submissions = tokio::spawn(async move {
+        for _ in 0..48 {
+            let envelope = mint_quote_envelope(&overflow_state, &QuoteId::new());
+            let operation_id = envelope.operation_id().expect("operation id");
+            submit_live_operation_allowing_pending_timeout(&overflow_state, envelope).await;
+            overflow_operation_ids.push(operation_id);
+        }
+    });
+    time::timeout(Duration::from_secs(30), async {
+        loop {
+            if session._first_handle.state() == AlephBftSessionSupervisorState::Stopped {
+                break;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("overflow must stop the session with a bounded transition");
+    assert!(
+        session
+            .second_state
+            .federation_aleph_bft_live_session_active()
+            .await
+    );
+
+    // The rotated session replays from durable history: after the contention
+    // clears, the backlogged units apply, proving nothing was dropped.
+    session
+        .first_state
+        .federation
+        .components
+        .faults
+        .permanent_federation_apply_contention
+        .store(false, Ordering::Release);
+    let mut applied_overflow = 0usize;
+    time::timeout(Duration::from_secs(30), async {
+        loop {
+            let applied = session
+                .first_state
+                .mint
+                .localstore()
+                .get_federation_journal_entries()
+                .await
+                .expect("journal lookup after rotation")
+                .len();
+            if applied >= 24 {
+                applied_overflow = applied;
+                break;
+            }
+            time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("rotated session must replay the backlog without loss");
+    assert!(
+        applied_overflow >= 24,
+        "rotated session must apply the backlogged finalized units"
+    );
+    overflow_submissions.abort();
+    let _ = overflow_submissions.await;
 }
 
 #[tokio::test]

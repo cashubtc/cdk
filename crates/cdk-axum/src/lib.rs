@@ -117,6 +117,52 @@ pub(crate) fn federation_apply_retry_budget() -> Duration {
     FEDERATION_APPLY_RETRY_BUDGET
 }
 
+/// Bounded message-count budget for each AlephBFT runtime channel
+/// (inbound/outbound network, finalized units, and essential/activity
+/// events). Bounds memory growth independent of the bounded
+/// pending-operation mempool.
+#[cfg(feature = "federation")]
+pub(crate) const FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY: usize = 4_096;
+/// Bounded total buffered byte budget for the inbound AlephBFT network
+/// queue. Together with the per-message size cap and the count budget, this
+/// keeps an authenticated flood from growing process memory without limit.
+#[cfg(feature = "federation")]
+pub(crate) const FEDERATION_ALEPH_BFT_INBOUND_BYTE_BUDGET: usize = 256 * 1024 * 1024;
+
+#[cfg(all(test, feature = "federation"))]
+pub(crate) static FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "federation")]
+pub(crate) fn federation_aleph_bft_channel_capacity() -> usize {
+    #[cfg(test)]
+    {
+        let override_capacity = FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY_OVERRIDE
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if override_capacity > 0 {
+            return usize::try_from(override_capacity).unwrap_or(usize::MAX);
+        }
+    }
+    FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY
+}
+
+#[cfg(all(test, feature = "federation"))]
+pub(crate) static FEDERATION_ALEPH_BFT_INBOUND_BYTE_BUDGET_OVERRIDE: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "federation")]
+pub(crate) fn federation_aleph_bft_inbound_byte_budget() -> usize {
+    #[cfg(test)]
+    {
+        let override_budget = FEDERATION_ALEPH_BFT_INBOUND_BYTE_BUDGET_OVERRIDE
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if override_budget > 0 {
+            return usize::try_from(override_budget).unwrap_or(usize::MAX);
+        }
+    }
+    FEDERATION_ALEPH_BFT_INBOUND_BYTE_BUDGET
+}
+
 #[cfg(feature = "federation")]
 const FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD: u64 = 20;
 #[cfg(feature = "federation")]

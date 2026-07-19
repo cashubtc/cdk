@@ -58,7 +58,7 @@ is well established but its root cause is not.
 | 10 | `F4` | Apply and backup retries have no terminal budget | High | 97% | Session/member starvation | Completed |
 | 11 | `P3` | Exact evidence quorum is not backed by an enforced evidence model | High | 97% | Quote/proofs | Completed |
 | 12 | `R1` | Recovery candidate fetch is pinned to the first source | High | 97% | Startup recovery | Completed |
-| 13 | `A1` | Aleph queues lack bounded backpressure | High security gate | 97% | Process/quorum resource exhaustion | Not started |
+| 13 | `A1` | Aleph queues lack bounded backpressure | High security gate | 97% | Process/quorum resource exhaustion | Completed |
 | 14 | `R4` | Finalized-item catch-up response-count mismatch remains unexplained | High investigation | 95% failure / 55% cause | Member recovery | Not started |
 | 15 | `R2` | Opaque Aleph backup can pin startup to unusable bytes | High | 85% | Startup/live-session recovery | Not started |
 | 16 | `P7` | Staged melt commits need complete crash/replay proof | High pending proof | 75% | Quote/proofs | Not started |
@@ -72,6 +72,7 @@ is well established but its root cause is not.
 | 24 | `DB-003` | First observer can fix incorrect immutable deposit fields permanently | Critical | 99% | On-chain quote/funds | Not started |
 | 25 | `DB-004` | Rebuilt wallet connectors cannot supply original melt change outputs | Medium availability | 95% | Wallet melt recovery after restart | Not started |
 | 26 | `DB-005` | Payment evidence trust model is not committed or validated | High | 99% | Quote/proofs; all independent-backend liquidity | Not started |
+| 27 | `DB-006` | Shared AlephBFT inbound budget lacks per-member fairness | Medium | 90% | Consensus message admission under an authenticated flood | Not started |
 
 Discovered bugs are appended after the existing ranked milestones in discovery
 order with their legacy IDs preserved; `DB-001` was recorded on 2026-07-18
@@ -556,6 +557,40 @@ legacy ID and discovery history.
   processors cannot satisfy it, and prove with independent backends that a
   quote resolves under the committed model.
 - **Proposed position in the milestone order:** after `DB-004` (position 26).
+
+### DB-006 — Shared AlephBFT inbound budget lacks per-member fairness
+
+- **Discovery date and originating milestone:** 2026-07-19, milestone 13
+  (`A1`) fix evaluation.
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium; 90% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** one authenticated
+  member flooding the private `/federation/v1/aleph-bft/messages` admission
+  path.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** milestone 13 bounded the inbound AlephBFT queue with one
+  shared channel capacity
+  (`crates/cdk-axum/src/lib.rs` `FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY`) and
+  one shared buffered-byte budget
+  (`FEDERATION_ALEPH_BFT_INBOUND_BYTE_BUDGET`, tracked by the shared
+  `buffered_inbound_bytes` counter in
+  `crates/cdk-axum/src/federation/aleph_bft_network.rs`). Both bounds are
+  global: a single flooding member can consume the whole budget, so honest
+  members' messages are rejected with `AlephBftBackpressure` (HTTP 429)
+  until the consumer drains. The violated invariant is the `A1` required
+  correction's fairness clause: admission failure should be isolated to the
+  flooding member, not shared by honest members. AlephBFT rebroadcast and
+  catch-up bound the blast radius (delayed, not lost, honest units), so the
+  impact is transient admission starvation rather than memory exhaustion.
+- **Why distinct from an existing finding:** milestone 13 resolved the
+  unbounded-memory finding itself; this is the residual fairness gap the
+  required-correction text names separately ("fairness per member").
+- **Likely simplest federation-only correction and required proof:** track
+  the inbound byte/queue budget per member (evicting or rejecting only the
+  member over its share), and prove with a two-member live session that one
+  flooding member is throttled while the honest member's messages are still
+  admitted.
+- **Proposed position in the milestone order:** after `DB-005` (position 27).
 
 No other additional bugs have yet been recorded through this milestone workflow.
 
@@ -2608,25 +2643,125 @@ the existing reconnect backoff), and only fully verified candidates persist.
 
 ### 13. Aleph queues lack bounded backpressure (`A1`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with an executed focused harness
+against the unmodified pre-fix worktree, driving the exact authenticated
+private-REST admission path
+(`CdkAlephBftNetworkInboundHandle::queue_request`, the same function the
+`/federation/v1/aleph-bft/messages` route calls):
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-axum --features federation aleph_bft_inbound_network_queue_rejects_flood_beyond_bounded_budget -- --nocapture`
 
-**Fix check and evaluation:** Not run
+FAILED with `flood beyond the bounded budget must be rejected`: 129 valid
+network messages were all accepted into the inbound queue with no bound,
+no backpressure, and no fail-fast — the exact unbounded-queue finding. A
+blocked or slow consumer lets an authenticated flood or a stuck apply path
+grow process memory without limit until members are removed. No production
+code had been edited; only the regression in
+`crates/cdk-axum/src/federation/tests.rs` was added.
 
-**Commit subject:** Not assigned
+**Minimal fix:** Federation-only changes. The network pair, the
+finalized-unit channel, and the essential-task/activity event channels are
+now bounded `mpsc::channel`s
+(`FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY = 4096` for the consensus channels,
+64 for the event channels, both in `crates/cdk-axum/src/lib.rs` with
+`cfg(test)` overrides). Inbound requests carry
+`CdkAlephBftInboundEnvelope { data, byte_len }` against a shared
+buffered-byte counter (`FEDERATION_ALEPH_BFT_INBOUND_BYTE_BUDGET = 256
+MiB`); `queue_request` checks the byte budget and `try_send`s, rejecting
+beyond either bound with the new
+`FederationError::AlephBftBackpressure { session_id, detail }`
+(`crates/cdk-common/src/federation.rs`), mapped to HTTP 429 in
+`crates/cdk-axum/src/federation.rs` — fail-fast backpressure at the exact
+authenticated private-REST admission path. Consensus outbound `send`
+(a synchronous upstream trait method that cannot block) drops with a debug
+log at the bound; AlephBFT rebroadcast and catch-up cover it.
+`queue_finalized_unit` panics at the bound so the supervisor tears the
+session generation down and rotates; rotation replays the durable AlephBFT
+backup and journal, so no finalized work is dropped. A `cfg(test)`
+`with_aleph_bft_channel_capacity` session option lets tests use small
+bounds. No standalone code changed.
 
-**Milestone observations:** None yet
+**Fix check and evaluation:** Fix check on 2026-07-19 with the exact
+confirmation scenario. Post-fix:
+
+`cargo test -p cdk-axum --features federation aleph_bft_inbound_network_queue_rejects_flood_beyond_bounded_budget -- --nocapture`
+
+`1 passed`: with the capacity override at 128, the 129th flooded message is
+rejected with `AlephBftBackpressure` instead of queueing without limit.
+
+New saturation harness proving no finalized work is dropped:
+
+`cargo test -p cdk-axum --features federation aleph_bft_finalized_channel_backpressure_never_drops_and_overflow_halts_bounded -- --nocapture`
+
+`1 passed`: phase 1 queues 24 finalized operations against a permanently
+contended apply path and every one applies after the contention clears;
+phase 2 exceeds the bound, the session generation stops (bounded
+transition, supervisor `Stopped`), the rotated session replays the backlog
+from durable history (journal count asserted), and member 2 stays live
+throughout.
+
+Broader evaluation on 2026-07-19:
+
+- `rustfmt --check` on every changed file — clean (only the three
+  pre-existing `crates/cdk-common/src/federation/operation.rs` regions
+  recorded in earlier milestones remain).
+- `cargo test -p cdk-axum --features federation` — `502 passed; 0 failed; 2
+  ignored` on two consecutive runs (one intermediate run had a single
+  non-reproducing flaky failure).
+- `cargo test -p cdk --lib` — `540 passed; 0 failed`.
+- `cargo test -p cdk --features federation,mint --lib` — `781 passed; 0
+  failed`.
+- `cargo test -p cdk-common` — `112 passed; 0 failed`.
+- `cargo check -p cdk-common -p cdk -p cdk-axum --no-default-features` —
+  passed; all changed code is federation-gated.
+- `cargo clippy -p cdk-axum --features federation --all-targets` — only
+  pre-existing feature-gated federation lints; none in the changed code.
+
+Not run: a live multi-process OOM (the harnesses drive the exact admission
+and finalized-queue functions through authenticated routes and a real
+two-member live session).
+
+**Commit subject:** `fix: bound AlephBFT channels with backpressure and byte budgets`
+
+**Milestone observations:** 2026-07-18 — Milestone 12 is committed
+(`5a5e1f215`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the channel topology, admission
+points, and consumer budget shape are inspected.
+
+2026-07-19 — Fix and evaluation complete; milestone kept. Observations
+during the fix: (1) Bounding the essential-event channel turned `send()`
+from synchronous into a future, and three apply-task event sends were left
+unawaited — `let _ = future;` compiles silently, so
+`FinalizedPayloadApplyStopped/Failed/Panicked` were dropped and the
+milestone-10 halt path would have been disabled in production. The existing
+`F4` regressions
+(`permanent_apply_contention_transitions_to_bounded_operator_repairable_state`,
+`aleph_bft_non_retryable_finalized_payload_failure_halts_exact_generation`)
+caught it immediately; every bounded send is now awaited. (2) Overflow
+semantics: `batch_finalized` is a synchronous upstream callback, so
+blocking backpressure is impossible there; at the bound the session task
+panics, the supervisor tears the generation down, and automatic rotation
+replays the durable backup and journal. The member does not permanently
+halt on overflow and nothing finalized is dropped; at production capacity
+permanent apply contention still halts through the milestone-10 retry
+budget long before the channel bound is reached. (3)
+`aleph_bft_network_retry_queue_evicts_oldest_delivery_at_bound` now builds
+its pair with explicit `new_pair_with_capacity(message_count)` because it
+targets the retry-queue bound, not the new default channel capacity. (4)
+Fairness gap: the inbound bounds are shared, not per-member — one
+authenticated flooder can exhaust them and cause transient 429s for honest
+members until the consumer drains. Recorded as `DB-006`.
 
 **Severity:** High security gate
 
 **Confidence:** 97% — source-proven and previously reported
 
-**Finding status:** Open security release gate, source-proven
+**Finding status:** Resolved on 2026-07-19 with red-before-green runtime
+proof; per-member fairness follow-up queued as `DB-006`
 
-Core channels are unbounded:
+Core channels were unbounded:
 
 - inbound/outbound network pair:
   `crates/cdk-axum/src/federation/aleph_bft_runtime.rs:152-184`
@@ -2637,13 +2772,22 @@ Core channels are unbounded:
 - essential-task and activity events:
   `crates/cdk-axum/src/federation/aleph_bft_session.rs:750-795`
 
-An authenticated flood, blocked application lock, or stuck backup writer can
-make memory growth independent of the bounded pending-operation mempool. OOM or
-scheduler collapse can remove enough members to stop quorum.
+An authenticated flood, blocked application lock, or stuck backup writer
+could make memory growth independent of the bounded pending-operation
+mempool. OOM or scheduler collapse can remove enough members to stop
+quorum.
 
-**Required correction:** bounded queues and byte budgets, backpressure/fail-fast
-semantics at private REST admission, fairness per member, and saturation tests
-that do not drop already finalized work.
+**Required correction:** bounded queues and byte budgets, backpressure/
+fail-fast semantics at private REST admission, fairness per member, and
+saturation tests that do not drop already finalized work. The first,
+second, and fourth clauses are implemented and proven by this milestone:
+every listed channel is bounded with explicit capacity, the inbound byte
+budget is enforced at admission, the admission path fails fast with HTTP
+429, and both saturation harnesses prove finalized work is never dropped
+(queued units apply after contention clears; overflow rotates and replays
+from durable history). The fairness clause is partially met: admission
+failure is now bounded and fail-fast but shared across members, so
+per-member fairness is queued as `DB-006`.
 
 Reference: [security audit SEC-2026-07-17-05](federated-cashu-security-audit-2026-07-17.md#sec-2026-07-17-05--alephbft-channels-do-not-provide-bounded-backpressure).
 

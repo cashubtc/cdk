@@ -638,7 +638,8 @@ fn federation_error_status(err: &FederationError) -> StatusCode {
         FederationError::ConflictingOperation { .. } => StatusCode::CONFLICT,
         FederationError::CheckpointAuditNotLocal { .. } => StatusCode::FORBIDDEN,
         FederationError::PendingConsensusMempoolFull { .. }
-        | FederationError::ResponseWaiterLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
+        | FederationError::ResponseWaiterLimitExceeded { .. }
+        | FederationError::AlephBftBackpressure { .. } => StatusCode::TOO_MANY_REQUESTS,
         FederationError::ConsensusQuorumUnavailable { .. }
         | FederationError::RuntimeUnavailable { .. }
         | FederationError::NodeAwaitingQuorum { .. }
