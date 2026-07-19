@@ -20,6 +20,7 @@ federation = [
     "dep:cdk-frost-bip32",
     "dep:cdk-bdk",
 ]
+federation-bark = ["federation", "dep:cdk-bark", "cdk-bark/federation-bark"]
 redis = ["dep:redis"]
 integration-tests = []
 prometheus = ["dep:cdk-prometheus", "cdk-common/prometheus"]
@@ -37,6 +38,7 @@ cdk-common.workspace = true
 cdk-frost = { workspace = true, optional = true }
 cdk-frost-bip32 = { workspace = true, optional = true }
 cdk-bdk = { workspace = true, optional = true, features = ["bitcoin-rpc", "esplora"] }
+cdk-bark = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 tokio.workspace = true
 tracing.workspace = true

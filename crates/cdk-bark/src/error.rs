@@ -37,6 +37,45 @@ pub enum Error {
     /// Protected receive-secret state is unavailable.
     #[error("protected receive-secret store is unavailable")]
     MissingReceiveSecretStore,
+    /// The receive-secret storage key is invalid.
+    #[error("protected receive-secret encryption key is invalid")]
+    InvalidReceiveSecretEncryptionKey,
+    /// The receive-secret database could not be opened.
+    #[error("protected receive-secret store could not be opened")]
+    ReceiveSecretStoreOpenFailed,
+    /// A protected receive-secret write or read failed.
+    #[error("protected receive-secret persistence failed")]
+    ReceiveSecretPersistence,
+    /// A private prepare-secret request failed validation.
+    #[error("protected receive-secret request is invalid")]
+    ReceiveSecretRequestInvalid,
+    /// An existing action is bound to different protected secret state.
+    #[error("protected receive-secret record conflicts with existing state")]
+    ReceiveSecretConflict,
+    /// A protected receive-secret record is missing.
+    #[error("protected receive-secret is unavailable")]
+    ReceiveSecretUnavailable,
+    /// A protected receive-secret record is malformed or unauthenticated.
+    #[error("protected receive-secret record is invalid")]
+    ReceiveSecretRecordInvalid,
+    /// Receive-secret encryption failed.
+    #[error("protected receive-secret encryption failed")]
+    ReceiveSecretEncryptionFailed,
+    /// Receive-secret decryption failed closed.
+    #[error("protected receive-secret decryption failed")]
+    ReceiveSecretDecryptionFailed,
+    /// Durable acknowledgement construction failed.
+    #[error("protected receive-secret acknowledgement failed")]
+    ReceiveSecretAcknowledgementFailed,
+    /// Accepted/terminal lifecycle evidence is inconsistent.
+    #[error("protected receive-secret lifecycle transition is invalid")]
+    ReceiveSecretLifecycleInvalid,
+    /// Retention is below the accepted v1 minimum or overflows.
+    #[error("protected receive-secret retention is invalid")]
+    ReceiveSecretRetentionInvalid,
+    /// Encrypted backup bytes are malformed, oversized, or inconsistent.
+    #[error("protected receive-secret backup is invalid")]
+    ReceiveSecretBackupInvalid,
     /// The configured unit is not satoshis.
     #[error("federated Bark supports only the satoshi unit")]
     UnsupportedUnit,

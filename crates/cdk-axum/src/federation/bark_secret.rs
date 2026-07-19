@@ -1,0 +1,179 @@
+//! Authenticated private transport for protected Bark receive secrets.
+
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::extract::{Json, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use cdk::federation::{
+    FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecret,
+    FederationBarkReceiveSecretAcknowledgement, FederationBarkReceiveSecretBinding,
+    FederationConfig, FederationRestMessageKind, FederationSignedRequest, MemberConfigPublic,
+};
+use futures::{stream, StreamExt};
+use tracing::instrument;
+
+use crate::MintState;
+
+use super::{admit_private_request, federation_error_response, federation_runtime_config};
+
+/// Bounded collector for one exact protected receive-secret replication set.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct FederationBarkReceiveSecretCoordinator<'a, T> {
+    client: &'a super::peer_client::FederationRestPeerClient<T>,
+}
+
+#[allow(dead_code)]
+impl<'a, T> FederationBarkReceiveSecretCoordinator<'a, T>
+where
+    T: cdk_http_client::Transport,
+{
+    pub(crate) fn new(client: &'a super::peer_client::FederationRestPeerClient<T>) -> Self {
+        Self { client }
+    }
+
+    /// Replicate an exact preimage to a sorted eligible set and require a
+    /// signature threshold including the designated invoice actor.
+    pub(crate) async fn distribute(
+        &self,
+        config: &FederationConfig,
+        binding: &FederationBarkReceiveSecretBinding,
+        secret: &FederationBarkReceiveSecret,
+        eligible: &[MemberConfigPublic],
+    ) -> anyhow::Result<Vec<FederationBarkReceiveSecretAcknowledgement>> {
+        binding.validate(config)?;
+        let mut previous = None;
+        for member in eligible {
+            if previous.is_some_and(|previous| previous >= member.member_id)
+                || config.member(member.member_id) != Some(member)
+            {
+                anyhow::bail!("Bark receive-secret recipients are not a sorted configured set");
+            }
+            previous = Some(member.member_id);
+        }
+        if eligible.len() < usize::from(config.threshold_params.signature_threshold)
+            || !eligible
+                .iter()
+                .any(|member| member.member_id == binding.actor)
+        {
+            anyhow::bail!(
+                "Bark receive-secret recipients cannot satisfy actor and threshold policy"
+            );
+        }
+
+        let mut acknowledgements = stream::iter(eligible.iter())
+            .map(|member| async move {
+                let request = FederationBarkPrepareReceiveSecretRequest::new(
+                    binding.clone(),
+                    member.member_id,
+                    *secret.as_bytes(),
+                );
+                self.client
+                    .prepare_bark_receive_secret(member, &request)
+                    .await
+            })
+            .buffer_unordered(
+                self.client
+                    .sync_config
+                    .private_rest_outbound_concurrency_limit,
+            )
+            .filter_map(|result| async move { result.ok() })
+            .collect::<Vec<_>>()
+            .await;
+        acknowledgements.sort_by_key(|acknowledgement| acknowledgement.member);
+        if acknowledgements.len() < usize::from(config.threshold_params.signature_threshold)
+            || !acknowledgements
+                .iter()
+                .any(|acknowledgement| acknowledgement.member == binding.actor)
+        {
+            anyhow::bail!("Bark receive-secret acknowledgement threshold was not reached");
+        }
+        Ok(acknowledgements)
+    }
+}
+
+#[instrument(skip_all)]
+pub(super) async fn post_bark_receive_secret(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationBarkPrepareReceiveSecretRequest>>,
+) -> Result<Json<FederationSignedRequest<FederationBarkReceiveSecretAcknowledgement>>, Response> {
+    let kind = FederationRestMessageKind::BarkReceiveSecretPrepare;
+    let verified = admit_private_request(&state, &payload, kind).await?;
+    state
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .map_err(bark_secret_unavailable_response)?;
+    let runtime_config = federation_runtime_config(&state)?;
+    let public_config = runtime_config.public_config().clone();
+    let private_config = runtime_config.private_config().clone();
+    let federation_id = runtime_config.federation_id();
+    let store = state
+        .federation
+        .bark_receive_secrets()
+        .cloned()
+        .ok_or_else(bark_secret_store_unavailable_response)?;
+    let request = payload.payload.clone();
+    let sender = verified.sender();
+    let received_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| bark_secret_store_unavailable_response())?
+        .as_secs();
+    let acknowledgement = tokio::task::spawn_blocking(move || {
+        store.prepare_receive_secret(
+            &request,
+            sender,
+            &public_config,
+            &private_config,
+            received_at,
+        )
+    })
+    .await
+    .map_err(|_| bark_secret_store_unavailable_response())?
+    .map_err(bark_secret_request_response)?;
+    state
+        .record_federation_sequence(kind, verified.sender(), verified.sequence())
+        .await;
+    let runtime_config = federation_runtime_config(&state)?;
+    let response = FederationSignedRequest::new_signed(
+        federation_id,
+        verified.sender(),
+        verified.sequence(),
+        kind,
+        acknowledgement,
+        runtime_config.private_config(),
+    )
+    .map_err(federation_error_response)?;
+    Ok(Json(response))
+}
+
+fn bark_secret_request_response(error: cdk_bark::Error) -> Response {
+    let status = match error {
+        cdk_bark::Error::ReceiveSecretRequestInvalid
+        | cdk_bark::Error::ReceiveSecretConflict
+        | cdk_bark::Error::ReceiveSecretRecordInvalid => StatusCode::BAD_REQUEST,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    tracing::warn!(
+        status = status.as_u16(),
+        "Federation Bark receive-secret request failed"
+    );
+    (status, "federation Bark receive-secret request failed").into_response()
+}
+
+fn bark_secret_store_unavailable_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "federation Bark receive-secret store is unavailable",
+    )
+        .into_response()
+}
+
+fn bark_secret_unavailable_response(error: cdk::Error) -> Response {
+    let _ = error;
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        "federation Bark receive-secret service is unavailable",
+    )
+        .into_response()
+}

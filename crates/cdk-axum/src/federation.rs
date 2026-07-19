@@ -35,6 +35,8 @@ mod aleph_bft_runtime;
 mod aleph_bft_session;
 mod backup_routes;
 pub(crate) mod bark_custody;
+#[cfg(feature = "federation-bark")]
+mod bark_secret;
 mod broadcast;
 mod catch_up_routes;
 mod checkpoint_catch_up;
@@ -78,6 +80,8 @@ use self::bark_custody::{
     post_bark_custody_abort, post_bark_threshold_dh, post_bark_virtual_musig_commitment,
     post_bark_virtual_musig_partial,
 };
+#[cfg(feature = "federation-bark")]
+use self::bark_secret::post_bark_receive_secret;
 pub(crate) use self::broadcast::FederationTransactionBroadcaster;
 use self::catch_up_routes::post_journal;
 use self::checkpoint_routes::{
@@ -341,8 +345,15 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .layer(DefaultBodyLimit::max(
             cdk::federation::FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES,
         ));
+    #[cfg(feature = "federation-bark")]
+    let bark_secret_router = Router::new().route(
+        "/bark/receive-secrets",
+        post(post_bark_receive_secret).layer(DefaultBodyLimit::max(
+            cdk::federation::FEDERATION_MAX_BARK_RECEIVE_SECRET_REQUEST_BYTES,
+        )),
+    );
 
-    Router::new()
+    let router = Router::new()
         .merge(dkg_router)
         .merge(frost_signing_router)
         .route("/config", get(get_public_config))
@@ -375,7 +386,10 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
             post(post_journal).layer(DefaultBodyLimit::max(
                 cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
             )),
-        )
+        );
+    #[cfg(feature = "federation-bark")]
+    let router = router.merge(bark_secret_router);
+    router
 }
 
 pub(crate) async fn get_public_config(

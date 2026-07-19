@@ -98,6 +98,8 @@ pub enum FederationRestMessageKind {
     BarkThresholdDh,
     /// Burn one Bark custody protocol session after ambiguity or failover.
     BarkCustodyAbort,
+    /// Persist one protected Bark receive secret before acknowledging it.
+    BarkReceiveSecretPrepare,
     /// Share a member signature over a DKG/setup transcript hash.
     DkgTranscriptSignature,
     /// Confirm that one member assembled the exact finalized DKG config.
@@ -162,6 +164,7 @@ impl FederationRestMessageKind {
             Self::BarkVirtualMusigPartial => b"bark_virtual_musig_partial",
             Self::BarkThresholdDh => b"bark_threshold_dh",
             Self::BarkCustodyAbort => b"bark_custody_abort",
+            Self::BarkReceiveSecretPrepare => b"bark_receive_secret_prepare",
             Self::DkgTranscriptSignature => b"dkg_transcript_signature",
             Self::DkgActivation => b"dkg_activation",
             Self::SubmitOperation => b"submit_operation",
@@ -5922,6 +5925,7 @@ mod tests {
             FederationRestMessageKind::FrostSigningPackage,
             FederationRestMessageKind::FrostSigningAbort,
             FederationRestMessageKind::FrostAggregateResult,
+            FederationRestMessageKind::BarkReceiveSecretPrepare,
         ] {
             assert!(!kind.has_durable_replay_state(), "unexpected durable kind");
         }

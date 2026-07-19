@@ -10,6 +10,7 @@ mod address_allocation;
 mod backup;
 mod bark_operation;
 mod bark_projection;
+mod bark_secret;
 mod chain_observation;
 mod checkpoint;
 mod config;
@@ -79,6 +80,12 @@ pub use self::bark_projection::{
     FederationBarkActionRecord, FederationBarkDerivationAllocationRecord,
     FederationBarkObservationRecord, FederationBarkProjectionSnapshot,
     FederationBarkReservationRecord, FederationBarkTransitionRecord, FederationBarkVtxoRecord,
+};
+pub use self::bark_secret::{
+    ark_server_commitment, payment_hash_for_preimage, preimage_commitment,
+    FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecret,
+    FederationBarkReceiveSecretBinding, FEDERATION_BARK_RECEIVE_SECRET_VERSION,
+    FEDERATION_MAX_BARK_RECEIVE_SECRET_REQUEST_BYTES,
 };
 pub use self::chain_observation::{
     FederationAllocatedAddressRef, FederationChainObservation, FederationChainObservationEvidence,

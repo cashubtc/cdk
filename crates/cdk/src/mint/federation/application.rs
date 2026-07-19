@@ -716,6 +716,11 @@ impl Mint {
         entry: &FederationJournalEntry,
         operation: &FederationBarkOperation,
     ) -> Result<(), Error> {
+        operation.validate()?;
+        if let FederationBarkOperation::ReceiveIntent(intent) = operation {
+            let runtime_config = self.federation_config().ok_or(Error::Internal)?;
+            intent.validate_secret_acknowledgements(runtime_config.public_config())?;
+        }
         let mut transaction = self.localstore.begin_transaction().await?;
         let outcome = transaction
             .apply_federation_bark_operation(entry, operation)

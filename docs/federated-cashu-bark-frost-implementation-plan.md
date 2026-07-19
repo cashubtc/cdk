@@ -2,10 +2,10 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5 and 7 complete, Milestones
-6 and 8 are locally complete but retain the dependency-publication and
-PostgreSQL-runtime verification gates recorded below, and no production Bark
-payment backend exists yet
+Status: implementation in progress; Milestones 0-5, 7, and 9 complete,
+Milestones 6 and 8 are locally complete but retain the dependency-publication
+and PostgreSQL-runtime verification gates recorded below, and no production
+Bark payment backend exists yet
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -33,7 +33,7 @@ machine-specific metadata in this document.
 | 6. `cdk-bark` skeleton | In progress (dependency publication gate) | Local construction, custody, redaction, feature-isolation, strict-clippy, and standalone regression gates pass; immutable Bark source is not remotely fetchable yet | `feat: add federated Bark runtime skeleton` (local-only progress commit) |
 | 7. Bark operations | Complete (2026-07-19) | Nested canonical operation family, typed authorization, conflict/idempotency tests, result lookup, full common regression suite, and workspace compatibility passed | `feat: add typed Bark federation operations` |
 | 8. SQL projection | In progress (PostgreSQL runtime gate) | New paired-only migrations, all 83 historical migrations byte-locked, deterministic action/VTXO projection, retry-state hardening, SQLite's 168 tests, strict changed-crate clippy, and workspace checks pass; PostgreSQL compiles but the local test role is absent | `feat: add deterministic Bark SQL projection` (local-only progress commit) |
-| 9. Receive secrets | Pending | — | — |
+| 9. Receive secrets | Complete (2026-07-19) | Authenticated 4 KiB private transport, AES-GCM persistence-before-acknowledgement and crash recovery, threshold/actor signature checks, verified-checkpoint retention, encrypted backup/restore, and feature-isolation checks passed | `feat: protect federated Bark receive secrets` |
 | 10. Incoming preparation | Pending | — | — |
 | 11. Incoming claim | Pending | — | — |
 | 12. Outgoing planning | Pending | — | — |
@@ -2179,6 +2179,82 @@ Exit criteria:
 - no previously existing migration byte changes.
 
 ### Milestone 9: protected receive-secret distribution
+
+Status: complete on 2026-07-19. The feature-gated private service and runtime
+handle are implemented; Milestone 10 will attach the already-opened Bark
+runtime to production mint-daemon construction when it activates the incoming
+backend.
+
+Implementation record:
+
+- added one canonical public binding containing the federation, action, quote,
+  actor, amounts, payment/preimage commitments, locator, mailbox scope, Ark
+  server, network, policies, proof mode, and expiry, while keeping the preimage
+  exclusively in the authenticated private request;
+- bounded the complete protected-secret request at the frozen 4 KiB limit,
+  authenticated sender and recipient through the existing signed federation
+  transport, and added a bounded collector that accepts only a sorted configured
+  recipient set and requires the signature threshold including the invoice
+  actor;
+- replaced placeholder acknowledgement bytes with deterministic member
+  identity signatures over a domain-separated federation/member/record-hash
+  transcript. The client verifies both signatures and that the acknowledgement
+  signer is the member contacted;
+- added a separate member-local Redb store encrypted with AES-256-GCM and an
+  independently backed-up operator key. The binding, record hash,
+  acknowledgement, receipt time, and accepted/terminal lifecycle metadata are
+  all AEAD-authenticated, keys and plaintext owners zeroize on drop, and debug
+  and error surfaces remain redacted;
+- split preparation into two durable transactions: encrypted persistence first,
+  acknowledgement persistence second. A crash after the first commit leaves an
+  unacknowledged but decryptable record, and an exact retry completes the same
+  deterministic acknowledgement without replacing the secret or locator;
+- made action conflicts fail closed, exact retries idempotent, and backup import
+  bounded, fully authenticated, decrypt-checked, atomic, and idempotent. Exported
+  backups contain ciphertext and public bindings, never plaintext or the
+  encryption key;
+- retain unaccepted orphans for at least 24 hours, retain accepted intents
+  indefinitely, and permit terminal cleanup only after at least the configured
+  30-day policy and a cryptographically verified quorum checkpoint that covers
+  the terminal journal index; and
+- verify acknowledgement signatures, sorted uniqueness, threshold, and actor
+  eligibility both at operation admission and deterministic replay/application,
+  so catch-up cannot bypass the protected-secret gate.
+
+Verification evidence:
+
+```text
+cargo test -p cdk-bark --features federation-bark --offline
+  7 passed; doc tests passed
+  includes persistence-before-ack crash/reopen, exact retry, two-member
+  threshold recovery, forgery/replay/duplicate rejection, cleanup boundaries,
+  verified-checkpoint retention, redaction, and encrypted backup/restore
+
+cargo test -p cdk-common --features federation --offline
+  438 passed, 1 ignored; doc tests passed
+
+cargo test -p cdk --features federation --lib mint::federation:: --offline
+  139 passed
+
+cargo check -p cdk-axum --features federation-bark --all-targets --offline
+cargo check -p cdk-mintd --features federation-bark --offline -j 1
+cargo check -p cdk-bark --no-default-features --offline
+cargo check -p cdk-axum --features federation --no-default-features --offline
+cargo check --workspace --all-targets --offline -j 1
+  passed; ordinary federation and empty cdk-bark feature surfaces remain clean
+
+cargo clippy -p cdk-common --features federation --all-targets --offline -- -D warnings
+cargo clippy -p cdk-bark --features federation-bark --all-targets --offline -- -D warnings
+  passed; the reviewed Bark dependency retains its two pre-existing warnings
+
+cargo fmt -p cdk-common -p cdk-bark -p cdk-axum -p cdk-mintd -p cdk -- --check
+git diff --check
+  passed
+```
+
+Strict whole-`cdk` and whole-`cdk-axum` clippy still reach unrelated
+pre-existing Rust 1.95 warnings in unchanged code. No warning reported by those
+runs points to the receive-secret modules or their integration arms.
 
 Deliverables:
 

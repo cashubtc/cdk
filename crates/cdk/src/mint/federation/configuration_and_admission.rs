@@ -702,7 +702,11 @@ impl FederationRuntimeConfig {
             }
             FederationOperation::Bark(operation) => {
                 operation.validate()?;
-                self.validate_federation_observer(operation.claimed_author())
+                self.validate_federation_observer(operation.claimed_author())?;
+                if let FederationBarkOperation::ReceiveIntent(intent) = operation {
+                    intent.validate_secret_acknowledgements(&self.public_config)?;
+                }
+                Ok(())
             }
         }
     }

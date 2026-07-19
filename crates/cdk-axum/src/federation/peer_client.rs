@@ -30,6 +30,10 @@ use cdk::federation::{
     FEDERATION_MAX_ALEPH_BFT_BACKUP_REQUEST_BYTES, FEDERATION_MAX_CHECKPOINT_CATCH_UP_PAGE_BYTES,
     FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES, FEDERATION_REST_API_VERSION,
 };
+#[cfg(feature = "federation-bark")]
+use cdk::federation::{
+    FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecretAcknowledgement,
+};
 use cdk_http_client::{Async, HttpError, Transport};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -971,6 +975,36 @@ where
             .into());
         }
         Ok(())
+    }
+
+    #[cfg(feature = "federation-bark")]
+    pub(crate) async fn prepare_bark_receive_secret(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationBarkPrepareReceiveSecretRequest,
+    ) -> anyhow::Result<FederationBarkReceiveSecretAcknowledgement> {
+        if request.recipient != member.member_id {
+            anyhow::bail!("Bark receive-secret request recipient differs from target member");
+        }
+        let kind = FederationRestMessageKind::BarkReceiveSecretPrepare;
+        let signed = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationBarkReceiveSecretAcknowledgement> = self
+            .http_post_with_timeout(
+                member,
+                "bark/receive-secrets",
+                "Bark receive-secret preparation",
+                &signed,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        response
+            .payload
+            .verify(&self.public_config, &request.binding)?;
+        if response.payload.member != member.member_id {
+            anyhow::bail!("Bark receive-secret acknowledgement signer differs from target member");
+        }
+        Ok(response.payload)
     }
 
     pub(crate) async fn submit_dkg_transcript_signature(

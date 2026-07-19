@@ -394,6 +394,13 @@ impl FederationNodeRuntime {
         self.components.wallet.frost_signing.as_ref()
     }
 
+    #[cfg(feature = "federation-bark")]
+    pub(crate) fn bark_receive_secrets(
+        &self,
+    ) -> Option<&Arc<cdk_bark::FederatedBarkReceiveSecretStore>> {
+        self.components.wallet.bark_receive_secrets.as_ref()
+    }
+
     #[cfg(test)]
     pub(crate) fn set_frost_signing_for_test(
         &mut self,

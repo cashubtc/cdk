@@ -3,6 +3,7 @@
 use core::fmt;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use bark::custody::{KeySourceDescriptor, KeySourceKind};
 use bark::{Config as BarkConfig, WalletSeed};
@@ -16,7 +17,7 @@ use cdk_common::CurrencyUnit;
 use cdk_frost_bark::FrostBark;
 use sha2::{Digest, Sha256};
 
-use crate::Error;
+use crate::{Error, FederatedBarkReceiveSecretEncryptionKey};
 
 const CUSTODY_DESCRIPTOR_DOMAIN: &[u8] = b"cdk/bark/custody-descriptor/v1";
 
@@ -112,6 +113,25 @@ pub struct FederatedBarkStoreAvailability {
     pub receive_secret_store: bool,
 }
 
+/// Member-local protected receive-secret database and at-rest key.
+#[derive(Clone)]
+pub struct FederatedBarkReceiveSecretStoreConfig {
+    /// Application-scoped Redb file, separate from Bark SQLite.
+    pub database_path: PathBuf,
+    /// Operator-provided key that must be backed up independently.
+    pub encryption_key: Arc<FederatedBarkReceiveSecretEncryptionKey>,
+}
+
+impl fmt::Debug for FederatedBarkReceiveSecretStoreConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FederatedBarkReceiveSecretStoreConfig")
+            .field("database_path", &"<redacted>")
+            .field("encryption_key", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Accepted satoshi limits advertised by the payment adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FederatedBarkLimits {
@@ -163,6 +183,8 @@ pub struct FederatedBarkLocalConfig {
     pub create_if_missing: bool,
     /// Required durable-store availability.
     pub stores: FederatedBarkStoreAvailability,
+    /// Protected receive-secret persistence opened before the Bark wallet.
+    pub receive_secret_store: FederatedBarkReceiveSecretStoreConfig,
     /// Accepted satoshi payment limits.
     pub limits: FederatedBarkLimits,
 }
@@ -178,6 +200,7 @@ impl fmt::Debug for FederatedBarkLocalConfig {
             .field("operational_seed", &"<redacted>")
             .field("create_if_missing", &self.create_if_missing)
             .field("stores", &self.stores)
+            .field("receive_secret_store", &self.receive_secret_store)
             .field("limits", &self.limits)
             .finish()
     }
@@ -320,6 +343,14 @@ impl ValidatedFederatedBarkConfig {
             return Err(Error::MissingFrostProtocolStore);
         }
         if !local.stores.receive_secret_store {
+            return Err(Error::MissingReceiveSecretStore);
+        }
+        if local
+            .receive_secret_store
+            .database_path
+            .as_os_str()
+            .is_empty()
+        {
             return Err(Error::MissingReceiveSecretStore);
         }
         if local.bark.server_address.trim().is_empty() {

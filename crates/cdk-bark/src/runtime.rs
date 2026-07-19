@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use crate::{
-    CdkFrostVtxoCustody, Error, FederatedBarkLimits, FederatedBarkLocalConfig, FederatedBarkScope,
-    ValidatedFederatedBarkConfig,
+    CdkFrostVtxoCustody, Error, FederatedBarkLimits, FederatedBarkLocalConfig,
+    FederatedBarkReceiveSecretStore, FederatedBarkScope, ValidatedFederatedBarkConfig,
 };
 
 /// Whether member-local Bark state can serve an accepted frontier.
@@ -63,6 +63,7 @@ pub struct FederatedBarkRuntime {
     scope: FederatedBarkScope,
     limits: FederatedBarkLimits,
     wallet: FederationWallet,
+    receive_secrets: Arc<FederatedBarkReceiveSecretStore>,
     health: RwLock<RuntimeHealth>,
 }
 
@@ -73,6 +74,7 @@ impl fmt::Debug for FederatedBarkRuntime {
             .field("scope", &self.scope)
             .field("limits", &self.limits)
             .field("wallet", &"<member-local Bark projection>")
+            .field("receive_secrets", &"<encrypted member-local store>")
             .field("health", &"<bounded runtime status>")
             .finish()
     }
@@ -87,6 +89,10 @@ impl FederatedBarkRuntime {
     ) -> Result<Arc<Self>, Error> {
         let validated =
             ValidatedFederatedBarkConfig::validate(federation_enabled, federation, &local)?;
+        let receive_secrets = Arc::new(FederatedBarkReceiveSecretStore::open(
+            &local.receive_secret_store.database_path,
+            Arc::clone(&local.receive_secret_store.encryption_key),
+        )?);
         let custody = Arc::new(CdkFrostVtxoCustody::new(validated.clone()));
         validated.validate_descriptor(&custody.descriptor())?;
         let expected_operational_fingerprint = local.operational_seed.fingerprint();
@@ -126,6 +132,7 @@ impl FederatedBarkRuntime {
             scope: validated.scope(),
             limits,
             wallet,
+            receive_secrets,
             health: RwLock::new(RuntimeHealth {
                 local_frontier: 0,
                 degraded_reason: None,
@@ -143,6 +150,12 @@ impl FederatedBarkRuntime {
     #[must_use]
     pub const fn limits(&self) -> FederatedBarkLimits {
         self.limits
+    }
+
+    /// Encrypted member-local receive-secret store.
+    #[must_use]
+    pub fn receive_secret_store(&self) -> Arc<FederatedBarkReceiveSecretStore> {
+        Arc::clone(&self.receive_secrets)
     }
 
     /// Purely derive one accepted locator without database or network I/O.

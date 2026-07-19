@@ -30,7 +30,7 @@ info-page = ["cdk-axum/info-page"]
 federation = ["bdk", "cdk/federation", "cdk/wallet", "cdk-common/federation", "cdk-axum/federation", "cdk-sqlite?/federation", "cdk-sqlite?/wallet", "cdk-postgres?/federation"]
 # Federated Bark is deliberately separate so ordinary federation builds do not
 # resolve or compile the Bark dependency graph.
-federation-bark = ["federation", "dep:cdk-bark", "cdk-bark/federation-bark"]
+federation-bark = ["federation", "dep:cdk-bark", "cdk-bark/federation-bark", "cdk-axum/federation-bark"]
 # Local/regtest-only trusted-dealer setup and runtime admission.
 federation-test-utils = ["federation", "fakewallet", "cdk-bark?/federation-test-utils"]
 
