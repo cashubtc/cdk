@@ -2,7 +2,7 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-1 complete, no production CDK Bark integration exists yet
+Status: implementation in progress; Milestones 0-2 complete, no production CDK Bark integration exists yet
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -23,7 +23,7 @@ machine-specific metadata in this document.
 |---|---|---|---|
 | 0. Protocol and threat model | Complete (2026-07-19) | Decision record below; targeted Bark cryptography tests and standalone CDK regression baseline passed | `docs: freeze federated Bark protocol model` |
 | 1. Bark federation facade | Complete (2026-07-19) | Exact locator/import/send/receive APIs, deterministic custody sessions, stable replay results, two-clean-database and per-step restart tests, standalone and minimal-feature Bark checks passed | `feat: add explicit federation wallet facade` |
-| 2. Bark wire and authorization | Pending | — | — |
+| 2. Bark wire and authorization | Complete (2026-07-19) | Versioned bounded encodings for FROST, virtual MuSig2, and threshold DH; typed accepted-operation references; exact transcript reconstruction and adversarial mutation tests passed | `feat: define canonical Bark custody wire` |
 | 3. CDK Bark application | Pending | — | — |
 | 4. Durable MuSig2 and DH | Pending | — | — |
 | 5. Custody transport | Pending | — | — |
@@ -1509,6 +1509,67 @@ Tests:
 - restart between every action step returns to the same semantic plan.
 
 ### Milestone 2: canonical Bark wire and authorization contract
+
+Status: complete on 2026-07-19.
+
+Implementation commit in Bark: `6fd88165` (`feat: define canonical Bark custody wire`).
+
+Implementation record:
+
+- added custody wire version 1 with a 64 KiB complete request/response limit and
+  a 64-participant/commitment limit, plus canonical decode-by-reencode checks;
+- exposed validating public encoders and decoders for standard-FROST requests,
+  nonce commitments, complete ordered commitment sets, and signature shares;
+  virtual-MuSig2 commitment requests, commitments, complete ordered sets,
+  final BIP327 transcripts, and partial shares; and threshold-DH requests,
+  shares, and standalone DLEQ proofs;
+- made threshold-DH requests and DLEQ transcripts bind the accepted attempt and
+  canonical signer set instead of deriving the signer set from whichever
+  responses happened to arrive;
+- replaced `BarkAuthorizationRequest`'s opaque application byte vector with a
+  canonical `FederationBarkAuthorizationReference`, capped at 16 KiB, that
+  binds the federation and application identities/epochs, accepted operation
+  and journal index, Bark action/phase/object, operation kind, exact plan hash,
+  session, locator, protocol family, message/transcript hash, signer set,
+  attempt, network, and Ark server;
+- replaced the inline MuSig commitment fields with a public validating
+  `VirtualMusigCommitmentRequest`, and made every authorization protocol round
+  independently encodable with an explicit kind and version;
+- defined the exact protocol commitment as
+  `SHA256("bark-frost/authorization-protocol-transcript/v1" ||
+  canonical_protocol_bytes)`, so FROST commitment/signature rounds and all
+  three protocol families are domain separated; and
+- documented the participant reconstruction algorithm. A reference is only an
+  identity claim: an honest authorizer must load the accepted journal entry,
+  reconstruct the reference and full protocol transcript, compare canonical
+  bytes and transcript commitment, and verify participant membership before
+  releasing cryptographic material.
+
+Verification evidence:
+
+```text
+cargo test -p frost-federation-core -p bark-frost --locked
+  bark-frost: 5 passed
+  frost-federation-core: 5 passed
+  doc tests: passed
+
+cargo check -p frost-federation-core -p bark-frost --all-targets --locked
+  passed (existing bark-wallet warnings only)
+
+cargo clippy -p frost-federation-core --all-targets --locked -- -D warnings
+  passed
+
+cargo clippy -p bark-frost --all-targets --locked --no-deps -- -D warnings
+  passed for bark-frost (existing dependency warnings only)
+```
+
+The wire tests round-trip every public request, commitment/set, share, final
+MuSig transcript, and DLEQ proof. They reject oversized input, trailing bytes,
+too many participants, malformed values through validating constructors, and
+cross-protocol decoding. The exact-authorizer test reconstructs one accepted
+request for every selected participant, then proves that plan-hash, accepted
+operation, object ordinal, protocol round, message, and Bark operation
+mutations are denied. No migration was added or modified.
 
 Deliverables:
 
