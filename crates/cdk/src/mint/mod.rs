@@ -7,7 +7,7 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use cdk_common::common::{PaymentProcessorKey, QuoteTTL};
 use cdk_common::database::mint::Acquired;
-use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
+use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase, KVStoreTransaction};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
@@ -52,6 +52,88 @@ const CDK_MINT_CONFIG_SECONDARY_NAMESPACE: &str = "config";
 const CDK_MINT_CONFIG_KV_KEY: &str = "mint_info";
 const CDK_MINT_QUOTE_TTL_KV_KEY: &str = "quote_ttl";
 
+/// Writes canonical mint information through an existing database transaction.
+pub async fn write_mint_info_to_transaction<T>(
+    transaction: &mut T,
+    mint_info: &MintInfo,
+) -> Result<(), Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized,
+{
+    let bytes = serde_json::to_vec(mint_info)?;
+    transaction
+        .kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_CONFIG_KV_KEY,
+            &bytes,
+        )
+        .await?;
+    Ok(())
+}
+
+/// Writes canonical quote TTL through an existing database transaction.
+pub async fn write_quote_ttl_to_transaction<T>(
+    transaction: &mut T,
+    quote_ttl: &QuoteTTL,
+) -> Result<(), Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized,
+{
+    let bytes = serde_json::to_vec(quote_ttl)?;
+    transaction
+        .kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_QUOTE_TTL_KV_KEY,
+            &bytes,
+        )
+        .await?;
+    Ok(())
+}
+
+/// Replaces canonical mint information and quote TTL through an existing
+/// database transaction.
+///
+/// Passing `None` removes the corresponding record. This is intended for
+/// callers that must restore both records atomically after a failed startup.
+pub async fn replace_mint_configuration_in_transaction<T>(
+    transaction: &mut T,
+    mint_info: Option<&MintInfo>,
+    quote_ttl: Option<&QuoteTTL>,
+) -> Result<(), Error>
+where
+    T: KVStoreTransaction<database::Error> + ?Sized,
+{
+    match mint_info {
+        Some(mint_info) => write_mint_info_to_transaction(transaction, mint_info).await?,
+        None => {
+            transaction
+                .kv_remove(
+                    CDK_MINT_PRIMARY_NAMESPACE,
+                    CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                    CDK_MINT_CONFIG_KV_KEY,
+                )
+                .await?;
+        }
+    }
+
+    match quote_ttl {
+        Some(quote_ttl) => write_quote_ttl_to_transaction(transaction, quote_ttl).await?,
+        None => {
+            transaction
+                .kv_remove(
+                    CDK_MINT_PRIMARY_NAMESPACE,
+                    CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+                    CDK_MINT_QUOTE_TTL_KV_KEY,
+                )
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Cashu Mint
 #[derive(Clone)]
 pub struct Mint {
@@ -88,6 +170,8 @@ impl std::fmt::Debug for Mint {
 /// State for managing background tasks
 #[derive(Default)]
 struct TaskState {
+    /// Whether payment processors have completed their startup phase.
+    processors_started: bool,
     /// Shutdown signal for all background tasks
     shutdown_notify: Option<Arc<Notify>>,
     /// Handle to the main supervisor task
@@ -267,6 +351,78 @@ impl Mint {
     /// - Payment processor initialization and startup
     /// - Invoice payment monitoring across all configured payment processors
     pub async fn start(&self) -> Result<(), Error> {
+        self.prepare_start().await?;
+        match self.start_prepared().await {
+            Ok(()) => Ok(()),
+            Err(start_error) => {
+                if let Err(stop_error) = self.stop().await {
+                    tracing::error!(
+                        "Failed to clean up prepared mint services after startup error: {}",
+                        stop_error
+                    );
+                }
+                Err(start_error)
+            }
+        }
+    }
+
+    /// Starts payment processors without running recovery or invoice watchers.
+    ///
+    /// This is the pre-activation phase used when an application must finish an
+    /// external activation transaction before the mint runs recovery that can
+    /// mutate financial saga state. Call [`Self::start_prepared`] afterward.
+    pub async fn prepare_start(&self) -> Result<(), Error> {
+        let mut task_state = self.task_state.lock().await;
+
+        if task_state.processors_started || task_state.shutdown_notify.is_some() {
+            return Err(Error::Custom(
+                "Mint background services are already prepared or running".to_owned(),
+            ));
+        }
+
+        tracing::info!("Starting payment processors...");
+        let mut seen_processors = Vec::new();
+        for (key, processor) in self.payment_processors.iter() {
+            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
+                continue;
+            }
+
+            seen_processors.push(Arc::clone(processor));
+            tracing::info!("Starting payment wait task for {:?}", key);
+
+            if let Err(error) = processor.start().await {
+                tracing::error!("Failed to start payment processor for {:?}: {}", key, error);
+                drop(task_state);
+                if let Err(stop_error) = self.stop_payment_processors().await {
+                    tracing::error!(
+                        "Failed to clean up payment processors after startup error: {}",
+                        stop_error
+                    );
+                }
+                return Err(error.into());
+            }
+            tracing::debug!("Successfully started payment processor for {:?}", key);
+        }
+
+        task_state.processors_started = true;
+        tracing::info!("Payment processor startup completed");
+        Ok(())
+    }
+
+    /// Activates recovery and invoice watchers after [`Self::prepare_start`].
+    pub async fn start_prepared(&self) -> Result<(), Error> {
+        let mut task_state = self.task_state.lock().await;
+        if !task_state.processors_started {
+            return Err(Error::Custom(
+                "Mint background services must be prepared before activation".to_owned(),
+            ));
+        }
+        if task_state.shutdown_notify.is_some() {
+            return Err(Error::Custom(
+                "Mint background services are already running".to_owned(),
+            ));
+        }
+
         // Recover from incomplete swap sagas
         // This cleans up incomplete swap operations using persisted saga state
         if let Err(e) = self.recover_from_incomplete_sagas().await {
@@ -282,40 +438,6 @@ impl Mint {
             tracing::error!("Failed to recover incomplete melt sagas: {}", e);
             // Don't fail startup
         }
-
-        let mut task_state = self.task_state.lock().await;
-
-        // Prevent starting if already running
-        if task_state.shutdown_notify.is_some() {
-            return Err(Error::Internal); // Already started
-        }
-
-        // Start all payment processors first
-        tracing::info!("Starting payment processors...");
-        let mut seen_processors = Vec::new();
-        for (key, processor) in self.payment_processors.iter() {
-            // Skip if we've already spawned a task for this processor instance
-            if seen_processors.iter().any(|p| Arc::ptr_eq(p, processor)) {
-                continue;
-            }
-
-            seen_processors.push(Arc::clone(processor));
-
-            tracing::info!("Starting payment wait task for {:?}", key);
-
-            match processor.start().await {
-                Ok(()) => {
-                    tracing::debug!("Successfully started payment processor for {:?}", key);
-                }
-                Err(e) => {
-                    // Log the error but continue with other processors
-                    tracing::error!("Failed to start payment processor for {:?}: {}", key, e);
-                    return Err(e.into());
-                }
-            }
-        }
-
-        tracing::info!("Payment processor startup completed");
 
         // Create shutdown signal
         let shutdown_notify = Arc::new(Notify::new());
@@ -363,6 +485,8 @@ impl Mint {
         let mut task_state = self.task_state.lock().await;
 
         // Take the handles out of the state
+        let processors_started = task_state.processors_started;
+        task_state.processors_started = false;
         let shutdown_notify = task_state.shutdown_notify.take();
         let supervisor_handle = task_state.supervisor_handle.take();
 
@@ -371,8 +495,12 @@ impl Mint {
             (Some(notify), Some(handle)) => (notify, handle),
             _ => {
                 tracing::debug!("Stop called but no background services were running");
-                // Still try to stop payment processors
-                return self.stop_payment_processors().await;
+                drop(task_state);
+                return if processors_started {
+                    self.stop_payment_processors().await
+                } else {
+                    Ok(())
+                };
             }
         };
 
@@ -550,15 +678,8 @@ impl Mint {
     #[instrument(skip_all)]
     pub async fn set_mint_info(&self, mint_info: MintInfo) -> Result<(), Error> {
         tracing::info!("Updating mint info");
-        let mint_info_bytes = serde_json::to_vec(&mint_info)?;
         let mut tx = self.localstore.begin_transaction().await?;
-        tx.kv_write(
-            CDK_MINT_PRIMARY_NAMESPACE,
-            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
-            CDK_MINT_CONFIG_KV_KEY,
-            &mint_info_bytes,
-        )
-        .await?;
+        write_mint_info_to_transaction(tx.as_mut(), &mint_info).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -590,15 +711,8 @@ impl Mint {
     /// Set quote ttl
     #[instrument(skip_all)]
     pub async fn set_quote_ttl(&self, quote_ttl: QuoteTTL) -> Result<(), Error> {
-        let quote_ttl_bytes = serde_json::to_vec(&quote_ttl)?;
         let mut tx = self.localstore.begin_transaction().await?;
-        tx.kv_write(
-            CDK_MINT_PRIMARY_NAMESPACE,
-            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
-            CDK_MINT_QUOTE_TTL_KV_KEY,
-            &quote_ttl_bytes,
-        )
-        .await?;
+        write_quote_ttl_to_transaction(tx.as_mut(), &quote_ttl).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1757,6 +1871,33 @@ mod tests {
         // Should be able to start again after stopping
         mint.start().await.expect("Should be able to restart");
         mint.stop().await.expect("Final stop should work");
+    }
+
+    #[tokio::test]
+    async fn test_prepared_start_defers_background_activation() {
+        let mut supported_units = HashMap::new();
+        let amounts: Vec<u64> = (0..32).map(|i| 2u64.pow(i)).collect();
+        supported_units.insert(CurrencyUnit::default(), (0, amounts));
+        let config = MintConfig::<'_> {
+            supported_units,
+            ..Default::default()
+        };
+        let mint = create_mint(config).await;
+
+        mint.prepare_start()
+            .await
+            .expect("payment processors should prepare");
+        assert!(mint.prepare_start().await.is_err());
+        mint.start_prepared()
+            .await
+            .expect("prepared background services should activate");
+        mint.stop().await.expect("prepared mint should stop");
+
+        assert!(mint.start_prepared().await.is_err());
+        mint.start()
+            .await
+            .expect("normal startup should still work");
+        mint.stop().await.expect("restarted mint should stop");
     }
 
     #[tokio::test]

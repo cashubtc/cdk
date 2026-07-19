@@ -23,6 +23,34 @@ nix develop .#regtest
 
 For more details on available environments, see the [Development Guide](DEVELOPMENT.md).
 
+### Mint configuration
+
+`cdk-mintd` uses its database as the authoritative configuration source after
+an explicit initialization:
+
+```bash
+cdk-mintd config validate --file mint.toml
+cdk-mintd config init --file mint.toml
+cdk-mintd
+```
+
+Normal startup does not reread TOML or apply operational environment
+overrides. Use `cdk-mintd config apply --file mint.toml` to explicitly stage a
+replacement through management RPC; it becomes active after a successful
+restart. The same binary provides `config show`, `config export`,
+`config discard-pending`, and field-specific management commands such as
+`get-info` and `update-motd`.
+
+If a staged configuration prevents startup, the same configuration commands
+support stopped-daemon database recovery with `--offline`.
+
+Work-directory, primary-database, SQLCipher, and RPC connection values remain
+bootstrap inputs. Persisted secret fields use `env:VARIABLE` or
+`file:/absolute/path` references, and resolved values are never stored. This
+initial configuration interface does not use revisions. See the
+[`cdk-mintd` configuration guide](crates/cdk-mintd/README.md#configuration) for
+details.
+
 ## Project structure
 
 The project is split up into several crates in the `crates/` directory:
@@ -50,11 +78,10 @@ The project is split up into several crates in the `crates/` directory:
     * [**cdk-npubcash**](./crates/cdk-npubcash/): npub.cash SDK integration.
     * [**cdk-ffi**](./crates/cdk-ffi/): Foreign Function Interface bindings for other languages.
     * [**cdk-integration-tests**](./crates/cdk-integration-tests/): Integration test suite.
-    * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and cli.
+    * [**cdk-mint-rpc**](./crates/cdk-mint-rpc/): Mint management gRPC server and client library.
 * Binaries:
     * [**cdk-cli**](./crates/cdk-cli/): Cashu wallet CLI.
-    * [**cdk-mintd**](./crates/cdk-mintd/): Cashu Mint Binary.
-    * [**cdk-mint-cli**](./crates/cdk-mint-rpc/): Cashu Mint management gRPC client cli.
+    * [**cdk-mintd**](./crates/cdk-mintd/): Cashu mint daemon and management CLI.
 
 
 ## Implemented [NUTs](https://github.com/cashubtc/nuts/):

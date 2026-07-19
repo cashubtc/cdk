@@ -4,6 +4,9 @@ package cdk_mint_management_v1;
 
 service CdkMint {
     rpc GetInfo(GetInfoRequest) returns (GetInfoResponse) {}
+    rpc GetConfiguration(GetConfigurationRequest) returns (GetConfigurationResponse) {}
+    rpc ApplyConfiguration(ApplyConfigurationRequest) returns (ApplyConfigurationResponse) {}
+    rpc DiscardPendingConfiguration(DiscardPendingConfigurationRequest) returns (GetConfigurationResponse) {}
     rpc UpdateMotd(UpdateMotdRequest) returns (UpdateResponse) {}
     rpc UpdateShortDescription(UpdateDescriptionRequest) returns (UpdateResponse) {}
     rpc UpdateLongDescription(UpdateDescriptionRequest) returns (UpdateResponse) {}
@@ -23,6 +26,28 @@ service CdkMint {
 }
 
 message GetInfoRequest {
+}
+
+message GetConfigurationRequest {
+}
+
+message GetConfigurationResponse {
+    string active_toml = 1;
+    optional string pending_toml = 2;
+    bool restart_required = 3;
+}
+
+message ApplyConfigurationRequest {
+    string config_toml = 1;
+    bool validate_only = 2;
+}
+
+message ApplyConfigurationResponse {
+    bool restart_required = 1;
+    repeated string changed_fields = 2;
+}
+
+message DiscardPendingConfigurationRequest {
 }
 
 message ContactInfo {
