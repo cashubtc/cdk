@@ -11,10 +11,7 @@ use tracing::instrument;
 
 use crate::MintState;
 
-use super::{
-    acquire_private_rest_admission, cdk_error_response, federation_error_response,
-    verify_federation_request,
-};
+use super::{admit_private_request, cdk_error_response, federation_error_response};
 
 #[instrument(skip_all)]
 pub(super) async fn post_wallet_transaction_status(
@@ -22,8 +19,7 @@ pub(super) async fn post_wallet_transaction_status(
     Json(payload): Json<FederationSignedRequest<FederationWalletTransactionRequest>>,
 ) -> Result<Json<FederationWalletTransactionStatus>, Response> {
     let kind = FederationRestMessageKind::WalletTransactionStatus;
-    let _permit = acquire_private_rest_admission(&state, kind)?;
-    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let verified = admit_private_request(&state, &payload, kind).await?;
     payload
         .payload
         .validate()
@@ -34,7 +30,7 @@ pub(super) async fn post_wallet_transaction_status(
         .map_err(cdk_error_response)?;
     let status = transaction_status(&state, payload.payload.proposal_id).await?;
     state
-        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .record_federation_sequence(kind, verified.sender(), verified.sequence())
         .await;
     Ok(Json(status))
 }
@@ -45,8 +41,7 @@ pub(super) async fn post_wallet_rebroadcast(
     Json(payload): Json<FederationSignedRequest<FederationWalletTransactionRequest>>,
 ) -> Result<Json<FederationWalletRebroadcastResponse>, Response> {
     let kind = FederationRestMessageKind::WalletRebroadcast;
-    let _permit = acquire_private_rest_admission(&state, kind)?;
-    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let verified = admit_private_request(&state, &payload, kind).await?;
     payload
         .payload
         .validate()
@@ -67,7 +62,7 @@ pub(super) async fn post_wallet_rebroadcast(
         > 0;
     let status = transaction_status(&state, payload.payload.proposal_id).await?;
     state
-        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .record_federation_sequence(kind, verified.sender(), verified.sequence())
         .await;
     Ok(Json(FederationWalletRebroadcastResponse {
         version: FEDERATION_REST_API_VERSION,

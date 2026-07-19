@@ -11,8 +11,7 @@ use tracing::instrument;
 use crate::MintState;
 
 use super::{
-    acquire_private_rest_admission, anyhow_response, federation_error_response,
-    federation_runtime_config, verify_federation_request,
+    admit_private_request, anyhow_response, federation_error_response, federation_runtime_config,
 };
 
 #[instrument(skip_all)]
@@ -21,14 +20,13 @@ pub(super) async fn post_aleph_bft_backup(
     Json(payload): Json<FederationSignedRequest<FederationAlephBftBackupRequest>>,
 ) -> Result<Json<FederationSignedRequest<FederationAlephBftBackupResponse>>, Response> {
     let kind = FederationRestMessageKind::AlephBftBackup;
-    let _permit = acquire_private_rest_admission(&state, kind)?;
-    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let verified = admit_private_request(&state, &payload, kind).await?;
     payload
         .payload
         .validate()
         .map_err(federation_error_response)?;
     state
-        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .record_federation_sequence(kind, verified.sender(), verified.sequence())
         .await;
 
     let runtime_config = federation_runtime_config(&state)?;
@@ -43,8 +41,8 @@ pub(super) async fn post_aleph_bft_backup(
         .map_err(federation_error_response)?;
     let response = FederationSignedRequest::new_signed(
         runtime_config.federation_id(),
-        verified.sender,
-        verified.sequence,
+        verified.sender(),
+        verified.sequence(),
         kind,
         response,
         runtime_config.private_config(),

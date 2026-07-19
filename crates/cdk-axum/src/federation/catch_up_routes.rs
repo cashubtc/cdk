@@ -11,8 +11,7 @@ use tracing::instrument;
 use crate::MintState;
 
 use super::{
-    acquire_private_rest_admission, anyhow_response, federation_error_response,
-    federation_runtime_config, verify_federation_request,
+    admit_private_request, anyhow_response, federation_error_response, federation_runtime_config,
 };
 
 const DEFAULT_FEDERATION_CATCH_UP_LIMIT: u16 = 100;
@@ -23,14 +22,13 @@ pub(super) async fn post_journal(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationJournalCatchUpRequest>>,
 ) -> Result<Json<FederationJournalCatchUpResponse>, Response> {
-    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::CatchUp)?;
     let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::CatchUp).await?;
+        admit_private_request(&state, &payload, FederationRestMessageKind::CatchUp).await?;
     state
         .record_federation_sequence(
             FederationRestMessageKind::CatchUp,
-            verified.sender,
-            verified.sequence,
+            verified.sender(),
+            verified.sequence(),
         )
         .await;
     tracing::debug!(

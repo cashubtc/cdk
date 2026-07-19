@@ -16,9 +16,8 @@ use tracing::instrument;
 use crate::MintState;
 
 use super::{
-    acquire_private_rest_admission, anyhow_response, cdk_error_response, local_peer_status,
+    admit_private_request, anyhow_response, cdk_error_response, local_peer_status,
     local_peer_status_with_materialized_rows, payment_observation_report_summaries,
-    verify_federation_request,
 };
 
 #[instrument(skip_all)]
@@ -26,14 +25,13 @@ pub(super) async fn post_status(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationPeerStatusRequest>>,
 ) -> Result<Json<FederationPeerStatus>, Response> {
-    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::Status)?;
     let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::Status).await?;
+        admit_private_request(&state, &payload, FederationRestMessageKind::Status).await?;
     state
         .record_federation_sequence(
             FederationRestMessageKind::Status,
-            verified.sender,
-            verified.sequence,
+            verified.sender(),
+            verified.sequence(),
         )
         .await;
     let peer_status = local_peer_status(&state).await.map_err(anyhow_response)?;
@@ -45,14 +43,13 @@ pub(super) async fn post_local_status(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationPeerStatusRequest>>,
 ) -> Result<Json<FederationLocalStatusResponse>, Response> {
-    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::Status)?;
     let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::Status).await?;
+        admit_private_request(&state, &payload, FederationRestMessageKind::Status).await?;
     state
         .record_federation_sequence(
             FederationRestMessageKind::Status,
-            verified.sender,
-            verified.sequence,
+            verified.sender(),
+            verified.sequence(),
         )
         .await;
     let (peer_status, materialized_state_rows) = if payload.payload.include_materialized_rows {

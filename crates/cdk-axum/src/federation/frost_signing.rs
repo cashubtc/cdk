@@ -28,10 +28,7 @@ use tracing::instrument;
 
 use crate::MintState;
 
-use super::{
-    acquire_private_rest_admission, federation_error_response, federation_runtime_config,
-    verify_federation_request,
-};
+use super::{admit_private_request, federation_error_response, federation_runtime_config};
 
 const RESULT_CACHE_LIMIT: usize = 1_024;
 
@@ -769,8 +766,7 @@ pub(super) async fn post_frost_signing_commitment(
     Json(payload): Json<FederationSignedRequest<FederationFrostCommitmentRequest>>,
 ) -> Result<Json<FederationSignedRequest<FederationFrostCommitmentResponse>>, Response> {
     let kind = FederationRestMessageKind::FrostSigningCommitment;
-    let _permit = acquire_private_rest_admission(&state, kind)?;
-    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let verified = admit_private_request(&state, &payload, kind).await?;
     state
         .ensure_federation_ready_for_authoritative_read()
         .await
@@ -786,12 +782,12 @@ pub(super) async fn post_frost_signing_commitment(
         .await
         .map_err(signing_error_response)?;
     state
-        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .record_federation_sequence(kind, verified.sender(), verified.sequence())
         .await;
     let response = FederationSignedRequest::new_signed(
         runtime_config.federation_id(),
-        verified.sender,
-        verified.sequence,
+        verified.sender(),
+        verified.sequence(),
         kind,
         FederationFrostCommitmentResponse::new(&commitment),
         runtime_config.private_config(),
@@ -806,8 +802,7 @@ pub(super) async fn post_frost_signing_package(
     Json(payload): Json<FederationSignedRequest<FederationFrostSigningPackageRequest>>,
 ) -> Result<Json<FederationSignedRequest<FederationFrostSignatureShareResponse>>, Response> {
     let kind = FederationRestMessageKind::FrostSigningPackage;
-    let _permit = acquire_private_rest_admission(&state, kind)?;
-    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let verified = admit_private_request(&state, &payload, kind).await?;
     state
         .ensure_federation_ready_for_authoritative_read()
         .await
@@ -829,12 +824,12 @@ pub(super) async fn post_frost_signing_package(
         .await
         .map_err(signing_error_response)?;
     state
-        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .record_federation_sequence(kind, verified.sender(), verified.sequence())
         .await;
     let response = FederationSignedRequest::new_signed(
         runtime_config.federation_id(),
-        verified.sender,
-        verified.sequence,
+        verified.sender(),
+        verified.sequence(),
         kind,
         FederationFrostSignatureShareResponse::new(payload.payload.package_hash, &share),
         runtime_config.private_config(),
@@ -849,8 +844,7 @@ pub(super) async fn post_frost_signing_abort(
     Json(payload): Json<FederationSignedRequest<FederationFrostSigningAbortRequest>>,
 ) -> Result<Json<FederationSignedRequest<FederationFrostSigningAck>>, Response> {
     let kind = FederationRestMessageKind::FrostSigningAbort;
-    let _permit = acquire_private_rest_admission(&state, kind)?;
-    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let verified = admit_private_request(&state, &payload, kind).await?;
     let runtime_config = federation_runtime_config(&state)?;
     let (context, authorization, reason) = payload
         .payload
@@ -862,12 +856,12 @@ pub(super) async fn post_frost_signing_abort(
         .await
         .map_err(signing_error_response)?;
     state
-        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .record_federation_sequence(kind, verified.sender(), verified.sequence())
         .await;
     let response = FederationSignedRequest::new_signed(
         runtime_config.federation_id(),
-        verified.sender,
-        verified.sequence,
+        verified.sender(),
+        verified.sequence(),
         kind,
         FederationFrostSigningAck::new(context.session_id(), kind),
         runtime_config.private_config(),
@@ -882,8 +876,7 @@ pub(super) async fn post_frost_aggregate_result(
     Json(payload): Json<FederationSignedRequest<FederationFrostAggregateResultNotification>>,
 ) -> Result<Json<FederationSignedRequest<FederationFrostSigningAck>>, Response> {
     let kind = FederationRestMessageKind::FrostAggregateResult;
-    let _permit = acquire_private_rest_admission(&state, kind)?;
-    let verified = verify_federation_request(&state, &payload, kind).await?;
+    let verified = admit_private_request(&state, &payload, kind).await?;
     let runtime_config = federation_runtime_config(&state)?;
     let (context, authorization, package_hash, signature) = payload
         .payload
@@ -901,12 +894,12 @@ pub(super) async fn post_frost_aggregate_result(
         .await
         .map_err(signing_error_response)?;
     state
-        .record_federation_sequence(kind, verified.sender, verified.sequence)
+        .record_federation_sequence(kind, verified.sender(), verified.sequence())
         .await;
     let response = FederationSignedRequest::new_signed(
         runtime_config.federation_id(),
-        verified.sender,
-        verified.sequence,
+        verified.sender(),
+        verified.sequence(),
         kind,
         FederationFrostSigningAck::new(context.session_id(), kind),
         runtime_config.private_config(),

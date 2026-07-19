@@ -12,8 +12,7 @@ use tracing::instrument;
 use crate::MintState;
 
 use super::{
-    acquire_private_rest_admission, cdk_error_response, federation_error_response,
-    federation_runtime_config, verify_federation_request,
+    admit_private_request, cdk_error_response, federation_error_response, federation_runtime_config,
 };
 
 #[instrument(skip_all)]
@@ -21,9 +20,7 @@ pub(super) async fn post_aleph_bft_activity(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationAlephBftActivityRequest>>,
 ) -> Result<Json<FederationAlephBftActivityResponse>, Response> {
-    let _permit =
-        acquire_private_rest_admission(&state, FederationRestMessageKind::AlephBftActivity)?;
-    let verified = verify_federation_request(
+    let verified = admit_private_request(
         &state,
         &payload,
         FederationRestMessageKind::AlephBftActivity,
@@ -37,8 +34,8 @@ pub(super) async fn post_aleph_bft_activity(
     state
         .record_federation_sequence(
             FederationRestMessageKind::AlephBftActivity,
-            verified.sender,
-            verified.sequence,
+            verified.sender(),
+            verified.sequence(),
         )
         .await;
 
@@ -54,9 +51,7 @@ pub(super) async fn post_aleph_bft_network_message(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationAlephBftNetworkMessageRequest>>,
 ) -> Result<Json<FederationAlephBftNetworkMessageResponse>, Response> {
-    let _permit =
-        acquire_private_rest_admission(&state, FederationRestMessageKind::AlephBftNetworkMessage)?;
-    let verified = verify_federation_request(
+    let verified = admit_private_request(
         &state,
         &payload,
         FederationRestMessageKind::AlephBftNetworkMessage,
@@ -88,8 +83,8 @@ pub(super) async fn post_aleph_bft_network_message(
     state
         .record_federation_sequence(
             FederationRestMessageKind::AlephBftNetworkMessage,
-            verified.sender,
-            verified.sequence,
+            verified.sender(),
+            verified.sequence(),
         )
         .await;
 

@@ -48,6 +48,7 @@ mod operation_pipeline;
 mod operator_routes;
 mod payment_observation;
 mod peer_client;
+mod private_request;
 pub(crate) mod runtime_components;
 mod status_routes;
 mod sync_config;
@@ -107,6 +108,7 @@ use self::payment_observation::payment_observation_report_summaries;
 pub(crate) use self::payment_observation::FederationPaymentObserver;
 #[cfg(test)]
 use self::peer_client::FederationRestPeerClient;
+pub(super) use self::private_request::admit_private_request;
 use self::status_routes::{post_local_status, post_status};
 #[cfg(test)]
 use self::sync_config::FederationPeerReconnectBackoff;
@@ -581,9 +583,9 @@ where
 }
 
 #[derive(Debug, Clone, Copy)]
-struct VerifiedFederationRequest {
-    sender: cdk::federation::MemberId,
-    sequence: u64,
+pub(super) struct VerifiedFederationRequest {
+    pub(super) sender: cdk::federation::MemberId,
+    pub(super) sequence: u64,
 }
 
 #[cfg(feature = "prometheus")]
