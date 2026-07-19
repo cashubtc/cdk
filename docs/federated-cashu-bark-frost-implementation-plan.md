@@ -2092,7 +2092,10 @@ Run:
 - database transaction and disk failures;
 - SQLite/PostgreSQL parity;
 - MSRV, fmt, clippy, docs, and workspace tests;
-- regtest multi-process mint/Ark/Lightning scenarios;
+- deterministic regtest end-to-end CLI tests with a local
+  Bark/Ark/Lightning stack, covering federated BOLT11 mint and melt;
+- an opt-in Signet end-to-end CLI test against the existing Bark Signet
+  infrastructure, covering both federated BOLT11 mint and melt;
 - independent cryptographic and federation-state review.
 
 Exit criteria:
@@ -2156,6 +2159,62 @@ Exit criteria:
 - success, failure, pending, and unknown status;
 - revocation success/stuck/exit;
 - exact-once Cashu saga finalization.
+
+### Regtest CLI end-to-end release test
+
+Run the complete two-direction CLI payment scenario deterministically on
+regtest. Start a local multi-process CDK federation, one member-local Bark
+wallet per federation member, a local Bark/Ark server, its Lightning backend,
+and the required Bitcoin/chain-source processes. Drive the Cashu side through
+`cdk-cli`: mint ecash after paying the federation-created BOLT11 invoice, then
+melt that ecash to a BOLT11 invoice created by an independent local Lightning
+receiver.
+
+The regtest harness must provision funds and mine blocks automatically, verify
+the same liability/projection/backend-selection invariants as the Signet test,
+and exercise at least one restart or actor-failover boundary in each payment
+direction. This is the deterministic CI release gate and must not depend on a
+user, faucet, public Ark server, or public Lightning liquidity.
+
+### Signet CLI end-to-end release test
+
+In addition to regtest, run a real-payment interoperability smoke test on
+Signet without launching a local Ark server. Start a local multi-process CDK
+federation with `federation-bark`; each member opens its own member-local Bark
+wallet and connects to the same existing Bark Signet Ark endpoint and pinned
+server public key. Drive the Cashu side exclusively through `cdk-cli`, as an
+external wallet would.
+
+The test must complete both directions with small, configurable amounts:
+
+1. `cdk-cli` requests a federated BOLT11 mint quote and receives the exact
+   accepted invoice.
+2. A separately funded Signet payer pays that invoice. The federation reaches
+   its payment-observation quorum and `cdk-cli` mints the expected ecash exactly
+   once.
+3. A separate Signet receiver creates a BOLT11 invoice.
+4. `cdk-cli` melts ecash to that invoice through the federated Bark backend and
+   observes terminal settlement, the actual fee, and any ordinary melt change.
+5. The test reconciles the Cashu liability, accepted Bark projection, and every
+   member-local Bark projection, and proves that no standalone seed-custodied
+   Bark or non-federated Lightning backend was selected.
+
+Funding has two supported modes. In interactive mode, print only the public
+Signet address or invoice and wait with a bounded timeout for the operator to
+fund the external payer or pay the requested invoice. In unattended mode,
+first use the existing Bark Signet faucet to fund the isolated external Bark
+test wallet. If that faucet is unavailable, use an explicitly configured
+alternative Signet faucet to fund an on-chain address and board those funds
+into the external Bark wallet before continuing. Faucet URLs, credentials,
+rate-limit tokens, wallet seeds, and local paths are member-local test
+configuration and must be redacted from output.
+
+The test is an opt-in release gate because it depends on shared Signet
+infrastructure. It must use a unique run identifier, bounded retries and
+timeouts, faucet-friendly amounts, and idempotent payment-hash lookup. If no
+operator and no configured faucet can supply funds, the gate reports a funding
+blocker; it must not report the payment test as passed or silently replace it
+with a mocked or regtest payment.
 
 ### Maintenance and recovery
 
@@ -2261,7 +2320,8 @@ The federated Bark backend is production-ready only when all of the following ar
 - Existing federation checkpoint, backup, recovery, and materialized-state audits include Bark rows.
 - Existing Cashu business logic and standalone Lightning backends remain unchanged.
 - `federation-bark` is optional and absent from default builds.
-- MSRV, formatting, clippy, unit, integration, doc, restart, adversarial, and regtest gates pass.
+- MSRV, formatting, clippy, unit, integration, doc, restart, adversarial,
+  deterministic regtest, and opt-in Signet CLI payment gates pass.
 - Operator status is sufficient to diagnose lag, ambiguity, signer failure, expiring funds, and recovery-required value without leaking secrets.
 - An independent review covers application derivation, virtual MuSig math, threshold DH, nonce persistence, typed authorization, VTXO accounting, payment ambiguity, and emergency recovery.
 
