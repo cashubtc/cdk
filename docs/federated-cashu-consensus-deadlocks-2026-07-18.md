@@ -73,10 +73,41 @@ is well established but its root cause is not.
 | 25 | `DB-004` | Rebuilt wallet connectors cannot supply original melt change outputs | Medium availability | 95% | Wallet melt recovery after restart | Not started |
 | 26 | `DB-005` | Payment evidence trust model is not committed or validated | High | 99% | Quote/proofs; all independent-backend liquidity | Not started |
 | 27 | `DB-006` | Shared AlephBFT inbound budget lacks per-member fairness | Medium | 90% | Consensus message admission under an authenticated flood | Not started |
+| 28 | `DB-007` | Melt payment lease epoch derives from the local journal tip, so skew elects concurrent payers | Critical | 95% | Duplicate external Lightning payment (funds loss) | Not started |
+| 29 | `DB-008` | Failed/Unpaid observation quorum can roll back a melt saga while the original payment is in flight | Critical | 90% | Melt double-spend (proofs released after payment) | Not started |
+| 30 | `DB-009` | One member permanently freezes any liability-issued UTXO via un-gated quarantine/alarm | Critical availability | 99% | All on-chain liquidity and in-flight payouts | Not started |
+| 31 | `DB-010` | Pre-liability repair resurrects a Reserved UTXO as Spendable, desyncing the transaction reservation | High | 95% | In-flight on-chain payout deadlock | Not started |
+| 32 | `DB-011` | Quote coordinator substitutes committed quote terms; visibility check compares only method and quote id | Critical | 95% | Wallet melt/mint destination theft | Not started |
+| 33 | `DB-012` | Pubkey-less mint quotes are bearer credentials every member can mint against | Critical | 90% | Wallet mint deposit theft | Not started |
+| 34 | `DB-013` | Replay-time finalized-queue overflow is misclassified as ExitedEarly and quarantines a valid backup | High | 90% | Member recovery loop + peer bandwidth exhaustion | Not started |
+| 35 | `DB-014` | Peer-reported session adoption has no sanity bound (`max`), so one peer can drive sessions to u64::MAX | Critical | 95% | Permanent member death; federation liveness | Not started |
+| 36 | `DB-015` | Scheduled catch-up target is not skipped when the local frontier already covers it | High | 90% | Permanent member catch-up wedge | Not started |
+| 37 | `DB-016` | Halt-epoch bypass: rotation/sync-loop start publishes a new session after a halt landed | High | 90% | Application continues under Halted | Not started |
+| 38 | `DB-017` | Checkpoint catch-up swaps the consensus runtime before stopping the old session | High | 85% | Self-inflicted session-mismatch halt | Not started |
+| 39 | `DB-018` | Unbounded in-memory retention between checkpoint promotions | Medium | 90% | Member OOM halt when promotion stalls | Not started |
+| 40 | `DB-019` | Fabricated Rejected broadcast observations force fee-burning RBF replacement cycles | Medium | 90% | Federation fee burn up to intent caps | Not started |
+| 41 | `DB-020` | Cumulative-amount observations can form competing quorums and wedge a mint quote | Medium | 85% | Mint-quote payment deadlock | Not started |
+| 42 | `DB-021` | `get_mint_keyset` fan-out has no timeout; one hanging member hangs the wallet | Medium | 95% | Wallet operations | Not started |
+| 43 | `DB-022` | One member's fabricated definitive quote error short-circuits creation fallback | Medium | 95% | Wallet quote creation DoS | Not started |
+| 44 | `DB-023` | Fabricated early FROST DKG confirmation is durably stored and poisons every ceremony tick | Medium | 90% | DKG ceremony stall | Not started |
+| 45 | `DB-024` | Catch-up stages a page and swaps consensus before application; a Failed entry wedges later pages | Medium | 85% | Member catch-up deadlock | Not started |
+| 46 | `DB-025` | Replay-readiness floor can reference units the member will never observe | Medium | 85% | Member wedged in AwaitingQuorum | Not started |
+| 47 | `DB-026` | Replay-readiness watcher task is detached and never cancelled | Medium | 90% | Task/state leak per torn-down session | Not started |
+| 48 | `DB-027` | Recovery reconstruction re-check ignores pure-content rejection status | Low | 80% | Test-gated recovery halt | Not started |
+| 49 | `DB-028` | Session-transition bookkeeping clears pending maps before requeue | Low | 75% | Latent silent operation loss | Not started |
+| 50 | `DB-029` | BLS DKG secret shares are plaintext at the application layer and at rest | Low | 90% | Key material exposure via transport/storage | Not started |
+| 51 | `DB-030` | Settlement Confirmed claims carry no block-validity cross-check | Low | 75% | Fake-settlement via eclipsed honest member | Not started |
+| 52 | `DB-031` | In-flight conflicting garbage op censors honest ops at admission; first-wins keys brick a quote | Low | 85% | Per-operation griefing | Not started |
+| 53 | `DB-032` | Backup recovery commits fetched chunks before the post-fetch session check | Low | 85% | Valid backup overwritten by garbage (self-heals) | Not started |
+| 54 | `DB-033` | Inbound byte-budget check-then-act race over-admits under concurrent floods | Low | 85% | Bounded budget overshoot | Not started |
 
 Discovered bugs are appended after the existing ranked milestones in discovery
 order with their legacy IDs preserved; `DB-001` was recorded on 2026-07-18
-from milestone 2.
+from milestone 2. `DB-007` through `DB-033` were recorded on 2026-07-19 from
+a requested full security scan of the federation codebase (consensus core,
+AlephBFT session/network, sync/recovery/checkpoint, payment settlement,
+on-chain/FROST/broadcast, wallet connector, and DKG); every entry was
+verified against current source before recording.
 
 ### Most likely common cause
 
@@ -678,6 +709,800 @@ legacy ID and discovery history.
   flooding member is throttled while the honest member's messages are still
   admitted.
 - **Proposed position in the milestone order:** after `DB-005` (position 27).
+
+### DB-007 — Melt payment lease epoch derives from the local journal tip, so skew elects concurrent payers
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Critical; 95% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** independent member
+  payment backends plus a slow in-flight Lightning payment; accelerable by
+  a Byzantine member flooding the journal to force lease rotation.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** `federation_melt_payment_lease_actor`
+  (`crates/cdk/src/mint/federation/application.rs:97-106`) computes the
+  lease epoch from `self.localstore.get_federation_journal_tip()` — the
+  member's *local* persisted journal tip, which skews freely across members
+  during catch-up, slow apply, or bursts. The doc comment's assumption
+  ("every member with the same journal frontier computes the same single
+  actor") is therefore false in production: two members transiently compute
+  different actors, each CASes its *own* saga row and calls `make_payment`
+  on its *own* backend (per-process claim at `application.rs:61-67` and the
+  per-member saga CAS at `melt_saga/mod.rs:533-539` give no cross-member
+  exclusion; backend idempotency dedupes only within one node, e.g.
+  `cdk-cln/src/lib.rs:1015-1032`). The same invoice is paid twice, both
+  payments produce matching Paid evidence, and the duplicate is invisible
+  in federation state. The project's own takeover test
+  (`crates/cdk/src/mint/federation/tests/melt.rs` —
+  `lease_takeover_after_author_backend_success_keeps_matching_paid_evidence`)
+  demonstrates both members paying with independent fake backends. The
+  violated invariant is "at most one external payment per accepted melt".
+- **Why distinct from an existing finding:** milestone 5 (`P1`) removed the
+  permanent author veto and documents the shared-frontier assumption;
+  `DB-005` is the independent-backend quorum dead end. This is the safety
+  (duplicate payment) consequence of the same topology, from a different
+  mechanism (local-tip lease derivation).
+- **Likely simplest federation-only correction and required proof:** derive
+  the lease epoch from consensus-stable state (e.g., the operation's own
+  journal index plus the *confirmed applied* frontier shared by all
+  members, not the local persisted tip), or make takeover conditional on
+  backend-confirmed terminal failure of the previous attempt; prove with
+  skewed frontiers and a slow backend that exactly one payment is
+  attempted.
+- **Proposed position in the milestone order:** position 28.
+
+### DB-008 — Failed/Unpaid observation quorum can roll back a melt saga while the original payment is in flight
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Critical; 90% source-proven
+  (conditional on n ≥ 3 with independent backends and lease rotation).
+- **Faulty/Byzantine actor or backend precondition:** heterogeneous node
+  connectivity: transient lease actors' fresh attempts fail fast while the
+  original actor's payment later succeeds.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** only the current lease actor reports Failed/Unpaid
+  (`application.rs:304-312`). With lease skew (`DB-007`), transient actors
+  can each attempt and fail fast, forming a matching Failed/Unpaid quorum.
+  `apply_federation_melt_quote_payment` then drives
+  `process_melt_saga_outcome` → rollback (`melt/shared.rs:180-240`), which
+  deletes the input proofs, resets the quote Unpaid, and deletes the saga —
+  while the original payment is still in flight on the original actor's
+  node. When it settles, the late Paid evidence either cannot form a quorum
+  or fails apply (`application.rs:1715-1721`, saga gone). Net: the external
+  payment happened, the melt is recorded failed, and the released proofs
+  can be re-spent — a full melt double-spend against the federation. The
+  violated invariant is "no rollback after a payment attempt without
+  backend-confirmed terminal failure of *that* attempt".
+- **Why distinct from an existing finding:** milestone 5 fixed the veto;
+  this is the opposite-direction hazard introduced by rotating actors whose
+  Failed evidence is accepted without binding it to the original attempt's
+  backend state.
+- **Likely simplest federation-only correction and required proof:** bind
+  Failed/Unpaid finalization to the attempting actor's backend-confirmed
+  terminal state for the durable attempt id (or refuse rollback while any
+  attempt is not terminally failed), and prove with an in-flight original
+  payment plus failing transient actors that proofs are never released
+  early.
+- **Proposed position in the milestone order:** position 29.
+
+### DB-009 — One member permanently freezes any liability-issued UTXO via un-gated quarantine/alarm
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Critical availability; 99%
+  source-proven.
+- **Faulty/Byzantine actor or backend precondition:** one Byzantine member
+  (sub-threshold); not accidental — honest observers never emit conflicting
+  votes.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** `quarantine()`
+  (`crates/cdk-common/src/federation/chain_observation.rs:1221-1225`)
+  fires unconditionally on any field/block conflict at apply
+  (`:771-811`), setting `Quarantined` and — for liability-issued UTXOs —
+  the sticky `liability_alarm`, which is set nowhere and cleared nowhere.
+  Repair is pre-liability only (`:856-859`), no post-liability recovery
+  epoch exists (`:499-501`), and adoption is pre-liability only (DB-003).
+  One conflicting deposit (or reorg-naming-wrong-block, `:903-912`)
+  observation therefore permanently: blocks the UTXO from transaction
+  proposals (`transaction_policy.rs:246-254`), wedges any in-flight
+  accepted transaction (`transaction_state.rs:536-541` requires
+  `Reserved`), hard-errors the deposit's quote payment pipeline
+  (`chain_observation.rs:603-611`), and leaves intents stuck in `Accepted`
+  forever (no `Failed` transition exists anywhere). The violated invariant
+  is the one milestones 4/DB-003 defend — no single observation can make
+  accepted funds unspendable — which is quorum-gated everywhere *except*
+  the fail-closed side effect itself.
+- **Why distinct from an existing finding:** milestone 4 quorum-gated
+  reorg/spendability *transitions* and DB-003 quorum-gated *field
+  establishment*; this is the remaining un-gated kill switch (quarantine +
+  alarm) that one member can trigger against every liability-issued UTXO at
+  zero cost.
+- **Likely simplest federation-only correction and required proof:** make
+  the post-liability quarantine/alarm quorum-authorized (record the
+  conflict but transition only when the conflicting claim reaches the
+  spendability quorum against the established evidence, mirroring DB-003),
+  and prove one member cannot freeze funds while a fabricated conflicting
+  quorum still alarms.
+- **Proposed position in the milestone order:** position 30.
+
+### DB-010 — Pre-liability repair resurrects a Reserved UTXO as Spendable, desyncing the transaction reservation
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** High; 95% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** one Byzantine member
+  conflicting a Reserved (pre-liability) UTXO.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** `quarantine()` overwrites `Reserved` with `Quarantined`
+  (`chain_observation.rs:1223`); the repair recompute
+  (`:867-878`) can only produce `Observed/Confirmed/Spendable/Reorged` —
+  never `Reserved`. The chain projection then says `Spendable` while the
+  transaction projection's `utxo_reservations`
+  (`transaction_proposal.rs:1781-1784`) still names the accepted proposal:
+  the accepted transaction can never sign
+  (`transaction_state.rs:539-541` requires `Reserved`), and the UTXO can
+  never be re-proposed (`transaction_proposal.rs:1762-1772` plus the
+  `OnchainUtxo` conflict key). The intents stay `Accepted` forever (no
+  `Failed` transition). The violated invariant is cross-projection
+  consistency plus the documented stickiness of accepted reservations
+  (`transaction_proposal.rs:981-983`).
+- **Why distinct from an existing finding:** milestone 4/DB-003 made
+  quarantines repairable; this is the repair semantics being wrong for the
+  `Reserved` case (state is destroyed before repair).
+- **Likely simplest federation-only correction and required proof:**
+  preserve the pre-conflict lifecycle state and restore `Reserved` when the
+  quorum repairs the conflict (or align the transaction projection on
+  repair), and prove a conflicted Reserved UTXO returns to signing without
+  losing its reservation.
+- **Proposed position in the milestone order:** position 31.
+
+### DB-011 — Quote coordinator substitutes committed quote terms; visibility check compares only method and quote id
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Critical; 95% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** one Byzantine quote
+  coordinator (the deterministic first-tried member).
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** `verify_mint_quote_visible_to_threshold`
+  (`crates/cdk/src/wallet/federation.rs:1298-1310`) and
+  `verify_melt_quote_visible_to_threshold` (`:1355-1365`) compare only
+  `method` and `quote` id between the coordinator-returned response and the
+  threshold-aggregated status view — never the terms (destination
+  `request`, `pubkey`, `amount`, `fee_reserve`). The proposing member
+  supplies both sides of the consensus operation
+  (`crates/cdk-common/src/federation/operation.rs:423-432` for melt;
+  `:301-313` for mint); honest members can only check internal consistency
+  (`configuration_and_admission.rs:556-573`) because they never saw the
+  wallet's request. A coordinator can therefore commit a melt quote with
+  its own destination invoice (wallet burns proofs paying the attacker), or
+  commit a mint quote with its own NUT-20 pubkey (after the wallet pays the
+  real invoice, the attacker mints with the substituted key;
+  `helpers.rs:403-427` verifies against the committed key). The status
+  views (`mint_quote_status_consensus_view`, `melt_quote_status_view`)
+  already carry `request`/`pubkey` on the wire — the comparison is simply
+  never made. The violated invariant is that the wallet binds the committed
+  quote's terms to its own request before spending against it.
+- **Why distinct from an existing finding:** `DB-012` is the consensus-side
+  bearer property of pubkey-less quotes; this is the wallet-side
+  verification gap that makes substitution undetectable even for
+  pubkey-full quotes and melt destinations.
+- **Likely simplest federation-only correction and required proof:**
+  compare the full threshold-aggregated terms (destination request, pubkey,
+  amount, fee_reserve, state) against both the wallet's request and the
+  coordinator's response at the two visibility checks, and prove a
+  substituting coordinator is rejected before any proof is spent.
+- **Proposed position in the milestone order:** position 32.
+
+### DB-012 — Pubkey-less mint quotes are bearer credentials every member can mint against
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Critical; 90% source-proven
+  (conditional on pubkey-less quotes being admitted).
+- **Faulty/Byzantine actor or backend precondition:** one Byzantine member;
+  a wallet that requests a mint quote without setting the NUT-20 pubkey.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** mint quotes carry an *optional* NUT-20 pubkey and no
+  federation admission path requires it; the quote id is replicated to
+  every member through consensus; a `Mint` operation has no author binding
+  (`crates/cdk-common/src/federation/operation.rs:1858-1874`), repeated
+  mints on one quote are all journaled `Accepted` via the deliberate Mint
+  conflict exception (`journal.rs:1170-1175`), and the apply-time NUT-20
+  check is a no-op for pubkey-less quotes
+  (`crates/cdk/src/mint/federation/helpers.rs:403-408` — `None => Ok(())`).
+  A Byzantine member can therefore mint a paid pubkey-less quote with its
+  own blinded outputs ahead of the victim's mint; the victim's later mint
+  fails apply with `IssuedQuote`. The violated invariant is "only the party
+  that paid a mint quote can issue against it" — single-mint's quote-id
+  secrecy assumption does not survive roster-wide replication.
+- **Why distinct from an existing finding:** `DB-011` is the wallet-side
+  missing terms comparison; this is the consensus-side bearer property that
+  exists even when the wallet sees the honest quote terms (any member can
+  front-run the mint, not just the coordinator).
+- **Likely simplest federation-only correction and required proof:**
+  require a NUT-20 pubkey on federated mint quotes at federation admission
+  (reject pubkey-less quotes federation-only), and prove a front-running
+  member cannot mint against another wallet's paid quote.
+- **Proposed position in the milestone order:** position 33.
+
+### DB-013 — Replay-time finalized-queue overflow is misclassified as ExitedEarly and quarantines a valid backup
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** High; 90% source-proven (the
+  >4096-unit replay backlog precondition needs a large session or stalled
+  apply).
+- **Faulty/Byzantine actor or backend precondition:** accident (restart
+  with a large session backup, slow DB/apply); rolling restarts amplify.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** the milestone-13 overflow panic
+  (`crates/cdk-axum/src/federation/aleph_bft_runtime.rs:852-865`) also
+  fires during backup *replay*: upstream re-finalizes loaded units in a
+  burst far faster than the apply loop drains (each duplicate unit costs an
+  O(history) scan at `operation_pipeline.rs:237-245` plus DB work). The
+  panic inside the upstream essential sub-task completes `run_session`
+  cleanly, and during pure replay the backup writer skips re-persisting
+  matched bytes (`aleph_bft_runtime.rs:1298-1318`), so
+  `persisted_chunks == backup_chunks_at_start` and the milestone-15
+  classifier (`aleph_bft_session.rs:811-822`) reports `ExitedEarly` — the
+  arm that *quarantines (deletes) the backup and stops for peer recovery*
+  (`aleph_bft_session.rs:1406-1414, 1482-1506`). The backup was valid: the
+  sync loop re-fetches the same bytes (`sync_loop.rs:1517-1527`), replay
+  overflows again, quarantine deletes them again — an unbounded
+  delete/refetch loop transferring up to 256 MiB per cycle per member, with
+  the member never rejoining. The violated invariant is that backup
+  deletion requires actual corruption evidence; the M15 comment "its only
+  early return is an undecodable or inconsistent stored backup" misses this
+  third early-return path.
+- **Why distinct from an existing finding:** milestone 13 (`A1`) covered
+  the live-traffic overflow (chunks grow → Completed → rotation); milestone
+  15 (`R2`) covered undecodable backup. This is the interaction: replay-time
+  overflow with a valid backup takes the quarantine arm.
+- **Likely simplest federation-only correction and required proof:**
+  distinguish backup-decode failure from apply-backpressure early return
+  (e.g., only classify `ExitedEarly` when zero *new* units were finalized
+  AND the backup was consumed undecoded, or detect the overflow signal
+  explicitly and treat it as rotation, not corruption), and prove a large
+  valid backup replays without quarantine.
+- **Proposed position in the milestone order:** position 34.
+
+### DB-014 — Peer-reported session adoption has no sanity bound (`max`), so one peer can drive sessions to u64::MAX
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Critical; 95% source-proven for
+  `consensus_threshold == 2` deployments (t−1 colluders above).
+- **Faulty/Byzantine actor or backend precondition:** one Byzantine peer in
+  application-frontier sync.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** `quorum_compatible_session`
+  (`crates/cdk-axum/src/federation/sync_loop.rs:1145-1168`) filters
+  candidates to `matching_peers + 1 >= required` and then takes `.max()`
+  with no cap relative to the local session or to quorum-supported
+  evidence. At threshold 2, one peer reporting
+  `aleph_bft_session = u64::MAX` (with matching application frontier)
+  satisfies the filter. While a live session is active the member is pinned
+  in `AwaitingQuorum` (target ≠ local) — a readiness DoS; when the session
+  is next inactive, `begin_aleph_bft_session(u64::MAX)`
+  (`sync_loop.rs:990-1003`, `consensus.rs:1808-1814`) succeeds, is
+  persisted (`aleph_bft_session.rs:696-705`), and no successor session can
+  ever exist (`session <= self.session` rejected) — the member is
+  permanently dead, durable across restarts, spreading to every member that
+  reconciles while the liar is online. The replay-target path uses
+  median-style selection (`sync_loop.rs:1067-1071`) and is not vulnerable;
+  the session path is asymmetric.
+- **Why distinct from an existing finding:** milestone 1 removed
+  single-peer halt authority over *digests*; this is single-peer authority
+  over the *session cursor*, a different and unmitigated channel.
+- **Likely simplest federation-only correction and required proof:** bound
+  the adoptable session (e.g., `local + 1` unless a quorum-supported
+  checkpoint evidence justifies a jump, or median-style selection as for
+  replay targets), and prove one liar cannot advance the session beyond the
+  quorum-supported value or pin readiness.
+- **Proposed position in the milestone order:** position 35.
+
+### DB-015 — Scheduled catch-up target is not skipped when the local frontier already covers it
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** High; 90% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** accident (routine
+  timing: store-ahead quorum, live advance past it, later need for
+  catch-up).
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** the scheduled branch of the catch-up target selector
+  (`crates/cdk-axum/src/federation/sync_loop.rs:646-660`) returns the next
+  stored scheduled quorum without a coverage check, while the recovery
+  branch right below skips covered checkpoints (`:676-682`). A member that
+  stored a scheduled quorum without promoting it (not locally reached at
+  persist time), then finalized past it live, later needs catch-up: the
+  selector nominates the same covered checkpoint, and the applier
+  hard-rejects it (`sync_loop.rs:1263-1271`, "local catch-up frontier is
+  ahead of the selected target checkpoint"). Every round re-selects and
+  re-fails identically; promotion cannot happen later (only at persist
+  time or after a completed catch-up), and newer chain continuations fail
+  `validate_promotion_from` because the trusted pointer is stuck — a
+  durable, restart-proof recovery wedge for the member.
+- **Why distinct from an existing finding:** milestone 12 (`R1`) covered
+  source *fetch* pinning; this is target *selection* pinning on locally
+  stored quorum evidence.
+- **Likely simplest federation-only correction and required proof:** apply
+  the same coverage skip to the scheduled branch (and/or sweep stored
+  scheduled quorums for promotion once locally reached), and prove a
+  covered stored checkpoint is skipped or promoted so catch-up proceeds to
+  the true target.
+- **Proposed position in the milestone order:** position 36.
+
+### DB-016 — Halt-epoch bypass: rotation/sync-loop start publishes a new session after a halt landed
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** High; 90% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** accident (operator
+  audit halt during natural rotation) or Byzantine timing of no-progress
+  catch-up responses near session completion.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** the halt epoch is captured at the *start* of each session
+  start call (`crates/cdk-axum/src/federation/aleph_bft_session.rs:666`)
+  and checked only once before publication (`:1016-1022`). The rotation
+  path takes the old handle, then awaits the full task-join of
+  `shutdown_for_rotation` (`:1828-1847`), and only afterwards captures a
+  *fresh* epoch for the new start — a halt landing anywhere in that window
+  (epoch already bumped, federation marked `Halted`) is never detected, so
+  the new generation is published and its apply loop keeps mutating state
+  under `Halted` (`:1856-1897` has no status check). The sync-loop start
+  path similarly never re-consults halt state between the quorum gate and
+  the start (`sync_loop.rs:935-1007`). The violated invariant is that
+  `Halted` is a terminal barrier for consensus application.
+- **Why distinct from an existing finding:** milestones 10/13/15 built the
+  halt/stop/rotate machinery; this is a TOCTOU between that machinery and
+  the audit/no-progress halt triggers.
+- **Likely simplest federation-only correction and required proof:** check
+  the halt epoch again immediately before publication *and* gate the apply
+  loop on sync status, and prove a halt landing mid-rotation leaves no
+  published session applying under `Halted`.
+- **Proposed position in the milestone order:** position 37.
+
+### DB-017 — Checkpoint catch-up swaps the consensus runtime before stopping the old session
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** High; 85% source-proven
+  (ordering-dependent).
+- **Faulty/Byzantine actor or backend precondition:** a Byzantine peer
+  advertising a higher `operation_count` to induce catch-up, or accident
+  (restart with stale journal while a session is active).
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** `checkpoint_catch_up.rs:181` replaces
+  `*consensus.lock().await` with the checkpoint runtime while the old
+  session may still be running; the session is stopped only after the whole
+  catch-up (`sync_loop.rs:1496-1498`), a window spanning seconds of page
+  work. Catch-up is deferred to the live session only when `Healthy`
+  (`sync_loop.rs:1629-1638`), so an `AwaitingQuorum`/`Lagging` member with
+  an active session proceeds. During the window, old-session units
+  finalized from peers reach the apply loop and fail the swapped runtime's
+  session check with non-retryable `AlephBftUnitSessionMismatch`
+  (`consensus.rs:1860-1865`) → `FinalizedPayloadApplyFailed` → generation
+  halt (`aleph_bft_session.rs:1416-1428`). The violated invariant is
+  stop-then-swap lifecycle ordering between a live session and the
+  consensus runtime object.
+- **Why distinct from an existing finding:** `R4` covered response *page*
+  alignment; this is the runtime *object* replacement racing the live
+  session.
+- **Likely simplest federation-only correction and required proof:** stop
+  the live session before swapping the runtime (or make the swap
+  generation/session-aware so old-session units are discarded), and prove
+  catch-up under an active session never produces a session-mismatch halt.
+- **Proposed position in the milestone order:** position 38.
+
+### DB-018 — Unbounded in-memory retention between checkpoint promotions
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium; 90% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** stalled checkpoint
+  promotion (scheduling/promotion failure, or ≥ n−t withholding checkpoint
+  signatures); faulty-wallet traffic accelerates growth.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** the in-memory consensus runtime retains every finalized item
+  with full envelope bodies (`crates/cdk-common/src/federation/consensus.rs:2697`,
+  never pruned), all journal rows and conflict keys
+  (`journal.rs:824-831`), and the per-session unit-dedup maps
+  (`consensus.rs:1808-1825`, reset but never cleared). The only pruning is
+  wholesale runtime replacement on checkpoint promotion
+  (`checkpoint_catch_up.rs:181`), gated on quorum signing and catch-up
+  verification. If promotion stalls, memory grows linearly with operation
+  throughput until the member OOMs and halts; quorum loss if enough members
+  stall together. The violated invariant is bounded long-running member
+  memory independent of total history.
+- **Why distinct from an existing finding:** `A1` bounded channel/queue
+  memory; this is durable-history retention in the runtime itself.
+- **Likely simplest federation-only correction and required proof:** prune
+  retained history at the trusted checkpoint watermark in-memory (as the DB
+  already prunes), and prove steady-state memory is flat across promotions
+  and bounded when promotion stalls.
+- **Proposed position in the milestone order:** position 39.
+
+### DB-019 — Fabricated Rejected broadcast observations force fee-burning RBF replacement cycles
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium; 90% source-proven (bounded
+  loss; miner collusion to profit).
+- **Faulty/Byzantine actor or backend precondition:** one Byzantine member.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** `replacement_is_due`
+  (`crates/cdk-axum/src/federation/wallet_liveness.rs:879-882`) treats any
+  member's `Rejected` broadcast observation as authoritative, and
+  observation validation (`transaction_state.rs:339-378`) checks only
+  roster membership/txid/replay — a `Rejected` claim is never verified
+  against backend truth. One member can therefore force deterministic
+  fee-bumped replacements whose extra fee comes out of the change output
+  (`transaction_policy.rs:499-524`), then report `Rejected` again for each
+  replacement, iterating until the lineage stalls at the intent fee caps —
+  burning up to (Σ `maximum_fee_sat` − initial fee) per batch to miners.
+- **Why distinct from an existing finding:** broadcast intent authorization
+  is quorum-gated; the per-attempt *outcome* claims are not.
+- **Likely simplest federation-only correction and required proof:**
+  require quorum-matching `Rejected` claims (or backend-verified rejection
+  evidence) before scheduling a replacement, and prove one liar cannot
+  force a fee bump.
+- **Proposed position in the milestone order:** position 40.
+
+### DB-020 — Cumulative-amount observations can form competing quorums and wedge a mint quote
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium; 85% source-proven (needs
+  multi-payment quotes: MPP/amountless/second payer).
+- **Faulty/Byzantine actor or backend precondition:** accident; or a wallet
+  deliberately double-paying its own quote.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** the Lightning probe reports *cumulative* `amount_paid`
+  (`crates/cdk/src/mint/federation/application.rs:189-214`), observers keep
+  their old records, and non-onchain contexts do not collapse to
+  latest-per-observer (`application.rs:807-819`). After a second payment,
+  both the `{100}` and `{200}` groups reach the required count, and
+  `has_competing_quorums()` (`operation.rs:1138-1145`) makes every
+  finalization check fail closed (`application.rs:820-832, 1122-1159`) —
+  the quote can never be credited beyond the first amount or issued
+  against; funds are stuck, not stolen.
+- **Why distinct from an existing finding:** milestone 11 (`P3`)
+  canonicalized *which* payment settles; this is *cumulative amounts of the
+  same payment stream* forming incompatible quorums.
+- **Likely simplest federation-only correction and required proof:**
+  collapse non-onchain observation evidence to latest-per-observer (as
+  onchain already does) or treat cumulative amounts as totally ordered for
+  quorum matching, and prove a twice-paid quote finalizes at the cumulative
+  amount.
+- **Proposed position in the milestone order:** position 41.
+
+### DB-021 — `get_mint_keyset` fan-out has no timeout; one hanging member hangs the wallet
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium; 95% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** one hung or
+  partitioned member while the wallet needs threshold answers.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** `crates/cdk/src/wallet/federation.rs:2081-2089` spawns
+  per-member `get_mint_info` + `get_mint_keyset` futures with no
+  `tokio::time::timeout` (unlike every sibling fan-out, e.g.
+  `collect_member_results_from` at `:623-634`), and the collection loop
+  awaits every future when valid answers stay below threshold — the wallet
+  hangs indefinitely with no error. Same pattern in `get_auth_wallet`
+  (`:2397-2405`).
+- **Why distinct from an existing finding:** `W1` covers member metadata
+  validation waiting forever on the fanout *policy*; this is the plain
+  missing per-call timeout on a specific path.
+- **Likely simplest federation-only correction and required proof:** wrap
+  both calls in the connector's standard bounded timeout, and prove one
+  hanging member cannot block keyset lookup beyond the bound.
+- **Proposed position in the milestone order:** position 42.
+
+### DB-022 — One member's fabricated definitive quote error short-circuits creation fallback
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium; 95% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** the Byzantine quote
+  coordinator (always tried first).
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** mint/melt quote creation returns immediately on the first
+  member's `is_definitive_failure` error
+  (`crates/cdk/src/wallet/federation.rs:1223-1225, 1268-1270`, and
+  `call_first_healthy_member_from` at `:538-540`). Any 4xx (except 429) is
+  definitive (`cdk-common/src/error.rs:876-881`), so one member can
+  fabricate a 4xx and block all quote creation for the wallet without any
+  honest member being consulted — threshold rejection
+  (`federation.rs:299-312`) never gets a chance.
+- **Why distinct from an existing finding:** `DB-011` is term substitution;
+  this is single-member definitive-error authority on the same path.
+- **Likely simplest federation-only correction and required proof:** treat
+  single-member definitive errors as one vote (fall back, or require
+  threshold-identical rejection), and prove one lying member cannot block
+  quote creation.
+- **Proposed position in the milestone order:** position 43.
+
+### DB-023 — Fabricated early FROST DKG confirmation is durably stored and poisons every ceremony tick
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium; 90% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** one Byzantine member
+  during a DKG ceremony.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** a confirmation is accepted and persisted before the local
+  root exists (`crates/cdk-axum/src/federation/dkg_routes.rs:393-409`
+  skips the comparison when there is no local root; the SQL conflict clause
+  only rejects *second* conflicting records from the same sender). Once
+  honest members complete the DKG, every driver tick hard-errors on the
+  stored mismatch (`dkg_driver.rs:817-828`) and the FROST tick aborts the
+  whole combined tick (`dkg_driver.rs:1099-1107`) — a durable ceremony
+  stall across restarts (operator remedy: new ceremony id, as documented
+  for `S1`).
+- **Why distinct from an existing finding:** `S1` documented the
+  all-member requirement and timeouts; this is an unvalidated early
+  confirmation poisoning the loop by a different mechanism.
+- **Likely simplest federation-only correction and required proof:** ignore
+  or quarantine confirmations that precede the confirmer's possible share
+  of the confirmed root (or validate against the local root only once it
+  exists without poisoning the tick), and prove one early fabricated
+  confirmation cannot stall the ceremony.
+- **Proposed position in the milestone order:** position 44.
+
+### DB-024 — Catch-up stages a page and swaps consensus before application; a Failed entry wedges later pages
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium; 85% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** accident (a
+  non-definitive, non-retryable apply error mid-page, e.g. a
+  backend-dependent melt failure).
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** catch-up stages the whole page and swaps the consensus
+  (`checkpoint_catch_up.rs:279-291`) before application; a non-retryable,
+  non-definitive apply error leaves the entry durably `Failed`
+  (`node_runtime.rs:202-208`), aborting the batch mid-way
+  (`operation_pipeline.rs:728-736`). Every subsequent page then fails the
+  `application_next_index == from_index` check
+  (`checkpoint_catch_up.rs:79-88`) forever, and nothing in the running
+  system retries a `Failed` entry outside process restart — the member
+  spins in `Lagging` with no repair.
+- **Why distinct from an existing finding:** `DB-001` made deterministic
+  *content* failures definitive per-item rejections; this is the remaining
+  *local* ambiguous failure's catch-up wedge and the missing runtime
+  retry/repair for `Failed` entries.
+- **Likely simplest federation-only correction and required proof:** retry
+  or surface `Failed` entries for bounded runtime repair (or make catch-up
+  tolerate/skip a Failed frontier deterministically), and prove a mid-page
+  ambiguous failure does not permanently wedge catch-up.
+- **Proposed position in the milestone order:** position 45.
+
+### DB-025 — Replay-readiness floor can reference units the member will never observe
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium; 85% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** a member going
+  offline after advancing its floor, or recovery from a peer with a partial
+  backup.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** the replay floor takes the required-th largest quorum-reported
+  per-member unit index (`crates/cdk-axum/src/federation/sync_loop.rs:1067-1071`),
+  but the single fetched peer backup may contain that member's units only
+  up to a lower index, and AlephBFT does not re-gossip already-finalized
+  old units — so the floor is never satisfied
+  (`aleph_bft_runtime.rs:81-103`), `mark_healthy_after_replay` never fires,
+  and the member is wedged in `AwaitingQuorum` (public traffic rejected)
+  until the missing member returns or the session rotates (up to ~100
+  minutes at idle cadence).
+- **Why distinct from an existing finding:** milestone 15 repaired unusable
+  backup *contents*; this is a valid-but-incomplete backup combined with a
+  quorum-derived floor the member cannot reach.
+- **Likely simplest federation-only correction and required proof:** cap
+  the floor at what the fetched backup actually covers (or satisfy it via
+  catch-up evidence), and prove recovery with a partial peer backup reaches
+  readiness.
+- **Proposed position in the milestone order:** position 46.
+
+### DB-026 — Replay-readiness watcher task is detached and never cancelled
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium; 90% source-proven.
+- **Faulty/Byzantine actor or backend precondition:** any session torn down
+  before its readiness frontier is satisfied; amplified by recovery loops.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** `spawn_federation_aleph_bft_replay_readiness_watcher`
+  (`crates/cdk-axum/src/federation/aleph_bft_session.rs:1040-1066`) spawns
+  a detached `tokio::spawn` that is not stored in `AlephBftSessionTasks`
+  and has no shutdown path; `wait_until_ready`
+  (`aleph_bft_runtime.rs:113-117`) pends on a `Notify` forever once the
+  owning session is dropped. Each halted/rotated/stopped generation leaks
+  one task plus pinned `MintState` and supervisor `Arc` — slow unbounded
+  growth on a long-running node.
+- **Why distinct from an existing finding:** `A1` bounded channel memory;
+  this is an untracked task/state leak in the session lifecycle.
+- **Likely simplest federation-only correction and required proof:** own
+  the watcher in `AlephBftSessionTasks` (abort on teardown) or close the
+  readiness notify on shutdown, and prove no task outlives its generation.
+- **Proposed position in the milestone order:** position 47.
+
+### DB-027 — Recovery reconstruction re-check ignores pure-content rejection status
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Low; 80% source-proven (the
+  reconstruction path is currently `#[cfg(any(test, feature = "test"))]`,
+  so production impact is nil).
+- **Observed behavior, exact code references, and evidence:** the
+  reconstruction status re-check
+  (`crates/cdk-common/src/federation/consensus.rs:1557-1568`) compares only
+  `verify_authorization` against `RejectedInvalidOperation`, while live
+  classification (`:1842-1847`) also rejects on `validate_pure()` — so a
+  history containing a pure-content rejection fails reconstruction with
+  `AlephBftFinalizedItemRecoveryMismatch` even though the live path
+  produced it. Production suffix recovery replays through the live
+  finalization path and is consistent.
+- **Likely simplest federation-only correction and required proof:** mirror
+  the live predicate (`verify_authorization(...).is_err() ||
+  validate_pure().is_err()`) in the re-check, with a regression containing
+  a pure-content rejection.
+- **Proposed position in the milestone order:** position 48.
+
+### DB-028 — Session-transition bookkeeping clears pending maps before requeue
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Low; 75% source-proven (latent —
+  admission invariants make the triggering error currently unreachable).
+- **Observed behavior, exact code references, and evidence:**
+  `begin_session_requeue_pending_finalization`
+  (`crates/cdk-common/src/federation/consensus.rs:2531-2543`) clears the
+  pending-finalization maps *before* requeueing; a mid-loop `submit_item`
+  error propagates and silently drops the remaining items from every
+  tracking structure. The same shape exists in `next_unit_payload`
+  (`:2630-2636`): the provider drains the queue and burns the unit index
+  before `remember_pending_finalization_unit` can fail.
+- **Likely simplest federation-only correction and required proof:** requeue
+  first and clear only successfully requeued entries (or stage and swap),
+  and prove a mid-loop error loses no admitted operation.
+- **Proposed position in the milestone order:** position 49.
+
+### DB-029 — BLS DKG secret shares are plaintext at the application layer and at rest
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Low; 90% source-proven
+  (transport/at-rest exposure, not a member attack — members legitimately
+  receive only their own share).
+- **Observed behavior, exact code references, and evidence:**
+  `crates/cdk-common/src/federation/transport.rs:1878-1889` serializes
+  `secret_shares: BTreeMap<Amount, BlsSecretKeyShare>` in the clear inside
+  the signed request; confidentiality rests on TLS
+  (`dkg_driver.rs:1560-1583`, HTTPS or loopback-only) and shares are
+  persisted unencrypted (`dkg_persistence.rs:266-268`). FROST round-2
+  packages are application-layer sealed; BLS shares are not. `signature_threshold`
+  observed shares reconstruct the mint key.
+- **Likely simplest federation-only correction and required proof:**
+  application-layer sealing to the recipient member's identity key (as for
+  FROST), with a regression that plaintext shares never appear on the wire
+  or at rest.
+- **Proposed position in the milestone order:** position 50.
+
+### DB-030 — Settlement Confirmed claims carry no block-validity cross-check
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Low; 75% source-proven (requires
+  one Byzantine member plus one eclipsed honest member at
+  `required == consensus_threshold`).
+- **Observed behavior, exact code references, and evidence:** settlement
+  claims of `(block_hash, block_height, confirmation_depth)` for a signed
+  txid are validated only for roster/txid/replay consistency
+  (`crates/cdk/src/mint/federation/transaction_state.rs:339-378`); nothing
+  cross-checks the claimed block against the consensus chain-observation
+  projection before a matching quorum settles the transaction and marks the
+  melt paid.
+- **Likely simplest federation-only correction and required proof:**
+  cross-check settlement block claims against the accepted chain
+  observation state (or require chain-observation quorum evidence of the
+  block), and prove a fake-chain settlement cannot complete.
+- **Proposed position in the milestone order:** position 51.
+
+### DB-031 — In-flight conflicting garbage op censors honest ops at admission; first-wins keys brick a quote
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Low; 85% source-proven (temporary,
+  self-healing; per-quote).
+- **Faulty/Byzantine actor or backend precondition:** one Byzantine member.
+- **Observed behavior, exact code references, and evidence:** admission
+  rejects an operation whose conflict key matches a pending-but-unfinalized
+  operation (`crates/cdk-common/src/federation/consensus.rs:2573-2583`);
+  journal conflict keys are first-wins
+  (`crates/cdk-common/src/federation/journal.rs:1330-1333`). A garbage
+  operation carrying an honest operation's conflict keys delays the honest
+  resubmission until it finalizes; a *valid* Byzantine entry winning the
+  race bricks that one quote for the honest wallet (it must request a new
+  quote).
+- **Likely simplest federation-only correction and required proof:**
+  attribute conflict-key ownership and let a rejected/expired entry release
+  the key promptly, and prove a garbage entry cannot delay an honest
+  operation beyond its own finalization.
+- **Proposed position in the milestone order:** position 52.
+
+### DB-032 — Backup recovery commits fetched chunks before the post-fetch session check
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Low; 85% source-proven (self-heals
+  through the milestone-15 quarantine path).
+- **Faulty/Byzantine actor or backend precondition:** a peer advancing its
+  session mid-fetch or serving garbage with `replace_existing = true`.
+- **Observed behavior, exact code references, and evidence:**
+  `recover_aleph_bft_backup_from_member`
+  (`crates/cdk-axum/src/federation/sync_loop.rs:1591-1601`) commits the
+  fetched chunks and only then checks the peer did not advance its session
+  (`:1609-1616`); with `replace_existing = recovered_from_peer` a peer's
+  garbage can overwrite a good local backup. The milestone-15
+  quarantine-and-recover path repairs it on next use.
+- **Likely simplest federation-only correction and required proof:** stage
+  chunks uncommitted until the post-fetch checks pass, and prove a
+  mid-fetch session advance leaves the prior backup intact.
+- **Proposed position in the milestone order:** position 53.
+
+### DB-033 — Inbound byte-budget check-then-act race over-admits under concurrent floods
+
+- **Discovery date and originating milestone:** 2026-07-19, full federation
+  security scan (requested audit).
+- **Status:** Queued
+- **Proposed severity and confidence:** Low; 85% source-proven (bounded by
+  the inbound permit count × max payload, and self-corrects on drain).
+- **Faulty/Byzantine actor or backend precondition:** concurrent
+  authenticated flood requests racing the budget check.
+- **Observed behavior, exact code references, and evidence:**
+  `crates/cdk-axum/src/federation/aleph_bft_network.rs:188-218` reads the
+  shared buffered-byte counter, then `try_send`s, then `fetch_add`s — up to
+  the inbound permit count of concurrent handlers can all pass the check
+  before any accounts the bytes, over-admitting beyond the 256 MiB budget
+  by roughly permits × max-payload.
+- **Why distinct from an existing finding:** `A1` added the budget; `DB-006`
+  is per-member fairness; this is the residual atomicity gap in the
+  accounting itself.
+- **Likely simplest federation-only correction and required proof:** charge
+  the bytes atomically before enqueue (compare-and-reserve), and prove the
+  budget is never exceeded under concurrent floods.
+- **Proposed position in the milestone order:** position 54.
 
 No other additional bugs have yet been recorded through this milestone workflow.
 
