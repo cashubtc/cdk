@@ -127,7 +127,9 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
             &premature_observation
         )
         .await,
-        Err(Error::PendingQuote)
+        Err(Error::Federation(
+            cdk_common::federation::FederationError::OperationStateInvalid { .. }
+        ))
     ));
 
     let (mut completed_state, signed) =

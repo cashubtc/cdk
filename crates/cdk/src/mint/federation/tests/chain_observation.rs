@@ -812,7 +812,9 @@ async fn accepted_onchain_outputs_pay_one_quote_and_reuse_existing_mint_flow() {
     assert!(matches!(
         mint.apply_federation_journal_entries(std::slice::from_ref(&wrong_quote_entry))
             .await,
-        Err(cdk_common::Error::InvalidPaymentRequest)
+        Err(cdk_common::Error::Federation(
+            cdk_common::federation::FederationError::OperationStateInvalid { .. }
+        ))
     ));
     assert!(store
         .get_mint_quote(&wrong_quote_id)

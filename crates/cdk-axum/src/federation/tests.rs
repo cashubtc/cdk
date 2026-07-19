@@ -14112,6 +14112,245 @@ async fn byzantine_balance_overflow_operation_does_not_halt_finalized_applicatio
 }
 
 #[tokio::test]
+async fn byzantine_paid_melt_observation_without_saga_rejects_item_without_halt() {
+    let session = start_two_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 0,
+            max_messages_per_tick: 128,
+            max_peer_deliveries_per_message: 128,
+        },
+        500,
+    ))
+    .await
+    .expect("start two-member live session");
+
+    // Create a real melt quote through live consensus. No melt operation is
+    // ever submitted, so no member can hold a pending saga for it.
+    let quote_id = QuoteId::new();
+    let melt_quote_envelope = test_melt_quote_operation(
+        session
+            .second_state
+            .mint
+            .federation_config()
+            .expect("federation config"),
+        quote_id.clone(),
+        cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+            request: create_fake_invoice(1_000, "db-001 trap quote".to_string()),
+            unit: CurrencyUnit::Sat,
+            options: None,
+        }),
+    );
+    let melt_quote_operation_id = melt_quote_envelope.operation_id().expect("quote op id");
+    submit_live_operation_allowing_pending_timeout(&session.second_state, melt_quote_envelope)
+        .await;
+    for state in [&session.first_state, &session.second_state] {
+        assert_eq!(
+            wait_for_terminal_operation(state, melt_quote_operation_id).await,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    // One Byzantine member queues a structurally valid paid observation for
+    // that saga-less quote directly into its own data provider, bypassing
+    // public admission. The observation's pure content is valid; only its
+    // ordered-state dependency (the missing melt saga) is invalid.
+    let byzantine_envelope = melt_payment_observation_envelope(
+        &session.first_state,
+        &quote_id,
+        MeltQuoteState::Paid,
+        Some("byzantine preimage".to_string()),
+    );
+    let byzantine_operation_id = byzantine_envelope
+        .operation_id()
+        .expect("observation op id");
+    {
+        let consensus = session
+            .first_state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("consensus");
+        let mut consensus = consensus.lock().await;
+        assert_eq!(
+            consensus
+                .submit_operation(byzantine_envelope)
+                .expect("queue Byzantine paid observation"),
+            FederationConsensusItemAdmission::Accepted
+        );
+    }
+
+    // A valid mint quote submitted through the live path drives unit
+    // activity and lands in a unit after the Byzantine one.
+    let trailing_quote_id = QuoteId::new();
+    let trailing_envelope = mint_quote_envelope(&session.second_state, &trailing_quote_id);
+    let trailing_operation_id = trailing_envelope.operation_id().expect("trailing op id");
+    let trailing_state = session.second_state.clone();
+    let trailing_submit = tokio::spawn(async move {
+        submit_live_operation_allowing_pending_timeout(&trailing_state, trailing_envelope).await
+    });
+
+    // The stateful-invalid observation must be a canonical per-item rejection
+    // — never a member halt — and the valid trailing operation must apply on
+    // both members.
+    for state in [&session.first_state, &session.second_state] {
+        assert_eq!(
+            wait_for_terminal_operation(state, byzantine_operation_id).await,
+            FederationOperationStatus::Rejected,
+            "Byzantine saga-less paid observation must be a canonical per-item rejection"
+        );
+        assert_eq!(
+            wait_for_terminal_operation(state, trailing_operation_id).await,
+            FederationOperationStatus::Applied,
+            "valid operation finalized after the Byzantine item must still apply"
+        );
+        assert!(
+            !matches!(
+                state.federation_sync_status().await,
+                Some(crate::FederationSyncStatus::Halted { .. })
+            ),
+            "one Byzantine stateful-invalid operation must not halt a member"
+        );
+        assert!(state.federation_aleph_bft_live_session_active().await);
+    }
+    let _ = trailing_submit.abort();
+    let _ = trailing_submit.await;
+}
+
+#[tokio::test]
+async fn stateful_invalid_chain_deposit_rejects_item_without_halt() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+
+    // A deposit observation whose pure content is valid but whose allocation
+    // reference has no accepted projection in ordered state.
+    let deposit = cdk::federation::FederationDepositObservation {
+        allocation: cdk::federation::FederationAllocatedAddressRef {
+            application_id: cdk::federation::FederationFrostApplicationId::from_bytes([7; 32])
+                .expect("application id"),
+            application_key_epoch: 2,
+            quote: "unknown-allocation-quote".to_string(),
+            keychain: cdk::federation::FederationAddressKeychain::External,
+            derivation_index: 4,
+        },
+        outpoint: cdk_common::bitcoin::OutPoint {
+            txid: cdk_common::bitcoin::Txid::from_raw_hash(
+                cdk_common::bitcoin::hashes::Hash::from_byte_array([3u8; 32]),
+            ),
+            vout: 0,
+        },
+        txout: cdk_common::bitcoin::TxOut {
+            value: cdk_common::bitcoin::Amount::from_sat(50_000),
+            script_pubkey: cdk_common::bitcoin::ScriptBuf::from_bytes(vec![0x51]),
+        },
+        confirmation: None,
+        observation_epoch: 0,
+        observer: local_private.member_id,
+        source: cdk::federation::FederationChainSourceDescriptor::new(
+            cdk::federation::FederationChainSourceScope::Independent,
+            "source-1",
+        )
+        .expect("source descriptor"),
+    };
+    let config = state.mint.federation_config().expect("federation config");
+    let deposit_envelope =
+        config.operation_envelope(cdk::federation::FederationOperation::ChainObservation(
+            cdk::federation::FederationChainObservation::Deposit(deposit),
+        ));
+    let deposit_operation_id = deposit_envelope.operation_id().expect("deposit op id");
+    let trailing_quote_id = QuoteId::new();
+    let trailing_envelope = mint_quote_envelope(&state, &trailing_quote_id);
+    let trailing_operation_id = trailing_envelope.operation_id().expect("trailing op id");
+    let unit = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(deposit_envelope),
+            FederationConsensusItem::operation(trailing_envelope),
+        ],
+    )
+    .expect("stateful-invalid deposit unit");
+    state
+        .apply_federation_aleph_bft_finalized_unit(unit)
+        .await
+        .expect("stateful-invalid deposit must not abort unit application");
+
+    let deposit_entry = state
+        .mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(deposit_operation_id)
+        .await
+        .expect("deposit journal lookup")
+        .expect("deposit journal entry");
+    assert_eq!(
+        deposit_entry.status(),
+        FederationOperationStatus::Rejected,
+        "stateful-invalid deposit must be a canonical per-item rejection"
+    );
+    let trailing_entry = state
+        .mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(trailing_operation_id)
+        .await
+        .expect("trailing journal lookup")
+        .expect("trailing journal entry");
+    assert_eq!(
+        trailing_entry.status(),
+        FederationOperationStatus::Applied,
+        "the valid operation in the same unit must still apply"
+    );
+    assert!(
+        !matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Halted { .. })
+        ),
+        "one stateful-invalid deposit must not halt the member"
+    );
+}
+
+#[test]
+fn federation_apply_content_errors_are_definitive_but_corruption_errors_are_not() {
+    use cdk::federation::FederationError;
+
+    for error in [
+        FederationError::OperationStateInvalid {
+            reason: "x".to_string(),
+        },
+        FederationError::ChainObservationInvalid {
+            reason: "x".to_string(),
+        },
+        FederationError::AddressAllocationInvalid {
+            reason: "x".to_string(),
+        },
+    ] {
+        assert!(
+            cdk::Error::from(error).is_definitive_failure(),
+            "deterministic apply-time content errors must be definitive"
+        );
+    }
+    assert!(
+        !cdk::Error::from(FederationError::ChainObservationStateInvalid {
+            reason: "x".to_string(),
+        })
+        .is_definitive_failure(),
+        "genuine local state corruption must stay halt-worthy"
+    );
+    assert!(
+        !cdk::Error::Internal.is_definitive_failure(),
+        "free-form internal errors must stay halt-worthy"
+    );
+}
+
+#[tokio::test]
 async fn aleph_bft_automatic_rotation_failure_halts_without_live_resources() {
     let options = fast_aleph_bft_live_session_options(
         CdkAlephBftNetworkPumpConfig {

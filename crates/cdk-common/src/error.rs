@@ -905,7 +905,10 @@ impl Error {
             #[cfg(feature = "federation")]
             Self::Federation(
                 crate::federation::FederationError::InactiveFederatedKeyset { .. }
-                | crate::federation::FederationError::RejectedOperation { .. },
+                | crate::federation::FederationError::RejectedOperation { .. }
+                | crate::federation::FederationError::OperationStateInvalid { .. }
+                | crate::federation::FederationError::ChainObservationInvalid { .. }
+                | crate::federation::FederationError::AddressAllocationInvalid { .. },
             ) => true,
 
             Self::MintErrorResponse(response) => {

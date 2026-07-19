@@ -452,6 +452,15 @@ pub enum FederationError {
         /// Stable validation reason without proposer-local details.
         reason: String,
     },
+    /// A finalized operation failed deterministic content validation against
+    /// the ordered federation state at the apply boundary. This is a
+    /// canonical per-item rejection, never a member halt; genuine local
+    /// corruption must use a non-definitive error instead.
+    #[error("Federation operation conflicts with ordered state: {reason}")]
+    OperationStateInvalid {
+        /// Stable validation reason without member-local source details.
+        reason: String,
+    },
     /// A public or private FROST wallet configuration failed validation.
     #[error("Invalid federation FROST wallet configuration: {reason}")]
     FrostConfigurationInvalid {

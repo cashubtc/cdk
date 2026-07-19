@@ -67,7 +67,7 @@ is well established but its root cause is not.
 | 19 | `P6` | Unbounded pending-quote population amplifies wallet-request DoS | Medium | 97% | Resource starvation | Not started |
 | 20 | `R3` | Retry queue is serviced only when fresh traffic is idle | Medium | 95% | Network/rejoining member | Not started |
 | 21 | `A2` | Payment-observation submit readiness remains implicit | Medium | 85% | Consensus backlog and invalid-state amplification | Not started |
-| 22 | `DB-001` | Stateful apply-time content errors remain ambiguous and halt the session | Critical | 99% | Session/global | Not started |
+| 22 | `DB-001` | Stateful apply-time content errors remain ambiguous and halt the session | Critical | 99% | Session/global | Completed |
 | 23 | `DB-002` | Payment backends do not uniformly honor a caller-supplied recovery key | Medium liveness | 95% | Quote liveness; standalone follow-up | Not started |
 | 24 | `DB-003` | First observer can fix incorrect immutable deposit fields permanently | Critical | 99% | On-chain quote/funds | Not started |
 | 25 | `DB-004` | Rebuilt wallet connectors cannot supply original melt change outputs | Medium availability | 95% | Wallet melt recovery after restart | Not started |
@@ -377,7 +377,51 @@ legacy ID and discovery history.
 
 - **Discovery date and originating milestone:** 2026-07-18, milestone 2 (`F2`)
   confirmation.
-- **Status:** Queued
+- **Status:** Resolved on 2026-07-19 with red-before-green runtime proof
+  (commit `fix: reject stateful-invalid federation operations per item instead of halting`).
+- **Confirmation (executed 2026-07-19, unmodified pre-fix worktree):**
+  `cargo test -p cdk-axum --features federation byzantine_paid_melt_observation_without_saga_rejects_item_without_halt -- --nocapture`
+  FAILED after 30 seconds: a Byzantine member queued a structurally valid
+  paid melt observation for a real melt quote with no melt operation (pure
+  content valid; ordered-state dependency invalid). Both members applied it,
+  hit `Custom("federation paid melt observation found no pending melt
+  saga")` — non-definitive — and the member halted with `AlephBFT live
+  session 0 stopped after a non-retryable finalized-payload apply failure`;
+  the observation never reached a terminal status and live finalization
+  stopped federation-wide.
+- **Minimal fix:** new typed
+  `FederationError::OperationStateInvalid { reason }` for deterministic
+  ordered-state content conflicts at apply boundaries; free-form
+  `Custom`/`InvalidPaymentRequest`/`PendingQuote` content errors at the cited
+  melt-trap, mint-quote, and on-chain sites
+  (`crates/cdk/src/mint/federation.rs`) remapped to it;
+  `Error::is_definitive_failure`'s federation set
+  (`crates/cdk-common/src/error.rs`) extended with `OperationStateInvalid`,
+  `ChainObservationInvalid`, and `AddressAllocationInvalid`. Deterministic
+  content failures now persist as canonical per-item `Rejected` entries via
+  the existing `mark_federation_operation_apply_failure` path; genuine local
+  corruption (`Internal`, `ChainObservationStateInvalid`, `Database`) stays
+  non-definitive and halt-worthy, pinned by
+  `federation_apply_content_errors_are_definitive_but_corruption_errors_are_not`.
+  Two existing mint-level tests that pinned the old generic error types
+  (`melt.rs`, `chain_observation.rs`) were updated to the typed error; no
+  standalone code or behavior changed.
+- **Per-family proof:** melt traps — the live-session harness above (a
+  saga-less Byzantine paid observation is `Rejected` on both members, the
+  trailing valid operation applies, nobody halts); chain-observation
+  deposit/trap — `stateful_invalid_chain_deposit_rejects_item_without_halt`
+  (a deposit referencing an unknown allocation is `Rejected`, the same-unit
+  valid operation applies); on-chain quote validation — the frost-gated
+  paths are unreachable with test configurations, so their remapped sites
+  are pinned at the classification level by the definitive-set test above.
+- **Evaluation (2026-07-19):** `cargo test -p cdk-axum --features
+  federation` — `507 passed; 0 failed; 2 ignored` (two consecutive runs; one
+  intermediate run had a single non-reproducing flaky failure); `cargo test
+  -p cdk --features federation,mint --lib` — `781 passed; 0 failed`; `cargo
+  test -p cdk --lib` — `540 passed`; `cargo test -p cdk-common` — `112
+  passed`; `cargo check -p cdk-common -p cdk -p cdk-axum
+  --no-default-features` — passed; `rustfmt --check` clean on changed files;
+  clippy unchanged (pre-existing lints only).
 - **Proposed severity and confidence:** Critical; 99% source-proven.
 - **Faulty/Byzantine actor or backend precondition:** one Byzantine member
   places an authorized operation whose pure content is valid but whose ordered
