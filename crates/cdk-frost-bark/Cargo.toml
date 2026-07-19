@@ -1,0 +1,20 @@
+[package]
+name = "cdk-frost-bark"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Bark VTXO key derivation for CDK FROST applications"
+
+[dependencies]
+bitcoin.workspace = true
+cdk-frost.workspace = true
+k256.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

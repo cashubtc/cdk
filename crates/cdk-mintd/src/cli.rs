@@ -542,6 +542,18 @@ pub struct FederationDkgStatusArgs {
     /// Initial application key epoch derived from the application-neutral FROST root.
     #[arg(long, requires_all = ["from_database", "final_config_dir"])]
     pub frost_cdk_application_key_epoch: Option<u64>,
+    /// Explicit Bitcoin network for the initial federated Bark application.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_bark_network: Option<String>,
+    /// Compressed public key of the single accepted Ark server.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_bark_ark_server_public_key: Option<String>,
+    /// Initial Bark application key epoch derived from the reusable FROST root.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_bark_application_key_epoch: Option<u64>,
+    /// JSON file containing the exact accepted Bark fee, CLTV, and recovery policy.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_bark_policy_config: Option<PathBuf>,
 }
 
 #[cfg(feature = "federation")]
@@ -980,6 +992,14 @@ mod tests {
             "1",
             "--frost-cdk-application-key-epoch",
             "1",
+            "--frost-bark-network",
+            "regtest",
+            "--frost-bark-ark-server-public-key",
+            "03774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb",
+            "--frost-bark-application-key-epoch",
+            "1",
+            "--frost-bark-policy-config",
+            "bark-policy.json",
             "--force",
         ])
         .expect("dkg status command parses");
@@ -1009,6 +1029,11 @@ mod tests {
             vec![PathBuf::from("member-1/dkg-transcript-signature.json")]
         );
         assert!(status.require_ready);
+        assert_eq!(status.frost_bark_network.as_deref(), Some("regtest"));
+        assert_eq!(
+            status.frost_bark_policy_config,
+            Some(PathBuf::from("bark-policy.json"))
+        );
         assert_eq!(
             status.final_config_dir,
             Some(PathBuf::from("member-1/finalized"))

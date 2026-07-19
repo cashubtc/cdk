@@ -10,12 +10,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
 use cdk::federation::{
-    FederationCdkOnchainFrostAuthorization, FederationCdkOnchainFrostAuthorizationAdapter,
-    FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
-    FederationFrostCommitmentResponse, FederationFrostInputSignatureAudit,
-    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
-    FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationRestMessageKind,
-    FederationSignedRequest, FederationSignedTransaction, FederationTransactionProposalId,
+    FederationBarkFrostRegistrationAdapter, FederationCdkOnchainFrostAuthorization,
+    FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostAggregateResultNotification,
+    FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
+    FederationFrostInputSignatureAudit, FederationFrostSignatureShareResponse,
+    FederationFrostSigningAbortRequest, FederationFrostSigningAck,
+    FederationFrostSigningPackageRequest, FederationRestMessageKind, FederationSignedRequest,
+    FederationSignedTransaction, FederationTransactionProposalId,
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
 use cdk_frost::{
@@ -424,6 +425,23 @@ impl FederationFrostSigningRuntime {
         manager.register_application(FederationCdkOnchainFrostAuthorizationAdapter::new(
             application,
         )?)?;
+        if let Some(bark) = &wallet.bark_application {
+            let derived =
+                manager.register_application(FederationBarkFrostRegistrationAdapter::new(bark)?)?;
+            if derived.group_key() != bark.derived_group_key
+                || derived.verifying_shares().len() != bark.verification_shares.len()
+                || derived.verifying_shares().iter().any(|(member, share)| {
+                    let Ok(member) = cdk::federation::MemberId::new(member.get()) else {
+                        return true;
+                    };
+                    bark.verification_shares.get(&member) != Some(share)
+                })
+            {
+                return Err(anyhow::anyhow!(
+                    "participant Bark application derivation differs from public config"
+                ));
+            }
+        }
         managers.insert(
             public_root.root_key_epoch,
             Arc::new(tokio::sync::Mutex::new(manager)),

@@ -15,6 +15,11 @@ use cdk_frost::{
     CanonicalRootKeyPackage, DerivedPublicPackage, EncryptedSecret, FrostCiphersuite,
     RootPublicPackage, SecretEncryptionKey,
 };
+use cdk_frost_bark::{
+    application_registration_for_epoch as bark_application_registration_for_epoch, FrostBark,
+    APPLICATION_DERIVATION_VERSION as BARK_APPLICATION_DERIVATION_VERSION,
+    LOCATOR_DERIVATION_VERSION as BARK_LOCATOR_DERIVATION_VERSION,
+};
 use cdk_frost_bip32::{
     application_chain_code, application_registration_for_epoch, FrostBip32,
     APPLICATION_DERIVATION_VERSION,
@@ -31,6 +36,9 @@ const ROOT_CONFIG_VERSION: u16 = 1;
 const ROOT_PRIVATE_CONFIG_VERSION: u16 = 1;
 const APPLICATION_CONFIG_VERSION: u16 = 1;
 const WALLET_CONFIG_VERSION: u16 = 1;
+const BARK_APPLICATION_CONFIG_VERSION: u16 = 1;
+const BARK_POLICY_CONFIG_VERSION: u16 = 1;
+const BARK_WALLET_CONFIG_VERSION: u16 = 2;
 const CONFIRMATION_POLICY_VERSION: u16 = 1;
 const SEALED_STORAGE_VERSION: u16 = 1;
 const ROOT_CONFIG_DIGEST_DOMAIN: &[u8] = b"cdk/federation/frost-root-config/v1";
@@ -483,6 +491,306 @@ pub struct FederationFrostApplicationConfig {
     pub fee_policy_version: u16,
 }
 
+/// Accepted first-receive proof mode for a federated Bark application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationBarkReceiveAntiDosPolicy {
+    /// The accepted Ark deployment does not require a first-receive proof.
+    NoProof,
+    /// Each eligible actor must have the separately protected operator token.
+    ProtectedToken,
+    /// Each receive intent must reserve an accepted federation VTXO attestation.
+    AcceptedVtxo,
+}
+
+/// Exact accepted fee, CLTV, retention, and recovery bounds for Bark v1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkPolicyConfig {
+    /// Policy schema version.
+    pub version: u16,
+    /// Fixed component of the gross incoming invoice fee formula, in satoshis.
+    pub receive_base_fee_sat: u64,
+    /// Proportional component of the gross incoming invoice fee formula.
+    pub receive_fee_ppm: u32,
+    /// Fixed component of the maximum accepted outgoing fee, in satoshis.
+    pub maximum_outgoing_base_fee_sat: u64,
+    /// Proportional component of the maximum accepted outgoing fee.
+    pub maximum_outgoing_fee_ppm: u32,
+    /// Smallest accepted incoming invoice final-CLTV delta.
+    pub minimum_incoming_cltv_delta: u32,
+    /// Smallest accepted outgoing invoice final-CLTV delta.
+    pub minimum_outgoing_cltv_delta: u32,
+    /// Refresh must begin at least this many blocks before VTXO expiry.
+    pub refresh_before_expiry_blocks: u32,
+    /// Emergency exit must begin at least this many blocks before VTXO expiry.
+    pub emergency_exit_before_expiry_blocks: u32,
+    /// Minimum local retention after terminal checkpoint coverage.
+    pub receive_secret_retention_days: u16,
+    /// Accepted first-receive anti-DoS mode.
+    pub receive_anti_dos: FederationBarkReceiveAntiDosPolicy,
+}
+
+impl FederationBarkPolicyConfig {
+    /// Construct the current Bark policy after checking deterministic bounds.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        receive_base_fee_sat: u64,
+        receive_fee_ppm: u32,
+        maximum_outgoing_base_fee_sat: u64,
+        maximum_outgoing_fee_ppm: u32,
+        minimum_incoming_cltv_delta: u32,
+        minimum_outgoing_cltv_delta: u32,
+        refresh_before_expiry_blocks: u32,
+        emergency_exit_before_expiry_blocks: u32,
+        receive_secret_retention_days: u16,
+        receive_anti_dos: FederationBarkReceiveAntiDosPolicy,
+    ) -> Result<Self> {
+        let config = Self {
+            version: BARK_POLICY_CONFIG_VERSION,
+            receive_base_fee_sat,
+            receive_fee_ppm,
+            maximum_outgoing_base_fee_sat,
+            maximum_outgoing_fee_ppm,
+            minimum_incoming_cltv_delta,
+            minimum_outgoing_cltv_delta,
+            refresh_before_expiry_blocks,
+            emergency_exit_before_expiry_blocks,
+            receive_secret_retention_days,
+            receive_anti_dos,
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.version != BARK_POLICY_CONFIG_VERSION
+            || self.receive_fee_ppm > 1_000_000
+            || self.maximum_outgoing_fee_ppm > 1_000_000
+            || self.minimum_incoming_cltv_delta == 0
+            || self.minimum_outgoing_cltv_delta == 0
+            || self.emergency_exit_before_expiry_blocks == 0
+            || self.refresh_before_expiry_blocks <= self.emergency_exit_before_expiry_blocks
+            || self.receive_secret_retention_days < 30
+        {
+            return Err(invalid_config("unsupported or unsafe Bark policy config"));
+        }
+        Ok(())
+    }
+}
+
+/// Versioned public Bark application derived from the reusable federation root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkFrostApplicationConfig {
+    /// Application config schema version.
+    pub version: u16,
+    /// Stable Bark application identifier.
+    pub application_id: FederationFrostApplicationId,
+    /// Bark application key epoch.
+    pub application_key_epoch: u64,
+    /// Referenced reusable-root epoch.
+    pub root_key_epoch: u64,
+    /// Additive application derivation contract version.
+    pub derivation_version: u16,
+    /// Commitment to the accepted typed Bark authorization policy.
+    pub authorization_policy: [u8; 32],
+    /// Derived Bark application signing threshold.
+    pub threshold: u16,
+    /// Derived Bark application verification shares.
+    #[serde(with = "point_map_serde")]
+    pub verification_shares: BTreeMap<MemberId, [u8; 33]>,
+    /// Derived Bark application aggregate key before locator derivation.
+    #[serde(with = "point_serde")]
+    pub derived_group_key: [u8; 33],
+    /// Immutable Bitcoin network accepted for this application.
+    pub network: Network,
+    /// Exact compressed public key of the single accepted Ark server.
+    #[serde(with = "point_serde")]
+    pub ark_server_public_key: [u8; 33],
+    /// Version of the CDK-owned VTXO locator derivation.
+    pub locator_derivation_version: u16,
+    /// Accepted fee, CLTV, recovery, retention, and anti-DoS bounds.
+    pub policy: FederationBarkPolicyConfig,
+}
+
+impl FederationBarkFrostApplicationConfig {
+    /// Derive a complete public Bark application config from the reusable root.
+    pub fn new(
+        federation: &FederationConfig,
+        root: &FederationFrostRootPublicConfig,
+        application_key_epoch: u64,
+        network: Network,
+        ark_server_public_key: PublicKey,
+        policy: FederationBarkPolicyConfig,
+    ) -> Result<Self> {
+        let registration =
+            bark_application_registration_for_epoch(application_key_epoch).map_err(bark_error)?;
+        let root_public = root.root_public_package(federation)?;
+        let derived = derive_application_public(&root_public, registration).map_err(frost_error)?;
+        let verification_shares = derived
+            .verifying_shares()
+            .iter()
+            .map(|(member, share)| Ok((common_member(*member)?, *share)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let config = Self {
+            version: BARK_APPLICATION_CONFIG_VERSION,
+            application_id: FederationFrostApplicationId::from_bytes(registration.id().to_bytes())?,
+            application_key_epoch,
+            root_key_epoch: root.root_key_epoch,
+            derivation_version: registration.derivation_version().get(),
+            authorization_policy: registration.authorization_policy(),
+            threshold: derived.threshold(),
+            verification_shares,
+            derived_group_key: derived.group_key(),
+            network,
+            ark_server_public_key: ark_server_public_key.serialize(),
+            locator_derivation_version: BARK_LOCATOR_DERIVATION_VERSION,
+            policy,
+        };
+        config.validate(federation, root)?;
+        Ok(config)
+    }
+
+    /// Reconstruct the public Bark application package after full validation.
+    pub fn derived_public_package(
+        &self,
+        federation: &FederationConfig,
+        root: &FederationFrostRootPublicConfig,
+    ) -> Result<DerivedPublicPackage> {
+        self.validate(federation, root)?;
+        let shares = self
+            .verification_shares
+            .iter()
+            .map(|(member, share)| Ok((frost_member(*member)?, *share)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        DerivedPublicPackage::new(
+            cdk_frost::RootKeyEpoch::new(self.root_key_epoch).map_err(frost_error)?,
+            self.registration()?,
+            self.threshold,
+            shares,
+            self.derived_group_key,
+        )
+        .map_err(frost_error)
+    }
+
+    /// Open the public locator adapter only for the exact accepted runtime scope.
+    pub fn open_public_adapter(
+        &self,
+        federation: &FederationConfig,
+        root: &FederationFrostRootPublicConfig,
+        expected_network: Network,
+        expected_ark_server: PublicKey,
+        expected_root_epoch: u64,
+        expected_application_key_epoch: u64,
+    ) -> Result<FrostBark> {
+        if self.network != expected_network
+            || self.ark_server_public_key != expected_ark_server.serialize()
+            || self.root_key_epoch != expected_root_epoch
+            || self.application_key_epoch != expected_application_key_epoch
+        {
+            return Err(invalid_config(
+                "Bark runtime network, Ark server, or application epoch mismatch",
+            ));
+        }
+        FrostBark::new(self.derived_public_package(federation, root)?).map_err(bark_error)
+    }
+
+    /// Validate registration, root derivation, roster, Ark key, and policy.
+    pub fn validate(
+        &self,
+        federation: &FederationConfig,
+        root: &FederationFrostRootPublicConfig,
+    ) -> Result<()> {
+        if self.version != BARK_APPLICATION_CONFIG_VERSION
+            || self.application_key_epoch == 0
+            || self.root_key_epoch != root.root_key_epoch
+            || self.derivation_version != BARK_APPLICATION_DERIVATION_VERSION
+            || self.locator_derivation_version != BARK_LOCATOR_DERIVATION_VERSION
+        {
+            return Err(invalid_config(
+                "Bark application config version or epoch mismatch",
+            ));
+        }
+        self.policy.validate()?;
+        PublicKey::from_slice(&self.ark_server_public_key)
+            .map_err(|error| invalid_config(error.to_string()))?;
+        let registration = self.registration()?;
+        let expected_registration =
+            bark_application_registration_for_epoch(self.application_key_epoch)
+                .map_err(bark_error)?;
+        if registration != expected_registration {
+            return Err(invalid_config(
+                "unregistered or unsupported Bark application",
+            ));
+        }
+        let root_public = root.root_public_package(federation)?;
+        let expected =
+            derive_application_public(&root_public, registration).map_err(frost_error)?;
+        let expected_shares = expected
+            .verifying_shares()
+            .iter()
+            .map(|(member, share)| Ok((common_member(*member)?, *share)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        if self.threshold != federation.threshold_params.signature_threshold
+            || self.threshold != expected.threshold()
+            || self.verification_shares != expected_shares
+            || self.derived_group_key != expected.group_key()
+        {
+            return Err(invalid_config(
+                "Bark application derivation differs from root",
+            ));
+        }
+        Ok(())
+    }
+
+    fn registration(&self) -> Result<ApplicationRegistration> {
+        ApplicationRegistration::new(
+            self.application_id.to_frost()?,
+            ApplicationKeyEpoch::new(self.application_key_epoch).map_err(frost_error)?,
+            cdk_frost::ApplicationDerivationVersion::new(self.derivation_version)
+                .map_err(frost_error)?,
+            self.authorization_policy,
+        )
+        .map_err(frost_error)
+    }
+}
+
+/// Registration-only Bark adapter used before typed Bark authorization is enabled.
+///
+/// Registering this adapter derives the participant-local Bark application share
+/// inside [`cdk_frost::ParticipantKeyManager`] without exposing it. Milestone 7
+/// replaces the fail-closed authorization decision with accepted-state lookup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FederationBarkFrostRegistrationAdapter {
+    registration: ApplicationRegistration,
+}
+
+impl FederationBarkFrostRegistrationAdapter {
+    /// Construct from a fully validated Bark application config.
+    pub fn new(application: &FederationBarkFrostApplicationConfig) -> Result<Self> {
+        Ok(Self {
+            registration: application.registration()?,
+        })
+    }
+}
+
+impl ApplicationAuthorization for FederationBarkFrostRegistrationAdapter {
+    fn registration(&self) -> ApplicationRegistration {
+        self.registration
+    }
+
+    fn authorize(
+        &self,
+        _request: &AuthorizationRequest,
+    ) -> std::result::Result<AuthorizedSigningRequest, cdk_frost::Error> {
+        Err(cdk_frost::Error::Application(
+            "Bark signing remains disabled until accepted-state authorization is installed"
+                .to_string(),
+        ))
+    }
+}
+
 /// Reviewed CDK on-chain application adapter for the generic FROST key manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FederationCdkOnchainFrostAuthorizationAdapter {
@@ -689,6 +997,9 @@ pub struct FederationFrostWalletConfig {
     pub root: FederationFrostRootPublicConfig,
     /// Immutable CDK on-chain application derived from the root.
     pub cdk_onchain_application: FederationFrostApplicationConfig,
+    /// Optional immutable Bark VTXO application derived from the same root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bark_application: Option<FederationBarkFrostApplicationConfig>,
 }
 
 impl FederationFrostWalletConfig {
@@ -702,6 +1013,24 @@ impl FederationFrostWalletConfig {
             version: WALLET_CONFIG_VERSION,
             root,
             cdk_onchain_application: application,
+            bark_application: None,
+        };
+        config.validate(federation)?;
+        Ok(config)
+    }
+
+    /// Construct the Bark-capable aggregate config without changing v1 snapshots.
+    pub fn new_with_bark(
+        federation: &FederationConfig,
+        root: FederationFrostRootPublicConfig,
+        cdk_onchain_application: FederationFrostApplicationConfig,
+        bark_application: FederationBarkFrostApplicationConfig,
+    ) -> Result<Self> {
+        let config = Self {
+            version: BARK_WALLET_CONFIG_VERSION,
+            root,
+            cdk_onchain_application,
+            bark_application: Some(bark_application),
         };
         config.validate(federation)?;
         Ok(config)
@@ -709,7 +1038,12 @@ impl FederationFrostWalletConfig {
 
     /// Validate the immutable root and application derivation invariants.
     pub fn validate(&self, federation: &FederationConfig) -> Result<()> {
-        if self.version != WALLET_CONFIG_VERSION {
+        let expected_version = if self.bark_application.is_some() {
+            BARK_WALLET_CONFIG_VERSION
+        } else {
+            WALLET_CONFIG_VERSION
+        };
+        if self.version != expected_version {
             return Err(invalid_config("unsupported FROST wallet config"));
         }
         self.root.validate(federation)?;
@@ -718,6 +1052,14 @@ impl FederationFrostWalletConfig {
         }
         self.cdk_onchain_application
             .validate(federation, &self.root)?;
+        if let Some(application) = &self.bark_application {
+            application.validate(federation, &self.root)?;
+            if application.network != self.cdk_onchain_application.network {
+                return Err(invalid_config(
+                    "Bark and recovery wallet Bitcoin networks differ",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -838,6 +1180,10 @@ fn frost_error(error: cdk_frost::Error) -> FederationError {
 }
 
 fn bip32_error(error: cdk_frost_bip32::Error) -> FederationError {
+    invalid_config(error.to_string())
+}
+
+fn bark_error(error: cdk_frost_bark::Error) -> FederationError {
     invalid_config(error.to_string())
 }
 

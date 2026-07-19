@@ -2,7 +2,7 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-2 complete, no production CDK Bark integration exists yet
+Status: implementation in progress; Milestones 0-3 complete, no production Bark payment backend exists yet
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -24,7 +24,7 @@ machine-specific metadata in this document.
 | 0. Protocol and threat model | Complete (2026-07-19) | Decision record below; targeted Bark cryptography tests and standalone CDK regression baseline passed | `docs: freeze federated Bark protocol model` |
 | 1. Bark federation facade | Complete (2026-07-19) | Exact locator/import/send/receive APIs, deterministic custody sessions, stable replay results, two-clean-database and per-step restart tests, standalone and minimal-feature Bark checks passed | `feat: add explicit federation wallet facade` |
 | 2. Bark wire and authorization | Complete (2026-07-19) | Versioned bounded encodings for FROST, virtual MuSig2, and threshold DH; typed accepted-operation references; exact transcript reconstruction and adversarial mutation tests passed | `feat: define canonical Bark custody wire` |
-| 3. CDK Bark application | Pending | — | — |
+| 3. CDK Bark application | Complete (2026-07-19) | Frozen registration/locator adapter, v2 Bark-capable config, dual-DKG activation, sealed-root registration, 2-of-3 and 3-of-5 vectors, Bark byte-agreement and scope rejection tests passed | `feat: register Bark FROST application` |
 | 4. Durable MuSig2 and DH | Pending | — | — |
 | 5. Custody transport | Pending | — | — |
 | 6. `cdk-bark` skeleton | Pending | — | — |
@@ -1584,6 +1584,84 @@ Exit criteria:
 - changing any plan field causes every honest participant to deny the request.
 
 ### Milestone 3: register Bark under the CDK root
+
+Status: complete on 2026-07-19.
+
+Implementation commits:
+
+- CDK: `feat: register Bark FROST application`
+- Bark: `2450be25` (`test: verify CDK Bark derivation vectors`)
+
+Implementation record:
+
+- added the small application-specific `cdk-frost-bark` crate. It owns the
+  frozen application label/ID, key epoch and authorization-policy commitment,
+  the version-1 VTXO locator, the exact SHA-256/reduce-mod-order additive
+  scalar transcript, and the plain BIP340 `SigningDerivation`; it has no Bark
+  runtime or secret-share dependency;
+- added a Bark-specific public application config without changing the
+  descriptor-bearing BDK application type. It commits the root/application
+  epochs, complete derived verification-share map, group key, network, exact
+  compressed Ark server key, locator version, and explicit fee, CLTV,
+  refresh/exit, receive-secret-retention, and first-receive anti-DoS policy;
+- extended `FederationFrostWalletConfig` with a serde-defaulted, omitted-when-
+  absent Bark application. BDK-only snapshots remain aggregate version 1 and
+  retain their prior serialized digest vector; a Bark application requires
+  aggregate version 2. Consequently an older `deny_unknown_fields` binary
+  rejects a Bark-enabled snapshot before startup, while the current binary
+  rejects version 1 with Bark or version 2 without Bark;
+- added initial DKG export activation flags for Bark network, Ark server key,
+  application epoch, and an explicit public-policy JSON file. Bark activation
+  requires the existing federated BDK recovery application on the same network
+  and derives from the already completed reusable FROST root; no second DKG or
+  secret field is created;
+- kept participant persistence at the existing boundary: the participant-local
+  root remains encrypted in `FederationFrostRootPrivateConfig`, the complete
+  public Bark application persists through the signed federation-config
+  snapshot, and startup derives/registers Bark inside the existing
+  `ParticipantKeyManager` and durable nonce namespace;
+- added a registration-only Bark authorization adapter. It proves application
+  construction without exporting a root or application share, but denies every
+  signing request until the accepted-state authorizer in Milestone 7 is
+  installed; and
+- froze deterministic 2-of-3 and 3-of-5 application group keys, every member's
+  verification share, and locator `0`/`u32::MAX` public keys. Bark independently
+  reconstructs the transcript and returns the same keys through its
+  `VtxoCustody::derive_public_key` contract, with `local_keypair()` unavailable.
+
+Verification evidence:
+
+```text
+cargo test -p cdk-frost-bark
+  2 passed; doc tests passed
+
+cargo test -p cdk-common --features federation --test frost_dkg
+  4 passed, including 2-of-3 and 3-of-5 DKG/config/no-export vectors
+
+cargo test -p cdk-mintd --features federation completed_dual_dkg_ --lib
+  2 passed
+
+cargo test -p cdk-mintd --features federation parses_federation_dkg_status_subcommand --lib
+  1 passed
+
+cargo test -p cdk-axum --features federation frost_signing --lib
+  8 passed
+
+cargo clippy -p cdk-frost-bark -p cdk-common --all-targets \
+  --features federation --no-deps -- -D warnings
+  passed
+
+bark: cargo test -p frost-federation-core -p bark-frost --locked
+  bark-frost: 6 passed; frost-federation-core: 5 passed; doc tests passed
+
+bark: cargo clippy -p bark-frost --all-targets --locked --no-deps -- -D warnings
+  passed for bark-frost (existing bark-wallet warnings only)
+```
+
+An additional strict all-target clippy run including `cdk-axum` reached
+unrelated pre-existing Rust 1.95 lints in unchanged federation/AlephBFT files;
+none referenced the Milestone 3 changes. The focused Axum FROST signing suite
+and all-target compile gate passed. No migration was added or modified.
 
 Deliverables:
 

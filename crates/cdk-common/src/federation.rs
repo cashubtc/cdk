@@ -113,6 +113,8 @@ pub use self::dkg_driver::{
     FederationDkgDriverRecords, ValidatedFederationDkgParticipantState,
 };
 pub use self::frost_config::{
+    FederationBarkFrostApplicationConfig, FederationBarkFrostRegistrationAdapter,
+    FederationBarkPolicyConfig, FederationBarkReceiveAntiDosPolicy,
     FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostApplicationConfig,
     FederationFrostApplicationId, FederationFrostRootPrivateConfig,
     FederationFrostRootPublicConfig, FederationFrostSealedStorageMetadata,

@@ -3,10 +3,12 @@ use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use anyhow::{bail, Context, Result};
 use cdk_common::federation::{
-    redact_federation_operator_message, FederationConfig, FederationDkgActivationRequest,
+    redact_federation_operator_message, FederationBarkFrostApplicationConfig,
+    FederationBarkPolicyConfig, FederationConfig, FederationDkgActivationRequest,
     FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgDriverPhase,
     FederationDkgDriverRecords, FederationDkgFinalizedMemberConfig, FederationDkgMemberKeysetShare,
     FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
@@ -136,10 +138,61 @@ fn maybe_write_finalized_configs(
         transcript_signatures,
         activations,
     )?;
-    if let Some(bootstrap) = FrostCdkBootstrap::from_args(args)? {
+    let cdk_bootstrap = FrostCdkBootstrap::from_args(args)?;
+    let bark_bootstrap = FrostBarkBootstrap::from_args(args)?;
+    if bark_bootstrap.is_some() && cdk_bootstrap.is_none() {
+        bail!("initial Bark bootstrap requires the federated CDK recovery wallet");
+    }
+    if let Some(bootstrap) = cdk_bootstrap {
         attach_initial_frost_cdk_wallet(&mut finalized, frost_roots, bootstrap)?;
     }
+    if let Some(bootstrap) = bark_bootstrap {
+        attach_initial_frost_bark_application(&mut finalized, bootstrap)?;
+    }
     write_finalized_member_config(output_dir, &finalized, args.force).map(Some)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FrostBarkBootstrap {
+    network: bitcoin::Network,
+    ark_server_public_key: bitcoin::secp256k1::PublicKey,
+    application_key_epoch: u64,
+    policy: FederationBarkPolicyConfig,
+}
+
+impl FrostBarkBootstrap {
+    fn from_args(args: &FederationDkgStatusArgs) -> Result<Option<Self>> {
+        let values = (
+            args.frost_bark_network.as_deref(),
+            args.frost_bark_ark_server_public_key.as_deref(),
+            args.frost_bark_application_key_epoch,
+            args.frost_bark_policy_config.as_deref(),
+        );
+        let (network, ark_server_public_key, application_key_epoch, policy_path) = match values {
+            (None, None, None, None) => return Ok(None),
+            (Some(network), Some(server), Some(epoch), Some(policy)) => {
+                (network, server, epoch, policy)
+            }
+            _ => bail!(
+                "FROST Bark bootstrap requires --frost-bark-network, \
+                 --frost-bark-ark-server-public-key, --frost-bark-application-key-epoch, and \
+                 --frost-bark-policy-config together"
+            ),
+        };
+        let network = parse_bitcoin_network(network, "FROST Bark")?;
+        let ark_server_public_key = bitcoin::secp256k1::PublicKey::from_str(ark_server_public_key)
+            .context("invalid compressed Ark server public key")?;
+        if application_key_epoch == 0 {
+            bail!("FROST Bark application epoch must be non-zero");
+        }
+        let policy = crate::read_federation_json(policy_path, "Bark public policy config")?;
+        Ok(Some(Self {
+            network,
+            ark_server_public_key,
+            application_key_epoch,
+            policy,
+        }))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,13 +223,7 @@ impl FrostCdkBootstrap {
                      --frost-cdk-application-key-epoch together"
                 ),
             };
-        let network = match network {
-            "bitcoin" | "mainnet" => bitcoin::Network::Bitcoin,
-            "testnet" => bitcoin::Network::Testnet,
-            "signet" => bitcoin::Network::Signet,
-            "regtest" => bitcoin::Network::Regtest,
-            other => bail!("unknown FROST CDK Bitcoin network {other}"),
-        };
+        let network = parse_bitcoin_network(network, "FROST CDK")?;
         FederationOnchainConfirmationPolicy::new(minimum_confirmations)?;
         if fee_policy_version == 0 || application_key_epoch == 0 {
             bail!("FROST CDK fee-policy and application epochs must be non-zero");
@@ -187,6 +234,17 @@ impl FrostCdkBootstrap {
             fee_policy_version,
             application_key_epoch,
         }))
+    }
+}
+
+fn parse_bitcoin_network(value: &str, application: &str) -> Result<bitcoin::Network> {
+    match value {
+        "bitcoin" | "mainnet" => Ok(bitcoin::Network::Bitcoin),
+        "testnet" => Ok(bitcoin::Network::Testnet),
+        "testnet4" => Ok(bitcoin::Network::Testnet4),
+        "signet" => Ok(bitcoin::Network::Signet),
+        "regtest" => Ok(bitcoin::Network::Regtest),
+        other => bail!("unknown {application} Bitcoin network {other}"),
     }
 }
 
@@ -215,6 +273,45 @@ fn attach_initial_frost_cdk_wallet(
         root.clone(),
         application,
     )?);
+    finalized.public_config.validate()?;
+    finalized
+        .private_config
+        .validate_against_public(&finalized.public_config)?;
+    Ok(())
+}
+
+fn attach_initial_frost_bark_application(
+    finalized: &mut FederationDkgFinalizedMemberConfig,
+    bootstrap: FrostBarkBootstrap,
+) -> Result<()> {
+    let wallet = finalized
+        .public_config
+        .frost_wallet
+        .as_ref()
+        .ok_or_else(|| {
+            anyhow::anyhow!("initial Bark bootstrap requires an existing FROST CDK wallet")
+        })?;
+    if wallet.bark_application.is_some() {
+        bail!("initial Bark bootstrap cannot replace an existing Bark application");
+    }
+    if wallet.cdk_onchain_application.network != bootstrap.network {
+        bail!("Bark and federated CDK recovery wallet networks must match");
+    }
+    let bark = FederationBarkFrostApplicationConfig::new(
+        &finalized.public_config,
+        &wallet.root,
+        bootstrap.application_key_epoch,
+        bootstrap.network,
+        bootstrap.ark_server_public_key,
+        bootstrap.policy,
+    )?;
+    let upgraded = FederationFrostWalletConfig::new_with_bark(
+        &finalized.public_config,
+        wallet.root.clone(),
+        wallet.cdk_onchain_application.clone(),
+        bark,
+    )?;
+    finalized.public_config.frost_wallet = Some(upgraded);
     finalized.public_config.validate()?;
     finalized
         .private_config

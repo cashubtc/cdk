@@ -1219,6 +1219,7 @@ mod tests {
             version: 1,
             root,
             cdk_onchain_application: application,
+            bark_application: None,
         };
         let federation_id = cdk::federation::FederationId::from_bytes([11; 32]);
 
