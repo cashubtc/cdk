@@ -2,7 +2,7 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-3 complete, no production Bark payment backend exists yet
+Status: implementation in progress; Milestones 0-4 complete, no production Bark payment backend exists yet
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -25,7 +25,7 @@ machine-specific metadata in this document.
 | 1. Bark federation facade | Complete (2026-07-19) | Exact locator/import/send/receive APIs, deterministic custody sessions, stable replay results, two-clean-database and per-step restart tests, standalone and minimal-feature Bark checks passed | `feat: add explicit federation wallet facade` |
 | 2. Bark wire and authorization | Complete (2026-07-19) | Versioned bounded encodings for FROST, virtual MuSig2, and threshold DH; typed accepted-operation references; exact transcript reconstruction and adversarial mutation tests passed | `feat: define canonical Bark custody wire` |
 | 3. CDK Bark application | Complete (2026-07-19) | Frozen registration/locator adapter, v2 Bark-capable config, dual-DKG activation, sealed-root registration, 2-of-3 and 3-of-5 vectors, Bark byte-agreement and scope rejection tests passed | `feat: register Bark FROST application` |
-| 4. Durable MuSig2 and DH | Pending | — | — |
+| 4. Durable MuSig2 and DH | Complete (2026-07-19) | Protocol-separated durable ledgers, atomic attempt/nonces, restart-safe exact retries, write-failure matrix, transparent-crypto agreement, and ordinary-FROST coexistence passed | `feat: persist federated custody protocols` |
 | 5. Custody transport | Pending | — | — |
 | 6. `cdk-bark` skeleton | Pending | — | — |
 | 7. Bark operations | Pending | — | — |
@@ -1678,6 +1678,83 @@ Exit criteria:
 - opening with wrong network/server/epoch fails.
 
 ### Milestone 4: durable virtual MuSig2 and threshold DH in `cdk-frost`
+
+Status: complete on 2026-07-19.
+
+Implementation commit:
+
+- CDK: `feat: persist federated custody protocols`
+
+Implementation record:
+
+- added explicit `VirtualMusig2` and `ThresholdDh` custody protocol domains to
+  the existing signing-session model while retaining the byte-identical
+  ordinary-FROST slot/session derivation domains. A single authorization slot
+  can no longer collide across ordinary signing, virtual MuSig2, or
+  threshold-DH;
+- added typed virtual-MuSig2 nonce IDs, two-column public commitments, complete
+  canonical commitment sets, finalized BIP327 transcripts, and partial shares.
+  Partial generation and verification use the same libsecp-compatible MuSig2
+  equations exercised by Bark, and aggregate tests compare the resulting
+  signature against the transparent group key;
+- added typed threshold-DH requests, shares, and Chaum-Pedersen DLEQ proofs.
+  Each result binds the exact accepted session, request, participant, and
+  signer set; combination verifies every proof before interpolation and agrees
+  with the transparent group operation for 2-of-3 and 3-of-5 subsets;
+- kept both new operations behind the registered-application authorization
+  adapter. The key manager exposes only protocol-specific methods: it does not
+  expose the root share, an application share, arbitrary scalar multiplication,
+  or an unrestricted digest-signing API;
+- added independent in-memory and Redb ledgers with versioned, bounded records
+  and new `frost_virtual_musig2_*_v1`, `frost_threshold_dh_*_v1`, and
+  `frost_protocol_meta_v1` tables. Existing ordinary-FROST table names and
+  record bytes were not changed, and an ordinary-only Redb database is opened
+  and upgraded by creating empty protocol tables;
+- made attempt activation, older-attempt burning, slot reservation,
+  compare-and-swap transitions, terminal ordering, and tombstone compaction
+  atomic. Attempt high-water marks permanently reject stale attempts and reject
+  a different signer set or session at the same attempt;
+- implemented the virtual-nonce lifecycle `Generated -> Reserved ->
+  CommitmentSent -> PartialSigning -> PartialProduced -> Consumed`, with
+  terminal `Burned` transitions. Secret nonces are sealed with protocol,
+  session, nonce, and participant AAD, removed before partial computation, and
+  never reloaded after the durable `PartialSigning` boundary;
+- durably cache completed virtual partials and threshold-DH results. An exact
+  retry after restart verifies the cached cryptographic result against the
+  caller's reconstructed transcript before returning byte-identical output;
+  conflicting requests for the same slot/session remain rejected, including
+  after detail compaction; and
+- restart recovery burns every ambiguous nonce-bearing state, promotes an
+  already persisted `PartialProduced` record to terminal `Consumed`, and burns
+  pending threshold-DH work. Failure-injection tests stop at every persistence
+  transition and prove that recovery never exposes a reusable virtual nonce or
+  recomputes an ambiguous DH result.
+
+Verification evidence:
+
+```text
+cargo test -p cdk-frost
+  29 passed; doc tests passed
+
+cargo clippy -p cdk-frost --all-targets --no-deps -- -D warnings
+  passed
+
+cargo check --workspace --all-targets
+  passed
+
+bark: cargo test -p frost-federation-core -p bark-frost --locked
+  bark-frost: 6 passed; frost-federation-core: 5 passed; doc tests passed
+```
+
+The focused suite covers exact completed retries across Redb reopen, same-slot
+and same-attempt substitution, stale attempts, kill-at-every-write virtual
+MuSig2 recovery, threshold-DH write failures, terminal compaction, and an
+ordinary FROST signing session before and after protocol-ledger use. Formatting
+passes with the repository's available stable formatter, which reports that
+the repository's nightly-only formatting options are ignored. The configured
+environment has no `rustup` executable, so a separate explicit MSRV 1.85 run
+could not be performed; the whole-workspace all-target compile gate passed on
+the installed stable compiler. No migration was added or modified.
 
 Deliverables:
 

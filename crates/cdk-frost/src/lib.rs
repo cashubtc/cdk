@@ -8,8 +8,12 @@ mod error;
 mod key_manager;
 mod nonce;
 mod nonce_redb;
+mod protocol;
+mod protocol_redb;
 mod sealed;
+mod threshold_dh;
 mod types;
+mod virtual_musig;
 mod wire;
 
 #[cfg(test)]
@@ -25,18 +29,33 @@ pub use crate::key_manager::{
     signing_package_hash, ApplicationAuthorization, ParticipantKeyManager,
 };
 pub use crate::nonce::{
-    DurableNonceStore, MemoryNonceStore, NonceBurnReason, NonceLifecycle, NonceRecord,
-    NonceReservation, NonceTombstone, SigningAuthorizationScope, SigningSessionContext,
-    SigningSlotId, DEFAULT_TERMINAL_NONCE_RETENTION,
+    CustodyProtocol, DurableNonceStore, MemoryNonceStore, NonceBurnReason, NonceLifecycle,
+    NonceRecord, NonceReservation, NonceTombstone, SigningAuthorizationScope,
+    SigningSessionContext, SigningSlotId, DEFAULT_TERMINAL_NONCE_RETENTION,
 };
 pub use crate::nonce_redb::RedbNonceStore;
+pub use crate::protocol::{
+    DurableProtocolStore, ThresholdDhLifecycle, ThresholdDhRecord, ThresholdDhReservation,
+    ThresholdDhTombstone, VirtualMusigLifecycle, VirtualMusigRecord, VirtualMusigReservation,
+    VirtualMusigTombstone,
+};
 pub use crate::sealed::{EncryptedSecret, SecretEncryptionKey};
+pub use crate::threshold_dh::{
+    combine_shares as combine_threshold_dh_shares, verify_share as verify_threshold_dh_share,
+    ThresholdDhProof, ThresholdDhRequest, ThresholdDhShare,
+};
 pub use crate::types::{
     AggregateSignature, ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch,
     ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, DerivedPublicPackage,
     DerivedSigningPublicPackage, FrostCiphersuite, MemberId, NonceCommitment, NonceCommitmentSet,
     NonceId, RootKeyEpoch, RootPublicPackage, SignatureMode, SignatureShare, SigningDerivation,
     SigningSessionId,
+};
+pub use crate::virtual_musig::{
+    combine_partial_shares as combine_virtual_musig_partial_shares,
+    verify_partial_share as verify_virtual_musig_partial_share, VirtualMusigNonceCommitment,
+    VirtualMusigNonceCommitmentSet, VirtualMusigNonceId, VirtualMusigPartialShare,
+    VirtualMusigTranscript,
 };
 /// RNG traits and operating-system RNG version used by the pinned FROST library.
 pub use frost_secp256k1_tr::rand_core;

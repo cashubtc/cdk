@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::protocol::ProtocolMemoryState;
 use crate::types::{
     ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch, SignatureMode,
     MAX_PARTICIPANTS,
@@ -30,6 +31,17 @@ impl SigningSlotId {
     pub fn to_bytes(self) -> [u8; 32] {
         self.0
     }
+}
+
+/// Cryptographic protocol owning a participant-local session namespace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CustodyProtocol {
+    /// Ordinary two-round FROST signing.
+    OrdinaryFrost,
+    /// Virtual MuSig2 contribution made by a threshold FROST key.
+    VirtualMusig2,
+    /// Verifiable threshold Diffie-Hellman contribution.
+    ThresholdDh,
 }
 
 /// Complete application-neutral context committed by a signing session.
@@ -71,12 +83,43 @@ impl SigningAuthorizationScope {
             message_commitment,
         })
     }
+
+    /// Federation identifier committed by this authorization scope.
+    pub fn federation_id(&self) -> [u8; 32] {
+        self.federation_id
+    }
+
+    /// Root epoch committed by this authorization scope.
+    pub fn root_epoch(&self) -> RootKeyEpoch {
+        self.root_epoch
+    }
+
+    /// Registered application committed by this authorization scope.
+    pub fn registration(&self) -> ApplicationRegistration {
+        self.registration
+    }
+
+    /// Exact child-derivation binding committed by this scope.
+    pub fn derivation_binding(&self) -> [u8; 32] {
+        self.derivation_binding
+    }
+
+    /// Adapter-defined accepted-operation reference.
+    pub fn authorization_reference(&self) -> [u8; 32] {
+        self.authorization_reference
+    }
+
+    /// Exact message or protocol-transcript commitment.
+    pub fn message_commitment(&self) -> [u8; 32] {
+        self.message_commitment
+    }
 }
 
 /// Complete application-neutral context committed by one signing attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SigningSessionContext {
     scope: SigningAuthorizationScope,
+    protocol: CustodyProtocol,
     attempt: u32,
     signer_set: Vec<MemberId>,
     slot_id: SigningSlotId,
@@ -90,6 +133,16 @@ impl SigningSessionContext {
         attempt: u32,
         signer_set: impl IntoIterator<Item = MemberId>,
     ) -> Result<Self, Error> {
+        Self::new_for_protocol(scope, attempt, signer_set, CustodyProtocol::OrdinaryFrost)
+    }
+
+    /// Construct an attempt in a protocol-separated participant namespace.
+    pub fn new_for_protocol(
+        scope: SigningAuthorizationScope,
+        attempt: u32,
+        signer_set: impl IntoIterator<Item = MemberId>,
+        protocol: CustodyProtocol,
+    ) -> Result<Self, Error> {
         let signer_set = signer_set.into_iter().collect::<Vec<_>>();
         if signer_set.is_empty() || signer_set.len() > MAX_PARTICIPANTS {
             return Err(Error::InvalidSigningSession(
@@ -102,25 +155,40 @@ impl SigningSessionContext {
             ));
         }
 
-        let slot_id = SigningSlotId(session_hash(
-            b"cdk/frost/signing-slot/v1",
-            &scope,
-            None,
-            &[],
-        ));
+        let (slot_domain, session_domain) = match protocol {
+            CustodyProtocol::OrdinaryFrost => (
+                b"cdk/frost/signing-slot/v1".as_slice(),
+                b"cdk/frost/signing-session/v1".as_slice(),
+            ),
+            CustodyProtocol::VirtualMusig2 => (
+                b"cdk/frost/virtual-musig2-slot/v1".as_slice(),
+                b"cdk/frost/virtual-musig2-session/v1".as_slice(),
+            ),
+            CustodyProtocol::ThresholdDh => (
+                b"cdk/frost/threshold-dh-slot/v1".as_slice(),
+                b"cdk/frost/threshold-dh-session/v1".as_slice(),
+            ),
+        };
+        let slot_id = SigningSlotId(session_hash(slot_domain, &scope, None, &[]));
         let session_id = SigningSessionId::from_bytes(session_hash(
-            b"cdk/frost/signing-session/v1",
+            session_domain,
             &scope,
             Some(attempt),
             &signer_set,
         ))?;
         Ok(Self {
             scope,
+            protocol,
             attempt,
             signer_set,
             slot_id,
             session_id,
         })
+    }
+
+    /// Protocol namespace committed by this session.
+    pub fn protocol(&self) -> CustodyProtocol {
+        self.protocol
     }
 
     /// Federation identifier committed by this session.
@@ -630,6 +698,7 @@ struct MemoryNonceState {
 #[derive(Debug, Clone, Default)]
 pub struct MemoryNonceStore {
     state: Arc<Mutex<MemoryNonceState>>,
+    pub(crate) protocol_state: Arc<Mutex<ProtocolMemoryState>>,
 }
 
 impl MemoryNonceStore {
@@ -643,6 +712,14 @@ impl MemoryNonceStore {
         self.state
             .lock()
             .map_err(|_| Error::NoncePersistence("nonce store lock poisoned".to_string()))
+    }
+
+    pub(crate) fn protocol_lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, ProtocolMemoryState>, Error> {
+        self.protocol_state
+            .lock()
+            .map_err(|_| Error::NoncePersistence("protocol store lock poisoned".to_string()))
     }
 }
 
@@ -805,7 +882,8 @@ impl DurableNonceStore for MemoryNonceStore {
 }
 
 pub(crate) fn validate_new_nonce_record(record: &NonceRecord) -> Result<(), Error> {
-    if record.revision != 0
+    if record.context.protocol() != CustodyProtocol::OrdinaryFrost
+        || record.revision != 0
         || record.lifecycle != NonceLifecycle::Generated
         || record.encrypted_nonces.is_none()
         || record.cached_share.is_some()
@@ -821,7 +899,9 @@ pub(crate) fn validate_nonce_transition(
     expected: &NonceRecord,
     replacement: &NonceRecord,
 ) -> Result<(), Error> {
-    if expected.nonce_id != replacement.nonce_id
+    if expected.context.protocol() != CustodyProtocol::OrdinaryFrost
+        || replacement.context.protocol() != CustodyProtocol::OrdinaryFrost
+        || expected.nonce_id != replacement.nonce_id
         || expected.context != replacement.context
         || expected.derivation != replacement.derivation
         || expected.commitment != replacement.commitment
