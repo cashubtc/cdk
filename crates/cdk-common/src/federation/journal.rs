@@ -699,7 +699,8 @@ impl FederationJournalEntry {
             | FederationOperation::TransactionProposal(_)
             | FederationOperation::TransactionSigned(_)
             | FederationOperation::TransactionBroadcastIntent(_)
-            | FederationOperation::TransactionBroadcastObservation(_) => {}
+            | FederationOperation::TransactionBroadcastObservation(_)
+            | FederationOperation::Bark(_) => {}
             FederationOperation::MintQuote(operation) => {
                 insert(FederationMaterializedStateKey::MintQuote {
                     quote: operation.quote.clone(),

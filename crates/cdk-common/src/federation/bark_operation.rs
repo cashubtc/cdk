@@ -1,0 +1,1977 @@
+//! Stable federation-domain operations for Bark custody and Lightning actions.
+//!
+//! These types deliberately contain no Bark wallet checkpoints or member-local
+//! database state. They are the bounded, canonical facts ordered by federation
+//! consensus before a Bark or Ark side effect may occur.
+
+use core::fmt;
+
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::PublicKey;
+use bitcoin::Network;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use super::journal::{FederationJournalEntry, FederationOperationStatus};
+use super::operation::{canonical_json_bytes, FederationOperationSignature};
+use super::{
+    FederationError, FederationFrostApplicationId, FederationId, FederationOperation,
+    FederationOperationId, MemberId, Result,
+};
+use crate::Amount;
+
+/// Current nested Bark operation format.
+pub const FEDERATION_BARK_OPERATION_VERSION: u16 = 1;
+/// Current typed Bark participant-authorization format.
+pub const FEDERATION_BARK_AUTHORIZATION_VERSION: u16 = 1;
+/// Maximum canonical size of one nested Bark operation.
+pub const FEDERATION_MAX_BARK_OPERATION_BYTES: usize = 512 * 1024;
+/// Maximum raw bytes in one typed Bark artifact.
+pub const FEDERATION_MAX_BARK_ARTIFACT_BYTES: usize = 64 * 1024;
+/// Maximum aggregate raw artifact bytes in one operation.
+pub const FEDERATION_MAX_BARK_ARTIFACT_AGGREGATE_BYTES: usize = 512 * 1024;
+/// Maximum entries in each bounded Bark collection.
+pub const FEDERATION_MAX_BARK_COLLECTION_ENTRIES: usize = 64;
+/// Maximum canonical size of one participant authorization reference.
+pub const FEDERATION_MAX_BARK_AUTHORIZATION_BYTES: usize = 16 * 1024;
+/// Maximum canonical BOLT11 invoice bytes retained in an operation.
+pub const FEDERATION_MAX_BARK_INVOICE_BYTES: usize = 64 * 1024;
+
+const BARK_OPERATION_HASH_DOMAIN: &[u8] = b"cdk/federation/bark-operation/v1";
+const BARK_AUTHORIZATION_HASH_DOMAIN: &[u8] = b"cdk/federation/bark-authorization/v1";
+const BARK_SIGNING_SLOT_DOMAIN: &[u8] = b"cdk/federation/bark-signing-slot/v1";
+const BARK_SESSION_ID_DOMAIN: &[u8] = b"cdk/federation/bark-session-id/v1";
+const BARK_ACTION_ID_DOMAIN: &[u8] = b"cdk/federation/bark-action-id/v1";
+
+fn invalid_bark(reason: impl Into<String>) -> FederationError {
+    FederationError::BarkOperationInvalid {
+        reason: reason.into(),
+    }
+}
+
+macro_rules! bark_hash_type {
+    ($name:ident, $description:literal) => {
+        #[doc = $description]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name([u8; 32]);
+
+        impl $name {
+            /// Construct a canonical non-zero identifier.
+            pub fn from_bytes(bytes: [u8; 32]) -> Result<Self> {
+                if bytes == [0; 32] {
+                    return Err(invalid_bark(concat!(
+                        stringify!($name),
+                        " must be non-zero"
+                    )));
+                }
+                Ok(Self(bytes))
+            }
+
+            /// Parse a lowercase or uppercase hexadecimal identifier.
+            pub fn from_hex(value: &str) -> Result<Self> {
+                let bytes = crate::util::hex::decode(value)?;
+                let bytes: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+                    invalid_bark(format!(
+                        "{} must contain 32 bytes, found {}",
+                        stringify!($name),
+                        bytes.len()
+                    ))
+                })?;
+                Self::from_bytes(bytes)
+            }
+
+            /// Return the canonical bytes.
+            #[must_use]
+            pub fn to_bytes(self) -> [u8; 32] {
+                self.0
+            }
+
+            /// Return lowercase hexadecimal form.
+            #[must_use]
+            pub fn to_hex(self) -> String {
+                crate::util::hex::encode(self.0)
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(&self.to_hex())
+            }
+        }
+
+        impl Serialize for $name {
+            fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+            where
+                S: Serializer,
+            {
+                serializer.serialize_str(&self.to_hex())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                Self::from_hex(&value).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+bark_hash_type!(
+    FederationBarkActionId,
+    "Stable identifier for one federated Bark economic action."
+);
+bark_hash_type!(
+    FederationBarkDigest,
+    "Domain-specific commitment to canonical Bark data."
+);
+bark_hash_type!(
+    FederationBarkVtxoId,
+    "Canonical identifier for one Bark virtual transaction output."
+);
+bark_hash_type!(
+    FederationBarkExternalId,
+    "Stable idempotency identifier for one external Bark or Ark request."
+);
+
+impl FederationBarkActionId {
+    /// Derive the frozen v1 action ID for one object in an accepted operation.
+    pub fn derive(
+        federation_id: FederationId,
+        accepted_operation_id: FederationOperationId,
+        phase: FederationBarkSemanticPhase,
+        object_ordinal: u32,
+    ) -> Result<Self> {
+        let mut transcript = Vec::new();
+        transcript.extend_from_slice(BARK_ACTION_ID_DOMAIN);
+        transcript.extend_from_slice(&federation_id.to_bytes());
+        transcript.extend_from_slice(&accepted_operation_id.to_bytes());
+        transcript.extend_from_slice(&phase.code().to_be_bytes());
+        transcript.extend_from_slice(&object_ordinal.to_be_bytes());
+        Self::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
+    }
+}
+
+/// Only currency unit admitted by the v1 Bark backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationBarkUnit {
+    /// Bitcoin satoshis.
+    Sat,
+}
+
+/// CDK-owned deterministic locator for one Bark custody public key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkVtxoLocator {
+    /// Frozen v1 custody role. Only `1` is currently valid.
+    pub role: u8,
+    /// Consensus-allocated locator index.
+    pub index: u32,
+    /// Locator derivation format. Only `1` is currently valid.
+    pub version: u16,
+}
+
+impl FederationBarkVtxoLocator {
+    /// Construct the current VTXO-custody locator.
+    #[must_use]
+    pub const fn vtxo_custody(index: u32) -> Self {
+        Self {
+            role: 1,
+            index,
+            version: 1,
+        }
+    }
+
+    fn validate(self) -> Result<()> {
+        if self.role != 1 || self.version != 1 {
+            return Err(invalid_bark("unsupported Bark VTXO locator"));
+        }
+        Ok(())
+    }
+}
+
+/// Signed proof that one member durably stored an encrypted receive secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkReceiveSecretAcknowledgement {
+    /// Member that persisted and acknowledged the protected record.
+    pub member: MemberId,
+    /// Commitment to the exact protected record and receive scope.
+    pub record_hash: FederationBarkDigest,
+    /// Member identity signature over the acknowledgement transcript.
+    pub signature: FederationOperationSignature,
+}
+
+/// First-receive anti-DoS proof fixed by the accepted receive intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationBarkReceiveProof {
+    /// The pinned Ark capability does not require a proof.
+    NoProof,
+}
+
+/// Intent accepted before invoice creation or preimage disclosure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkReceiveIntent {
+    /// Nested operation format.
+    pub version: u16,
+    /// Deterministic action lineage.
+    pub action_id: FederationBarkActionId,
+    /// Cashu mint quote reserved by this receive.
+    pub quote: String,
+    /// Member eligible to execute invoice preparation first.
+    pub actor: MemberId,
+    /// Cashu liability requested by the client.
+    pub cashu_amount: Amount,
+    /// Exact invoice amount accepted for creation.
+    pub gross_amount: Amount,
+    /// Exact Ark receive fee.
+    pub receive_fee: Amount,
+    /// Minimum federation-custodied value required after claim.
+    pub minimum_net_amount: Amount,
+    /// Explicit v1 currency unit.
+    pub unit: FederationBarkUnit,
+    /// Hash of the bounded user description, never the description itself.
+    pub description_hash: FederationBarkDigest,
+    /// BOLT11 payment hash.
+    pub payment_hash: FederationBarkDigest,
+    /// Commitment to the protected preimage.
+    pub preimage_commitment: FederationBarkDigest,
+    /// Persist-before-acknowledgement proofs, sorted by member.
+    pub secret_acknowledgements: Vec<FederationBarkReceiveSecretAcknowledgement>,
+    /// Consensus-owned destination key locator.
+    pub destination: FederationBarkVtxoLocator,
+    /// Commitment to the member-independent mailbox scope.
+    pub mailbox_scope: FederationBarkDigest,
+    /// Commitment to the pinned Ark server identity and capability snapshot.
+    pub ark_server: FederationBarkDigest,
+    /// Immutable Bitcoin network.
+    pub network: Network,
+    /// Smallest final-CLTV delta allowed by the accepted policy.
+    pub minimum_cltv_delta: u32,
+    /// Accepted receive fee policy version.
+    pub fee_policy_version: u16,
+    /// Accepted anti-DoS policy version.
+    pub anti_dos_policy_version: u16,
+    /// Exact anti-DoS proof mode.
+    pub receive_proof: FederationBarkReceiveProof,
+    /// Consensus-visible invoice intent expiry.
+    pub expires_at: u64,
+}
+
+/// Exact canonical BOLT11 invoice accepted after an intent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkReceivePrepared {
+    /// Nested operation format.
+    pub version: u16,
+    /// Receive action lineage.
+    pub action_id: FederationBarkActionId,
+    /// Cashu quote from the receive intent.
+    pub quote: String,
+    /// Member that obtained and validated the idempotent Ark result.
+    pub actor: MemberId,
+    /// Accepted receive-intent operation.
+    pub intent_operation_id: FederationOperationId,
+    /// Exact canonical BOLT11 invoice.
+    pub invoice: String,
+    /// Invoice payment hash.
+    pub payment_hash: FederationBarkDigest,
+    /// Exact invoice amount.
+    pub gross_amount: Amount,
+    /// Minimum net VTXO value proven by invoice preparation.
+    pub expected_net_amount: Amount,
+    /// Immutable Bitcoin network.
+    pub network: Network,
+    /// Exact invoice expiry encoded in the accepted result.
+    pub expires_at: u64,
+    /// Actual final-CLTV delta returned by the Ark server.
+    pub final_cltv_delta: u32,
+    /// Exact fee returned by the Ark server.
+    pub receive_fee: Amount,
+    /// Commitment to the exact outgoing Ark request.
+    pub request_hash: FederationBarkDigest,
+    /// Commitment to the canonical Ark result.
+    pub result_hash: FederationBarkDigest,
+    /// Stable external retry identifier.
+    pub external_id: FederationBarkExternalId,
+}
+
+/// Exact input value reserved by one accepted Bark action plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkVtxoInput {
+    /// Canonical VTXO identifier.
+    pub vtxo_id: FederationBarkVtxoId,
+    /// Accepted value in satoshis.
+    pub amount: Amount,
+}
+
+/// Exact output value and locator allocated by one Bark action plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkVtxoOutput {
+    /// Consensus-owned destination locator.
+    pub locator: FederationBarkVtxoLocator,
+    /// Exact output value in satoshis.
+    pub amount: Amount,
+    /// Commitment to the canonical output policy or VTXO template.
+    pub artifact_hash: FederationBarkDigest,
+}
+
+/// Stable category of a bounded canonical Bark artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationBarkArtifactKind {
+    /// Canonical VTXO bytes.
+    Vtxo,
+    /// Canonical Ark request bytes.
+    ArkRequest,
+    /// Canonical Ark result bytes.
+    ArkResult,
+    /// Canonical BOLT11 invoice bytes.
+    Invoice,
+    /// Canonical transaction bytes.
+    Transaction,
+    /// Canonical payment or chain proof bytes.
+    Proof,
+}
+
+/// Bounded exact artifact needed to validate or rebuild Bark state.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkArtifact {
+    /// Artifact category.
+    pub kind: FederationBarkArtifactKind,
+    /// Canonical artifact commitment.
+    pub hash: FederationBarkDigest,
+    /// Exact canonical bytes, hex-encoded on the wire.
+    #[serde(with = "hex_bytes")]
+    pub bytes: Vec<u8>,
+}
+
+/// Side-effecting Bark action fixed before execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationBarkActionKind {
+    /// Pay one outgoing BOLT11 invoice.
+    LightningSend,
+    /// Claim incoming HTLC VTXOs with the protected preimage.
+    IncomingClaim,
+    /// Revoke failed outgoing HTLC VTXOs.
+    FailedSendRevocation,
+    /// Refresh expiring federation VTXOs.
+    Refresh,
+    /// Exit Bark custody into the accepted federated on-chain wallet.
+    EmergencyExit,
+}
+
+/// Exact side-effecting plan accepted before Bark or Ark execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkActionPlan {
+    /// Nested operation format.
+    pub version: u16,
+    /// Stable economic action lineage.
+    pub action_id: FederationBarkActionId,
+    /// Cashu quote authorizing a receive/send/revocation action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    /// Plan category.
+    pub kind: FederationBarkActionKind,
+    /// Member selected to execute the first attempt.
+    pub actor: MemberId,
+    /// Accepted predecessor operation or quote observation.
+    pub predecessor_operation_id: FederationOperationId,
+    /// Payment hash for send and claim actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_hash: Option<FederationBarkDigest>,
+    /// Exact sorted input reservation set.
+    pub inputs: Vec<FederationBarkVtxoInput>,
+    /// Exact sorted output allocation set.
+    pub outputs: Vec<FederationBarkVtxoOutput>,
+    /// Value leaving Bark custody as an external Lightning payment.
+    pub external_amount: Amount,
+    /// Exact planned fee.
+    pub fee_amount: Amount,
+    /// Maximum accepted fee under Cashu and Bark policy.
+    pub fee_bound: Amount,
+    /// Exact sorted canonical artifacts needed by the plan.
+    pub artifacts: Vec<FederationBarkArtifact>,
+    /// Stable Ark request idempotency identifier.
+    pub external_id: FederationBarkExternalId,
+    /// Initial deterministic signer set, sorted by member.
+    pub signer_set: Vec<MemberId>,
+    /// Initial accepted custody attempt.
+    pub attempt: u32,
+    /// Consensus-visible action expiry or chain-height bound.
+    pub expires_at: u64,
+}
+
+/// Semantic Bark state fixed by an action plan or accepted transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationBarkSemanticPhase {
+    /// Receive intent accepted.
+    ReceiveIntent,
+    /// Canonical invoice accepted.
+    ReceivePrepared,
+    /// Outgoing Lightning plan accepted.
+    SendPlanned,
+    /// Incoming claim plan accepted.
+    ClaimPlanned,
+    /// Failed-send revocation plan accepted.
+    RevocationPlanned,
+    /// Refresh plan accepted.
+    RefreshPlanned,
+    /// Emergency-exit plan accepted.
+    ExitPlanned,
+    /// A higher deterministic signer attempt was accepted.
+    SigningAttemptAdvanced,
+    /// Incoming HTLC VTXOs are available for claim.
+    ReceiveHtlcsReady,
+    /// The receive preimage was disclosed after claim authorization.
+    ReceivePreimageDisclosed,
+    /// Incoming value became spendable under federation custody.
+    ReceiveClaimed,
+    /// Outgoing HTLC package was co-signed.
+    SendHtlcsCosigned,
+    /// Exact outgoing payment was initiated.
+    PaymentInitiated,
+    /// Outgoing payment succeeded.
+    PaymentSucceeded,
+    /// Outgoing payment terminally failed but may still require recovery.
+    PaymentFailed,
+    /// Failed outgoing VTXOs were safely revoked.
+    RevocationCompleted,
+    /// Refresh produced accepted replacement VTXOs.
+    RefreshCompleted,
+    /// Emergency exit was registered.
+    ExitRegistered,
+    /// Emergency exit was published.
+    ExitPublished,
+    /// Emergency exit was sufficiently confirmed.
+    ExitConfirmed,
+    /// Bounded member evidence was recorded.
+    Observation,
+}
+
+impl FederationBarkSemanticPhase {
+    /// Stable v1 numeric code used by action and session derivation.
+    #[must_use]
+    pub const fn code(self) -> u16 {
+        match self {
+            Self::ReceiveIntent => 1,
+            Self::ReceivePrepared => 2,
+            Self::SendPlanned => 3,
+            Self::ClaimPlanned => 4,
+            Self::RevocationPlanned => 5,
+            Self::RefreshPlanned => 6,
+            Self::ExitPlanned => 7,
+            Self::SigningAttemptAdvanced => 8,
+            Self::ReceiveHtlcsReady => 9,
+            Self::ReceivePreimageDisclosed => 10,
+            Self::ReceiveClaimed => 11,
+            Self::SendHtlcsCosigned => 12,
+            Self::PaymentInitiated => 13,
+            Self::PaymentSucceeded => 14,
+            Self::PaymentFailed => 15,
+            Self::RevocationCompleted => 16,
+            Self::RefreshCompleted => 17,
+            Self::ExitRegistered => 18,
+            Self::ExitPublished => 19,
+            Self::ExitConfirmed => 20,
+            Self::Observation => 21,
+        }
+    }
+}
+
+/// Accepted externally observed transition of one Bark action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkActionTransition {
+    /// Nested operation format.
+    pub version: u16,
+    /// Stable action lineage.
+    pub action_id: FederationBarkActionId,
+    /// Cashu quote bound to the action, when quote-scoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    /// New semantic phase.
+    pub phase: FederationBarkSemanticPhase,
+    /// Member that obtained and validated the result.
+    pub actor: MemberId,
+    /// Accepted plan operation.
+    pub plan_operation_id: FederationOperationId,
+    /// Exact predecessor transition or plan.
+    pub predecessor_operation_id: FederationOperationId,
+    /// Payment hash for payment-scoped transitions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_hash: Option<FederationBarkDigest>,
+    /// Attempt that produced this result.
+    pub attempt: u32,
+    /// Exact signer set for this attempt, sorted by member.
+    pub signer_set: Vec<MemberId>,
+    /// Commitment to the exact external request.
+    pub request_hash: FederationBarkDigest,
+    /// Commitment to the complete canonical result.
+    pub result_hash: FederationBarkDigest,
+    /// Stable external retry identifier.
+    pub external_id: FederationBarkExternalId,
+    /// Exact sorted result artifacts.
+    pub artifacts: Vec<FederationBarkArtifact>,
+}
+
+/// Conservative status reported by one federation member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationBarkObservationStatus {
+    /// External state remains pending or ambiguous.
+    Pending,
+    /// Exact external request is known to have been accepted.
+    Accepted,
+    /// External operation is terminally successful.
+    Succeeded,
+    /// External operation is terminally failed.
+    Failed,
+    /// Recovery is required before a terminal Cashu observation is safe.
+    RecoveryRequired,
+}
+
+/// Bounded member evidence used by Bark transition and payment policies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkMemberObservation {
+    /// Nested operation format.
+    pub version: u16,
+    /// Stable action lineage.
+    pub action_id: FederationBarkActionId,
+    /// Cashu quote bound to the action, when quote-scoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
+    /// Reporting federation member.
+    pub observer: MemberId,
+    /// Monotonic source-scoped observation epoch.
+    pub observation_epoch: u64,
+    /// Commitment to the configured Ark or chain source scope.
+    pub source_scope: FederationBarkDigest,
+    /// Payment hash when the evidence is payment-scoped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payment_hash: Option<FederationBarkDigest>,
+    /// Conservative observed status.
+    pub status: FederationBarkObservationStatus,
+    /// Exact observed value.
+    pub amount: Amount,
+    /// Exact observed fee.
+    pub fee: Amount,
+    /// Commitment to the bounded evidence artifact.
+    pub result_hash: FederationBarkDigest,
+}
+
+/// Stable nested Bark journal operation family.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "data",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum FederationBarkOperation {
+    /// Accept a receive secret, locator, amounts, and policy before invoice creation.
+    ReceiveIntent(FederationBarkReceiveIntent),
+    /// Accept the exact idempotent invoice preparation result.
+    ReceivePrepared(FederationBarkReceivePrepared),
+    /// Accept one exact send, claim, revocation, refresh, or exit plan.
+    ActionPlan(FederationBarkActionPlan),
+    /// Accept one exact semantic action transition.
+    ActionTransition(FederationBarkActionTransition),
+    /// Accept bounded member-local Ark or chain evidence.
+    MemberObservation(FederationBarkMemberObservation),
+}
+
+/// Stable family-level Bark operation kind used in authorization references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationBarkOperationKind {
+    /// Receive intent.
+    ReceiveIntent,
+    /// Prepared receive invoice.
+    ReceivePrepared,
+    /// Exact action plan.
+    ActionPlan,
+    /// Semantic action transition.
+    ActionTransition,
+    /// Member observation.
+    MemberObservation,
+}
+
+/// Typed Bark semantic reservation used by the generic federation journal.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum FederationBarkConflictKey {
+    /// A Cashu quote may bind only one initial Bark action.
+    Quote {
+        /// Cashu quote identifier.
+        quote: String,
+    },
+    /// A BOLT11 payment hash may belong to only one receive or send lineage.
+    PaymentHash {
+        /// Exact payment hash.
+        payment_hash: FederationBarkDigest,
+    },
+    /// One VTXO may be reserved by only one accepted plan.
+    VtxoReservation {
+        /// Reserved VTXO.
+        vtxo_id: FederationBarkVtxoId,
+    },
+    /// One derivation locator may be allocated only once.
+    Locator {
+        /// Reserved destination locator.
+        locator: FederationBarkVtxoLocator,
+    },
+    /// One action phase and attempt may contain only one exact payload.
+    ActionPhase {
+        /// Stable action lineage.
+        action_id: FederationBarkActionId,
+        /// Semantic phase.
+        phase: FederationBarkSemanticPhase,
+        /// Custody attempt where applicable.
+        attempt: Option<u32>,
+    },
+    /// One predecessor may admit only one next transition.
+    Predecessor {
+        /// Exact predecessor operation.
+        operation_id: FederationOperationId,
+    },
+    /// One external idempotency identifier may bind only one request/result.
+    ExternalId {
+        /// Stable external identifier.
+        external_id: FederationBarkExternalId,
+    },
+    /// One deterministic custody slot and attempt may bind one signer context.
+    SigningAttempt {
+        /// Stable action lineage.
+        action_id: FederationBarkActionId,
+        /// Semantic phase using custody.
+        phase: FederationBarkSemanticPhase,
+        /// Accepted attempt.
+        attempt: u32,
+    },
+    /// One observer may submit one source-scoped view per epoch.
+    Observation {
+        /// Stable action lineage.
+        action_id: FederationBarkActionId,
+        /// Reporting member.
+        observer: MemberId,
+        /// Source-scoped epoch.
+        observation_epoch: u64,
+    },
+}
+
+impl FederationBarkOperation {
+    /// Return the family-level kind.
+    #[must_use]
+    pub const fn kind(&self) -> FederationBarkOperationKind {
+        match self {
+            Self::ReceiveIntent(_) => FederationBarkOperationKind::ReceiveIntent,
+            Self::ReceivePrepared(_) => FederationBarkOperationKind::ReceivePrepared,
+            Self::ActionPlan(_) => FederationBarkOperationKind::ActionPlan,
+            Self::ActionTransition(_) => FederationBarkOperationKind::ActionTransition,
+            Self::MemberObservation(_) => FederationBarkOperationKind::MemberObservation,
+        }
+    }
+
+    /// Return the member whose envelope authorization must match this payload.
+    #[must_use]
+    pub const fn claimed_author(&self) -> MemberId {
+        match self {
+            Self::ReceiveIntent(operation) => operation.actor,
+            Self::ReceivePrepared(operation) => operation.actor,
+            Self::ActionPlan(operation) => operation.actor,
+            Self::ActionTransition(operation) => operation.actor,
+            Self::MemberObservation(operation) => operation.observer,
+        }
+    }
+
+    /// Return the stable action identifier.
+    #[must_use]
+    pub const fn action_id(&self) -> FederationBarkActionId {
+        match self {
+            Self::ReceiveIntent(operation) => operation.action_id,
+            Self::ReceivePrepared(operation) => operation.action_id,
+            Self::ActionPlan(operation) => operation.action_id,
+            Self::ActionTransition(operation) => operation.action_id,
+            Self::MemberObservation(operation) => operation.action_id,
+        }
+    }
+
+    /// Return the Cashu quote bound to this Bark action lineage.
+    #[must_use]
+    pub fn quote(&self) -> Option<&str> {
+        match self {
+            Self::ReceiveIntent(operation) => Some(operation.quote.as_str()),
+            Self::ReceivePrepared(operation) => Some(operation.quote.as_str()),
+            Self::ActionPlan(operation) => operation.quote.as_deref(),
+            Self::ActionTransition(operation) => operation.quote.as_deref(),
+            Self::MemberObservation(operation) => operation.quote.as_deref(),
+        }
+    }
+
+    /// Return the semantic phase represented by this operation.
+    #[must_use]
+    pub const fn phase(&self) -> FederationBarkSemanticPhase {
+        match self {
+            Self::ReceiveIntent(_) => FederationBarkSemanticPhase::ReceiveIntent,
+            Self::ReceivePrepared(_) => FederationBarkSemanticPhase::ReceivePrepared,
+            Self::ActionPlan(operation) => match operation.kind {
+                FederationBarkActionKind::LightningSend => FederationBarkSemanticPhase::SendPlanned,
+                FederationBarkActionKind::IncomingClaim => {
+                    FederationBarkSemanticPhase::ClaimPlanned
+                }
+                FederationBarkActionKind::FailedSendRevocation => {
+                    FederationBarkSemanticPhase::RevocationPlanned
+                }
+                FederationBarkActionKind::Refresh => FederationBarkSemanticPhase::RefreshPlanned,
+                FederationBarkActionKind::EmergencyExit => FederationBarkSemanticPhase::ExitPlanned,
+            },
+            Self::ActionTransition(operation) => operation.phase,
+            Self::MemberObservation(_) => FederationBarkSemanticPhase::Observation,
+        }
+    }
+
+    /// Return the canonical result commitment, if this record carries a result.
+    #[must_use]
+    pub const fn result_hash(&self) -> Option<FederationBarkDigest> {
+        match self {
+            Self::ReceivePrepared(operation) => Some(operation.result_hash),
+            Self::ActionTransition(operation) => Some(operation.result_hash),
+            Self::MemberObservation(operation) => Some(operation.result_hash),
+            Self::ReceiveIntent(_) | Self::ActionPlan(_) => None,
+        }
+    }
+
+    /// Derive semantic conflict keys from typed fields only.
+    #[must_use]
+    pub fn conflict_keys(&self) -> Vec<FederationBarkConflictKey> {
+        match self {
+            Self::ReceiveIntent(operation) => vec![
+                FederationBarkConflictKey::Quote {
+                    quote: operation.quote.clone(),
+                },
+                FederationBarkConflictKey::PaymentHash {
+                    payment_hash: operation.payment_hash,
+                },
+                FederationBarkConflictKey::Locator {
+                    locator: operation.destination,
+                },
+                FederationBarkConflictKey::ActionPhase {
+                    action_id: operation.action_id,
+                    phase: FederationBarkSemanticPhase::ReceiveIntent,
+                    attempt: None,
+                },
+            ],
+            Self::ReceivePrepared(operation) => vec![
+                FederationBarkConflictKey::ActionPhase {
+                    action_id: operation.action_id,
+                    phase: FederationBarkSemanticPhase::ReceivePrepared,
+                    attempt: None,
+                },
+                FederationBarkConflictKey::ExternalId {
+                    external_id: operation.external_id,
+                },
+            ],
+            Self::ActionPlan(operation) => {
+                let phase = self.phase();
+                let mut keys =
+                    Vec::with_capacity(operation.inputs.len() + operation.outputs.len() + 6);
+                if matches!(operation.kind, FederationBarkActionKind::LightningSend) {
+                    if let Some(quote) = &operation.quote {
+                        keys.push(FederationBarkConflictKey::Quote {
+                            quote: quote.clone(),
+                        });
+                    }
+                    if let Some(payment_hash) = operation.payment_hash {
+                        keys.push(FederationBarkConflictKey::PaymentHash { payment_hash });
+                    }
+                }
+                keys.push(FederationBarkConflictKey::ActionPhase {
+                    action_id: operation.action_id,
+                    phase,
+                    attempt: Some(operation.attempt),
+                });
+                keys.push(FederationBarkConflictKey::Predecessor {
+                    operation_id: operation.predecessor_operation_id,
+                });
+                keys.push(FederationBarkConflictKey::ExternalId {
+                    external_id: operation.external_id,
+                });
+                keys.push(FederationBarkConflictKey::SigningAttempt {
+                    action_id: operation.action_id,
+                    phase,
+                    attempt: operation.attempt,
+                });
+                keys.extend(operation.inputs.iter().map(|input| {
+                    FederationBarkConflictKey::VtxoReservation {
+                        vtxo_id: input.vtxo_id,
+                    }
+                }));
+                keys.extend(operation.outputs.iter().map(|output| {
+                    FederationBarkConflictKey::Locator {
+                        locator: output.locator,
+                    }
+                }));
+                keys
+            }
+            Self::ActionTransition(operation) => {
+                let mut keys = vec![
+                    FederationBarkConflictKey::ActionPhase {
+                        action_id: operation.action_id,
+                        phase: operation.phase,
+                        attempt: Some(operation.attempt),
+                    },
+                    FederationBarkConflictKey::Predecessor {
+                        operation_id: operation.predecessor_operation_id,
+                    },
+                ];
+                if !operation.signer_set.is_empty() {
+                    keys.push(FederationBarkConflictKey::SigningAttempt {
+                        action_id: operation.action_id,
+                        phase: operation.phase,
+                        attempt: operation.attempt,
+                    });
+                }
+                keys
+            }
+            Self::MemberObservation(operation) => {
+                vec![FederationBarkConflictKey::Observation {
+                    action_id: operation.action_id,
+                    observer: operation.observer,
+                    observation_epoch: operation.observation_epoch,
+                }]
+            }
+        }
+    }
+
+    /// Validate deterministic operation-local rules and frozen v1 bounds.
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::ReceiveIntent(operation) => operation.validate()?,
+            Self::ReceivePrepared(operation) => operation.validate()?,
+            Self::ActionPlan(operation) => operation.validate()?,
+            Self::ActionTransition(operation) => operation.validate()?,
+            Self::MemberObservation(operation) => operation.validate()?,
+        }
+        let actual = self.canonical_bytes()?.len();
+        if actual > FEDERATION_MAX_BARK_OPERATION_BYTES {
+            return Err(invalid_bark(format!(
+                "canonical Bark operation is {actual} bytes, maximum is {FEDERATION_MAX_BARK_OPERATION_BYTES}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Return sorted-key canonical JSON bytes.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        canonical_json_bytes(self)
+    }
+
+    /// Commit to the complete canonical nested operation.
+    pub fn commitment(&self) -> Result<FederationBarkDigest> {
+        domain_hash(BARK_OPERATION_HASH_DOMAIN, &self.canonical_bytes()?)
+    }
+}
+
+impl FederationBarkReceiveIntent {
+    fn validate(&self) -> Result<()> {
+        ensure_version(self.version)?;
+        ensure_quote(&self.quote)?;
+        self.destination.validate()?;
+        if self.cashu_amount == Amount::ZERO
+            || self.gross_amount != self.cashu_amount
+            || self.receive_fee != Amount::ZERO
+            || self.minimum_net_amount < self.cashu_amount
+        {
+            return Err(invalid_bark(
+                "v1 receive amounts must be non-zero, fee-free, and fully collateralized",
+            ));
+        }
+        if self.minimum_cltv_delta == 0
+            || self.fee_policy_version != 1
+            || self.anti_dos_policy_version != 1
+            || self.expires_at == 0
+        {
+            return Err(invalid_bark("unsupported receive policy or expiry"));
+        }
+        ensure_count(
+            "receive-secret acknowledgements",
+            self.secret_acknowledgements.len(),
+            false,
+        )?;
+        ensure_members_sorted_unique(
+            &self
+                .secret_acknowledgements
+                .iter()
+                .map(|acknowledgement| acknowledgement.member)
+                .collect::<Vec<_>>(),
+        )?;
+        let expected_record = self.secret_acknowledgements[0].record_hash;
+        if self
+            .secret_acknowledgements
+            .iter()
+            .any(|acknowledgement| acknowledgement.record_hash != expected_record)
+        {
+            return Err(invalid_bark(
+                "receive-secret acknowledgements do not bind one record",
+            ));
+        }
+        if !self
+            .secret_acknowledgements
+            .iter()
+            .any(|acknowledgement| acknowledgement.member == self.actor)
+        {
+            return Err(invalid_bark(
+                "receive actor must have acknowledged the protected secret",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl FederationBarkReceivePrepared {
+    fn validate(&self) -> Result<()> {
+        ensure_version(self.version)?;
+        ensure_quote(&self.quote)?;
+        if self.invoice.is_empty() || self.invoice.len() > FEDERATION_MAX_BARK_INVOICE_BYTES {
+            return Err(invalid_bark("Bark invoice is empty or exceeds 64 KiB"));
+        }
+        if self.gross_amount == Amount::ZERO
+            || self.receive_fee != Amount::ZERO
+            || self.expected_net_amount < self.gross_amount
+            || self.expires_at == 0
+            || self.final_cltv_delta == 0
+        {
+            return Err(invalid_bark(
+                "prepared receive violates v1 amount or expiry rules",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl FederationBarkActionPlan {
+    fn validate(&self) -> Result<()> {
+        ensure_version(self.version)?;
+        ensure_optional_quote(self.quote.as_deref())?;
+        ensure_count("Bark inputs", self.inputs.len(), false)?;
+        ensure_count("Bark outputs", self.outputs.len(), false)?;
+        ensure_count("Bark signer set", self.signer_set.len(), false)?;
+        ensure_count("Bark artifacts", self.artifacts.len(), true)?;
+        ensure_strictly_sorted("Bark inputs", &self.inputs)?;
+        ensure_strictly_sorted("Bark outputs", &self.outputs)?;
+        ensure_strictly_sorted("Bark artifacts", &self.artifacts)?;
+        ensure_members_sorted_unique(&self.signer_set)?;
+        for output in &self.outputs {
+            output.locator.validate()?;
+            if output.amount == Amount::ZERO {
+                return Err(invalid_bark("Bark action output must be non-zero"));
+            }
+        }
+        if self.inputs.iter().any(|input| input.amount == Amount::ZERO) {
+            return Err(invalid_bark("Bark action input must be non-zero"));
+        }
+        validate_artifacts(&self.artifacts)?;
+        if self.attempt == 0 || self.expires_at == 0 || self.fee_amount > self.fee_bound {
+            return Err(invalid_bark("invalid Bark attempt, expiry, or fee bound"));
+        }
+        let quote_and_payment_required = matches!(
+            self.kind,
+            FederationBarkActionKind::LightningSend
+                | FederationBarkActionKind::IncomingClaim
+                | FederationBarkActionKind::FailedSendRevocation
+        );
+        if quote_and_payment_required && (self.quote.is_none() || self.payment_hash.is_none()) {
+            return Err(invalid_bark(
+                "payment action is missing its Cashu quote or payment hash",
+            ));
+        }
+        if matches!(self.kind, FederationBarkActionKind::LightningSend) {
+            if self.external_amount == Amount::ZERO {
+                return Err(invalid_bark("Lightning send amount must be non-zero"));
+            }
+        } else if self.external_amount != Amount::ZERO {
+            return Err(invalid_bark(
+                "only Lightning send may move value outside Bark outputs",
+            ));
+        }
+        let inputs = checked_sum(self.inputs.iter().map(|input| input.amount))?;
+        let outputs = checked_sum(self.outputs.iter().map(|output| output.amount))?;
+        let accounted = outputs
+            .checked_add(self.external_amount)
+            .and_then(|amount| amount.checked_add(self.fee_amount))
+            .ok_or_else(|| invalid_bark("Bark action accounting overflow"))?;
+        if inputs != accounted {
+            return Err(invalid_bark(
+                "Bark action inputs do not equal outputs, payment, and fee",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl FederationBarkActionTransition {
+    fn validate(&self) -> Result<()> {
+        ensure_version(self.version)?;
+        ensure_optional_quote(self.quote.as_deref())?;
+        if matches!(
+            self.phase,
+            FederationBarkSemanticPhase::ReceiveIntent
+                | FederationBarkSemanticPhase::ReceivePrepared
+                | FederationBarkSemanticPhase::SendPlanned
+                | FederationBarkSemanticPhase::ClaimPlanned
+                | FederationBarkSemanticPhase::RevocationPlanned
+                | FederationBarkSemanticPhase::RefreshPlanned
+                | FederationBarkSemanticPhase::ExitPlanned
+                | FederationBarkSemanticPhase::Observation
+        ) {
+            return Err(invalid_bark("phase is not a Bark action transition"));
+        }
+        if self.attempt == 0 {
+            return Err(invalid_bark("Bark transition attempt must be non-zero"));
+        }
+        ensure_count("Bark signer set", self.signer_set.len(), true)?;
+        ensure_count("Bark artifacts", self.artifacts.len(), true)?;
+        ensure_members_sorted_unique(&self.signer_set)?;
+        ensure_strictly_sorted("Bark artifacts", &self.artifacts)?;
+        validate_artifacts(&self.artifacts)?;
+        Ok(())
+    }
+}
+
+impl FederationBarkMemberObservation {
+    fn validate(&self) -> Result<()> {
+        ensure_version(self.version)?;
+        ensure_optional_quote(self.quote.as_deref())?;
+        if self.observation_epoch == 0 {
+            return Err(invalid_bark("Bark observation epoch must be non-zero"));
+        }
+        if self.fee > self.amount {
+            return Err(invalid_bark("Bark observation fee exceeds observed amount"));
+        }
+        Ok(())
+    }
+}
+
+/// Custody protocol authorized by an accepted Bark operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationBarkCustodyProtocol {
+    /// Plain BIP340 threshold signature.
+    Frost,
+    /// Federation-produced virtual user MuSig2 partial signature.
+    Musig2,
+    /// Threshold Diffie-Hellman mailbox blinding contribution.
+    ThresholdDh,
+}
+
+/// Complete typed reference authorizing one Bark custody protocol request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkAuthorizationReference {
+    /// Authorization format.
+    pub version: u16,
+    /// Owning federation.
+    pub federation_id: FederationId,
+    /// Registered Bark application.
+    pub application_id: FederationFrostApplicationId,
+    /// Referenced reusable-root epoch.
+    pub root_key_epoch: u64,
+    /// Bark application key epoch.
+    pub application_key_epoch: u64,
+    /// Bark application derivation contract version.
+    pub application_derivation_version: u16,
+    /// Accepted operation authorizing this request.
+    pub accepted_operation_id: FederationOperationId,
+    /// Accepted journal position.
+    pub accepted_operation_index: u64,
+    /// Stable economic action lineage.
+    pub action_id: FederationBarkActionId,
+    /// Authorized semantic phase.
+    pub phase: FederationBarkSemanticPhase,
+    /// Object ordinal within the accepted operation.
+    pub object_ordinal: u32,
+    /// Family-level accepted operation kind.
+    pub operation_kind: FederationBarkOperationKind,
+    /// Exact accepted plan or result commitment.
+    pub plan_or_result_hash: FederationBarkDigest,
+    /// Exact VTXO custody locator.
+    pub locator: FederationBarkVtxoLocator,
+    /// Disjoint custody protocol namespace.
+    pub protocol: FederationBarkCustodyProtocol,
+    /// Exact message or protocol transcript commitment.
+    pub transcript_hash: FederationBarkDigest,
+    /// Accepted signer subset, sorted by member.
+    pub signer_set: Vec<MemberId>,
+    /// Accepted protocol attempt.
+    pub attempt: u32,
+    /// Immutable Bitcoin network.
+    pub network: Network,
+    /// Exact compressed public key of the pinned Ark server.
+    #[serde(with = "hex_array_33")]
+    pub ark_server_public_key: [u8; 33],
+}
+
+impl FederationBarkAuthorizationReference {
+    /// Validate stable fields, ordering, and the 16 KiB authorization limit.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != FEDERATION_BARK_AUTHORIZATION_VERSION
+            || self.root_key_epoch == 0
+            || self.application_key_epoch == 0
+            || self.application_derivation_version == 0
+            || self.attempt == 0
+        {
+            return Err(invalid_bark(
+                "unsupported Bark authorization version or epoch",
+            ));
+        }
+        self.locator.validate()?;
+        PublicKey::from_slice(&self.ark_server_public_key)
+            .map_err(|_| invalid_bark("Bark authorization Ark server key is invalid"))?;
+        ensure_count(
+            "Bark authorization signer set",
+            self.signer_set.len(),
+            false,
+        )?;
+        ensure_members_sorted_unique(&self.signer_set)?;
+        if !authorization_kind_matches_phase(self.operation_kind, self.phase) {
+            return Err(invalid_bark(
+                "Bark authorization operation kind and phase are incompatible",
+            ));
+        }
+        let actual = self.canonical_bytes()?.len();
+        if actual > FEDERATION_MAX_BARK_AUTHORIZATION_BYTES {
+            return Err(invalid_bark(format!(
+                "Bark authorization is {actual} bytes, maximum is {FEDERATION_MAX_BARK_AUTHORIZATION_BYTES}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validate the accepted journal and public-configuration portion of custody authorization.
+    ///
+    /// The Bark SQL projection must additionally reconstruct the referenced
+    /// VTXO locator and exact message/transcript before a participant releases
+    /// cryptographic material. This method intentionally performs no database
+    /// or network access.
+    pub fn validate_accepted_operation(
+        &self,
+        config: &super::FederationConfig,
+        entry: &FederationJournalEntry,
+    ) -> Result<()> {
+        self.validate()?;
+        entry.envelope.verify_authorization(config)?;
+        if entry.status() != FederationOperationStatus::Applied {
+            return Err(invalid_bark(
+                "Bark custody authorization requires an applied operation",
+            ));
+        }
+        if self.federation_id != config.federation_id
+            || self.accepted_operation_id != entry.operation_id
+            || self.accepted_operation_index != entry.index
+        {
+            return Err(invalid_bark(
+                "Bark authorization references a different accepted operation",
+            ));
+        }
+        let application = config
+            .frost_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.bark_application.as_ref())
+            .ok_or_else(|| invalid_bark("accepted Bark application is missing"))?;
+        if self.application_id != application.application_id
+            || self.root_key_epoch != application.root_key_epoch
+            || self.application_key_epoch != application.application_key_epoch
+            || self.application_derivation_version != application.derivation_version
+            || self.network != application.network
+            || self.ark_server_public_key != application.ark_server_public_key
+        {
+            return Err(invalid_bark(
+                "Bark authorization application scope differs from public config",
+            ));
+        }
+        let FederationOperation::Bark(operation) = &entry.envelope.operation else {
+            return Err(invalid_bark(
+                "Bark authorization references a non-Bark operation",
+            ));
+        };
+        operation.validate()?;
+        if self.action_id != operation.action_id()
+            || self.operation_kind != operation.kind()
+            || self.phase != operation.phase()
+            || self.plan_or_result_hash != operation.commitment()?
+        {
+            return Err(invalid_bark(
+                "Bark authorization differs from the accepted operation",
+            ));
+        }
+        let (accepted_signers, accepted_attempt) = match operation {
+            FederationBarkOperation::ActionPlan(plan) => (&plan.signer_set, plan.attempt),
+            FederationBarkOperation::ActionTransition(transition)
+                if !transition.signer_set.is_empty() =>
+            {
+                (&transition.signer_set, transition.attempt)
+            }
+            FederationBarkOperation::ReceiveIntent(_)
+            | FederationBarkOperation::ReceivePrepared(_)
+            | FederationBarkOperation::ActionTransition(_)
+            | FederationBarkOperation::MemberObservation(_) => {
+                return Err(invalid_bark(
+                    "accepted operation does not authorize a custody signer set",
+                ));
+            }
+        };
+        if &self.signer_set != accepted_signers || self.attempt != accepted_attempt {
+            return Err(invalid_bark(
+                "Bark authorization signer set or attempt differs from accepted state",
+            ));
+        }
+        if self.signer_set.len() < usize::from(application.threshold)
+            || self
+                .signer_set
+                .iter()
+                .any(|member| !config.members.contains_key(member))
+        {
+            return Err(invalid_bark(
+                "Bark authorization signer set cannot satisfy the accepted application",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Return sorted-key canonical JSON bytes.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        canonical_json_bytes(self)
+    }
+
+    /// Commit to every authorization field.
+    pub fn commitment(&self) -> Result<FederationBarkDigest> {
+        domain_hash(BARK_AUTHORIZATION_HASH_DOMAIN, &self.canonical_bytes()?)
+    }
+
+    /// Derive the stable session slot, excluding signer set and attempt.
+    pub fn signing_slot(&self) -> Result<FederationBarkDigest> {
+        #[derive(Serialize)]
+        struct SigningSlot {
+            version: u16,
+            federation_id: FederationId,
+            application_id: FederationFrostApplicationId,
+            root_key_epoch: u64,
+            application_key_epoch: u64,
+            application_derivation_version: u16,
+            accepted_operation_id: FederationOperationId,
+            accepted_operation_index: u64,
+            action_id: FederationBarkActionId,
+            phase: FederationBarkSemanticPhase,
+            object_ordinal: u32,
+            operation_kind: FederationBarkOperationKind,
+            plan_or_result_hash: FederationBarkDigest,
+            locator: FederationBarkVtxoLocator,
+            protocol: FederationBarkCustodyProtocol,
+            transcript_hash: FederationBarkDigest,
+            network: Network,
+            #[serde(with = "hex_array_33")]
+            ark_server_public_key: [u8; 33],
+        }
+
+        self.validate()?;
+        let slot = SigningSlot {
+            version: self.version,
+            federation_id: self.federation_id,
+            application_id: self.application_id,
+            root_key_epoch: self.root_key_epoch,
+            application_key_epoch: self.application_key_epoch,
+            application_derivation_version: self.application_derivation_version,
+            accepted_operation_id: self.accepted_operation_id,
+            accepted_operation_index: self.accepted_operation_index,
+            action_id: self.action_id,
+            phase: self.phase,
+            object_ordinal: self.object_ordinal,
+            operation_kind: self.operation_kind,
+            plan_or_result_hash: self.plan_or_result_hash,
+            locator: self.locator,
+            protocol: self.protocol,
+            transcript_hash: self.transcript_hash,
+            network: self.network,
+            ark_server_public_key: self.ark_server_public_key,
+        };
+        domain_hash(BARK_SIGNING_SLOT_DOMAIN, &canonical_json_bytes(&slot)?)
+    }
+
+    /// Derive the full protocol session ID, including attempt and signer set.
+    pub fn session_id(&self) -> Result<FederationBarkDigest> {
+        self.validate()?;
+        let mut transcript = Vec::new();
+        append_hash_bytes(&mut transcript, &self.signing_slot()?.to_bytes());
+        append_hash_bytes(&mut transcript, &self.attempt.to_be_bytes());
+        for member in &self.signer_set {
+            append_hash_bytes(&mut transcript, &member.get().to_be_bytes());
+        }
+        domain_hash(BARK_SESSION_ID_DOMAIN, &transcript)
+    }
+}
+
+/// Compact operation metadata returned to routes and workers waiting for a result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkOperationRecord {
+    /// Accepted operation ID.
+    pub operation_id: FederationOperationId,
+    /// Accepted journal index.
+    pub operation_index: u64,
+    /// Local deterministic application status.
+    pub status: FederationOperationStatus,
+    /// Nested operation kind.
+    pub kind: FederationBarkOperationKind,
+    /// Stable action lineage.
+    pub action_id: FederationBarkActionId,
+    /// Semantic phase represented by this record.
+    pub phase: FederationBarkSemanticPhase,
+    /// Canonical result commitment when present.
+    pub result_hash: Option<FederationBarkDigest>,
+}
+
+impl FederationBarkOperationRecord {
+    /// Extract Bark metadata from one journal entry.
+    #[must_use]
+    pub fn from_journal_entry(entry: &FederationJournalEntry) -> Option<Self> {
+        let FederationOperation::Bark(operation) = &entry.envelope.operation else {
+            return None;
+        };
+        Some(Self {
+            operation_id: entry.operation_id,
+            operation_index: entry.index,
+            status: entry.status(),
+            kind: operation.kind(),
+            action_id: operation.action_id(),
+            phase: operation.phase(),
+            result_hash: operation.result_hash(),
+        })
+    }
+
+    /// Find the latest retained record for one exact action phase.
+    #[must_use]
+    pub fn latest_for_action_phase(
+        entries: &[FederationJournalEntry],
+        action_id: FederationBarkActionId,
+        phase: FederationBarkSemanticPhase,
+    ) -> Option<Self> {
+        entries
+            .iter()
+            .filter_map(Self::from_journal_entry)
+            .filter(|record| record.action_id == action_id && record.phase == phase)
+            .max_by_key(|record| record.operation_index)
+    }
+}
+
+fn ensure_version(version: u16) -> Result<()> {
+    if version != FEDERATION_BARK_OPERATION_VERSION {
+        return Err(invalid_bark(format!(
+            "unsupported Bark operation version {version}"
+        )));
+    }
+    Ok(())
+}
+
+fn authorization_kind_matches_phase(
+    kind: FederationBarkOperationKind,
+    phase: FederationBarkSemanticPhase,
+) -> bool {
+    match kind {
+        FederationBarkOperationKind::ReceiveIntent => {
+            phase == FederationBarkSemanticPhase::ReceiveIntent
+        }
+        FederationBarkOperationKind::ReceivePrepared => {
+            phase == FederationBarkSemanticPhase::ReceivePrepared
+        }
+        FederationBarkOperationKind::ActionPlan => matches!(
+            phase,
+            FederationBarkSemanticPhase::SendPlanned
+                | FederationBarkSemanticPhase::ClaimPlanned
+                | FederationBarkSemanticPhase::RevocationPlanned
+                | FederationBarkSemanticPhase::RefreshPlanned
+                | FederationBarkSemanticPhase::ExitPlanned
+        ),
+        FederationBarkOperationKind::ActionTransition => !matches!(
+            phase,
+            FederationBarkSemanticPhase::ReceiveIntent
+                | FederationBarkSemanticPhase::ReceivePrepared
+                | FederationBarkSemanticPhase::SendPlanned
+                | FederationBarkSemanticPhase::ClaimPlanned
+                | FederationBarkSemanticPhase::RevocationPlanned
+                | FederationBarkSemanticPhase::RefreshPlanned
+                | FederationBarkSemanticPhase::ExitPlanned
+                | FederationBarkSemanticPhase::Observation
+        ),
+        FederationBarkOperationKind::MemberObservation => {
+            phase == FederationBarkSemanticPhase::Observation
+        }
+    }
+}
+
+fn ensure_quote(quote: &str) -> Result<()> {
+    if quote.is_empty() || quote.len() > 256 {
+        return Err(invalid_bark("Bark quote identifier is empty or too long"));
+    }
+    Ok(())
+}
+
+fn ensure_optional_quote(quote: Option<&str>) -> Result<()> {
+    if let Some(quote) = quote {
+        ensure_quote(quote)?;
+    }
+    Ok(())
+}
+
+fn ensure_count(label: &str, actual: usize, allow_empty: bool) -> Result<()> {
+    if (!allow_empty && actual == 0) || actual > FEDERATION_MAX_BARK_COLLECTION_ENTRIES {
+        return Err(invalid_bark(format!(
+            "{label} count {actual} is outside the accepted bound"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_members_sorted_unique(members: &[MemberId]) -> Result<()> {
+    ensure_strictly_sorted("Bark member set", members)
+}
+
+fn ensure_strictly_sorted<T>(label: &str, values: &[T]) -> Result<()>
+where
+    T: Ord,
+{
+    if values.windows(2).any(|window| window[0] >= window[1]) {
+        return Err(invalid_bark(format!(
+            "{label} must be strictly sorted and unique"
+        )));
+    }
+    Ok(())
+}
+
+fn checked_sum<I>(amounts: I) -> Result<Amount>
+where
+    I: IntoIterator<Item = Amount>,
+{
+    Amount::try_sum(amounts).map_err(|_| invalid_bark("Bark amount sum overflow"))
+}
+
+fn validate_artifacts(artifacts: &[FederationBarkArtifact]) -> Result<()> {
+    let mut aggregate = 0usize;
+    for artifact in artifacts {
+        if artifact.bytes.len() > FEDERATION_MAX_BARK_ARTIFACT_BYTES {
+            return Err(invalid_bark("one Bark artifact exceeds 64 KiB"));
+        }
+        aggregate = aggregate
+            .checked_add(artifact.bytes.len())
+            .ok_or_else(|| invalid_bark("Bark artifact aggregate overflow"))?;
+        if Sha256Hash::hash(&artifact.bytes).to_byte_array() != artifact.hash.to_bytes() {
+            return Err(invalid_bark("Bark artifact hash mismatch"));
+        }
+    }
+    if aggregate > FEDERATION_MAX_BARK_ARTIFACT_AGGREGATE_BYTES {
+        return Err(invalid_bark("Bark artifact aggregate exceeds 512 KiB"));
+    }
+    Ok(())
+}
+
+fn domain_hash(domain: &[u8], value: &[u8]) -> Result<FederationBarkDigest> {
+    let mut transcript = Vec::new();
+    append_hash_bytes(&mut transcript, domain);
+    append_hash_bytes(&mut transcript, value);
+    FederationBarkDigest::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
+}
+
+fn append_hash_bytes(transcript: &mut Vec<u8>, value: &[u8]) {
+    transcript.extend_from_slice(&(value.len() as u32).to_be_bytes());
+    transcript.extend_from_slice(value);
+}
+
+mod hex_bytes {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&crate::util::hex::encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        crate::util::hex::decode(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+mod hex_array_33 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8; 33], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&crate::util::hex::encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 33], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let bytes = crate::util::hex::decode(&value).map_err(serde::de::Error::custom)?;
+        bytes.try_into().map_err(|bytes: Vec<u8>| {
+            serde::de::Error::custom(format!(
+                "compressed public key must contain 33 bytes, found {}",
+                bytes.len()
+            ))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bitcoin::hashes::Hash;
+
+    use super::*;
+    use crate::federation::{
+        FederationConsensusItem, FederationJournalAppendOutcome, FederationOperationEnvelope,
+        InMemoryFederationJournal,
+    };
+
+    fn digest(seed: u8) -> FederationBarkDigest {
+        FederationBarkDigest::from_bytes([seed; 32]).expect("non-zero digest")
+    }
+
+    fn action(seed: u8) -> FederationBarkActionId {
+        FederationBarkActionId::from_bytes([seed; 32]).expect("non-zero action")
+    }
+
+    fn vtxo(seed: u8) -> FederationBarkVtxoId {
+        FederationBarkVtxoId::from_bytes([seed; 32]).expect("non-zero VTXO")
+    }
+
+    fn external(seed: u8) -> FederationBarkExternalId {
+        FederationBarkExternalId::from_bytes([seed; 32]).expect("non-zero external ID")
+    }
+
+    fn member(value: u16) -> MemberId {
+        MemberId::new(value).expect("member")
+    }
+
+    fn operation_id(seed: u8) -> FederationOperationId {
+        FederationOperationId::from_bytes([seed; 32])
+    }
+
+    fn ark_server_key() -> [u8; 33] {
+        [
+            0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce,
+            0x87, 0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81,
+            0x5b, 0x16, 0xf8, 0x17, 0x98,
+        ]
+    }
+
+    fn federation_id() -> FederationId {
+        FederationId::from_bytes([42; 32])
+    }
+
+    fn acknowledgement(member_id: u16) -> FederationBarkReceiveSecretAcknowledgement {
+        FederationBarkReceiveSecretAcknowledgement {
+            member: member(member_id),
+            record_hash: digest(12),
+            signature: FederationOperationSignature::from_slice(&[member_id as u8; 64])
+                .expect("signature"),
+        }
+    }
+
+    fn receive_intent() -> FederationBarkOperation {
+        FederationBarkOperation::ReceiveIntent(FederationBarkReceiveIntent {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: action(1),
+            quote: "mint-quote-1".to_string(),
+            actor: member(1),
+            cashu_amount: Amount::from(100),
+            gross_amount: Amount::from(100),
+            receive_fee: Amount::ZERO,
+            minimum_net_amount: Amount::from(100),
+            unit: FederationBarkUnit::Sat,
+            description_hash: digest(2),
+            payment_hash: digest(3),
+            preimage_commitment: digest(4),
+            secret_acknowledgements: vec![acknowledgement(1), acknowledgement(2)],
+            destination: FederationBarkVtxoLocator::vtxo_custody(7),
+            mailbox_scope: digest(5),
+            ark_server: digest(6),
+            network: Network::Regtest,
+            minimum_cltv_delta: 18,
+            fee_policy_version: 1,
+            anti_dos_policy_version: 1,
+            receive_proof: FederationBarkReceiveProof::NoProof,
+            expires_at: 1_900_000_000,
+        })
+    }
+
+    fn artifact(seed: u8) -> FederationBarkArtifact {
+        let bytes = vec![seed; 16];
+        FederationBarkArtifact {
+            kind: FederationBarkArtifactKind::Vtxo,
+            hash: FederationBarkDigest::from_bytes(Sha256Hash::hash(&bytes).to_byte_array())
+                .expect("artifact digest"),
+            bytes,
+        }
+    }
+
+    fn receive_prepared() -> FederationBarkOperation {
+        FederationBarkOperation::ReceivePrepared(FederationBarkReceivePrepared {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: action(1),
+            quote: "mint-quote-1".to_string(),
+            actor: member(2),
+            intent_operation_id: operation_id(1),
+            invoice: "lnbcrt1canonicalinvoice".to_string(),
+            payment_hash: digest(3),
+            gross_amount: Amount::from(100),
+            expected_net_amount: Amount::from(100),
+            network: Network::Regtest,
+            expires_at: 1_900_000_000,
+            final_cltv_delta: 18,
+            receive_fee: Amount::ZERO,
+            request_hash: digest(15),
+            result_hash: digest(16),
+            external_id: external(17),
+        })
+    }
+
+    fn send_plan() -> FederationBarkOperation {
+        FederationBarkOperation::ActionPlan(FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: action(20),
+            quote: Some("melt-quote-1".to_string()),
+            kind: FederationBarkActionKind::LightningSend,
+            actor: member(1),
+            predecessor_operation_id: operation_id(19),
+            payment_hash: Some(digest(21)),
+            inputs: vec![FederationBarkVtxoInput {
+                vtxo_id: vtxo(22),
+                amount: Amount::from(110),
+            }],
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: FederationBarkVtxoLocator::vtxo_custody(8),
+                amount: Amount::from(5),
+                artifact_hash: digest(23),
+            }],
+            external_amount: Amount::from(100),
+            fee_amount: Amount::from(5),
+            fee_bound: Amount::from(8),
+            artifacts: vec![artifact(24)],
+            external_id: external(26),
+            signer_set: vec![member(1), member(2)],
+            attempt: 1,
+            expires_at: 850_000,
+        })
+    }
+
+    fn envelope(operation: FederationBarkOperation) -> FederationOperationEnvelope {
+        FederationOperationEnvelope::new(federation_id(), FederationOperation::Bark(operation))
+    }
+
+    #[test]
+    fn nested_operation_is_canonical_bounded_and_roundtrips() {
+        let operation = receive_intent();
+        operation.validate().expect("valid receive intent");
+        let canonical = operation.canonical_bytes().expect("canonical operation");
+        assert!(canonical.len() < FEDERATION_MAX_BARK_OPERATION_BYTES);
+        let decoded: FederationBarkOperation =
+            serde_json::from_slice(&canonical).expect("decode canonical operation");
+        assert_eq!(decoded, operation);
+        assert_eq!(
+            decoded.commitment().expect("commitment"),
+            operation.commitment().expect("commitment")
+        );
+    }
+
+    #[test]
+    fn journal_replay_is_idempotent_and_rebuildable() {
+        let envelope = envelope(receive_intent());
+        let consensus_item = FederationConsensusItem::operation(envelope.clone());
+        let consensus_wire =
+            serde_json::to_vec(&consensus_item).expect("consensus transport bytes");
+        let decoded_item: FederationConsensusItem =
+            serde_json::from_slice(&consensus_wire).expect("consensus transport decode");
+        assert_eq!(
+            decoded_item.operation_id().expect("decoded operation ID"),
+            consensus_item.operation_id().expect("operation ID")
+        );
+        let mut journal = InMemoryFederationJournal::new();
+        assert!(matches!(
+            journal.append(envelope.clone()).expect("first append"),
+            FederationJournalAppendOutcome::Appended(_)
+        ));
+        assert!(matches!(
+            journal.append(envelope).expect("duplicate append"),
+            FederationJournalAppendOutcome::Duplicate(_)
+        ));
+        let encoded = serde_json::to_vec(journal.entries()).expect("journal transport bytes");
+        let decoded = serde_json::from_slice(&encoded).expect("journal transport decode");
+        let rebuilt = InMemoryFederationJournal::from_entries(decoded).expect("rebuild journal");
+        assert_eq!(rebuilt.latest_order_digest(), journal.latest_order_digest());
+        assert_eq!(rebuilt.len(), 1);
+    }
+
+    #[test]
+    fn prepared_result_lookup_is_stable_across_journal_roundtrip() {
+        let mut journal = InMemoryFederationJournal::new();
+        journal
+            .append(envelope(receive_intent()))
+            .expect("append intent");
+        journal
+            .append(envelope(receive_prepared()))
+            .expect("append prepared result");
+        let record = FederationBarkOperationRecord::latest_for_action_phase(
+            journal.entries(),
+            action(1),
+            FederationBarkSemanticPhase::ReceivePrepared,
+        )
+        .expect("prepared result");
+        assert_eq!(record.operation_index, 1);
+        assert_eq!(record.status, FederationOperationStatus::Accepted);
+        assert_eq!(record.result_hash, Some(digest(16)));
+
+        let rebuilt = InMemoryFederationJournal::from_entries(journal.entries().to_vec())
+            .expect("rebuild result journal");
+        assert_eq!(
+            FederationBarkOperationRecord::latest_for_action_phase(
+                rebuilt.entries(),
+                action(1),
+                FederationBarkSemanticPhase::ReceivePrepared,
+            ),
+            Some(record)
+        );
+    }
+
+    #[test]
+    fn typed_conflicts_cover_quote_hash_vtxo_locator_phase_and_attempt() {
+        let mut journal = InMemoryFederationJournal::new();
+        journal
+            .append(envelope(receive_intent()))
+            .expect("append receive intent");
+        let FederationBarkOperation::ReceiveIntent(base) = receive_intent() else {
+            panic!("receive intent")
+        };
+        let cases = [
+            {
+                let mut changed = base.clone();
+                changed.action_id = action(30);
+                changed.payment_hash = digest(31);
+                changed.destination = FederationBarkVtxoLocator::vtxo_custody(30);
+                FederationBarkOperation::ReceiveIntent(changed)
+            },
+            {
+                let mut changed = base.clone();
+                changed.action_id = action(31);
+                changed.quote = "other-quote".to_string();
+                changed.destination = FederationBarkVtxoLocator::vtxo_custody(31);
+                FederationBarkOperation::ReceiveIntent(changed)
+            },
+            {
+                let mut changed = base.clone();
+                changed.action_id = action(32);
+                changed.quote = "other-quote-2".to_string();
+                changed.payment_hash = digest(32);
+                FederationBarkOperation::ReceiveIntent(changed)
+            },
+            {
+                let mut changed = base;
+                changed.quote = "other-quote-3".to_string();
+                changed.payment_hash = digest(33);
+                changed.destination = FederationBarkVtxoLocator::vtxo_custody(33);
+                FederationBarkOperation::ReceiveIntent(changed)
+            },
+        ];
+        for operation in cases {
+            assert!(journal.append(envelope(operation)).is_err());
+        }
+
+        let plan = send_plan();
+        let plan_keys = plan.conflict_keys();
+        assert!(plan_keys
+            .iter()
+            .any(|key| matches!(key, FederationBarkConflictKey::VtxoReservation { .. })));
+        assert!(plan_keys
+            .iter()
+            .any(|key| matches!(key, FederationBarkConflictKey::Locator { .. })));
+        assert!(plan_keys.iter().any(|key| matches!(
+            key,
+            FederationBarkConflictKey::ActionPhase {
+                attempt: Some(1),
+                ..
+            }
+        )));
+        assert!(plan_keys.iter().any(|key| matches!(
+            key,
+            FederationBarkConflictKey::SigningAttempt { attempt: 1, .. }
+        )));
+        let mut plan_journal = InMemoryFederationJournal::new();
+        plan_journal
+            .append(envelope(plan.clone()))
+            .expect("append plan");
+        let FederationBarkOperation::ActionPlan(base) = plan else {
+            panic!("action plan")
+        };
+        let mut vtxo_conflict = base.clone();
+        vtxo_conflict.action_id = action(40);
+        vtxo_conflict.quote = Some("melt-quote-2".to_string());
+        vtxo_conflict.payment_hash = Some(digest(40));
+        vtxo_conflict.outputs[0].locator = FederationBarkVtxoLocator::vtxo_custody(40);
+        vtxo_conflict.predecessor_operation_id = operation_id(40);
+        vtxo_conflict.external_id = external(40);
+        assert!(plan_journal
+            .append(envelope(FederationBarkOperation::ActionPlan(vtxo_conflict)))
+            .is_err());
+
+        let mut attempt_conflict = base;
+        attempt_conflict.fee_bound = Amount::from(9);
+        assert!(plan_journal
+            .append(envelope(FederationBarkOperation::ActionPlan(
+                attempt_conflict
+            )))
+            .is_err());
+    }
+
+    #[test]
+    fn author_and_balance_mutations_fail_closed() {
+        let FederationBarkOperation::ReceiveIntent(mut intent) = receive_intent() else {
+            panic!("receive intent")
+        };
+        intent.actor = member(3);
+        let operation = FederationBarkOperation::ReceiveIntent(intent);
+        assert_eq!(operation.claimed_author(), member(3));
+        assert!(operation.validate().is_err());
+
+        let FederationBarkOperation::ActionPlan(mut plan) = send_plan() else {
+            panic!("action plan")
+        };
+        plan.fee_amount = Amount::from(6);
+        assert!(FederationBarkOperation::ActionPlan(plan)
+            .validate()
+            .is_err());
+    }
+
+    #[test]
+    fn collection_artifact_and_invoice_bounds_fail_closed() {
+        let FederationBarkOperation::ActionPlan(mut plan) = send_plan() else {
+            panic!("action plan")
+        };
+        plan.inputs = (1..=65)
+            .map(|seed| FederationBarkVtxoInput {
+                vtxo_id: vtxo(seed),
+                amount: Amount::from(1),
+            })
+            .collect();
+        assert!(FederationBarkOperation::ActionPlan(plan)
+            .validate()
+            .is_err());
+
+        let FederationBarkOperation::ActionPlan(mut plan) = send_plan() else {
+            panic!("action plan")
+        };
+        let bytes = vec![1; FEDERATION_MAX_BARK_ARTIFACT_BYTES + 1];
+        plan.artifacts = vec![FederationBarkArtifact {
+            kind: FederationBarkArtifactKind::Vtxo,
+            hash: FederationBarkDigest::from_bytes(Sha256Hash::hash(&bytes).to_byte_array())
+                .expect("artifact hash"),
+            bytes,
+        }];
+        assert!(FederationBarkOperation::ActionPlan(plan)
+            .validate()
+            .is_err());
+
+        let FederationBarkOperation::ReceivePrepared(mut prepared) = receive_prepared() else {
+            panic!("receive prepared")
+        };
+        prepared.invoice = "x".repeat(FEDERATION_MAX_BARK_INVOICE_BYTES + 1);
+        assert!(FederationBarkOperation::ReceivePrepared(prepared)
+            .validate()
+            .is_err());
+    }
+
+    #[test]
+    fn authorization_slot_excludes_attempt_but_session_does_not() {
+        let application_id =
+            FederationFrostApplicationId::from_bytes([7; 32]).expect("application ID");
+        let reference = FederationBarkAuthorizationReference {
+            version: FEDERATION_BARK_AUTHORIZATION_VERSION,
+            federation_id: federation_id(),
+            application_id,
+            root_key_epoch: 1,
+            application_key_epoch: 1,
+            application_derivation_version: 1,
+            accepted_operation_id: operation_id(8),
+            accepted_operation_index: 9,
+            action_id: action(10),
+            phase: FederationBarkSemanticPhase::SendHtlcsCosigned,
+            object_ordinal: 0,
+            operation_kind: FederationBarkOperationKind::ActionTransition,
+            plan_or_result_hash: digest(11),
+            locator: FederationBarkVtxoLocator::vtxo_custody(12),
+            protocol: FederationBarkCustodyProtocol::Musig2,
+            transcript_hash: digest(13),
+            signer_set: vec![member(1), member(2)],
+            attempt: 1,
+            network: Network::Regtest,
+            ark_server_public_key: ark_server_key(),
+        };
+        reference.validate().expect("valid authorization");
+        let slot = reference.signing_slot().expect("slot");
+        let session = reference.session_id().expect("session");
+        let mut retry = reference.clone();
+        retry.signer_set = vec![member(2), member(3)];
+        retry.attempt = 2;
+        assert_eq!(retry.signing_slot().expect("retry slot"), slot);
+        assert_ne!(retry.session_id().expect("retry session"), session);
+        let mut mutated = reference;
+        mutated.transcript_hash = digest(14);
+        assert_ne!(mutated.signing_slot().expect("mutated slot"), slot);
+        let mut incompatible = mutated;
+        incompatible.operation_kind = FederationBarkOperationKind::ReceiveIntent;
+        assert!(incompatible.validate().is_err());
+    }
+
+    #[test]
+    fn action_id_derivation_has_a_fixed_vector() {
+        let action_id = FederationBarkActionId::derive(
+            federation_id(),
+            operation_id(8),
+            FederationBarkSemanticPhase::SendHtlcsCosigned,
+            3,
+        )
+        .expect("action ID");
+        assert_eq!(
+            action_id.to_hex(),
+            "2007f3f7f11ea3e128c6470494df3e6b3dee0791d946e79ff396b148ecf6123d"
+        );
+
+        let changed = FederationBarkActionId::derive(
+            federation_id(),
+            operation_id(8),
+            FederationBarkSemanticPhase::SendHtlcsCosigned,
+            4,
+        )
+        .expect("changed action ID");
+        assert_ne!(changed, action_id);
+    }
+}

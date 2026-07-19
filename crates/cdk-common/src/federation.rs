@@ -8,6 +8,7 @@ use thiserror::Error;
 
 mod address_allocation;
 mod backup;
+mod bark_operation;
 mod chain_observation;
 mod checkpoint;
 mod config;
@@ -56,6 +57,21 @@ pub use self::address_allocation::{
 pub use self::backup::{
     FederationDatabaseBackupManifest, FEDERATION_DATABASE_BACKUP_MANIFEST_VERSION,
     FEDERATION_DATABASE_BACKUP_SCHEMA_VERSION,
+};
+pub use self::bark_operation::{
+    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionPlan,
+    FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
+    FederationBarkAuthorizationReference, FederationBarkConflictKey, FederationBarkCustodyProtocol,
+    FederationBarkDigest, FederationBarkExternalId, FederationBarkMemberObservation,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkOperationKind,
+    FederationBarkOperationRecord, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
+    FederationBarkReceiveProof, FederationBarkReceiveSecretAcknowledgement,
+    FederationBarkSemanticPhase, FederationBarkUnit, FederationBarkVtxoId, FederationBarkVtxoInput,
+    FederationBarkVtxoLocator, FederationBarkVtxoOutput, FEDERATION_BARK_AUTHORIZATION_VERSION,
+    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_BARK_ARTIFACT_AGGREGATE_BYTES,
+    FEDERATION_MAX_BARK_ARTIFACT_BYTES, FEDERATION_MAX_BARK_AUTHORIZATION_BYTES,
+    FEDERATION_MAX_BARK_COLLECTION_ENTRIES, FEDERATION_MAX_BARK_INVOICE_BYTES,
+    FEDERATION_MAX_BARK_OPERATION_BYTES,
 };
 pub use self::chain_observation::{
     FederationAllocatedAddressRef, FederationChainObservation, FederationChainObservationEvidence,
@@ -450,6 +466,12 @@ pub enum FederationError {
     #[error("Federation chain observation state is invalid: {reason}")]
     ChainObservationStateInvalid {
         /// Stable validation reason without member-local source details.
+        reason: String,
+    },
+    /// A typed, canonical Bark consensus operation or authorization is invalid.
+    #[error("Federation Bark operation is invalid: {reason}")]
+    BarkOperationInvalid {
+        /// Stable validation reason without Bark database, endpoint, or secret details.
         reason: String,
     },
     /// Canonical on-chain intent, batch, or transaction proposal is malformed.

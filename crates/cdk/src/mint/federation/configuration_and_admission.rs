@@ -700,6 +700,13 @@ impl FederationRuntimeConfig {
                 observation.validate()?;
                 self.validate_federation_observer(observation.observer)
             }
+            FederationOperation::Bark(operation) => {
+                operation.validate()?;
+                self.validate_federation_observer(operation.claimed_author())?;
+                Err(Error::Custom(
+                    "federated Bark operation admission requires its SQL projection".to_string(),
+                ))
+            }
         }
     }
 

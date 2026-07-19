@@ -704,6 +704,9 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
+            FederationOperation::Bark(_) => Err(Error::Custom(
+                "federated Bark SQL projection is not installed".to_string(),
+            )),
         }
     }
 

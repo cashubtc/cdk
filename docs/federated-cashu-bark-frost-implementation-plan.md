@@ -2,7 +2,7 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5 complete, Milestone 6 awaits dependency publication, no production Bark payment backend exists yet
+Status: implementation in progress; Milestones 0-5 and 7 complete, Milestone 6 is locally complete but awaits dependency publication, no production Bark payment backend exists yet
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -28,7 +28,7 @@ machine-specific metadata in this document.
 | 4. Durable MuSig2 and DH | Complete (2026-07-19) | Protocol-separated durable ledgers, atomic attempt/nonces, restart-safe exact retries, write-failure matrix, transparent-crypto agreement, and ordinary-FROST coexistence passed | `feat: persist federated custody protocols` |
 | 5. Custody transport | Complete (2026-07-19) | Signed bounded REST routes, durable participant handlers, timeout/backpressure-aware bounded collection, exact retries, stale/mixed-attempt rejection, and higher-attempt signer replacement passed | `feat: add federated Bark custody transport` |
 | 6. `cdk-bark` skeleton | In progress (dependency publication gate) | Local construction, custody, redaction, feature-isolation, strict-clippy, and standalone regression gates pass; immutable Bark source is not remotely fetchable yet | `feat: add federated Bark runtime skeleton` (local-only progress commit) |
-| 7. Bark operations | Pending | — | — |
+| 7. Bark operations | Complete (2026-07-19) | Nested canonical operation family, typed authorization, conflict/idempotency tests, result lookup, full common regression suite, and workspace compatibility passed | `feat: add typed Bark federation operations` |
 | 8. SQL projection | Pending | — | — |
 | 9. Receive secrets | Pending | — | — |
 | 10. Incoming preparation | Pending | — | — |
@@ -1948,8 +1948,9 @@ Publication gate:
 
 - the required Bark facade/wire/vector commit is currently available only in
   the local `frost-wallet` branch at `2450be256343`;
-- the temporary development dependency is therefore deliberately not suitable
-  for a milestone commit; and
+- the temporary development dependency is therefore deliberately suitable
+  only for the documented local progress commit, not a publishable milestone
+  commit; and
 - completion requires publishing that commit (or an equivalent reviewed
   immutable revision/release), replacing the temporary source with the exact
   immutable dependency, regenerating the lockfile, and rerunning the gates
@@ -1971,6 +1972,81 @@ Exit criteria:
 - debug output contains no path, endpoint credential, secret, or nonce.
 
 ### Milestone 7: typed Bark federation operations
+
+Status: complete on 2026-07-19.
+
+Implementation record:
+
+- added one `FederationOperation::Bark(FederationBarkOperation)` variant while
+  retaining outer operation-envelope version `5` and the existing non-Bark
+  canonical golden vector;
+- kept the nested family to `ReceiveIntent`, `ReceivePrepared`, `ActionPlan`,
+  `ActionTransition`, and `MemberObservation`; signer replacement, revocation,
+  refresh, and exit use typed plan/transition phases instead of a parallel
+  recovery operation hierarchy;
+- added non-zero typed action, digest, VTXO, and external idempotency IDs;
+  versioned locators; satoshi-only checked receive and action accounting;
+  sorted unique input, output, signer, acknowledgement, and artifact sets; and
+  the frozen 64-entry, 64 KiB artifact, 512 KiB aggregate/nested, 64 KiB
+  invoice, and 16 KiB authorization bounds;
+- derived the frozen action ID from federation ID, accepted operation ID,
+  semantic phase, and object ordinal, with a fixed vector, and derived disjoint
+  signing-slot and full-session commitments so signer-set/attempt rotation
+  changes the session without changing the economic slot;
+- added conflict keys for initial Cashu quote and payment-hash ownership, VTXO
+  reservations, locator allocations, action phase/attempt, predecessor,
+  external idempotency ID, custody signing attempt, and observer epoch; typed
+  references in later phases do not incorrectly re-reserve an origin key;
+- bound operation authorship to the actor or observer and reject Bark envelopes
+  under a public config without an accepted Bark application;
+- added a typed accepted-operation authorization reference covering federation,
+  application/root epochs and derivation, accepted journal position, action,
+  phase, object, operation kind, canonical plan/result commitment, locator,
+  protocol, transcript, signer set, attempt, network, and Ark server;
+- added pure accepted-entry authorization checks for applied status, exact
+  envelope authorization, application scope, operation commitment, signer set,
+  attempt, threshold, and roster. Locator ownership and exact transcript
+  reconstruction remain deliberately assigned to the deterministic SQL
+  projection in Milestone 8;
+- added compact result lookup by action and semantic phase, preserving result
+  status and commitment across journal serialization and replay;
+- kept Bark materialized-row registration empty and CDK admission/apply
+  explicitly fail-closed until Milestone 8 installs the deterministic SQL
+  projection. This prevents the intermediate milestone from accepting an
+  operation it cannot safely materialize; and
+- changed no migration and added no Bark implementation checkpoint or
+  member-local endpoint/database data to consensus.
+
+Verification evidence:
+
+```text
+cargo test -p cdk-common --features federation --offline
+  438 passed, 1 ignored
+  federation operation authorization: 4 passed
+  FROST DKG/config: 4 passed
+  doc tests: passed
+
+cargo test -p cdk --features federation --lib --offline
+  779 passed; 3 loopback-listener tests were blocked by the filesystem/network sandbox
+
+cargo test -p cdk --features federation --lib wallet::wallet_repository::tests:: --offline
+  12 passed with loopback binding permitted, including the 3 sandbox-blocked tests
+
+cargo clippy -p cdk-common --features federation --all-targets --offline -- -D warnings
+  passed
+
+cargo check --workspace --all-targets --offline
+  passed
+
+cargo fmt -p cdk-common -p cdk -- --check
+git diff --check
+  passed
+```
+
+Strict whole-`cdk` clippy still reaches ten unrelated pre-existing Rust 1.95
+warnings in unchanged federation helpers, melt types, mint construction, and
+wallet federation code. None is in the Bark operation module or the two small
+fail-closed match arms added by this milestone.
 
 Deliverables:
 
