@@ -60,7 +60,7 @@ is well established but its root cause is not.
 | 12 | `R1` | Recovery candidate fetch is pinned to the first source | High | 97% | Startup recovery | Completed |
 | 13 | `A1` | Aleph queues lack bounded backpressure | High security gate | 97% | Process/quorum resource exhaustion | Completed |
 | 14 | `R4` | Finalized-item catch-up response-count mismatch remains unexplained | High investigation | 95% failure / 55% cause | Member recovery | Completed |
-| 15 | `R2` | Opaque Aleph backup can pin startup to unusable bytes | High | 85% | Startup/live-session recovery | Not started |
+| 15 | `R2` | Opaque Aleph backup can pin startup to unusable bytes | High | 85% | Startup/live-session recovery | Completed |
 | 16 | `P7` | Staged melt commits need complete crash/replay proof | High pending proof | 75% | Quote/proofs | Not started |
 | 17 | `W1` | Member metadata validation can wait forever | Medium | 99% | Wallet operations | Not started |
 | 18 | `W3` | Broadcast worker has the same sequential backend head-of-line failure | Medium | 98% | On-chain settlements | Not started |
@@ -2887,23 +2887,111 @@ pre-cutover deployed build.
 
 ### 15. Opaque Aleph backup can pin startup to unusable bytes (`R2`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-19 with an executed two-member
+live-session harness against the unmodified pre-fix worktree:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-axum --features federation unusable_stored_aleph_bft_backup_does_not_pin_startup_with_valid_peer -- --nocapture`
 
-**Fix check and evaluation:** Not run
+The harness finalizes one operation on both members, stops member 1's
+session, writes semantically unusable bytes into member 1's durable backup
+for session 0 (the state a prior unusable fetch would have left), restarts
+member 1's session, and then requires the member to recover and finalize a
+fresh operation with the healthy peer.
 
-**Commit subject:** Not assigned
+The recorded pinning mechanism was refuted at its first link: upstream
+`run_session` (aleph-bft 0.45.4 `consensus/mod.rs`) returns early with a
+logged error when backup decode fails, so CDK mapped the failure to a clean
+`AlephBftSessionCompletion::Completed` and rotated the session — no pin.
+But the confirmation harness proved a worse failure of the same hazard:
+member 1 rotated unilaterally to session 1 while member 2 stayed on session
+0 (sessions cannot go backward and member 2's healthy session 0 has no
+rotation trigger), and both members reported `Healthy` while the submitted
+operation never finalized:
 
-**Milestone observations:** None yet
+`first_session=1 second_session=0 first_sync=Some(Healthy) second_sync=Some(Healthy)`
+(six consecutive probes; the operation pended the full 30-second timeout)
+
+With a two-member threshold-2 roster the silent session split halts all
+live finalization while looking healthy — a federation-wide liveness
+deadlock, not a single-member pin. Pre-fix the harness FAILED at the
+quarantine/teardown wait (`tests.rs:20079`), proving the garbage was never
+cleared and the generation never stopped for recovery.
+
+**Minimal fix:** Federation-only, in
+`crates/cdk-axum/src/federation/aleph_bft_session.rs` and
+`aleph_bft_runtime.rs`. The session task now classifies the upstream return
+into a new `AlephBftSessionCompletion::ExitedEarly` when termination was
+not requested (a `termination_requested` flag set by both supervisor
+shutdown paths) **and** the session saved no new backup units (the shared
+`persisted_chunks` counter in `CdkAlephBftDbBackupWriter`, compared against
+the count at session start). Saved units distinguish the intended
+completion at the configured max round — which must rotate — from an
+undecodable backup, whose session never creates a unit. On `ExitedEarly`
+the completion watcher quarantines the stored backup bytes for that session
+(`replace_federation_aleph_bft_backup_chunks(session, &[])`, so they are
+neither reloaded nor re-served) and stops the generation **without**
+rotating and **without** halting (`mark_federation_awaiting_quorum`), so
+ordinary peer sync fetches a valid backup from another member and restarts
+the same session. No standalone code changed.
+
+**Fix check and evaluation:** Fix check on 2026-07-19 with the exact
+confirmation scenario. Pre-fix: FAILED as recorded above. Post-fix:
+
+`cargo test -p cdk-axum --features federation unusable_stored_aleph_bft_backup_does_not_pin_startup_with_valid_peer -- --nocapture`
+
+`1 passed`: the garbage is quarantined, peer sync fetches the peer's valid
+backup (15 chunks), member 1 restarts **session 0** (no split), both
+members report `Healthy`, and the fresh operation finalizes on both
+members.
+
+Broader evaluation on 2026-07-19:
+
+- `rustfmt --check` on every changed file — clean.
+- `cargo test -p cdk-axum --features federation` — `504 passed; 0 failed; 2
+  ignored`, including the rotation lifecycle regressions
+  (`aleph_bft_live_sessions_auto_rotate_after_session_completion`,
+  `aleph_bft_automatic_rotation_failure_halts_without_live_resources`)
+  that pin the max-round/backup-failure discriminator.
+- `cargo test -p cdk --lib` — `540 passed; 0 failed`.
+- `cargo check -p cdk-common -p cdk -p cdk-axum --no-default-features` —
+  passed; all changed code is federation-gated.
+- `cargo clippy -p cdk-axum --features federation` — only the pre-existing
+  feature-gated lints recorded in earlier milestones; none in the changed
+  code.
+
+**Commit subject:** `fix: recover unusable AlephBFT backup without session split`
+
+**Milestone observations:** 2026-07-19 — Milestone 14 is committed
+(`ed3371c61`) and the worktree was clean before starting confirmation.
+
+2026-07-19 — Confirmation recorded above: the recorded pin mechanism is
+absent (upstream returns early; CDK rotated), but the confirmation harness
+proved the worse session-split deadlock. Observations during the fix: (1)
+upstream `run_session` returns on its own in exactly two ways — intended
+completion at the configured max round and backup-load failure — and the
+pair (termination-requested flag, new-units-saved counter) discriminates
+them without decoding the opaque upstream byte format, which CDK cannot do
+(the upstream unit types are not exported; the adapter is deliberately
+byte-preserving). (2) The fetch-path disposable-decoder clause of the
+required correction is therefore not directly implementable; the equivalent
+protection is session-start detection plus quarantine plus automatic
+alternate-source recovery, which also covers bytes stored before this fix.
+(3) Provenance: the fetch path already logs the serving member id
+(`Recovered AlephBFT live-session backup from federation peer`); the new
+quarantine path logs the session and reason. (4) Harness lesson: the
+recovery assertion must first wait for the early-exit teardown (generation
+stopped, bytes quarantined); an earlier draft broke on the stale `Healthy`
+mark and raced the watcher.
 
 **Severity:** High
 
 **Confidence:** 85% — CDK source pinning is proven; upstream backup failure needs a regression
 
-**Finding status:** Open high-confidence hazard
+**Finding status:** Resolved on 2026-07-19 with red-before-green runtime
+proof (confirmed form: silent session split halting live finalization
+federation-wide while both members report `Healthy`)
 
 **Attacker/fault:** Authenticated peer serves size-bounded but semantically
 unusable upstream Aleph backup bytes
@@ -2924,6 +3012,13 @@ test, so this is not labeled fully source-proven.
 **Required proof/correction:** inject an unusable first source and valid second
 source; validate in a disposable decoder before durable replacement; record
 source provenance; and automatically retry another peer after startup failure.
+Delivered as follows: the harness injects unusable stored bytes with a valid
+second source serving the same session; unusable bytes are detected at session
+start (the disposable-decoder equivalent for the opaque upstream format) and
+quarantined so they are never reloaded or re-served; source provenance is
+recorded by the existing fetch log and the new quarantine log; and peer sync
+automatically recovers a valid backup from another member and restarts the
+same session, proven by the retained regression.
 
 ### 16. Staged melt commits need complete crash/replay proof (`P7`)
 

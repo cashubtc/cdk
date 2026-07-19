@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::AssertUnwindSafe;
-#[cfg(test)]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -263,6 +261,10 @@ impl Default for FederationAlephBftLiveSessionOptions {
 enum AlephBftSessionCompletion {
     Completed,
     Panicked,
+    /// The upstream session returned before termination was requested. Its
+    /// only early return is an undecodable or inconsistent stored backup, so
+    /// this must not be treated as a clean completion.
+    ExitedEarly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -366,6 +368,7 @@ pub(crate) struct AlephBftSessionSupervisor {
     spawn_handle: CdkAlephBftTokioSpawnHandle,
     activity_sender: mpsc::Sender<FederationOperationId>,
     tasks: Mutex<Option<AlephBftSessionTasks>>,
+    termination_requested: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -504,6 +507,7 @@ impl AlephBftSessionSupervisor {
         if !should_stop {
             return;
         }
+        self.termination_requested.store(true, Ordering::Release);
         if let Ok(mut exit) = self.exit.lock() {
             if let Some(exit) = exit.take() {
                 let _ = exit.send(());
@@ -525,6 +529,7 @@ impl AlephBftSessionSupervisor {
         if let Ok(mut state) = self.state.lock() {
             *state = AlephBftSessionSupervisorState::Stopped;
         }
+        self.termination_requested.store(true, Ordering::Release);
         if let Ok(mut exit) = self.exit.lock() {
             if let Some(exit) = exit.take() {
                 let _ = exit.send(());
@@ -725,7 +730,8 @@ where
     .await?;
     let replay_readiness = session_io.replay_readiness();
     let pending_activity_operation_ids = pending_aleph_bft_operation_ids(&db, session_id).await?;
-    let (local_io, finalized_units) = session_io.into_parts();
+    let (local_io, finalized_units, backup_writer, backup_chunks_at_start) =
+        session_io.into_parts();
     let (network, mut network_handle) =
         CdkAlephBftNetwork::<CdkAlephBftNetworkData>::new_pair_with_capacity(
             options.aleph_bft_channel_capacity,
@@ -773,6 +779,8 @@ where
     let session_spawn_handle = spawn_handle.clone();
     let root_event_sender = essential_event_sender.clone();
     let session_activation = activation_receiver.clone();
+    let termination_requested = Arc::new(AtomicBool::new(false));
+    let session_termination_requested = termination_requested.clone();
     #[cfg(test)]
     let panic_session_task = options.panic_session_task;
     #[cfg(test)]
@@ -801,7 +809,15 @@ where
             .await;
         };
         let completion = match AssertUnwindSafe(session).catch_unwind().await {
-            Ok(()) => AlephBftSessionCompletion::Completed,
+            Ok(()) if session_termination_requested.load(Ordering::Acquire) => {
+                AlephBftSessionCompletion::Completed
+            }
+            Ok(()) if backup_writer.persisted_chunks() > backup_chunks_at_start => {
+                // The session created and saved new units, so it ran: this is
+                // the intended completion at the configured max round.
+                AlephBftSessionCompletion::Completed
+            }
+            Ok(()) => AlephBftSessionCompletion::ExitedEarly,
             Err(_) => AlephBftSessionCompletion::Panicked,
         };
         let _ = root_event_sender
@@ -989,6 +1005,7 @@ where
             apply_task,
             completion_watcher_task,
         })),
+        termination_requested,
     });
     #[cfg(test)]
     if let Some((reached, release)) = publication_pause {
@@ -1386,6 +1403,16 @@ where
                 )
                 .await;
             }
+            AlephBftEssentialTaskEvent::Root(AlephBftSessionCompletion::ExitedEarly) => {
+                quarantine_federation_aleph_bft_session_backup(&state, completed_session).await;
+                stop_federation_aleph_bft_generation_for_backup_recovery(
+                    &state,
+                    completed_session,
+                    generation,
+                    "exited early on unusable stored backup; quarantined the bytes for peer recovery",
+                )
+                .await;
+            }
             AlephBftEssentialTaskEvent::FinalizedPayloadApplyFailed(error) => {
                 let reason = format!(
                     "stopped after a non-retryable finalized-payload apply failure: {error}"
@@ -1448,6 +1475,82 @@ enum FederationAlephBftHaltTarget {
     Current,
     Generation(u64),
     GenerationOrNone(u64),
+}
+
+/// Remove every stored AlephBFT backup chunk for one session so unusable
+/// bytes are neither reloaded at the next start nor served to peers again.
+async fn quarantine_federation_aleph_bft_session_backup(state: &MintState, session_id: u64) {
+    let db = state.mint.localstore();
+    let result = async {
+        let mut tx = db.begin_transaction().await?;
+        tx.replace_federation_aleph_bft_backup_chunks(session_id, &[])
+            .await?;
+        tx.commit().await
+    }
+    .await;
+    match result {
+        Ok(()) => {
+            tracing::warn!(
+                session_id,
+                "Quarantined unusable AlephBFT backup bytes after the session exited early"
+            );
+        }
+        Err(err) => {
+            tracing::error!(
+                session_id,
+                "Could not quarantine unusable AlephBFT backup bytes: {}",
+                err
+            );
+        }
+    }
+}
+
+/// Stop one AlephBFT session generation after the upstream session exited
+/// early on unusable stored backup. Unlike a halt this stays recoverable:
+/// peer sync fetches a valid backup for the same session and restarts it, so
+/// the member rejoins instead of rotating unilaterally and splitting the
+/// federation across sessions.
+async fn stop_federation_aleph_bft_generation_for_backup_recovery(
+    state: &MintState,
+    session_id: u64,
+    generation: u64,
+    reason: &str,
+) {
+    let mut live_session = state.federation.aleph_bft_live_session.write().await;
+    let target_matches = live_session
+        .as_ref()
+        .is_some_and(|supervisor| supervisor.generation() == generation);
+    if !target_matches {
+        tracing::debug!(
+            session_id,
+            generation,
+            "Ignoring stale AlephBFT backup-recovery stop from an inactive live-session generation"
+        );
+        return;
+    }
+
+    let supervisor = live_session.take();
+    let mut network_inbound = state.federation.aleph_bft_network_inbound.write().await;
+    *network_inbound = None;
+    state
+        .federation
+        .aleph_bft_halt_epoch
+        .fetch_add(1, Ordering::SeqCst);
+    tracing::warn!(
+        session_id,
+        reason,
+        "AlephBFT live session stopped for backup recovery"
+    );
+    let operation_count = match state.federation.consensus.as_ref() {
+        Some(consensus) => consensus.lock().await.status().accepted_operation_count,
+        None => 0,
+    };
+    state.mark_federation_awaiting_quorum(operation_count).await;
+    drop(network_inbound);
+    drop(live_session);
+    if let Some(supervisor) = supervisor {
+        supervisor.shutdown_for_rotation().await;
+    }
 }
 
 async fn halt_federation_aleph_bft_generation(
@@ -1907,6 +2010,7 @@ mod tests {
                 apply_task: task(),
                 completion_watcher_task: task(),
             })),
+            termination_requested: Arc::new(AtomicBool::new(false)),
         };
 
         while started.load(Ordering::SeqCst) < 5 {

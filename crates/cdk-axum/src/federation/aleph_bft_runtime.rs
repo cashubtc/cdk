@@ -1209,6 +1209,19 @@ impl fmt::Debug for CdkAlephBftDbBackupWriter {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+impl CdkAlephBftDbBackupWriter {
+    /// Number of backup chunks persisted so far, including the replayed
+    /// prefix the writer was initialized with. A session that created units
+    /// grows this count; one that exited on an unusable backup never does.
+    pub(crate) fn persisted_chunks(&self) -> usize {
+        self.state
+            .lock()
+            .map(|state| state.persisted_chunks)
+            .unwrap_or_default()
+    }
+}
+
 impl AsyncWrite for CdkAlephBftDbBackupWriter {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -1419,6 +1432,8 @@ pub(crate) struct CdkAlephBftSessionIo {
     local_io: CdkAlephBftLocalIo,
     finalized_units: mpsc::Receiver<CdkAlephBftFinalizedUnit>,
     replay_readiness: Arc<CdkAlephBftReplayReadiness>,
+    backup_writer: CdkAlephBftDbBackupWriter,
+    backup_chunks_at_start: usize,
 }
 
 impl fmt::Debug for CdkAlephBftSessionIo {
@@ -1484,7 +1499,7 @@ impl CdkAlephBftSessionIo {
         let local_io = LocalIO::new_with_unit_finalization_handler(
             data_provider,
             finalization_handler,
-            unit_saver,
+            unit_saver.clone(),
             unit_loader,
         );
 
@@ -1492,6 +1507,8 @@ impl CdkAlephBftSessionIo {
             local_io,
             finalized_units,
             replay_readiness,
+            backup_writer: unit_saver,
+            backup_chunks_at_start: backup_chunks,
         })
     }
 
@@ -1500,11 +1517,23 @@ impl CdkAlephBftSessionIo {
         Arc::clone(&self.replay_readiness)
     }
 
-    /// Split the upstream session IO from the receiver consumed by the CDK apply loop.
+    /// Split the upstream session IO from the receiver consumed by the CDK
+    /// apply loop, plus the backup-progress evidence used to distinguish a
+    /// session that ran from one that exited on an unusable stored backup.
     pub(crate) fn into_parts(
         self,
-    ) -> (CdkAlephBftLocalIo, mpsc::Receiver<CdkAlephBftFinalizedUnit>) {
-        (self.local_io, self.finalized_units)
+    ) -> (
+        CdkAlephBftLocalIo,
+        mpsc::Receiver<CdkAlephBftFinalizedUnit>,
+        CdkAlephBftDbBackupWriter,
+        usize,
+    ) {
+        (
+            self.local_io,
+            self.finalized_units,
+            self.backup_writer,
+            self.backup_chunks_at_start,
+        )
     }
 }
 
@@ -2382,7 +2411,7 @@ mod tests {
         )
         .await
         .expect("session io");
-        let (local_io, mut finalized_units) = session_io.into_parts();
+        let (local_io, mut finalized_units, _, _) = session_io.into_parts();
         let (mut data_provider, mut finalization_handler, mut unit_saver, mut unit_loader) =
             local_io.into_components();
         let mut loaded = Vec::new();
@@ -2449,7 +2478,7 @@ mod tests {
         )
         .await
         .expect("session io");
-        let (local_io, _) = session_io.into_parts();
+        let (local_io, _, _, _) = session_io.into_parts();
         let (_, _, mut unit_saver, mut unit_loader) = local_io.into_components();
         let mut replayed = Vec::new();
 
@@ -2511,7 +2540,7 @@ mod tests {
         )
         .await
         .expect("session io");
-        let (local_io, _) = session_io.into_parts();
+        let (local_io, _, _, _) = session_io.into_parts();
         let (_, _, _, mut unit_loader) = local_io.into_components();
         let mut replayed = Vec::new();
 
