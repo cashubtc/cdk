@@ -161,6 +161,7 @@ fn mint_quote_conversion_preserves_bolt11_accounting() {
     response.amount_paid = Amount::from(7);
     response.amount_issued = Amount::from(3);
     response.state = MintQuoteState::Paid;
+    response.updated_at = 1_700_000_123;
 
     let operation = FederationMintQuoteOperation {
         quote: quote.to_string(),
@@ -168,7 +169,7 @@ fn mint_quote_conversion_preserves_bolt11_accounting() {
         request: bolt11_quote_request(10),
         response: MintQuoteResponse::Bolt11(response.clone()),
     };
-    let converted = super::super::mint_quote_from_federation_operation(&operation, 1)
+    let converted = super::super::mint_quote_from_federation_operation(&operation)
         .expect("convert mint quote");
 
     assert_eq!(
@@ -179,20 +180,27 @@ fn mint_quote_conversion_preserves_bolt11_accounting() {
         converted.amount_issued(),
         Amount::from(3).with_unit(CurrencyUnit::Sat)
     );
+    assert_eq!(converted.created_time, response.updated_at);
 }
 
 #[tokio::test]
-async fn apply_federation_mint_quote_uses_consensus_logical_time() {
+async fn apply_federation_mint_quote_uses_committed_response_time() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
     let mut journal = InMemoryFederationJournal::new();
     let quote = QuoteId::new();
+    let mut response = bolt11_quote_response(&quote, 10);
+    let MintQuoteResponse::Bolt11(response) = &mut response else {
+        panic!("expected bolt11 response");
+    };
+    response.updated_at = 1_700_000_456;
+    let expected_created_time = response.updated_at;
     let entry = appended_entry(
         &mut journal,
         runtime_config.mint_quote_operation(
             quote.clone(),
             bolt11_quote_request(10),
-            bolt11_quote_response(&quote, 10),
+            MintQuoteResponse::Bolt11(response.clone()),
         ),
     );
 
@@ -203,10 +211,7 @@ async fn apply_federation_mint_quote_uses_consensus_logical_time() {
         .await
         .expect("mint quote lookup")
         .expect("mint quote");
-    assert_eq!(
-        stored.created_time,
-        super::super::federation_accepted_logical_time(&entry)
-    );
+    assert_eq!(stored.created_time, expected_created_time);
 }
 
 #[tokio::test]

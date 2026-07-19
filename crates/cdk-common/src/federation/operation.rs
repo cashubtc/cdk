@@ -40,7 +40,7 @@ fn is_zero(value: &u64) -> bool {
 }
 
 /// Version of the federation operation envelope format.
-pub const FEDERATION_OPERATION_VERSION: u16 = 4;
+pub const FEDERATION_OPERATION_VERSION: u16 = 5;
 
 /// Maximum canonical operation envelope size admitted into federation consensus.
 ///
@@ -435,6 +435,8 @@ pub struct FederationMeltQuoteOperation {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FederationMeltQuoteMetadata {
+    /// Unix timestamp when the prepared quote was created.
+    pub created_time: u64,
     /// Stable payment-processor lookup identifier.
     pub request_lookup_id: Option<PaymentIdentifier>,
     /// Payment-method-specific response fields.
@@ -448,6 +450,7 @@ impl FederationMeltQuoteMetadata {
     #[must_use]
     pub fn from_melt_quote(quote: &MeltQuote) -> Self {
         Self {
+            created_time: quote.created_time,
             request_lookup_id: quote.request_lookup_id.clone(),
             extra_json: quote.extra_json.clone(),
             estimated_blocks: quote.estimated_blocks,
@@ -456,11 +459,10 @@ impl FederationMeltQuoteMetadata {
 }
 
 impl FederationMeltQuoteOperation {
-    /// Validate and materialize the accepted quote using deterministic time.
+    /// Validate and materialize the accepted quote.
     pub fn into_melt_quote(
         &self,
         quote_id: QuoteId,
-        created_time: u64,
     ) -> std::result::Result<MeltQuote, crate::Error> {
         let response: MeltQuoteResponse<String> = self.response.clone().into();
         let (expected_request, unit) = match &self.request {
@@ -569,7 +571,7 @@ impl FederationMeltQuoteOperation {
             None,
             self.metadata.request_lookup_id.clone(),
             options,
-            created_time,
+            self.metadata.created_time,
             None,
             self.request.method(),
             self.metadata.extra_json.clone(),
@@ -2093,7 +2095,7 @@ mod tests {
             metadata: FederationMeltQuoteMetadata::default(),
         };
         let bolt12_quote = bolt12
-            .into_melt_quote(quote_id.clone(), 1)
+            .into_melt_quote(quote_id.clone())
             .expect("bolt12 quote");
         assert_eq!(bolt12_quote.payment_method, PaymentMethod::BOLT12);
 
@@ -2125,13 +2127,14 @@ mod tests {
                 change: None,
             }),
             metadata: FederationMeltQuoteMetadata {
+                created_time: 2,
                 request_lookup_id: Some(PaymentIdentifier::QuoteId(onchain_quote_id.clone())),
                 extra_json: None,
                 estimated_blocks: Some(6),
             },
         };
         let onchain_quote = onchain
-            .into_melt_quote(onchain_quote_id, 2)
+            .into_melt_quote(onchain_quote_id)
             .expect("onchain quote");
         assert_eq!(
             onchain_quote.payment_method,
@@ -2387,7 +2390,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_operation_encoding_matches_v4_golden_vector() {
+    fn canonical_operation_encoding_matches_v5_golden_vector() {
         let envelope = envelope(mint_operation(
             "quote-golden",
             vec![output(
@@ -2403,12 +2406,12 @@ mod tests {
             concat!(
                 r#"{"federation_id":"0707070707070707070707070707070707070707070707070707070707070707","#,
                 r#""operation":{"data":{"request":{"data":{"outputs":[{"B_":"0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41","#,
-                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":4}"#
+                r#""amount":1,"id":"00bfa73302d12ffd"}],"quote":"quote-golden"},"type":"single"}},"type":"mint"},"version":5}"#
             )
         );
         assert_eq!(
             envelope.operation_id().expect("operation id").to_hex(),
-            "01d678fdcaea34b609ebd79940f71c02100e94f731b0ccb174f63e2e5abdc20c"
+            "3eb834c8a11c4dcba92dd021b66eeedbd4ef18ca6ff7a658f9d6da416fbfb1c8"
         );
     }
 

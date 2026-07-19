@@ -55,6 +55,7 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
         change: None,
     });
     let metadata = FederationMeltQuoteMetadata {
+        created_time: 1_700_000_000,
         request_lookup_id: Some(PaymentIdentifier::QuoteId(quote.clone())),
         extra_json: None,
         estimated_blocks: Some(6),
@@ -102,7 +103,7 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
     );
     assert_eq!(
         intent.intent.creation_time,
-        super::super::federation_accepted_logical_time(&melt_entry)
+        super::super::federation_accepted_order(&melt_entry)
     );
     assert_eq!(intent.intent.melt_operation_id, melt_entry.operation_id);
     assert!(mint
@@ -374,7 +375,7 @@ async fn accepted_melt_quote_materializes_canonical_terms_without_follower_backe
         response.fee_reserve.with_unit(stored.unit.clone())
     );
     assert_eq!(stored.expiry, response.expiry);
-    assert_eq!(stored.created_time, quote_entry.index.saturating_add(1));
+    assert_eq!(stored.created_time, metadata.created_time);
 }
 
 #[tokio::test]
@@ -393,9 +394,10 @@ async fn accepted_melt_quote_rejects_conflicting_preexisting_quote_without_rewri
     let FederationOperation::MeltQuote(operation) = &envelope.operation else {
         panic!("expected melt quote operation");
     };
-    let conflicting = operation
-        .into_melt_quote(quote.clone(), 999)
+    let mut conflicting = operation
+        .into_melt_quote(quote.clone())
         .expect("conflicting local quote");
+    conflicting.created_time = 999;
     let mut tx = localstore.begin_transaction().await.expect("begin");
     tx.add_melt_quote(conflicting)
         .await
@@ -2445,7 +2447,7 @@ async fn internal_melt_to_mint_settlement_updates_both_quotes_in_accepted_melt()
     );
     assert_eq!(
         stored_mint_quote.payments[0].time,
-        super::super::federation_accepted_logical_time(&melt_entry)
+        0
     );
 
     let stored_melt_quote = localstore
@@ -2476,10 +2478,7 @@ async fn internal_melt_to_mint_settlement_updates_both_quotes_in_accepted_melt()
         .await
         .expect("internal settlement completed operation lookup")
         .expect("internal settlement completed operation");
-    assert_eq!(
-        completed_operation.completed_at(),
-        &Some(super::super::federation_accepted_logical_time(&melt_entry))
-    );
+    assert_eq!(completed_operation.completed_at(), &Some(0));
     assert!(
         localstore
             .get_federation_payment_observations(
@@ -2616,6 +2615,7 @@ async fn frost_onchain_internal_melt_fixture() -> FrostOnchainInternalMeltFixtur
                 change: None,
             }),
             FederationMeltQuoteMetadata {
+                created_time: 1_700_000_000,
                 request_lookup_id: Some(PaymentIdentifier::QuoteId(melt_quote.clone())),
                 extra_json: None,
                 estimated_blocks: Some(6),
@@ -2747,11 +2747,7 @@ async fn failed_frost_onchain_internal_melt_replays_after_restart() {
     persist_journal_entry(&fixture.localstore, &fixture.melt_entry).await;
     let response = fixture
         .mint
-        .melt_federation_with_accepted_time(
-            &fixture.melt_request,
-            fixture.melt_entry.operation_id,
-            super::super::federation_accepted_logical_time(&fixture.melt_entry),
-        )
+        .melt_federation(&fixture.melt_request, fixture.melt_entry.operation_id)
         .await
         .expect("commit internal settlement before application status");
     assert_eq!(response.state(), MeltQuoteState::Paid);
@@ -3070,10 +3066,7 @@ async fn catch_up_melt_payment_observations_finalize_without_duplicate_payment()
         .await
         .expect("catch-up paid completed operation lookup")
         .expect("catch-up paid completed operation");
-    assert_eq!(
-        completed_operation.completed_at(),
-        &Some(super::super::federation_accepted_logical_time(&melt_entry))
-    );
+    assert_eq!(completed_operation.completed_at(), &Some(0));
 
     let duplicate = mint
         .melt_federation(&request, melt_entry.operation_id)
@@ -3399,6 +3392,7 @@ async fn offline_melt_author_cannot_veto_payment_beyond_bounded_lease() {
             quote_request.clone(),
             test_melt_quote_response(&quote, &quote_request),
             cdk_common::federation::FederationMeltQuoteMetadata {
+                created_time: 1_700_000_000,
                 request_lookup_id: Some(cdk_common::payment::PaymentIdentifier::PaymentHash(
                     *bolt11_request.request.payment_hash().as_ref(),
                 )),
@@ -3513,6 +3507,7 @@ async fn lease_takeover_after_author_backend_success_keeps_matching_paid_evidenc
             quote_request.clone(),
             test_melt_quote_response(&quote, &quote_request),
             cdk_common::federation::FederationMeltQuoteMetadata {
+                created_time: 1_700_000_000,
                 request_lookup_id: Some(expected_payment_id.clone()),
                 extra_json: None,
                 estimated_blocks: None,

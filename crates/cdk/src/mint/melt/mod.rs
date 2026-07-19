@@ -1247,18 +1247,6 @@ impl Mint {
         })
     }
 
-    /// Process a federation melt after the exact request has been accepted by consensus.
-    #[cfg(feature = "federation")]
-    #[instrument(skip_all)]
-    pub async fn melt_federation(
-        &self,
-        melt_request: &MeltRequest<QuoteId>,
-        federation_operation_id: FederationOperationId,
-    ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
-        self.melt_federation_with_accepted_time(melt_request, federation_operation_id, 0)
-            .await
-    }
-
     #[cfg(feature = "federation")]
     async fn ensure_terminal_federation_melt_matches_request(
         localstore: &DynMintDatabase,
@@ -1333,11 +1321,10 @@ impl Mint {
     /// Process a federation melt after the exact request has been accepted by consensus.
     #[cfg(feature = "federation")]
     #[instrument(skip_all)]
-    pub(crate) async fn melt_federation_with_accepted_time(
+    pub async fn melt_federation(
         &self,
         melt_request: &MeltRequest<QuoteId>,
         federation_operation_id: FederationOperationId,
-        accepted_time: u64,
     ) -> Result<MeltQuoteResponse<QuoteId>, Error> {
         let federation_config = self
             .effective_federation_config()
@@ -1469,7 +1456,7 @@ impl Mint {
             .setup_melt(melt_request, verification, quote.payment_method.clone())
             .await?;
         match setup_saga
-            .finalize_internal_settlement_federation(federation_operation_id, accepted_time)
+            .finalize_internal_settlement_federation(federation_operation_id)
             .await?
         {
             FederationInternalSettlementOutcome::Finalized(response) => return Ok(response),

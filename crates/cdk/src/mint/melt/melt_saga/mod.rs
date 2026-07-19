@@ -7,7 +7,9 @@ use cdk_common::federation::FederationOperationId;
 use cdk_common::mint::{MeltFinalizationData, MeltSagaState, Operation, Saga, SagaStateEnum};
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nuts::MeltQuoteState;
-use cdk_common::payment::{DynMintPayment, OutgoingPaymentOptions, PaymentIdentifier};
+#[cfg(feature = "federation")]
+use cdk_common::payment::PaymentIdentifier;
+use cdk_common::payment::{DynMintPayment, OutgoingPaymentOptions};
 use cdk_common::{
     Amount, CurrencyUnit, Error, ProofsMethods, PublicKey, QuoteId, SpendingConditionVerification,
     State,
@@ -585,7 +587,6 @@ impl MeltSaga<SetupComplete> {
     pub(super) async fn finalize_internal_settlement_federation(
         self,
         federation_operation_id: FederationOperationId,
-        payment_time: u64,
     ) -> Result<FederationInternalSettlementOutcome, Error> {
         match shared::finalize_federation_internal_melt_quote(
             &self.mint,
@@ -594,7 +595,6 @@ impl MeltSaga<SetupComplete> {
             &self.state_data.quote,
             self.operation_id,
             federation_operation_id,
-            payment_time,
         )
         .await
         {

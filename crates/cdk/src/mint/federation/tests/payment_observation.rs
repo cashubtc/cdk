@@ -573,7 +573,7 @@ async fn mint_payment_observation_apply_error_rolls_back_observation_and_status(
 }
 
 #[tokio::test]
-async fn mint_payment_observation_uses_payment_id_and_consensus_logical_time() {
+async fn mint_payment_observation_uses_payment_id_and_unknown_payment_time() {
     let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
     let (mint, localstore) =
@@ -637,5 +637,5 @@ async fn mint_payment_observation_uses_payment_id_and_consensus_logical_time() {
         stored_quote.payments[0].payment_id,
         "custom:metadata-payment"
     );
-    assert_eq!(stored_quote.payments[0].time, 3);
+    assert_eq!(stored_quote.payments[0].time, 0);
 }

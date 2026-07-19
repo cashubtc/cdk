@@ -101,7 +101,6 @@ fn validate_payment_method_name(method: &PaymentMethod) -> Result<(), Error> {
 
 fn mint_quote_from_federation_operation(
     operation: &FederationMintQuoteOperation,
-    created_time: u64,
 ) -> Result<MintQuote, Error> {
     let quote_id = quote_id_from_federation(&operation.quote)?;
     if operation.response.quote() != &operation.quote {
@@ -116,6 +115,7 @@ fn mint_quote_from_federation_operation(
         .map(|amount| amount.with_unit(unit.clone()));
     let (amount_paid, amount_issued, extra_json) =
         mint_quote_response_amounts(&operation.response, &unit)?;
+    let created_time = mint_quote_response_updated_at(&operation.response);
 
     Ok(MintQuote::new(
         Some(quote_id.clone()),
@@ -136,10 +136,18 @@ fn mint_quote_from_federation_operation(
     ))
 }
 
-fn federation_accepted_logical_time(entry: &FederationJournalEntry) -> u64 {
-    // The MVP journal has ordered consensus but no wall-clock timestamp. Use a
-    // stable logical time so deterministic replay converges across members.
+fn federation_accepted_order(entry: &FederationJournalEntry) -> u64 {
+    // On-chain batching needs only a stable ordering value, not wall-clock time.
     entry.index.saturating_add(1)
+}
+
+fn mint_quote_response_updated_at(response: &MintQuoteResponse<String>) -> u64 {
+    match response {
+        MintQuoteResponse::Bolt11(response) => response.updated_at,
+        MintQuoteResponse::Bolt12(response) => response.updated_at,
+        MintQuoteResponse::Onchain(response) => response.updated_at,
+        MintQuoteResponse::Custom { response, .. } => response.updated_at,
+    }
 }
 
 fn mint_quote_response_amounts(
@@ -378,19 +386,6 @@ fn validate_federation_mint_quotes(
     }
 
     Ok((payment_method, unit))
-}
-
-fn validate_federation_mint_quote_expiry(
-    quotes: &[database::mint::Acquired<MintQuote>],
-    accepted_time: u64,
-) -> Result<(), Error> {
-    for quote in quotes {
-        if quote.expiry != 0 && quote.expiry < accepted_time {
-            return Err(Error::ExpiredQuote(quote.expiry, accepted_time));
-        }
-    }
-
-    Ok(())
 }
 
 fn validate_federation_mint_quote_signatures(

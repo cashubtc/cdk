@@ -875,10 +875,7 @@ impl Mint {
     ) -> Result<(), Error> {
         self.validate_federation_onchain_mint_quote_allocation(operation)
             .await?;
-        let proposed_quote = mint_quote_from_federation_operation(
-            operation,
-            federation_accepted_logical_time(entry),
-        )?;
+        let proposed_quote = mint_quote_from_federation_operation(operation)?;
         let mut tx = self.localstore.begin_transaction().await?;
         let outcome = async {
             let mut quote = match tx.get_mint_quote(&proposed_quote.id).await? {
@@ -1149,11 +1146,10 @@ impl Mint {
                             mint_quote_state_label(observation.state)
                         )
                     });
-                quote.add_payment(
-                    additional_amount,
-                    payment_id,
-                    Some(record.operation_index.saturating_add(1)),
-                )?;
+                // Payment observations currently carry no wall-clock evidence.
+                // Preserve deterministic replay without storing journal order
+                // in the Unix timestamp field.
+                quote.add_payment(additional_amount, payment_id, Some(0))?;
                 tx.update_mint_quote(quote).await?;
                 paid_notification = Some(quote.amount_paid());
             }
@@ -1264,12 +1260,6 @@ impl Mint {
             if outputs_amount.unit() != &unit {
                 return Err(Error::UnsupportedUnit);
             }
-            // Use consensus logical time so replay converges across members.
-            validate_federation_mint_quote_expiry(
-                &quotes,
-                federation_accepted_logical_time(entry),
-            )?;
-
             let expected_amounts =
                 expected_federation_mint_amounts(&input, &quotes, outputs_amount.clone())?;
             let total_expected = expected_amounts.iter().try_fold(0_u64, |total, amount| {
@@ -1326,6 +1316,8 @@ impl Mint {
                 }
             }
 
+            // Consensus orders completion but does not attest its wall-clock time.
+            let completed_at = Some(0);
             let operation_record = if input.is_batch() {
                 Operation::new(
                     federation_operation_uuid(operation_id),
@@ -1333,7 +1325,7 @@ impl Mint {
                     outputs_amount.clone().into(),
                     Amount::ZERO,
                     Amount::ZERO,
-                    Some(federation_accepted_logical_time(entry)),
+                    completed_at,
                     Some(payment_method.clone()),
                 )
             } else {
@@ -1343,7 +1335,7 @@ impl Mint {
                     outputs_amount.clone().into(),
                     Amount::ZERO,
                     Amount::ZERO,
-                    Some(federation_accepted_logical_time(entry)),
+                    completed_at,
                     Some(payment_method.clone()),
                 )
             };
@@ -1447,13 +1439,14 @@ impl Mint {
             .iter()
             .map(|output| output.blinded_secret)
             .collect::<Vec<PublicKey>>();
+        // Consensus orders completion but does not attest its wall-clock time.
         let operation_record = Operation::new(
             federation_operation_uuid(operation_id),
             OperationKind::Swap,
             output_verification.amount.clone().into(),
             input_verification.amount.clone().into(),
             fee_breakdown.total,
-            Some(federation_accepted_logical_time(entry)),
+            Some(0),
             None,
         );
         let completed_swap = self
@@ -1557,8 +1550,7 @@ impl Mint {
         operation: &FederationMeltQuoteOperation,
     ) -> Result<(), Error> {
         let quote_id = quote_id_from_federation(&operation.quote)?;
-        let created_time = federation_accepted_logical_time(entry);
-        let quote = operation.into_melt_quote(quote_id, created_time)?;
+        let quote = operation.into_melt_quote(quote_id)?;
         ensure_melt_quote_matches_request(&quote, &operation.request)?;
 
         let mut tx = self.localstore.begin_transaction().await?;
@@ -1838,11 +1830,7 @@ impl Mint {
         self.require_prior_applied_melt_quote(request.quote(), entry.index)
             .await?;
         let melt_remains_pending = match self
-            .melt_federation_with_accepted_time(
-                &request,
-                operation_id,
-                federation_accepted_logical_time(entry),
-            )
+            .melt_federation(&request, operation_id)
             .await
         {
             Ok(response) => match response.state() {
@@ -1869,7 +1857,7 @@ impl Mint {
                     runtime,
                     &quote,
                     operation_id,
-                    federation_accepted_logical_time(entry),
+                    federation_accepted_order(entry),
                 )
                 .await
             } else if quote.state == cdk_common::MeltQuoteState::Paid {
@@ -2009,4 +1997,3 @@ impl Mint {
         Ok(())
     }
 }
-

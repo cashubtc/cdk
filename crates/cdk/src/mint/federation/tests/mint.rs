@@ -15,7 +15,7 @@ async fn persist_paid_mint_quote_projection_without_quote_journal(
     let FederationOperation::MintQuote(quote_operation) = &quote_envelope.operation else {
         panic!("expected mint quote operation");
     };
-    let materialized_quote = super::super::mint_quote_from_federation_operation(quote_operation, 1)
+    let materialized_quote = super::super::mint_quote_from_federation_operation(quote_operation)
         .expect("materialized mint quote");
 
     let mut tx = localstore.begin_transaction().await.expect("begin");
@@ -51,7 +51,7 @@ async fn persist_paid_mint_payment_projection(
         .add_payment(
             Amount::new(amount, CurrencyUnit::Sat),
             format!("materialized-payment-{quote}"),
-            Some(observation_entry.index.saturating_add(1)),
+            Some(0),
         )
         .expect("mark materialized mint quote paid");
     tx.update_mint_quote(&mut stored_quote)
@@ -717,112 +717,6 @@ async fn later_mint_payment_quorum_does_not_retroactively_authorize_older_mint()
 }
 
 #[tokio::test]
-async fn apply_federation_mint_rejects_expired_quote_before_signing() {
-    let runtime_config = runtime_config();
-    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
-    let mut journal = InMemoryFederationJournal::new();
-    let quote = QuoteId::new();
-    let expiry = 1;
-    let quote_entry = appended_entry(
-        &mut journal,
-        runtime_config.mint_quote_operation(
-            quote.clone(),
-            bolt11_quote_request(1),
-            MintQuoteResponse::Bolt11(MintQuoteBolt11Response {
-                quote: quote.to_string(),
-                request: format!("invoice-{quote}"),
-                amount: Some(Amount::from(1)),
-                unit: Some(CurrencyUnit::Sat),
-                method: PaymentMethod::Known(KnownMethod::Bolt11),
-                amount_paid: Amount::ZERO,
-                amount_issued: Amount::ZERO,
-                updated_at: 0,
-                state: MintQuoteState::Unpaid,
-                expiry: Some(expiry),
-                pubkey: None,
-            }),
-        ),
-    );
-    persist_and_apply_entry(&mint, &quote_entry).await;
-    let paid_entry = appended_entry(
-        &mut journal,
-        runtime_config.mint_quote_payment_observation(
-            quote.clone(),
-            PaymentMethod::Known(KnownMethod::Bolt11),
-            MintQuoteState::Paid,
-            Amount::from(1),
-            Amount::ZERO,
-            Some("expired-mint-payment".to_string()),
-        ),
-    );
-    persist_and_apply_entry(&mint, &paid_entry).await;
-
-    let output = output_for_runtime(&runtime_config, b"expired federation mint output");
-    let mint_entry = appended_entry(
-        &mut journal,
-        runtime_config
-            .mint_operation(MintInput::Single(MintRequest {
-                quote: quote.clone(),
-                outputs: vec![output.clone()],
-                signature: None,
-            }))
-            .expect("expired mint operation"),
-    );
-    persist_journal_entry(&localstore, &mint_entry).await;
-
-    assert!(matches!(
-        mint.apply_federation_journal_entries(std::slice::from_ref(&mint_entry))
-            .await,
-        Err(Error::ExpiredQuote(expired_at, accepted_time))
-            if expired_at == expiry && accepted_time > expiry
-    ));
-
-    let signatures = localstore
-        .get_blind_signatures(&[output.blinded_secret])
-        .await
-        .expect("expired mint signature lookup");
-    assert_eq!(
-        signatures,
-        vec![None],
-        "expired quote must fail before blind signature storage"
-    );
-    let share_records = localstore
-        .get_federation_signature_shares_for_output(mint_entry.operation_id, 0)
-        .await
-        .expect("expired mint share lookup");
-    assert!(
-        share_records.is_empty(),
-        "expired quote must fail before federation share storage"
-    );
-    let blinded_message_share_records = localstore
-        .get_federation_signature_shares_for_blinded_message(output.blinded_secret)
-        .await
-        .expect("expired blinded-message share lookup");
-    assert!(
-        blinded_message_share_records.is_empty(),
-        "expired quote must fail before blinded-message share storage"
-    );
-    let stored_quote = localstore
-        .get_mint_quote(&quote)
-        .await
-        .expect("quote lookup")
-        .expect("quote");
-    assert_eq!(stored_quote.state(), MintQuoteState::Paid);
-    assert_eq!(
-        stored_quote.amount_issued(),
-        Amount::ZERO.with_unit(CurrencyUnit::Sat)
-    );
-    assert!(
-        localstore
-            .get_completed_operations()
-            .await
-            .expect("completed operation lookup")
-            .is_empty(),
-        "expired quote must fail before completed-operation storage"
-    );
-}
-
-#[tokio::test]
 async fn apply_federation_mint_rejects_duplicate_outputs_before_signing() {
     let runtime_config = runtime_config();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
@@ -1074,10 +968,7 @@ async fn apply_federation_mint_persists_accepted_materialization_rows() {
     assert_eq!(completed_operation.total_issued(), Amount::from(1));
     assert_eq!(completed_operation.total_redeemed(), Amount::ZERO);
     assert_eq!(completed_operation.fee_collected(), Amount::ZERO);
-    assert_eq!(
-        completed_operation.completed_at(),
-        &Some(super::super::federation_accepted_logical_time(&mint_entry))
-    );
+    assert_eq!(completed_operation.completed_at(), &Some(0));
     assert_eq!(
         completed_operation.payment_method(),
         Some(PaymentMethod::Known(KnownMethod::Bolt11))

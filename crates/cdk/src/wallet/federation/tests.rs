@@ -1138,6 +1138,7 @@ async fn persist_unpaid_bolt11_melt_quote_to_federation(
         method: PaymentMethod::Known(KnownMethod::Bolt11),
     });
     let metadata = FederationMeltQuoteMetadata {
+        created_time: 1_700_000_000,
         request_lookup_id: Some(PaymentIdentifier::PaymentHash(
             *invoice.payment_hash().as_ref(),
         )),

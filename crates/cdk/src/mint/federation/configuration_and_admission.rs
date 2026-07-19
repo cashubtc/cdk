@@ -566,7 +566,7 @@ impl FederationRuntimeConfig {
                 "federation melt quote request has empty payment request".to_string(),
             ));
         }
-        let quote = operation.into_melt_quote(quote_id_from_federation(&operation.quote)?, 1)?;
+        let quote = operation.into_melt_quote(quote_id_from_federation(&operation.quote)?)?;
         ensure_melt_quote_matches_request(&quote, &operation.request)?;
 
         Ok(())
@@ -1136,4 +1136,3 @@ impl FederationRuntimeConfig {
         })
     }
 }
-

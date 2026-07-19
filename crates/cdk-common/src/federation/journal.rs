@@ -2048,11 +2048,11 @@ mod tests {
         );
         assert_eq!(
             entry.operation_id.to_string(),
-            "a2b58bcf783e9936b317f1207a437795972134eb708499b2b3cf97d1b510b117"
+            "a5a962bcc0f62fbdb92bc6c369e9247b8681b45e753d8c6ce9d7ea9f0c015542"
         );
         assert_eq!(
             entry.order_digest.to_hex(),
-            "20222f79401c3e696d4d06fdbeb393e43c22c56a629f8878616e6afc7016a1fa"
+            "7ac847af7ed481b344917e7ed1e009ca59f8b0b5e7f03a51a5e06172cc00f925"
         );
         assert_eq!(
             FederationMaterializedStateDigest::genesis().to_hex(),

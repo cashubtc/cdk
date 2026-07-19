@@ -625,10 +625,6 @@ impl FederationSignatureShareProvenance {
             consensus_evidence,
         }
     }
-
-    pub(crate) fn completed_operation_time(self) -> u64 {
-        self.accepted_operation_index.saturating_add(1)
-    }
 }
 
 #[cfg(feature = "federation")]
@@ -1142,7 +1138,6 @@ pub(crate) async fn finalize_federation_internal_melt_quote(
     quote: &MeltQuote,
     operation_id: uuid::Uuid,
     federation_operation_id: FederationOperationId,
-    payment_time: u64,
 ) -> Result<FederationInternalMeltSettlement, Error> {
     let request = quote.request.to_string();
 
@@ -1259,11 +1254,10 @@ pub(crate) async fn finalize_federation_internal_melt_quote(
         .clone()
         .unwrap_or_else(|| cdk_common::payment::PaymentIdentifier::CustomId(quote.id.to_string()));
 
-    if let Err(err) = mint_quote.add_payment(
-        total_spent.clone(),
-        quote.id.to_string(),
-        Some(payment_time),
-    ) {
+    // The accepted operation orders this payment but carries no wall-clock
+    // evidence. Zero records an unknown time without confusing journal order
+    // with a Unix timestamp.
+    if let Err(err) = mint_quote.add_payment(total_spent.clone(), quote.id.to_string(), Some(0)) {
         tx.rollback().await?;
         return Err(err);
     }
@@ -1312,13 +1306,14 @@ pub(crate) async fn finalize_federation_internal_melt_quote(
 
     tx.delete_melt_request(&quote.id).await?;
 
+    // Consensus orders completion but does not attest its wall-clock time.
     let mut operation = mint_types::Operation::new(
         operation_id,
         mint_types::OperationKind::Melt,
         Amount::ZERO,
         melt_request_info.inputs_amount.clone().into(),
         fee_breakdown.total,
-        Some(payment_time),
+        Some(0),
         Some(locked_quote.payment_method.clone()),
     );
     operation.add_change(change_amount);
@@ -1517,8 +1512,9 @@ async fn finalize_melt_quote_inner(
     };
 
     #[cfg(feature = "federation")]
-    let federation_completed_at = signature_share_provenance
-        .map(FederationSignatureShareProvenance::completed_operation_time);
+    // Preserve standalone completion time when this is not a federation melt.
+    // An accepted federation operation provides order but no wall-clock time.
+    let federation_completed_at = signature_share_provenance.map(|_| 0);
 
     // Process change (if needed) - opens new transaction.
     #[cfg(feature = "federation")]

@@ -1414,6 +1414,7 @@ fn melt_quote_operation_with_lookup_id(
         request,
         response,
         cdk::federation::FederationMeltQuoteMetadata {
+            created_time: 1_700_000_000,
             request_lookup_id: Some(request_lookup_id),
             extra_json: None,
             estimated_blocks: None,
