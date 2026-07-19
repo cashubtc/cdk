@@ -69,7 +69,7 @@ is well established but its root cause is not.
 | 21 | `A2` | Payment-observation submit readiness remains implicit | Medium | 85% | Consensus backlog and invalid-state amplification | Not started |
 | 22 | `DB-001` | Stateful apply-time content errors remain ambiguous and halt the session | Critical | 99% | Session/global | Completed |
 | 23 | `DB-002` | Payment backends do not uniformly honor a caller-supplied recovery key | Medium liveness | 95% | Quote liveness; standalone follow-up | Not started |
-| 24 | `DB-003` | First observer can fix incorrect immutable deposit fields permanently | Critical | 99% | On-chain quote/funds | Not started |
+| 24 | `DB-003` | First observer can fix incorrect immutable deposit fields permanently | Critical | 99% | On-chain quote/funds | Completed |
 | 25 | `DB-004` | Rebuilt wallet connectors cannot supply original melt change outputs | Medium availability | 95% | Wallet melt recovery after restart | Not started |
 | 26 | `DB-005` | Payment evidence trust model is not committed or validated | High | 99% | Quote/proofs; all independent-backend liquidity | Not started |
 | 27 | `DB-006` | Shared AlephBFT inbound budget lacks per-member fairness | Medium | 90% | Consensus message admission under an authenticated flood | Not started |
@@ -498,7 +498,50 @@ legacy ID and discovery history.
 
 - **Discovery date and originating milestone:** 2026-07-18, milestone 4 (`P5`)
   confirmation.
-- **Status:** Queued
+- **Status:** Resolved on 2026-07-19 with red-before-green runtime proof
+  (commit `fix: adopt quorum-backed deposit fields over minority-fixed ones`).
+- **Confirmation (executed 2026-07-19, unmodified pre-fix worktree):** the
+  harness from this record was reinstated and run pre-fix:
+  `cargo test -p cdk-common --lib --features federation first_lying_observer_cannot_brick_deposit_fields -- --nocapture`
+  FAILED with `left: Quarantined, right: Spendable`: one first liar fixing a
+  wrong value could not be repaired by three honest observers reporting the
+  true fields, because every honest report mismatched the liar-fixed fields
+  and was discarded instead of stored.
+- **Minimal fix:** federation-only, in
+  `crates/cdk-common/src/federation/chain_observation.rs`. (1) Conflicting
+  immutable evidence is retained as a per-observer field vote instead of
+  being discarded. (2) Pre-liability, when exactly one current-epoch field
+  set (`txout`, allocation, block) reaches the spendability quorum and
+  differs from the established fields, it is adopted; the conflict
+  diagnostic is recomputed so the minority (including block-only liars)
+  stays recorded. A confirmed block is never replaced by unconfirmed votes.
+  (3) Post-liability quarantines never adopt and stay sticky with the
+  alarm. (4) `matching_confirmed_observers` counts only evidence matching
+  the established fields, so retained conflicting votes never count toward
+  spendability. (5) `FederationChainObservationState::validate` no longer
+  requires stored evidence to match the established fields; it requires
+  well-formed per-observer evidence and at least one observation backing
+  the established fields. No serialization, wire format, or standalone
+  change.
+- **Required proof (all retained in the module's test suite):** the
+  canonical harness above plus `first_lying_observer_cannot_brick_deposit_block`
+  (block-anchor variant), `lying_observer_changing_story_cannot_double_vote`
+  (equivocation cannot replace its own recorded vote),
+  `quorum_split_across_two_false_sets_adopts_the_honest_set_or_stays_closed`
+  (two-liar split adopted; no quorum set fails closed),
+  `liar_first_repair_survives_restart_replay` (durable round-trips
+  mid-repair), and
+  `post_liability_conflict_stays_sticky_with_alarm_and_never_adopts`. The
+  pre-existing liar-last repair test now documents immediate same-apply
+  repair through the retained quorum.
+- **Evaluation (2026-07-19):** `cargo test -p cdk-common --features
+  federation` — `430 passed; 0 failed`; `cargo test -p cdk-axum
+  --features federation` — `507 passed; 0 failed; 2 ignored`; `cargo test
+  -p cdk --features federation,mint --lib` — `781 passed; 0 failed`;
+  `cargo test -p cdk --lib` — `540 passed`; `cargo test -p cdk-common` —
+  `112 passed`; `cargo check -p cdk-common -p cdk -p cdk-axum
+  --no-default-features` — passed; `rustfmt --check` and clippy clean on
+  the changed code.
 - **Proposed severity and confidence:** Critical; 99% source-proven and
   demonstrated.
 - **Faulty/Byzantine actor or backend precondition:** one Byzantine observer

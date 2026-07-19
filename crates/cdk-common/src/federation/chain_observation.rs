@@ -346,8 +346,16 @@ pub struct FederationWalletUtxo {
     pub liability_alarm: bool,
 }
 
+/// Immutable UTXO field set that member observers vote on with their
+/// deposit evidence: exact output contents, allocation, and block anchor.
+type UtxoFieldSet = (TxOut, FederationAllocatedAddressRef, Option<(BlockHash, u32)>);
+
 impl FederationWalletUtxo {
     /// Number of distinct members reporting sufficient confirmations.
+    ///
+    /// Only evidence matching the established immutable fields counts toward
+    /// the spendability quorum: conflicting retained votes are diagnostic
+    /// until a quorum-backed set is adopted.
     #[must_use]
     pub fn matching_confirmed_observers(&self) -> u16 {
         self.observations
@@ -355,6 +363,8 @@ impl FederationWalletUtxo {
             .filter(|evidence| match &evidence.observation {
                 FederationChainObservation::Deposit(observation) => {
                     observation.observation_epoch == self.observation_epoch
+                        && observation.txout == self.txout
+                        && observation.allocation == self.allocation
                         && observation.confirmation.is_some_and(|confirmation| {
                             confirmation.confirmation_depth >= self.minimum_confirmations
                                 && self.block
@@ -366,6 +376,45 @@ impl FederationWalletUtxo {
             .count()
             .try_into()
             .unwrap_or(u16::MAX)
+    }
+
+    /// Quorum-backed immutable field set among current-epoch observers, when
+    /// exactly one distinct set reaches the spendability quorum. Conflicting
+    /// evidence stays recorded either way; this only determines whether one
+    /// alternative field set is backed by enough members to be adopted over
+    /// a minority-fixed one.
+    #[must_use]
+    fn quorum_backed_field_set(&self) -> Option<UtxoFieldSet> {
+        let mut votes: Vec<(UtxoFieldSet, BTreeSet<MemberId>)> = Vec::new();
+        for evidence in self.observations.values() {
+            let FederationChainObservation::Deposit(observation) = &evidence.observation else {
+                continue;
+            };
+            if observation.observation_epoch != self.observation_epoch {
+                continue;
+            }
+            let block = observation
+                .confirmation
+                .map(|confirmation| (confirmation.block_hash, confirmation.block_height));
+            let fields = (
+                observation.txout.clone(),
+                observation.allocation.clone(),
+                block,
+            );
+            match votes.iter_mut().find(|(candidate, _)| *candidate == fields) {
+                Some((_, observers)) => {
+                    observers.insert(observation.observer);
+                }
+                None => votes.push((fields, BTreeSet::from([observation.observer]))),
+            }
+        }
+        let mut quorum_sets = votes
+            .into_iter()
+            .filter(|(_, observers)| observers.len() >= usize::from(self.required_observers));
+        match (quorum_sets.next(), quorum_sets.next()) {
+            (Some(((txout, allocation, block), _)), None) => Some((txout, allocation, block)),
+            _ => None,
+        }
     }
 
     /// Distinct diagnostic source identities represented in accepted evidence.
@@ -678,8 +727,6 @@ impl FederationChainObservationState {
         if utxo.required_observers != required_observers
             || utxo.minimum_confirmations != minimum_confirmations
             || utxo.outpoint != observation.outpoint
-            || utxo.txout != observation.txout
-            || utxo.allocation != observation.allocation
         {
             quarantine(utxo, observation.observer);
             self.validate()?;
@@ -717,20 +764,6 @@ impl FederationChainObservationState {
             ));
         }
 
-        if let Some(confirmation) = observation.confirmation {
-            match utxo.block {
-                Some(block) if block != (confirmation.block_hash, confirmation.block_height) => {
-                    quarantine(utxo, observation.observer);
-                    self.validate()?;
-                    return Ok(FederationChainObservationOutcome::Quarantined);
-                }
-                None => {
-                    utxo.block = Some((confirmation.block_hash, confirmation.block_height));
-                }
-                Some(_) => {}
-            }
-        }
-
         if let Some(existing) = utxo.observations.get(&observation.observer) {
             let FederationChainObservation::Deposit(existing_observation) = &existing.observation
             else {
@@ -748,8 +781,70 @@ impl FederationChainObservationState {
                 return Ok(FederationChainObservationOutcome::Existing(utxo.state));
             }
         }
+
+        // Conflicting immutable evidence is retained as a per-observer field
+        // vote instead of being discarded: a quorum-backed field set can then
+        // be adopted over a minority-fixed one before liability issuance.
+        let fields_match =
+            utxo.txout == observation.txout && utxo.allocation == observation.allocation;
+        let block_conflict = match (utxo.block, observation.confirmation) {
+            (Some(block), Some(confirmation)) => {
+                block != (confirmation.block_hash, confirmation.block_height)
+            }
+            _ => false,
+        };
+        if fields_match && !block_conflict {
+            if let Some(confirmation) = observation.confirmation {
+                if utxo.block.is_none() {
+                    utxo.block = Some((confirmation.block_hash, confirmation.block_height));
+                }
+            }
+        }
         utxo.observations.insert(observation.observer, evidence);
         utxo.observation_epoch = observation.observation_epoch;
+        if !fields_match || block_conflict {
+            quarantine(utxo, observation.observer);
+        }
+
+        // Pre-liability quorum adoption: when exactly one current-epoch
+        // field set reaches the spendability quorum and it differs from the
+        // established fields, adopt it and recompute the conflict diagnostic
+        // so a first liar cannot permanently fix incorrect fields. A
+        // confirmed block is never replaced by unconfirmed votes.
+        if !utxo.liability_issued {
+            if let Some((txout, allocation, block)) = utxo.quorum_backed_field_set() {
+                let block_adoption_allowed = block.is_some() || utxo.block.is_none();
+                if block_adoption_allowed
+                    && (utxo.txout != txout || utxo.allocation != allocation || utxo.block != block)
+                {
+                    utxo.txout = txout;
+                    utxo.allocation = allocation;
+                    utxo.block = block;
+                    utxo.conflicting_observers = utxo
+                        .observations
+                        .values()
+                        .filter_map(|evidence| match &evidence.observation {
+                            FederationChainObservation::Deposit(observation)
+                                if observation.observation_epoch == utxo.observation_epoch
+                                    && (observation.txout != utxo.txout
+                                        || observation.allocation != utxo.allocation
+                                        || observation.confirmation.is_some_and(
+                                            |confirmation| {
+                                                Some((
+                                                    confirmation.block_hash,
+                                                    confirmation.block_height,
+                                                )) != utxo.block
+                                            },
+                                        )) =>
+                            {
+                                Some(observation.observer)
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                }
+            }
+        }
 
         // One member cannot permanently quarantine accepted funds: while no
         // liability is issued, a matching observer quorum repairs the UTXO
@@ -780,6 +875,11 @@ impl FederationChainObservationState {
         }
         let outcome_state = utxo.state;
         self.validate()?;
+        if outcome_state == FederationWalletUtxoState::Quarantined
+            && (!fields_match || block_conflict)
+        {
+            return Ok(FederationChainObservationOutcome::Quarantined);
+        }
         Ok(FederationChainObservationOutcome::Updated(outcome_state))
     }
 
@@ -1008,17 +1108,24 @@ impl FederationChainObservationState {
                 observation.validate()?;
                 if observer != &observation.observer
                     || observation.outpoint != utxo.outpoint
-                    || observation.allocation != utxo.allocation
-                    || observation.txout != utxo.txout
                     || observation.observation_epoch > utxo.observation_epoch
                 {
                     return Err(invalid_state("wallet UTXO evidence identity mismatch"));
                 }
-                if let Some(confirmation) = observation.confirmation {
-                    if utxo.block != Some((confirmation.block_hash, confirmation.block_height)) {
-                        return Err(invalid_state("wallet UTXO block evidence mismatch"));
-                    }
-                }
+            }
+            // Conflicting per-observer field votes are retained so a
+            // quorum-backed set can be adopted; the established fields must
+            // still be backed by at least one stored observation.
+            let established_fields_backed = utxo.observations.values().any(|evidence| {
+                matches!(
+                    &evidence.observation,
+                    FederationChainObservation::Deposit(observation)
+                        if observation.txout == utxo.txout
+                            && observation.allocation == utxo.allocation
+                )
+            });
+            if !established_fields_backed {
+                return Err(invalid_state("wallet UTXO fields have no backing evidence"));
             }
             for (observer, evidence) in &utxo.reorg_observations {
                 let FederationChainObservation::Reorg(observation) = &evidence.observation else {
@@ -1928,7 +2035,10 @@ mod tests {
         );
 
         // One Byzantine observer reports a conflicting value for the same
-        // public outpoint. The conflict still fails closed.
+        // public outpoint. The conflicting vote is retained and recorded,
+        // and because the honest quorum's stored votes already back the
+        // established fields, the UTXO repairs within the same apply instead
+        // of staying quarantined.
         let mut conflict = observation(
             5,
             Some(block(9, 100, 2)),
@@ -1946,11 +2056,23 @@ mod tests {
                 5,
             )
             .expect("conflict materializes");
-        assert_eq!(outcome, FederationChainObservationOutcome::Quarantined);
         assert_eq!(
-            state.utxo(outpoint(3)).expect("quarantined UTXO").state,
-            FederationWalletUtxoState::Quarantined
+            outcome,
+            FederationChainObservationOutcome::Updated(FederationWalletUtxoState::Spendable)
         );
+        {
+            let utxo = state.utxo(outpoint(3)).expect("repaired UTXO");
+            assert_eq!(
+                utxo.state,
+                FederationWalletUtxoState::Spendable,
+                "the quorum-backed honest fields must repair the conflict immediately"
+            );
+            assert!(
+                utxo.conflicting_observers.contains(&member(5)),
+                "the conflicting observer stays recorded"
+            );
+            assert_eq!(utxo.txout.value, Amount::from_sat(50_000));
+        }
 
         // Honest observers keep reporting the true fields with deepening
         // confirmations; the honest quorum must repair the UTXO.
@@ -1976,5 +2098,276 @@ mod tests {
                 .is_some(),
             "a repaired UTXO must fund quote credit again"
         );
+    }
+
+    #[test]
+    fn first_lying_observer_cannot_brick_deposit_fields() {
+        let mut state = FederationChainObservationState::new();
+
+        // A Byzantine observer is the first to report a real public outpoint
+        // but claims an incorrect value while keeping the correct allocated
+        // script, so its report fixes the UTXO's immutable fields.
+        let mut liar = observation(
+            1,
+            Some(block(9, 100, 2)),
+            FederationChainSourceScope::Independent,
+        );
+        liar.txout.value = Amount::from_sat(49_999);
+        apply_with_policy(&mut state, &liar, 2, 2, 2);
+
+        // The honest quorum then reports the true fields for the same
+        // outpoint.
+        for (operation, observer) in [(3, 2), (4, 3)] {
+            let honest = observation(
+                observer,
+                Some(block(9, 100, 3)),
+                FederationChainSourceScope::Independent,
+            );
+            apply_with_policy(&mut state, &honest, 2, 2, operation);
+        }
+
+        // The quorum-backed fields must be adopted over the minority-fixed
+        // ones: the UTXO becomes spendable with the true value, and the liar
+        // is the recorded conflict.
+        let utxo = state.utxo(outpoint(3)).expect("utxo");
+        assert_eq!(
+            utxo.state,
+            FederationWalletUtxoState::Spendable,
+            "an honest quorum must repair a liar-first quarantine"
+        );
+        assert_eq!(utxo.txout.value, Amount::from_sat(50_000));
+        assert!(
+            utxo.conflicting_observers.contains(&member(1)),
+            "the first liar must be the recorded conflict"
+        );
+        assert!(!utxo.conflicting_observers.contains(&member(2)));
+        assert!(!utxo.conflicting_observers.contains(&member(3)));
+        assert!(
+            state
+                .quote_payment_at_or_before("quote-1", u64::MAX)
+                .expect("credit query")
+                .is_some(),
+            "an adopted UTXO must fund quote credit"
+        );
+    }
+
+    #[test]
+    fn first_lying_observer_cannot_brick_deposit_block() {
+        let mut state = FederationChainObservationState::new();
+
+        // Liar-first variant on the block anchor: the value is correct but
+        // the claimed block is wrong.
+        let mut liar = observation(
+            1,
+            Some(block(8, 100, 2)),
+            FederationChainSourceScope::Independent,
+        );
+        liar.confirmation = Some(block(8, 100, 2));
+        apply_with_policy(&mut state, &liar, 2, 2, 2);
+
+        for (operation, observer) in [(3, 2), (4, 3)] {
+            let honest = observation(
+                observer,
+                Some(block(9, 100, 3)),
+                FederationChainSourceScope::Independent,
+            );
+            apply_with_policy(&mut state, &honest, 2, 2, operation);
+        }
+
+        let utxo = state.utxo(outpoint(3)).expect("utxo");
+        assert_eq!(utxo.state, FederationWalletUtxoState::Spendable);
+        assert_eq!(
+            utxo.block,
+            Some((BlockHash::from_byte_array([9; 32]), 100,)),
+            "the quorum-backed block must replace the liar's anchor"
+        );
+        assert!(utxo.conflicting_observers.contains(&member(1)));
+    }
+
+    #[test]
+    fn lying_observer_changing_story_cannot_double_vote() {
+        let mut state = FederationChainObservationState::new();
+
+        // The liar reports one false value, then equivocates with a second
+        // false value for the same outpoint.
+        let mut first_story = observation(
+            1,
+            Some(block(9, 100, 2)),
+            FederationChainSourceScope::Independent,
+        );
+        first_story.txout.value = Amount::from_sat(49_999);
+        apply_with_policy(&mut state, &first_story, 2, 2, 2);
+        let mut second_story = first_story.clone();
+        second_story.txout.value = Amount::from_sat(48_000);
+        let outcome = state
+            .apply_deposit(
+                &second_story,
+                &allocation().0,
+                ScriptBuf::from_bytes(vec![0x51]).as_script(),
+                2,
+                2,
+                FederationOperationId::from_bytes([3; 32]),
+                3,
+            )
+            .expect("equivocation materializes");
+        assert_eq!(outcome, FederationChainObservationOutcome::Quarantined);
+        assert_eq!(
+            state.utxo(outpoint(3)).expect("utxo").txout.value,
+            Amount::from_sat(49_999),
+            "an equivocating observer cannot replace its own recorded vote"
+        );
+
+        // The honest quorum repairs the UTXO; the liar's first story is the
+        // recorded conflict and cannot double-vote for either false set.
+        for (operation, observer) in [(4, 2), (5, 3)] {
+            let honest = observation(
+                observer,
+                Some(block(9, 100, 3)),
+                FederationChainSourceScope::Independent,
+            );
+            apply_with_policy(&mut state, &honest, 2, 2, operation);
+        }
+        let utxo = state.utxo(outpoint(3)).expect("utxo");
+        assert_eq!(utxo.state, FederationWalletUtxoState::Spendable);
+        assert_eq!(utxo.txout.value, Amount::from_sat(50_000));
+        assert!(utxo.conflicting_observers.contains(&member(1)));
+    }
+
+    #[test]
+    fn quorum_split_across_two_false_sets_adopts_the_honest_set_or_stays_closed() {
+        // Two liars split across two false sets; the honest quorum still
+        // reaches the spendability threshold and is adopted.
+        let mut state = FederationChainObservationState::new();
+        let mut false_one = observation(
+            1,
+            Some(block(9, 100, 2)),
+            FederationChainSourceScope::Independent,
+        );
+        false_one.txout.value = Amount::from_sat(49_999);
+        apply_with_policy(&mut state, &false_one, 3, 2, 2);
+        let mut false_two = observation(
+            2,
+            Some(block(9, 100, 2)),
+            FederationChainSourceScope::Independent,
+        );
+        false_two.txout.value = Amount::from_sat(48_000);
+        apply_with_policy(&mut state, &false_two, 3, 2, 3);
+        for (operation, observer) in [(4, 3), (5, 4), (6, 5)] {
+            let honest = observation(
+                observer,
+                Some(block(9, 100, 3)),
+                FederationChainSourceScope::Independent,
+            );
+            apply_with_policy(&mut state, &honest, 3, 2, operation);
+        }
+        let utxo = state.utxo(outpoint(3)).expect("utxo");
+        assert_eq!(utxo.state, FederationWalletUtxoState::Spendable);
+        assert_eq!(utxo.txout.value, Amount::from_sat(50_000));
+        assert!(utxo.conflicting_observers.contains(&member(1)));
+        assert!(utxo.conflicting_observers.contains(&member(2)));
+
+        // Without any set reaching the quorum the UTXO fails closed and
+        // stays quarantined with the conflict recorded.
+        let mut stuck = FederationChainObservationState::new();
+        apply_with_policy(&mut stuck, &false_one, 3, 2, 2);
+        apply_with_policy(&mut stuck, &false_two, 3, 2, 3);
+        let honest = observation(
+            3,
+            Some(block(9, 100, 3)),
+            FederationChainSourceScope::Independent,
+        );
+        apply_with_policy(&mut stuck, &honest, 3, 2, 4);
+        let utxo = stuck.utxo(outpoint(3)).expect("stuck utxo");
+        assert_eq!(
+            utxo.state,
+            FederationWalletUtxoState::Quarantined,
+            "no quorum-backed field set must keep the UTXO quarantined"
+        );
+        assert!(stuck
+            .quote_payment_at_or_before("quote-1", u64::MAX)
+            .expect("credit query")
+            .is_none());
+    }
+
+    #[test]
+    fn liar_first_repair_survives_restart_replay() {
+        let mut state = FederationChainObservationState::new();
+        let mut liar = observation(
+            1,
+            Some(block(9, 100, 2)),
+            FederationChainSourceScope::Independent,
+        );
+        liar.txout.value = Amount::from_sat(49_999);
+        apply_with_policy(&mut state, &liar, 2, 2, 2);
+
+        // Restart from the durable bytes with only the liar's fields fixed.
+        let bytes = state.to_bytes().expect("serialize liar-first state");
+        let mut replayed = FederationChainObservationState::from_bytes(&bytes)
+            .expect("liar-first state must validate after replay");
+        let honest = observation(
+            2,
+            Some(block(9, 100, 3)),
+            FederationChainSourceScope::Independent,
+        );
+        apply_with_policy(&mut replayed, &honest, 2, 2, 3);
+
+        // Replay again mid-repair, then finish the honest quorum.
+        let bytes = replayed.to_bytes().expect("serialize mid-repair state");
+        let mut replayed = FederationChainObservationState::from_bytes(&bytes)
+            .expect("mid-repair state must validate after replay");
+        let honest = observation(
+            3,
+            Some(block(9, 100, 4)),
+            FederationChainSourceScope::Independent,
+        );
+        apply_with_policy(&mut replayed, &honest, 2, 2, 4);
+        let utxo = replayed.utxo(outpoint(3)).expect("utxo");
+        assert_eq!(utxo.state, FederationWalletUtxoState::Spendable);
+        assert_eq!(utxo.txout.value, Amount::from_sat(50_000));
+        assert!(utxo.conflicting_observers.contains(&member(1)));
+    }
+
+    #[test]
+    fn post_liability_conflict_stays_sticky_with_alarm_and_never_adopts() {
+        let mut state = FederationChainObservationState::new();
+        for (operation, observer) in [(2, 1), (3, 2)] {
+            let evidence = observation(
+                observer,
+                Some(block(9, 100, 2)),
+                FederationChainSourceScope::Independent,
+            );
+            apply_with_policy(&mut state, &evidence, 2, 2, operation);
+        }
+        let payment = state
+            .quote_payment_at_or_before("quote-1", u64::MAX)
+            .expect("payment query")
+            .expect("spendable payment");
+        state
+            .mark_quote_liability_issued_at_or_before(
+                "quote-1",
+                u64::MAX,
+                payment.amount_sat,
+                payment.payment_id,
+            )
+            .expect("issue liability");
+
+        // A late liar cannot adopt anything after liability: the conflict
+        // stays quarantined with the alarm raised.
+        let mut liar = observation(
+            3,
+            Some(block(9, 100, 2)),
+            FederationChainSourceScope::Independent,
+        );
+        liar.txout.value = Amount::from_sat(49_999);
+        apply_with_policy(&mut state, &liar, 2, 2, 4);
+        let utxo = state.utxo(outpoint(3)).expect("utxo");
+        assert_eq!(utxo.state, FederationWalletUtxoState::Quarantined);
+        assert!(utxo.liability_alarm);
+        assert_eq!(
+            utxo.txout.value,
+            Amount::from_sat(50_000),
+            "post-liability fields never adopt a minority set"
+        );
+        assert!(utxo.conflicting_observers.contains(&member(3)));
     }
 }
