@@ -194,6 +194,12 @@ impl FederationBarkVtxoLocator {
     }
 }
 
+impl fmt::Display for FederationBarkVtxoLocator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}:{}:{}", self.role, self.index, self.version)
+    }
+}
+
 /// Signed proof that one member durably stored an encrypted receive secret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -321,6 +327,49 @@ pub struct FederationBarkVtxoOutput {
     /// Exact output value in satoshis.
     pub amount: Amount,
     /// Commitment to the canonical output policy or VTXO template.
+    pub artifact_hash: FederationBarkDigest,
+}
+
+/// Consensus-authoritative lifecycle state of one Bark VTXO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationBarkVtxoState {
+    /// The VTXO was observed but is not yet safe to spend.
+    Observed,
+    /// The VTXO is accepted as spendable federation collateral.
+    Spendable,
+    /// An accepted action plan exclusively reserved the VTXO.
+    Reserved,
+    /// The accepted plan may have spent the VTXO externally.
+    PendingSpend,
+    /// The VTXO was terminally spent.
+    Spent,
+    /// The VTXO is committed to an emergency exit.
+    Exiting,
+    /// The emergency exit is sufficiently confirmed.
+    Exited,
+}
+
+/// Exact VTXO state mutation proven by one accepted Bark transition.
+///
+/// The canonical VTXO bytes are carried once in the transition's artifact set
+/// and selected by `artifact_hash`. This mapping lets the CDK projection remain
+/// independent of Bark's internal serialization and database schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkVtxoTransition {
+    /// Canonical VTXO identifier.
+    pub vtxo_id: FederationBarkVtxoId,
+    /// Consensus-owned custody locator.
+    pub locator: FederationBarkVtxoLocator,
+    /// Exact VTXO value in satoshis.
+    pub amount: Amount,
+    /// Required prior state, or `None` when this transition creates the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_state: Option<FederationBarkVtxoState>,
+    /// New authoritative state.
+    pub new_state: FederationBarkVtxoState,
+    /// Hash of the canonical `Vtxo` artifact in this transition.
     pub artifact_hash: FederationBarkDigest,
 }
 
@@ -525,6 +574,12 @@ pub struct FederationBarkActionTransition {
     pub external_id: FederationBarkExternalId,
     /// Exact sorted result artifacts.
     pub artifacts: Vec<FederationBarkArtifact>,
+    /// Exact sorted VTXO state mutations proven by the result.
+    ///
+    /// Defaulting this additive field preserves decoding of the frozen v1 Bark
+    /// operation shape emitted before the SQL projection was installed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vtxo_transitions: Vec<FederationBarkVtxoTransition>,
 }
 
 /// Conservative status reported by one federation member.
@@ -719,6 +774,18 @@ impl FederationBarkOperation {
             Self::ActionPlan(operation) => operation.quote.as_deref(),
             Self::ActionTransition(operation) => operation.quote.as_deref(),
             Self::MemberObservation(operation) => operation.quote.as_deref(),
+        }
+    }
+
+    /// Return the Lightning payment hash bound to this action lineage.
+    #[must_use]
+    pub const fn payment_hash(&self) -> Option<FederationBarkDigest> {
+        match self {
+            Self::ReceiveIntent(operation) => Some(operation.payment_hash),
+            Self::ReceivePrepared(operation) => Some(operation.payment_hash),
+            Self::ActionPlan(operation) => operation.payment_hash,
+            Self::ActionTransition(operation) => operation.payment_hash,
+            Self::MemberObservation(operation) => operation.payment_hash,
         }
     }
 
@@ -1045,11 +1112,49 @@ impl FederationBarkActionTransition {
         }
         ensure_count("Bark signer set", self.signer_set.len(), true)?;
         ensure_count("Bark artifacts", self.artifacts.len(), true)?;
+        ensure_count("Bark VTXO transitions", self.vtxo_transitions.len(), true)?;
         ensure_members_sorted_unique(&self.signer_set)?;
         ensure_strictly_sorted("Bark artifacts", &self.artifacts)?;
+        ensure_strictly_sorted("Bark VTXO transitions", &self.vtxo_transitions)?;
         validate_artifacts(&self.artifacts)?;
+        for transition in &self.vtxo_transitions {
+            transition.locator.validate()?;
+            if transition.amount == Amount::ZERO {
+                return Err(invalid_bark("Bark VTXO transition amount must be non-zero"));
+            }
+            let artifact_matches = self.artifacts.iter().any(|artifact| {
+                artifact.kind == FederationBarkArtifactKind::Vtxo
+                    && artifact.hash == transition.artifact_hash
+            });
+            if !artifact_matches {
+                return Err(invalid_bark(
+                    "Bark VTXO transition does not reference a canonical VTXO artifact",
+                ));
+            }
+            if !valid_vtxo_state_transition(transition.previous_state, transition.new_state) {
+                return Err(invalid_bark("invalid Bark VTXO state transition"));
+            }
+        }
         Ok(())
     }
+}
+
+fn valid_vtxo_state_transition(
+    previous: Option<FederationBarkVtxoState>,
+    new: FederationBarkVtxoState,
+) -> bool {
+    use FederationBarkVtxoState::{
+        Exited, Exiting, Observed, PendingSpend, Reserved, Spendable, Spent,
+    };
+
+    matches!(
+        (previous, new),
+        (None, Observed | Spendable)
+            | (Some(Observed), Spendable | Exiting)
+            | (Some(Reserved), PendingSpend | Spent | Spendable | Exiting)
+            | (Some(PendingSpend), Spent | Spendable | Exiting)
+            | (Some(Exiting), Exited)
+    )
 }
 
 impl FederationBarkMemberObservation {

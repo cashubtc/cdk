@@ -676,6 +676,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_bark_projection_persistence() {
+        cdk_common::database::mint::test::federation_bark_projection_persistence(
+            provide_mint_db(unique_federation_test_id(
+                "federation_bark_projection_persistence",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_signature_share_persistence() {
         cdk_common::database::mint::test::federation_signature_share_persistence(
             provide_mint_db(unique_federation_test_id(
@@ -885,6 +897,12 @@ mod test {
             "federation_dkg_ceremonies",
             "federation_frost_dkg_records",
             "federation_frost_wallet_config",
+            "federation_bark_actions",
+            "federation_bark_vtxos",
+            "federation_bark_derivation_allocations",
+            "federation_bark_reservations",
+            "federation_bark_transitions",
+            "federation_bark_observations",
         ] {
             assert!(
                 table_names.contains(table),
@@ -933,6 +951,14 @@ mod test {
             "idx_federation_dkg_activations_member",
             "idx_federation_frost_dkg_records_kind",
             "idx_federation_frost_wallet_config_kind",
+            "idx_federation_bark_actions_phase",
+            "idx_federation_bark_vtxos_state",
+            "idx_federation_bark_vtxos_reservation",
+            "idx_federation_bark_allocations_action",
+            "idx_federation_bark_reservations_action",
+            "idx_federation_bark_reservations_operation",
+            "idx_federation_bark_transitions_action",
+            "idx_federation_bark_observations_action",
             "blind_signature_quote_id_index",
         ] {
             assert!(
@@ -1033,9 +1059,78 @@ mod test {
                 "20260712000000_create_federation_schema.sql".to_owned(),
                 "20260713000000_allow_federation_payment_observation_revisions.sql".to_owned(),
                 "20260714000000_chunk_federation_aleph_bft_backups.sql".to_owned(),
+                "20260719000000_create_federation_bark_projection.sql".to_owned(),
             ]
         );
 
+        connection_handle.abort();
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn pre_bark_postgres_database_upgrades_with_only_the_forward_migration() {
+        let test_id = unique_federation_test_id("pre_bark_upgrade");
+        let db_url = test_db_url_with_schema(&test_id);
+        let current = MintPgDatabase::new(db_url.as_str())
+            .await
+            .expect("create current PostgreSQL database");
+        drop(current);
+
+        let config = PgConfig::from(db_url.as_str());
+        let schema = config.schema.clone().expect("test schema");
+        let (client, connection) = connect(&config.url, NoTls)
+            .await
+            .expect("postgres connection");
+        let connection_handle = tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute(&format!(
+                r#"
+                DROP TABLE "{schema}".federation_bark_observations;
+                DROP TABLE "{schema}".federation_bark_transitions;
+                DROP TABLE "{schema}".federation_bark_reservations;
+                DROP TABLE "{schema}".federation_bark_derivation_allocations;
+                DROP TABLE "{schema}".federation_bark_vtxos;
+                DROP TABLE "{schema}".federation_bark_actions;
+                DELETE FROM "{schema}".migrations
+                WHERE name = '20260719000000_create_federation_bark_projection.sql';
+                "#
+            ))
+            .await
+            .expect("rewind fixture to the pre-Bark schema");
+
+        let upgraded = MintPgDatabase::new(db_url.as_str())
+            .await
+            .expect("apply only the forward Bark migration");
+        drop(upgraded);
+        let rows = client
+            .query(
+                r#"
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = $1
+                  AND table_name LIKE 'federation_bark_%'
+                ORDER BY table_name
+                "#,
+                &[&schema],
+            )
+            .await
+            .expect("query upgraded Bark tables");
+        assert_eq!(rows.len(), 6);
+        let proof_count = client
+            .query_one(
+                r#"
+                SELECT COUNT(*)
+                FROM information_schema.tables
+                WHERE table_schema = $1 AND table_name = 'proof'
+                "#,
+                &[&schema],
+            )
+            .await
+            .expect("query historical standalone table")
+            .get::<_, i64>(0);
+        assert_eq!(proof_count, 1);
         connection_handle.abort();
     }
 

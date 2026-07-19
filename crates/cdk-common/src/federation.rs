@@ -9,6 +9,7 @@ use thiserror::Error;
 mod address_allocation;
 mod backup;
 mod bark_operation;
+mod bark_projection;
 mod chain_observation;
 mod checkpoint;
 mod config;
@@ -67,11 +68,17 @@ pub use self::bark_operation::{
     FederationBarkOperationRecord, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
     FederationBarkReceiveProof, FederationBarkReceiveSecretAcknowledgement,
     FederationBarkSemanticPhase, FederationBarkUnit, FederationBarkVtxoId, FederationBarkVtxoInput,
-    FederationBarkVtxoLocator, FederationBarkVtxoOutput, FEDERATION_BARK_AUTHORIZATION_VERSION,
+    FederationBarkVtxoLocator, FederationBarkVtxoOutput, FederationBarkVtxoState,
+    FederationBarkVtxoTransition, FEDERATION_BARK_AUTHORIZATION_VERSION,
     FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_BARK_ARTIFACT_AGGREGATE_BYTES,
     FEDERATION_MAX_BARK_ARTIFACT_BYTES, FEDERATION_MAX_BARK_AUTHORIZATION_BYTES,
     FEDERATION_MAX_BARK_COLLECTION_ENTRIES, FEDERATION_MAX_BARK_INVOICE_BYTES,
     FEDERATION_MAX_BARK_OPERATION_BYTES,
+};
+pub use self::bark_projection::{
+    FederationBarkActionRecord, FederationBarkDerivationAllocationRecord,
+    FederationBarkObservationRecord, FederationBarkProjectionSnapshot,
+    FederationBarkReservationRecord, FederationBarkTransitionRecord, FederationBarkVtxoRecord,
 };
 pub use self::chain_observation::{
     FederationAllocatedAddressRef, FederationChainObservation, FederationChainObservationEvidence,

@@ -1,8 +1,11 @@
 //! Federation journal storage tests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::sync::Arc;
+
+use bitcoin::hashes::{sha256, Hash};
+use bitcoin::Network;
 
 use crate::database::mint::{
     Database, FederationAlephBftBackupMetadata, FederationJournalDatabase,
@@ -10,13 +13,20 @@ use crate::database::mint::{
 use crate::error::{Error, ErrorResponse};
 use crate::federation::{
     FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
-    FederationApplicationDigest, FederationApplicationState, FederationCheckpoint,
-    FederationCheckpointFrontier, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationConfig, FederationConfigDigest,
-    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusRuntime,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgKeysetSpec,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationApplicationDigest, FederationApplicationState, FederationBarkActionId,
+    FederationBarkActionKind, FederationBarkActionPlan, FederationBarkActionTransition,
+    FederationBarkArtifact, FederationBarkArtifactKind, FederationBarkDigest,
+    FederationBarkExternalId, FederationBarkOperation, FederationBarkReceiveIntent,
+    FederationBarkReceivePrepared, FederationBarkReceiveProof,
+    FederationBarkReceiveSecretAcknowledgement, FederationBarkSemanticPhase, FederationBarkUnit,
+    FederationBarkVtxoId, FederationBarkVtxoInput, FederationBarkVtxoLocator,
+    FederationBarkVtxoOutput, FederationBarkVtxoState, FederationBarkVtxoTransition,
+    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfig,
+    FederationConfigDigest, FederationConfigSnapshot, FederationConsensusItem,
+    FederationConsensusRuntime, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
+    FederationDkgKeysetSpec, FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
     FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
     FederationDkgPublicCeremony, FederationDkgSecretShareRequest, FederationDkgSetupMethod,
     FederationDkgSetupState, FederationDkgTranscript, FederationDkgTranscriptSignature,
@@ -29,11 +39,12 @@ use crate::federation::{
     FederationJournalConsensusEvidence, FederationJournalEntry, FederationMaterializedStateDigest,
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation,
     FederationOnchainConfirmationPolicy, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationContext, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportStatus,
-    FederationSignatureShareRecord, InMemoryFederationJournal, MemberConfigPrivate,
-    MemberConfigPublic, MemberId, ThresholdParams, FEDERATION_CHECKPOINT_VERSION,
+    FederationOperationId, FederationOperationSignature, FederationOperationStatus,
+    FederationPaymentObservation, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportStatus, FederationSignatureShareRecord,
+    InMemoryFederationJournal, MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
+    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_CHECKPOINT_VERSION,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote, Operation, OperationKind};
 use crate::mint_url::MintUrl;
@@ -1924,6 +1935,449 @@ where
         .expect("load keyed completed operations");
     assert_eq!(completed_operations.len(), 1);
     assert_eq!(*completed_operations[0].id(), selected_operation_id);
+}
+
+fn bark_digest(seed: u8) -> FederationBarkDigest {
+    FederationBarkDigest::from_bytes([seed; 32]).expect("non-zero Bark digest")
+}
+
+fn bark_action(seed: u8) -> FederationBarkActionId {
+    FederationBarkActionId::from_bytes([seed; 32]).expect("non-zero Bark action")
+}
+
+fn bark_vtxo(seed: u8) -> FederationBarkVtxoId {
+    FederationBarkVtxoId::from_bytes([seed; 32]).expect("non-zero Bark VTXO")
+}
+
+fn bark_external(seed: u8) -> FederationBarkExternalId {
+    FederationBarkExternalId::from_bytes([seed; 32]).expect("non-zero Bark external ID")
+}
+
+fn bark_artifact(kind: FederationBarkArtifactKind, bytes: &[u8]) -> FederationBarkArtifact {
+    FederationBarkArtifact {
+        kind,
+        hash: FederationBarkDigest::from_bytes(sha256::Hash::hash(bytes).to_byte_array())
+            .expect("non-zero artifact hash"),
+        bytes: bytes.to_vec(),
+    }
+}
+
+fn append_bark_operation(
+    journal: &mut InMemoryFederationJournal,
+    operation: FederationBarkOperation,
+) -> FederationJournalEntry {
+    let envelope =
+        FederationOperationEnvelope::new(federation_id(), FederationOperation::Bark(operation))
+            .authorize(&private_member(1))
+            .expect("authorize Bark operation");
+    appended(journal.append(envelope).expect("append Bark operation"))
+}
+
+async fn apply_bark_entry<DB>(db: &DB, entry: &FederationJournalEntry)
+where
+    DB: Database<crate::database::Error>,
+{
+    let FederationOperation::Bark(operation) = &entry.envelope.operation else {
+        panic!("expected Bark operation");
+    };
+    let mut tx = Database::begin_transaction(db)
+        .await
+        .expect("begin Bark projection transaction");
+    tx.apply_federation_bark_operation(entry, operation)
+        .await
+        .expect("apply Bark projection operation");
+    tx.commit().await.expect("commit Bark projection operation");
+}
+
+/// Assert the Bark SQL state machine is deterministic, replay-safe, and fully projected.
+pub async fn federation_bark_projection_persistence<DB>(db: DB)
+where
+    DB: Database<crate::database::Error> + FederationJournalDatabase<Err = crate::database::Error>,
+{
+    let mut journal = InMemoryFederationJournal::new();
+    let action_id = bark_action(1);
+    let payment_hash = bark_digest(2);
+    let input_locator = FederationBarkVtxoLocator::vtxo_custody(7);
+    let output_locator = FederationBarkVtxoLocator::vtxo_custody(8);
+    let input_vtxo = bark_vtxo(8);
+    let output_vtxo = bark_vtxo(9);
+    let quote = "bark-projection-quote".to_string();
+
+    let intent = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ReceiveIntent(FederationBarkReceiveIntent {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: quote.clone(),
+            actor: MemberId::new(1).expect("member"),
+            cashu_amount: Amount::from(100),
+            gross_amount: Amount::from(100),
+            receive_fee: Amount::ZERO,
+            minimum_net_amount: Amount::from(100),
+            unit: FederationBarkUnit::Sat,
+            description_hash: bark_digest(3),
+            payment_hash,
+            preimage_commitment: bark_digest(4),
+            secret_acknowledgements: vec![FederationBarkReceiveSecretAcknowledgement {
+                member: MemberId::new(1).expect("member"),
+                record_hash: bark_digest(5),
+                signature: FederationOperationSignature::from_slice(&[6; 64])
+                    .expect("signature bytes"),
+            }],
+            destination: input_locator,
+            mailbox_scope: bark_digest(7),
+            ark_server: bark_digest(8),
+            network: Network::Regtest,
+            minimum_cltv_delta: 18,
+            fee_policy_version: 1,
+            anti_dos_policy_version: 1,
+            receive_proof: FederationBarkReceiveProof::NoProof,
+            expires_at: 1_900_000_000,
+        }),
+    );
+    apply_bark_entry(&db, &intent).await;
+
+    let prepared = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ReceivePrepared(FederationBarkReceivePrepared {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: quote.clone(),
+            actor: MemberId::new(1).expect("member"),
+            intent_operation_id: intent.operation_id,
+            invoice: "lnbcrt1barkprojection".to_string(),
+            payment_hash,
+            gross_amount: Amount::from(100),
+            expected_net_amount: Amount::from(100),
+            network: Network::Regtest,
+            expires_at: 1_900_000_000,
+            final_cltv_delta: 18,
+            receive_fee: Amount::ZERO,
+            request_hash: bark_digest(9),
+            result_hash: bark_digest(10),
+            external_id: bark_external(11),
+        }),
+    );
+    apply_bark_entry(&db, &prepared).await;
+
+    let input_artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, b"input-vtxo");
+    let ready = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some(quote.clone()),
+            phase: FederationBarkSemanticPhase::ReceiveHtlcsReady,
+            actor: MemberId::new(1).expect("member"),
+            plan_operation_id: prepared.operation_id,
+            predecessor_operation_id: prepared.operation_id,
+            payment_hash: Some(payment_hash),
+            attempt: 1,
+            signer_set: vec![
+                MemberId::new(1).expect("member"),
+                MemberId::new(2).expect("member"),
+            ],
+            request_hash: bark_digest(12),
+            result_hash: bark_digest(13),
+            external_id: bark_external(14),
+            artifacts: vec![input_artifact.clone()],
+            vtxo_transitions: vec![FederationBarkVtxoTransition {
+                vtxo_id: input_vtxo,
+                locator: input_locator,
+                amount: Amount::from(100),
+                previous_state: None,
+                new_state: FederationBarkVtxoState::Spendable,
+                artifact_hash: input_artifact.hash,
+            }],
+        }),
+    );
+    apply_bark_entry(&db, &ready).await;
+
+    let plan_artifact = bark_artifact(FederationBarkArtifactKind::ArkRequest, b"claim-plan");
+    let output_artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, b"output-vtxo");
+    let plan = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionPlan(FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some(quote.clone()),
+            kind: FederationBarkActionKind::IncomingClaim,
+            actor: MemberId::new(1).expect("member"),
+            predecessor_operation_id: ready.operation_id,
+            payment_hash: Some(payment_hash),
+            inputs: vec![FederationBarkVtxoInput {
+                vtxo_id: input_vtxo,
+                amount: Amount::from(100),
+            }],
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: output_locator,
+                amount: Amount::from(100),
+                artifact_hash: output_artifact.hash,
+            }],
+            external_amount: Amount::ZERO,
+            fee_amount: Amount::ZERO,
+            fee_bound: Amount::ZERO,
+            artifacts: vec![plan_artifact],
+            external_id: bark_external(15),
+            signer_set: vec![
+                MemberId::new(1).expect("member"),
+                MemberId::new(2).expect("member"),
+            ],
+            attempt: 1,
+            expires_at: 850_000,
+        }),
+    );
+    apply_bark_entry(&db, &plan).await;
+
+    let retry = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some(quote.clone()),
+            phase: FederationBarkSemanticPhase::SigningAttemptAdvanced,
+            actor: MemberId::new(1).expect("member"),
+            plan_operation_id: plan.operation_id,
+            predecessor_operation_id: plan.operation_id,
+            payment_hash: Some(payment_hash),
+            attempt: 2,
+            signer_set: vec![
+                MemberId::new(1).expect("member"),
+                MemberId::new(2).expect("member"),
+            ],
+            request_hash: bark_digest(16),
+            result_hash: bark_digest(17),
+            external_id: bark_external(18),
+            artifacts: Vec::new(),
+            vtxo_transitions: Vec::new(),
+        }),
+    );
+    apply_bark_entry(&db, &retry).await;
+
+    let mut artifacts = vec![input_artifact.clone(), output_artifact.clone()];
+    artifacts.sort();
+    let settled = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some(quote.clone()),
+            phase: FederationBarkSemanticPhase::ReceivePreimageDisclosed,
+            actor: MemberId::new(1).expect("member"),
+            plan_operation_id: plan.operation_id,
+            predecessor_operation_id: retry.operation_id,
+            payment_hash: Some(payment_hash),
+            attempt: 2,
+            signer_set: vec![
+                MemberId::new(1).expect("member"),
+                MemberId::new(2).expect("member"),
+            ],
+            request_hash: bark_digest(19),
+            result_hash: bark_digest(20),
+            external_id: bark_external(21),
+            artifacts,
+            vtxo_transitions: vec![
+                FederationBarkVtxoTransition {
+                    vtxo_id: input_vtxo,
+                    locator: input_locator,
+                    amount: Amount::from(100),
+                    previous_state: Some(FederationBarkVtxoState::Reserved),
+                    new_state: FederationBarkVtxoState::Spent,
+                    artifact_hash: input_artifact.hash,
+                },
+                FederationBarkVtxoTransition {
+                    vtxo_id: output_vtxo,
+                    locator: output_locator,
+                    amount: Amount::from(100),
+                    previous_state: None,
+                    new_state: FederationBarkVtxoState::Spendable,
+                    artifact_hash: output_artifact.hash,
+                },
+            ],
+        }),
+    );
+    apply_bark_entry(&db, &settled).await;
+    assert_eq!(
+        settled
+            .materialized_state_keys()
+            .expect("Bark materialized keys")
+            .into_iter()
+            .map(|record| record.kind_label())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "bark_action",
+            "bark_derivation_allocation",
+            "bark_transition",
+            "bark_vtxo",
+        ])
+    );
+
+    let snapshot = db
+        .get_federation_bark_projection_snapshot()
+        .await
+        .expect("load Bark projection");
+    assert_eq!(snapshot.actions.len(), 1);
+    assert_eq!(snapshot.vtxos.len(), 2);
+    assert_eq!(snapshot.derivation_allocations.len(), 2);
+    assert_eq!(snapshot.reservations.len(), 1);
+    assert_eq!(snapshot.transitions.len(), 5);
+    assert!(snapshot.observations.is_empty());
+    assert_eq!(
+        snapshot.actions[0].latest_operation_id,
+        settled.operation_id
+    );
+    assert_eq!(snapshot.vtxos[0].state, FederationBarkVtxoState::Spent);
+    assert_eq!(snapshot.vtxos[1].state, FederationBarkVtxoState::Spendable);
+    assert_eq!(
+        snapshot.canonical_bytes().expect("canonical snapshot"),
+        serde_json::to_vec(&snapshot).expect("snapshot JSON")
+    );
+    assert_eq!(
+        snapshot
+            .materialized_rows()
+            .expect("materialized rows")
+            .len(),
+        11
+    );
+
+    let conflicting = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some(quote.clone()),
+            phase: FederationBarkSemanticPhase::ReceiveClaimed,
+            actor: MemberId::new(1).expect("member"),
+            plan_operation_id: plan.operation_id,
+            predecessor_operation_id: FederationOperationId::from_bytes([31; 32]),
+            payment_hash: Some(payment_hash),
+            attempt: 1,
+            signer_set: vec![
+                MemberId::new(1).expect("member"),
+                MemberId::new(2).expect("member"),
+            ],
+            request_hash: bark_digest(22),
+            result_hash: bark_digest(23),
+            external_id: bark_external(24),
+            artifacts: vec![output_artifact],
+            vtxo_transitions: Vec::new(),
+        }),
+    );
+    let FederationOperation::Bark(conflicting_operation) = &conflicting.envelope.operation else {
+        panic!("expected Bark operation");
+    };
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin conflicting Bark projection transaction");
+    assert!(
+        tx.apply_federation_bark_operation(&conflicting, conflicting_operation)
+            .await
+            .is_err(),
+        "a non-current Bark predecessor must fail deterministically"
+    );
+    tx.rollback()
+        .await
+        .expect("rollback conflicting Bark projection transaction");
+
+    let claimed = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some(quote.clone()),
+            phase: FederationBarkSemanticPhase::ReceiveClaimed,
+            actor: MemberId::new(1).expect("member"),
+            plan_operation_id: plan.operation_id,
+            predecessor_operation_id: settled.operation_id,
+            payment_hash: Some(payment_hash),
+            attempt: 2,
+            signer_set: vec![
+                MemberId::new(1).expect("member"),
+                MemberId::new(2).expect("member"),
+            ],
+            request_hash: bark_digest(25),
+            result_hash: bark_digest(26),
+            external_id: bark_external(27),
+            artifacts: Vec::new(),
+            vtxo_transitions: Vec::new(),
+        }),
+    );
+    apply_bark_entry(&db, &claimed).await;
+
+    let reopened = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some(quote),
+            phase: FederationBarkSemanticPhase::SigningAttemptAdvanced,
+            actor: MemberId::new(1).expect("member"),
+            plan_operation_id: plan.operation_id,
+            predecessor_operation_id: claimed.operation_id,
+            payment_hash: Some(payment_hash),
+            attempt: 3,
+            signer_set: vec![
+                MemberId::new(1).expect("member"),
+                MemberId::new(2).expect("member"),
+            ],
+            request_hash: bark_digest(28),
+            result_hash: bark_digest(29),
+            external_id: bark_external(30),
+            artifacts: Vec::new(),
+            vtxo_transitions: Vec::new(),
+        }),
+    );
+    let FederationOperation::Bark(reopened_operation) = &reopened.envelope.operation else {
+        panic!("expected Bark operation");
+    };
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin terminal Bark retry transaction");
+    assert!(
+        tx.apply_federation_bark_operation(&reopened, reopened_operation)
+            .await
+            .is_err(),
+        "a terminal Bark action must not reopen through a signing retry"
+    );
+    tx.rollback()
+        .await
+        .expect("rollback terminal Bark retry transaction");
+
+    let terminal_snapshot = db
+        .get_federation_bark_projection_snapshot()
+        .await
+        .expect("load terminal Bark projection");
+    assert_eq!(
+        terminal_snapshot.actions[0].latest_operation_id,
+        claimed.operation_id
+    );
+    assert_eq!(terminal_snapshot.actions[0].signing_retry_phase, None);
+    assert_eq!(terminal_snapshot.transitions.len(), 6);
+    assert_eq!(
+        terminal_snapshot
+            .materialized_rows()
+            .expect("terminal materialized rows")
+            .len(),
+        12
+    );
+    assert_eq!(
+        sha256::Hash::hash(
+            &terminal_snapshot
+                .canonical_bytes()
+                .expect("canonical Bark projection bytes")
+        )
+        .to_string(),
+        "b21be6c6673c788bdeffc74ca845df81b4ce9c308e1dda198b387af2206665d5"
+    );
+
+    apply_bark_entry(&db, &intent).await;
+    apply_bark_entry(&db, &settled).await;
+    assert_eq!(
+        db.get_federation_bark_projection_snapshot()
+            .await
+            .expect("projection after replay"),
+        terminal_snapshot
+    );
 }
 
 /// Assert payment observations persist as durable per-member quorum evidence.

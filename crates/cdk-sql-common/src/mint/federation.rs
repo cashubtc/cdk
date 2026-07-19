@@ -44,6 +44,7 @@ macro_rules! federation_aleph_bft_finalized_item_select {
 }
 
 mod application;
+mod bark_projection;
 mod dkg;
 mod frost_wallet;
 mod journal;
@@ -59,20 +60,23 @@ use cdk_common::database::Error;
 use cdk_common::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftFinalizedItemStatus,
     FederationAlephBftPendingOperationRecord, FederationApplicationDigest,
-    FederationApplicationState, FederationCheckpoint, FederationCheckpointFrontier,
-    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationConfigDigest, FederationConfigSnapshot,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
-    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
-    FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
+    FederationApplicationState, FederationBarkActionRecord,
+    FederationBarkDerivationAllocationRecord, FederationBarkObservationRecord,
+    FederationBarkOperation, FederationBarkProjectionSnapshot, FederationBarkReservationRecord,
+    FederationBarkTransitionRecord, FederationBarkVtxoRecord, FederationBarkVtxoState,
+    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointId,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
+    FederationConfigDigest, FederationConfigSnapshot, FederationDkgActivationRequest,
+    FederationDkgCeremonyId, FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
+    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
+    FederationDkgParticipantState, FederationDkgSecretShareRequest, FederationDkgTranscriptHash,
     FederationDkgTranscriptSignatureRequest, FederationFinalizedItemDigest,
     FederationFrostApplicationConfig, FederationFrostDkgConfirmationRequest,
     FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalConsensusEvidence, FederationJournalDigest,
     FederationJournalEntry, FederationJournalTip, FederationMaterializedStateDigest,
-    FederationMaterializedStateKeyRecord, FederationOperationConflictKey,
+    FederationMaterializedStateKeyRecord, FederationOperation, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
     FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,

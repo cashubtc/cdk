@@ -1406,6 +1406,8 @@ impl From<crate::database::Error> for Error {
                 state => Self::Database(crate::database::Error::InvalidStateTransition(state)),
             },
             crate::database::Error::ConcurrentUpdate => Self::ConcurrentUpdate,
+            #[cfg(feature = "federation")]
+            crate::database::Error::Federation(error) => Self::Federation(error),
             db_error => Self::Database(db_error),
         }
     }
@@ -1416,6 +1418,8 @@ impl From<crate::database::Error> for Error {
     fn from(db_error: crate::database::Error) -> Self {
         match db_error {
             crate::database::Error::ConcurrentUpdate => Self::ConcurrentUpdate,
+            #[cfg(feature = "federation")]
+            crate::database::Error::Federation(error) => Self::Federation(error),
             db_error => Self::Database(db_error),
         }
     }

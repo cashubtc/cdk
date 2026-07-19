@@ -226,6 +226,11 @@ pub enum Error {
     /// Concurrent update detected
     #[error("Concurrent update detected")]
     ConcurrentUpdate,
+
+    /// Deterministic federation projection validation error.
+    #[cfg(feature = "federation")]
+    #[error(transparent)]
+    Federation(#[from] crate::federation::FederationError),
 }
 
 #[cfg(feature = "mint")]

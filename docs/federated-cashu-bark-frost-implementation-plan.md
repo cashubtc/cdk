@@ -2,7 +2,10 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5 and 7 complete, Milestone 6 is locally complete but awaits dependency publication, no production Bark payment backend exists yet
+Status: implementation in progress; Milestones 0-5 and 7 complete, Milestones
+6 and 8 are locally complete but retain the dependency-publication and
+PostgreSQL-runtime verification gates recorded below, and no production Bark
+payment backend exists yet
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -29,7 +32,7 @@ machine-specific metadata in this document.
 | 5. Custody transport | Complete (2026-07-19) | Signed bounded REST routes, durable participant handlers, timeout/backpressure-aware bounded collection, exact retries, stale/mixed-attempt rejection, and higher-attempt signer replacement passed | `feat: add federated Bark custody transport` |
 | 6. `cdk-bark` skeleton | In progress (dependency publication gate) | Local construction, custody, redaction, feature-isolation, strict-clippy, and standalone regression gates pass; immutable Bark source is not remotely fetchable yet | `feat: add federated Bark runtime skeleton` (local-only progress commit) |
 | 7. Bark operations | Complete (2026-07-19) | Nested canonical operation family, typed authorization, conflict/idempotency tests, result lookup, full common regression suite, and workspace compatibility passed | `feat: add typed Bark federation operations` |
-| 8. SQL projection | Pending | — | — |
+| 8. SQL projection | In progress (PostgreSQL runtime gate) | New paired-only migrations, all 83 historical migrations byte-locked, deterministic action/VTXO projection, retry-state hardening, SQLite's 168 tests, strict changed-crate clippy, and workspace checks pass; PostgreSQL compiles but the local test role is absent | `feat: add deterministic Bark SQL projection` (local-only progress commit) |
 | 9. Receive secrets | Pending | — | — |
 | 10. Incoming preparation | Pending | — | — |
 | 11. Incoming claim | Pending | — | — |
@@ -2010,10 +2013,10 @@ Implementation record:
   projection in Milestone 8;
 - added compact result lookup by action and semantic phase, preserving result
   status and commitment across journal serialization and replay;
-- kept Bark materialized-row registration empty and CDK admission/apply
-  explicitly fail-closed until Milestone 8 installs the deterministic SQL
-  projection. This prevents the intermediate milestone from accepting an
-  operation it cannot safely materialize; and
+- initially kept Bark materialized-row registration empty and CDK
+  admission/apply fail-closed; Milestone 8 has now replaced those temporary
+  guards with the deterministic SQL projection without changing the outer
+  operation-envelope version or the pre-existing empty-transition wire; and
 - changed no migration and added no Bark implementation checkpoint or
   member-local endpoint/database data to consensus.
 
@@ -2063,6 +2066,104 @@ Exit criteria:
 - non-Bark federation operation behavior is unchanged.
 
 ### Milestone 8: Bark SQL projection and append-only migrations
+
+Status: implementation and SQLite verification complete on 2026-07-19;
+PostgreSQL execution is wired and compiles, but the local runtime gate remains
+pending because the available PostgreSQL server has no configured CDK test
+role.
+
+Implementation record:
+
+- added exactly one new paired forward migration,
+  `20260719000000_create_federation_bark_projection.sql`, and did not modify
+  any prior SQLite or PostgreSQL migration;
+- added explicit action, VTXO, derivation-allocation, reservation, transition,
+  and observation tables with unique quote, payment hash, action/phase/attempt,
+  VTXO, locator, predecessor, operation ID, and observer-epoch ownership;
+- checksum-locked every pre-Bark migration as ordered filename-and-byte
+  transcripts: 30 PostgreSQL files and 53 SQLite files, in addition to the
+  existing representative per-file locks;
+- added backend-neutral typed projection records and a canonical complete
+  snapshot. The shared SQLite/PostgreSQL lifecycle test must produce fixed
+  SHA-256 vector
+  `b21be6c6673c788bdeffc74ca845df81b4ce9c308e1dda198b387af2206665d5`;
+- added a bounded, sorted, defaulted `vtxo_transitions` field to Bark action
+  transitions. It explicitly maps canonical VTXO artifacts to locator,
+  amount, prior state, and new state, so CDK never parses Bark internals or
+  guesses state changes from opaque bytes. Empty pre-projection v1 records
+  retain their exact canonical wire and golden vector;
+- implemented deterministic stateful checks for action lineage, quote and
+  payment-hash ownership, exact predecessor and current plan, semantic phase,
+  current attempt, locator ownership, input spendability and reservation,
+  immutable VTXO identity/amount/artifact, and the allowed VTXO lifecycle;
+- retained the semantic phase underneath `SigningAttemptAdvanced`, so a
+  higher-attempt retry can continue only along the original phase's valid
+  next edge and can never reopen a completed action or jump between flows;
+- made accepted-operation replay idempotent at both the mint apply boundary
+  and direct projection boundary, while stale predecessors and different
+  locator/VTXO/reservation contents fail before mutation;
+- registered every Bark action, VTXO, locator, reservation, transition, and
+  observation row through `federation_materialized_state_keys`, and included
+  the complete Bark projection in the federation materialized-state snapshot
+  and digest;
+- added the Bark transaction/database traits and one shared SQL
+  implementation used by both SQLite and PostgreSQL; the only mint business
+  logic changes are one Bark admission arm, one transactional apply arm, and
+  one snapshot section; and
+- added empty-install schema/index tests, simulated pre-Bark forward-upgrade
+  tests for both backends, an atomic migration-failure rollback test, exact
+  replay and stale-predecessor tests, VTXO reserve/spend/replacement coverage,
+  and fixed cross-backend projection bytes.
+
+Verification evidence:
+
+```text
+cargo test -p cdk-common --features federation --offline
+  438 passed, 1 ignored
+  federation operation authorization: 4 passed
+  FROST DKG/config: 4 passed
+  doc tests: passed
+
+cargo test -p cdk-sqlite --features federation --offline
+  168 passed; doc tests passed
+  includes clean install, pre-Bark upgrade, atomic migration rollback,
+  projection lifecycle/replay/conflict, and fixed snapshot vector
+
+cargo test -p cdk-sql-common --features federation migration_tests --offline
+  4 passed, including all 83 historical migration bytes locked
+
+cargo test -p cdk-postgres --features federation --offline --no-run
+  passed
+
+cargo test -p cdk-postgres --features federation \
+  federation_bark_projection_persistence --offline
+  not runnable locally: configured CDK PostgreSQL test role is absent
+
+cargo test -p cdk --features federation --lib --offline
+  779 passed; 3 loopback-listener tests were sandbox-blocked
+
+cargo test -p cdk --features federation --lib \
+  wallet::wallet_repository::tests:: --offline
+  12 passed with loopback binding permitted, including those 3 tests
+
+cargo clippy -p cdk-common -p cdk-sql-common -p cdk-sqlite -p cdk-postgres \
+  --features federation --all-targets --offline -- -D warnings
+  passed
+
+cargo check --workspace --all-targets --offline
+  passed
+
+cargo fmt -p cdk-common -p cdk-sql-common -p cdk-sqlite -p cdk-postgres -p cdk -- --check
+git diff --check
+  passed
+```
+
+Remaining local verification gate:
+
+- run the two PostgreSQL Bark tests against a configured test role. They use
+  the same backend-neutral lifecycle fixture and fixed snapshot vector as
+  SQLite, plus the PostgreSQL pre-Bark upgrade fixture. No implementation
+  change is expected; this is execution evidence only.
 
 Deliverables:
 

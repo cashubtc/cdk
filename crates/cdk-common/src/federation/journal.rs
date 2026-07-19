@@ -413,6 +413,36 @@ pub enum FederationMaterializedStateKey {
         /// Rotated federated keyset.
         keyset: FederatedKeyset,
     },
+    /// Current Bark action head.
+    BarkAction {
+        /// Stable action lineage.
+        action_id: super::FederationBarkActionId,
+    },
+    /// Current authoritative Bark VTXO row.
+    BarkVtxo {
+        /// Canonical VTXO identifier.
+        vtxo_id: super::FederationBarkVtxoId,
+    },
+    /// Consensus-owned Bark derivation allocation.
+    BarkDerivationAllocation {
+        /// Unique custody locator.
+        locator: super::FederationBarkVtxoLocator,
+    },
+    /// Append-only Bark input reservation.
+    BarkReservation {
+        /// Reserved VTXO.
+        vtxo_id: super::FederationBarkVtxoId,
+    },
+    /// Append-only Bark action transition.
+    BarkTransition {
+        /// Operation that created the transition row.
+        operation_id: FederationOperationId,
+    },
+    /// Append-only Bark member observation.
+    BarkObservation {
+        /// Operation that created the observation row.
+        operation_id: FederationOperationId,
+    },
 }
 
 impl FederationMaterializedStateKey {
@@ -426,6 +456,12 @@ impl FederationMaterializedStateKey {
             Self::ProofState { .. } => "proof_state",
             Self::BlindSignature { .. } => "blind_signature",
             Self::KeysetRotation { .. } => "keyset_rotation",
+            Self::BarkAction { .. } => "bark_action",
+            Self::BarkVtxo { .. } => "bark_vtxo",
+            Self::BarkDerivationAllocation { .. } => "bark_derivation_allocation",
+            Self::BarkReservation { .. } => "bark_reservation",
+            Self::BarkTransition { .. } => "bark_transition",
+            Self::BarkObservation { .. } => "bark_observation",
         }
     }
 
@@ -438,6 +474,12 @@ impl FederationMaterializedStateKey {
             Self::ProofState { y } => y.to_hex(),
             Self::BlindSignature { blinded_message } => blinded_message.to_hex(),
             Self::KeysetRotation { keyset } => keyset.id.to_string(),
+            Self::BarkAction { action_id } => action_id.to_string(),
+            Self::BarkVtxo { vtxo_id } | Self::BarkReservation { vtxo_id } => vtxo_id.to_string(),
+            Self::BarkDerivationAllocation { locator } => locator.to_string(),
+            Self::BarkTransition { operation_id } | Self::BarkObservation { operation_id } => {
+                operation_id.to_string()
+            }
         }
     }
 }
@@ -699,8 +741,67 @@ impl FederationJournalEntry {
             | FederationOperation::TransactionProposal(_)
             | FederationOperation::TransactionSigned(_)
             | FederationOperation::TransactionBroadcastIntent(_)
-            | FederationOperation::TransactionBroadcastObservation(_)
-            | FederationOperation::Bark(_) => {}
+            | FederationOperation::TransactionBroadcastObservation(_) => {}
+            FederationOperation::Bark(operation) => match operation {
+                super::FederationBarkOperation::ReceiveIntent(intent) => {
+                    insert(FederationMaterializedStateKey::BarkAction {
+                        action_id: operation.action_id(),
+                    });
+                    insert(FederationMaterializedStateKey::BarkDerivationAllocation {
+                        locator: intent.destination,
+                    });
+                }
+                super::FederationBarkOperation::ReceivePrepared(_) => {
+                    insert(FederationMaterializedStateKey::BarkAction {
+                        action_id: operation.action_id(),
+                    });
+                    insert(FederationMaterializedStateKey::BarkTransition {
+                        operation_id: self.operation_id,
+                    });
+                }
+                super::FederationBarkOperation::ActionPlan(plan) => {
+                    insert(FederationMaterializedStateKey::BarkAction {
+                        action_id: operation.action_id(),
+                    });
+                    insert(FederationMaterializedStateKey::BarkTransition {
+                        operation_id: self.operation_id,
+                    });
+                    for input in &plan.inputs {
+                        insert(FederationMaterializedStateKey::BarkVtxo {
+                            vtxo_id: input.vtxo_id,
+                        });
+                        insert(FederationMaterializedStateKey::BarkReservation {
+                            vtxo_id: input.vtxo_id,
+                        });
+                    }
+                    for output in &plan.outputs {
+                        insert(FederationMaterializedStateKey::BarkDerivationAllocation {
+                            locator: output.locator,
+                        });
+                    }
+                }
+                super::FederationBarkOperation::ActionTransition(transition) => {
+                    insert(FederationMaterializedStateKey::BarkAction {
+                        action_id: operation.action_id(),
+                    });
+                    insert(FederationMaterializedStateKey::BarkTransition {
+                        operation_id: self.operation_id,
+                    });
+                    for vtxo in &transition.vtxo_transitions {
+                        insert(FederationMaterializedStateKey::BarkVtxo {
+                            vtxo_id: vtxo.vtxo_id,
+                        });
+                        insert(FederationMaterializedStateKey::BarkDerivationAllocation {
+                            locator: vtxo.locator,
+                        });
+                    }
+                }
+                super::FederationBarkOperation::MemberObservation(_) => {
+                    insert(FederationMaterializedStateKey::BarkObservation {
+                        operation_id: self.operation_id,
+                    });
+                }
+            },
             FederationOperation::MintQuote(operation) => {
                 insert(FederationMaterializedStateKey::MintQuote {
                     quote: operation.quote.clone(),

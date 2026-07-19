@@ -68,6 +68,13 @@ impl Mint {
         {
             snapshot.push(row);
         }
+        for row in db
+            .get_federation_bark_projection_snapshot()
+            .await?
+            .materialized_rows()?
+        {
+            snapshot.push(row);
+        }
         let mut mint_quotes = BTreeSet::new();
         let mut melt_quotes = BTreeSet::new();
         let mut completed_operations = BTreeSet::new();
@@ -95,6 +102,12 @@ impl Mint {
                 FederationMaterializedStateKey::KeysetRotation { keyset } => {
                     keyset_rotations.push((record.operation_index, record.operation_id, keyset));
                 }
+                FederationMaterializedStateKey::BarkAction { .. }
+                | FederationMaterializedStateKey::BarkVtxo { .. }
+                | FederationMaterializedStateKey::BarkDerivationAllocation { .. }
+                | FederationMaterializedStateKey::BarkReservation { .. }
+                | FederationMaterializedStateKey::BarkTransition { .. }
+                | FederationMaterializedStateKey::BarkObservation { .. } => {}
             }
         }
 

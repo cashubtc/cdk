@@ -6,7 +6,7 @@ use std::time::Instant;
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationAddressAllocationOperation, FederationAddressAllocationScope,
+    FederationAddressAllocationOperation, FederationAddressAllocationScope, FederationBarkOperation,
     FederationAddressKeychain, FederationApplicationState, FederationBlindSignatureShareSet,
     FederationChainObservation, FederationConfig, FederationConfigDigest, FederationError,
     FederationFrostApplicationId, FederationId, FederationJournalEntry,
@@ -702,10 +702,7 @@ impl FederationRuntimeConfig {
             }
             FederationOperation::Bark(operation) => {
                 operation.validate()?;
-                self.validate_federation_observer(operation.claimed_author())?;
-                Err(Error::Custom(
-                    "federated Bark operation admission requires its SQL projection".to_string(),
-                ))
+                self.validate_federation_observer(operation.claimed_author())
             }
         }
     }

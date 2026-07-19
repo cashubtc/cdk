@@ -704,10 +704,24 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
-            FederationOperation::Bark(_) => Err(Error::Custom(
-                "federated Bark SQL projection is not installed".to_string(),
-            )),
+            FederationOperation::Bark(operation) => {
+                self.apply_federation_bark(entry, operation).await?;
+                Ok(true)
+            }
         }
+    }
+
+    async fn apply_federation_bark(
+        &self,
+        entry: &FederationJournalEntry,
+        operation: &FederationBarkOperation,
+    ) -> Result<(), Error> {
+        let mut transaction = self.localstore.begin_transaction().await?;
+        let outcome = transaction
+            .apply_federation_bark_operation(entry, operation)
+            .await
+            .map_err(Error::from);
+        finish_federation_apply_transaction(transaction, entry, outcome).await
     }
 
     async fn require_prior_applied_melt_quote(
