@@ -67,6 +67,7 @@ cdk-signatory = { workspace = true }
 bip39 = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
+musig2.workspace = true
 
 [lints]
 workspace = true

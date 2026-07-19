@@ -598,6 +598,7 @@ fn signing_transport_wire_round_trips_and_rejects_mutation() {
         SigningSessionContext::decode(&context.encode()).expect("context wire"),
         context
     );
+    assert_eq!(&context.encode()[..8], b"CDKFSC01");
     assert_eq!(
         SigningDerivation::decode(&derivation.encode()).expect("derivation wire"),
         derivation
@@ -2020,6 +2021,34 @@ fn virtual_musig_and_threshold_dh_match_transparent_group_operations() {
         .collect::<Vec<_>>();
     let commitment_set =
         VirtualMusigNonceCommitmentSet::new(commitments.clone()).expect("commitment set");
+    assert_eq!(
+        SigningSessionContext::decode(&musig_context.encode()).expect("protocol context wire"),
+        musig_context
+    );
+    assert_eq!(&musig_context.encode()[..8], b"CDKFSC02");
+    for commitment in &commitments {
+        assert_eq!(
+            crate::VirtualMusigNonceCommitment::decode(&commitment.encode(), &musig_context)
+                .expect("virtual commitment wire"),
+            commitment.clone()
+        );
+    }
+    assert_eq!(
+        VirtualMusigNonceCommitmentSet::decode(&commitment_set.encode(), &musig_context)
+            .expect("virtual commitment-set wire"),
+        commitment_set
+    );
+    let mut trailing_commitment = commitments[0].encode();
+    trailing_commitment.push(0);
+    assert!(
+        crate::VirtualMusigNonceCommitment::decode(&trailing_commitment, &musig_context).is_err()
+    );
+    let commitment_set_bytes = commitment_set.encode();
+    assert!(VirtualMusigNonceCommitmentSet::decode(
+        &commitment_set_bytes[..commitment_set_bytes.len() - 1],
+        &musig_context,
+    )
+    .is_err());
     let user_nonce = commitment_set
         .aggregate_public_nonce()
         .expect("aggregate user nonce");
@@ -2045,6 +2074,13 @@ fn virtual_musig_and_threshold_dh_match_transparent_group_operations() {
         Some([7; 32]),
     )
     .expect("outer MuSig2 transcript");
+    assert_eq!(
+        VirtualMusigTranscript::decode(&transcript.encode()).expect("virtual transcript wire"),
+        transcript
+    );
+    let mut trailing_transcript = transcript.encode();
+    trailing_transcript.push(0);
+    assert!(VirtualMusigTranscript::decode(&trailing_transcript).is_err());
     let authorization = authorized_request(
         registration,
         musig_context.session_id(),
@@ -2077,13 +2113,26 @@ fn virtual_musig_and_threshold_dh_match_transparent_group_operations() {
             partial
         })
         .collect::<Vec<_>>();
+    for partial in &partials {
+        assert_eq!(
+            crate::VirtualMusigPartialShare::decode(&partial.encode())
+                .expect("virtual partial wire"),
+            partial.clone()
+        );
+    }
     combine_virtual_musig_partial_shares(
         &target,
         musig_context.signer_set(),
         &transcript,
-        commitments.into_iter().zip(partials),
+        commitments.clone().into_iter().zip(partials.clone()),
     )
     .expect("combined virtual partial");
+    let mut trailing_partial = partials[0].encode();
+    trailing_partial.push(0);
+    assert!(crate::VirtualMusigPartialShare::decode(&trailing_partial).is_err());
+    let mut wrong_context = musig_context.encode();
+    wrong_context[8] = 0;
+    assert!(SigningSessionContext::decode(&wrong_context).is_err());
     let conflicting_nonce = SecNonce::new(
         MusigScalar::try_from([54; 32]).expect("conflicting nonce one"),
         MusigScalar::try_from([55; 32]).expect("conflicting nonce two"),
@@ -2157,6 +2206,13 @@ fn virtual_musig_and_threshold_dh_match_transparent_group_operations() {
         dh_context_binding,
     )
     .expect("threshold-DH request");
+    assert_eq!(
+        ThresholdDhRequest::decode(&dh_request.encode()).expect("threshold-DH request wire"),
+        dh_request
+    );
+    let dh_request_bytes = dh_request.encode();
+    assert!(ThresholdDhRequest::decode(&dh_request_bytes[..dh_request_bytes.len() - 1]).is_err());
+    assert!(VirtualMusigTranscript::decode(&dh_request_bytes).is_err());
     let dh_authorization = authorized_request(
         registration,
         dh_context.session_id(),
@@ -2190,9 +2246,22 @@ fn virtual_musig_and_threshold_dh_match_transparent_group_operations() {
             share
         })
         .collect::<Vec<_>>();
-    let combined =
-        combine_threshold_dh_shares(&target, dh_context.signer_set(), &dh_request, shares)
-            .expect("combined threshold-DH point");
+    for share in &shares {
+        assert_eq!(
+            crate::ThresholdDhShare::decode(&share.encode()).expect("threshold-DH share wire"),
+            share.clone()
+        );
+    }
+    let combined = combine_threshold_dh_shares(
+        &target,
+        dh_context.signer_set(),
+        &dh_request,
+        shares.clone(),
+    )
+    .expect("combined threshold-DH point");
+    let mut trailing_dh = shares[0].encode();
+    trailing_dh.push(0);
+    assert!(crate::ThresholdDhShare::decode(&trailing_dh).is_err());
     assert_eq!(
         combined,
         (user_key * dh_server_secret).serialize(),

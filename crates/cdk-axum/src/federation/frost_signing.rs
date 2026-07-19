@@ -20,8 +20,11 @@ use cdk::federation::{
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
 use cdk_frost::{
-    AuthorizationRequest, DerivedPublicPackage, NonceCommitment, ParticipantKeyManager,
-    RedbNonceStore, SecretEncryptionKey, SignatureShare, SigningDerivation, SigningSessionContext,
+    AuthorizationRequest, CustodyProtocol, DerivedPublicPackage, NonceCommitment,
+    ParticipantKeyManager, RedbNonceStore, SecretEncryptionKey, SignatureShare, SigningDerivation,
+    SigningSessionContext, ThresholdDhRequest, ThresholdDhShare, VirtualMusigNonceCommitment,
+    VirtualMusigNonceCommitmentSet, VirtualMusigNonceId, VirtualMusigPartialShare,
+    VirtualMusigTranscript,
 };
 use cdk_frost_bip32::{FrostBip32, WalletBranch, WalletIndex};
 use sha2::{Digest, Sha256};
@@ -484,7 +487,7 @@ impl FederationFrostSigningRuntime {
         derivation: &SigningDerivation,
         authorization: &AuthorizationRequest,
     ) -> Result<NonceCommitment, cdk::Error> {
-        let validated = self.validate(mint, context, authorization).await?;
+        let validated = self.validate_onchain(mint, context, authorization).await?;
         if &validated.derivation != derivation {
             return Err(frost_invalid("round-one derivation differs from accepted input").into());
         }
@@ -508,7 +511,7 @@ impl FederationFrostSigningRuntime {
         authorization: &AuthorizationRequest,
         commitments: &cdk_frost::NonceCommitmentSet,
     ) -> Result<SignatureShare, cdk::Error> {
-        self.validate(mint, context, authorization).await?;
+        self.validate_onchain(mint, context, authorization).await?;
         let manager = self.manager(context.root_epoch().get())?;
         manager
             .lock()
@@ -525,7 +528,7 @@ impl FederationFrostSigningRuntime {
         package_hash: [u8; 32],
         signature: cdk_frost::AggregateSignature,
     ) -> Result<(), cdk::Error> {
-        let validated = self.validate(mint, context, authorization).await?;
+        let validated = self.validate_onchain(mint, context, authorization).await?;
         if package_hash == [0; 32] {
             return Err(frost_invalid("aggregate result package hash is empty").into());
         }
@@ -571,12 +574,112 @@ impl FederationFrostSigningRuntime {
         authorization: &AuthorizationRequest,
         reason: cdk_frost::NonceBurnReason,
     ) -> Result<(), cdk::Error> {
-        self.validate(mint, context, authorization).await?;
+        self.validate_onchain(mint, context, authorization).await?;
         self.manager(context.root_epoch().get())?
             .lock()
             .await
             .burn_session(context.session_id(), reason)
             .map_err(frost_boundary_error)
+    }
+
+    pub(super) async fn commit_bark_virtual_musig(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        derivation: &SigningDerivation,
+        authorization: &AuthorizationRequest,
+    ) -> Result<VirtualMusigNonceCommitment, cdk::Error> {
+        let validated = self.validate_bark(mint, context, authorization).await?;
+        if context.protocol() != CustodyProtocol::VirtualMusig2
+            || &validated.derivation != derivation
+        {
+            return Err(frost_invalid(
+                "Bark virtual MuSig2 derivation differs from accepted state",
+            )
+            .into());
+        }
+        self.manager(context.root_epoch().get())?
+            .lock()
+            .await
+            .commit_virtual_musig_nonce(
+                context,
+                derivation.clone(),
+                &mut cdk_frost::rand_core::OsRng,
+            )
+            .map_err(frost_boundary_error)
+    }
+
+    pub(super) async fn sign_bark_virtual_musig(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        nonce_id: VirtualMusigNonceId,
+        authorization: &AuthorizationRequest,
+        commitments: &VirtualMusigNonceCommitmentSet,
+        transcript: &VirtualMusigTranscript,
+    ) -> Result<VirtualMusigPartialShare, cdk::Error> {
+        self.validate_bark(mint, context, authorization).await?;
+        if context.protocol() != CustodyProtocol::VirtualMusig2 {
+            return Err(frost_invalid("Bark virtual partial uses the wrong protocol").into());
+        }
+        self.manager(context.root_epoch().get())?
+            .lock()
+            .await
+            .virtual_musig_partial(nonce_id, authorization, commitments, transcript)
+            .map_err(frost_boundary_error)
+    }
+
+    pub(super) async fn bark_threshold_dh(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        derivation: &SigningDerivation,
+        authorization: &AuthorizationRequest,
+        request: &ThresholdDhRequest,
+    ) -> Result<ThresholdDhShare, cdk::Error> {
+        let validated = self.validate_bark(mint, context, authorization).await?;
+        if context.protocol() != CustodyProtocol::ThresholdDh || &validated.derivation != derivation
+        {
+            return Err(
+                frost_invalid("Bark threshold-DH derivation differs from accepted state").into(),
+            );
+        }
+        self.manager(context.root_epoch().get())?
+            .lock()
+            .await
+            .threshold_dh_share(
+                context,
+                derivation.clone(),
+                authorization,
+                request,
+                &mut cdk_frost::rand_core::OsRng,
+            )
+            .map_err(frost_boundary_error)
+    }
+
+    pub(super) async fn abort_bark_custody(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+        reason: cdk_frost::NonceBurnReason,
+    ) -> Result<(), cdk::Error> {
+        self.validate_bark(mint, context, authorization).await?;
+        let manager = self.manager(context.root_epoch().get())?;
+        match context.protocol() {
+            CustodyProtocol::VirtualMusig2 => manager
+                .lock()
+                .await
+                .burn_virtual_musig_session(context.session_id(), reason),
+            CustodyProtocol::ThresholdDh => manager
+                .lock()
+                .await
+                .burn_threshold_dh_session(context.session_id(), reason),
+            CustodyProtocol::OrdinaryFrost => {
+                return Err(frost_invalid("Bark abort cannot burn ordinary FROST state").into());
+            }
+        }
+        .map_err(frost_boundary_error)
     }
 
     fn manager(
@@ -588,7 +691,7 @@ impl FederationFrostSigningRuntime {
             .ok_or_else(|| frost_invalid("FROST root epoch is not active").into())
     }
 
-    async fn validate(
+    async fn validate_onchain(
         &self,
         mint: &Mint,
         context: &SigningSessionContext,
@@ -607,6 +710,31 @@ impl FederationFrostSigningRuntime {
             });
         }
         validate_cdk_authorization(mint, context, authorization).await
+    }
+
+    async fn validate_bark(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+    ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+        #[cfg(test)]
+        if let Some((accepted_context, accepted_authorization, derivation)) = self
+            .test_authorizations
+            .get(&context.session_id().to_bytes())
+        {
+            if accepted_context != context || accepted_authorization != authorization {
+                return Err(frost_invalid("test Bark authorization binding mismatch").into());
+            }
+            return Ok(ValidatedCdkAuthorization {
+                derivation: derivation.clone(),
+            });
+        }
+        let _ = (mint, context, authorization);
+        Err(frost_invalid(
+            "Bark custody requests remain disabled until accepted Bark operations are available",
+        )
+        .into())
     }
 }
 
@@ -749,11 +877,11 @@ fn frost_invalid(reason: impl ToString) -> cdk::federation::FederationError {
     }
 }
 
-fn signing_runtime(state: &MintState) -> Option<&FederationFrostSigningRuntime> {
+pub(super) fn signing_runtime(state: &MintState) -> Option<&FederationFrostSigningRuntime> {
     state.federation.frost_signing()
 }
 
-fn signing_unavailable_response() -> Response {
+pub(super) fn signing_unavailable_response() -> Response {
     (
         axum::http::StatusCode::SERVICE_UNAVAILABLE,
         "federation FROST signing is unavailable",
@@ -761,7 +889,7 @@ fn signing_unavailable_response() -> Response {
         .into_response()
 }
 
-fn signing_error_response(error: cdk::Error) -> Response {
+pub(super) fn signing_error_response(error: cdk::Error) -> Response {
     match error {
         cdk::Error::Federation(error) => federation_error_response(error),
         error => {

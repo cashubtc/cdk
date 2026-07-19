@@ -34,6 +34,7 @@ mod aleph_bft_routes;
 mod aleph_bft_runtime;
 mod aleph_bft_session;
 mod backup_routes;
+pub(crate) mod bark_custody;
 mod broadcast;
 mod catch_up_routes;
 mod checkpoint_catch_up;
@@ -73,6 +74,10 @@ pub(crate) use self::aleph_bft_session::{
     stop_current_federation_aleph_bft_session_for_catch_up, AlephBftSessionSupervisor,
 };
 use self::backup_routes::post_aleph_bft_backup;
+use self::bark_custody::{
+    post_bark_custody_abort, post_bark_threshold_dh, post_bark_virtual_musig_commitment,
+    post_bark_virtual_musig_partial,
+};
 pub(crate) use self::broadcast::FederationTransactionBroadcaster;
 use self::catch_up_routes::post_journal;
 use self::checkpoint_routes::{
@@ -323,6 +328,16 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         .route("/frost/signing/packages", post(post_frost_signing_package))
         .route("/frost/signing/aborts", post(post_frost_signing_abort))
         .route("/frost/signing/results", post(post_frost_aggregate_result))
+        .route(
+            "/frost/bark/musig2/commitments",
+            post(post_bark_virtual_musig_commitment),
+        )
+        .route(
+            "/frost/bark/musig2/partials",
+            post(post_bark_virtual_musig_partial),
+        )
+        .route("/frost/bark/threshold-dh", post(post_bark_threshold_dh))
+        .route("/frost/bark/aborts", post(post_bark_custody_abort))
         .layer(DefaultBodyLimit::max(
             cdk::federation::FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES,
         ));

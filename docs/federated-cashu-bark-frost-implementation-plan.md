@@ -2,7 +2,7 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-4 complete, no production Bark payment backend exists yet
+Status: implementation in progress; Milestones 0-5 complete, no production Bark payment backend exists yet
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -26,7 +26,7 @@ machine-specific metadata in this document.
 | 2. Bark wire and authorization | Complete (2026-07-19) | Versioned bounded encodings for FROST, virtual MuSig2, and threshold DH; typed accepted-operation references; exact transcript reconstruction and adversarial mutation tests passed | `feat: define canonical Bark custody wire` |
 | 3. CDK Bark application | Complete (2026-07-19) | Frozen registration/locator adapter, v2 Bark-capable config, dual-DKG activation, sealed-root registration, 2-of-3 and 3-of-5 vectors, Bark byte-agreement and scope rejection tests passed | `feat: register Bark FROST application` |
 | 4. Durable MuSig2 and DH | Complete (2026-07-19) | Protocol-separated durable ledgers, atomic attempt/nonces, restart-safe exact retries, write-failure matrix, transparent-crypto agreement, and ordinary-FROST coexistence passed | `feat: persist federated custody protocols` |
-| 5. Custody transport | Pending | — | — |
+| 5. Custody transport | Complete (2026-07-19) | Signed bounded REST routes, durable participant handlers, timeout/backpressure-aware bounded collection, exact retries, stale/mixed-attempt rejection, and higher-attempt signer replacement passed | `feat: add federated Bark custody transport` |
 | 6. `cdk-bark` skeleton | Pending | — | — |
 | 7. Bark operations | Pending | — | — |
 | 8. SQL projection | Pending | — | — |
@@ -1771,6 +1771,97 @@ Exit criteria:
 - a conflicting request for the same slot is rejected permanently.
 
 ### Milestone 5: authenticated Bark custody transport
+
+Status: complete on 2026-07-19.
+
+Implementation commit:
+
+- CDK: `feat: add federated Bark custody transport`
+
+Implementation record:
+
+- extended the canonical `cdk-frost` wire boundary for protocol-separated
+  signing contexts, virtual MuSig2 commitments/sets/transcripts/partials, and
+  threshold-DH requests/shares with DLEQ proofs. Ordinary FROST continues to
+  emit the exact version-1 `CDKFSC01` context bytes; only virtual MuSig2 and
+  threshold-DH use the new explicitly tagged `CDKFSC02` context format;
+- added four signature-domain-separated private REST message kinds and routes:
+  virtual commitment, finalized virtual partial, threshold-DH share, and
+  protocol abort. Every payload is versioned, `deny_unknown_fields`, bounded
+  by the existing 512-KiB private signing body limit, and decoded through the
+  canonical bounded `cdk-frost` types rather than ad hoc field access;
+- bound every request and response to the federation, application registration,
+  protocol, root/session, exact derivation, authorization, participant, sorted
+  signer set, accepted attempt, nonce or request ID, and finalized transcript.
+  Mixed-session, mixed-attempt, wrong-signer, changed-transcript, trailing-byte,
+  oversized, and cross-protocol inputs fail before cryptographic output;
+- implemented participant handlers on the existing authenticated federation
+  REST envelope and long-lived `ParticipantKeyManager`. The handlers require a
+  healthy authoritative-read state before producing material and call the
+  durable Milestone 4 nonce/DH APIs directly. Abort requests are authorized
+  before they may burn state;
+- kept the production Bark application fail closed until Milestone 7 supplies
+  the accepted-operation revalidator. The transport is live and fully tested
+  with exact accepted-state fixtures, but the registration-only Bark adapter
+  still denies production custody requests rather than trusting coordinator
+  claims;
+- added public-only coordinator collection for an exact accepted signer set.
+  Requests are collected with bounded unordered concurrency capped by the
+  existing outbound semaphore, inherit the configured per-peer timeout and
+  fail-fast backpressure, verify every signed response, then independently
+  verify and combine the virtual partial or threshold-DH point;
+- on an unavailable or ambiguous participant response, the coordinator sends
+  best-effort authenticated aborts to the entire selected set. It never swaps a
+  signer inside the same attempt: the accepted-state caller must provide a
+  higher attempt and its deterministic replacement subset. Participant
+  high-water records reject both same-attempt substitution and delayed stale
+  traffic; and
+- reused the existing private-REST observability boundary: handlers use
+  `#[instrument(skip_all)]`, peer errors and timeout labels contain only the
+  member and operation class, and externally returned signing failures remain
+  fail-closed/redacted. No nonce, authorization payload, transcript, endpoint
+  credential, or cryptographic result is logged or added to metric labels.
+
+Verification evidence:
+
+```text
+cargo test -p cdk-frost
+  29 passed; doc tests passed
+
+cargo test -p cdk-common --features federation
+  430 unit tests passed, 1 ignored
+  4 federation-operation authorization tests passed
+  4 FROST DKG/config tests passed
+  doc tests passed
+
+cargo test -p cdk-axum --features federation frost_signing --lib
+  9 passed
+
+cargo clippy -p cdk-frost --all-targets --no-deps -- -D warnings
+  passed
+
+cargo clippy -p cdk-common --features federation --all-targets \
+  --no-deps -- -D warnings
+  passed
+
+cargo check --workspace --all-targets
+  passed
+```
+
+The live three-member route test deliberately omits one selected signer. It
+proves that the first attempt fails and is aborted, replacing that signer at
+the same attempt is rejected, a higher accepted attempt with the new subset
+succeeds under an outbound concurrency limit of one, exact commitment/partial
+and threshold-DH retries return identical verified results, a mutated
+transcript binding is rejected, and delayed old-attempt traffic remains stale.
+The same test performs all participant work through signed private routes; it
+does not construct an in-process participant transport.
+
+Strict all-target clippy for `cdk-axum` still reaches unrelated pre-existing
+Rust 1.95 lints in unchanged AlephBFT, status, handler, and test code; none
+referenced the Bark custody module, peer methods, handlers, or transport test.
+Formatting passes with the available stable formatter and its previously
+documented nightly-option warnings. No migration was added or modified.
 
 Deliverables:
 

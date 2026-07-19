@@ -6,8 +6,12 @@ use cdk::federation::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
     FederationAlephBftNetworkMessageRequest, FederationAlephBftNetworkMessageResponse,
-    FederationCheckpoint, FederationCheckpointFetchRequest, FederationCheckpointFetchResponse,
-    FederationCheckpointId, FederationCheckpointQuorum, FederationCheckpointQuorumRequest,
+    FederationBarkCustodyAbortRequest, FederationBarkThresholdDhRequest,
+    FederationBarkThresholdDhResponse, FederationBarkVirtualMusigCommitmentRequest,
+    FederationBarkVirtualMusigCommitmentResponse, FederationBarkVirtualMusigPartialRequest,
+    FederationBarkVirtualMusigPartialResponse, FederationCheckpoint,
+    FederationCheckpointFetchRequest, FederationCheckpointFetchResponse, FederationCheckpointId,
+    FederationCheckpointQuorum, FederationCheckpointQuorumRequest,
     FederationCheckpointQuorumResponse, FederationCheckpointSignatureRequest,
     FederationCheckpointSignatureResponse, FederationCheckpointSummaryRequest,
     FederationCheckpointSummaryResponse, FederationConfig, FederationDkgActivationRequest,
@@ -863,6 +867,106 @@ where
         {
             return Err(FederationError::FrostSigningInvalid {
                 reason: "signing-abort acknowledgement bindings are inconsistent".to_string(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn request_bark_virtual_musig_commitment(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationBarkVirtualMusigCommitmentRequest,
+    ) -> anyhow::Result<cdk_frost::VirtualMusigNonceCommitment> {
+        let kind = FederationRestMessageKind::BarkVirtualMusigCommitment;
+        let context = cdk_frost::SigningSessionContext::decode(&request.context)?;
+        let signed = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationBarkVirtualMusigCommitmentResponse> = self
+            .http_post_with_timeout(
+                member,
+                "frost/bark/musig2/commitments",
+                "Bark virtual MuSig2 commitment request",
+                &signed,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        Ok(response.payload.decode(member.member_id, &context)?)
+    }
+
+    pub(crate) async fn request_bark_virtual_musig_partial(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationBarkVirtualMusigPartialRequest,
+    ) -> anyhow::Result<cdk_frost::VirtualMusigPartialShare> {
+        let kind = FederationRestMessageKind::BarkVirtualMusigPartial;
+        let context = cdk_frost::SigningSessionContext::decode(&request.context)?;
+        let transcript_binding = request.transcript_binding;
+        let signed = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationBarkVirtualMusigPartialResponse> = self
+            .http_post_with_timeout(
+                member,
+                "frost/bark/musig2/partials",
+                "Bark virtual MuSig2 partial request",
+                &signed,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        Ok(response
+            .payload
+            .decode(member.member_id, context.session_id(), transcript_binding)?)
+    }
+
+    pub(crate) async fn request_bark_threshold_dh_share(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationBarkThresholdDhRequest,
+    ) -> anyhow::Result<cdk_frost::ThresholdDhShare> {
+        let kind = FederationRestMessageKind::BarkThresholdDh;
+        let context = cdk_frost::SigningSessionContext::decode(&request.context)?;
+        let request_binding = request.request_binding;
+        let signed = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationBarkThresholdDhResponse> = self
+            .http_post_with_timeout(
+                member,
+                "frost/bark/threshold-dh",
+                "Bark threshold-DH share request",
+                &signed,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        Ok(response
+            .payload
+            .decode(member.member_id, context.session_id(), request_binding)?)
+    }
+
+    pub(crate) async fn abort_bark_custody(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationBarkCustodyAbortRequest,
+    ) -> anyhow::Result<()> {
+        let kind = FederationRestMessageKind::BarkCustodyAbort;
+        let expected_session =
+            cdk_frost::SigningSessionContext::decode(&request.context)?.session_id();
+        let signed = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationFrostSigningAck> = self
+            .http_post_with_timeout(
+                member,
+                "frost/bark/aborts",
+                "Bark custody abort",
+                &signed,
+                self.sync_config.peer_request_timeout,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        if response.payload.version != FEDERATION_REST_API_VERSION
+            || response.payload.kind != kind
+            || response.payload.session_id != expected_session.to_bytes()
+        {
+            return Err(FederationError::FrostSigningInvalid {
+                reason: "Bark custody abort acknowledgement is inconsistent".to_string(),
             }
             .into());
         }
