@@ -46,26 +46,46 @@ trap cleanup EXIT INT TERM
 CDK_ITESTS=$(mktemp -d)
 echo "Created temporary directory for mintd: $CDK_ITESTS"
 
-export CDK_MINTD_URL="$MINT_URL"
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS"
-export CDK_MINTD_LISTEN_HOST="127.0.0.1"
-export CDK_MINTD_LISTEN_PORT="8085"
-export CDK_MINTD_LN_BACKEND="fakewallet"
-export CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS="sat,usd"
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
-export CDK_MINTD_FAKE_WALLET_FEE_PERCENT="0"
-export CDK_MINTD_FAKE_WALLET_RESERVE_FEE_MIN="1"
-export CDK_MINTD_INPUT_FEE_PPK="100"
-
-
 export CDK_ITESTS_DIR="$CDK_ITESTS"
+
+MINTD_CONFIG_FILE="$CDK_ITESTS/mintd.toml"
+cat > "$MINTD_CONFIG_FILE" <<EOF
+[info]
+url = "$MINT_URL"
+listen_host = "127.0.0.1"
+listen_port = $MINT_PORT
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+input_fee_ppk = 100
+
+[database]
+engine = "sqlite"
+
+[[ln]]
+ln_backend = "fakewallet"
+unit = "sat"
+
+[[ln]]
+ln_backend = "fakewallet"
+unit = "usd"
+
+[fake_wallet]
+supported_units = ["sat", "usd"]
+fee_percent = 0
+reserve_fee_min = 1
+EOF
 
 # Build cdk-mintd first to avoid compilation time affecting the timeout timer
 echo "Building cdk-mintd..."
 cargo build --bin cdk-mintd
 
+echo "Initializing mintd configuration"
+cargo run --bin cdk-mintd -- \
+  --work-dir "$CDK_MINTD_WORK_DIR" config init --file "$MINTD_CONFIG_FILE"
+
 echo "Starting fake mintd"
-cargo run --bin cdk-mintd &
+cargo run --bin cdk-mintd -- --work-dir "$CDK_MINTD_WORK_DIR" &
 CDK_MINTD_PID=$!
 
 # Wait for the mint to be ready

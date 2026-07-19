@@ -16,6 +16,7 @@ elif [ ! -z "$CDK_ITESTS_DIR" ]; then
     echo "export CDK_MINTD_PID=\"$CDK_MINTD_PID\"" >> "$ENV_FILE"
     echo "export CDK_MINTD_LND_PID=\"$CDK_MINTD_LND_PID\"" >> "$ENV_FILE"
     echo "export CDK_REGTEST_PID=\"$CDK_REGTEST_PID\"" >> "$ENV_FILE"
+    echo "export CDK_MINTD_DATABASE=\"$CDK_MINTD_DATABASE\"" >> "$ENV_FILE"
 else
     echo "❌ CDK regtest environment not found!"
     echo "Please run './misc/interactive_regtest_mprocs.sh' or 'just regtest' first"
@@ -289,20 +290,6 @@ restart_mints() {
     echo "Restarting CDK Mints"
     echo "==============================="
 
-    export_regtest_bdk_env() {
-        local mnemonic="$1"
-
-        export CDK_MINTD_BDK_MNEMONIC="$mnemonic"
-        export CDK_MINTD_ONCHAIN_BACKEND="bdk"
-        export CDK_MINTD_BDK_BITCOIND_RPC_HOST="127.0.0.1"
-        export CDK_MINTD_BDK_BITCOIND_RPC_PORT=18443
-        export CDK_MINTD_BDK_BITCOIND_RPC_USER="testuser"
-        export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
-        export CDK_MINTD_BDK_NETWORK="regtest"
-        export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
-        export CDK_MINTD_BDK_NUM_CONFS=1
-    }
-    
     # Stop existing mints
     echo "Stopping existing mints..."
     if [ ! -z "$CDK_MINTD_PID" ] && kill -0 $CDK_MINTD_PID 2>/dev/null; then
@@ -327,17 +314,14 @@ restart_mints() {
     
     # Restart CLN mint
     echo "Starting CLN Mint..."
-    export CDK_MINTD_CLN_RPC_PATH="$CDK_ITESTS_DIR/cln/one/regtest/lightning-rpc"
-    export CDK_MINTD_URL="http://127.0.0.1:8085"
     export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/cln_mint"
-    export CDK_MINTD_LISTEN_HOST="127.0.0.1"
-    export CDK_MINTD_LISTEN_PORT=8085
-    export CDK_MINTD_LN_BACKEND="cln"
+    export CDK_MINTD_DATABASE="${CDK_MINTD_DATABASE:-sqlite}"
     export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
+    export CDK_REGTEST_BITCOIND_RPC_PASSWORD="testpass"
     export RUST_BACKTRACE=1
-    export_regtest_bdk_env "$CDK_MINTD_MNEMONIC"
     
-    cargo run --bin cdk-mintd > "$CDK_MINTD_WORK_DIR/mintd.log" 2>&1 &
+    cargo run --bin cdk-mintd -- --work-dir "$CDK_MINTD_WORK_DIR" \
+        > "$CDK_MINTD_WORK_DIR/mintd.log" 2>&1 &
     NEW_CLN_PID=$!
     
     # Wait for CLN mint to be ready
@@ -361,18 +345,11 @@ restart_mints() {
     
     # Restart LND mint
     echo "Starting LND Mint..."
-    export CDK_MINTD_LND_ADDRESS="https://localhost:10010"
-    export CDK_MINTD_LND_CERT_FILE="$CDK_ITESTS_DIR/lnd/two/tls.cert"
-    export CDK_MINTD_LND_MACAROON_FILE="$CDK_ITESTS_DIR/lnd/two/data/chain/bitcoin/regtest/admin.macaroon"
-    export CDK_MINTD_URL="http://127.0.0.1:8087"
     export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/lnd_mint"
-    export CDK_MINTD_LISTEN_HOST="127.0.0.1"
-    export CDK_MINTD_LISTEN_PORT=8087
-    export CDK_MINTD_LN_BACKEND="lnd"
     export CDK_MINTD_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
-    export_regtest_bdk_env "$CDK_MINTD_MNEMONIC"
     
-    cargo run --bin cdk-mintd > "$CDK_MINTD_WORK_DIR/mintd.log" 2>&1 &
+    cargo run --bin cdk-mintd -- --work-dir "$CDK_MINTD_WORK_DIR" \
+        > "$CDK_MINTD_WORK_DIR/mintd.log" 2>&1 &
     NEW_LND_PID=$!
     
     # Wait for LND mint to be ready
@@ -402,9 +379,11 @@ restart_mints() {
     echo "export CDK_ITESTS_DIR=\"$CDK_ITESTS_DIR\"" > "$ENV_FILE"
     echo "export CDK_TEST_MINT_URL=\"$CDK_TEST_MINT_URL\"" >> "$ENV_FILE"
     echo "export CDK_TEST_MINT_URL_2=\"$CDK_TEST_MINT_URL_2\"" >> "$ENV_FILE"
+    echo "export CDK_TEST_MINT_URL_3=\"$CDK_TEST_MINT_URL_3\"" >> "$ENV_FILE"
     echo "export CDK_MINTD_PID=\"$CDK_MINTD_PID\"" >> "$ENV_FILE"
     echo "export CDK_MINTD_LND_PID=\"$CDK_MINTD_LND_PID\"" >> "$ENV_FILE"
     echo "export CDK_REGTEST_PID=\"$CDK_REGTEST_PID\"" >> "$ENV_FILE"
+    echo "export CDK_MINTD_DATABASE=\"$CDK_MINTD_DATABASE\"" >> "$ENV_FILE"
     
     echo
     echo "✅ Mints restarted successfully!"

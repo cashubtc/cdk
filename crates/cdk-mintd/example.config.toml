@@ -3,7 +3,9 @@
 url = "https://mint.thesimplekid.dev/"
 listen_host = "127.0.0.1"
 listen_port = 8085
-mnemonic = ""
+# Secrets are references, never literal values. Supported forms are
+# `env:VARIABLE` and `file:/absolute/path`.
+mnemonic = "env:CDK_MINTD_MNEMONIC"
 # input_fee_ppk = 0
 # enable_info_page = true
 
@@ -14,7 +16,7 @@ mnemonic = ""
 # use_keyset_v2 = true
 
 [info.quote_ttl]
-# Prefer explicit fields over inline tables for readability and ease of overrides
+# Prefer explicit fields over inline tables for readability and reviewable edits
 mint_ttl = 600
 melt_ttl = 120
 
@@ -34,6 +36,8 @@ enabled = false
 # tls_dir = "/path/to/tls"
 # allow_insecure = false
 
+# Enable this to use `cdk-mintd config apply/show/export/discard-pending`
+# against the running daemon.
 [mint_management_rpc]
 enabled = false
 # address = "127.0.0.1"
@@ -59,8 +63,8 @@ tti = 60
 # use_cluster = true
 # cluster_nodes = ["redis://node1:6379", "redis://node2:6379"]
 
-# NOTE: If [mint_management_rpc] is enabled these values will only be used on first start up.
-# Further changes must be made through the rpc.
+# This file is only imported by an explicit `config init` or `config apply`
+# command. It is never reapplied automatically during daemon startup.
 [mint_info]
 # name = "cdk-mintd mutiney net mint"
 # Hex pubkey of mint
@@ -72,7 +76,10 @@ tti = 60
 # contact_email = "hello@cashu.me"
 # Nostr pubkey of mint (Hex)
 # contact_nostr_public_key = ""
+# Arbitrary contact methods can be imported as a complete list:
+# contacts = [{ method = "support", info = "https://support.example" }]
 # tos_url = "https://example.com/terms-of-service"
+# urls = ["https://mint.example"]
 
 
 [database]
@@ -82,9 +89,9 @@ engine = "sqlite"
 # PostgreSQL configuration (when engine = "postgres")
 [database.postgres]
 # PostgreSQL connection URL
-# Can also be set via CDK_MINTD_POSTGRES_URL or CDK_MINTD_DATABASE_URL environment variables
-# Environment variables take precedence over config file settings
-url = "postgresql://user:password@localhost:5432/cdk_mint"
+# The referenced variable is also the bootstrap URL used to open the
+# authoritative database before its stored configuration can be read.
+url = "env:CDK_MINTD_POSTGRES_URL"
 # TLS mode: "disable", "prefer", "require" (optional, defaults to "disable")
 tls_mode = "disable"
 # Maximum number of connections in the pool (optional, defaults to 20)
@@ -95,9 +102,8 @@ connection_timeout_seconds = 10
 # Auth database configuration (optional, only used when auth is enabled)
 [auth_database.postgres]
 # PostgreSQL connection URL for authentication database
-# Can also be set via CDK_MINTD_AUTH_POSTGRES_URL environment variable
-# Environment variables take precedence over config file settings
-url = "postgresql://user:password@localhost:5432/cdk_mint_auth"
+# This secret is resolved at runtime and the resolved URL is never persisted.
+url = "env:CDK_MINTD_AUTH_POSTGRES_URL"
 # TLS mode: "disable", "prefer", "require" (optional, defaults to "disable")
 tls_mode = "disable"
 # Maximum number of connections in the pool (optional, defaults to 20)
@@ -144,7 +150,7 @@ onchain_backend = "fakewallet"
 # max_melt=1000000
 
 # [bdk]
-# mnemonic = "your twelve or twenty-four word mnemonic phrase here"
+# mnemonic = "env:CDK_MINTD_BDK_MNEMONIC"
 # network = "regtest"  # REQUIRED: mainnet, testnet, signet, regtest (no default)
 # num_confs = 3        # Number of confirmations required (must be >= 1; 0 is rejected)
 # min_receive_amount_sat = 1000  # Minimum inbound amount that counts toward minting
@@ -156,7 +162,7 @@ onchain_backend = "fakewallet"
 # # bitcoind_rpc_host = "127.0.0.1"
 # # bitcoind_rpc_port = 18443
 # # bitcoind_rpc_user = "user"
-# # bitcoind_rpc_password = "pass"
+# # bitcoind_rpc_password = "env:CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD"
 #
 # # Esplora configuration (when chain_source_type = "esplora")
 # # esplora_url = "https://mutinynet.com/api"
@@ -184,8 +190,9 @@ onchain_backend = "fakewallet"
 # # `quote_safety_multiplier`; the defaults are tuned for mainnet where
 # # fee-rate spikes between quote and broadcast are common.
 # #
-# # Every field below has a matching CDK_MINTD_BDK_* env-var override; see
-# # crates/cdk-mintd/src/env_vars/bdk.rs.
+# # These are operational configuration fields. Change them through an
+# # explicit full-document apply; startup environment variables do not
+# # override them.
 # # [bdk.batch_config]
 # # By default only Immediate is exposed. Uncomment and choose any subset of
 # # the existing tiers to expose more fee options; order defines fee_index.
@@ -228,8 +235,8 @@ onchain_backend = "fakewallet"
 # reserve_fee_min = 2        # Optional, defaults to 2 sats
 
 # [lnbits]
-# admin_api_key = ""
-# invoice_api_key = ""
+# admin_api_key = "env:CDK_MINTD_LNBITS_ADMIN_API_KEY"
+# invoice_api_key = "env:CDK_MINTD_LNBITS_INVOICE_API_KEY"
 # lnbits_api = ""
 # fee_percent = 0.02         # Optional, defaults to 2%
 # reserve_fee_min = 2        # Optional, defaults to 2 sats
@@ -253,7 +260,7 @@ onchain_backend = "fakewallet"
 # # the LDK node's keys. Keep this secure and backed up!
 # # For EXISTING nodes: If omitted, the node will use its stored seed from the storage directory.
 # # This maintains backward compatibility with nodes created before this configuration was added.
-# ldk_node_mnemonic = "your twelve or twenty-four word mnemonic phrase here"
+# ldk_node_mnemonic = "env:CDK_MINTD_LDK_NODE_MNEMONIC"
 # 
 # # Mutinynet configuration (recommended for testing)
 # esplora_url = "https://mutinynet.com/api"
@@ -279,7 +286,7 @@ onchain_backend = "fakewallet"
 # bitcoind_rpc_host = "127.0.0.1"
 # bitcoind_rpc_port = 18443
 # bitcoind_rpc_user = "testuser" 
-# bitcoind_rpc_password = "testpass"
+# bitcoind_rpc_password = "env:CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD"
 #
 # # Electrum configuration (when chain_source_type = "electrum")
 # electrum_url = "tcp://127.0.0.1:50001"

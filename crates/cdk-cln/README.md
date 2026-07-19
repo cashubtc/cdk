@@ -32,25 +32,22 @@ fee_percent = 0.02       # Optional, defaults to 2%
 reserve_fee_min = 2      # Optional, defaults to 2 sats
 ```
 
-### Environment Variables
+### Import and Start
 
-All configuration can be set via environment variables:
-
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `CDK_MINTD_LN_BACKEND` | Set to `cln` | Yes |
-| `CDK_MINTD_CLN_RPC_PATH` | Path to CLN RPC socket | Yes |
-| `CDK_MINTD_CLN_BOLT12` | Enable BOLT12 support (default: `true`) | No |
-| `CDK_MINTD_CLN_FEE_PERCENT` | Fee percentage (default: `0.02`) | No |
-| `CDK_MINTD_CLN_RESERVE_FEE_MIN` | Minimum fee in sats (default: `2`) | No |
-
-### Example
+Add the section above to a complete `mint.toml`, then explicitly import it into
+the mint database before the first start:
 
 ```bash
-export CDK_MINTD_LN_BACKEND=cln
-export CDK_MINTD_CLN_RPC_PATH=/home/user/.lightning/bitcoin/lightning-rpc
+cdk-mintd config validate --file mint.toml
+cdk-mintd config init --file mint.toml
 cdk-mintd
 ```
+
+Environment variables no longer override CLN settings at daemon startup. To
+change them later, edit the complete file, run
+`cdk-mintd config apply --file mint.toml` through the management RPC (or add
+`--offline` while the daemon is stopped), and restart. See the
+[`cdk-mintd` configuration guide](../cdk-mintd/README.md#configuration).
 
 ## License
 

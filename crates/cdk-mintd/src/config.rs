@@ -1,12 +1,15 @@
 use std::path::PathBuf;
 
 use bitcoin::hashes::{sha256, Hash};
-use cdk::nuts::{CurrencyUnit, PublicKey};
+use cdk::nuts::{nut04, nut05, ContactInfo, CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use cdk_common::common::QuoteTTL;
-use config::{Config, ConfigError, File};
+use config::ConfigError;
 use serde::{Deserialize, Serialize};
+
+#[cfg(test)]
+use config::{Config, File};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -36,6 +39,7 @@ impl std::str::FromStr for LoggingOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LoggingConfig {
     /// Where to output logs: stdout, file, or both
     #[serde(default)]
@@ -47,7 +51,7 @@ pub struct LoggingConfig {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Info {
     pub url: String,
     pub listen_host: String,
@@ -71,8 +75,8 @@ pub struct Info {
     /// This requires `mintd` was built with the `info-page` feature flag.
     pub enable_info_page: Option<bool>,
 
-    /// Optional persisted quote TTL values (seconds) to initialize the database with
-    /// when RPC is disabled or on first-run when RPC is enabled.
+    /// Optional quote TTL values (seconds) imported into canonical database
+    /// state when this document is initialized or explicitly applied.
     /// If not provided, defaults are used.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quote_ttl: Option<QuoteTTL>,
@@ -123,7 +127,7 @@ impl std::fmt::Debug for Info {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Signatory {
     #[serde(default)]
     pub enabled: bool,
@@ -171,6 +175,7 @@ pub enum LnBackend {
     #[cfg(feature = "lnd")]
     Lnd,
     #[cfg(feature = "ldk-node")]
+    #[serde(rename = "ldk-node", alias = "ldknode")]
     LdkNode,
     #[cfg(feature = "grpc-processor")]
     GrpcProcessor,
@@ -199,7 +204,7 @@ impl std::str::FromStr for LnBackend {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Ln {
     pub ln_backend: LnBackend,
     #[serde(default)]
@@ -269,7 +274,7 @@ impl std::str::FromStr for OnchainBackend {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Onchain {
     pub onchain_backend: OnchainBackend,
     pub min_mint: Amount,
@@ -292,6 +297,7 @@ impl Default for Onchain {
 
 #[cfg(feature = "bdk")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BatchConfig {
     /// How often the batch processor wakes up to check for ready intents
     #[serde(default = "default_bdk_poll_interval_secs")]
@@ -349,6 +355,7 @@ impl Default for BatchConfig {
 
 #[cfg(feature = "bdk")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Bdk {
     /// Fee percentage (e.g., 0.02 for 2%)
     #[serde(default = "default_fee_percent")]
@@ -552,7 +559,7 @@ fn default_bdk_quote_safety_multiplier() -> f64 {
 
 #[cfg(feature = "lnbits")]
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LNbits {
     pub admin_api_key: String,
     pub invoice_api_key: String,
@@ -591,7 +598,7 @@ impl Default for LNbits {
 
 #[cfg(feature = "cln")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Cln {
     pub rpc_path: PathBuf,
     #[serde(default = "default_cln_bolt12")]
@@ -624,7 +631,7 @@ fn default_cln_bolt12() -> bool {
 
 #[cfg(feature = "lnd")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Lnd {
     pub address: String,
     pub cert_file: PathBuf,
@@ -650,7 +657,7 @@ impl Default for Lnd {
 
 #[cfg(feature = "ldk-node")]
 #[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LdkNode {
     /// Fee percentage (e.g., 0.02 for 2%)
     #[serde(default = "default_ldk_fee_percent")]
@@ -777,6 +784,7 @@ fn default_webserver_port() -> Option<u16> {
 
 #[cfg(feature = "fakewallet")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FakeWalletKeysetRotation {
     /// Currency unit (e.g. "sat", "usd")
     pub unit: CurrencyUnit,
@@ -798,7 +806,7 @@ fn default_keyset_version() -> String {
 
 #[cfg(feature = "fakewallet")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum FakeWalletCustomPaymentMethod {
     /// Custom method available for every supported fake wallet unit
     Method(String),
@@ -832,7 +840,7 @@ impl FakeWalletCustomPaymentMethod {
 
 #[cfg(feature = "fakewallet")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct FakeWallet {
     #[serde(default = "default_fake_wallet_supported_units")]
     pub supported_units: Vec<CurrencyUnit>,
@@ -897,7 +905,7 @@ fn default_fake_wallet_supported_units() -> Vec<CurrencyUnit> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct GrpcProcessor {
     #[serde(default)]
     pub supported_units: Vec<CurrencyUnit>,
@@ -952,20 +960,20 @@ impl std::str::FromStr for DatabaseEngine {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Database {
     pub engine: DatabaseEngine,
     pub postgres: Option<PostgresConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AuthDatabase {
     pub postgres: Option<PostgresAuthConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PostgresAuthConfig {
     pub url: String,
     pub tls_mode: Option<String>,
@@ -985,7 +993,7 @@ impl Default for PostgresAuthConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PostgresConfig {
     pub url: String,
     pub tls_mode: Option<String>,
@@ -1027,7 +1035,7 @@ impl std::str::FromStr for AuthType {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Auth {
     #[serde(default)]
     pub auth_enabled: bool,
@@ -1063,7 +1071,7 @@ fn default_blind() -> AuthType {
 
 /// CDK settings, derived from `config.toml`
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Settings {
     pub info: Info,
     pub signatory: Option<Signatory>,
@@ -1099,7 +1107,7 @@ pub struct Settings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[cfg(feature = "prometheus")]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Prometheus {
     pub enabled: bool,
     pub address: Option<String>,
@@ -1108,6 +1116,7 @@ pub struct Prometheus {
 
 /// Transaction limits configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Limits {
     /// Maximum number of inputs allowed per transaction (swap/melt)
     #[serde(default = "default_max_inputs")]
@@ -1135,7 +1144,7 @@ fn default_max_outputs() -> usize {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MintInfo {
     /// name of the mint and should be recognizable
     pub name: String,
@@ -1153,16 +1162,41 @@ pub struct MintInfo {
     pub contact_nostr_public_key: Option<String>,
     /// Contact email
     pub contact_email: Option<String>,
+    /// Complete contact list used by managed configuration exports.
+    #[serde(default)]
+    pub contacts: Vec<ContactInfo>,
     /// URL to the terms of service
     pub tos_url: Option<String>,
+    /// Public endpoints serving this mint.
+    #[serde(default)]
+    pub urls: Vec<String>,
+    /// Canonical NUT policy exported by the management interface.
+    ///
+    /// Manually authored initialization files may omit this and let mintd
+    /// derive capabilities from the configured backends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nuts: Option<ManagedNuts>,
+}
+
+/// Canonical operator-managed policy for minting and melting methods.
+///
+/// Other advertised NUT capabilities are derived by mintd and are not accepted
+/// as configuration inputs.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ManagedNuts {
+    /// NUT-04 mint method policy.
+    pub nut04: nut04::Settings,
+    /// NUT-05 melt method policy.
+    pub nut05: nut05::Settings,
 }
 
 #[cfg(feature = "management-rpc")]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MintManagementRpc {
-    /// When this is set to `true` the mint use the config file for the initial set up on first start.
-    /// Changes to the `[mint_info]` after this **MUST** be made via the RPC changes to the config file or env vars will be ignored.
+    /// Enables the management RPC used by `cdk-mintd` configuration and
+    /// field-specific management commands.
     pub enabled: bool,
     pub address: Option<String>,
     pub port: Option<u16>,
@@ -1172,6 +1206,29 @@ pub struct MintManagementRpc {
 }
 
 impl Settings {
+    /// Parses a complete mintd configuration document from TOML.
+    ///
+    /// Defaults are applied in exactly the same way as for file-based imports.
+    pub fn try_from_toml(toml: &str) -> Result<Self, ConfigError> {
+        let mut ignored = Vec::new();
+        let deserializer = toml::Deserializer::new(toml);
+        let settings = serde_ignored::deserialize(deserializer, |path| {
+            ignored.push(path.to_string());
+        })
+        .map_err(|error| ConfigError::Foreign(Box::new(error)))?;
+
+        if !ignored.is_empty() {
+            ignored.sort();
+            ignored.dedup();
+            return Err(ConfigError::Message(format!(
+                "unknown configuration field(s): {}",
+                ignored.join(", ")
+            )));
+        }
+
+        Ok(settings)
+    }
+
     pub fn validate_backend_pairing(&self) -> Result<(), String> {
         #[cfg(feature = "fakewallet")]
         self.validate_fake_wallet_backend_pairing()?;
@@ -1224,7 +1281,8 @@ impl Settings {
         Ok(())
     }
 
-    pub fn try_new<P>(config_file_name: Option<P>) -> Result<Self, ConfigError>
+    #[cfg(test)]
+    pub(crate) fn try_new<P>(config_file_name: Option<P>) -> Result<Self, ConfigError>
     where
         P: Into<PathBuf>,
     {
@@ -1232,26 +1290,7 @@ impl Settings {
         Self::new_from_default(&default_settings, config_file_name)
     }
 
-    /// Loads settings from defaults and an optional config file.
-    ///
-    /// New code should use [`Self::try_new`] so configuration errors can be
-    /// reported to the caller. This method retains its historical fallback
-    /// behavior for API compatibility.
-    #[deprecated(note = "use Settings::try_new to handle configuration errors")]
-    #[must_use]
-    pub fn new<P>(config_file_name: Option<P>) -> Self
-    where
-        P: Into<PathBuf>,
-    {
-        match Self::try_new(config_file_name) {
-            Ok(settings) => settings,
-            Err(err) => {
-                tracing::error!("Error reading config file, falling back to defaults: {err}");
-                Self::default()
-            }
-        }
-    }
-
+    #[cfg(test)]
     fn new_from_default<P>(
         default: &Settings,
         config_file_name: Option<P>,
@@ -1336,6 +1375,90 @@ mod tests {
         assert!(debug_output.contains("<hashed: "));
 
         assert!(debug_output.contains("input_fee_ppk: Some(100)"));
+    }
+
+    #[test]
+    fn managed_toml_rejects_unknown_top_level_sections() {
+        let error = Settings::try_from_toml(
+            r#"
+[database]
+engine = "sqlite"
+
+[databse]
+engine = "postgres"
+"#,
+        )
+        .expect_err("unknown top-level sections must be rejected");
+
+        assert!(error.to_string().contains("unknown field `databse`"));
+    }
+
+    #[test]
+    fn managed_toml_rejects_unknown_nested_fields() {
+        let error = Settings::try_from_toml(
+            r#"
+[info]
+listen_host = "127.0.0.1"
+listen_prt = 8085
+"#,
+        )
+        .expect_err("unknown nested fields must be rejected");
+
+        assert!(error.to_string().contains("unknown field `listen_prt`"));
+    }
+
+    #[test]
+    fn managed_toml_rejects_unknown_fields_in_imported_types() {
+        let error = Settings::try_from_toml(
+            r#"
+[info.quote_ttl]
+mint_ttl = 3600
+melt_ttl = 60
+mint_tt1 = 7200
+"#,
+        )
+        .expect_err("unknown fields in nested imported types must be rejected");
+
+        assert!(error.to_string().contains("mint_tt1"));
+    }
+
+    #[test]
+    fn managed_toml_preserves_field_aliases() {
+        let settings = Settings::try_from_toml(
+            r#"
+[grpc_processor]
+addr = "processor.internal"
+"#,
+        )
+        .expect("documented aliases must remain accepted");
+
+        assert_eq!(
+            settings
+                .grpc_processor
+                .expect("gRPC processor settings")
+                .address,
+            "processor.internal"
+        );
+    }
+
+    #[test]
+    fn managed_toml_accepts_the_example_document() {
+        Settings::try_from_toml(include_str!("../example.config.toml"))
+            .expect("the shipped example must remain a valid strict configuration document");
+    }
+
+    #[cfg(feature = "ldk-node")]
+    #[test]
+    fn managed_toml_preserves_ldk_backend_alias() {
+        let settings = Settings::try_from_toml(
+            r#"
+[[ln]]
+ln_backend = "ldknode"
+"#,
+        )
+        .expect("legacy LDK backend alias must remain accepted");
+
+        assert_eq!(settings.ln[0].ln_backend, LnBackend::LdkNode);
     }
 
     #[test]
@@ -2082,7 +2205,7 @@ port = 9090
         // Create a minimal config.toml with backend set but NO [lnd] section
         let config_content = r#"
 [ln]
-backend = "lnd"
+ln_backend = "lnd"
 min_mint = 1
 max_mint = 500000
 min_melt = 1
@@ -2143,7 +2266,7 @@ max_melt = 500000
         // Create a minimal config.toml with backend set but NO [cln] section
         let config_content = r#"
 [ln]
-backend = "cln"
+ln_backend = "cln"
 min_mint = 1
 max_mint = 500000
 min_melt = 1
@@ -2194,7 +2317,7 @@ max_melt = 500000
         // Create a minimal config.toml with backend set but NO [lnbits] section
         let config_content = r#"
 [ln]
-backend = "lnbits"
+ln_backend = "lnbits"
 min_mint = 1
 max_mint = 500000
 min_melt = 1
@@ -2254,7 +2377,7 @@ max_melt = 500000
         // Create a minimal config.toml with backend set but NO [fake_wallet] section
         let config_content = r#"
 [ln]
-backend = "fakewallet"
+ln_backend = "fakewallet"
 min_mint = 1
 max_mint = 500000
 min_melt = 1
@@ -2334,7 +2457,7 @@ max_melt = 500000
         // Create a minimal config.toml with backend set but NO [grpc_processor] section
         let config_content = r#"
 [ln]
-backend = "grpcprocessor"
+ln_backend = "grpcprocessor"
 min_mint = 1
 max_mint = 500000
 min_melt = 1
@@ -2383,7 +2506,7 @@ max_melt = 500000
         // Create a minimal config.toml with backend set but NO [ldk_node] section
         let config_content = r#"
 [ln]
-backend = "ldknode"
+ln_backend = "ldknode"
 min_mint = 1
 max_mint = 500000
 min_melt = 1

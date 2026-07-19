@@ -27,11 +27,20 @@ Start Prometheus and Grafana with docker-compose:
 ```
 docker compose up -d prometheus grafana
 ```
-Start your mintd 
+Initialize the database-backed mint configuration once, with Prometheus enabled
+in the complete TOML document, then start `cdk-mintd`:
+
+```bash
+cdk-mintd --work-dir ~/.cdk-mintd config init --file mint.toml
+cdk-mintd --work-dir ~/.cdk-mintd
 ```
-./mintd -w ~/.cdk-mintd
-```
-Check Prometheus and Grafana 
+
+Later configuration-file edits require an explicit `config apply` through the
+management RPC (or `config apply --offline` while stopped) and a restart; normal
+startup does not reload the file.
+
+Check Prometheus and Grafana:
+
 * `curl localhost:9000/metrics` for checking CDK metrics  
 * `http://localhost:9090/targets?search=` checking the prometheus collector (you should see http://host.docker.internal:9000/metrics)
 * `http://localhost:3011/d/cdk-mint-dashboard/cdk-mint-dashboard` Grafana dashboard (default login: admin/admin)
@@ -193,4 +202,3 @@ Handle these at startup and monitor logs during runtime.
 ## License
 
 MIT
-```

@@ -460,7 +460,10 @@ The wallet seed is automatically generated and stored in `<work-dir>/seed` on fi
 ### Complete Workflow Example
 
 ```bash
-# 1. Start a test mint (in another terminal)
+# 1. Initialize a test mint once from a complete configuration file
+cdk-mintd config init --file mint.toml
+
+# Then start it (in another terminal)
 cdk-mintd
 
 # 2. Mint some tokens
@@ -481,6 +484,9 @@ cdk-cli receive <cashu_token_string>
 cdk-cli melt
 # Follow prompts to enter invoice
 ```
+
+See the [`cdk-mintd` configuration guide](../cdk-mintd/README.md#configuration)
+for creating the initial file and applying later changes explicitly.
 
 ### Multi-Mint Setup
 

@@ -12,24 +12,36 @@ use cdk::Amount;
 use cdk_common::grpc::create_version_check_interceptor;
 use cdk_common::payment::WaitPaymentResponse;
 use thiserror::Error;
-use tokio::sync::Notify;
+use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
+use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 
 use crate::cdk_mint_server::{CdkMint, CdkMintServer};
 use crate::{
-    ContactInfo, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest, GetQuoteTtlResponse,
-    RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
-    UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
-    UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
-    UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
+    ApplyConfigurationRequest, ApplyConfigurationResponse, ConfigurationError,
+    ConfigurationManager, ConfigurationSnapshot, ContactInfo, DiscardPendingConfigurationRequest,
+    GetConfigurationRequest, GetConfigurationResponse, GetInfoRequest, GetInfoResponse,
+    GetQuoteTtlRequest, GetQuoteTtlResponse, RotateNextKeysetRequest, RotateNextKeysetResponse,
+    UpdateContactRequest, UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest,
+    UpdateNameRequest, UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request,
+    UpdateQuoteTtlRequest, UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
 };
 
 /// Error
 #[derive(Debug, Error)]
 pub enum Error {
+    /// The RPC server has already been prepared.
+    #[error("Mint RPC server is already prepared")]
+    AlreadyPrepared,
+    /// The RPC server has already been started.
+    #[error("Mint RPC server is already started")]
+    AlreadyStarted,
+    /// The RPC server must be prepared before it can start serving.
+    #[error("Mint RPC server has not been prepared")]
+    NotPrepared,
     /// Parse error
     #[error(transparent)]
     Parse(#[from] std::net::AddrParseError),
@@ -41,14 +53,55 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
+struct PreparedServer {
+    router: tonic::transport::server::Router,
+    incoming: TcpListenerStream,
+}
+
+impl From<ConfigurationError> for Status {
+    fn from(error: ConfigurationError) -> Self {
+        match error {
+            ConfigurationError::Invalid { message } => Self::invalid_argument(message),
+            ConfigurationError::FailedPrecondition { message } => {
+                Self::failed_precondition(message)
+            }
+            ConfigurationError::Internal { message } => Self::internal(message),
+        }
+    }
+}
+
+fn configuration_response(snapshot: ConfigurationSnapshot) -> GetConfigurationResponse {
+    GetConfigurationResponse {
+        active_toml: snapshot.active_toml,
+        pending_toml: snapshot.pending_toml,
+        restart_required: snapshot.restart_required,
+    }
+}
+
 /// CDK Mint RPC Server
-#[derive(Clone)]
 #[allow(missing_debug_implementations)]
 pub struct MintRPCServer {
     socket_addr: SocketAddr,
     mint: Arc<Mint>,
+    configuration_manager: Arc<dyn ConfigurationManager>,
+    configuration_lock: Arc<Mutex<()>>,
     shutdown: Arc<Notify>,
+    prepared: Option<PreparedServer>,
     handle: Option<Arc<JoinHandle<Result<(), Error>>>>,
+}
+
+impl Clone for MintRPCServer {
+    fn clone(&self) -> Self {
+        Self {
+            socket_addr: self.socket_addr,
+            mint: self.mint.clone(),
+            configuration_manager: self.configuration_manager.clone(),
+            configuration_lock: self.configuration_lock.clone(),
+            shutdown: self.shutdown.clone(),
+            prepared: None,
+            handle: self.handle.clone(),
+        }
+    }
 }
 
 impl MintRPCServer {
@@ -58,11 +111,20 @@ impl MintRPCServer {
     /// * `addr` - The address to bind to
     /// * `port` - The port to listen on
     /// * `mint` - The Mint instance to serve
-    pub fn new(addr: &str, port: u16, mint: Arc<Mint>) -> Result<Self, Error> {
+    /// * `configuration_manager` - The daemon configuration manager
+    pub fn new(
+        addr: &str,
+        port: u16,
+        mint: Arc<Mint>,
+        configuration_manager: Arc<dyn ConfigurationManager>,
+    ) -> Result<Self, Error> {
         Ok(Self {
             socket_addr: format!("{addr}:{port}").parse()?,
             mint,
+            configuration_manager,
+            configuration_lock: Arc::new(Mutex::new(())),
             shutdown: Arc::new(Notify::new()),
+            prepared: None,
             handle: None,
         })
     }
@@ -77,16 +139,39 @@ impl MintRPCServer {
     /// - server.key: Server private key
     /// - ca.pem: CA certificate for client authentication
     pub async fn start(&mut self, tls_dir: Option<PathBuf>) -> Result<(), Error> {
-        tracing::info!("Starting RPC server {}", self.socket_addr);
+        self.prepare(tls_dir).await?;
+        self.start_prepared().await
+    }
+
+    /// Binds the RPC listener and validates the complete server configuration.
+    ///
+    /// This reserves the configured address but does not accept connections or
+    /// serve requests. Call [`Self::start_prepared`] after the daemon has
+    /// completed its startup activation.
+    pub async fn prepare(&mut self, tls_dir: Option<PathBuf>) -> Result<(), Error> {
+        if self.handle.is_some() {
+            return Err(Error::AlreadyStarted);
+        }
+        if self.prepared.is_some() {
+            return Err(Error::AlreadyPrepared);
+        }
+
+        tracing::info!("Preparing RPC server {}", self.socket_addr);
 
         #[cfg(not(target_arch = "wasm32"))]
         if rustls::crypto::CryptoProvider::get_default().is_none() {
             let _ = rustls::crypto::ring::default_provider().install_default();
         }
 
-        let server = match tls_dir {
+        // Bind before constructing and spawning the serving future so callers
+        // receive address-in-use and other listener errors synchronously.
+        let listener = tokio::net::TcpListener::bind(self.socket_addr).await?;
+        self.socket_addr = listener.local_addr()?;
+        let incoming = TcpListenerStream::new(listener);
+
+        let router = match tls_dir {
             Some(tls_dir) => {
-                tracing::info!("TLS configuration found, starting secure server");
+                tracing::info!("TLS configuration found, preparing secure server");
                 let server_pem_path = tls_dir.join("server.pem");
                 let server_key_path = tls_dir.join("server.key");
                 let ca_pem_path = tls_dir.join("ca.pem");
@@ -147,7 +232,7 @@ impl MintRPCServer {
                 )
             }
             None => {
-                tracing::warn!("No valid TLS configuration found, starting insecure server");
+                tracing::warn!("No valid TLS configuration found, preparing insecure server");
                 Server::builder().add_service(CdkMintServer::with_interceptor(
                     self.clone(),
                     create_version_check_interceptor(
@@ -158,11 +243,22 @@ impl MintRPCServer {
             }
         };
 
+        self.prepared = Some(PreparedServer { router, incoming });
+        Ok(())
+    }
+
+    /// Starts serving from a listener previously created by [`Self::prepare`].
+    pub async fn start_prepared(&mut self) -> Result<(), Error> {
+        if self.handle.is_some() {
+            return Err(Error::AlreadyStarted);
+        }
+
+        let PreparedServer { router, incoming } = self.prepared.take().ok_or(Error::NotPrepared)?;
+
         let shutdown = self.shutdown.clone();
-        let addr = self.socket_addr;
 
         self.handle = Some(Arc::new(tokio::spawn(async move {
-            let server = server.serve_with_shutdown(addr, async {
+            let server = router.serve_with_incoming_shutdown(incoming, async {
                 shutdown.notified().await;
             });
 
@@ -170,6 +266,7 @@ impl MintRPCServer {
             Ok(())
         })));
 
+        tracing::info!("Started RPC server {}", self.socket_addr);
         Ok(())
     }
 
@@ -178,12 +275,27 @@ impl MintRPCServer {
         self.shutdown.notify_one();
         if let Some(handle) = &self.handle {
             while !handle.is_finished() {
-                tracing::info!("Waitning for mint rpc server to stop");
+                tracing::info!("Waiting for mint RPC server to stop");
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }
 
         tracing::info!("Mint rpc server stopped");
+        Ok(())
+    }
+
+    async fn require_no_pending_configuration(&self) -> Result<(), Status> {
+        let snapshot = self
+            .configuration_manager
+            .get_configuration()
+            .await
+            .map_err(Status::from)?;
+        if snapshot.pending_toml.is_some() {
+            return Err(Status::failed_precondition(
+                "a complete configuration document is pending; restart to activate it or discard it before applying immediate configuration updates",
+            ));
+        }
+
         Ok(())
     }
 }
@@ -202,6 +314,7 @@ impl CdkMint for MintRPCServer {
         &self,
         _request: Request<GetInfoRequest>,
     ) -> Result<Response<GetInfoResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
         let info = self
             .mint
             .mint_info()
@@ -253,11 +366,62 @@ impl CdkMint for MintRPCServer {
         Ok(response)
     }
 
+    /// Returns the active and pending mint daemon configuration.
+    async fn get_configuration(
+        &self,
+        _request: Request<GetConfigurationRequest>,
+    ) -> Result<Response<GetConfigurationResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        let snapshot = self
+            .configuration_manager
+            .get_configuration()
+            .await
+            .map_err(Status::from)?;
+
+        Ok(Response::new(configuration_response(snapshot)))
+    }
+
+    /// Validates or applies a complete mint daemon configuration document.
+    async fn apply_configuration(
+        &self,
+        request: Request<ApplyConfigurationRequest>,
+    ) -> Result<Response<ApplyConfigurationResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        let request = request.into_inner();
+        let outcome = self
+            .configuration_manager
+            .apply_configuration(request.config_toml, request.validate_only)
+            .await
+            .map_err(Status::from)?;
+
+        Ok(Response::new(ApplyConfigurationResponse {
+            restart_required: outcome.restart_required,
+            changed_fields: outcome.changed_fields,
+        }))
+    }
+
+    /// Discards restart-required mint daemon configuration.
+    async fn discard_pending_configuration(
+        &self,
+        _request: Request<DiscardPendingConfigurationRequest>,
+    ) -> Result<Response<GetConfigurationResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        let snapshot = self
+            .configuration_manager
+            .discard_pending_configuration()
+            .await
+            .map_err(Status::from)?;
+
+        Ok(Response::new(configuration_response(snapshot)))
+    }
+
     /// Updates the mint's message of the day
     async fn update_motd(
         &self,
         request: Request<UpdateMotdRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let motd = request.into_inner().motd;
         let mut info = self
             .mint
@@ -279,6 +443,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateDescriptionRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let description = request.into_inner().description;
         let mut info = self
             .mint
@@ -300,6 +466,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateDescriptionRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let description = request.into_inner().description;
         let mut info = self
             .mint
@@ -321,6 +489,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNameRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let name = request.into_inner().name;
         let mut info = self
             .mint
@@ -342,6 +512,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateIconUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let icon_url = request.into_inner().icon_url;
 
         let mut info = self
@@ -364,6 +536,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateTosUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let tos_url = request.into_inner().tos_url;
 
         let mut info = self
@@ -386,6 +560,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let url = request.into_inner().url;
         let mut info = self
             .mint
@@ -409,6 +585,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let url = request.into_inner().url;
         let mut info = self
             .mint
@@ -436,6 +614,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateContactRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let request_inner = request.into_inner();
         let mut info = self
             .mint
@@ -461,6 +641,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateContactRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let request_inner = request.into_inner();
         let mut info = self
             .mint
@@ -486,6 +668,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut04Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let mut info = self
             .mint
             .mint_info()
@@ -563,6 +747,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut05Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let mut info = self
             .mint
             .mint_info()
@@ -638,6 +824,8 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateQuoteTtlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
+        self.require_no_pending_configuration().await?;
         let current_ttl = self
             .mint
             .quote_ttl()
@@ -664,6 +852,7 @@ impl CdkMint for MintRPCServer {
         &self,
         _request: Request<GetQuoteTtlRequest>,
     ) -> Result<Response<GetQuoteTtlResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
         let ttl = self
             .mint
             .quote_ttl()
@@ -681,6 +870,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut04QuoteRequest>,
     ) -> Result<Response<UpdateNut04QuoteRequest>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
         let request = request.into_inner();
         let quote_id = request
             .quote_id
@@ -797,6 +987,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<RotateNextKeysetRequest>,
     ) -> Result<Response<RotateNextKeysetResponse>, Status> {
+        let _configuration = self.configuration_lock.lock().await;
         let request = request.into_inner();
 
         let unit = CurrencyUnit::from_str(&request.unit)
@@ -840,9 +1031,68 @@ mod tests {
 
     use super::*;
     use crate::cdk_mint_server::CdkMint;
-    use crate::{GetInfoRequest, UpdateTosUrlRequest};
+    use crate::{
+        ApplyConfigurationOutcome, ApplyConfigurationRequest, ConfigurationError,
+        ConfigurationManager, ConfigurationSnapshot, DiscardPendingConfigurationRequest,
+        GetConfigurationRequest, GetInfoRequest, UpdateTosUrlRequest,
+    };
+
+    #[derive(Debug)]
+    struct TestConfigurationManager {
+        snapshot: Mutex<ConfigurationSnapshot>,
+        apply_outcome: ApplyConfigurationOutcome,
+        last_apply: Mutex<Option<(String, bool)>>,
+    }
+
+    impl Default for TestConfigurationManager {
+        fn default() -> Self {
+            Self {
+                snapshot: Mutex::new(ConfigurationSnapshot {
+                    active_toml: "format_version = 1\n".to_string(),
+                    pending_toml: None,
+                    restart_required: false,
+                }),
+                apply_outcome: ApplyConfigurationOutcome {
+                    restart_required: true,
+                    changed_fields: vec!["ln".to_string()],
+                },
+                last_apply: Mutex::new(None),
+            }
+        }
+    }
+
+    #[tonic::async_trait]
+    impl ConfigurationManager for TestConfigurationManager {
+        async fn get_configuration(&self) -> Result<ConfigurationSnapshot, ConfigurationError> {
+            Ok(self.snapshot.lock().await.clone())
+        }
+
+        async fn apply_configuration(
+            &self,
+            config_toml: String,
+            validate_only: bool,
+        ) -> Result<ApplyConfigurationOutcome, ConfigurationError> {
+            *self.last_apply.lock().await = Some((config_toml, validate_only));
+            Ok(self.apply_outcome.clone())
+        }
+
+        async fn discard_pending_configuration(
+            &self,
+        ) -> Result<ConfigurationSnapshot, ConfigurationError> {
+            let mut snapshot = self.snapshot.lock().await;
+            snapshot.pending_toml = None;
+            snapshot.restart_required = false;
+            Ok(snapshot.clone())
+        }
+    }
 
     async fn create_test_rpc_server() -> MintRPCServer {
+        create_test_rpc_server_with_manager(Arc::new(TestConfigurationManager::default())).await
+    }
+
+    async fn create_test_rpc_server_with_manager(
+        configuration_manager: Arc<dyn ConfigurationManager>,
+    ) -> MintRPCServer {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
 
         let mut mint_builder = MintBuilder::new(db.clone());
@@ -890,9 +1140,125 @@ mod tests {
         MintRPCServer {
             socket_addr: "127.0.0.1:0".parse().unwrap(),
             mint: Arc::new(mint),
+            configuration_manager,
+            configuration_lock: Arc::new(Mutex::new(())),
             shutdown: Arc::new(Notify::new()),
+            prepared: None,
             handle: None,
         }
+    }
+
+    #[tokio::test]
+    async fn start_reports_listener_bind_errors() {
+        let occupied_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should bind");
+        let occupied_address = occupied_listener
+            .local_addr()
+            .expect("test listener should have a local address");
+        let mut server = create_test_rpc_server().await;
+        server.socket_addr = occupied_address;
+
+        let error = server
+            .start(None)
+            .await
+            .expect_err("starting on an occupied address must fail");
+
+        assert!(
+            matches!(error, Error::Io(source) if source.kind() == std::io::ErrorKind::AddrInUse)
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_server_does_not_serve_until_started() {
+        let mut server = create_test_rpc_server().await;
+
+        server
+            .prepare(None)
+            .await
+            .expect("RPC server should prepare");
+
+        assert!(server.prepared.is_some());
+        assert!(server.handle.is_none());
+
+        server
+            .start_prepared()
+            .await
+            .expect("prepared RPC server should start");
+
+        assert!(server.prepared.is_none());
+        assert!(server.handle.is_some());
+        server.stop().await.expect("RPC server should stop");
+    }
+
+    #[tokio::test]
+    async fn start_prepared_requires_prepare() {
+        let mut server = create_test_rpc_server().await;
+
+        let error = server
+            .start_prepared()
+            .await
+            .expect_err("unprepared RPC server must not start");
+
+        assert!(matches!(error, Error::NotPrepared));
+    }
+
+    #[tokio::test]
+    async fn configuration_handlers_delegate_to_manager() {
+        let manager = Arc::new(TestConfigurationManager::default());
+        {
+            let mut snapshot = manager.snapshot.lock().await;
+            snapshot.pending_toml = Some("format_version = 1\nname = \"pending\"\n".to_string());
+            snapshot.restart_required = true;
+        }
+        let server = create_test_rpc_server_with_manager(manager.clone()).await;
+
+        let snapshot = server
+            .get_configuration(Request::new(GetConfigurationRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(snapshot.active_toml, "format_version = 1\n");
+        assert!(snapshot.pending_toml.is_some());
+        assert!(snapshot.restart_required);
+
+        let document = "format_version = 1\nname = \"new\"\n".to_string();
+        let outcome = server
+            .apply_configuration(Request::new(ApplyConfigurationRequest {
+                config_toml: document.clone(),
+                validate_only: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(outcome.restart_required);
+        assert_eq!(outcome.changed_fields, vec!["ln"]);
+        assert_eq!(*manager.last_apply.lock().await, Some((document, true)));
+
+        let snapshot = server
+            .discard_pending_configuration(Request::new(DiscardPendingConfigurationRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(snapshot.pending_toml.is_none());
+        assert!(!snapshot.restart_required);
+    }
+
+    #[test]
+    fn configuration_errors_map_to_tonic_status_codes() {
+        let invalid = Status::from(ConfigurationError::Invalid {
+            message: "bad input".to_string(),
+        });
+        let precondition = Status::from(ConfigurationError::FailedPrecondition {
+            message: "not initialized".to_string(),
+        });
+        let internal = Status::from(ConfigurationError::Internal {
+            message: "database unavailable".to_string(),
+        });
+
+        assert_eq!(invalid.code(), tonic::Code::InvalidArgument);
+        assert_eq!(precondition.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(internal.code(), tonic::Code::Internal);
     }
 
     #[tokio::test]
@@ -942,5 +1308,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.into_inner().tos_url.unwrap(), tos);
+    }
+
+    #[tokio::test]
+    async fn immediate_configuration_updates_are_rejected_while_a_document_is_pending() {
+        let manager = Arc::new(TestConfigurationManager::default());
+        {
+            let mut snapshot = manager.snapshot.lock().await;
+            snapshot.pending_toml = Some("name = \"pending\"\n".to_string());
+            snapshot.restart_required = true;
+        }
+        let server = create_test_rpc_server_with_manager(manager).await;
+        let original_name = server.mint.mint_info().await.unwrap().name;
+
+        let error = server
+            .update_name(Request::new(UpdateNameRequest {
+                name: "must not be applied".to_string(),
+            }))
+            .await
+            .expect_err("immediate update must be rejected");
+
+        assert_eq!(error.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(server.mint.mint_info().await.unwrap().name, original_name);
     }
 }
