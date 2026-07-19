@@ -56,7 +56,7 @@ is well established but its root cause is not.
 | 8 | `F3` | Local BDK reconciliation is inside the fatal apply boundary | High | 98% | Session/member; quorum loss if repeated | Completed |
 | 9 | `W2` | Melt-status recovery lets one invalid share poison an honest threshold | High availability / Medium scope | 98% | Wallet melt recovery | Completed |
 | 10 | `F4` | Apply and backup retries have no terminal budget | High | 97% | Session/member starvation | Completed |
-| 11 | `P3` | Exact evidence quorum is not backed by an enforced evidence model | High | 97% | Quote/proofs | Not started |
+| 11 | `P3` | Exact evidence quorum is not backed by an enforced evidence model | High | 97% | Quote/proofs | Completed |
 | 12 | `R1` | Recovery candidate fetch is pinned to the first source | High | 97% | Startup recovery | Not started |
 | 13 | `A1` | Aleph queues lack bounded backpressure | High security gate | 97% | Process/quorum resource exhaustion | Not started |
 | 14 | `R4` | Finalized-item catch-up response-count mismatch remains unexplained | High investigation | 95% failure / 55% cause | Member recovery | Not started |
@@ -71,6 +71,7 @@ is well established but its root cause is not.
 | 23 | `DB-002` | Payment backends do not uniformly honor a caller-supplied recovery key | Medium liveness | 95% | Quote liveness; standalone follow-up | Not started |
 | 24 | `DB-003` | First observer can fix incorrect immutable deposit fields permanently | Critical | 99% | On-chain quote/funds | Not started |
 | 25 | `DB-004` | Rebuilt wallet connectors cannot supply original melt change outputs | Medium availability | 95% | Wallet melt recovery after restart | Not started |
+| 26 | `DB-005` | Payment evidence trust model is not committed or validated | High | 99% | Quote/proofs; all independent-backend liquidity | Not started |
 
 Discovered bugs are appended after the existing ranked milestones in discovery
 order with their legacy IDs preserved; `DB-001` was recorded on 2026-07-18
@@ -520,6 +521,41 @@ legacy ID and discovery history.
   and recovery with one invalid member and show the honest threshold still
   aggregates.
 - **Proposed position in the milestone order:** after `DB-003` (position 25).
+
+### DB-005 — Payment evidence trust model is not committed or validated
+
+- **Discovery date and originating milestone:** 2026-07-18, milestone 11
+  (`P3`) confirmation.
+- **Status:** Queued
+- **Proposed severity and confidence:** High; 99% source-proven and
+  demonstrated.
+- **Faulty/Byzantine actor or backend precondition:** members with
+  independent payment backends (no shared read-only access, origin proof,
+  threshold gateway, or on-chain proof).
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** every member probes only its local payment processor with the
+  quote's lookup id (`crates/cdk/src/mint/federation.rs:1260-1355`). For an
+  invoice created on one member's node, other members cannot query it; the
+  proposer alone observes and the configured member quorum never forms, so
+  the quote can never become paid. Executed baseline on 2026-07-18:
+  `proposer_only_invoice_visibility_cannot_form_payment_quorum` proves the
+  dead end with two independent fake backends under `member_quorum(2)`.
+- **Why distinct from an existing finding:** milestone 11 fixed the backend
+  iteration-order defect in settlement identity selection. This bug is the
+  missing committed and validated evidence trust model itself: config
+  currently records no enforceable shared-backend/origin-proof/gateway/
+  on-chain choice
+  (`docs/federated-cashu-payment-trust-model.md` says such a model must only
+  be added with its actual evidence verifier, admission rules, and failure
+  tests).
+- **Likely simplest federation-only correction and required proof:** commit
+  one evidence trust model with its verifier (for example: caller-supplied
+  `PaymentIdentifier::QuoteId` correlation plus a contract-honoring backend
+  gateway, or origin-proof forwarding of the proposer's payment evidence
+  that other members can independently verify), reject configurations whose
+  processors cannot satisfy it, and prove with independent backends that a
+  quote resolves under the committed model.
+- **Proposed position in the milestone order:** after `DB-004` (position 26).
 
 No other additional bugs have yet been recorded through this milestone workflow.
 
@@ -2289,23 +2325,106 @@ pending-mempool item limit.
 
 ### 11. Exact evidence quorum is not backed by an enforced evidence model (`P3`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with two executed focused harnesses
+against the unmodified pre-fix worktree, driving the exact probe path
+(`Mint::probe_federation_mint_quote_payment`):
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk --features federation,mint --lib mint_payment_observation_identity_is_canonical_across_backend_orderings -- --nocapture`
 
-**Fix check and evaluation:** Not run
+FAILED with `backend return order must not split settlement identity:
+Some(CustomId(payment-b)) vs Some(CustomId(payment-a))`: two members polling
+identical payment sets in opposite backend return orders selected different
+settlement identities, so their exact-match evidence groups split and the
+configured quorum can never form — the reported iteration-order defect.
 
-**Commit subject:** Not assigned
+`cargo test -p cdk --features federation,mint --lib proposer_only_invoice_visibility_cannot_form_payment_quorum -- --nocapture`
 
-**Milestone observations:** None yet
+PASSED as the limitation baseline it pins: member 1 observes its own
+backend-created invoice, member 2's independent backend cannot see it, the
+single observation is accepted everywhere, and the quote still never becomes
+paid under `member_quorum(2)` — the reported proposer-only visibility dead
+end. No production code had been edited; only the harnesses and one backend
+double in `crates/cdk/src/mint/federation/tests/payment_observation.rs` were
+added.
+
+**Minimal fix:** One federation-only change in
+`crates/cdk/src/mint/federation.rs`
+(`Mint::probe_federation_mint_quote_payment`): settlement identity is now
+canonical. The probe selects the smallest durable payment label among newly
+accepted payments (and among the quote's recorded payments on the fallback
+path) instead of the last one in backend return order, so every honest
+member derives the same settlement identifier from the same visible payment
+set and exact-match evidence groups agree across members. Payment
+accumulation, skip/dedup rules, and observation shape are unchanged. No
+standalone code or wire format changed.
+
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact
+confirmation scenario. Pre-fix run (recorded above): FAILED with the split
+identity `Some(CustomId(payment-b)) vs Some(CustomId(payment-a))`. Post-fix:
+
+`cargo test -p cdk --features federation,mint --lib mint_payment_observation_identity_is_canonical_across_backend_orderings -- --nocapture`
+
+`1 passed`: two members polling the same payment set in opposite backend
+return orders now derive the identical settlement identity and their
+observations match. The proposer-only visibility baseline
+(`proposer_only_invoice_visibility_cannot_form_payment_quorum`) continues
+to pin the `DB-005` dead end.
+
+Broader evaluation on 2026-07-18:
+
+- `cargo fmt -p cdk -- --check` — clean for the milestone's code.
+- `cargo test -p cdk --features federation,mint --lib` — `781 passed; 0
+  failed`, including both harnesses and all neighboring mint payment
+  observation tests.
+- `cargo test -p cdk-axum --features federation` — `499 passed; 0 failed; 2
+  ignored`.
+- `cargo test -p cdk --lib` (default features, no federation) — `540
+  passed; 0 failed`, standalone unchanged.
+- `cargo check -p cdk --no-default-features` — passed.
+- `cargo clippy -p cdk --features federation,mint --all-targets -- -D
+  warnings` — fails only on the same 9 pre-existing `crates/cdk` lints
+  recorded in milestone 2 (none in the changed code after a redundant
+  closure was simplified).
+
+Not run: a real CLN/LND demonstration of cross-member invoice
+(non-)visibility; the visibility dead end is reproduced faithfully with two
+independent fake backends and remains `DB-005`.
+
+**Commit subject:** `fix: canonicalize federation mint payment settlement identity`
+
+**Milestone observations:** 2026-07-18 — Milestone 10 is committed
+(`d9c4d286c`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the probe's payment selection, the
+exact-match grouping, the observation policy configuration surface, and the
+payment trust model document are inspected.
+
+2026-07-18 — Confirmation recorded above. Scope decision: the confirmed
+mechanism for this milestone is the backend iteration-order defect in
+settlement identity selection (concretely fixable). The proposer-only
+visibility dead end and the missing committed/validated evidence trust
+model (shared read-only backend, origin proof, threshold gateway, or
+on-chain proof, with its verifier and admission rules) are a distinct
+protocol design effort and are recorded as discovered bug `DB-005`. The
+`n-of-n` payment-quorum shape is a documented operator availability
+trade-off (like milestone 7's DKG boundary), not an accident.
+
+2026-07-18 — Fix and evaluation complete; milestone kept. The
+canonical-smallest durable label is a pure function of the visible payment
+set, so members that have observed the same set derive the same identity
+regardless of poll order or arrival timing per poll; timing skew between
+polls (one member seeing a strict prefix) remains the exact-match surface
+resolved by later polls converging on the same set.
 
 **Severity:** High
 
 **Confidence:** 97% — source-proven configuration gap
 
-**Finding status:** Open, source-proven configuration/design gap
+**Finding status:** Resolved for the iteration-order mechanism on
+2026-07-18 with red-before-green runtime proof; the missing committed
+evidence trust model and proposer-only visibility dead end are tracked as
+discovered bug `DB-005`
 
 **Fault:** Independent payment backends, backend-specific proof/ID formats,
 non-canonical result ordering, or honest members with different visibility
@@ -2343,14 +2462,25 @@ a threshold gateway, or an on-chain proof:
 An operator may also configure an `n-of-n` payment quorum, deliberately giving
 one failed observer/backend a veto.
 
+Settlement identity is now canonical: the probe selects the smallest durable
+payment label instead of the last one in backend return order, so exact-match
+evidence groups agree across members given the same visible payment set. The
+retained regression proves opposite backend orderings derive the identical
+identity. The remaining gaps — the missing committed/validated evidence
+trust model and proposer-only invoice visibility — are `DB-005`.
+
 **Most likely cause when observed:** multiple accepted observation rows exist
 for a quote but are split by payment ID/proof/amount, or only the quote creator
-can see the invoice. Consensus stays healthy.
+can see the invoice. Consensus stays healthy. On a post-fix build, split
+groups by backend return order no longer occur; a quote stuck with only the
+creator's observation points to `DB-005`.
 
 **Required correction:** commit and validate an actual evidence trust model;
 canonicalize settlement identity independently of backend iteration order; and
 reject configurations whose processors cannot share/verify the accepted lookup
-evidence.
+evidence. The canonicalization clause is implemented and proven by this
+milestone; the trust-model commitment and configuration rejection are
+`DB-005`.
 
 ### 12. Recovery candidate fetch is pinned to the first source (`R1`)
 
@@ -2789,8 +2919,8 @@ not currently classified as an open deadlock.
 | A member still halts with `peer ... digest mismatch` | Pre-fix build or regression of 1 (`F1`) | Build/commit identity, signed peer statuses, live-session teardown state |
 | One member halts after an on-chain operation; peers continue | `DB-001` or 24 (`DB-003`); pre-fix builds: 8 (`F3`) | BDK reconciliation error, BDK-degraded reason, local BDK DB state |
 | Session remains live but application index/backlog stops growing | 13 (`A1`); pre-fix builds: 10 (`F4`) | Blocked operation index, retry-budget log, DB lock age, queue depth/bytes |
-| Melt proofs stay pending with healthy consensus | 11 (`P3`), 19 (`P6`), or `DB-002`; pre-fix builds: 5 (`P1`), 6 (`P2`) | Accepted envelope author, lease epoch vs journal tip, saga state, lookup ID, per-member backend observations |
-| Mint quote is paid externally but never becomes paid in federation | 11 (`P3`), then 6 (`P2`) | Per-member lookup visibility and exact evidence group differences |
+| Melt proofs stay pending with healthy consensus | 26 (`DB-005`), 19 (`P6`), or `DB-002`; pre-fix builds: 5 (`P1`), 6 (`P2`) | Accepted envelope author, lease epoch vs journal tip, saga state, lookup ID, per-member backend observations |
+| Mint quote is paid externally but never becomes paid in federation | 26 (`DB-005`), then 6 (`P2`) | Per-member lookup visibility and exact evidence group differences |
 | UTXO changes to `Reorged`/`Quarantined` | Post-fix: quorum evidence or 24 (`DB-003`); pre-fix builds: 4 (`P5`) | Every member's reorg/deposit evidence, first observation author, block/txout fields, every member's raw chain-source result |
 | Restarted member never adopts a known checkpoint | 12 (`R1`), 15 (`R2`), or 14 (`R4`) | Advertising peers, selected source, transferred bytes, page cursors/counts |
 | Wallet hangs before sending value operation | 17 (`W1`) | In-flight `get_mint_info`/`get_mint_keys` member calls and fanout slots |

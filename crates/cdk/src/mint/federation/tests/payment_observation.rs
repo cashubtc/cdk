@@ -1,5 +1,241 @@
 use super::*;
 
+/// Payment backend double whose incoming status returns one fixed,
+/// deliberately ordered payment list, to reproduce backend return-order
+/// dependence in settlement identity selection.
+struct OrderedIncomingPaymentProcessor {
+    payments: Vec<WaitPaymentResponse>,
+}
+
+#[async_trait]
+impl MintPayment for OrderedIncomingPaymentProcessor {
+    type Err = payment::Error;
+
+    async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor.get_settings().await
+    }
+
+    async fn create_incoming_payment_request(
+        &self,
+        options: IncomingPaymentOptions,
+    ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .create_incoming_payment_request(options)
+            .await
+    }
+
+    async fn get_payment_quote(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<PaymentQuoteResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .get_payment_quote(unit, options)
+            .await
+    }
+
+    async fn make_payment(
+        &self,
+        unit: &CurrencyUnit,
+        options: OutgoingPaymentOptions,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .make_payment(unit, options)
+            .await
+    }
+
+    async fn wait_payment_event(
+        &self,
+    ) -> Result<Pin<Box<dyn futures::Stream<Item = Event> + Send>>, Self::Err> {
+        BackendAgnosticPaymentProcessor.wait_payment_event().await
+    }
+
+    fn is_payment_event_stream_active(&self) -> bool {
+        BackendAgnosticPaymentProcessor.is_payment_event_stream_active()
+    }
+
+    fn cancel_payment_event_stream(&self) {
+        BackendAgnosticPaymentProcessor.cancel_payment_event_stream();
+    }
+
+    async fn check_incoming_payment_status(
+        &self,
+        _payment_identifier: &PaymentIdentifier,
+    ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+        Ok(self.payments.clone())
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        payment_identifier: &PaymentIdentifier,
+    ) -> Result<MakePaymentResponse, Self::Err> {
+        BackendAgnosticPaymentProcessor
+            .check_outgoing_payment(payment_identifier)
+            .await
+    }
+}
+
+fn ordered_payment(payment_id: &str, amount_sat: u64) -> WaitPaymentResponse {
+    WaitPaymentResponse {
+        payment_identifier: PaymentIdentifier::CustomId("shared-invoice".to_string()),
+        payment_amount: Amount::new(amount_sat * 1_000, CurrencyUnit::Msat),
+        payment_id: payment_id.to_string(),
+    }
+}
+
+#[tokio::test]
+async fn mint_payment_observation_identity_is_canonical_across_backend_orderings() {
+    let mut configs = runtime_configs();
+    let first_config = configs.remove(0);
+    let second_config = configs.remove(0);
+    let (first_mint, _first_store) = federated_test_mint_with_payment_processor(
+        first_config.clone(),
+        Arc::new(OrderedIncomingPaymentProcessor {
+            payments: vec![
+                ordered_payment("payment-a", 60),
+                ordered_payment("payment-b", 60),
+            ],
+        }),
+    )
+    .await;
+    let (second_mint, _second_store) = federated_test_mint_with_payment_processor(
+        second_config.clone(),
+        Arc::new(OrderedIncomingPaymentProcessor {
+            payments: vec![
+                ordered_payment("payment-b", 60),
+                ordered_payment("payment-a", 60),
+            ],
+        }),
+    )
+    .await;
+
+    let mut journal = InMemoryFederationJournal::new();
+    let quote_id = QuoteId::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        first_config.mint_quote_operation(
+            quote_id.clone(),
+            bolt11_quote_request(100),
+            bolt11_quote_response(&quote_id, 100),
+        ),
+    );
+    persist_and_apply_entry(&first_mint, &quote_entry).await;
+    persist_and_apply_entry(&second_mint, &quote_entry).await;
+
+    // Both backends report the same two payments in opposite orders. Exact
+    // quorum evidence must select one identical settlement identity anyway.
+    let first_observation = first_mint
+        .probe_federation_mint_quote_payment(&quote_id)
+        .await
+        .expect("first probe")
+        .expect("first observation");
+    let second_observation = second_mint
+        .probe_federation_mint_quote_payment(&quote_id)
+        .await
+        .expect("second probe")
+        .expect("second observation");
+
+    assert!(
+        first_observation.matches_payment_evidence(&second_observation),
+        "backend return order must not split settlement identity: {:?} vs {:?}",
+        first_observation.payment_id,
+        second_observation.payment_id
+    );
+}
+
+#[tokio::test]
+async fn proposer_only_invoice_visibility_cannot_form_payment_quorum() {
+    let mut configs = runtime_configs();
+    let mut first_config = configs.remove(0);
+    let mut second_config = configs.remove(0);
+    first_config.public_config.payment_observation_policy =
+        FederationPaymentObservationPolicy::member_quorum(2);
+    second_config.public_config.payment_observation_policy =
+        FederationPaymentObservationPolicy::member_quorum(2);
+    let (first_mint, first_store) = federated_test_mint(first_config.clone()).await;
+    let (second_mint, second_store) = federated_test_mint(second_config.clone()).await;
+
+    // Member 1 creates a real quote on its own backend; member 2's backend
+    // never sees that invoice.
+    let backend_response = first_mint
+        .get_mint_quote(MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+            amount: Amount::from(100),
+            unit: CurrencyUnit::Sat,
+            description: None,
+            pubkey: None,
+        }))
+        .await
+        .expect("backend mint quote");
+    let quote_id = backend_response.quote().clone();
+    let MintQuoteResponse::Bolt11(bolt11_response) = &backend_response else {
+        panic!("expected bolt11 quote response");
+    };
+    let invoice = bolt11_response.request.clone();
+    let payment_lookup_id = PaymentIdentifier::PaymentHash(
+        *cdk_common::Bolt11Invoice::from_str(&invoice)
+            .expect("backend invoice")
+            .payment_hash()
+            .as_ref(),
+    );
+    let operation_response = MintQuoteResponse::Bolt11(bolt11_response.clone().into());
+    // The fake backend registers the invoice payment in a spawned task.
+    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+    let mut journal = InMemoryFederationJournal::new();
+    let quote_entry = appended_entry(
+        &mut journal,
+        first_config.mint_quote_operation_with_lookup_id(
+            quote_id.clone(),
+            payment_lookup_id,
+            MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+                amount: Amount::from(100),
+                unit: CurrencyUnit::Sat,
+                description: None,
+                pubkey: None,
+            }),
+            operation_response,
+        ),
+    );
+    persist_and_apply_entry(&first_mint, &quote_entry).await;
+    persist_and_apply_entry(&second_mint, &quote_entry).await;
+
+    let first_observation = first_mint
+        .probe_federation_mint_quote_payment(&quote_id)
+        .await
+        .expect("first probe");
+    let second_observation = second_mint
+        .probe_federation_mint_quote_payment(&quote_id)
+        .await
+        .expect("second probe");
+    let first_observation =
+        first_observation.expect("the proposer must observe its own invoice payment");
+    assert!(
+        second_observation.is_none(),
+        "the other member's independent backend cannot see the proposer's invoice"
+    );
+
+    // Even with the proposer's observation accepted everywhere, the
+    // two-member quorum can never form and the quote never becomes paid.
+    let observation_entry = appended_entry(
+        &mut journal,
+        first_config.operation_envelope(FederationOperation::MintQuotePayment(first_observation)),
+    );
+    persist_and_apply_entry(&first_mint, &observation_entry).await;
+    persist_and_apply_entry(&second_mint, &observation_entry).await;
+    for store in [&first_store, &second_store] {
+        let quote = store
+            .get_mint_quote(&quote_id)
+            .await
+            .expect("quote lookup")
+            .expect("quote");
+        assert_ne!(
+            quote.state(),
+            MintQuoteState::Paid,
+            "proposer-only visibility must not form the payment quorum"
+        );
+    }
+}
+
 fn mint_payment_observation_envelope(
     runtime_config: &FederationRuntimeConfig,
     quote: &QuoteId,

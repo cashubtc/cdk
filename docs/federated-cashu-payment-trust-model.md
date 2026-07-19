@@ -41,6 +41,15 @@ shared read-only backend, origin proof, threshold gateway, or onchain proof.
 Such a model should be added to consensus config only together with its actual
 evidence verifier, admission rules, and failure tests.
 
+> **Update 2026-07-18:** settlement identity is now canonical — mint payment
+> observations select the smallest durable payment label instead of the last
+> payment in backend return order, so exact-match evidence groups agree across
+> members given the same visible payment set (milestone `P3` in
+> `docs/federated-cashu-consensus-deadlocks-2026-07-18.md` with
+> red-before-green proof). The remaining trust-model commitment and the
+> proposer-only invoice visibility dead end are tracked as discovered bug
+> `DB-005` in that ledger.
+
 Quorum policies must require at least the configured consensus threshold and no
 more than the member count. This prevents a single malicious member from marking
 a quote paid or settled in a production configuration, but it does not by

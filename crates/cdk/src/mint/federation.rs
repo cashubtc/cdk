@@ -1312,6 +1312,7 @@ impl Mint {
             .await?;
         let mut observed_quote = quote.clone();
         let mut payment_id = None;
+        let mut payment_label: Option<String> = None;
 
         for payment in payments {
             let candidate_payment_id =
@@ -1326,7 +1327,16 @@ impl Mint {
                 continue;
             }
             let amount = payment.payment_amount.convert_to(&observed_quote.unit)?;
-            payment_id = Some(candidate_payment_id);
+            // Settlement identity is canonical: every member selects the
+            // smallest durable payment label, independent of backend return
+            // order, so exact-match evidence groups agree across members.
+            if payment_label
+                .as_deref()
+                .is_none_or(|current| durable_payment_label.as_str() < current)
+            {
+                payment_label = Some(durable_payment_label);
+                payment_id = Some(candidate_payment_id);
+            }
             observed_quote.add_payment(amount, payment.payment_id, None)?;
         }
 
@@ -1338,8 +1348,9 @@ impl Mint {
         if payment_id.is_none() {
             payment_id = observed_quote
                 .payments
-                .last()
-                .map(|payment| federation_payment_identifier_from_label(&payment.payment_id));
+                .iter()
+                .map(|payment| federation_payment_identifier_from_label(&payment.payment_id))
+                .min_by_key(federation_payment_identifier_label);
         }
 
         Ok(Some(FederationMintQuotePaymentObservation {
