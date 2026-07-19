@@ -1,0 +1,52 @@
+[package]
+name = "cdk-bark"
+version.workspace = true
+edition.workspace = true
+authors = ["CDK Developers"]
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Federated Bark BOLT11 backend for CDK"
+
+[features]
+default = []
+federation-bark = [
+    "dep:anyhow",
+    "dep:async-trait",
+    "dep:bark",
+    "dep:bitcoin",
+    "dep:cdk-common",
+    "dep:cdk-frost-bark",
+    "dep:futures",
+    "dep:serde",
+    "dep:sha2",
+    "dep:thiserror",
+    "dep:tokio",
+]
+# This feature only relaxes trusted-dealer admission for local/regtest tests.
+federation-test-utils = ["federation-bark"]
+
+[dependencies]
+anyhow = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+# Temporary local development source. Before this milestone is committed this
+# must be replaced by a remotely fetchable immutable revision of the reviewed
+# frost-wallet commit; absolute/floating dependencies are forbidden.
+bark = { package = "bark-wallet", path = "../../../../../../git/bark/bark", default-features = false, features = ["bitcoind-rpc", "native", "sqlite", "tls-webpki-roots"], optional = true }
+bitcoin = { workspace = true, optional = true }
+cdk-common = { workspace = true, features = ["federation", "mint"], optional = true }
+cdk-frost-bark = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync"], optional = true }
+
+[dev-dependencies]
+cashu.workspace = true
+cdk-frost.workspace = true
+rand_chacha = "0.3"
+
+[lints]
+workspace = true

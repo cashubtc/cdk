@@ -79,6 +79,7 @@ cdk-bdk = { path = "./crates/cdk-bdk", version = "=0.18.0", default-features = f
 cdk-frost = { path = "./crates/cdk-frost", version = "=0.18.0" }
 cdk-frost-bip32 = { path = "./crates/cdk-frost-bip32", version = "=0.18.0" }
 cdk-frost-bark = { path = "./crates/cdk-frost-bark", version = "=0.18.0" }
+cdk-bark = { path = "./crates/cdk-bark", version = "=0.18.0", default-features = false }
 clap = { version = "4.5.31", features = ["derive"] }
 ciborium = { version = "0.2.2", default-features = false, features = ["std"] }
 cbor-diag = "0.1.12"

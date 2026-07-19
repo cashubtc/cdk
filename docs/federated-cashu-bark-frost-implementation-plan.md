@@ -2,7 +2,7 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5 complete, no production Bark payment backend exists yet
+Status: implementation in progress; Milestones 0-5 complete, Milestone 6 awaits dependency publication, no production Bark payment backend exists yet
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -27,7 +27,7 @@ machine-specific metadata in this document.
 | 3. CDK Bark application | Complete (2026-07-19) | Frozen registration/locator adapter, v2 Bark-capable config, dual-DKG activation, sealed-root registration, 2-of-3 and 3-of-5 vectors, Bark byte-agreement and scope rejection tests passed | `feat: register Bark FROST application` |
 | 4. Durable MuSig2 and DH | Complete (2026-07-19) | Protocol-separated durable ledgers, atomic attempt/nonces, restart-safe exact retries, write-failure matrix, transparent-crypto agreement, and ordinary-FROST coexistence passed | `feat: persist federated custody protocols` |
 | 5. Custody transport | Complete (2026-07-19) | Signed bounded REST routes, durable participant handlers, timeout/backpressure-aware bounded collection, exact retries, stale/mixed-attempt rejection, and higher-attempt signer replacement passed | `feat: add federated Bark custody transport` |
-| 6. `cdk-bark` skeleton | Pending | — | — |
+| 6. `cdk-bark` skeleton | In progress (dependency publication gate) | Local construction, custody, redaction, feature-isolation, strict-clippy, and standalone regression gates pass; immutable Bark source is not remotely fetchable yet | `feat: add federated Bark runtime skeleton` (local-only progress commit) |
 | 7. Bark operations | Pending | — | — |
 | 8. SQL projection | Pending | — | — |
 | 9. Receive secrets | Pending | — | — |
@@ -1878,6 +1878,82 @@ Exit criteria:
 - stale and mixed-attempt shares are rejected.
 
 ### Milestone 6: `cdk-bark` skeleton and fail-closed construction
+
+Status: implementation and local verification complete; publishable milestone
+completion and final provenance evidence are waiting for a remotely fetchable
+immutable Bark revision.
+
+Local progress commit subject: `feat: add federated Bark runtime skeleton`.
+This commit is intentionally not publishable while it contains the temporary
+developer-checkout dependency; it preserves reviewed work without representing
+the dependency-publication exit criterion as complete.
+
+In-progress implementation record:
+
+- added an empty-by-default `cdk-bark` crate and a separate
+  `federation-bark` mintd feature, so neither the crate's Bark-backed modules
+  nor `bark-wallet` enter ordinary federation or standalone dependency graphs;
+- added typed, redacted errors; an immutable federation/application/custody
+  scope; explicit member-local public bindings; store readiness; validated
+  satoshi limits; and a manual local-config `Debug` implementation that never
+  formats Bark endpoints, credentials, paths, or the operational seed;
+- derived a stable Bark `KeySourceDescriptor::frost` fingerprint from the
+  accepted federation, application registration, threshold roster, verification
+  shares, group key, and locator version;
+- implemented `CdkFrostVtxoCustody::descriptor()` and public locator derivation
+  through `cdk-frost-bark`, while every signature- or DH-releasing method stays
+  consensus-only until Milestone 7 installs accepted-state authorization;
+- opened Bark through `Wallet::open_with_custody` using a separate member-local
+  operational seed and the restricted `FederationWallet` facade, with daemon
+  mutation disabled at construction;
+- validated the persisted Bark network, operational-seed fingerprint, exact
+  FROST custody descriptor, Ark server key, and mailbox key before exposing the
+  runtime;
+- added bounded ready/behind/degraded reporting and monotonic local-frontier
+  tracking; and
+- added a non-mutating `MintPayment` adapter that obtains its limits from the
+  validated runtime and rejects invoice creation, quoting, payment, and status
+  mutation until the corresponding consensus operation families exist.
+
+Local verification evidence:
+
+```text
+cargo test -p cdk-bark --features federation-bark --offline
+  4 passed; doc tests passed
+
+cargo clippy -p cdk-bark --all-targets --features federation-bark --offline -- -D warnings
+  passed for cdk-bark; two pre-existing Bark dependency warnings remain visible
+
+cargo check -p cdk-mintd --no-default-features --features federation-bark,sqlite --offline
+  passed (existing unrelated mintd warnings only)
+
+cargo check -p cdk-mintd --no-default-features --features federation,sqlite --offline
+cargo check -p cdk-mintd --no-default-features --features fakewallet,sqlite --offline
+  both passed; neither built bark-wallet
+
+cargo tree -p cdk-mintd --no-default-features --features federation -i bark-wallet --offline
+  bark-wallet is absent
+
+cargo tree -p cdk-mintd --no-default-features --features federation-bark -i bark-wallet --offline
+  bark-wallet -> cdk-bark -> cdk-mintd is the only enabling path
+```
+
+The four tests cover exact public derivation, fail-closed signing, every local
+federation/network/server/root/application/threshold/roster/policy/unit/store/
+chain-source binding, standalone-seed custody rejection, persisted descriptor
+and operational-seed mismatch rejection, missing application rejection, limit
+validation, and debug redaction.
+
+Publication gate:
+
+- the required Bark facade/wire/vector commit is currently available only in
+  the local `frost-wallet` branch at `2450be256343`;
+- the temporary development dependency is therefore deliberately not suitable
+  for a milestone commit; and
+- completion requires publishing that commit (or an equivalent reviewed
+  immutable revision/release), replacing the temporary source with the exact
+  immutable dependency, regenerating the lockfile, and rerunning the gates
+  above.
 
 Deliverables:
 
