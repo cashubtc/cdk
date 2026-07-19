@@ -10,7 +10,6 @@ use cdk::federation::{
     FederationBarkReceiveSecretAcknowledgement, FederationBarkReceiveSecretBinding,
     FederationConfig, FederationRestMessageKind, FederationSignedRequest, MemberConfigPublic,
 };
-use futures::{stream, StreamExt};
 use tracing::instrument;
 
 use crate::MintState;
@@ -41,6 +40,7 @@ where
         binding: &FederationBarkReceiveSecretBinding,
         secret: &FederationBarkReceiveSecret,
         eligible: &[MemberConfigPublic],
+        initial: Vec<FederationBarkReceiveSecretAcknowledgement>,
     ) -> anyhow::Result<Vec<FederationBarkReceiveSecretAcknowledgement>> {
         binding.validate(config)?;
         let mut previous = None;
@@ -52,36 +52,31 @@ where
             }
             previous = Some(member.member_id);
         }
-        if eligible.len() < usize::from(config.threshold_params.signature_threshold)
-            || !eligible
-                .iter()
-                .any(|member| member.member_id == binding.actor)
-        {
-            anyhow::bail!(
-                "Bark receive-secret recipients cannot satisfy actor and threshold policy"
+        let mut acknowledgements = initial;
+        for member in eligible {
+            let request = FederationBarkPrepareReceiveSecretRequest::new(
+                binding.clone(),
+                member.member_id,
+                *secret.as_bytes(),
             );
+            if let Ok(acknowledgement) = self
+                .client
+                .prepare_bark_receive_secret(member, &request)
+                .await
+            {
+                acknowledgements.push(acknowledgement);
+            }
         }
-
-        let mut acknowledgements = stream::iter(eligible.iter())
-            .map(|member| async move {
-                let request = FederationBarkPrepareReceiveSecretRequest::new(
-                    binding.clone(),
-                    member.member_id,
-                    *secret.as_bytes(),
-                );
-                self.client
-                    .prepare_bark_receive_secret(member, &request)
-                    .await
-            })
-            .buffer_unordered(
-                self.client
-                    .sync_config
-                    .private_rest_outbound_concurrency_limit,
-            )
-            .filter_map(|result| async move { result.ok() })
-            .collect::<Vec<_>>()
-            .await;
         acknowledgements.sort_by_key(|acknowledgement| acknowledgement.member);
+        if acknowledgements
+            .windows(2)
+            .any(|pair| pair[0].member >= pair[1].member)
+        {
+            anyhow::bail!("Bark receive-secret acknowledgements are not unique");
+        }
+        for acknowledgement in &acknowledgements {
+            acknowledgement.verify(config, binding)?;
+        }
         if acknowledgements.len() < usize::from(config.threshold_params.signature_threshold)
             || !acknowledgements
                 .iter()
@@ -111,7 +106,6 @@ pub(super) async fn post_bark_receive_secret(
     let store = state
         .federation
         .bark_receive_secrets()
-        .cloned()
         .ok_or_else(bark_secret_store_unavailable_response)?;
     let request = payload.payload.clone();
     let sender = verified.sender();

@@ -3,9 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
 
 use bitcoin::hashes::{sha256, Hash};
+use bitcoin::secp256k1::{Secp256k1, SecretKey as SecpSecretKey};
 use bitcoin::Network;
+use lightning_invoice::{Bolt11Invoice, Currency, InvoiceBuilder, PaymentSecret};
 
 use crate::database::mint::{
     Database, FederationAlephBftBackupMetadata, FederationJournalDatabase,
@@ -1953,6 +1956,27 @@ fn bark_external(seed: u8) -> FederationBarkExternalId {
     FederationBarkExternalId::from_bytes([seed; 32]).expect("non-zero Bark external ID")
 }
 
+fn bark_mailbox_id() -> [u8; 33] {
+    [
+        0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62, 0x95, 0xce, 0x87,
+        0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28, 0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16,
+        0xf8, 0x17, 0x98,
+    ]
+}
+
+fn bark_receive_invoice(payment_hash: sha256::Hash) -> Bolt11Invoice {
+    let signing_key = SecpSecretKey::from_slice(&[42; 32]).expect("invoice signing key");
+    InvoiceBuilder::new(Currency::Regtest)
+        .description(String::new())
+        .payment_hash(payment_hash)
+        .payment_secret(PaymentSecret([43; 32]))
+        .amount_milli_satoshis(100_000)
+        .timestamp(UNIX_EPOCH + Duration::from_secs(1_800_000_000))
+        .min_final_cltv_expiry_delta(18)
+        .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &signing_key))
+        .expect("signed Bark receive invoice")
+}
+
 fn bark_artifact(kind: FederationBarkArtifactKind, bytes: &[u8]) -> FederationBarkArtifact {
     FederationBarkArtifact {
         kind,
@@ -1996,7 +2020,9 @@ where
 {
     let mut journal = InMemoryFederationJournal::new();
     let action_id = bark_action(1);
-    let payment_hash = bark_digest(2);
+    let invoice_payment_hash = sha256::Hash::hash(b"bark projection payment");
+    let payment_hash = FederationBarkDigest::from_bytes(invoice_payment_hash.to_byte_array())
+        .expect("payment hash");
     let input_locator = FederationBarkVtxoLocator::vtxo_custody(7);
     let output_locator = FederationBarkVtxoLocator::vtxo_custody(8);
     let input_vtxo = bark_vtxo(8);
@@ -2015,7 +2041,9 @@ where
             receive_fee: Amount::ZERO,
             minimum_net_amount: Amount::from(100),
             unit: FederationBarkUnit::Sat,
-            description_hash: bark_digest(3),
+            description_hash: crate::federation::federation_bark_description_hash(None)
+                .expect("description hash"),
+            description: None,
             payment_hash,
             preimage_commitment: bark_digest(4),
             secret_acknowledgements: vec![FederationBarkReceiveSecretAcknowledgement {
@@ -2025,7 +2053,9 @@ where
                     .expect("signature bytes"),
             }],
             destination: input_locator,
-            mailbox_scope: bark_digest(7),
+            mailbox_scope: crate::federation::federation_bark_mailbox_scope(&bark_mailbox_id())
+                .expect("mailbox scope"),
+            mailbox_id: bark_mailbox_id(),
             ark_server: bark_digest(8),
             network: Network::Regtest,
             minimum_cltv_delta: 18,
@@ -2037,26 +2067,21 @@ where
     );
     apply_bark_entry(&db, &intent).await;
 
+    let FederationOperation::Bark(FederationBarkOperation::ReceiveIntent(intent_operation)) =
+        &intent.envelope.operation
+    else {
+        panic!("expected receive intent");
+    };
+    let prepared_operation = FederationBarkReceivePrepared::from_invoice(
+        MemberId::new(1).expect("member"),
+        intent.operation_id,
+        intent_operation,
+        bark_receive_invoice(invoice_payment_hash),
+    )
+    .expect("prepared receive");
     let prepared = append_bark_operation(
         &mut journal,
-        FederationBarkOperation::ReceivePrepared(FederationBarkReceivePrepared {
-            version: FEDERATION_BARK_OPERATION_VERSION,
-            action_id,
-            quote: quote.clone(),
-            actor: MemberId::new(1).expect("member"),
-            intent_operation_id: intent.operation_id,
-            invoice: "lnbcrt1barkprojection".to_string(),
-            payment_hash,
-            gross_amount: Amount::from(100),
-            expected_net_amount: Amount::from(100),
-            network: Network::Regtest,
-            expires_at: 1_900_000_000,
-            final_cltv_delta: 18,
-            receive_fee: Amount::ZERO,
-            request_hash: bark_digest(9),
-            result_hash: bark_digest(10),
-            external_id: bark_external(11),
-        }),
+        FederationBarkOperation::ReceivePrepared(prepared_operation),
     );
     apply_bark_entry(&db, &prepared).await;
 
@@ -2367,7 +2392,7 @@ where
                 .expect("canonical Bark projection bytes")
         )
         .to_string(),
-        "b21be6c6673c788bdeffc74ca845df81b4ce9c308e1dda198b387af2206665d5"
+        "81cea4507814d6365ef32f3b2250e87269ef2256d72a978fc1a0b2bde0a738bb"
     );
 
     apply_bark_entry(&db, &intent).await;

@@ -72,6 +72,9 @@ pub struct FederationBarkReceiveSecretBinding {
     pub destination: FederationBarkVtxoLocator,
     /// Member-independent mailbox scope.
     pub mailbox_scope: FederationBarkDigest,
+    /// Exact notification-only mailbox identifier supplied to Ark.
+    #[serde(with = "hex_array_33")]
+    pub mailbox_id: [u8; 33],
     /// Pinned Ark server identity commitment.
     pub ark_server: FederationBarkDigest,
     /// Immutable Bitcoin network.
@@ -108,6 +111,7 @@ impl FederationBarkReceiveSecretBinding {
             preimage_commitment: intent.preimage_commitment,
             destination: intent.destination,
             mailbox_scope: intent.mailbox_scope,
+            mailbox_id: intent.mailbox_id,
             ark_server: intent.ark_server,
             network: intent.network,
             minimum_cltv_delta: intent.minimum_cltv_delta,
@@ -158,6 +162,11 @@ impl FederationBarkReceiveSecretBinding {
         {
             return Err(invalid_secret(
                 "Bark receive-secret locator, policy, or expiry is unsupported",
+            ));
+        }
+        if self.mailbox_scope != super::federation_bark_mailbox_scope(&self.mailbox_id)? {
+            return Err(invalid_secret(
+                "Bark receive-secret mailbox differs from its scope commitment",
             ));
         }
         let application = config
@@ -437,6 +446,31 @@ fn acknowledgement_transcript(
     append_bytes(&mut transcript, &member.get().to_be_bytes());
     append_bytes(&mut transcript, &record_hash.to_bytes());
     transcript
+}
+
+mod hex_array_33 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8; 33], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&crate::util::hex::encode(bytes))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 33], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let bytes = crate::util::hex::decode(&value).map_err(serde::de::Error::custom)?;
+        bytes.try_into().map_err(|bytes: Vec<u8>| {
+            serde::de::Error::custom(format!(
+                "mailbox identifier must contain 33 bytes, found {}",
+                bytes.len()
+            ))
+        })
+    }
 }
 
 fn domain_hash(domain: &[u8], value: &[u8]) -> Result<FederationBarkDigest> {

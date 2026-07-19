@@ -7,7 +7,8 @@
         feature = "ldk-node",
         feature = "fakewallet",
         feature = "bdk",
-        feature = "grpc-processor"
+        feature = "grpc-processor",
+        feature = "federation-bark"
     )),
     allow(dead_code, unused_imports, unused_mut, unused_variables)
 )]
@@ -47,6 +48,8 @@ use cdk::nuts::{
 use cdk_axum::cache::HttpCache;
 use cdk_common::common::QuoteTTL;
 use cdk_common::database::DynMintDatabase;
+#[cfg(feature = "federation-bark")]
+use cdk_common::federation::FederationBarkReceiveAntiDosPolicy;
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
     FederationConfig, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
@@ -1314,6 +1317,8 @@ fn configure_federation(
 
     let public_config = read_public_federation_config(public_config_path)?;
     validate_federated_bdk_startup(settings, &public_config)?;
+    #[cfg(feature = "federation-bark")]
+    validate_federated_bark_startup(settings, &public_config)?;
     warn_federated_wallet_startup_risks(federation, &public_config);
     validate_federation_setup_method_startup_policy(&public_config)?;
     validate_federation_payment_observation_startup_policy(
@@ -1333,6 +1338,79 @@ fn configure_federation(
     );
 
     Ok(mint_builder.with_federation_config(runtime_config))
+}
+
+#[cfg(feature = "federation-bark")]
+fn validate_federated_bark_startup(
+    settings: &config::Settings,
+    public_config: &FederationConfig,
+) -> Result<()> {
+    let federation = settings
+        .federation
+        .as_ref()
+        .ok_or_else(|| anyhow!("federated Bark validation requires federation settings"))?;
+    let selected = settings
+        .ln
+        .iter()
+        .filter(|entry| entry.ln_backend == LnBackend::FederatedBark)
+        .collect::<Vec<_>>();
+    if !federation.bark.enabled {
+        if !selected.is_empty() {
+            bail!("ln_backend = \"federated-bark\" requires federation.bark.enabled=true");
+        }
+        return Ok(());
+    }
+    if selected.len() != 1 || selected[0].unit != cdk::nuts::CurrencyUnit::Sat {
+        bail!(
+            "federation.bark.enabled=true requires exactly one satoshi ln_backend = \"federated-bark\" entry"
+        );
+    }
+    let application = public_config
+        .frost_wallet
+        .as_ref()
+        .and_then(|wallet| wallet.bark_application.as_ref())
+        .ok_or_else(|| anyhow!("federated Bark requires an accepted Bark FROST application"))?;
+    let network = federation
+        .bark
+        .network
+        .as_deref()
+        .ok_or_else(|| anyhow!("federation.bark.network must be explicitly configured"))?;
+    if parse_federation_bitcoin_network(network)? != application.network {
+        bail!("federation.bark.network differs from the accepted Bark application");
+    }
+    let ark_server = federation
+        .bark
+        .ark_server_public_key
+        .as_deref()
+        .ok_or_else(|| {
+            anyhow!("federation.bark.ark_server_public_key must be explicitly configured")
+        })?;
+    let ark_server = cdk::secp256k1::PublicKey::from_str(ark_server)
+        .context("invalid federation.bark.ark_server_public_key")?;
+    if ark_server.serialize() != application.ark_server_public_key {
+        bail!("federation.bark.ark_server_public_key differs from the accepted Bark application");
+    }
+    if application.policy.receive_base_fee_sat != 0
+        || application.policy.receive_fee_ppm != 0
+        || application.policy.receive_anti_dos != FederationBarkReceiveAntiDosPolicy::NoProof
+    {
+        bail!("federated Bark production v1 requires zero receive fees and no anti-DoS proof");
+    }
+    if federation
+        .bark
+        .server_address
+        .as_deref()
+        .is_none_or(str::is_empty)
+        || federation.bark.esplora_url.is_some() == federation.bark.bitcoind_address.is_some()
+        || federation.bark.operational_seed_hex.is_none()
+        || federation.bark.receive_secret_key_hex.is_none()
+        || federation.bark.frost_protocol_storage_root.is_none()
+    {
+        bail!(
+            "federation.bark requires an Ark endpoint, exactly one chain source, both local secret keys, and durable FROST storage"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -1615,6 +1693,118 @@ fn federation_bdk_local_config(
         sync_interval: std::time::Duration::from_secs(wallet.sync_interval_secs),
         observation_source,
     }))
+}
+
+#[cfg(feature = "federation-bark")]
+fn federation_bark_local_config(
+    settings: &config::Settings,
+    work_dir: &Path,
+    runtime: &FederationRuntimeConfig,
+) -> Result<Option<cdk_bark::FederatedBarkLocalConfig>> {
+    let Some(federation) = settings.federation.as_ref() else {
+        return Ok(None);
+    };
+    let wallet = &federation.bark;
+    if !wallet.enabled {
+        return Ok(None);
+    }
+    let application = runtime
+        .public_config()
+        .frost_wallet
+        .as_ref()
+        .and_then(|wallet| wallet.bark_application.as_ref())
+        .ok_or_else(|| anyhow!("accepted Bark application is missing"))?;
+    let selected = settings
+        .ln
+        .iter()
+        .find(|entry| entry.ln_backend == LnBackend::FederatedBark)
+        .ok_or_else(|| anyhow!("federated Bark Lightning backend is missing"))?;
+    let operational_seed = decode_fixed_hex::<64>(
+        wallet
+            .operational_seed_hex
+            .as_deref()
+            .ok_or_else(|| anyhow!("federation.bark.operational_seed_hex is missing"))?,
+        "federation.bark.operational_seed_hex",
+    )?;
+    let receive_secret_key = decode_fixed_hex::<32>(
+        wallet
+            .receive_secret_key_hex
+            .as_deref()
+            .ok_or_else(|| anyhow!("federation.bark.receive_secret_key_hex is missing"))?,
+        "federation.bark.receive_secret_key_hex",
+    )?;
+    let frost_storage = wallet
+        .frost_protocol_storage_root
+        .as_deref()
+        .ok_or_else(|| anyhow!("federation.bark.frost_protocol_storage_root is missing"))?;
+    if !frost_storage.is_dir() {
+        bail!("federation.bark FROST protocol storage root is unavailable");
+    }
+    let data_directory = wallet
+        .data_directory
+        .clone()
+        .unwrap_or_else(|| work_dir.join("federation-bark"));
+    if wallet.create_if_missing {
+        std::fs::create_dir_all(&data_directory)
+            .context("failed to create federated Bark data directory")?;
+    }
+    let receive_secret_database_path = wallet
+        .receive_secret_database_path
+        .clone()
+        .unwrap_or_else(|| data_directory.join("receive-secrets.redb"));
+    let bindings = cdk_bark::FederatedBarkLocalBindings {
+        federation_id: runtime.federation_id(),
+        network: application.network,
+        ark_server_public_key: cdk::secp256k1::PublicKey::from_slice(
+            &application.ark_server_public_key,
+        )
+        .context("invalid accepted Ark server key")?,
+        root_key_epoch: application.root_key_epoch,
+        application_id: application.application_id,
+        application_key_epoch: application.application_key_epoch,
+        threshold: application.threshold,
+        members: runtime.public_config().members.keys().copied().collect(),
+        policy: application.policy.clone(),
+        unit: cdk::nuts::CurrencyUnit::Sat,
+    };
+    let connection = cdk_bark::FederatedBarkConnectionConfig {
+        server_address: wallet
+            .server_address
+            .clone()
+            .ok_or_else(|| anyhow!("federation.bark.server_address is missing"))?,
+        server_access_token: wallet.server_access_token.clone(),
+        esplora_address: wallet.esplora_url.clone(),
+        bitcoind_address: wallet.bitcoind_address.clone(),
+        bitcoind_cookiefile: wallet.bitcoind_cookiefile.clone(),
+        bitcoind_user: wallet.bitcoind_user.clone(),
+        bitcoind_pass: wallet.bitcoind_password.clone(),
+    };
+    Ok(Some(cdk_bark::FederatedBarkLocalConfig::from_seed_bytes(
+        bindings,
+        connection,
+        data_directory,
+        receive_secret_database_path,
+        operational_seed,
+        receive_secret_key,
+        wallet.create_if_missing,
+        cdk_bark::FederatedBarkStoreAvailability {
+            frost_protocol_store: true,
+            receive_secret_store: true,
+        },
+        cdk_bark::FederatedBarkLimits::new(
+            u64::from(selected.min_mint),
+            u64::from(selected.max_mint),
+        )?,
+    )?))
+}
+
+#[cfg(feature = "federation-bark")]
+fn decode_fixed_hex<const N: usize>(value: &str, field: &'static str) -> Result<[u8; N]> {
+    let bytes = cdk::util::hex::decode(value)
+        .with_context(|| format!("{field} must be valid hexadecimal"))?;
+    bytes
+        .try_into()
+        .map_err(|bytes: Vec<u8>| anyhow!("{field} must contain {N} bytes, found {}", bytes.len()))
 }
 
 #[cfg(feature = "federation")]
@@ -2193,6 +2383,25 @@ async fn configure_payment_backends(
                     backend_entry.unit.clone(),
                     mint_melt_limits,
                     Arc::new(ldk_node),
+                )
+                .await?;
+            }
+            #[cfg(feature = "federation-bark")]
+            PaymentBackendType::FederatedBark => {
+                if backend_entry.unit != cdk::nuts::CurrencyUnit::Sat {
+                    bail!("federated Bark supports only the satoshi unit");
+                }
+                let limits = cdk_bark::FederatedBarkLimits::new(
+                    u64::from(backend_entry.min_mint),
+                    u64::from(backend_entry.max_mint),
+                )?;
+                let adapter = cdk_bark::FederatedBarkPaymentAdapter::from_limits(limits);
+                mint_builder = configure_backend_for_unit(
+                    settings,
+                    mint_builder,
+                    backend_entry.unit.clone(),
+                    mint_melt_limits,
+                    Arc::new(adapter),
                 )
                 .await?;
             }

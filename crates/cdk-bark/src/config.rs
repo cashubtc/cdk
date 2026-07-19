@@ -10,8 +10,9 @@ use bark::{Config as BarkConfig, WalletSeed};
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Network;
 use cdk_common::federation::{
-    FederationBarkFrostApplicationConfig, FederationBarkPolicyConfig, FederationConfig,
-    FederationDkgSetupMethod, FederationFrostApplicationId, FederationId, MemberId,
+    FederationBarkFrostApplicationConfig, FederationBarkPolicyConfig,
+    FederationBarkReceiveAntiDosPolicy, FederationConfig, FederationDkgSetupMethod,
+    FederationFrostApplicationId, FederationId, MemberId,
 };
 use cdk_common::CurrencyUnit;
 use cdk_frost_bark::FrostBark;
@@ -113,6 +114,40 @@ pub struct FederatedBarkStoreAvailability {
     pub receive_secret_store: bool,
 }
 
+/// Redacted member-local Bark network and chain connection settings.
+#[derive(Clone)]
+pub struct FederatedBarkConnectionConfig {
+    /// Ark gRPC endpoint.
+    pub server_address: String,
+    /// Optional Ark access token.
+    pub server_access_token: Option<String>,
+    /// Optional Esplora endpoint; exclusive with bitcoind.
+    pub esplora_address: Option<String>,
+    /// Optional Bitcoin Core RPC endpoint; exclusive with Esplora.
+    pub bitcoind_address: Option<String>,
+    /// Optional Bitcoin Core cookie file.
+    pub bitcoind_cookiefile: Option<PathBuf>,
+    /// Optional Bitcoin Core username.
+    pub bitcoind_user: Option<String>,
+    /// Optional Bitcoin Core password.
+    pub bitcoind_pass: Option<String>,
+}
+
+impl fmt::Debug for FederatedBarkConnectionConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FederatedBarkConnectionConfig")
+            .field("server_address", &"<redacted>")
+            .field("server_access_token", &"<redacted>")
+            .field("esplora_address", &"<redacted>")
+            .field("bitcoind_address", &"<redacted>")
+            .field("bitcoind_cookiefile", &"<redacted>")
+            .field("bitcoind_user", &"<redacted>")
+            .field("bitcoind_pass", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Member-local protected receive-secret database and at-rest key.
 #[derive(Clone)]
 pub struct FederatedBarkReceiveSecretStoreConfig {
@@ -189,6 +224,64 @@ pub struct FederatedBarkLocalConfig {
     pub limits: FederatedBarkLimits,
 }
 
+impl FederatedBarkLocalConfig {
+    /// Construct member-local Bark state without exposing Bark types to the mint daemon.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_seed_bytes(
+        bindings: FederatedBarkLocalBindings,
+        connection: FederatedBarkConnectionConfig,
+        data_directory: PathBuf,
+        receive_secret_database_path: PathBuf,
+        operational_seed: [u8; 64],
+        receive_secret_key: [u8; 32],
+        create_if_missing: bool,
+        stores: FederatedBarkStoreAvailability,
+        limits: FederatedBarkLimits,
+    ) -> Result<Self, Error> {
+        let mut bark = BarkConfig::network_default(bindings.network);
+        bark.server_address = connection.server_address;
+        #[allow(deprecated)]
+        {
+            bark.server_access_token = connection.server_access_token;
+        }
+        bark.user_agent = Some(format!("cdk/{}", env!("CARGO_PKG_VERSION")));
+        bark.esplora_address = connection.esplora_address;
+        bark.bitcoind_address = connection.bitcoind_address;
+        bark.bitcoind_cookiefile = connection.bitcoind_cookiefile;
+        bark.bitcoind_user = connection.bitcoind_user;
+        bark.bitcoind_pass = connection.bitcoind_pass;
+        bark.vtxo_refresh_expiry_threshold = bindings.policy.refresh_before_expiry_blocks;
+        bark.vtxo_exit_margin = bindings
+            .policy
+            .emergency_exit_before_expiry_blocks
+            .try_into()
+            .map_err(|_| Error::UnsupportedReceivePolicy)?;
+        bark.htlc_recv_claim_delta = bindings
+            .policy
+            .minimum_incoming_cltv_delta
+            .try_into()
+            .map_err(|_| Error::UnsupportedReceivePolicy)?;
+        let operational_seed = WalletSeed::new_from_seed(bindings.network, &operational_seed);
+        let encryption_key = Arc::new(FederatedBarkReceiveSecretEncryptionKey::new(
+            receive_secret_key,
+        )?);
+        Ok(Self {
+            enabled: true,
+            bindings,
+            bark,
+            data_directory,
+            operational_seed,
+            create_if_missing,
+            stores,
+            receive_secret_store: FederatedBarkReceiveSecretStoreConfig {
+                database_path: receive_secret_database_path,
+                encryption_key,
+            },
+            limits,
+        })
+    }
+}
+
 impl fmt::Debug for FederatedBarkLocalConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -214,6 +307,7 @@ pub struct ValidatedFederatedBarkConfig {
     ark_server_public_key: PublicKey,
     public_adapter: FrostBark,
     descriptor: KeySourceDescriptor,
+    policy: FederationBarkPolicyConfig,
 }
 
 impl fmt::Debug for ValidatedFederatedBarkConfig {
@@ -297,6 +391,7 @@ impl ValidatedFederatedBarkConfig {
             ark_server_public_key,
             public_adapter,
             descriptor,
+            policy: application.policy.clone(),
         };
         validated.validate_local(federation, application, local)?;
         Ok(validated)
@@ -336,6 +431,12 @@ impl ValidatedFederatedBarkConfig {
             "member_roster",
         )?;
         check(bindings.policy == application.policy, "policy")?;
+        if application.policy.receive_base_fee_sat != 0
+            || application.policy.receive_fee_ppm != 0
+            || application.policy.receive_anti_dos != FederationBarkReceiveAntiDosPolicy::NoProof
+        {
+            return Err(Error::UnsupportedReceivePolicy);
+        }
         if bindings.unit != CurrencyUnit::Sat {
             return Err(Error::UnsupportedUnit);
         }
@@ -407,6 +508,12 @@ impl ValidatedFederatedBarkConfig {
     #[must_use]
     pub const fn ark_server_public_key(&self) -> PublicKey {
         self.ark_server_public_key
+    }
+
+    /// Accepted production-v1 Bark policy.
+    #[must_use]
+    pub const fn policy(&self) -> &FederationBarkPolicyConfig {
+        &self.policy
     }
 
     pub(crate) fn public_adapter(&self) -> FrostBark {

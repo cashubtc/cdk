@@ -3,11 +3,20 @@
 use core::fmt;
 use std::sync::Arc;
 
+use bark::actions::lightning::receive::LightningReceiveAntiDosMode;
+use bark::ark::lightning::{PaymentHash, Preimage};
+use bark::ark::mailbox::MailboxIdentifier;
 use bark::custody::{KeySourceDescriptor, KeySourceKind, VtxoCustody, VtxoKeyLocator};
-use bark::federation::FederationWallet;
+use bark::federation::{
+    FederationActionId, FederationLightningReceiveIntent, FederationLightningReceivePlan,
+    FederationRequestCommitment, FederationWallet,
+};
 use bark::{OpenWalletArgs, Wallet, WalletProperties};
 use bitcoin::secp256k1::PublicKey;
-use cdk_common::federation::FederationConfig;
+use cdk_common::federation::{
+    FederationBarkOperation, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
+    FederationBarkReceiveSecretBinding, FederationConfig, FederationOperationId,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -125,6 +134,23 @@ impl FederatedBarkRuntime {
             &expected_descriptor,
             expected_server,
         )?;
+        let ark_info = wallet
+            .require_ark_info()
+            .await
+            .map_err(|_| Error::ArkCapabilityMismatch)?;
+        if ark_info.network != validated.network()
+            || ark_info.server_pubkey != expected_server
+            || ark_info.ln_receive_anti_dos_required
+            || ark_info.fees.lightning_receive.base_fee != bitcoin::Amount::ZERO
+            || ark_info.fees.lightning_receive.ppm.0 != 0
+            || u32::from(ark_info.max_user_invoice_cltv_delta)
+                < validated.policy().minimum_incoming_cltv_delta
+            || ark_info
+                .max_vtxo_amount
+                .is_some_and(|maximum| maximum.to_sat() < limits.maximum_sat())
+        {
+            return Err(Error::ArkCapabilityMismatch);
+        }
         let wallet = FederationWallet::new(&wallet)
             .await
             .map_err(|_| Error::FederationFacadeUnavailable)?;
@@ -164,6 +190,117 @@ impl FederatedBarkRuntime {
             .derive_locator(VtxoKeyLocator { index })
             .map(|derived| derived.public_key)
             .map_err(|_| Error::PublicKeyDerivationFailed)
+    }
+
+    /// Perform the sole Ark invoice RPC for an already accepted receive intent.
+    ///
+    /// The protected preimage is loaded only after the caller supplies the
+    /// accepted intent operation ID. Bark receives no locally generated
+    /// identity, secret, locator, mailbox, amount, or policy value.
+    pub async fn prepare_receive_invoice(
+        &self,
+        intent_operation_id: FederationOperationId,
+        intent: &FederationBarkReceiveIntent,
+    ) -> Result<FederationBarkReceivePrepared, Error> {
+        let binding =
+            FederationBarkReceiveSecretBinding::from_intent(self.scope.federation_id(), intent);
+        let secret = self.receive_secrets.load_secret(&binding)?;
+        let bark_intent = self.bark_receive_intent(intent, *secret.as_bytes())?;
+        let plan = self
+            .wallet
+            .start_lightning_receive(&bark_intent)
+            .await
+            .map_err(|_| Error::InvoicePreparationFailed)?;
+        FederationBarkReceivePrepared::from_invoice(
+            intent.actor,
+            intent_operation_id,
+            intent,
+            plan.invoice,
+        )
+        .map_err(|_| Error::InvoicePreparationFailed)
+    }
+
+    /// Materialize an accepted receive plan without another Ark RPC.
+    pub async fn apply_receive_prepared(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared: &FederationBarkReceivePrepared,
+    ) -> Result<(), Error> {
+        prepared
+            .validate_against_intent(intent)
+            .map_err(|_| Error::ReceiveProjectionFailed)?;
+        let binding =
+            FederationBarkReceiveSecretBinding::from_intent(self.scope.federation_id(), intent);
+        let secret = self.receive_secrets.load_secret(&binding)?;
+        let bark_intent = self.bark_receive_intent(intent, *secret.as_bytes())?;
+        let plan = FederationLightningReceivePlan {
+            action_id: bark_intent.action_id,
+            request_commitment: bark_intent.request_commitment,
+            payment_hash: bark_intent.payment_hash,
+            cashu_amount: bark_intent.cashu_amount,
+            gross_amount: bark_intent.gross_amount,
+            receive_fee_bound: bark_intent.receive_fee_bound,
+            minimum_net_amount: bark_intent.minimum_net_amount,
+            description: bark_intent.description,
+            invoice: prepared
+                .invoice
+                .parse()
+                .map_err(|_| Error::ReceiveProjectionFailed)?,
+            payment_preimage: bark_intent.payment_preimage,
+            locator: bark_intent.locator,
+            mailbox_id: bark_intent.mailbox_id,
+            htlc_recv_cltv_delta: bark_intent.htlc_recv_cltv_delta,
+            anti_dos: bark_intent.anti_dos,
+            policy_version: bark_intent.policy_version,
+            custody_attempt: bark_intent.custody_attempt,
+        };
+        self.wallet
+            .validate_lightning_receive_plan(&plan)
+            .map_err(|_| Error::ReceiveProjectionFailed)?;
+        self.wallet
+            .apply_lightning_receive(&plan)
+            .await
+            .map_err(|_| Error::ReceiveProjectionFailed)?;
+        Ok(())
+    }
+
+    fn bark_receive_intent(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        preimage: [u8; 32],
+    ) -> Result<FederationLightningReceiveIntent, Error> {
+        let action_id = FederationActionId::from_bytes(intent.action_id.to_bytes())
+            .map_err(|_| Error::InvoicePreparationFailed)?;
+        let request_commitment = FederationRequestCommitment::from_bytes(
+            FederationBarkOperation::ReceiveIntent(intent.clone())
+                .commitment()
+                .map_err(|_| Error::InvoicePreparationFailed)?
+                .to_bytes(),
+        )
+        .map_err(|_| Error::InvoicePreparationFailed)?;
+        let mailbox_public_key = PublicKey::from_slice(&intent.mailbox_id)
+            .map_err(|_| Error::InvoicePreparationFailed)?;
+        let htlc_recv_cltv_delta = u16::try_from(intent.minimum_cltv_delta)
+            .map_err(|_| Error::InvoicePreparationFailed)?;
+        Ok(FederationLightningReceiveIntent {
+            action_id,
+            request_commitment,
+            payment_hash: PaymentHash::from(intent.payment_hash.to_bytes()),
+            cashu_amount: bitcoin::Amount::from_sat(u64::from(intent.cashu_amount)),
+            gross_amount: bitcoin::Amount::from_sat(u64::from(intent.gross_amount)),
+            receive_fee_bound: bitcoin::Amount::from_sat(u64::from(intent.receive_fee)),
+            minimum_net_amount: bitcoin::Amount::from_sat(u64::from(intent.minimum_net_amount)),
+            description: intent.description.clone(),
+            payment_preimage: Preimage::from(preimage),
+            locator: VtxoKeyLocator {
+                index: intent.destination.index,
+            },
+            mailbox_id: MailboxIdentifier::from_pubkey(mailbox_public_key),
+            htlc_recv_cltv_delta,
+            anti_dos: LightningReceiveAntiDosMode::NoProof,
+            policy_version: intent.fee_policy_version,
+            custody_attempt: 1,
+        })
     }
 
     /// Return readiness relative to one accepted frontier.

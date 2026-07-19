@@ -10,8 +10,8 @@ use cdk_common::federation::{
     payment_hash_for_preimage, preimage_commitment, FederationBarkActionId, FederationBarkDigest,
     FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecret,
     FederationBarkReceiveSecretAcknowledgement, FederationBarkReceiveSecretBinding,
-    FederationCheckpointId, FederationConfig, FederationOperationId, MemberConfigPrivate, MemberId,
-    VerifiedFederationCheckpointQuorum,
+    FederationCheckpointId, FederationConfig, FederationId, FederationOperationId,
+    MemberConfigPrivate, MemberId, VerifiedFederationCheckpointQuorum,
 };
 use cdk_frost::rand_core::{CryptoRng, OsRng, RngCore};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -94,6 +94,30 @@ pub struct FederatedBarkReceiveSecretStatus {
     pub accepted: Option<FederatedBarkReceiveSecretAcceptedRef>,
     /// Terminal checkpoint evidence, when deletion may eventually become eligible.
     pub terminal: Option<FederatedBarkReceiveSecretTerminalRef>,
+}
+
+/// Decrypted owner of one exact resumable receive record.
+pub struct FederatedBarkResumableReceiveSecret {
+    /// Complete public binding used to reconstruct a receive intent.
+    pub binding: FederationBarkReceiveSecretBinding,
+    /// Durable local acknowledgement, when signing completed.
+    pub acknowledgement: Option<FederationBarkReceiveSecretAcknowledgement>,
+    /// Accepted intent reference, when already known locally.
+    pub accepted: Option<FederatedBarkReceiveSecretAcceptedRef>,
+    /// Zeroizing protected preimage owner.
+    pub secret: FederationBarkReceiveSecret,
+}
+
+impl fmt::Debug for FederatedBarkResumableReceiveSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FederatedBarkResumableReceiveSecret")
+            .field("binding", &self.binding)
+            .field("acknowledgement", &self.acknowledgement)
+            .field("accepted", &self.accepted)
+            .field("secret", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,6 +279,44 @@ impl FederatedBarkReceiveSecretStore {
             return Err(Error::ReceiveSecretConflict);
         }
         self.decrypt_record(&record)
+    }
+
+    /// Find the sole protected receive record for a preallocated quote.
+    ///
+    /// This bounded scan is used only at the HTTP orchestration boundary to
+    /// resume a crash between local secret persistence and intent acceptance.
+    /// Multiple action bindings for one quote fail closed.
+    pub fn find_by_quote(
+        &self,
+        federation_id: FederationId,
+        quote: &str,
+    ) -> Result<Option<FederatedBarkResumableReceiveSecret>, Error> {
+        let transaction = self
+            .database
+            .begin_read()
+            .map_err(|_| Error::ReceiveSecretPersistence)?;
+        let table = transaction
+            .open_table(RECORDS)
+            .map_err(|_| Error::ReceiveSecretPersistence)?;
+        let mut found = None;
+        for row in table.iter().map_err(|_| Error::ReceiveSecretPersistence)? {
+            let (_, value) = row.map_err(|_| Error::ReceiveSecretPersistence)?;
+            let record = decode_record(value.value())?;
+            if record.binding.federation_id != federation_id || record.binding.quote != quote {
+                continue;
+            }
+            if found.is_some() {
+                return Err(Error::ReceiveSecretConflict);
+            }
+            let secret = self.decrypt_record(&record)?;
+            found = Some(FederatedBarkResumableReceiveSecret {
+                binding: record.binding,
+                acknowledgement: record.acknowledgement,
+                accepted: record.accepted,
+                secret,
+            });
+        }
+        Ok(found)
     }
 
     /// Return redacted lifecycle status without decrypting secret material.

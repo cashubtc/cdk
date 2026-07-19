@@ -82,6 +82,12 @@ pub enum Error {
     /// Payment limits are empty or inverted.
     #[error("invalid federated Bark payment limits")]
     InvalidLimits,
+    /// Accepted Bark receive policy is outside the deliberately narrow v1 profile.
+    #[error("unsupported federated Bark receive policy")]
+    UnsupportedReceivePolicy,
+    /// The live Ark server capabilities differ from accepted federation policy.
+    #[error("Ark server capabilities do not match accepted federated Bark policy")]
+    ArkCapabilityMismatch,
     /// A Bark configuration omitted or ambiguously selected a chain source.
     #[error("invalid Bark chain-source configuration")]
     InvalidChainSource,
@@ -103,6 +109,12 @@ pub enum Error {
     /// The restricted Bark facade rejected the opened wallet.
     #[error("Bark federation facade could not be opened")]
     FederationFacadeUnavailable,
+    /// The accepted receive intent could not be mapped to or served by Bark.
+    #[error("federated Bark invoice preparation failed")]
+    InvoicePreparationFailed,
+    /// The accepted receive plan could not be materialized locally.
+    #[error("federated Bark receive projection failed")]
+    ReceiveProjectionFailed,
     /// The runtime has not caught up to the required accepted frontier.
     #[error("federated Bark runtime is not ready")]
     NotReady,

@@ -499,13 +499,16 @@ fn receive_binding(
         receive_fee: Amount::ZERO,
         minimum_net_amount: Amount::from(100),
         unit: FederationBarkUnit::Sat,
-        description_hash: preimage_commitment(&[action_seed.wrapping_add(1); 32])
+        description_hash: cdk_common::federation::federation_bark_description_hash(None)
             .expect("description commitment"),
         payment_hash: payment_hash_for_preimage(preimage).expect("payment hash"),
         preimage_commitment: preimage_commitment(preimage).expect("preimage commitment"),
         destination: FederationBarkVtxoLocator::vtxo_custody(u32::from(action_seed)),
-        mailbox_scope: preimage_commitment(&[action_seed.wrapping_add(2); 32])
-            .expect("mailbox commitment"),
+        mailbox_scope: cdk_common::federation::federation_bark_mailbox_scope(
+            &application.ark_server_public_key,
+        )
+        .expect("mailbox commitment"),
+        mailbox_id: application.ark_server_public_key,
         ark_server: ark_server_commitment(&application.ark_server_public_key)
             .expect("Ark commitment"),
         network: application.network,
@@ -782,11 +785,13 @@ fn orphan_cleanup_threshold_acknowledgements_and_replay_bindings_fail_closed() {
         minimum_net_amount: binding.minimum_net_amount,
         unit: binding.unit,
         description_hash: binding.description_hash,
+        description: None,
         payment_hash: binding.payment_hash,
         preimage_commitment: binding.preimage_commitment,
         secret_acknowledgements: acknowledgements.clone(),
         destination: binding.destination,
         mailbox_scope: binding.mailbox_scope,
+        mailbox_id: binding.mailbox_id,
         ark_server: binding.ark_server,
         network: binding.network,
         minimum_cltv_delta: binding.minimum_cltv_delta,

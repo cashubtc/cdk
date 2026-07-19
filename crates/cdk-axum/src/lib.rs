@@ -36,6 +36,8 @@ use cdk::federation::{
     FederationRestSequenceTracker, FederationSubmitOperationResponse, FederationSuffixVerifier,
     MemberId, VerifiedFederationCheckpointQuorum,
 };
+#[cfg(feature = "federation-bark")]
+use cdk::federation::{FederationBarkOperation, FederationOperation};
 use cdk::mint::Mint;
 #[cfg(feature = "federation")]
 use cdk_bdk::{
@@ -2393,6 +2395,38 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
         federation_peer_sync_config,
         federation_dkg_config,
         federation_bdk_config,
+        #[cfg(feature = "federation-bark")]
+        None,
+        #[cfg(test)]
+        false,
+    )
+    .await
+}
+
+/// Create a mint router with both member-local federated wallet runtimes.
+#[cfg(all(feature = "federation", feature = "federation-bark"))]
+#[allow(unused_mut, unused_variables)]
+pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallets(
+    mint: Arc<Mint>,
+    cache: HttpCache,
+    custom_methods: Vec<String>,
+    enable_info_page: bool,
+    federation_peer_sync_config: FederationPeerSyncConfig,
+    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
+    federation_bdk_config: Option<FederatedBdkLocalConfig>,
+    federation_bark_config: Option<cdk_bark::FederatedBarkLocalConfig>,
+) -> Result<Router> {
+    federation_peer_sync_config.validate()?;
+    create_mint_router_with_custom_cache_inner(
+        mint,
+        cache,
+        custom_methods,
+        enable_info_page,
+        true,
+        federation_peer_sync_config,
+        federation_dkg_config,
+        federation_bdk_config,
+        federation_bark_config,
         #[cfg(test)]
         false,
     )
@@ -2417,6 +2451,8 @@ pub(crate) async fn create_mint_router_without_federation_peer_sync(
         FederationPeerSyncConfig::default(),
         None,
         None,
+        #[cfg(feature = "federation-bark")]
+        None,
         true,
     )
     .await
@@ -2432,18 +2468,33 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation")] federation_peer_sync_config: FederationPeerSyncConfig,
     #[cfg(feature = "federation")] federation_dkg_config: Option<FederationDkgAutoStartConfig>,
     #[cfg(feature = "federation")] federation_bdk_config: Option<FederatedBdkLocalConfig>,
+    #[cfg(feature = "federation-bark")] federation_bark_config: Option<
+        cdk_bark::FederatedBarkLocalConfig,
+    >,
     #[cfg(all(test, feature = "federation"))] federation_local_finality_test: bool,
 ) -> Result<Router> {
     #[cfg(all(feature = "federation", feature = "prometheus"))]
     let federation_startup_started_at = std::time::Instant::now();
     #[cfg(feature = "federation")]
-    let (
-        federation_consensus,
-        federation_sequences,
-        federation_onchain_wallets,
-        federation_frost_signing,
-        federation_startup_bdk_degraded_reason,
-    ) = create_federation_runtime_state_with_wallet(&mint, federation_bdk_config).await?;
+    let federation_runtime_state = create_federation_runtime_state_with_wallet(
+        &mint,
+        federation_bdk_config,
+        #[cfg(feature = "federation-bark")]
+        federation_bark_config,
+    )
+    .await?;
+    #[cfg(feature = "federation")]
+    let federation_consensus = federation_runtime_state.consensus;
+    #[cfg(feature = "federation")]
+    let federation_sequences = federation_runtime_state.sequences;
+    #[cfg(feature = "federation")]
+    let federation_onchain_wallets = federation_runtime_state.onchain_wallets;
+    #[cfg(feature = "federation")]
+    let federation_frost_signing = federation_runtime_state.frost_signing;
+    #[cfg(feature = "federation-bark")]
+    let federation_bark = federation_runtime_state.bark;
+    #[cfg(feature = "federation")]
+    let federation_startup_bdk_degraded_reason = federation_runtime_state.bdk_degraded_reason;
     #[cfg(feature = "federation")]
     let federation_sync = federation_consensus
         .as_ref()
@@ -2482,6 +2533,8 @@ async fn create_mint_router_with_custom_cache_inner(
                 None,
                 federation_onchain_wallets,
                 federation_frost_signing,
+                #[cfg(feature = "federation-bark")]
+                federation_bark,
             ),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
@@ -2831,23 +2884,45 @@ impl FederationCheckpointStartupVerifier<'_> {
 }
 
 #[cfg(feature = "federation")]
+struct FederationRuntimeState {
+    consensus: Option<FederationConsensusHandle>,
+    sequences: Option<FederationSequenceHandle>,
+    onchain_wallets: Vec<FederatedBdkWallet>,
+    frost_signing: Option<federation::frost_signing::FederationFrostSigningRuntime>,
+    #[cfg(feature = "federation-bark")]
+    bark: Option<Arc<cdk_bark::FederatedBarkRuntime>>,
+    bdk_degraded_reason: Option<String>,
+}
+
+#[cfg(feature = "federation")]
 async fn create_federation_runtime_state_with_wallet(
     mint: &Arc<Mint>,
     local_wallet_config: Option<FederatedBdkLocalConfig>,
-) -> Result<(
-    Option<FederationConsensusHandle>,
-    Option<FederationSequenceHandle>,
-    Vec<FederatedBdkWallet>,
-    Option<federation::frost_signing::FederationFrostSigningRuntime>,
-    Option<String>,
-)> {
+    #[cfg(feature = "federation-bark")] local_bark_config: Option<
+        cdk_bark::FederatedBarkLocalConfig,
+    >,
+) -> Result<FederationRuntimeState> {
     let Some(config) = mint.federation_config() else {
         if local_wallet_config.is_some() {
             return Err(anyhow::anyhow!(
                 "federated BDK configuration requires an active federation mint"
             ));
         }
-        return Ok((None, None, Vec::new(), None, None));
+        #[cfg(feature = "federation-bark")]
+        if local_bark_config.is_some() {
+            return Err(anyhow::anyhow!(
+                "federated Bark configuration requires an active federation mint"
+            ));
+        }
+        return Ok(FederationRuntimeState {
+            consensus: None,
+            sequences: None,
+            onchain_wallets: Vec::new(),
+            frost_signing: None,
+            #[cfg(feature = "federation-bark")]
+            bark: None,
+            bdk_degraded_reason: None,
+        });
     };
     let db = mint.localstore();
     validate_and_materialize_frost_wallet_config(mint).await?;
@@ -2862,6 +2937,13 @@ async fn create_federation_runtime_state_with_wallet(
         None => None,
     };
     let onchain_wallets = initialize_federation_onchain_wallets(config, local_wallet_config)?;
+    #[cfg(feature = "federation-bark")]
+    let bark = match local_bark_config {
+        Some(local) => {
+            Some(cdk_bark::FederatedBarkRuntime::open(true, config.public_config(), local).await?)
+        }
+        None => None,
+    };
     let snapshot = FederationConfigSnapshot::new(config.public_config().clone())?;
     let mut tx = db.begin_transaction().await?;
     tx.set_federation_config(&snapshot).await?;
@@ -3098,13 +3180,99 @@ async fn create_federation_runtime_state_with_wallet(
     };
     let sequences = FederationRestSequenceTracker::from_dkg_sequences(dkg_sequences);
 
-    Ok((
-        Some(Arc::new(tokio::sync::Mutex::new(consensus))),
-        Some(Arc::new(tokio::sync::Mutex::new(sequences))),
+    #[cfg(feature = "federation-bark")]
+    if let Some(runtime) = bark.as_ref() {
+        let persisted_entries = db.get_federation_journal_entries().await?;
+        if let Err(err) = reconcile_federation_bark_runtime(mint, runtime, &persisted_entries).await
+        {
+            tracing::error!(
+                reason = %format!("{err:#}"),
+                "federation local Bark reconciliation failed during startup; member starts Bark-degraded"
+            );
+        }
+    }
+
+    Ok(FederationRuntimeState {
+        consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
+        sequences: Some(Arc::new(tokio::sync::Mutex::new(sequences))),
         onchain_wallets,
         frost_signing,
-        startup_bdk_degraded_reason,
-    ))
+        #[cfg(feature = "federation-bark")]
+        bark,
+        bdk_degraded_reason: startup_bdk_degraded_reason,
+    })
+}
+
+#[cfg(feature = "federation-bark")]
+async fn reconcile_federation_bark_runtime(
+    mint: &Mint,
+    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
+    entries: &[FederationJournalEntry],
+) -> Result<()> {
+    let store = runtime.receive_secret_store();
+    let mut frontier = None;
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.status() == FederationOperationStatus::Applied)
+    {
+        let FederationOperation::Bark(operation) = &entry.envelope.operation else {
+            continue;
+        };
+        frontier = Some(frontier.map_or(entry.index, |current: u64| current.max(entry.index)));
+        match operation {
+            FederationBarkOperation::ReceiveIntent(intent) => {
+                if store
+                    .status(intent.action_id)
+                    .map_err(|_| anyhow::anyhow!("Bark receive-secret status is unavailable"))?
+                    .is_some()
+                {
+                    store
+                        .mark_intent_accepted(
+                            intent.action_id,
+                            cdk_bark::FederatedBarkReceiveSecretAcceptedRef {
+                                operation_id: entry.operation_id,
+                                operation_index: entry.index,
+                            },
+                        )
+                        .map_err(|_| {
+                            anyhow::anyhow!("Bark accepted receive secret could not be retained")
+                        })?;
+                }
+            }
+            FederationBarkOperation::ReceivePrepared(prepared) => {
+                if store
+                    .status(prepared.action_id)
+                    .map_err(|_| anyhow::anyhow!("Bark receive-secret status is unavailable"))?
+                    .is_none()
+                {
+                    continue;
+                }
+                let intent = mint
+                    .federation_bark_receive_intent(prepared.intent_operation_id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark receive intent is missing"))?;
+                if runtime
+                    .apply_receive_prepared(&intent, prepared)
+                    .await
+                    .is_err()
+                {
+                    runtime
+                        .mark_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
+                        .await;
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark receive plan could not be materialized"
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionPlan(_)
+            | FederationBarkOperation::ActionTransition(_)
+            | FederationBarkOperation::MemberObservation(_) => {}
+        }
+    }
+    if let Some(frontier) = frontier {
+        runtime.record_projection_frontier(frontier).await;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "federation")]
@@ -3175,9 +3343,14 @@ async fn create_federation_runtime_state(
     Option<FederationConsensusHandle>,
     Option<FederationSequenceHandle>,
 )> {
-    let (consensus, sequences, _, _, _) =
-        create_federation_runtime_state_with_wallet(mint, None).await?;
-    Ok((consensus, sequences))
+    let state = create_federation_runtime_state_with_wallet(
+        mint,
+        None,
+        #[cfg(feature = "federation-bark")]
+        None,
+    )
+    .await?;
+    Ok((state.consensus, state.sequences))
 }
 
 #[cfg(feature = "federation")]

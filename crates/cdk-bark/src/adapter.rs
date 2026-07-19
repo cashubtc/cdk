@@ -17,7 +17,7 @@ use crate::{Error, FederatedBarkLimits, FederatedBarkRuntime};
 /// Payment-backend facade that leaves all mutations to accepted Bark workers.
 #[derive(Clone)]
 pub struct FederatedBarkPaymentAdapter {
-    runtime: Arc<FederatedBarkRuntime>,
+    runtime: Option<Arc<FederatedBarkRuntime>>,
     limits: FederatedBarkLimits,
 }
 
@@ -25,7 +25,10 @@ impl std::fmt::Debug for FederatedBarkPaymentAdapter {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("FederatedBarkPaymentAdapter")
-            .field("scope", &self.runtime.scope())
+            .field(
+                "scope",
+                &self.runtime.as_ref().map(|runtime| runtime.scope()),
+            )
             .field("limits", &self.limits)
             .finish()
     }
@@ -36,7 +39,22 @@ impl FederatedBarkPaymentAdapter {
     #[must_use]
     pub fn new(runtime: Arc<FederatedBarkRuntime>) -> Self {
         let limits = runtime.limits();
-        Self { runtime, limits }
+        Self {
+            runtime: Some(runtime),
+            limits,
+        }
+    }
+
+    /// Construct the inert registry adapter before the Axum runtime opens Bark.
+    ///
+    /// Every mutation remains consensus-only; startup validation and external
+    /// I/O are owned by the router's member-local runtime.
+    #[must_use]
+    pub const fn from_limits(limits: FederatedBarkLimits) -> Self {
+        Self {
+            runtime: None,
+            limits,
+        }
     }
 
     /// Accepted satoshi payment limits.
@@ -45,17 +63,20 @@ impl FederatedBarkPaymentAdapter {
         self.limits
     }
 
-    fn consensus_only<T>() -> Result<T, Error> {
-        Err(Error::ConsensusOnly)
+    fn consensus_only<T>() -> Result<T, cdk_common::payment::Error> {
+        Err(Error::ConsensusOnly.into())
     }
 }
 
 #[async_trait]
 impl MintPayment for FederatedBarkPaymentAdapter {
-    type Err = Error;
+    type Err = cdk_common::payment::Error;
 
     async fn start(&self) -> Result<(), Self::Err> {
-        self.runtime.ensure_ready(0).await
+        match &self.runtime {
+            Some(runtime) => runtime.ensure_ready(0).await.map_err(Into::into),
+            None => Ok(()),
+        }
     }
 
     async fn get_settings(&self) -> Result<SettingsResponse, Self::Err> {
@@ -85,7 +106,7 @@ impl MintPayment for FederatedBarkPaymentAdapter {
         _options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
         if unit != &CurrencyUnit::Sat {
-            return Err(Error::UnsupportedUnit);
+            return Err(cdk_common::payment::Error::UnsupportedUnit);
         }
         Self::consensus_only()
     }
@@ -96,7 +117,7 @@ impl MintPayment for FederatedBarkPaymentAdapter {
         _options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
         if unit != &CurrencyUnit::Sat {
-            return Err(Error::UnsupportedUnit);
+            return Err(cdk_common::payment::Error::UnsupportedUnit);
         }
         Self::consensus_only()
     }

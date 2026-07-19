@@ -6,8 +6,10 @@ use std::str::FromStr;
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederatedKeyset, FederationMaterializedStateKey, FederationMaterializedStateRow,
-    FederationMaterializedStateSnapshot, FederationOperationId, FederationPaymentObservationRecord,
+    FederatedKeyset, FederationBarkOperation, FederationBarkProjectionSnapshot,
+    FederationBarkReceiveIntent, FederationMaterializedStateKey, FederationMaterializedStateRow,
+    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
+    FederationPaymentObservationRecord,
 };
 use cdk_common::mint::Operation;
 use cdk_common::{Amount, PublicKey};
@@ -19,6 +21,38 @@ use crate::mint::{Mint, QuoteId};
 const MATERIALIZED_STATE_QUERY_BATCH_SIZE: usize = 500;
 
 impl Mint {
+    /// Load the canonical Bark action/VTXO projection for route orchestration and workers.
+    #[instrument(skip_all)]
+    pub async fn federation_bark_projection_snapshot(
+        &self,
+    ) -> Result<FederationBarkProjectionSnapshot, Error> {
+        Ok(self
+            .localstore()
+            .get_federation_bark_projection_snapshot()
+            .await?)
+    }
+
+    /// Load one applied receive intent by its accepted operation ID.
+    #[instrument(skip_all)]
+    pub async fn federation_bark_receive_intent(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Result<Option<FederationBarkReceiveIntent>, Error> {
+        let Some(entry) = self
+            .localstore()
+            .get_federation_journal_entry_by_operation_id(operation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let FederationOperation::Bark(FederationBarkOperation::ReceiveIntent(intent)) =
+            entry.envelope.operation
+        else {
+            return Ok(None);
+        };
+        Ok(Some(intent))
+    }
+
     /// Build the deterministic federation materialized-state snapshot.
     #[instrument(skip_all)]
     pub async fn federation_materialized_state_snapshot(

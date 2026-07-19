@@ -54,6 +54,19 @@ async fn create_mint_quote_for_route(
 > {
     #[cfg(feature = "federation")]
     if state.mint.federation_config().is_some() {
+        #[cfg(feature = "federation-bark")]
+        if matches!(request, cdk::mint::MintQuoteRequest::Bolt11(_))
+            && state.federation.bark_runtime().is_some()
+        {
+            let quote_id = QuoteId::new();
+            state.mint.check_mint_request_acceptable(&request).await?;
+            let (response, request_lookup_id) =
+                crate::federation::bark_incoming::prepare_federated_bark_mint_quote(
+                    state, quote_id, request,
+                )
+                .await?;
+            return Ok((response, Some(request_lookup_id)));
+        }
         if matches!(request, cdk::mint::MintQuoteRequest::Onchain(_)) {
             let quote_id = QuoteId::new();
             state.mint.check_mint_request_acceptable(&request).await?;
@@ -1927,6 +1940,8 @@ mod tests {
                     None,
                     Vec::new(),
                     None,
+                    #[cfg(feature = "federation-bark")]
+                    None,
                 ),
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
                 aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
@@ -2769,6 +2784,8 @@ mod tests {
                     None,
                     None,
                     Vec::new(),
+                    None,
+                    #[cfg(feature = "federation-bark")]
                     None,
                 ),
                 aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),

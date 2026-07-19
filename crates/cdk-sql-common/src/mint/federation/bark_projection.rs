@@ -894,6 +894,15 @@ where
     let action = get_action(connection, prepared.action_id)
         .await?
         .ok_or_else(|| invalid_projection("Bark receive intent does not exist"))?;
+    let cdk_common::federation::FederationBarkOperation::ReceiveIntent(intent) = &action.operation
+    else {
+        return Err(invalid_projection(
+            "Bark receive preparation predecessor is not an intent",
+        ));
+    };
+    prepared
+        .validate_against_intent(intent)
+        .map_err(|_| invalid_projection("Bark receive preparation differs from its intent"))?;
     ensure_same_action_binding(&action, operation)?;
     ensure_predecessor(&action, prepared.intent_operation_id)?;
     if !transition_allowed(&action, operation.phase()) {

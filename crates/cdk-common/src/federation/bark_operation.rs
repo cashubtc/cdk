@@ -10,6 +10,7 @@ use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Network;
+use lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescriptionRef};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::journal::{FederationJournalEntry, FederationOperationStatus};
@@ -36,12 +37,20 @@ pub const FEDERATION_MAX_BARK_COLLECTION_ENTRIES: usize = 64;
 pub const FEDERATION_MAX_BARK_AUTHORIZATION_BYTES: usize = 16 * 1024;
 /// Maximum canonical BOLT11 invoice bytes retained in an operation.
 pub const FEDERATION_MAX_BARK_INVOICE_BYTES: usize = 64 * 1024;
+/// Maximum UTF-8 bytes in a direct federated Bark invoice description.
+pub const FEDERATION_MAX_BARK_DESCRIPTION_BYTES: usize = 4 * 1024;
 
 const BARK_OPERATION_HASH_DOMAIN: &[u8] = b"cdk/federation/bark-operation/v1";
 const BARK_AUTHORIZATION_HASH_DOMAIN: &[u8] = b"cdk/federation/bark-authorization/v1";
 const BARK_SIGNING_SLOT_DOMAIN: &[u8] = b"cdk/federation/bark-signing-slot/v1";
 const BARK_SESSION_ID_DOMAIN: &[u8] = b"cdk/federation/bark-session-id/v1";
 const BARK_ACTION_ID_DOMAIN: &[u8] = b"cdk/federation/bark-action-id/v1";
+const BARK_RECEIVE_ALLOCATION_DOMAIN: &[u8] = b"cdk/federation/bark-receive-allocation/v1";
+const BARK_DESCRIPTION_DOMAIN: &[u8] = b"cdk/federation/bark-description/v1";
+const BARK_MAILBOX_SCOPE_DOMAIN: &[u8] = b"cdk/federation/bark-mailbox-scope/v1";
+const BARK_RECEIVE_REQUEST_DOMAIN: &[u8] = b"cdk/federation/bark-receive-request/v1";
+const BARK_RECEIVE_RESULT_DOMAIN: &[u8] = b"cdk/federation/bark-receive-result/v1";
+const BARK_RECEIVE_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-receive-external-id/v1";
 
 fn invalid_bark(reason: impl Into<String>) -> FederationError {
     FederationError::BarkOperationInvalid {
@@ -153,6 +162,28 @@ impl FederationBarkActionId {
         transcript.extend_from_slice(&object_ordinal.to_be_bytes());
         Self::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
     }
+
+    /// Derive the initial receive action from its preallocated Cashu quote.
+    ///
+    /// Receive intent is the first accepted operation, so it has no prior
+    /// journal operation to reference. The frozen action derivation is fed a
+    /// domain-separated synthetic allocation reference bound to federation
+    /// and quote, avoiding a circular operation-ID dependency.
+    pub fn derive_receive_intent(federation_id: FederationId, quote: &str) -> Result<Self> {
+        ensure_quote(quote)?;
+        let mut allocation = Vec::new();
+        append_hash_bytes(&mut allocation, BARK_RECEIVE_ALLOCATION_DOMAIN);
+        append_hash_bytes(&mut allocation, &federation_id.to_bytes());
+        append_hash_bytes(&mut allocation, quote.as_bytes());
+        let allocation =
+            FederationOperationId::from_bytes(Sha256Hash::hash(&allocation).to_byte_array());
+        Self::derive(
+            federation_id,
+            allocation,
+            FederationBarkSemanticPhase::ReceiveIntent,
+            0,
+        )
+    }
 }
 
 /// Only currency unit admitted by the v1 Bark backend.
@@ -242,8 +273,10 @@ pub struct FederationBarkReceiveIntent {
     pub minimum_net_amount: Amount,
     /// Explicit v1 currency unit.
     pub unit: FederationBarkUnit,
-    /// Hash of the bounded user description, never the description itself.
+    /// Commitment to the bounded user description.
     pub description_hash: FederationBarkDigest,
+    /// Exact bounded direct BOLT11 description required for actor failover.
+    pub description: Option<String>,
     /// BOLT11 payment hash.
     pub payment_hash: FederationBarkDigest,
     /// Commitment to the protected preimage.
@@ -254,6 +287,9 @@ pub struct FederationBarkReceiveIntent {
     pub destination: FederationBarkVtxoLocator,
     /// Commitment to the member-independent mailbox scope.
     pub mailbox_scope: FederationBarkDigest,
+    /// Exact notification-only mailbox identifier supplied to the Ark server.
+    #[serde(with = "hex_array_33")]
+    pub mailbox_id: [u8; 33],
     /// Commitment to the pinned Ark server identity and capability snapshot.
     pub ark_server: FederationBarkDigest,
     /// Immutable Bitcoin network.
@@ -974,6 +1010,22 @@ impl FederationBarkReceiveIntent {
         {
             return Err(invalid_bark("unsupported receive policy or expiry"));
         }
+        let description = self.description.as_deref().unwrap_or_default();
+        if description.len() > FEDERATION_MAX_BARK_DESCRIPTION_BYTES
+            || self.description_hash
+                != federation_bark_description_hash(self.description.as_deref())?
+        {
+            return Err(invalid_bark(
+                "receive description exceeds 4 KiB or differs from its commitment",
+            ));
+        }
+        PublicKey::from_slice(&self.mailbox_id)
+            .map_err(|_| invalid_bark("invalid Bark mailbox identifier"))?;
+        if self.mailbox_scope != federation_bark_mailbox_scope(&self.mailbox_id)? {
+            return Err(invalid_bark(
+                "receive mailbox identifier differs from its scope commitment",
+            ));
+        }
         ensure_count(
             "receive-secret acknowledgements",
             self.secret_acknowledgements.len(),
@@ -1028,6 +1080,216 @@ impl FederationBarkReceivePrepared {
         }
         Ok(())
     }
+
+    /// Construct and fully validate the exact invoice result for an accepted intent.
+    pub fn from_invoice(
+        actor: MemberId,
+        intent_operation_id: FederationOperationId,
+        intent: &FederationBarkReceiveIntent,
+        invoice: Bolt11Invoice,
+    ) -> Result<Self> {
+        let expires_at = invoice
+            .expires_at()
+            .ok_or_else(|| invalid_bark("Bark invoice expiry overflows"))?
+            .as_secs();
+        let final_cltv_delta = u32::try_from(invoice.min_final_cltv_expiry_delta())
+            .map_err(|_| invalid_bark("Bark invoice final CLTV exceeds u32"))?;
+        let expected_net_amount = intent
+            .gross_amount
+            .checked_sub(intent.receive_fee)
+            .ok_or_else(|| invalid_bark("Bark receive fee exceeds gross amount"))?;
+        let mut prepared = Self {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: intent.action_id,
+            quote: intent.quote.clone(),
+            actor,
+            intent_operation_id,
+            invoice: invoice.to_string(),
+            payment_hash: FederationBarkDigest::from_bytes(invoice.payment_hash().to_byte_array())?,
+            gross_amount: intent.gross_amount,
+            expected_net_amount,
+            network: invoice.network(),
+            expires_at,
+            final_cltv_delta,
+            receive_fee: intent.receive_fee,
+            request_hash: receive_request_hash(intent_operation_id, intent)?,
+            result_hash: FederationBarkDigest::from_bytes([1; 32])?,
+            external_id: receive_external_id(intent_operation_id, intent.action_id)?,
+        };
+        prepared.result_hash = receive_result_hash(&prepared)?;
+        prepared.validate_against_intent(intent)?;
+        Ok(prepared)
+    }
+
+    /// Validate every prepared field and the canonical invoice against its accepted intent.
+    pub fn validate_against_intent(&self, intent: &FederationBarkReceiveIntent) -> Result<()> {
+        self.validate()?;
+        intent.validate()?;
+        if self.action_id != intent.action_id
+            || self.quote != intent.quote
+            || self.payment_hash != intent.payment_hash
+            || self.gross_amount != intent.gross_amount
+            || self.receive_fee != intent.receive_fee
+            || self.expected_net_amount
+                != intent
+                    .gross_amount
+                    .checked_sub(intent.receive_fee)
+                    .ok_or_else(|| invalid_bark("Bark receive fee exceeds gross amount"))?
+            || self.network != intent.network
+        {
+            return Err(invalid_bark(
+                "prepared receive differs from accepted intent bindings",
+            ));
+        }
+        if !intent
+            .secret_acknowledgements
+            .iter()
+            .any(|acknowledgement| acknowledgement.member == self.actor)
+        {
+            return Err(invalid_bark(
+                "prepared receive actor did not acknowledge the protected secret",
+            ));
+        }
+        let invoice = self
+            .invoice
+            .parse::<Bolt11Invoice>()
+            .map_err(|_| invalid_bark("prepared receive contains an invalid BOLT11 invoice"))?;
+        invoice
+            .check_signature()
+            .map_err(|_| invalid_bark("prepared receive invoice signature is invalid"))?;
+        if invoice.to_string() != self.invoice
+            || invoice.network() != intent.network
+            || invoice.payment_hash().to_byte_array() != intent.payment_hash.to_bytes()
+        {
+            return Err(invalid_bark(
+                "prepared receive invoice identity, network, or payment hash differs",
+            ));
+        }
+        let expected_msat = u64::from(intent.gross_amount)
+            .checked_mul(1_000)
+            .ok_or_else(|| invalid_bark("Bark invoice amount overflows millisatoshis"))?;
+        if invoice.amount_milli_satoshis() != Some(expected_msat) {
+            return Err(invalid_bark(
+                "prepared receive invoice amount differs from accepted gross amount",
+            ));
+        }
+        match invoice.description() {
+            Bolt11InvoiceDescriptionRef::Direct(description)
+                if description.to_string() == intent.description.as_deref().unwrap_or_default() => {
+            }
+            Bolt11InvoiceDescriptionRef::Direct(_) | Bolt11InvoiceDescriptionRef::Hash(_) => {
+                return Err(invalid_bark(
+                    "prepared receive requires the exact accepted direct description",
+                ));
+            }
+        }
+        let invoice_expiry = invoice
+            .expires_at()
+            .ok_or_else(|| invalid_bark("Bark invoice expiry overflows"))?
+            .as_secs();
+        let invoice_cltv = u32::try_from(invoice.min_final_cltv_expiry_delta())
+            .map_err(|_| invalid_bark("Bark invoice final CLTV exceeds u32"))?;
+        if self.expires_at != invoice_expiry
+            || self.expires_at > intent.expires_at
+            || self.final_cltv_delta != invoice_cltv
+            || self.final_cltv_delta < intent.minimum_cltv_delta
+        {
+            return Err(invalid_bark(
+                "prepared receive invoice expiry or final CLTV violates accepted policy",
+            ));
+        }
+        if self.request_hash != receive_request_hash(self.intent_operation_id, intent)?
+            || self.external_id != receive_external_id(self.intent_operation_id, intent.action_id)?
+            || self.result_hash != receive_result_hash(self)?
+        {
+            return Err(invalid_bark(
+                "prepared receive request, result, or retry commitment differs",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Commit to a bounded direct BOLT11 description, treating absence as the empty string.
+pub fn federation_bark_description_hash(description: Option<&str>) -> Result<FederationBarkDigest> {
+    let description = description.unwrap_or_default();
+    if description.len() > FEDERATION_MAX_BARK_DESCRIPTION_BYTES {
+        return Err(invalid_bark("Bark receive description exceeds 4 KiB"));
+    }
+    domain_hash(BARK_DESCRIPTION_DOMAIN, description.as_bytes())
+}
+
+/// Commit to the exact notification-only Ark mailbox identifier.
+pub fn federation_bark_mailbox_scope(mailbox_id: &[u8; 33]) -> Result<FederationBarkDigest> {
+    PublicKey::from_slice(mailbox_id)
+        .map_err(|_| invalid_bark("invalid Bark mailbox identifier"))?;
+    domain_hash(BARK_MAILBOX_SCOPE_DOMAIN, mailbox_id)
+}
+
+fn receive_request_hash(
+    intent_operation_id: FederationOperationId,
+    intent: &FederationBarkReceiveIntent,
+) -> Result<FederationBarkDigest> {
+    #[derive(Serialize)]
+    struct RequestCommitment<'a> {
+        intent_operation_id: FederationOperationId,
+        intent: &'a FederationBarkReceiveIntent,
+    }
+    domain_hash(
+        BARK_RECEIVE_REQUEST_DOMAIN,
+        &canonical_json_bytes(&RequestCommitment {
+            intent_operation_id,
+            intent,
+        })?,
+    )
+}
+
+fn receive_result_hash(prepared: &FederationBarkReceivePrepared) -> Result<FederationBarkDigest> {
+    #[derive(Serialize)]
+    struct ResultCommitment<'a> {
+        action_id: FederationBarkActionId,
+        intent_operation_id: FederationOperationId,
+        invoice: &'a str,
+        payment_hash: FederationBarkDigest,
+        gross_amount: Amount,
+        expected_net_amount: Amount,
+        network: Network,
+        expires_at: u64,
+        final_cltv_delta: u32,
+        receive_fee: Amount,
+        request_hash: FederationBarkDigest,
+        external_id: FederationBarkExternalId,
+    }
+    domain_hash(
+        BARK_RECEIVE_RESULT_DOMAIN,
+        &canonical_json_bytes(&ResultCommitment {
+            action_id: prepared.action_id,
+            intent_operation_id: prepared.intent_operation_id,
+            invoice: &prepared.invoice,
+            payment_hash: prepared.payment_hash,
+            gross_amount: prepared.gross_amount,
+            expected_net_amount: prepared.expected_net_amount,
+            network: prepared.network,
+            expires_at: prepared.expires_at,
+            final_cltv_delta: prepared.final_cltv_delta,
+            receive_fee: prepared.receive_fee,
+            request_hash: prepared.request_hash,
+            external_id: prepared.external_id,
+        })?,
+    )
+}
+
+fn receive_external_id(
+    intent_operation_id: FederationOperationId,
+    action_id: FederationBarkActionId,
+) -> Result<FederationBarkExternalId> {
+    let mut transcript = Vec::new();
+    transcript.extend_from_slice(&intent_operation_id.to_bytes());
+    transcript.extend_from_slice(&action_id.to_bytes());
+    FederationBarkExternalId::from_bytes(
+        Sha256Hash::hash(&[BARK_RECEIVE_EXTERNAL_ID_DOMAIN, transcript.as_slice()].concat())
+            .to_byte_array(),
+    )
 }
 
 impl FederationBarkActionPlan {
@@ -1714,12 +1976,14 @@ mod tests {
             receive_fee: Amount::ZERO,
             minimum_net_amount: Amount::from(100),
             unit: FederationBarkUnit::Sat,
-            description_hash: digest(2),
+            description_hash: federation_bark_description_hash(None).expect("description hash"),
+            description: None,
             payment_hash: digest(3),
             preimage_commitment: digest(4),
             secret_acknowledgements: vec![acknowledgement(1), acknowledgement(2)],
             destination: FederationBarkVtxoLocator::vtxo_custody(7),
-            mailbox_scope: digest(5),
+            mailbox_scope: federation_bark_mailbox_scope(&ark_server_key()).expect("mailbox scope"),
+            mailbox_id: ark_server_key(),
             ark_server: digest(6),
             network: Network::Regtest,
             minimum_cltv_delta: 18,

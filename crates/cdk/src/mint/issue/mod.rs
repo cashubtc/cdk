@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+#[cfg(feature = "federation")]
+use bitcoin::hashes::Hash;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
 use cdk_common::payment::{
@@ -14,6 +16,8 @@ use cdk_common::{
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
     MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
 };
+#[cfg(feature = "federation")]
+use lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescriptionRef};
 use tracing::instrument;
 
 use crate::mint::verification::{validate_custom_payment_method, MAX_REQUEST_FIELD_LEN};
@@ -258,6 +262,64 @@ impl Mint {
         .await
     }
 
+    /// Prepare a federation BOLT11 quote from an already accepted canonical invoice.
+    ///
+    /// This is intentionally narrower than the ordinary payment-backend path:
+    /// it accepts only a signed, amount-bearing satoshi invoice whose payment
+    /// hash and direct description match the ordinary Cashu request. The quote
+    /// is still persisted only by the accepted federation `MintQuote` operation.
+    #[cfg(feature = "federation")]
+    #[instrument(skip_all)]
+    pub async fn prepare_bolt11_mint_quote_with_invoice(
+        &self,
+        quote_id: QuoteId,
+        mint_quote_request: MintQuoteRequest,
+        invoice: Bolt11Invoice,
+    ) -> Result<(MintQuoteResponse<QuoteId>, PaymentIdentifier), Error> {
+        let MintQuoteRequest::Bolt11(request) = &mint_quote_request else {
+            return Err(Error::InvalidPaymentRequest);
+        };
+        invoice
+            .check_signature()
+            .map_err(|_| Error::InvalidPaymentRequest)?;
+        let expected_msat = u64::from(request.amount)
+            .checked_mul(1_000)
+            .ok_or(Error::InvalidPaymentRequest)?;
+        if request.unit != CurrencyUnit::Sat
+            || invoice.amount_milli_satoshis() != Some(expected_msat)
+            || invoice.to_string().is_empty()
+        {
+            return Err(Error::InvalidPaymentRequest);
+        }
+        match invoice.description() {
+            Bolt11InvoiceDescriptionRef::Direct(description)
+                if description.to_string()
+                    == request.description.as_deref().unwrap_or_default() => {}
+            Bolt11InvoiceDescriptionRef::Direct(_) | Bolt11InvoiceDescriptionRef::Hash(_) => {
+                return Err(Error::InvalidPaymentRequest);
+            }
+        }
+        let expiry = invoice
+            .expires_at()
+            .ok_or(Error::InvalidPaymentRequest)?
+            .as_secs();
+        let incoming = CreateIncomingPaymentResponse {
+            request_lookup_id: PaymentIdentifier::PaymentHash(
+                invoice.payment_hash().to_byte_array(),
+            ),
+            request: invoice.to_string(),
+            expiry: Some(expiry),
+            extra_json: None,
+        };
+        self.create_mint_quote_with_incoming_response(
+            mint_quote_request,
+            quote_id,
+            false,
+            Some(incoming),
+        )
+        .await
+    }
+
     async fn create_mint_quote(
         &self,
         mint_quote_request: MintQuoteRequest,
@@ -425,11 +487,25 @@ impl Mint {
 
             let create_invoice_response = match incoming_response {
                 Some(response) => {
-                    if !matches!(mint_quote_request, MintQuoteRequest::Onchain(_))
-                        || response.request_lookup_id
-                            != PaymentIdentifier::QuoteId(quote_id.clone())
-                        || response.request.is_empty()
-                    {
+                    let valid_prepared_response = match &mint_quote_request {
+                        MintQuoteRequest::Onchain(_) => {
+                            response.request_lookup_id
+                                == PaymentIdentifier::QuoteId(quote_id.clone())
+                                && !response.request.is_empty()
+                        }
+                        MintQuoteRequest::Bolt11(_) => response
+                            .request
+                            .parse::<Bolt11Invoice>()
+                            .ok()
+                            .is_some_and(|invoice| {
+                                response.request_lookup_id
+                                    == PaymentIdentifier::PaymentHash(
+                                        invoice.payment_hash().to_byte_array(),
+                                    )
+                            }),
+                        MintQuoteRequest::Bolt12(_) | MintQuoteRequest::Custom { .. } => false,
+                    };
+                    if !valid_prepared_response {
                         return Err(Error::InvalidPaymentRequest);
                     }
                     response

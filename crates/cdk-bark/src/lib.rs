@@ -25,9 +25,9 @@ mod tests;
 pub use self::adapter::FederatedBarkPaymentAdapter;
 #[cfg(feature = "federation-bark")]
 pub use self::config::{
-    FederatedBarkLimits, FederatedBarkLocalBindings, FederatedBarkLocalConfig,
-    FederatedBarkReceiveSecretStoreConfig, FederatedBarkScope, FederatedBarkStoreAvailability,
-    ValidatedFederatedBarkConfig,
+    FederatedBarkConnectionConfig, FederatedBarkLimits, FederatedBarkLocalBindings,
+    FederatedBarkLocalConfig, FederatedBarkReceiveSecretStoreConfig, FederatedBarkScope,
+    FederatedBarkStoreAvailability, ValidatedFederatedBarkConfig,
 };
 #[cfg(feature = "federation-bark")]
 pub use self::custody::CdkFrostVtxoCustody;
@@ -42,6 +42,7 @@ pub use self::runtime::{
 pub use self::secret_store::{
     FederatedBarkReceiveSecretAcceptedRef, FederatedBarkReceiveSecretEncryptionKey,
     FederatedBarkReceiveSecretStatus, FederatedBarkReceiveSecretStore,
-    FederatedBarkReceiveSecretTerminalRef, FEDERATED_BARK_RECEIVE_SECRET_MINIMUM_RETENTION_DAYS,
+    FederatedBarkReceiveSecretTerminalRef, FederatedBarkResumableReceiveSecret,
+    FEDERATED_BARK_RECEIVE_SECRET_MINIMUM_RETENTION_DAYS,
     FEDERATED_BARK_RECEIVE_SECRET_ORPHAN_RETENTION_SECONDS,
 };
