@@ -1775,6 +1775,7 @@ async fn apply_federation_aleph_bft_finalized_unit_with_retry(
 ) -> Result<(), cdk::Error> {
     let mut attempts = 0usize;
     let mut retry_delay = FEDERATION_APPLY_RETRY_INITIAL_DELAY;
+    let started_at = tokio::time::Instant::now();
 
     loop {
         match state
@@ -1792,6 +1793,20 @@ async fn apply_federation_aleph_bft_finalized_unit_with_retry(
             }
             Err(err) if is_retryable_federation_apply_error(&err) => {
                 attempts = attempts.saturating_add(1);
+                let elapsed = started_at.elapsed();
+                if elapsed >= crate::federation_apply_retry_budget() {
+                    tracing::error!(
+                        retry_attempts = attempts,
+                        elapsed_ms = elapsed.as_millis(),
+                        "AlephBFT finalized-unit apply retry budget exhausted; transitioning to bounded operator-repairable state"
+                    );
+                    return Err(cdk::Error::Custom(format!(
+                        "federation AlephBFT finalized-unit apply retry budget exhausted after {} attempts over {:.1}s: {}",
+                        attempts,
+                        elapsed.as_secs_f64(),
+                        err
+                    )));
+                }
                 if attempts == 1 || attempts % 10 == 0 {
                     tracing::warn!(
                         retry_attempts = attempts,

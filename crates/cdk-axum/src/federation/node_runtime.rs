@@ -150,6 +150,7 @@ pub(crate) async fn apply_federation_journal_entry_for_replay(
     }
     let mut attempts = 0usize;
     let mut retry_delay = crate::FEDERATION_APPLY_RETRY_INITIAL_DELAY;
+    let started_at = tokio::time::Instant::now();
 
     loop {
         match mint
@@ -169,6 +170,22 @@ pub(crate) async fn apply_federation_journal_entry_for_replay(
             Ok(false) => return Ok(None),
             Err(err) if crate::is_retryable_federation_apply_error(&err) => {
                 attempts = attempts.saturating_add(1);
+                let elapsed = started_at.elapsed();
+                if elapsed >= crate::federation_apply_retry_budget() {
+                    tracing::error!(
+                        operation_id = %entry.operation_id,
+                        retry_attempts = attempts,
+                        elapsed_ms = elapsed.as_millis(),
+                        "Federation journal replay apply retry budget exhausted; transitioning to bounded operator-repairable state"
+                    );
+                    return Err(cdk::Error::Custom(format!(
+                        "federation journal replay apply retry budget exhausted for operation {} after {} attempts over {:.1}s: {}",
+                        entry.operation_id,
+                        attempts,
+                        elapsed.as_secs_f64(),
+                        err
+                    )));
+                }
                 if attempts == 1 || attempts % 10 == 0 {
                     tracing::warn!(
                         operation_id = %entry.operation_id,
@@ -419,6 +436,14 @@ impl FederationNodeRuntime {
         self.components
             .faults
             .fail_next_onchain_reconciliation
+            .store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn permanent_federation_apply_contention_for_test(&self) {
+        self.components
+            .faults
+            .permanent_federation_apply_contention
             .store(true, Ordering::Release);
     }
 

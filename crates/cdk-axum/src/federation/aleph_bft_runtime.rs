@@ -1280,6 +1280,7 @@ async fn persist_aleph_bft_backup_bytes(
 
     let mut attempts = 0usize;
     let mut retry_delay = FEDERATION_APPLY_RETRY_INITIAL_DELAY;
+    let started_at = tokio::time::Instant::now();
 
     loop {
         match try_persist_aleph_bft_backup_bytes(Arc::clone(&db), session_id, &bytes).await {
@@ -1295,6 +1296,21 @@ async fn persist_aleph_bft_backup_bytes(
             }
             Err(err) if is_retryable_federation_database_error(&err) => {
                 attempts = attempts.saturating_add(1);
+                let elapsed = started_at.elapsed();
+                if elapsed >= crate::federation_apply_retry_budget() {
+                    tracing::error!(
+                        session_id,
+                        retry_attempts = attempts,
+                        elapsed_ms = elapsed.as_millis(),
+                        "AlephBFT backup persistence retry budget exhausted; transitioning to bounded operator-repairable state"
+                    );
+                    return Err(io::Error::other(format!(
+                        "federation AlephBFT backup persistence retry budget exhausted after {} attempts over {:.1}s: {}",
+                        attempts,
+                        elapsed.as_secs_f64(),
+                        err
+                    )));
+                }
                 if attempts == 1 || attempts % 10 == 0 {
                     tracing::warn!(
                         session_id,

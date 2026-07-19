@@ -578,6 +578,15 @@ impl FederationNodeRuntime {
         &self,
         payload: FederationAlephBftUnitPayload,
     ) -> Result<Vec<FederationSubmitOperationResponse>, cdk::Error> {
+        #[cfg(test)]
+        if self
+            .components
+            .faults
+            .permanent_federation_apply_contention
+            .load(Ordering::Acquire)
+        {
+            return Err(cdk::Error::ConcurrentUpdate);
+        }
         let _application = self.components.operation.lock().await;
         let db = self.active_mint()?.localstore();
         let mut durable_entries = BTreeMap::new();

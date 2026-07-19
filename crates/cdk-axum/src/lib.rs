@@ -93,6 +93,29 @@ type FederationAlephBftLiveSessionState =
 pub(crate) const FEDERATION_APPLY_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(25);
 #[cfg(feature = "federation")]
 pub(crate) const FEDERATION_APPLY_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+/// Terminal elapsed budget for retrying recognized transient storage
+/// contention during finalized application and backup persistence. When the
+/// budget is exhausted the caller transitions to a bounded operator-visible
+/// state instead of retrying forever; the exact item is retained for replay.
+#[cfg(feature = "federation")]
+pub(crate) const FEDERATION_APPLY_RETRY_BUDGET: Duration = Duration::from_secs(30);
+
+#[cfg(all(test, feature = "federation"))]
+pub(crate) static FEDERATION_APPLY_RETRY_BUDGET_OVERRIDE_MILLIS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(feature = "federation")]
+pub(crate) fn federation_apply_retry_budget() -> Duration {
+    #[cfg(test)]
+    {
+        let millis = FEDERATION_APPLY_RETRY_BUDGET_OVERRIDE_MILLIS
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if millis > 0 {
+            return Duration::from_millis(millis);
+        }
+    }
+    FEDERATION_APPLY_RETRY_BUDGET
+}
 
 #[cfg(feature = "federation")]
 const FEDERATION_INVALID_OPERATION_ALERT_THRESHOLD: u64 = 20;

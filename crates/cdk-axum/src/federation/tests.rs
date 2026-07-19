@@ -22631,6 +22631,93 @@ async fn onchain_reconciliation_failure_does_not_halt_finalized_application() {
     let _ = submit_task.await;
 }
 
+struct ApplyRetryBudgetOverrideGuard;
+
+impl ApplyRetryBudgetOverrideGuard {
+    fn set(millis: u64) -> Self {
+        crate::FEDERATION_APPLY_RETRY_BUDGET_OVERRIDE_MILLIS
+            .store(millis, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for ApplyRetryBudgetOverrideGuard {
+    fn drop(&mut self) {
+        crate::FEDERATION_APPLY_RETRY_BUDGET_OVERRIDE_MILLIS
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[tokio::test]
+async fn permanent_apply_contention_transitions_to_bounded_operator_repairable_state() {
+    let _budget_guard = ApplyRetryBudgetOverrideGuard::set(2_000);
+    let session = start_two_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 0,
+            max_messages_per_tick: 128,
+            max_peer_deliveries_per_message: 128,
+        },
+        500,
+    ))
+    .await
+    .expect("start two-member live session");
+
+    // Member 1's database remains locked/contended on every finalized-unit
+    // application attempt (a permanent retryable error).
+    session
+        .first_state
+        .federation
+        .permanent_federation_apply_contention_for_test();
+
+    let quote_id = QuoteId::new();
+    let envelope = mint_quote_envelope(&session.second_state, &quote_id);
+    let operation_id = envelope.operation_id().expect("operation id");
+    let submit_state = session.second_state.clone();
+    let submit_task = tokio::spawn(async move {
+        submit_state
+            .submit_federation_envelope_to_consensus(envelope)
+            .await
+    });
+
+    // Member 2 applies the operation normally.
+    assert_eq!(
+        wait_for_terminal_operation(&session.second_state, operation_id).await,
+        FederationOperationStatus::Applied
+    );
+
+    // Member 1 must transition to a bounded operator-repairable state with
+    // the blocked context exposed instead of retrying forever.
+    let mut first_halt_reason = None;
+    time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(crate::FederationSyncStatus::Halted { reason }) =
+                session.first_state.federation_sync_status().await
+            {
+                first_halt_reason = Some(reason);
+                break;
+            }
+            time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("member 1 must reach a bounded transition instead of retrying forever");
+    let reason = first_halt_reason.expect("halt reason");
+    assert!(
+        reason.contains("retry budget exhausted"),
+        "halt must name the exhausted apply retry budget: {reason}"
+    );
+
+    assert!(
+        session
+            .second_state
+            .federation_aleph_bft_live_session_active()
+            .await
+    );
+
+    let _ = submit_task.abort();
+    let _ = submit_task.await;
+}
+
 #[tokio::test]
 async fn aleph_bft_duplicate_pending_submit_joins_existing_waiter_without_requeuing() {
     let (public_config, local_private, _) = transport_config();

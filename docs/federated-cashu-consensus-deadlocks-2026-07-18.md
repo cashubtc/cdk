@@ -55,7 +55,7 @@ is well established but its root cause is not.
 | 7 | `S1` | DKG availability is all-member, not Byzantine-threshold | High availability | 99% | Federation setup/key ceremony | Completed |
 | 8 | `F3` | Local BDK reconciliation is inside the fatal apply boundary | High | 98% | Session/member; quorum loss if repeated | Completed |
 | 9 | `W2` | Melt-status recovery lets one invalid share poison an honest threshold | High availability / Medium scope | 98% | Wallet melt recovery | Completed |
-| 10 | `F4` | Apply and backup retries have no terminal budget | High | 97% | Session/member starvation | Not started |
+| 10 | `F4` | Apply and backup retries have no terminal budget | High | 97% | Session/member starvation | Completed |
 | 11 | `P3` | Exact evidence quorum is not backed by an enforced evidence model | High | 97% | Quote/proofs | Not started |
 | 12 | `R1` | Recovery candidate fetch is pinned to the first source | High | 97% | Startup recovery | Not started |
 | 13 | `A1` | Aleph queues lack bounded backpressure | High security gate | 97% | Process/quorum resource exhaustion | Not started |
@@ -2140,23 +2140,105 @@ Reference: [July 13 review R4](federated-cashu-security-review-jul-13.md#r4-melt
 
 ### 10. Apply and backup retries have no terminal budget (`F4`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with an executed two-member live
+AlephBFT session harness against the unmodified pre-fix worktree. A bounded
+test fault flag (`permanent_federation_apply_contention`, same `#[cfg(test)]`
+fault-harness pattern) makes every finalized-unit application on member 1
+return a retryable `ConcurrentUpdate`, and a valid mint quote operation was
+submitted through the real consensus path with a 2-second test budget
+override:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-axum --features federation permanent_apply_contention_transitions_to_bounded_operator_repairable_state -- --nocapture`
 
-**Fix check and evaluation:** Not run
+FAILED with `member 1 must reach a bounded transition instead of retrying
+forever: Elapsed(())`: member 1 retried the contention for the full 15-second
+bound without halting, transitioning, or applying the operation, while member
+2 applied the same operation normally — consensus was healthy and only the
+contended member starved. This is the reported unbounded retry starvation:
+the application boundary is held indefinitely with no terminal budget. No
+production behavior had been changed; only the test-only fault flag, its
+consumption point, and the regression in
+`crates/cdk-axum/src/federation/tests.rs` were added.
 
-**Commit subject:** Not assigned
+**Minimal fix:** One federation-only change adding a terminal elapsed budget
+(`FEDERATION_APPLY_RETRY_BUDGET`, 30s) to all three recognized transient
+storage-contention retry loops:
 
-**Milestone observations:** None yet
+- finalized-unit apply (`crates/cdk-axum/src/federation/aleph_bft_session.rs`),
+- journal replay apply (`crates/cdk-axum/src/federation/node_runtime.rs`,
+  which also names the blocked operation id), and
+- AlephBFT backup persistence
+  (`crates/cdk-axum/src/federation/aleph_bft_runtime.rs`).
+
+When the budget elapses, each loop logs an error with the attempt count and
+elapsed time and returns an error naming the context and budget instead of
+retrying forever — the finalized-unit loop then halts the session (an
+operator-repairable state with the exact item retained in the journal for
+replay), replay fails startup/catch-up to the operator, and the backup
+writer surfaces the failure to the session. Successful first-retry behavior,
+backoff shape, and non-retryable classification are unchanged. Tests use a
+`#[cfg(test)]` millisecond override to shrink the budget. No standalone code
+changed.
+
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact
+confirmation scenario. Pre-fix run (recorded above): FAILED at the 15-second
+bound with the member still retrying (`Elapsed(())`). Post-fix with the
+2-second test budget:
+
+`cargo test -p cdk-axum --features federation permanent_apply_contention_transitions_to_bounded_operator_repairable_state -- --nocapture`
+
+`1 passed` in 3.14s: member 1 exhausted the budget and halted with `retry
+budget exhausted` in the halt reason (bounded operator-repairable state),
+while member 2 applied the operation and stayed live.
+
+Broader evaluation on 2026-07-18:
+
+- `cargo fmt -p cdk-axum -- --check` — clean for the milestone's code.
+- `cargo test -p cdk-axum --features federation` — `499 passed; 0 failed; 2
+  ignored`, including the new regression and neighboring
+  persistence-failure/retry-recovery and session-lifecycle tests.
+- `cargo check -p cdk-axum --no-default-features` — passed; all changed code
+  is federation-gated.
+- `cargo clippy -p cdk-axum --features federation --all-targets -- -D
+  warnings` — fails only on the same 9 pre-existing `crates/cdk` lints
+  recorded in milestone 2 (none in the changed code).
+
+Not run: a real locked-database demonstration (the permanent-contention
+fault flag reproduces the exact retryable-error transition the finding
+describes; the DB engine is not the subject of the finding).
+
+**Commit subject:** `fix: bound federation apply and backup retries with a terminal budget`
+
+**Milestone observations:** 2026-07-18 — Milestone 9 is committed
+(`1e0ab6d58`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the apply, replay, and backup retry
+loops and their call-site budgets are inspected.
+
+2026-07-18 — Confirmation recorded above.
+
+2026-07-18 — Fix and evaluation complete; milestone kept. Observations
+during the fix: (1) exhaustion deliberately returns an error (halting the
+session for the finalized-unit loop) rather than skipping the item —
+ordering is preserved and the exact item stays in the journal for replay
+after operator repair, matching the finding's allowed degraded/halted
+transition. (2) The blocked index/context is exposed through the error
+message and the error-level log (`retry budget exhausted`, operation id for
+replay, attempt count, elapsed ms); the pending-mempool item limit already
+bounds new backlog, so no separate backlog rejection was added. (3) The 30s
+production budget is generous for real storage contention; tests shrink it
+to milliseconds through the override. (4) One new `#[cfg(test)]` fault flag
+(`permanent_federation_apply_contention`) and its pipeline consumption
+point were added for the injection, matching the existing fault-harness
+pattern.
 
 **Severity:** High
 
 **Confidence:** 97% — source-proven
 
-**Finding status:** Open, source-proven
+**Finding status:** Resolved on 2026-07-18 with red-before-green runtime
+proof
 
 **Fault:** A database that remains locked/busy or repeatedly returns
 `ConcurrentUpdate`
@@ -2189,10 +2271,21 @@ Preserving order means the item must not be skipped, but an indefinitely held
 application boundary lets finalized and network work accumulate without a
 bounded degraded transition.
 
+All three loops now share a terminal elapsed budget
+(`FEDERATION_APPLY_RETRY_BUDGET`, 30s) that logs the attempt count and elapsed
+time and errors with the blocked context instead of retrying forever: the
+finalized-unit loop halts into an operator-repairable state with the exact
+item retained in the journal, replay fails startup/catch-up visibly, and the
+backup writer surfaces the failure. The retained regression proves a
+permanently contended member transitions within the budget while a healthy
+peer applies and stays live.
+
 **Required correction:** add attempt/elapsed budgets, expose the blocked index
 and oldest retry age, reject new backlog at a bound, and transition to an
 operator-repairable degraded/halted state while retaining the exact item for
-replay.
+replay. The budget, blocked-context exposure, and bounded transition clauses
+are implemented and proven; new backlog remains bounded by the existing
+pending-mempool item limit.
 
 ### 11. Exact evidence quorum is not backed by an enforced evidence model (`P3`)
 
@@ -2695,7 +2788,7 @@ not currently classified as an open deadlock.
 | A peer sync rejects an equal-height digest mismatch but the member stays live | Completed 1 (`F1`) | Signed peer statuses from the entire roster at the same frontier; confirm the source enters backoff |
 | A member still halts with `peer ... digest mismatch` | Pre-fix build or regression of 1 (`F1`) | Build/commit identity, signed peer statuses, live-session teardown state |
 | One member halts after an on-chain operation; peers continue | `DB-001` or 24 (`DB-003`); pre-fix builds: 8 (`F3`) | BDK reconciliation error, BDK-degraded reason, local BDK DB state |
-| Session remains live but application index/backlog stops growing | 10 (`F4`) / 13 (`A1`) | Blocked operation index, DB lock age, queue depth/bytes |
+| Session remains live but application index/backlog stops growing | 13 (`A1`); pre-fix builds: 10 (`F4`) | Blocked operation index, retry-budget log, DB lock age, queue depth/bytes |
 | Melt proofs stay pending with healthy consensus | 11 (`P3`), 19 (`P6`), or `DB-002`; pre-fix builds: 5 (`P1`), 6 (`P2`) | Accepted envelope author, lease epoch vs journal tip, saga state, lookup ID, per-member backend observations |
 | Mint quote is paid externally but never becomes paid in federation | 11 (`P3`), then 6 (`P2`) | Per-member lookup visibility and exact evidence group differences |
 | UTXO changes to `Reorged`/`Quarantined` | Post-fix: quorum evidence or 24 (`DB-003`); pre-fix builds: 4 (`P5`) | Every member's reorg/deposit evidence, first observation author, block/txout fields, every member's raw chain-source result |
