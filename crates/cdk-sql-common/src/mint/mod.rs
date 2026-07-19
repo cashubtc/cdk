@@ -190,6 +190,64 @@ where
     }
 }
 
+#[cfg(test)]
+mod migration_tests {
+    use std::collections::BTreeSet;
+
+    use bitcoin::hashes::{sha256, Hash};
+
+    use super::MIGRATIONS;
+
+    const FAILED_STATE_MIGRATION: &str = "20260707170000_allow_failed_melt_quote_state.sql";
+
+    #[test]
+    fn historical_mint_migrations_keep_standalone_checksums() {
+        for (sql, expected) in [
+            (
+                include_str!("migrations/postgres/1_initial.sql"),
+                "04e697d8cfa7a4aa5aef818837442c4b97675157d6cf92d4f639843fe044fe02",
+            ),
+            (
+                include_str!("migrations/sqlite/20240618195700_quote_state.sql"),
+                "bba6767a1a06a425790825c8cdb71c689b355d20848662ad1b58c76d5a3f1a27",
+            ),
+            (
+                include_str!(
+                    "migrations/sqlite/20250819200000_remove_request_lookup_kind_constraints.sql"
+                ),
+                "e1b2a11393a610d0d34b316dbbc999a199c301fa072fd42d595886334c10108d",
+            ),
+        ] {
+            assert_eq!(sha256::Hash::hash(sql.as_bytes()).to_string(), expected);
+            assert!(
+                !sql.contains("'FAILED'"),
+                "historical standalone migration must not be rewritten"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_melt_quote_state_is_added_by_forward_migrations() {
+        let backends = MIGRATIONS
+            .iter()
+            .filter_map(|(backend, name, sql)| {
+                (*name == FAILED_STATE_MIGRATION).then_some((*backend, *sql))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            backends
+                .iter()
+                .map(|(backend, _)| *backend)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["postgres", "sqlite"])
+        );
+        for (_, sql) in backends {
+            assert!(sql.contains("'FAILED'"));
+            assert!(!sql.contains("'UNKNOWN'"));
+        }
+    }
+}
+
 #[cfg(all(test, feature = "prometheus"))]
 mod tests {
     use std::fmt;

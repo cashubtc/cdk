@@ -101,7 +101,7 @@ must not be removed merely to reduce line count.
 
 ### CLEAN-001: separate consensus ordering from wall-clock time
 
-**Status:** Complete (2026-07-19)  
+**Status:** Complete (2026-07-19)
 **Severity:** Critical  
 **Primary files:**
 
@@ -163,28 +163,50 @@ deterministic replay.
 
 ### CLEAN-002: restore immutable standalone migrations
 
-**Status:** Open  
+**Status:** Complete (2026-07-19)
 **Severity:** Critical  
 **Primary files:**
 
 - `crates/cdk-sql-common/src/mint/migrations/postgres/1_initial.sql`
 - `crates/cdk-sql-common/src/mint/migrations/sqlite/20240618195700_quote_state.sql`
 - `crates/cdk-sql-common/src/mint/migrations/sqlite/20250819200000_remove_request_lookup_kind_constraints.sql`
+- `crates/cdk-sql-common/src/mint/migrations/postgres/20260707170000_allow_failed_melt_quote_state.sql`
+- `crates/cdk-sql-common/src/mint/migrations/sqlite/20260707170000_allow_failed_melt_quote_state.sql`
+- `crates/cdk-sqlite/src/mint/mod.rs`
 
 Historical migrations were edited to add the `FAILED` melt quote state. This
 changes migration checksums and does not update already-migrated databases.
 
-Required work:
+Implemented cleanup:
 
-- [ ] Restore all three historical migrations byte-for-byte.
-- [ ] Add a new forward PostgreSQL migration for the `FAILED` state.
-- [ ] Add a new forward SQLite migration for the `FAILED` state.
-- [ ] Test migration from a pre-federation standalone database.
-- [ ] Test fresh database creation and upgrade produce identical final schemas.
-- [ ] Confirm the migration is justified independently of federation, because
+- [x] Restored all three historical migrations byte-for-byte to their standalone
+      checksums and added a checksum regression test.
+- [x] Restored the forward PostgreSQL migration for the `FAILED` state.
+- [x] Restored the forward SQLite migration for the `FAILED` state.
+- [x] Made the SQLite table rebuild preserve existing `melt_request` rows while
+      foreign-key enforcement remains enabled.
+- [x] Tested migration of populated pre-federation standalone quote and melt
+      request rows.
+- [x] Tested that fresh database creation and upgrade produce identical final
+      `melt_quote` tables and indexes.
+- [x] Confirmed the migration is justified independently of federation, because
       the state is now used by ordinary payment backends and wallet recovery.
 
-This task is separate from federation-only migration squashing in CLEAN-014.
+Only the undeployed federation migrations remain eligible for cut-through
+squashing under CLEAN-014. The standalone migration chain is immutable.
+
+Verification completed:
+
+- [x] Historical migration SHA-256 values match the standalone baseline.
+- [x] `cdk-sql-common` unit tests pass: 8 passed.
+- [x] `cdk-sqlite` unit tests pass: 137 passed.
+- [x] Fresh and populated-upgrade SQLite migration tests pass with foreign-key
+      enforcement enabled.
+- [x] Federation-enabled SQLite migration coverage passes.
+- [x] PostgreSQL unit-test target compiles; live migration execution still
+      requires the project test PostgreSQL service.
+- [x] Targeted SQL clippy with warnings denied passes.
+- [x] Standalone and federation-enabled `cdk` checks pass.
 
 ### CLEAN-003: restore type-safe standalone key behavior
 
@@ -867,7 +889,7 @@ feature, not core federation v1.
 ### Phase 1: restore correctness baseline
 
 - [x] CLEAN-001 consensus ordering and timestamp separation.
-- [ ] CLEAN-002 immutable migrations.
+- [x] CLEAN-002 immutable migrations.
 - [ ] CLEAN-003 type-safe key boundary.
 - [ ] CLEAN-004 verified melt-change recovery.
 - [ ] CLEAN-005 narrow signing capability.

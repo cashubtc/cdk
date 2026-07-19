@@ -38,7 +38,199 @@ mod test {
         memory::empty().await.unwrap()
     }
 
+    #[cfg(not(feature = "sqlcipher"))]
+    fn melt_quote_schema(connection: &rusqlite::Connection) -> Vec<(String, String, String)> {
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT type, name, sql
+                FROM sqlite_master
+                WHERE tbl_name = 'melt_quote'
+                  AND sql IS NOT NULL
+                ORDER BY type, name
+                "#,
+            )
+            .expect("prepare melt quote schema query");
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query melt quote schema")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read melt quote schema")
+    }
+
     mint_db_test!(provide_db);
+
+    #[cfg(not(feature = "sqlcipher"))]
+    #[tokio::test]
+    async fn failed_state_migration_preserves_pre_federation_database_and_matches_fresh_schema() {
+        let upgraded = rusqlite::Connection::open_in_memory().expect("upgrade database");
+        upgraded
+            .execute_batch(
+                r#"
+                PRAGMA foreign_keys = ON;
+
+                CREATE TABLE melt_quote (
+                    id TEXT PRIMARY KEY,
+                    unit TEXT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    request TEXT NOT NULL,
+                    fee_reserve INTEGER NOT NULL,
+                    expiry INTEGER NOT NULL,
+                    state TEXT CHECK (
+                        state IN ('UNPAID', 'PENDING', 'PAID')
+                    ) NOT NULL DEFAULT 'UNPAID',
+                    payment_proof TEXT,
+                    request_lookup_id TEXT,
+                    created_time INTEGER NOT NULL DEFAULT 0,
+                    paid_time INTEGER,
+                    payment_method TEXT NOT NULL DEFAULT 'bolt11',
+                    options TEXT,
+                    request_lookup_id_kind TEXT,
+                    estimated_blocks INTEGER,
+                    fee_options TEXT,
+                    extra_json TEXT,
+                    selected_fee_index INTEGER
+                );
+
+                CREATE INDEX melt_quote_state_index ON melt_quote(state);
+                CREATE INDEX idx_melt_quote_request_lookup_id ON melt_quote(request_lookup_id);
+                CREATE INDEX idx_melt_quote_request_lookup_id_and_kind
+                ON melt_quote(request_lookup_id, request_lookup_id_kind);
+                CREATE UNIQUE INDEX unique_pending_paid_lookup_id
+                ON melt_quote(request_lookup_id)
+                WHERE state IN ('PENDING', 'PAID');
+
+                CREATE TABLE melt_request (
+                    quote_id TEXT PRIMARY KEY,
+                    inputs_amount INTEGER NOT NULL,
+                    inputs_fee INTEGER NOT NULL,
+                    FOREIGN KEY (quote_id) REFERENCES melt_quote(id)
+                );
+
+                INSERT INTO melt_quote (
+                    id, unit, amount, request, fee_reserve, expiry, state,
+                    payment_proof, request_lookup_id, created_time, paid_time,
+                    payment_method, options, request_lookup_id_kind,
+                    estimated_blocks, fee_options, extra_json, selected_fee_index
+                ) VALUES (
+                    'existing-quote', 'sat', 42, 'invoice', 2, 100, 'PAID',
+                    'proof', 'lookup-id', 10, 11, 'bolt11', '{}',
+                    'payment_hash', 6, '[]', '{"source":"standalone"}', 0
+                );
+                INSERT INTO melt_request (quote_id, inputs_amount, inputs_fee)
+                VALUES ('existing-quote', 44, 2);
+                "#,
+            )
+            .expect("create pre-federation standalone schema");
+
+        upgraded
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("begin failed-state upgrade");
+        upgraded
+            .execute_batch(include_str!(
+                "../../../cdk-sql-common/src/mint/migrations/sqlite/20260707170000_allow_failed_melt_quote_state.sql"
+            ))
+            .expect("apply failed-state upgrade");
+        upgraded
+            .execute_batch("COMMIT")
+            .expect("commit failed-state upgrade");
+
+        let existing = upgraded
+            .query_row(
+                r#"
+                SELECT state, payment_proof, request_lookup_id, created_time,
+                       paid_time, extra_json, selected_fee_index
+                FROM melt_quote
+                WHERE id = 'existing-quote'
+                "#,
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                },
+            )
+            .expect("read preserved melt quote");
+        assert_eq!(
+            existing,
+            (
+                "PAID".to_owned(),
+                "proof".to_owned(),
+                "lookup-id".to_owned(),
+                10,
+                11,
+                r#"{"source":"standalone"}"#.to_owned(),
+                0,
+            )
+        );
+        assert_eq!(
+            upgraded
+                .query_row(
+                    "SELECT COUNT(*) FROM melt_request WHERE quote_id = 'existing-quote'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("preserved melt request count"),
+            1
+        );
+        upgraded
+            .execute(
+                r#"
+                INSERT INTO melt_quote
+                    (id, unit, amount, request, fee_reserve, expiry, state)
+                VALUES ('failed-quote', 'sat', 1, 'failed', 0, 0, 'FAILED')
+                "#,
+                [],
+            )
+            .expect("forward migration admits FAILED");
+        assert!(
+            upgraded
+                .execute(
+                    r#"
+                    INSERT INTO melt_quote
+                        (id, unit, amount, request, fee_reserve, expiry, state)
+                    VALUES ('unknown-quote', 'sat', 1, 'unknown', 0, 0, 'UNKNOWN')
+                    "#,
+                    [],
+                )
+                .is_err(),
+            "backend UNKNOWN must remain transient"
+        );
+
+        let mut foreign_key_check = upgraded
+            .prepare("PRAGMA foreign_key_check")
+            .expect("prepare foreign key check");
+        assert!(
+            foreign_key_check
+                .query([])
+                .expect("run foreign key check")
+                .next()
+                .expect("read foreign key check")
+                .is_none(),
+            "upgrade must preserve all foreign key relationships"
+        );
+        drop(foreign_key_check);
+
+        let fresh_path = std::env::temp_dir().join(format!(
+            "cdk-test-fresh-failed-state-schema-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let fresh_db = MintSqliteDatabase::new(fresh_path.clone())
+            .await
+            .expect("fresh database migration");
+        drop(fresh_db);
+        let fresh = rusqlite::Connection::open(&fresh_path).expect("open fresh database");
+        assert_eq!(melt_quote_schema(&upgraded), melt_quote_schema(&fresh));
+
+        drop(fresh);
+        let _ = remove_file(fresh_path);
+    }
 
     #[tokio::test]
     async fn dropped_write_transaction_releases_serialized_writer() {

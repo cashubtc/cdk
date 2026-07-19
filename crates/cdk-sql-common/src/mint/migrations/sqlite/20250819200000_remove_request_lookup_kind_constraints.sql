@@ -11,7 +11,7 @@ CREATE TABLE melt_quote_temp (
     fee_reserve INTEGER NOT NULL,
     expiry INTEGER NOT NULL,
     state TEXT CHECK (
-        state IN ('UNPAID', 'PENDING', 'PAID', 'FAILED')
+        state IN ('UNPAID', 'PENDING', 'PAID')
     ) NOT NULL DEFAULT 'UNPAID',
     payment_preimage TEXT,
     request_lookup_id TEXT,
