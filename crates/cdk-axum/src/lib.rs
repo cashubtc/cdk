@@ -58,6 +58,7 @@ pub use self::federation::{
     run_federation_dkg_driver, FederationDkgAutoStartConfig, FederationDkgDriverRunConfig,
     FederationDkgDriverRunOutcome, FederationDkgDriverTickOutcome,
     FederationDkgSecretShareTransportPolicy, FederationPeerSyncConfig,
+    FederationPeerSyncConfigError,
 };
 mod router_handlers;
 mod ws;

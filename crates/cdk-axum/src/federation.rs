@@ -112,12 +112,12 @@ pub(super) use self::private_request::admit_private_request;
 use self::status_routes::{post_local_status, post_status};
 #[cfg(test)]
 use self::sync_config::FederationPeerReconnectBackoff;
-pub use self::sync_config::FederationPeerSyncConfig;
 #[cfg(test)]
 use self::sync_config::{
     federation_peer_sync_disabled_value, federation_peer_sync_initial_delay,
     federation_peer_sync_interval, federation_reconnect_backoff_delay,
 };
+pub use self::sync_config::{FederationPeerSyncConfig, FederationPeerSyncConfigError};
 #[cfg(all(test, feature = "prometheus"))]
 use self::sync_loop::exchange_checkpoint_round;
 pub(crate) use self::sync_loop::spawn_federation_peer_sync_loop_with_config;

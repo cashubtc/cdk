@@ -609,75 +609,143 @@ async fn restart_retries_last_ordered_barrier_with_the_same_checkpoint_id() {
 fn federation_peer_sync_config_rejects_invalid_values() {
     let valid = FederationPeerSyncConfig::default();
     let cases = [
-        FederationPeerSyncConfig {
-            peer_sync_interval: Duration::ZERO,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            peer_request_timeout: Duration::ZERO,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            operation_submission_timeout: Duration::ZERO,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            catch_up_limit: 0,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            reconnect_initial_backoff: Duration::ZERO,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            reconnect_max_backoff: Duration::ZERO,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            reconnect_initial_backoff: Duration::from_secs(2),
-            reconnect_max_backoff: Duration::from_secs(1),
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            private_rest_inbound_concurrency_limit: 0,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            private_rest_outbound_concurrency_limit: 0,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            pending_mempool_item_limit: 0,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            response_waiter_limit: 0,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            response_cache_limit: 0,
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            aleph_bft_live_session_max_round: Some(0),
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            aleph_bft_live_session_max_round: Some(9),
-            aleph_bft_live_session_rotation_limit: Some(0),
-            ..valid
-        },
-        FederationPeerSyncConfig {
-            aleph_bft_live_session_rotation_limit: Some(2),
-            ..valid
-        },
+        (
+            FederationPeerSyncConfig {
+                peer_sync_interval: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "peer sync interval",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                peer_request_timeout: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "peer request timeout",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                operation_submission_timeout: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "operation submission timeout",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                catch_up_limit: 0,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "catch-up limit",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                reconnect_initial_backoff: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "reconnect initial backoff",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                reconnect_max_backoff: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "reconnect max backoff",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                reconnect_initial_backoff: Duration::from_secs(2),
+                reconnect_max_backoff: Duration::from_secs(1),
+                ..valid
+            },
+            FederationPeerSyncConfigError::ReconnectBackoffOrder,
+        ),
+        (
+            FederationPeerSyncConfig {
+                private_rest_inbound_concurrency_limit: 0,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "private REST inbound concurrency limit",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                private_rest_outbound_concurrency_limit: 0,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "private REST outbound concurrency limit",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                pending_mempool_item_limit: 0,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "pending mempool item limit",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                response_waiter_limit: 0,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "response waiter limit",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                response_cache_limit: 0,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "response cache limit",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                aleph_bft_live_session_max_round: Some(0),
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "AlephBFT live session max round",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                aleph_bft_live_session_max_round: Some(9),
+                aleph_bft_live_session_rotation_limit: Some(0),
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "AlephBFT live session rotation limit",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                aleph_bft_live_session_rotation_limit: Some(2),
+                ..valid
+            },
+            FederationPeerSyncConfigError::RotationLimitRequiresMaxRound,
+        ),
     ];
 
-    for config in cases {
-        assert!(
-            config.validate().is_err(),
-            "invalid peer sync config should fail: {config:?}"
-        );
+    for (config, expected) in cases {
+        assert_eq!(config.validate(), Err(expected));
     }
     assert!(valid.validate().is_ok());
 }
@@ -4468,4 +4536,3 @@ fn restore_request_for_config(config: &FederationConfig, label: &str) -> Restore
         )],
     }
 }
-
