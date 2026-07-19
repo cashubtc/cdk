@@ -5053,6 +5053,136 @@ async fn federated_mint_connector_aggregates_melt_quote_status_change_shares() {
 }
 
 #[tokio::test]
+async fn federated_melt_status_recovery_ignores_malformed_change_share() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let change_outputs = blinded_change_outputs(&bundle);
+    let mut connectors = BTreeMap::new();
+    for id in [member_id(1), member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, id, advertised.clone());
+        connector.set_post_melt_response(Ok(melt_response(&bundle, id, &change_outputs)));
+        let mut status = match melt_response(&bundle, id, &change_outputs) {
+            MeltQuoteResponse::Bolt11(response) => response,
+            _ => panic!("expected bolt11 melt response"),
+        };
+        if id == member_id(3) {
+            // The Byzantine member returns matching status metadata with a
+            // malformed `c` on every change signature (wrong key kind: it
+            // cannot even be parsed as a BLS share).
+            for signature in status
+                .change
+                .iter_mut()
+                .flat_map(|change| change.iter_mut())
+            {
+                signature.c = PublicKey::from_hex(
+                    "0204bbffa045f28ec836117a29ea0a00d77f1d692e38cf94f72a5145bfda6d8f41",
+                )
+                .expect("secp256k1 public key");
+            }
+        }
+        connector.set_melt_quote_status_response(Ok(status));
+        connectors.insert(
+            id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    connector
+        .post_melt(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MeltRequest::new(
+                "melt-quote".to_string(),
+                Vec::new(),
+                Some(change_outputs.clone()),
+            ),
+        )
+        .await
+        .expect("melt response");
+
+    let response = connector
+        .get_melt_quote_status(PaymentMethod::Known(KnownMethod::Bolt11), "melt-quote")
+        .await
+        .expect(
+            "status recovery must ignore the invalid member and aggregate the honest threshold",
+        );
+
+    assert_aggregate_response_valid(
+        &bundle,
+        &signed_change_outputs(&change_outputs),
+        &MintResponse {
+            signatures: response.change().cloned().expect("change signatures"),
+        },
+    );
+}
+
+#[tokio::test]
+async fn federated_melt_status_recovery_ignores_wrong_change_share() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let change_outputs = blinded_change_outputs(&bundle);
+    let mut connectors = BTreeMap::new();
+    for id in [member_id(1), member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, id, advertised.clone());
+        connector.set_post_melt_response(Ok(melt_response(&bundle, id, &change_outputs)));
+        let mut status = match melt_response(&bundle, id, &change_outputs) {
+            MeltQuoteResponse::Bolt11(response) => response,
+            _ => panic!("expected bolt11 melt response"),
+        };
+        if id == member_id(3) {
+            // The Byzantine member returns matching status metadata with a
+            // well-formed but wrong `c` on every change signature.
+            for signature in status
+                .change
+                .iter_mut()
+                .flat_map(|change| change.iter_mut())
+            {
+                signature.c = PublicKey::from(BlsG1PublicKey::hash_to_curve(
+                    b"byzantine invalid change share".as_slice(),
+                ));
+            }
+        }
+        connector.set_melt_quote_status_response(Ok(status));
+        connectors.insert(
+            id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    connector
+        .post_melt(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MeltRequest::new(
+                "melt-quote".to_string(),
+                Vec::new(),
+                Some(change_outputs.clone()),
+            ),
+        )
+        .await
+        .expect("melt response");
+
+    let response = connector
+        .get_melt_quote_status(PaymentMethod::Known(KnownMethod::Bolt11), "melt-quote")
+        .await
+        .expect(
+            "status recovery must ignore the invalid member and aggregate the honest threshold",
+        );
+
+    assert_aggregate_response_valid(
+        &bundle,
+        &signed_change_outputs(&change_outputs),
+        &MintResponse {
+            signatures: response.change().cloned().expect("change signatures"),
+        },
+    );
+}
+
+#[tokio::test]
 async fn federated_mint_connector_rejects_single_member_melt_quote_status() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);

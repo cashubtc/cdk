@@ -32,7 +32,7 @@ example demonstrates the claimed behavior.
 | R1 | Signed member can impersonate payment observers | Critical | 99% | Pending | — |
 | R2 | Byzantine finalized Aleph unit can halt honest members | High | 99% | Resolved 2026-07-18 (ledger `F2`); residual apply-time definiteness tracked as `DB-001` | `byzantine_balance_overflow_operation_does_not_halt_finalized_application` |
 | R3 | One member can permanently quarantine arbitrary quotes | High | 97% | Pending | — |
-| R4 | Melt status recovery aggregates unverified BLS shares | Medium | 99% | Pending | — |
+| R4 | Melt status recovery aggregates unverified BLS shares | Medium | 99% | Resolved 2026-07-18 (ledger `W2`); restart output supply tracked as `DB-004` | `federated_melt_status_recovery_ignores_{malformed,wrong}_change_share` |
 | R5 | Member validation can wait indefinitely | Medium | 98% | Pending | — |
 | R6 | Stale valid-member cache pins wallets to a dead threshold | Medium | 97% | Pending | — |
 | R7 | Continuous outbound traffic starves Aleph retry delivery | Medium | 95% | Pending | — |
@@ -166,6 +166,20 @@ can poison recovery even when enough slower honest members are available.
 **Required remediation:** Persist or retrieve the original blinded change
 outputs, verify every member share, ignore invalid shares, and continue until a
 valid threshold is available.
+
+**Resolution update 2026-07-18:** resolved for melts initiated through the
+live connector. The connector now retains the melt's original blinded change
+outputs in a bounded store at `post_melt` time, and status recovery verifies
+every member's change share against them with the same per-share batch
+verification used by normal melt aggregation, ignoring invalid members until
+a valid threshold remains. The retained regressions prove one malformed `c`
+and one well-formed-but-wrong `c` can no longer poison an honest threshold
+(milestone `W2` in
+`docs/federated-cashu-consensus-deadlocks-2026-07-18.md`). When the original
+outputs are unavailable (for example a rebuilt connector after a wallet
+restart), recovery falls back to parse-tolerant interpolation that never
+drops below the threshold; durable output supply across wallet restarts
+remains open as discovered bug `DB-004` in that ledger.
 
 ### R5: Member Validation Can Wait Indefinitely
 

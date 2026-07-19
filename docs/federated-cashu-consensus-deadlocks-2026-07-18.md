@@ -54,7 +54,7 @@ is well established but its root cause is not.
 | 6 | `P2` | One backend call or poison quote blocks the single observer worker | High | 99% | All payment repair on one member; quorum loss if shared | Completed |
 | 7 | `S1` | DKG availability is all-member, not Byzantine-threshold | High availability | 99% | Federation setup/key ceremony | Completed |
 | 8 | `F3` | Local BDK reconciliation is inside the fatal apply boundary | High | 98% | Session/member; quorum loss if repeated | Completed |
-| 9 | `W2` | Melt-status recovery lets one invalid share poison an honest threshold | High availability / Medium scope | 98% | Wallet melt recovery | Not started |
+| 9 | `W2` | Melt-status recovery lets one invalid share poison an honest threshold | High availability / Medium scope | 98% | Wallet melt recovery | Completed |
 | 10 | `F4` | Apply and backup retries have no terminal budget | High | 97% | Session/member starvation | Not started |
 | 11 | `P3` | Exact evidence quorum is not backed by an enforced evidence model | High | 97% | Quote/proofs | Not started |
 | 12 | `R1` | Recovery candidate fetch is pinned to the first source | High | 97% | Startup recovery | Not started |
@@ -70,6 +70,7 @@ is well established but its root cause is not.
 | 22 | `DB-001` | Stateful apply-time content errors remain ambiguous and halt the session | Critical | 99% | Session/global | Not started |
 | 23 | `DB-002` | Payment backends do not uniformly honor a caller-supplied recovery key | Medium liveness | 95% | Quote liveness; standalone follow-up | Not started |
 | 24 | `DB-003` | First observer can fix incorrect immutable deposit fields permanently | Critical | 99% | On-chain quote/funds | Not started |
+| 25 | `DB-004` | Rebuilt wallet connectors cannot supply original melt change outputs | Medium availability | 95% | Wallet melt recovery after restart | Not started |
 
 Discovered bugs are appended after the existing ranked milestones in discovery
 order with their legacy IDs preserved; `DB-001` was recorded on 2026-07-18
@@ -485,6 +486,40 @@ legacy ID and discovery history.
   plus adversarial ordering (liar first/last, liar changing story, quorum
   splitting across two false sets) and restart/replay convergence.
 - **Proposed position in the milestone order:** after `DB-002` (position 24).
+
+### DB-004 — Rebuilt wallet connectors cannot supply original melt change outputs
+
+- **Discovery date and originating milestone:** 2026-07-18, milestone 9 (`W2`)
+  confirmation.
+- **Status:** Queued
+- **Proposed severity and confidence:** Medium availability; 95% source-proven
+  design gap.
+- **Faulty/Byzantine actor or backend precondition:** a wallet process restart
+  between an ambiguous melt and melt-status recovery while one member returns
+  a well-formed but invalid change share.
+- **Observed behavior, violated invariant, exact code references, and
+  evidence:** milestone 9's fix verifies each status change share against the
+  original blinded change outputs the connector retains at `post_melt` time
+  (`crates/cdk/src/wallet/federation.rs`). Those outputs live durably only in
+  the wallet (saga `change_blinded_messages`
+  (`crates/cdk/src/wallet/melt/saga/mod.rs:833-853`) and seed-derived premint
+  secrets), which the rebuilt `FederatedMintConnector` cannot read without a
+  shared `MintConnector` trait change (prohibited by the scope boundary) or a
+  new connector-to-wallet-store coupling.
+- **Why distinct from an existing finding:** `W2` (milestone 9) fixes the
+  poisoning for melts initiated through the live connector instance (the
+  dominant ambiguous-response recovery). This bug is the remaining
+  restart-durability gap in the output supply, a different plumbing decision
+  requiring its own review.
+- **Likely simplest federation-only correction and required proof:** give the
+  connector a wallet-database-backed change-output store (applications pass
+  the wallet's `Arc<dyn WalletDatabase>` at construction, reading
+  `MeltOperationData.change_blinded_messages` by quote), or add a
+  wallet-side verified recovery entry that aggregates per-member responses
+  against premint secrets. Required proof: restart the wallet between melt
+  and recovery with one invalid member and show the honest threshold still
+  aggregates.
+- **Proposed position in the milestone order:** after `DB-003` (position 25).
 
 No other additional bugs have yet been recorded through this milestone workflow.
 
@@ -1954,23 +1989,116 @@ healthy re-reconciliation on later applications clears it.
 
 ### 9. Melt-status recovery lets one invalid share poison an honest threshold (`W2`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with two executed connector-level
+harnesses against the unmodified pre-fix worktree, driving the exact
+`FederatedMintConnector::get_melt_quote_status` recovery path with a 2-of-3
+threshold bundle (two honest members, one Byzantine member returning
+matching status metadata):
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk --features federation,wallet --lib federated_melt_status_recovery_ignores_malformed_change_share -- --nocapture`
 
-**Fix check and evaluation:** Not run
+FAILED with `NUT01(WrongKeyKind)`: one member's unparseable change-share `c`
+aborted the entire status aggregation even though the two honest members
+alone met the threshold.
 
-**Commit subject:** Not assigned
+`cargo test -p cdk --features federation,wallet --lib federated_melt_status_recovery_ignores_wrong_change_share -- --nocapture`
 
-**Milestone observations:** None yet
+FAILED with `aggregate signature verifies: TokenNotVerified`: one member's
+well-formed but wrong `c` was silently interpolated into the group,
+producing a corrupt aggregate that fails final verification — the wallet
+would dead-end at finalization instead of discarding the member and retrying
+the honest subset. Both runs had no production code edited; only the
+regressions in `crates/cdk/src/wallet/federation/tests.rs` were added.
+
+**Minimal fix:** One federation-only change in
+`crates/cdk/src/wallet/federation.rs`:
+
+1. The connector retains the melt request's original blinded change outputs
+   in a bounded in-memory store
+   (`FEDERATION_MAX_RETAINED_MELT_CHANGE_QUOTES = 1024`) at `post_melt` time.
+2. `aggregate_melt_quote_status_response` (now `async`, keyed by quote) uses
+   the retained outputs to verify every member's change share with the same
+   per-share batch verification as normal melt aggregation
+   (`aggregate_member_responses` with `AllowZeroAmountPlaceholder`), ignoring
+   invalid members until a valid threshold remains. A successful verified
+   aggregation drops the retained entry.
+3. When no retained outputs exist (for example a rebuilt connector after a
+   wallet restart), recovery falls back to parse-tolerant interpolation:
+   shares that fail to parse are skipped per index, never dropping the group
+   below the threshold; metadata and count checks are unchanged.
+
+No standalone code, the shared `MintConnector` trait, or wire formats
+changed. The wallet's own durable output copies (saga
+`change_blinded_messages`, seed-derived premint secrets) remain the
+long-term home; making them reachable to a rebuilt connector without a
+shared-trait change is `DB-004`.
+
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact two
+confirmation scenarios. Pre-fix runs (recorded above): FAILED with
+`NUT01(WrongKeyKind)` (malformed `c` aborts the whole aggregation) and
+`TokenNotVerified` (wrong `c` silently corrupts the aggregate). Post-fix:
+
+`cargo test -p cdk --features federation,wallet --lib federated_melt_status_recovery_ignores -- --nocapture`
+
+`2 passed`: the malformed share is ignored during per-share verification and
+the well-formed wrong share fails batch verification; in both cases the two
+honest members alone produce a valid threshold aggregate. One deadlock was
+found and fixed during the fix check: an `if let` scrutinee held the
+retention read lock through a later `write().await`; the value is now
+cloned before the branch.
+
+Broader evaluation on 2026-07-18:
+
+- `cargo fmt -p cdk -- --check` — clean for the milestone's code.
+- `cargo test -p cdk --features federation,wallet --lib wallet::federation`
+  — `91 passed; 0 failed`, including the neighboring status-aggregation,
+  melt-change, and bad-share tolerance tests.
+- `cargo test -p cdk --features federation,wallet --lib` — `779 passed; 0
+  failed`.
+- `cargo test -p cdk --lib` (default features, no federation) — `540
+  passed; 0 failed`, standalone unchanged.
+- `cargo check -p cdk --no-default-features` — passed.
+- `cargo clippy -p cdk --features federation,wallet --all-targets -- -D
+  warnings` — fails only on the same 9 pre-existing `crates/cdk` lints
+  recorded in milestone 2 (none in the changed code).
+
+Not run: a full wallet-process restart recovery (covered by `DB-004`; the
+fallback path is exercised structurally by the unchanged fallback branch
+and the neighboring tests).
+
+**Commit subject:** `fix: verify federation melt status change shares against retained outputs`
+
+**Milestone observations:** 2026-07-18 — Milestone 8 is committed
+(`b999cfe37`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the normal melt aggregation, the
+status-recovery grouping/aggregation split, and the wallet's durable
+blinded-output retention are inspected.
+
+2026-07-18 — Confirmation recorded above. Plumbing decision: the original
+blinded change outputs are durably retained by the wallet (saga
+`change_blinded_messages`, re-derivable from seed + counter), but the
+connector only sees the melt request's outputs at `post_melt` time and
+cannot read wallet state without a shared-trait change. The fix retains the
+melt's change outputs in a bounded in-memory store on the connector and
+verifies each share against them at status aggregation; durability of the
+output supply across wallet restarts (rebuilt connector) is recorded as
+discovered bug `DB-004`.
+
+2026-07-18 — Fix and evaluation complete; milestone kept. A deadlock
+introduced by the first fix iteration (an `if let` scrutinee holding the
+retention read lock through a later `write().await`) was caught by the fix
+check hanging for 45+ seconds and corrected by cloning the retained outputs
+before branching.
 
 **Severity:** High availability / Medium scope
 
 **Confidence:** 98% — source-proven and previously reported
 
-**Finding status:** Open, source-proven and previously reported
+**Finding status:** Resolved for the live-connector recovery path on
+2026-07-18 with red-before-green runtime proof; the wallet-restart output
+supply is tracked as discovered bug `DB-004`
 
 **Attacker/fault:** One Byzantine member returns matching metadata with malformed
 or invalid BLS `c`
@@ -1994,9 +2122,19 @@ make parsing or final aggregation fail. The wallet does not discard that member
 and retry a valid honest subset, so melt recovery remains a dead end even when
 enough honest shares are available.
 
+The corrected status recovery now retains the melt's original blinded change
+outputs at `post_melt` and verifies every member's change share against them
+with the same per-share batch verification as normal melt aggregation,
+ignoring invalid members until a valid threshold remains; the retained
+regressions prove one malformed `c` and one well-formed-but-wrong `c` no
+longer poison an honest threshold, and that a rebuilt connector falls back to
+parse-tolerant interpolation that never drops below the threshold.
+
 **Required correction:** durably retain/recover the original blinded change
 outputs; verify each share against its public share; ignore invalid members;
-continue collecting until a valid threshold is obtained.
+continue collecting until a valid threshold is obtained. The verify/ignore/
+continue clauses are implemented and proven by this milestone; durable output
+supply across wallet restarts is `DB-004`.
 
 Reference: [July 13 review R4](federated-cashu-security-review-jul-13.md#r4-melt-status-recovery-aggregates-unverified-bls-shares).
 

@@ -59,7 +59,17 @@ pub struct FederatedMintConnector {
     config: FederatedMintConnectorConfig,
     valid_member_connectors_cache:
         Arc<tokio::sync::RwLock<Option<BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>>>>,
+    /// Original blinded change outputs retained per melt quote so status
+    /// recovery can verify every member's change share and ignore invalid
+    /// members instead of letting one bad share poison an honest threshold.
+    melt_change_outputs:
+        Arc<tokio::sync::RwLock<BTreeMap<String, Vec<cdk_common::BlindedMessage>>>>,
 }
+
+/// Maximum number of melt quotes whose change outputs the connector retains
+/// for verified status recovery. Entries are dropped on successful verified
+/// aggregation; the cap only bounds retention for never-recovered melts.
+const FEDERATION_MAX_RETAINED_MELT_CHANGE_QUOTES: usize = 1_024;
 
 /// Runtime policy for wallet-side federation member calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -458,6 +468,7 @@ impl FederatedMintConnector {
             quote_coordinator_member_id,
             config,
             valid_member_connectors_cache: Arc::new(tokio::sync::RwLock::new(None)),
+            melt_change_outputs: Arc::new(tokio::sync::RwLock::new(BTreeMap::new())),
         })
     }
 
@@ -1325,7 +1336,9 @@ impl FederatedMintConnector {
                 async move { connector.get_melt_quote_status(method, &quote_id).await }
             })
             .await?;
-        let visible_response = self.aggregate_melt_quote_status_response(&member_responses)?;
+        let visible_response = self
+            .aggregate_melt_quote_status_response(&quote_id, &member_responses)
+            .await?;
         if visible_response.method() != response.method() || visible_response.quote() != quote_id {
             return Err(Error::InvalidMintResponse(
                 "federation melt quote visibility returned a different quote".to_string(),
@@ -1705,8 +1718,9 @@ impl FederatedMintConnector {
             })
     }
 
-    fn aggregate_melt_quote_status_response(
+    async fn aggregate_melt_quote_status_response(
         &self,
+        quote_id: &str,
         member_responses: &[(MemberId, MeltQuoteResponse<String>)],
     ) -> Result<MeltQuoteResponse<String>, Error> {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
@@ -1738,6 +1752,7 @@ impl FederatedMintConnector {
                     )));
                 }
             }
+            self.melt_change_outputs.write().await.remove(quote_id);
             return Ok(first_response.clone());
         };
 
@@ -1753,9 +1768,44 @@ impl FederatedMintConnector {
                     }
                 }
             }
+            self.melt_change_outputs.write().await.remove(quote_id);
             return Ok(first_response.clone());
         }
 
+        // When the original blinded change outputs are retained from the melt
+        // request, verify every member share against them and ignore invalid
+        // members until a valid threshold remains. One malformed or invalid
+        // share must not poison an honest threshold.
+        let retained_outputs = self.melt_change_outputs.read().await.get(quote_id).cloned();
+        if let Some(outputs) = retained_outputs {
+            let change_responses = matching_responses
+                .iter()
+                .map(|(member_id, response)| {
+                    response
+                        .change()
+                        .cloned()
+                        .map(|signatures| (*member_id, MintResponse { signatures }))
+                })
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    Error::InvalidMintResponse(
+                        "member did not return melt status change signatures".to_string(),
+                    )
+                })?;
+            let aggregate_change = self.aggregate_member_responses(
+                &outputs,
+                &change_responses,
+                ShareAmountValidation::AllowZeroAmountPlaceholder,
+            )?;
+            let mut response = first_response.clone();
+            set_melt_response_change(&mut response, Some(aggregate_change.signatures));
+            self.melt_change_outputs.write().await.remove(quote_id);
+            return Ok(response);
+        }
+
+        // Fallback when the original change outputs are unavailable (for
+        // example a rebuilt connector): interpolate tolerantly, skipping
+        // shares that cannot be parsed, never dropping below the threshold.
         let mut aggregate_change = Vec::with_capacity(first_change.len());
         for (index, first_signature) in first_change.iter().enumerate() {
             let mut shares = Vec::with_capacity(matching_responses.len());
@@ -1783,10 +1833,25 @@ impl FederatedMintConnector {
                     )));
                 }
 
-                shares.push(BlsBlindSignatureShare::new(
-                    member_id.to_bls_signer_id(),
-                    signature.c.as_bls_g1()?,
-                ));
+                match signature.c.as_bls_g1() {
+                    Ok(c) => {
+                        shares.push(BlsBlindSignatureShare::new(member_id.to_bls_signer_id(), c))
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            member_id = %member_id,
+                            "ignoring unparseable federation melt status change share"
+                        );
+                    }
+                }
+            }
+
+            if shares.len() < threshold {
+                return Err(Error::InvalidMintResponse(format!(
+                    "insufficient parseable federation melt status change shares: required {}, parseable {}",
+                    threshold,
+                    shares.len()
+                )));
             }
 
             let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
@@ -2175,7 +2240,8 @@ impl MintConnector for FederatedMintConnector {
             })
             .await?;
 
-        self.aggregate_melt_quote_status_response(&member_responses)
+        self.aggregate_melt_quote_status_response(quote_id, &member_responses)
+            .await
     }
 
     async fn post_melt(
@@ -2188,6 +2254,17 @@ impl MintConnector for FederatedMintConnector {
             self.public_config
                 .validate_blinded_change_outputs(outputs)
                 .map_err(map_federation_validation_error)?;
+            // Retain the original blinded change outputs so a later status
+            // recovery can verify every member's change share against them.
+            // The wallet's own durable copies remain the long-term home; this
+            // bounded store covers in-process recovery after an ambiguous
+            // melt response.
+            let mut retained = self.melt_change_outputs.write().await;
+            if retained.contains_key(request.quote())
+                || retained.len() < FEDERATION_MAX_RETAINED_MELT_CHANGE_QUOTES
+            {
+                retained.insert(request.quote().to_string(), outputs.clone());
+            }
         }
         self.validate_member_active_keysets().await?;
 
