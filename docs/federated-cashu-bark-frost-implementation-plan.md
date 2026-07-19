@@ -2,7 +2,7 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestone 0 protocol freeze complete, no production Bark integration exists yet
+Status: implementation in progress; Milestones 0-1 complete, no production CDK Bark integration exists yet
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -22,7 +22,7 @@ machine-specific metadata in this document.
 | Milestone | Status | Completion evidence | Commit subject |
 |---|---|---|---|
 | 0. Protocol and threat model | Complete (2026-07-19) | Decision record below; targeted Bark cryptography tests and standalone CDK regression baseline passed | `docs: freeze federated Bark protocol model` |
-| 1. Bark federation facade | Pending | — | — |
+| 1. Bark federation facade | Complete (2026-07-19) | Exact locator/import/send/receive APIs, deterministic custody sessions, stable replay results, two-clean-database and per-step restart tests, standalone and minimal-feature Bark checks passed | `feat: add explicit federation wallet facade` |
 | 2. Bark wire and authorization | Pending | — | — |
 | 3. CDK Bark application | Pending | — | — |
 | 4. Durable MuSig2 and DH | Pending | — | — |
@@ -1433,6 +1433,63 @@ Exit criteria:
 - standalone CDK behavior has an explicit regression baseline.
 
 ### Milestone 1: upstream explicit Bark federation facade
+
+Status: complete on 2026-07-19.
+
+Implementation commit in Bark: `4fe76da4` (`feat: add explicit federation wallet facade`).
+
+Implementation record:
+
+- added a FROST-only `FederationWallet` facade with explicit locator derive,
+  reveal, accepted-VTXO import, pure send planning, exact accepted-plan apply,
+  receive creation from supplied identity and secret material, and deterministic
+  local projection rebuild;
+- kept ordinary Bark flows on their existing random-session and next-key paths,
+  while federation actions carry an accepted action ID, request commitment,
+  exact locators, and a typed deterministic custody-session context;
+- persisted only stable federation bindings in existing key and action storage,
+  added an index-to-public-key lookup to both Bark persisters, and added no
+  migration or historical-migration change;
+- made outgoing projection use the accepted timestamp and exact VTXO set, with
+  no local clock read or reselection, and made incoming projection preserve the
+  Cashu liability, gross amount, receive-fee bound, minimum net amount, policy,
+  mailbox, locator, and payment-hash bindings across restart;
+- retained the plaintext incoming preimage only in the protected member-local
+  Bark action checkpoint. The exported semantic result and projection result
+  expose only the payment hash; and
+- added independent plan validators and stable public phases/retry classes so a
+  clean projection rebuild returns the same semantic state without signing or
+  consulting local secret keys.
+
+Verification evidence:
+
+```text
+cargo test -p bark-wallet federation --locked
+  2 passed
+
+cargo test -p bark-wallet --lib --tests --locked
+  105 library tests and 1 integration test passed
+
+cargo check -p bark-wallet --no-default-features --locked
+  passed (existing warnings only)
+
+cargo test -p frost-federation-core -p bark-frost --locked
+  8 tests passed; doc tests passed
+```
+
+The replay test applies identical accepted records to two clean Bark databases,
+reconstructs the projection at every outgoing and incoming action phase, and
+asserts that `local_keypair()` is never called. Static review also confirms the
+federation facade contains no next-key allocation call. Mutation tests reject a
+changed send plan and an undercollateralized receive plan, and custody-session
+tests cover stable replay plus protocol and transcript domain separation.
+
+A broader `cargo test -p bark-wallet --locked` run passed the same library and
+integration suites and 21 doc tests, but exposed two existing doctest
+feature-gating failures outside the changed files: the exit example imports the
+feature-gated on-chain wallet without enabling `onchain-bdk`, and the chain
+example supplies the feature-gated SOCKS argument. They do not affect this
+milestone's facade or its exit criteria and remain visible for upstream cleanup.
 
 Deliverables:
 
