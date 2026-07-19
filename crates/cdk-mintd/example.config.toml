@@ -441,6 +441,7 @@ max_delay_time = 3
 # amounts = [1, 2, 4, 8, 16, 32, 64]
 # max_ticks = 300
 # retry_delay_ms = 1000
+# ceremony_timeout_secs = 600
 # Each authenticated roster member may burst 16 DKG requests to a receiver;
 # one token is then restored every 250 ms. Startup enforces bounded values.
 # member_request_burst = 16

@@ -1019,10 +1019,16 @@ impl FederationPaymentObservationReport {
                 record.observation.context() == context && record.observation.quote() == quote
             })
             .collect::<Vec<_>>();
-        let is_onchain = matching_records.iter().any(|record| match &record.observation {
-            FederationPaymentObservation::MintQuote(observation) => observation.method.is_onchain(),
-            FederationPaymentObservation::MeltQuote(observation) => observation.method.is_onchain(),
-        });
+        let is_onchain = matching_records
+            .iter()
+            .any(|record| match &record.observation {
+                FederationPaymentObservation::MintQuote(observation) => {
+                    observation.method.is_onchain()
+                }
+                FederationPaymentObservation::MeltQuote(observation) => {
+                    observation.method.is_onchain()
+                }
+            });
         if is_onchain {
             let mut latest_by_observer = BTreeMap::new();
             for record in matching_records {
@@ -3463,18 +3469,14 @@ mod tests {
         .map(|(operation_index, observer)| {
             payment_record(
                 operation_index,
-                FederationOperation::MintQuotePayment(
-                    FederationMintQuotePaymentObservation {
-                        observer,
-                        amount_paid: Amount::from(15),
-                        ..observation.clone()
-                    },
-                ),
+                FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+                    observer,
+                    amount_paid: Amount::from(15),
+                    ..observation.clone()
+                }),
             )
         });
-        let records = std::iter::once(stale)
-            .chain(current)
-            .collect::<Vec<_>>();
+        let records = std::iter::once(stale).chain(current).collect::<Vec<_>>();
 
         let report = FederationPaymentObservationReport::from_records(
             FederationPaymentObservationContext::MintQuote,
@@ -3489,10 +3491,7 @@ mod tests {
         );
         assert_eq!(report.total_observations, 5);
         assert_eq!(report.groups.len(), 1);
-        assert_eq!(
-            report.groups[0].operation_indices,
-            vec![1, 2, 3, 4, 5]
-        );
+        assert_eq!(report.groups[0].operation_indices, vec![1, 2, 3, 4, 5]);
         assert!(report.groups[0].quorum_reached);
         assert!(report.conflicting_observers.is_empty());
     }

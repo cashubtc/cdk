@@ -348,7 +348,11 @@ pub struct FederationWalletUtxo {
 
 /// Immutable UTXO field set that member observers vote on with their
 /// deposit evidence: exact output contents, allocation, and block anchor.
-type UtxoFieldSet = (TxOut, FederationAllocatedAddressRef, Option<(BlockHash, u32)>);
+type UtxoFieldSet = (
+    TxOut,
+    FederationAllocatedAddressRef,
+    Option<(BlockHash, u32)>,
+);
 
 impl FederationWalletUtxo {
     /// Number of distinct members reporting sufficient confirmations.

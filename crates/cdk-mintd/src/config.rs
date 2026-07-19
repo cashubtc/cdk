@@ -1375,6 +1375,9 @@ pub struct FederationDkg {
     /// Delay between incomplete ticks in milliseconds.
     #[serde(default = "default_federation_dkg_retry_delay_ms")]
     pub retry_delay_ms: u64,
+    /// Overall time budget for one DKG ceremony driver run in seconds.
+    #[serde(default = "default_federation_dkg_ceremony_timeout_secs")]
+    pub ceremony_timeout_secs: u64,
     /// Number of authenticated DKG requests one member may burst per receiver.
     #[serde(default = "default_federation_dkg_member_request_burst")]
     pub member_request_burst: usize,
@@ -1400,6 +1403,7 @@ impl Default for FederationDkg {
             amounts: Vec::new(),
             max_ticks: default_federation_dkg_max_ticks(),
             retry_delay_ms: default_federation_dkg_retry_delay_ms(),
+            ceremony_timeout_secs: default_federation_dkg_ceremony_timeout_secs(),
             member_request_burst: default_federation_dkg_member_request_burst(),
             member_request_refill_ms: default_federation_dkg_member_request_refill_ms(),
             allow_insecure_localhost: false,
@@ -1425,6 +1429,11 @@ fn default_federation_dkg_max_ticks() -> usize {
 #[cfg(feature = "federation")]
 fn default_federation_dkg_retry_delay_ms() -> u64 {
     1_000
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_dkg_ceremony_timeout_secs() -> u64 {
+    600
 }
 
 #[cfg(feature = "federation")]

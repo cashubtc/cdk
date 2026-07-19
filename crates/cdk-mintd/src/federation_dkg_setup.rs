@@ -258,6 +258,7 @@ input_fee_ppk = {}\n\
 {}amounts = [{}]\n\
 max_ticks = 1200\n\
 retry_delay_ms = 250\n\
+ceremony_timeout_secs = 600\n\
 member_request_burst = 16\n\
 member_request_refill_ms = 250\n\
 allow_insecure_localhost = {}\n",

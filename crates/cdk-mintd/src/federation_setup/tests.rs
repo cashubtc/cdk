@@ -826,6 +826,7 @@ fn trusted_dealer_artifacts_are_written_and_validated() {
         assert_eq!(live_dkg_federation.dkg.amounts, vec![1, 2, 4]);
         assert_eq!(live_dkg_federation.dkg.max_ticks, 1200);
         assert_eq!(live_dkg_federation.dkg.retry_delay_ms, 250);
+        assert_eq!(live_dkg_federation.dkg.ceremony_timeout_secs, 600);
         assert_eq!(live_dkg_federation.dkg.member_request_burst, 16);
         assert_eq!(live_dkg_federation.dkg.member_request_refill_ms, 250);
         let ceremony_id = live_dkg_federation

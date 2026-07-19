@@ -9,6 +9,7 @@ input_fee_ppk = @@INPUT_FEE_PPK@@
 amounts = [@@AMOUNTS@@]
 max_ticks = 1200
 retry_delay_ms = 250
+ceremony_timeout_secs = 600
 member_request_burst = 16
 member_request_refill_ms = 250
 allow_insecure_localhost = @@ALLOW_INSECURE_LOCALHOST@@

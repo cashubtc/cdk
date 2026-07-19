@@ -1728,6 +1728,9 @@ fn federation_dkg_auto_start_config(
     if federation.dkg.retry_delay_ms == 0 {
         bail!("federation.dkg.retry_delay_ms must be greater than zero");
     }
+    if federation.dkg.ceremony_timeout_secs == 0 {
+        bail!("federation.dkg.ceremony_timeout_secs must be greater than zero");
+    }
     if !(1..=64).contains(&federation.dkg.member_request_burst) {
         bail!("federation.dkg.member_request_burst must be between 1 and 64");
     }
@@ -1765,6 +1768,7 @@ fn federation_dkg_auto_start_config(
         driver: cdk_axum::FederationDkgDriverRunConfig {
             max_ticks: federation.dkg.max_ticks,
             retry_delay: std::time::Duration::from_millis(federation.dkg.retry_delay_ms),
+            ceremony_timeout: std::time::Duration::from_secs(federation.dkg.ceremony_timeout_secs),
             secret_share_transport,
             member_request_burst: federation.dkg.member_request_burst,
             member_request_refill_interval: std::time::Duration::from_millis(
@@ -4946,6 +4950,7 @@ engine = "sqlite"
                     amounts: vec![1, 2, 4],
                     max_ticks: 17,
                     retry_delay_ms: 23,
+                    ceremony_timeout_secs: 31,
                     member_request_burst: 11,
                     member_request_refill_ms: 29,
                     allow_insecure_localhost: true,
@@ -4971,6 +4976,10 @@ engine = "sqlite"
         assert_eq!(
             config.driver.retry_delay,
             std::time::Duration::from_millis(23)
+        );
+        assert_eq!(
+            config.driver.ceremony_timeout,
+            std::time::Duration::from_secs(31)
         );
         assert_eq!(config.driver.member_request_burst, 11);
         assert_eq!(
@@ -5212,6 +5221,17 @@ engine = "sqlite"
                     ..config::FederationDkg::default()
                 },
                 "member_request_burst",
+            ),
+            (
+                "zero ceremony timeout",
+                config::FederationDkg {
+                    enabled: true,
+                    ceremony_id: ceremony_id.clone(),
+                    amounts: vec![1],
+                    ceremony_timeout_secs: 0,
+                    ..config::FederationDkg::default()
+                },
+                "ceremony_timeout_secs",
             ),
             (
                 "excessive member request burst",

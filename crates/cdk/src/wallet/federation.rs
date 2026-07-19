@@ -766,10 +766,29 @@ impl FederatedMintConnector {
         let mut members = self.member_connectors.iter();
         let mut pending = FuturesUnordered::new();
         let concurrency = self.effective_fanout_concurrency();
+        let member_request_timeout = self.config.member_request_timeout;
         let start_call = |member_id: MemberId, connector: Arc<dyn MintConnector + Send + Sync>| async move {
             let result = async {
-                let mint_info = connector.get_mint_info().await?;
-                let keysets = connector.get_mint_keys().await?;
+                let mint_info =
+                    tokio::time::timeout(member_request_timeout, connector.get_mint_info())
+                        .await
+                        .map_err(|_| {
+                            Error::InvalidMintResponse(format!(
+                                "member {} mint info request timed out after {}ms",
+                                member_id,
+                                member_request_timeout.as_millis()
+                            ))
+                        })??;
+                let keysets =
+                    tokio::time::timeout(member_request_timeout, connector.get_mint_keys())
+                        .await
+                        .map_err(|_| {
+                            Error::InvalidMintResponse(format!(
+                                "member {} mint key request timed out after {}ms",
+                                member_id,
+                                member_request_timeout.as_millis()
+                            ))
+                        })??;
                 Ok::<_, Error>((mint_info, keysets))
             }
             .await;

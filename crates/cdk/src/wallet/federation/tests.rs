@@ -1809,6 +1809,110 @@ async fn federated_mint_connector_polls_member_keysets_concurrently() {
     assert_eq!(response[0].id, advertised.id);
 }
 
+#[tokio::test(start_paused = true)]
+async fn federated_mint_connector_times_out_stalled_mint_info_validation() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let request_timeout = Duration::from_secs(2);
+    let mut connectors = BTreeMap::new();
+
+    let stalled_member = MockMintConnector::new();
+    set_member_advertisement_with_keyset(
+        &stalled_member,
+        &bundle,
+        member_id(1),
+        advertised.clone(),
+    );
+    stalled_member.set_mint_info_barrier(Arc::new(tokio::sync::Barrier::new(2)));
+    connectors.insert(
+        member_id(1),
+        Arc::new(stalled_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    for member_id in [member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_timeout: request_timeout,
+            fanout_concurrency: 1,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let validation = tokio::spawn(async move { connector.get_mint_keys().await });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(request_timeout).await;
+
+    let response = validation
+        .await
+        .expect("keyset validation task")
+        .expect("healthy threshold after mint info timeout");
+    assert_eq!(response.len(), 1);
+    assert_eq!(response[0].id, advertised.id);
+}
+
+#[tokio::test(start_paused = true)]
+async fn federated_mint_connector_times_out_stalled_mint_keys_validation() {
+    let bundle = threshold_bundle();
+    let advertised = advertised_keyset(&bundle);
+    let request_timeout = Duration::from_secs(2);
+    let mut connectors = BTreeMap::new();
+
+    let stalled_member = MockMintConnector::new();
+    set_member_advertisement_with_keyset(
+        &stalled_member,
+        &bundle,
+        member_id(1),
+        advertised.clone(),
+    );
+    stalled_member.set_mint_keys_barrier(Arc::new(tokio::sync::Barrier::new(2)));
+    connectors.insert(
+        member_id(1),
+        Arc::new(stalled_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    for member_id in [member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_timeout: request_timeout,
+            fanout_concurrency: 1,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let validation = tokio::spawn(async move { connector.get_mint_keys().await });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(request_timeout).await;
+
+    let response = validation
+        .await
+        .expect("keyset validation task")
+        .expect("healthy threshold after mint key timeout");
+    assert_eq!(response.len(), 1);
+    assert_eq!(response[0].id, advertised.id);
+}
+
 #[tokio::test]
 async fn federated_mint_connector_mints_after_threshold_keyset_advertisements() {
     let bundle = threshold_bundle();
