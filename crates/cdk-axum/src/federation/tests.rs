@@ -26,14 +26,14 @@ use cdk::federation::{
     FederationCheckpointAuditRequest, FederationCheckpointBoundary, FederationCheckpointKind,
     FederationCheckpointPolicy, FederationCheckpointQuorum, FederationCheckpointSignature,
     FederationCheckpointSummaryRequest, FederationCheckpointSummaryResponse,
-    FederationConfigSnapshot, FederationConsensusItem, FederationConsensusItemAdmission,
-    FederationConsensusModuleFact, FederationConsensusRuntime, FederationDatabaseBackupManifest,
-    FederationDkgActivationRequest, FederationDkgCeremonyId, FederationDkgCeremonyRecord,
-    FederationDkgCeremonyState, FederationDkgCommitmentRound, FederationDkgMemberKeysetShare,
-    FederationDkgSetupMethod, FederationDkgTranscript, FederationDkgTranscriptHash,
-    FederationDkgTranscriptSignature, FederationError, FederationJournalAppendOutcome,
-    FederationJournalDigest, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMeltQuoteMetadata, FederationMintQuoteOperation,
+    FederationConfigSnapshot, FederationConsensusDefaultItem, FederationConsensusItem,
+    FederationConsensusItemAdmission, FederationConsensusModuleFact, FederationConsensusRuntime,
+    FederationDatabaseBackupManifest, FederationDkgActivationRequest, FederationDkgCeremonyId,
+    FederationDkgCeremonyRecord, FederationDkgCeremonyState, FederationDkgCommitmentRound,
+    FederationDkgMemberKeysetShare, FederationDkgSetupMethod, FederationDkgTranscript,
+    FederationDkgTranscriptHash, FederationDkgTranscriptSignature, FederationError,
+    FederationJournalAppendOutcome, FederationJournalDigest, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMeltQuoteMetadata, FederationMintQuoteOperation,
     FederationMintQuotePaymentObservation, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationKind, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
@@ -26879,6 +26879,185 @@ async fn private_journal_route_aligns_claims_with_duplicate_finalized_items() {
     );
     assert!(response.complete);
     assert!(response.aleph_bft_finalized_items_complete);
+}
+
+#[tokio::test]
+async fn finalized_item_catch_up_pages_mixed_suffix_without_count_mismatch() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+
+    // The reported reproduction plus every mixed composition: unit 0 carries
+    // an accepted operation, its duplicate, a rejected recovery barrier, and
+    // an accepted non-operation item; unit 1 carries a second accepted
+    // operation; unit 2 carries only another duplicate. Six finalized items
+    // reconstruct two journal entries, so any one-to-one page alignment
+    // assumption produces the reported count mismatch.
+    let accepted_a = mint_quote_envelope(&state, &QuoteId::new());
+    let invalid_barrier =
+        FederationRecoveryBarrier::new(public_config.federation_id, 0, None, u64::MAX)
+            .expect("out-of-position recovery barrier");
+    let unit_zero = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        0,
+        vec![
+            FederationConsensusItem::operation(accepted_a.clone()),
+            FederationConsensusItem::operation(accepted_a.clone()),
+            FederationConsensusItem::recovery_barrier(invalid_barrier),
+            FederationConsensusItem::Default(FederationConsensusDefaultItem::new(
+                "module-fact",
+                serde_json::json!({"fact": 1}),
+            )),
+        ],
+    )
+    .expect("mixed unit");
+    let accepted_b = mint_quote_envelope(&state, &QuoteId::new());
+    let unit_one = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        1,
+        vec![FederationConsensusItem::operation(accepted_b)],
+    )
+    .expect("second accepted unit");
+    let unit_two = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        peer_private.member_id,
+        0,
+        2,
+        vec![FederationConsensusItem::operation(accepted_a)],
+    )
+    .expect("duplicate-only unit");
+    for unit in [unit_zero, unit_one, unit_two] {
+        state
+            .apply_federation_aleph_bft_finalized_unit(unit)
+            .await
+            .expect("apply finalized unit");
+    }
+
+    // Walk the real route and the real client check page by page with a
+    // limit that intersects the four-item unit. Every page must pair its
+    // journal claims with the exact finalized prefix that replays to them.
+    let mut client_items = Vec::new();
+    let mut client_entry_count = 0usize;
+    let mut next_index = 0u64;
+    let mut next_item_index = 0u64;
+    let mut first_page = None;
+    let expected_item_counts = [4usize, 1, 1];
+    let expected_entry_counts = [1usize, 1, 0];
+    let mut final_response = None;
+    for (sequence, (expected_items, expected_entries)) in expected_item_counts
+        .iter()
+        .zip(expected_entry_counts.iter())
+        .enumerate()
+    {
+        let request = signed_catch_up_request(
+            &public_config,
+            &peer_private,
+            local_private.member_id,
+            u64::try_from(sequence).expect("sequence") + 1,
+            FederationJournalCatchUpRequest::new(next_index)
+                .with_limit(1)
+                .with_aleph_bft_next_item_index(next_item_index),
+        );
+        let response = post_journal(State(state.clone()), Json(request))
+            .await
+            .expect("mixed-suffix catch-up page")
+            .0;
+        assert_eq!(
+            response.aleph_bft_finalized_items.len(),
+            *expected_items,
+            "page {sequence} must carry complete units only"
+        );
+        assert_eq!(
+            response.entries.len(),
+            *expected_entries,
+            "page {sequence} journal claims must match the finalized replay prefix"
+        );
+
+        client_items.extend(response.aleph_bft_finalized_items.iter().cloned());
+        let consensus = FederationConsensusRuntime::recover_finalized_items_for_test(
+            &public_config,
+            local_private.member_id,
+            0,
+            client_items.clone(),
+        )
+        .expect("reconstruct finalized history");
+        let recovered_entries = consensus.journal().entries();
+        crate::ensure_catch_up_entries_match_recovered_journal(
+            &recovered_entries[client_entry_count..],
+            Some(&response),
+        )
+        .expect("page must match the recovered journal exactly");
+        client_entry_count = recovered_entries.len();
+        next_index = response
+            .from_index
+            .checked_add(u64::try_from(response.entries.len()).expect("page length"))
+            .expect("journal cursor advance");
+        next_item_index = next_item_index
+            .checked_add(u64::try_from(response.aleph_bft_finalized_items.len()).expect("items"))
+            .expect("finalized cursor advance");
+        if sequence == 0 {
+            first_page = Some(response.clone());
+        }
+        final_response = Some((response, consensus));
+    }
+
+    let (response, consensus) = final_response.expect("duplicate-only final page");
+    assert!(
+        response.complete,
+        "duplicate-only page must complete the walk"
+    );
+    assert!(response.aleph_bft_finalized_items_complete);
+    assert_eq!(client_entry_count, 2);
+    assert_eq!(
+        response.latest_order_digest,
+        consensus.journal().latest_order_digest(),
+        "complete walk must converge on the server journal digest"
+    );
+    let statuses: Vec<_> = client_items.iter().map(|item| item.status).collect();
+    assert_eq!(
+        statuses,
+        vec![
+            FederationAlephBftFinalizedItemStatus::Accepted,
+            FederationAlephBftFinalizedItemStatus::DuplicateOperation,
+            FederationAlephBftFinalizedItemStatus::RejectedInvalidRecoveryBarrier,
+            FederationAlephBftFinalizedItemStatus::Accepted,
+            FederationAlephBftFinalizedItemStatus::Accepted,
+            FederationAlephBftFinalizedItemStatus::DuplicateOperation,
+        ]
+    );
+
+    // The exact comparison must still reject a genuinely mismatched pair:
+    // replaying the full six-item suffix recovers two journal entries, which
+    // must not be accepted against the first page's single-entry claims.
+    let full_consensus = FederationConsensusRuntime::recover_finalized_items_for_test(
+        &public_config,
+        local_private.member_id,
+        0,
+        client_items,
+    )
+    .expect("reconstruct full finalized history");
+    let mismatch = crate::ensure_catch_up_entries_match_recovered_journal(
+        full_consensus.journal().entries(),
+        Some(&first_page.expect("first page retained")),
+    )
+    .expect_err("mismatched page must be rejected");
+    assert!(
+        mismatch
+            .to_string()
+            .contains("recovered 2 journal entries but response carried 1"),
+        "rejection must name the exact count mismatch: {mismatch}"
+    );
 }
 
 #[tokio::test]

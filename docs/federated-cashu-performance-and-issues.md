@@ -1611,7 +1611,17 @@ coverage. All passed as recorded in Milestone 2.
 
 ### Milestone U8: Validate finalized-item catch-up response-count mismatch
 
-**Status:** Confirmed transient mismatch; cause unconfirmed
+**Status:** Resolved 2026-07-19 — defect absent in the current build; regression proof added
+
+Resolved by the consensus-deadlock ledger's milestone 14 (`R4`) in
+`docs/federated-cashu-consensus-deadlocks-2026-07-18.md`: the reported
+response-construction defect was removed by the checkpoint cutover refactor
+series (notably `7dccd381b`), and the executed canonical reproduction
+(`finalized_item_catch_up_pages_mixed_suffix_without_count_mismatch` in
+`crates/cdk-axum`) proves every mixed composition pages at complete-unit
+boundaries with journal claims aligned to the exact finalized replay prefix,
+while the client's exact equality check is retained and proven to fire on
+genuinely mismatched pairs. The historical observation is retained below.
 
 **Found during:** Milestone 2 parallel receive verification
 

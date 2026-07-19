@@ -59,7 +59,7 @@ is well established but its root cause is not.
 | 11 | `P3` | Exact evidence quorum is not backed by an enforced evidence model | High | 97% | Quote/proofs | Completed |
 | 12 | `R1` | Recovery candidate fetch is pinned to the first source | High | 97% | Startup recovery | Completed |
 | 13 | `A1` | Aleph queues lack bounded backpressure | High security gate | 97% | Process/quorum resource exhaustion | Completed |
-| 14 | `R4` | Finalized-item catch-up response-count mismatch remains unexplained | High investigation | 95% failure / 55% cause | Member recovery | Not started |
+| 14 | `R4` | Finalized-item catch-up response-count mismatch remains unexplained | High investigation | 95% failure / 55% cause | Member recovery | Completed |
 | 15 | `R2` | Opaque Aleph backup can pin startup to unusable bytes | High | 85% | Startup/live-session recovery | Not started |
 | 16 | `P7` | Staged melt commits need complete crash/replay proof | High pending proof | 75% | Quote/proofs | Not started |
 | 17 | `W1` | Member metadata validation can wait forever | Medium | 99% | Wallet operations | Not started |
@@ -2793,23 +2793,77 @@ Reference: [security audit SEC-2026-07-17-05](federated-cashu-security-audit-202
 
 ### 14. Finalized-item catch-up response-count mismatch remains unexplained (`R4`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Investigated on 2026-07-19 with an executed canonical
+reproduction against the unmodified worktree:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-axum --features federation finalized_item_catch_up_pages_mixed_suffix_without_count_mismatch -- --nocapture`
 
-**Fix check and evaluation:** Not run
+PASSED (`1 passed`). The harness builds the reported reproduction plus every
+mixed composition — accepted A, duplicate A, a rejected recovery barrier, and
+an accepted non-operation item in one four-item unit, accepted B in a second
+unit, and a duplicate-only third unit (six finalized items reconstructing two
+journal entries) — then walks the real `post_journal` route with a requested
+limit that intersects the four-item unit and runs the real client equality
+check (`recover_finalized_items_for_test` plus
+`ensure_catch_up_entries_match_recovered_journal`) on every page. Every page
+paired its journal claims with the exact finalized replay prefix, the
+duplicate-only page advanced the finalized cursor with zero journal entries,
+and the walk converged on the server's journal digest. A negative assertion
+confirmed the exact comparison still rejects a genuinely mismatched pair with
+`recovered 2 journal entries but response carried 1`.
 
-**Commit subject:** Not assigned
+The count mismatch does not reproduce because the reported response-construction
+defect was removed by the checkpoint cutover refactor series (in particular
+`7dccd381b feat: stream bounded checkpoint catch-up`) before this milestone:
+`truncate_to_complete_aleph_bft_units` never cuts a unit (the requested limit
+is soft for the first complete unit), `align_catch_up_page_to_finalized_prefix`
+truncates the journal page down to the finalized page's exact
+accepted-operation prefix, and `fit_checkpoint_page_to_byte_limit` trims only
+whole units while shrinking the journal claims correspondingly. The recorded
+6-versus-10, 0-versus-2, and 1-versus-2 pairs came from the pre-cutover
+deployed build analyzed in the Nocean report. The report's separate
+authentication note is also moot in the current build: catch-up certificates
+were replaced by `FederationCheckpointQuorum`, whose verification strictly
+requires `consensus_threshold` signers with no zero-signer branch
+(`crates/cdk-common/src/federation/checkpoint.rs`).
 
-**Milestone observations:** None yet
+**Minimal fix:** None required — the defect is absent from the current build.
+The milestone retains the new end-to-end regression proving the intended
+mapping. No production code changed.
+
+**Fix check and evaluation:** Evaluation on 2026-07-19:
+
+- `rustfmt --check` on the changed test file — clean.
+- `cargo test -p cdk-axum --features federation` — `503 passed; 0 failed; 2
+  ignored`, including the new regression and the pre-existing route-level
+  alignment test
+  (`private_journal_route_aligns_claims_with_duplicate_finalized_items`).
+
+**Commit subject:** `test: prove mixed finalized-item catch-up pages align with journal claims`
+
+**Milestone observations:** 2026-07-19 — Milestone 13 is committed
+(`5146beb22`) and the worktree was clean before starting confirmation.
+
+2026-07-19 — Confirmation recorded above: the reported failure is absent in
+the current build. Observations during confirmation: (1) the transcript-
+tampered envelope helper is classified `Accepted` at finalization (its
+failure is stateful, tracked by `DB-001`), so a finalization-time rejected
+item requires an authorization/barrier failure — the harness uses an
+out-of-position recovery barrier for the rejected composition. (2) The
+current construction enforces exactly the Nocean report's required mapping:
+the finalized-item stream determines the page boundary, the journal page is
+its accepted-operation prefix, no unit is ever cut, and the client's exact
+equality check is retained and proven to fire.
 
 **Severity:** High investigation
 
 **Confidence:** 95% that the failure exists; 55% in the current root-cause hypotheses
 
-**Finding status:** Open investigation; process-reproduced
+**Finding status:** Resolved on 2026-07-19 — the reported defect was removed
+by the checkpoint cutover refactor series; regression proof added with the
+intended mapping demonstrated end-to-end
 
 An offline member has rejected catch-up because reconstructed finalized items
 produced a different number of journal entries than the response carried.
@@ -2826,6 +2880,10 @@ Do not weaken the equality/digest checks without proving the intended mapping.
 The required investigation and exact reproductions are recorded in
 [Performance plan U8](federated-cashu-performance-and-issues.md#milestone-u8-validate-finalized-item-catch-up-response-count-mismatch)
 and the [Nocean recovery report](federated-cashu-nocean-deadlock.md#cause-of-the-catch-up-mismatch).
+The investigation completed on 2026-07-19: the intended mapping is proven
+(journal page == finalized page's accepted-operation prefix, units never cut),
+the equality check is unweakened, and the mismatch is confined to the
+pre-cutover deployed build.
 
 ### 15. Opaque Aleph backup can pin startup to unusable bytes (`R2`)
 
