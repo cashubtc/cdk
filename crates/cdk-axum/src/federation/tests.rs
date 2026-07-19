@@ -22649,6 +22649,137 @@ impl Drop for ApplyRetryBudgetOverrideGuard {
 }
 
 #[tokio::test]
+async fn recovery_candidate_fetch_falls_back_from_withholding_first_source() {
+    let (public_config, first_private, second_private, _) = transport_config_three();
+    let first_state = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        first_private.clone(),
+        Arc::new(cdk_sqlite::mint::memory::empty().await.expect("first db")),
+        &[9; 64],
+    )
+    .await;
+    let second_state = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        second_private.clone(),
+        Arc::new(cdk_sqlite::mint::memory::empty().await.expect("second db")),
+        &[8; 64],
+    )
+    .await;
+    let recovering_state = federation_route_state_for_private_with_db(
+        public_config.clone(),
+        second_private.clone(),
+        Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("recovering db"),
+        ),
+        &[7; 64],
+    )
+    .await;
+
+    // Member 1 finalizes one operation; every member applies the identical
+    // finalized unit so all of them hold the same durable history.
+    let history_envelope = mint_quote_envelope(&first_state, &QuoteId::new());
+    let history_payload = FederationAlephBftUnitPayload::new(
+        public_config.federation_id,
+        member_id(1),
+        0,
+        0,
+        vec![FederationConsensusItem::operation(history_envelope)],
+    )
+    .expect("history unit");
+    for state in [&first_state, &second_state, &recovering_state] {
+        state
+            .apply_federation_aleph_bft_finalized_unit(history_payload.clone())
+            .await
+            .expect("apply shared finalized unit");
+    }
+
+    // Every advertiser holds the same recovery checkpoint candidate.
+    let (checkpoint, _quorum) = recovery_checkpoint_quorum_for_state(
+        &first_state,
+        &public_config,
+        None,
+        &[&first_private, &second_private],
+    )
+    .await;
+    let checkpoint_id = checkpoint.id().expect("checkpoint id");
+    let first_member = public_config.member(member_id(1)).expect("first member");
+    let second_member = public_config.member(member_id(2)).expect("second member");
+    for state in [&first_state, &second_state] {
+        state
+            .federation
+            .persist_checkpoint_candidate(&checkpoint)
+            .await
+            .expect("persist advertised recovery candidate");
+    }
+
+    let first_summary = first_state
+        .federation
+        .checkpoint_summary(Some(0))
+        .await
+        .expect("first advertiser summary");
+    let second_summary = second_state
+        .federation
+        .checkpoint_summary(Some(0))
+        .await
+        .expect("second advertiser summary");
+    assert!(first_summary.latest_recovery_candidate.is_some());
+    assert!(second_summary.latest_recovery_candidate.is_some());
+
+    // The first advertiser serves its summary but withholds the candidate
+    // fetch (503), and it is always selected first by the discovery order.
+    let transport = RouterFederationTransportRegistry::default();
+    transport.insert(
+        first_member.federation_api_url.clone(),
+        Router::new()
+            .nest("/api/federation/v1", create_federation_router())
+            .route_layer(axum::middleware::from_fn(
+                |req: axum::extract::Request, next: axum::middleware::Next| async move {
+                    if req.uri().path().ends_with("/checkpoints/fetch") {
+                        return axum::http::Response::builder()
+                            .status(axum::http::StatusCode::SERVICE_UNAVAILABLE)
+                            .body(axum::body::Body::empty())
+                            .expect("withholding response");
+                    }
+                    next.run(req).await
+                },
+            ))
+            .with_state(first_state.clone()),
+    );
+    transport.insert(
+        second_member.federation_api_url.clone(),
+        Router::new()
+            .nest("/api/federation/v1", create_federation_router())
+            .with_state(second_state.clone()),
+    );
+    let client = FederationRestPeerClient::new(transport, &public_config, second_private)
+        .expect("peer client");
+    let peer_summaries = [
+        (first_member, first_summary),
+        (second_member, second_summary),
+    ];
+
+    let adopted =
+        sync_loop::adopt_peer_recovery_candidate(&recovering_state, &client, &peer_summaries).await;
+
+    assert_eq!(
+        adopted, 1,
+        "one withholding advertiser must not pin recovery: another advertiser must serve the candidate"
+    );
+    assert!(
+        recovering_state
+            .mint
+            .localstore()
+            .get_federation_checkpoint(checkpoint_id)
+            .await
+            .expect("recovery candidate lookup")
+            .is_some(),
+        "the verified candidate must be persisted from an honest advertiser"
+    );
+}
+
+#[tokio::test]
 async fn permanent_apply_contention_transitions_to_bounded_operator_repairable_state() {
     let _budget_guard = ApplyRetryBudgetOverrideGuard::set(2_000);
     let session = start_two_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(

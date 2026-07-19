@@ -435,7 +435,7 @@ where
     updates
 }
 
-async fn adopt_peer_recovery_candidate<T>(
+pub(super) async fn adopt_peer_recovery_candidate<T>(
     state: &MintState,
     client: &FederationRestPeerClient<T>,
     peer_summaries: &[(&MemberConfigPublic, FederationCheckpointSummaryResponse)],
@@ -472,54 +472,62 @@ where
     if local_checkpoint_quorum_is_stored(state, summary.checkpoint_id).await {
         return 0;
     }
-    let Some(source) = peers.first() else {
-        return 0;
-    };
-    let response = match client.fetch_checkpoint(source, summary.checkpoint_id).await {
-        Ok(response) => response,
-        Err(err) => {
+
+    // Try every advertising source within this bounded round, rotating the
+    // first attempt deterministically by the local member so one false
+    // advertiser is never the only source and does not always sit first.
+    // Only a fully verified candidate is persisted.
+    let local_member = runtime_config.member_id().get() as usize;
+    let peer_count = peers.len();
+    for position in 0..peer_count {
+        let source = peers[(local_member + position) % peer_count];
+        let response = match client.fetch_checkpoint(source, summary.checkpoint_id).await {
+            Ok(response) => response,
+            Err(err) => {
+                tracing::warn!(
+                    member_id = %source.member_id,
+                    checkpoint_id = %summary.checkpoint_id,
+                    "Federation recovery candidate fetch failed: {}",
+                    err
+                );
+                continue;
+            }
+        };
+        let Some(checkpoint) = response.checkpoint.as_ref() else {
             tracing::warn!(
                 member_id = %source.member_id,
                 checkpoint_id = %summary.checkpoint_id,
-                "Federation recovery candidate fetch failed: {}",
-                err
+                "Federation peer advertised a recovery candidate but did not serve it"
             );
-            return 0;
-        }
-    };
-    let Some(checkpoint) = response.checkpoint.as_ref() else {
-        tracing::warn!(
-            member_id = %source.member_id,
-            checkpoint_id = %summary.checkpoint_id,
-            "Federation peer advertised a recovery candidate but did not serve it"
-        );
-        return 0;
-    };
-    if let Err(err) = summary.validate_checkpoint(checkpoint) {
-        tracing::warn!(
-            member_id = %source.member_id,
-            checkpoint_id = %summary.checkpoint_id,
-            "Federation recovery candidate did not match its summary: {}",
-            err
-        );
-        return 0;
-    }
-    match state
-        .federation
-        .persist_checkpoint_candidate(checkpoint)
-        .await
-    {
-        Ok(()) => 1,
-        Err(err) => {
+            continue;
+        };
+        if let Err(err) = summary.validate_checkpoint(checkpoint) {
             tracing::warn!(
                 member_id = %source.member_id,
                 checkpoint_id = %summary.checkpoint_id,
-                "Could not persist federation recovery candidate: {}",
+                "Federation recovery candidate did not match its summary: {}",
                 err
             );
-            0
+            continue;
+        }
+        match state
+            .federation
+            .persist_checkpoint_candidate(checkpoint)
+            .await
+        {
+            Ok(()) => return 1,
+            Err(err) => {
+                tracing::warn!(
+                    member_id = %source.member_id,
+                    checkpoint_id = %summary.checkpoint_id,
+                    "Could not persist federation recovery candidate: {}",
+                    err
+                );
+                return 0;
+            }
         }
     }
+    0
 }
 
 async fn fetch_advertised_checkpoint_quorums<T>(

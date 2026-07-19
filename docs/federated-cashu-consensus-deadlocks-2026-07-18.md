@@ -57,7 +57,7 @@ is well established but its root cause is not.
 | 9 | `W2` | Melt-status recovery lets one invalid share poison an honest threshold | High availability / Medium scope | 98% | Wallet melt recovery | Completed |
 | 10 | `F4` | Apply and backup retries have no terminal budget | High | 97% | Session/member starvation | Completed |
 | 11 | `P3` | Exact evidence quorum is not backed by an enforced evidence model | High | 97% | Quote/proofs | Completed |
-| 12 | `R1` | Recovery candidate fetch is pinned to the first source | High | 97% | Startup recovery | Not started |
+| 12 | `R1` | Recovery candidate fetch is pinned to the first source | High | 97% | Startup recovery | Completed |
 | 13 | `A1` | Aleph queues lack bounded backpressure | High security gate | 97% | Process/quorum resource exhaustion | Not started |
 | 14 | `R4` | Finalized-item catch-up response-count mismatch remains unexplained | High investigation | 95% failure / 55% cause | Member recovery | Not started |
 | 15 | `R2` | Opaque Aleph backup can pin startup to unusable bytes | High | 85% | Startup/live-session recovery | Not started |
@@ -2484,23 +2484,98 @@ milestone; the trust-model commitment and configuration rejection are
 
 ### 12. Recovery candidate fetch is pinned to the first source (`R1`)
 
-**Milestone status:** Not started
+**Milestone status:** Completed
 
-**Confirmation:** Pending
+**Confirmation:** Confirmed on 2026-07-18 with an executed focused harness
+against the unmodified pre-fix worktree, driving `adopt_peer_recovery_candidate`
+directly with two real member states that both advertise the identical
+verified recovery candidate. The first advertiser serves its summary but
+answers every candidate fetch with 503; the second advertiser serves the
+candidate normally:
 
-**Minimal fix:** Not attempted
+`cargo test -p cdk-axum --features federation recovery_candidate_fetch_falls_back_from_withholding_first_source -- --nocapture`
 
-**Fix check and evaluation:** Not run
+FAILED with `left: 0, right: 1` (`one withholding advertiser must not pin
+recovery: another advertiser must serve the candidate`): adoption used
+`peers.first()` as the sole source, its fetch failed, and no other
+advertiser was tried even though the second advertiser held the identical
+verified candidate. That is the reported startup recovery dead end: the
+stable first source can withhold every round while the threshold group
+necessarily includes honest sources. No production code had been edited;
+only the harness and `pub(super)` visibility for
+`adopt_peer_recovery_candidate` were added.
 
-**Commit subject:** Not assigned
+**Minimal fix:** One federation-only change in
+`crates/cdk-axum/src/federation/sync_loop.rs`
+(`adopt_peer_recovery_candidate`): instead of `peers.first()` as the sole
+source, adoption now tries every advertising source within the bounded round,
+rotating the first attempt deterministically by the local member id so one
+false advertiser neither is the only source nor always sits first. Fetch
+errors, unserved advertisements, and summary mismatches move to the next
+source with a bounded per-source log, and only a fully verified candidate is
+persisted. Repeated false advertising on the status path remains covered by
+the existing reconnect backoff. `adopt_peer_recovery_candidate` was made
+`pub(super)` so the harness exercises the exact function. No standalone
+code changed.
 
-**Milestone observations:** None yet
+**Fix check and evaluation:** Fix check on 2026-07-18 with the exact
+confirmation scenario. Pre-fix run against the same harness with the
+single-source body restored: FAILED with `left: 0, right: 1`. Post-fix:
+
+`cargo test -p cdk-axum --features federation recovery_candidate_fetch_falls_back_from_withholding_first_source -- --nocapture`
+
+`1 passed`: the withholding first advertiser is tried first, fails, and the
+second advertiser serves the verified candidate, which is persisted on the
+recovering member.
+
+Broader evaluation on 2026-07-18:
+
+- `cargo fmt -p cdk-axum -- --check` — clean for the milestone's code.
+- `cargo test -p cdk-axum --features federation peer_sync_round` — `4
+  passed; 0 failed`.
+- `cargo test -p cdk-axum --features federation checkpoint` — `35 passed; 0
+  failed`, including checkpoint catch-up, candidate exchange, and quorum
+  dissemination tests.
+- `cargo test -p cdk-axum --features federation` — `500 passed; 0 failed; 2
+  ignored`.
+- `cargo check -p cdk-axum --no-default-features` — passed; all changed
+  code is federation-gated.
+- `cargo clippy -p cdk-axum --features federation --all-targets -- -D
+  warnings` — fails only on the same 9 pre-existing `crates/cdk` lints
+  recorded in milestone 2 (none in the changed code).
+
+Not run: a live multi-process partition (the harness drives the exact
+adoption function with real member states, real summaries, and a
+withholding first source through authenticated routes).
+
+**Commit subject:** `fix: try every recovery candidate source in bounded round`
+
+**Milestone observations:** 2026-07-18 — Milestone 11 is committed
+(`f3c9227ff`) and the worktree was clean before starting confirmation.
+Production code remains untouched while the checkpoint discovery, source
+ordering, and candidate verification paths are inspected.
+
+2026-07-18 — Confirmation recorded above.
+
+2026-07-18 — Fix and evaluation complete; milestone kept. Observations
+during the fix: (1) the first harness draft measured the round's update
+total, which other exchanges confound, so it was narrowed to drive
+`adopt_peer_recovery_candidate` directly with hand-ordered summaries and a
+recovering member whose deterministic rotation offset (0) tries the liar
+first; that is also what made the direct red re-run possible. (2)
+`persist_checkpoint_candidate` requires the candidate to equal the local
+durable frontier, so all harness states share one finalized unit — the
+adoption target is the candidate for the member's own frontier, which is
+the startup case this path serves. (3) False advertisers cost exactly one
+bounded fetch per round and are always skipped past; the existing
+status-path reconnect backoff is retained for repeated failures there.
 
 **Severity:** High
 
 **Confidence:** 97% — source-proven
 
-**Finding status:** Open, source-proven
+**Finding status:** Resolved on 2026-07-18 with red-before-green runtime
+proof
 
 **Attacker/fault:** One Byzantine member among a quorum that honestly advertises
 the same recovery candidate
@@ -2516,9 +2591,20 @@ Peer ordering is stable, so the same Byzantine first source can withhold every
 round even though the threshold group necessarily includes honest peers able to
 serve the object.
 
+The corrected adoption now tries every advertising source within the bounded
+round, rotating the first attempt deterministically by the local member id.
+Fetch errors, unserved advertisements, and summary mismatches move to the
+next source with a bounded log, and only a fully verified candidate is
+persisted. The retained regression proves one withholding first advertiser
+cannot pin recovery while an honest advertiser serves the same candidate.
+
 **Required correction:** shuffle/rotate deterministically, try every advertising
 source within a bounded round, penalize false advertisers, and persist only a
-fully verified candidate.
+fully verified candidate. All clauses are implemented and proven by this
+milestone: rotation is deterministic by local member id, every advertiser is
+tried once per round (a false advertiser costs exactly one bounded fetch and
+is always skipped past, with repeated status-path failures already covered by
+the existing reconnect backoff), and only fully verified candidates persist.
 
 ### 13. Aleph queues lack bounded backpressure (`A1`)
 
@@ -2922,7 +3008,7 @@ not currently classified as an open deadlock.
 | Melt proofs stay pending with healthy consensus | 26 (`DB-005`), 19 (`P6`), or `DB-002`; pre-fix builds: 5 (`P1`), 6 (`P2`) | Accepted envelope author, lease epoch vs journal tip, saga state, lookup ID, per-member backend observations |
 | Mint quote is paid externally but never becomes paid in federation | 26 (`DB-005`), then 6 (`P2`) | Per-member lookup visibility and exact evidence group differences |
 | UTXO changes to `Reorged`/`Quarantined` | Post-fix: quorum evidence or 24 (`DB-003`); pre-fix builds: 4 (`P5`) | Every member's reorg/deposit evidence, first observation author, block/txout fields, every member's raw chain-source result |
-| Restarted member never adopts a known checkpoint | 12 (`R1`), 15 (`R2`), or 14 (`R4`) | Advertising peers, selected source, transferred bytes, page cursors/counts |
+| Restarted member never adopts a known checkpoint | 15 (`R2`) or 14 (`R4`) | Advertising peers, selected source, transferred bytes, page cursors/counts |
 | Wallet hangs before sending value operation | 17 (`W1`) | In-flight `get_mint_info`/`get_mint_keys` member calls and fanout slots |
 | Melt succeeded but wallet cannot recover change | 9 (`W2`) | All raw member shares, selected metadata group, original blinded outputs |
 
