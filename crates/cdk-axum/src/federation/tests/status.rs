@@ -804,10 +804,12 @@ async fn catching_up_member_blocks_wallet_observer_and_broadcaster_work() {
         .mark_federation_catching_up(peer_private.member_id)
         .await;
 
-    assert!(super::payment_observation::FederationPaymentObserver
-        .run_round(&state)
-        .await
-        .is_err());
+    assert!(
+        super::payment_observation::FederationPaymentObserver::default()
+            .run_round(&state)
+            .await
+            .is_err()
+    );
     assert!(
         super::broadcast::FederationTransactionBroadcaster::default()
             .run_round(&state)

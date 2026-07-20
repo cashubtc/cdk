@@ -15,11 +15,11 @@ use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
 use futures::FutureExt as _;
 
+use super::mint_quote_schedule::{MintQuoteObservationSchedule, MintQuoteObservationTrigger};
 use crate::MintState;
 
 const FEDERATION_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
 const FEDERATION_PAYMENT_OBSERVER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-const FEDERATION_PAYMENT_OBSERVER_BATCH_SIZE: usize = 100;
 /// Per-quote backend probe deadline.
 ///
 /// One hung or slow backend call must never occupy the sequential observer
@@ -41,8 +41,29 @@ fn confirmation_matches_known_anchor(
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct FederationPaymentObserver;
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FederationPaymentObserver {
+    mint_quote_schedule: MintQuoteObservationSchedule,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MintQuoteProgress {
+    state: MintQuoteState,
+    amount_paid: u64,
+    amount_issued: u64,
+    updated_at: u64,
+}
+
+impl From<&cdk::mint::MintQuote> for MintQuoteProgress {
+    fn from(quote: &cdk::mint::MintQuote) -> Self {
+        Self {
+            state: quote.state(),
+            amount_paid: quote.amount_paid().value(),
+            amount_issued: quote.amount_issued().value(),
+            updated_at: quote.updated_at(),
+        }
+    }
+}
 
 impl FederationPaymentObserver {
     pub(crate) async fn observe_onchain_wallets(
@@ -245,71 +266,138 @@ impl FederationPaymentObserver {
         state: &MintState,
         quote_ids: &[QuoteId],
     ) -> Result<usize, cdk::Error> {
+        Box::pin(self.observe_mint_quotes_with_trigger(
+            state,
+            quote_ids,
+            MintQuoteObservationTrigger::Requested,
+        ))
+        .await
+    }
+
+    async fn observe_mint_quotes_with_trigger(
+        &self,
+        state: &MintState,
+        quote_ids: &[QuoteId],
+        trigger: MintQuoteObservationTrigger,
+    ) -> Result<usize, cdk::Error> {
+        let Some(federation_config) = state.mint.federation_config() else {
+            return Ok(0);
+        };
+        let member_id = federation_config.member_id();
+        let db = state.mint.localstore();
+        let quote_ids = self
+            .mint_quote_schedule
+            .candidates(&db, quote_ids, trigger, current_unix_time_ms())
+            .await?;
         let mut submitted = 0usize;
-        for quote_id in quote_ids {
-            let quote = state
-                .mint
-                .localstore()
+        for quote_id in &quote_ids {
+            let quote = db
                 .get_mint_quote(quote_id)
                 .await?
                 .ok_or(cdk::Error::UnknownQuote)?;
             if quote.state() == MintQuoteState::Issued {
+                self.mint_quote_schedule.remove(&db, quote_id).await?;
                 continue;
             }
-            #[cfg(feature = "federation-bark")]
-            if state.federation.bark_runtime().is_some() {
-                match super::bark_incoming::advance_federated_bark_mint_quote(state, quote_id).await
-                {
-                    Ok(advanced) => submitted = submitted.saturating_add(advanced),
-                    Err(error) => tracing::debug!(
-                        quote = %quote_id,
-                        error = %error,
-                        "federated Bark receive advancement left quote pending"
-                    ),
-                }
-            }
-            let Some(observation) = ({
-                let probe = std::panic::AssertUnwindSafe(async {
-                    state
-                        .mint
-                        .probe_federation_mint_quote_payment(quote_id)
-                        .await
-                })
-                .catch_unwind();
-                match tokio::time::timeout(FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE, probe).await
-                {
-                    Ok(Ok(Ok(observation))) => observation,
-                    Ok(Ok(Err(err))) => {
-                        tracing::debug!(
-                            quote = %quote_id,
-                            error = %err,
-                            "mint quote payment probe failed; quote left pending"
-                        );
-                        continue;
-                    }
-                    Ok(Err(_panic)) => {
-                        tracing::warn!(
-                            quote = %quote_id,
-                            "mint quote payment probe panicked; quote left pending"
-                        );
-                        continue;
-                    }
-                    Err(_) => {
-                        tracing::debug!(
-                            quote = %quote_id,
-                            "mint quote payment probe timed out; quote left pending"
-                        );
-                        continue;
-                    }
-                }
-            }) else {
+
+            let before = MintQuoteProgress::from(&quote);
+            let Some(permit) = self
+                .mint_quote_schedule
+                .claim(&db, quote_id, trigger, current_unix_time_ms())
+                .await?
+            else {
                 continue;
             };
-            if submit_observation(state, FederationPaymentObservation::MintQuote(observation))
-                .await?
-            {
-                submitted = submitted.saturating_add(1);
+
+            let observed = Box::pin(self.observe_one_mint_quote(state, quote_id)).await;
+            let after = db.get_mint_quote(quote_id).await;
+            let made_progress = observed.as_ref().is_ok_and(|count| *count > 0)
+                || after.as_ref().is_ok_and(|quote| {
+                    quote
+                        .as_ref()
+                        .is_some_and(|quote| MintQuoteProgress::from(quote) != before)
+                });
+            let schedule_result = self
+                .mint_quote_schedule
+                .finish(
+                    &db,
+                    permit,
+                    member_id,
+                    made_progress,
+                    current_unix_time_ms(),
+                )
+                .await;
+
+            match schedule_result {
+                Ok(()) => {}
+                Err(error) if observed.is_err() || after.is_err() => tracing::warn!(
+                    quote = %quote_id,
+                    error = %error,
+                    "Could not persist mint quote observation backoff after observation failure"
+                ),
+                Err(error) => return Err(error),
             }
+            after?;
+            submitted = submitted.saturating_add(observed?);
+        }
+        Ok(submitted)
+    }
+
+    async fn observe_one_mint_quote(
+        &self,
+        state: &MintState,
+        quote_id: &QuoteId,
+    ) -> Result<usize, cdk::Error> {
+        let mut submitted = 0usize;
+        #[cfg(feature = "federation-bark")]
+        if state.federation.bark_runtime().is_some() {
+            match super::bark_incoming::advance_federated_bark_mint_quote(state, quote_id).await {
+                Ok(advanced) => submitted = submitted.saturating_add(advanced),
+                Err(error) => tracing::debug!(
+                    quote = %quote_id,
+                    error = %error,
+                    "federated Bark receive advancement left quote pending"
+                ),
+            }
+        }
+        let Some(observation) = ({
+            let probe = std::panic::AssertUnwindSafe(async {
+                state
+                    .mint
+                    .probe_federation_mint_quote_payment(quote_id)
+                    .await
+            })
+            .catch_unwind();
+            match tokio::time::timeout(FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE, probe).await {
+                Ok(Ok(Ok(observation))) => observation,
+                Ok(Ok(Err(err))) => {
+                    tracing::debug!(
+                        quote = %quote_id,
+                        error = %err,
+                        "mint quote payment probe failed; quote left pending"
+                    );
+                    return Ok(submitted);
+                }
+                Ok(Err(_panic)) => {
+                    tracing::warn!(
+                        quote = %quote_id,
+                        "mint quote payment probe panicked; quote left pending"
+                    );
+                    return Ok(submitted);
+                }
+                Err(_) => {
+                    tracing::debug!(
+                        quote = %quote_id,
+                        "mint quote payment probe timed out; quote left pending"
+                    );
+                    return Ok(submitted);
+                }
+            }
+        }) else {
+            return Ok(submitted);
+        };
+        if submit_observation(state, FederationPaymentObservation::MintQuote(observation)).await? {
+            submitted = submitted.saturating_add(1);
         }
         Ok(submitted)
     }
@@ -397,8 +485,12 @@ impl FederationPaymentObserver {
                 else {
                     return Ok(0);
                 };
-                self.observe_mint_quotes(state, std::slice::from_ref(&quote.id))
-                    .await
+                self.observe_mint_quotes_with_trigger(
+                    state,
+                    std::slice::from_ref(&quote.id),
+                    MintQuoteObservationTrigger::Notified,
+                )
+                .await
             }
             Event::PaymentSuccessful { quote_id, .. } | Event::PaymentFailed { quote_id, .. } => {
                 Ok(usize::from(
@@ -433,9 +525,14 @@ impl FederationPaymentObserver {
             })
             .map(|quote| quote.id)
             .collect::<Vec<_>>();
-        for quote_ids in mint_quote_ids.chunks(FEDERATION_PAYMENT_OBSERVER_BATCH_SIZE) {
-            submitted = submitted.saturating_add(self.observe_mint_quotes(state, quote_ids).await?);
-        }
+        submitted = submitted.saturating_add(
+            self.observe_mint_quotes_with_trigger(
+                state,
+                &mint_quote_ids,
+                MintQuoteObservationTrigger::Scheduled,
+            )
+            .await?,
+        );
 
         let melt_quote_ids = state
             .mint
@@ -655,6 +752,13 @@ fn current_unix_time() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
+fn current_unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default()
 }
 

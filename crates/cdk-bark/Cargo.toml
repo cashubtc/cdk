@@ -40,7 +40,7 @@ async-trait = { workspace = true, optional = true }
 # Temporary local development source. Before publication or push this must be
 # replaced by a remotely fetchable immutable revision of the reviewed
 # frost-wallet commit; absolute/floating dependencies are forbidden there.
-bark = { package = "bark-wallet", path = "../../../../../../git/bark/bark", default-features = false, features = ["bitcoind-rpc", "native", "sqlite", "tls-webpki-roots"], optional = true }
+bark = { package = "bark-wallet", path = "../../../bark-cdk/bark", default-features = false, features = ["bitcoind-rpc", "native", "sqlite", "tls-webpki-roots"], optional = true }
 bitcoin = { workspace = true, optional = true }
 cdk-common = { workspace = true, features = ["federation", "mint"], optional = true }
 cdk-frost-bark = { workspace = true, optional = true }

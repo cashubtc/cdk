@@ -53,6 +53,7 @@ mod dkg_driver;
 mod dkg_persistence;
 mod dkg_routes;
 pub(crate) mod frost_signing;
+mod mint_quote_schedule;
 mod node_runtime;
 mod operation_pipeline;
 mod operator_routes;

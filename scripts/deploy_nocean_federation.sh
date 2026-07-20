@@ -28,7 +28,7 @@ PROMETHEUS_PORT_START="${PROMETHEUS_PORT_START:-21985}"
 CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS:-20}"
 CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
 CONTROL_SCRIPT="$SCRIPT_DIR/nocean_federation_control.sh"
-BARK_REPO_ROOT="${BARK_REPO_ROOT:-$REPO_ROOT/crates/cdk-bark/../../../../../../git/bark}"
+BARK_REPO_ROOT="${BARK_REPO_ROOT:-$REPO_ROOT/../bark-cdk}"
 
 usage() {
     cat <<'EOF'
@@ -300,7 +300,7 @@ docker run --rm \
     --platform "$DOCKER_PLATFORM" \
     --env "RUSTUP_TOOLCHAIN=$RUST_VERSION" \
     --mount "type=bind,src=$REPO_ROOT,dst=/work" \
-    --mount "type=bind,src=$BARK_REPO_ROOT,dst=/git/bark,readonly" \
+    --mount "type=bind,src=$BARK_REPO_ROOT,dst=/bark-cdk,readonly" \
     --mount "type=volume,src=$CARGO_REGISTRY_VOLUME,dst=/usr/local/cargo/registry" \
     --workdir /work \
     "$RUST_IMAGE" \
