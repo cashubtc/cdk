@@ -62,7 +62,7 @@ cdk-mintd get-info \
 
 ### Configuration RPC
 
-After one explicit offline initialization, the database is authoritative:
+After one explicit direct initialization, the database is authoritative:
 
 ```bash
 cdk-mintd config validate --file mint.toml
@@ -71,13 +71,15 @@ cdk-mintd
 ```
 
 Normal mintd startup never reads TOML or applies operational environment
-overrides. A later full-document replacement must be requested explicitly:
+overrides. Configuration commands access the authoritative database directly
+by default. A later full-document replacement must be requested explicitly
+while mintd is stopped:
 
 ```bash
-# Validate through the management RPC without persisting
+# Validate against persisted configuration constraints without changing state
 cdk-mintd config apply --file changed.toml --validate-only
 
-# Stage through the management RPC; the active mint is unchanged until restart
+# Stage directly; the active configuration is unchanged until restart
 cdk-mintd config apply --file changed.toml
 
 # Inspect/export active state and inspect pending state
@@ -87,9 +89,16 @@ cdk-mintd config export --file backup.toml
 # Cancel the staged replacement before restart
 cdk-mintd config discard-pending
 
-# Stopped-daemon recovery when RPC is unavailable
-cdk-mintd config discard-pending --offline
+# Explicitly stage through a running daemon instead
+cdk-mintd config apply --file changed.toml --rpc https://mint.example:8086 \
+  --rpc-tls-dir /var/lib/cdk-mintd/tls
 ```
+
+`config apply`, `show`, `export`, and `discard-pending` use RPC only when an
+endpoint is supplied with `--rpc`. They never probe RPC and never fall back to
+direct database access. Direct access acquires an exclusive lock before opening
+the database and therefore requires mintd to be stopped; contention fails with
+guidance to stop mintd or use `--rpc <endpoint>`.
 
 Full-document applies are staged until a successful restart. There are no
 configuration revisions or expected-revision parameters in this iteration.
@@ -99,7 +108,9 @@ before issuing one of those updates.
 
 Database/work-directory/SQLCipher inputs and RPC connection options are
 bootstrap exceptions because they are required before stored configuration can
-be read or the management server can be contacted.
+be read or the management server can be contacted. The global `--rpc-address`
+option remains for field-specific management commands; configuration commands
+use their transport-selecting `--rpc <endpoint>` option.
 
 Configuration RPC payloads persist secret references only. Secret fields must
 use `env:VARIABLE` or `file:/absolute/path`; the resolved contents are never

@@ -243,7 +243,7 @@ impl ConfigRepository {
     /// Initializes the active configuration.
     ///
     /// This operation refuses to overwrite an existing active configuration.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "sqlite"))]
     pub(crate) async fn initialize(
         &self,
         toml: String,

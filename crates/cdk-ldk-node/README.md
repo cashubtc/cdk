@@ -69,8 +69,8 @@ webserver_port = 8091  # 0 = auto-assign port
 ```
 
 For an existing mint, change these fields in the complete configuration, run
-`cdk-mintd config apply --file mint.toml` through the management RPC (or add
-`--offline` while the daemon is stopped), and restart.
+`cdk-mintd config apply --file mint.toml` while the daemon is stopped, and
+restart. Add `--rpc <endpoint>` to stage through a running daemon.
 
 ## Basic Configuration
 
@@ -95,8 +95,8 @@ webserver_port = 8091
 LDK settings are part of the database-backed mint configuration; environment
 variables do not override them when the daemon starts. Use `env:VARIABLE` only
 for secret fields such as `ldk_node_mnemonic`, and use `config apply` plus a
-restart for later configuration changes (`--offline` is available while the
-daemon is stopped). See the
+restart for later configuration changes. Direct apply requires the daemon to be
+stopped; add `--rpc <endpoint>` for online apply. See the
 [`cdk-mintd` configuration guide](../cdk-mintd/README.md#configuration).
 
 **For detailed network configurations, Docker setup, production deployment, and troubleshooting, see [NETWORK_GUIDE.md](./NETWORK_GUIDE.md).**

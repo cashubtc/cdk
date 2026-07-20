@@ -14,7 +14,8 @@ use cdk_sql_common::{SQLMintDatabase, SQLWalletDatabase};
 use db::{pg_batch, pg_execute, pg_fetch_all, pg_fetch_one, pg_pluck};
 use native_tls::TlsConnector;
 use postgres_native_tls::MakeTlsConnector;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{watch, Mutex, Notify};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_postgres::{connect, Client, Error as PgError, NoTls};
 
@@ -208,6 +209,235 @@ impl From<&str> for PgConfig {
             connection_timeout: Duration::from_secs(DEFAULT_CONNECTION_TIMEOUT_SECS),
         }
     }
+}
+
+// This namespace participates in cross-version mutual exclusion. Changing it
+// would let daemons built from different CDK versions acquire different locks.
+const MINTD_ADVISORY_LOCK_NAMESPACE: &[u8] = b"cdk-mintd/database-access-lock/v1";
+const FNV_1A_64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV_1A_64_PRIME: u64 = 0x00000100000001b3;
+
+/// Errors returned while acquiring the mintd PostgreSQL advisory lock.
+#[derive(Debug, thiserror::Error)]
+pub enum PgAdvisoryLockError {
+    /// Another daemon or direct configuration command already holds the lock.
+    #[error("the mintd PostgreSQL advisory lock is already held")]
+    AlreadyHeld,
+
+    /// The configured search path does not resolve to a schema.
+    #[error("the PostgreSQL connection has no current schema for the mintd advisory lock")]
+    MissingSchema,
+
+    /// The dedicated lock connection timed out.
+    #[error("timed out after {timeout_seconds} seconds opening the mintd PostgreSQL lock session")]
+    ConnectionTimeout {
+        /// Configured connection timeout in seconds.
+        timeout_seconds: u64,
+    },
+
+    /// The lock connection closed while the lock was being acquired.
+    #[error("the mintd PostgreSQL lock session closed while acquiring the advisory lock")]
+    ConnectionLost,
+
+    /// PostgreSQL rejected the connection or advisory-lock operation.
+    #[error("PostgreSQL mintd advisory-lock operation failed: {source}")]
+    Postgres {
+        /// PostgreSQL driver error.
+        #[source]
+        source: PgError,
+    },
+}
+
+impl From<PgError> for PgAdvisoryLockError {
+    fn from(source: PgError) -> Self {
+        Self::Postgres { source }
+    }
+}
+
+/// Cloneable notification that the dedicated advisory-lock connection closed.
+///
+/// A daemon should treat this notification as terminal. Once the connection is
+/// lost, PostgreSQL has released the session-level advisory lock.
+#[derive(Debug, Clone)]
+pub struct PgAdvisoryLockLossSignal {
+    receiver: watch::Receiver<bool>,
+}
+
+impl PgAdvisoryLockLossSignal {
+    /// Returns whether the lock connection has already closed.
+    pub fn is_lost(&self) -> bool {
+        *self.receiver.borrow()
+    }
+
+    /// Waits until the lock connection closes or the lock guard is dropped.
+    pub async fn wait(mut self) {
+        if self.is_lost() {
+            return;
+        }
+
+        loop {
+            match self.receiver.changed().await {
+                Ok(()) if *self.receiver.borrow() => return,
+                Ok(()) => {}
+                Err(_) => return,
+            }
+        }
+    }
+}
+
+struct DedicatedLockSession {
+    client: Option<Client>,
+    connection_task: Option<JoinHandle<()>>,
+    loss_sender: watch::Sender<bool>,
+    loss_receiver: watch::Receiver<bool>,
+}
+
+impl DedicatedLockSession {
+    fn client(&self) -> Result<&Client, PgAdvisoryLockError> {
+        self.client
+            .as_ref()
+            .ok_or(PgAdvisoryLockError::ConnectionLost)
+    }
+
+    fn loss_signal(&self) -> PgAdvisoryLockLossSignal {
+        PgAdvisoryLockLossSignal {
+            receiver: self.loss_receiver.clone(),
+        }
+    }
+}
+
+impl Drop for DedicatedLockSession {
+    fn drop(&mut self) {
+        let _ = self.loss_sender.send(true);
+        drop(self.client.take());
+        if let Some(connection_task) = self.connection_task.take() {
+            connection_task.abort();
+        }
+    }
+}
+
+/// RAII guard for mintd's PostgreSQL advisory-session lock.
+///
+/// The guard owns one dedicated PostgreSQL connection. Dropping it closes that
+/// connection and releases the advisory lock. Use [`Self::loss_signal`] to stop
+/// the daemon if the connection closes unexpectedly while the guard is alive.
+pub struct PgAdvisoryLock {
+    session: DedicatedLockSession,
+}
+
+impl fmt::Debug for PgAdvisoryLock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PgAdvisoryLock")
+            .field("connection_lost", &self.session.loss_signal().is_lost())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PgAdvisoryLock {
+    /// Returns a cloneable signal for unexpected lock-connection loss.
+    pub fn loss_signal(&self) -> PgAdvisoryLockLossSignal {
+        self.session.loss_signal()
+    }
+
+    /// Acquires the database-and-schema-scoped mintd PostgreSQL advisory lock.
+    ///
+    /// The function opens one dedicated connection without creating or selecting a
+    /// configured schema first, so callers can acquire the lock before running
+    /// database migrations. A configured `schema=...` value identifies the scope;
+    /// otherwise PostgreSQL's current schema is used. The PostgreSQL endpoint must
+    /// preserve session affinity; transaction-pooled proxies are not supported.
+    pub async fn try_acquire(config: PgConfig) -> Result<Self, PgAdvisoryLockError> {
+        let configured_schema = config.schema.clone();
+        let session = open_dedicated_lock_session(config).await?;
+        let identity = session
+            .client()?
+            .query_one("SELECT current_database(), current_schema()", &[])
+            .await?;
+        let database: String = identity.try_get(0)?;
+        let current_schema: Option<String> = identity.try_get(1)?;
+        let schema = configured_schema
+            .or(current_schema)
+            .ok_or(PgAdvisoryLockError::MissingSchema)?;
+        let key = mintd_advisory_lock_key(&database, &schema);
+        let acquired: bool = session
+            .client()?
+            .query_one("SELECT pg_try_advisory_lock($1::bigint)", &[&key])
+            .await?
+            .try_get(0)?;
+
+        if !acquired {
+            return Err(PgAdvisoryLockError::AlreadyHeld);
+        }
+        if session.loss_signal().is_lost() {
+            return Err(PgAdvisoryLockError::ConnectionLost);
+        }
+
+        Ok(Self { session })
+    }
+}
+
+async fn open_dedicated_lock_session(
+    config: PgConfig,
+) -> Result<DedicatedLockSession, PgAdvisoryLockError> {
+    let PgConfig {
+        url,
+        tls,
+        connection_timeout,
+        ..
+    } = config;
+    let timeout_seconds = connection_timeout.as_secs();
+    let (loss_sender, loss_receiver) = watch::channel(false);
+
+    let (client, connection_task) = match tls {
+        SslMode::NoTls(tls) => {
+            let (client, connection) = timeout(connection_timeout, connect(&url, tls))
+                .await
+                .map_err(|_| PgAdvisoryLockError::ConnectionTimeout { timeout_seconds })??;
+            let loss_sender = loss_sender.clone();
+            let connection_task = tokio::spawn(async move {
+                if let Err(error) = connection.await {
+                    tracing::warn!("Mintd PostgreSQL advisory-lock connection closed: {error}");
+                }
+                let _ = loss_sender.send(true);
+            });
+            (client, connection_task)
+        }
+        SslMode::NativeTls(tls) => {
+            let (client, connection) = timeout(connection_timeout, connect(&url, tls))
+                .await
+                .map_err(|_| PgAdvisoryLockError::ConnectionTimeout { timeout_seconds })??;
+            let loss_sender = loss_sender.clone();
+            let connection_task = tokio::spawn(async move {
+                if let Err(error) = connection.await {
+                    tracing::warn!("Mintd PostgreSQL advisory-lock connection closed: {error}");
+                }
+                let _ = loss_sender.send(true);
+            });
+            (client, connection_task)
+        }
+    };
+
+    Ok(DedicatedLockSession {
+        client: Some(client),
+        connection_task: Some(connection_task),
+        loss_sender,
+        loss_receiver,
+    })
+}
+
+fn mintd_advisory_lock_key(database: &str, schema: &str) -> i64 {
+    let mut hash = FNV_1A_64_OFFSET_BASIS;
+    for byte in MINTD_ADVISORY_LOCK_NAMESPACE
+        .iter()
+        .chain([0].iter())
+        .chain(database.as_bytes())
+        .chain([0].iter())
+        .chain(schema.as_bytes())
+    {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_1A_64_PRIME);
+    }
+    hash as i64
 }
 
 impl DatabasePool for PgConnectionPool {
@@ -460,6 +690,127 @@ mod test {
             stale.load(std::sync::atomic::Ordering::SeqCst),
             "failed initial connect should mark the pooled connection stale"
         );
+    }
+
+    #[test]
+    fn mintd_advisory_lock_key_is_stable_and_scoped() {
+        let key = mintd_advisory_lock_key("cdk_mint", "public");
+
+        assert_eq!(key, 5_922_106_403_771_514_837);
+        assert_eq!(key, mintd_advisory_lock_key("cdk_mint", "public"));
+        assert_ne!(key, mintd_advisory_lock_key("other_mint", "public"));
+        assert_ne!(key, mintd_advisory_lock_key("cdk_mint", "tenant"));
+    }
+
+    #[tokio::test]
+    async fn advisory_lock_loss_signal_is_cloneable_and_wakes() {
+        let (sender, receiver) = watch::channel(false);
+        let signal = PgAdvisoryLockLossSignal { receiver };
+        let cloned = signal.clone();
+
+        assert!(!signal.is_lost());
+        sender
+            .send(true)
+            .expect("loss signal receiver should still be alive");
+        cloned.wait().await;
+        assert!(signal.is_lost());
+    }
+
+    #[tokio::test]
+    async fn advisory_lock_unavailable_server_is_not_reported_as_contention() {
+        let config = PgConfig::new(
+            "host=127.0.0.1 port=1 user=cdk dbname=cdk connect_timeout=1",
+            None,
+            Some(1),
+            Some(1),
+        );
+
+        let error = PgAdvisoryLock::try_acquire(config)
+            .await
+            .expect_err("an unavailable PostgreSQL server must fail");
+
+        assert!(!matches!(error, PgAdvisoryLockError::AlreadyHeld));
+    }
+
+    fn live_advisory_lock_config(test_name: &str) -> PgConfig {
+        let url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .expect("set CDK_MINTD_DATABASE_URL or PG_DB_URL for ignored PostgreSQL lock tests");
+        let schema = format!("cdk_mintd_lock_{test_name}_{}", std::process::id());
+        PgConfig::new(
+            format!("{url} schema={schema}").as_str(),
+            None,
+            Some(2),
+            Some(10),
+        )
+    }
+
+    async fn acquire_live_lock_eventually(config: PgConfig) -> PgAdvisoryLock {
+        for _ in 0..50 {
+            match PgAdvisoryLock::try_acquire(config.clone()).await {
+                Ok(lock) => return lock,
+                Err(PgAdvisoryLockError::AlreadyHeld) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("unexpected advisory-lock error: {error}"),
+            }
+        }
+        panic!("advisory lock was not released within one second");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live PostgreSQL server"]
+    async fn advisory_lock_contends_and_releases_for_same_database_and_schema() {
+        let config = live_advisory_lock_config("contention");
+        let first = PgAdvisoryLock::try_acquire(config.clone())
+            .await
+            .expect("first advisory lock should succeed");
+
+        let error = PgAdvisoryLock::try_acquire(config.clone())
+            .await
+            .expect_err("second advisory lock should contend");
+        assert!(matches!(error, PgAdvisoryLockError::AlreadyHeld));
+
+        drop(first);
+        acquire_live_lock_eventually(config).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a live PostgreSQL server with pg_terminate_backend permission"]
+    async fn advisory_lock_reports_backend_termination_and_can_be_reacquired() {
+        let config = live_advisory_lock_config("termination");
+        let lock = PgAdvisoryLock::try_acquire(config.clone())
+            .await
+            .expect("advisory lock should succeed");
+        let backend_pid: i32 = lock
+            .session
+            .client()
+            .expect("lock client should exist")
+            .query_one("SELECT pg_backend_pid()", &[])
+            .await
+            .expect("read lock backend PID")
+            .try_get(0)
+            .expect("decode lock backend PID");
+        let loss_signal = lock.loss_signal();
+
+        let killer = open_dedicated_lock_session(config.clone())
+            .await
+            .expect("open termination session");
+        let terminated: bool = killer
+            .client()
+            .expect("termination client should exist")
+            .query_one("SELECT pg_terminate_backend($1)", &[&backend_pid])
+            .await
+            .expect("terminate advisory-lock backend")
+            .try_get(0)
+            .expect("decode termination result");
+        assert!(terminated);
+        timeout(Duration::from_secs(5), loss_signal.wait())
+            .await
+            .expect("lock-loss signal should fire after backend termination");
+
+        drop(lock);
+        acquire_live_lock_eventually(config).await;
     }
 
     #[test]

@@ -58,8 +58,8 @@ configuration.
 
 Environment variables no longer override the LNbits backend, API URL, or fee
 settings at daemon startup. To change them later, edit the complete file, run
-`cdk-mintd config apply --file mint.toml` through the management RPC (or add
-`--offline` while the daemon is stopped), and restart. See the
+`cdk-mintd config apply --file mint.toml` while the daemon is stopped, and
+restart. Add `--rpc <endpoint>` to stage through a running daemon. See the
 [`cdk-mintd` configuration guide](../cdk-mintd/README.md#configuration).
 
 ### Getting API Keys

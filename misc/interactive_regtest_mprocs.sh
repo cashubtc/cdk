@@ -328,7 +328,7 @@ echo "Working directory: \$CDK_MINTD_WORK_DIR"
 echo "Database type: \$CDK_MINTD_DATABASE"
 echo "---"
 
-if ! cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config show --offline >/dev/null 2>&1; then
+if ! cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config show >/dev/null 2>&1; then
     cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --file "\$CDK_MINTD_WORK_DIR/config.toml"
 fi
 
@@ -352,7 +352,7 @@ echo "Working directory: \$CDK_MINTD_WORK_DIR"
 echo "Database type: \$CDK_MINTD_DATABASE"
 echo "---"
 
-if ! cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config show --offline >/dev/null 2>&1; then
+if ! cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config show >/dev/null 2>&1; then
     cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --file "\$CDK_MINTD_WORK_DIR/config.toml"
 fi
 
@@ -379,7 +379,7 @@ echo "Storage directory: $CDK_ITESTS_DIR/ldk_mint"
 echo "Database type: \$CDK_MINTD_DATABASE"
 echo "---"
 
-if ! cargo run --bin cdk-mintd --features ldk-node -- --work-dir "\$CDK_MINTD_WORK_DIR" config show --offline >/dev/null 2>&1; then
+if ! cargo run --bin cdk-mintd --features ldk-node -- --work-dir "\$CDK_MINTD_WORK_DIR" config show >/dev/null 2>&1; then
     cargo run --bin cdk-mintd --features ldk-node -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --file "\$CDK_MINTD_WORK_DIR/config.toml"
 fi
 
