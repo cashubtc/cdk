@@ -2,6 +2,11 @@
 
 tonic::include_proto!("cdk_mint_management_v1");
 
+/// Keyset administration service
+pub mod keyset {
+    tonic::include_proto!("cdk_mint_keyset_v1");
+}
+
 mod server;
 
 /// Protocol version for gRPC Mint RPC communication

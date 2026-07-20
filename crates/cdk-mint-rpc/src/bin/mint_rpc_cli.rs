@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, Result};
 use cdk_common::grpc::{VersionInterceptor, VERSION_HEADER};
 use cdk_mint_rpc::cdk_mint_client::CdkMintClient;
+use cdk_mint_rpc::keyset::keyset_service_client::KeysetServiceClient;
 use cdk_mint_rpc::mint_rpc_cli::subcommands;
 use cdk_mint_rpc::GetInfoRequest;
 use clap::{Parser, Subcommand};
@@ -153,10 +154,10 @@ async fn main() -> Result<()> {
             .await?
     };
 
-    // Create client with version header interceptor
+    // Shared version header interceptor
     let interceptor =
         VersionInterceptor::new(VERSION_HEADER, cdk_common::MINT_RPC_PROTOCOL_VERSION);
-    let mut client = CdkMintClient::with_interceptor(channel, interceptor);
+    let mut client = CdkMintClient::with_interceptor(channel.clone(), interceptor.clone());
 
     match cli.command {
         Commands::GetInfo => {
@@ -238,7 +239,8 @@ async fn main() -> Result<()> {
             subcommands::update_nut04_quote_state(&mut client, &sub_command_args).await?;
         }
         Commands::RotateNextKeyset(sub_command_args) => {
-            subcommands::rotate_next_keyset(&mut client, &sub_command_args).await?;
+            let mut keyset_client = KeysetServiceClient::with_interceptor(channel, interceptor);
+            subcommands::rotate_next_keyset(&mut keyset_client, &sub_command_args).await?;
         }
     }
 
