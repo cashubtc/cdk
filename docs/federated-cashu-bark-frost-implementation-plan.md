@@ -3360,6 +3360,17 @@ Progress checkpoint:
   members from observing the receive. Bark status polling now returns status
   metadata only; exact evidence always comes from the original prepare
   endpoint. No Ark protobuf, capability, database, or server change is needed;
+- diagnosed the next paid Nocean retry from exact member-local errors: the
+  original idempotent prepare endpoint returned the HTLC VTXOs created by the
+  first caller, but later replicas compared their original absolute expiry to
+  a newly calculated `current_tip + receive_delta` and rejected valid evidence.
+  Repeated failed hydration then reached the public Ark's rate limit. Bark now
+  keeps strict requested-expiry validation for the initial `Accepted` prepare,
+  while the explicit `HtlcsReady` hydration path accepts the first caller's
+  exact VTXOs only while their expiry remains in the future. Hydrated evidence
+  is persisted before return, so successful replicas stop calling prepare. The
+  fix uses the original status and prepare RPCs and requires no public Ark
+  server or protocol change;
 - retained consensus-frontier lease rotation for both outgoing payment workers
   and the incoming first-prepare worker. Every replica validates the full
   evidence returned by the ready-state prepare call before submitting its

@@ -2281,7 +2281,14 @@ impl FederatedBarkRuntime {
             .wallet
             .poll_lightning_receive(&receive)
             .await
-            .map_err(|_| Error::ReceiveObservationFailed)?;
+            .map_err(|error| {
+                tracing::warn!(
+                    action_id = %intent.action_id,
+                    error = %error,
+                    "Federated Bark receive status poll failed"
+                );
+                Error::ReceiveObservationFailed
+            })?;
         let evidence = match observation.status {
             FederationLightningReceiveStatus::AwaitingPayment
             | FederationLightningReceiveStatus::Canceled => return Ok(None),
@@ -2292,16 +2299,30 @@ impl FederatedBarkRuntime {
                 .wallet
                 .prepare_lightning_receive_htlcs(&receive)
                 .await
-                .map_err(|_| Error::ReceiveObservationFailed)?,
+                .map_err(|error| {
+                    tracing::warn!(
+                        action_id = %intent.action_id,
+                        error = %error,
+                        "Federated Bark accepted receive preparation failed"
+                    );
+                    Error::ReceiveObservationFailed
+                })?,
             FederationLightningReceiveStatus::Accepted => return Ok(None),
             // The original Ark status response contains VTXO IDs, not full
             // VTXOs. Once ready, this endpoint is idempotent and returns the
             // same complete evidence to every federation member.
             FederationLightningReceiveStatus::HtlcsReady => self
                 .wallet
-                .prepare_lightning_receive_htlcs(&receive)
+                .hydrate_lightning_receive_htlcs(&receive)
                 .await
-                .map_err(|_| Error::ReceiveObservationFailed)?,
+                .map_err(|error| {
+                    tracing::warn!(
+                        action_id = %intent.action_id,
+                        error = %error,
+                        "Federated Bark ready receive hydration failed"
+                    );
+                    Error::ReceiveObservationFailed
+                })?,
         };
         let result_hash = receive_htlc_evidence_hash(&evidence)?;
         let member_observation = FederationBarkMemberObservation {
