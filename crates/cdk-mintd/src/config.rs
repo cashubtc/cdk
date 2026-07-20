@@ -1441,6 +1441,7 @@ addr = "processor.internal"
         );
     }
 
+    #[cfg(feature = "management-rpc")]
     #[test]
     fn managed_toml_accepts_the_example_document() {
         Settings::try_from_toml(include_str!("../example.config.toml"))

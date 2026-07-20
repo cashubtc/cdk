@@ -53,7 +53,7 @@ pub struct CLIArgs {
     #[arg(
         long,
         global = true,
-        help = "Address of the mint management RPC server (defaults to local HTTP or HTTPS based on TLS credentials)"
+        help = "Address of the mint management RPC server for non-config management commands (defaults to local HTTP or HTTPS based on TLS credentials)"
     )]
     pub rpc_address: Option<String>,
     #[arg(
@@ -138,14 +138,14 @@ pub enum ConfigCommands {
     Init(ConfigFileArgs),
     /// Validate a configuration file without changing persisted configuration.
     Validate(ConfigFileArgs),
-    /// Apply a configuration file through the management interface.
+    /// Apply a configuration file directly, or through an explicitly selected RPC endpoint.
     Apply(ApplyConfigArgs),
     /// Show the effective persisted configuration.
-    Show(ConfigAccessArgs),
+    Show(ConfigTransportArgs),
     /// Export the effective persisted configuration to a file.
     Export(ExportConfigArgs),
     /// Discard a staged configuration that has not yet been activated.
-    DiscardPending(ConfigAccessArgs),
+    DiscardPending(ConfigTransportArgs),
 }
 
 /// Arguments for a command that reads a configuration file.
@@ -165,9 +165,8 @@ pub struct ApplyConfigArgs {
     /// Validate the configuration without persisting it.
     #[arg(long)]
     pub validate_only: bool,
-    /// Access the database directly while mintd is stopped instead of using RPC.
-    #[arg(long)]
-    pub offline: bool,
+    #[command(flatten)]
+    pub transport: ConfigTransportArgs,
 }
 
 /// Arguments for exporting persisted configuration.
@@ -176,17 +175,16 @@ pub struct ExportConfigArgs {
     /// File to write the exported configuration to.
     #[arg(long)]
     pub file: PathBuf,
-    /// Access the database directly while mintd is stopped instead of using RPC.
-    #[arg(long)]
-    pub offline: bool,
+    #[command(flatten)]
+    pub transport: ConfigTransportArgs,
 }
 
-/// Arguments selecting online RPC or stopped-daemon database access.
+/// Optional RPC transport for a configuration command.
 #[derive(Debug, Args)]
-pub struct ConfigAccessArgs {
-    /// Access the database directly while mintd is stopped instead of using RPC.
-    #[arg(long)]
-    pub offline: bool,
+pub struct ConfigTransportArgs {
+    /// Use the running daemon at this management RPC endpoint instead of accessing the database directly.
+    #[arg(long, value_name = "ENDPOINT")]
+    pub rpc: Option<String>,
 }
 
 #[cfg(test)]
@@ -248,8 +246,14 @@ mod tests {
     #[cfg(feature = "sqlcipher")]
     #[test]
     fn sqlcipher_password_is_not_a_parse_time_requirement() {
-        let online = CLIArgs::try_parse_from(["cdk-mintd", "config", "show"])
-            .expect("online management must parse without a database password");
+        let online = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "show",
+            "--rpc",
+            "http://127.0.0.1:8086",
+        ])
+        .expect("online management must parse without a database password");
         assert!(online.password.is_none());
 
         let validate = CLIArgs::try_parse_from([
@@ -262,16 +266,10 @@ mod tests {
         .expect("local validation must parse without a database password");
         assert!(validate.password.is_none());
 
-        let offline = CLIArgs::try_parse_from([
-            "cdk-mintd",
-            "config",
-            "show",
-            "--offline",
-            "--password",
-            "secret",
-        ])
-        .expect("offline database password should be accepted after the subcommand");
-        assert_eq!(offline.password.as_deref(), Some("secret"));
+        let direct =
+            CLIArgs::try_parse_from(["cdk-mintd", "config", "show", "--password", "secret"])
+                .expect("direct database password should be accepted after the subcommand");
+        assert_eq!(direct.password.as_deref(), Some("secret"));
     }
 
     #[test]
@@ -290,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_config_apply_validate_only_with_global_rpc_args() {
+    fn parses_config_apply_validate_only_with_explicit_rpc_transport() {
         let args = CLIArgs::try_parse_from([
             "cdk-mintd",
             "config",
@@ -298,14 +296,14 @@ mod tests {
             "--file",
             "/tmp/config.toml",
             "--validate-only",
-            "--rpc-address",
+            "--rpc",
             "http://localhost:8086",
             "--rpc-tls-dir",
             "/tmp/tls",
         ])
         .expect("arguments should parse");
 
-        assert_eq!(args.rpc_address, Some("http://localhost:8086".to_string()));
+        assert!(args.rpc_address.is_none());
         assert_eq!(args.rpc_tls_dir, Some(PathBuf::from("/tmp/tls")));
         let Some(Commands::Config(config)) = args.command else {
             panic!("expected config command");
@@ -315,6 +313,48 @@ mod tests {
         };
         assert_eq!(apply.file, PathBuf::from("/tmp/config.toml"));
         assert!(apply.validate_only);
+        assert_eq!(
+            apply.transport.rpc.as_deref(),
+            Some("http://localhost:8086")
+        );
+    }
+
+    #[test]
+    fn config_commands_default_to_direct_database_transport() {
+        let apply =
+            CLIArgs::try_parse_from(["cdk-mintd", "config", "apply", "--file", "/tmp/config.toml"])
+                .expect("direct apply should parse");
+        let Some(Commands::Config(config)) = apply.command else {
+            panic!("expected config command");
+        };
+        let ConfigCommands::Apply(apply) = config.command else {
+            panic!("expected config apply command");
+        };
+        assert!(apply.transport.rpc.is_none());
+
+        let show = CLIArgs::try_parse_from(["cdk-mintd", "config", "show"])
+            .expect("direct show should parse");
+        let Some(Commands::Config(config)) = show.command else {
+            panic!("expected config command");
+        };
+        let ConfigCommands::Show(transport) = config.command else {
+            panic!("expected config show command");
+        };
+        assert!(transport.rpc.is_none());
+    }
+
+    #[test]
+    fn removed_offline_transport_flag_is_rejected() {
+        let result = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "apply",
+            "--file",
+            "/tmp/config.toml",
+            "--offline",
+        ]);
+
+        assert!(result.is_err());
     }
 
     #[test]

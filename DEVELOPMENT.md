@@ -127,8 +127,8 @@ cargo run --bin cdk-mintd -- config init --file crates/cdk-mintd/example.config.
 cargo run --bin cdk-mintd
 ```
 
-On later edits, use `config apply --file ...` through the management RPC, or
-`config apply --offline --file ...` while the daemon is stopped, then restart.
+On later edits, stop the daemon and use `config apply --file ...`, then restart.
+To stage through a running daemon instead, explicitly add `--rpc <endpoint>`.
 See the
 [`cdk-mintd` configuration guide](crates/cdk-mintd/README.md#configuration) for
 the full workflow.

@@ -98,9 +98,10 @@ startup.
    cdk-mintd config init --file ~/.cdk-mintd/config.toml
    ```
 
-   Initialization is an offline operation and refuses to replace an already
-   initialized configuration. It stages the first import for authoritative
-   activation: the first successful `cdk-mintd` start atomically promotes it
+   Initialization accesses the database directly and refuses to replace an
+   already initialized configuration. It stages the first import for
+   authoritative activation: the first successful `cdk-mintd` start atomically
+   promotes it
    together with canonical mint metadata and quote TTL. This prevents metadata
    left by an older deployment from overriding the imported document.
 
@@ -121,10 +122,11 @@ cdk-mintd config validate --file /path/to/config.toml
 # Initialize the bootstrap-selected configuration database directly
 cdk-mintd config init --file /path/to/config.toml
 
-# Validate through the running mint without persisting
+# Validate against the stored configuration constraints without persisting;
+# direct database access is the default
 cdk-mintd config apply --file /path/to/config.toml --validate-only
 
-# Explicitly stage a complete replacement through management RPC
+# Stage a complete replacement directly while mintd is stopped
 cdk-mintd config apply --file /path/to/config.toml
 
 # Inspect active configuration and any staged replacement
@@ -136,24 +138,25 @@ cdk-mintd config export --file /path/to/exported-config.toml
 # Discard a staged replacement before restarting
 cdk-mintd config discard-pending
 
-# If mintd cannot start or RPC is unavailable, access the database while the
-# daemon is stopped (also supported by apply/show/export)
-cdk-mintd config discard-pending --offline
-```
-
-`config apply`, `show`, `export`, and `discard-pending` connect to the
-management RPC endpoint. Use `--rpc-address` and, for mutual TLS,
-`--rpc-tls-dir` to select it:
-
-```bash
-cdk-mintd config show \
-  --rpc-address https://127.0.0.1:8086 \
+# Explicitly use the running daemon instead of direct database access
+cdk-mintd config apply --file /path/to/config.toml \
+  --rpc https://127.0.0.1:8086 \
   --rpc-tls-dir /var/lib/cdk-mintd/tls
 ```
 
-Those four commands also accept `--offline` for stopped-daemon initialization
-or recovery. Offline mutation must not be used while another mintd process is
-running against the same database.
+`config apply`, `show`, `export`, and `discard-pending` access the authoritative
+database directly by default; they never probe RPC or fall back between
+transports. Every direct database command acquires exclusive access before it
+opens or migrates the database, so mintd must be stopped. If mintd owns the
+lock, the command fails with `mintd is running; stop it or use --rpc
+<endpoint>`. To operate through a running daemon, explicitly select its endpoint
+with `--rpc` and, for mutual TLS, `--rpc-tls-dir`:
+
+```bash
+cdk-mintd config show \
+  --rpc https://127.0.0.1:8086 \
+  --rpc-tls-dir /var/lib/cdk-mintd/tls
+```
 
 Every full-file apply is restart-bound in this iteration. The running mint
 continues with its active configuration while the submitted document is stored
@@ -167,8 +170,20 @@ rejected so a later promotion cannot silently overwrite a newer field update.
 
 There is deliberately no configuration revision, `expected-revision`, or
 `--force` workflow in this iteration. Configuration mutations are serialized by
-the running mint, and startup internally verifies that the pending document has
-not been replaced before promoting it.
+the running mint for RPC requests or by exclusive stopped-daemon access for
+direct requests. Startup internally verifies that the pending document has not
+been replaced before promoting it.
+
+SQLite and SQLCipher use an OS-released lock file in the work directory.
+PostgreSQL uses a database-and-schema-scoped advisory session lock, so separate
+hosts cannot mutate the same mint concurrently. PostgreSQL deployments must use
+a direct connection or a session-affine pool for mintd; transaction-pooled
+proxies cannot preserve the advisory lock. If that dedicated lock session is
+lost unexpectedly, mintd exits immediately without unwinding instead of
+gracefully draining while it no longer owns the lock. This is intentional
+fail-stop behavior; PostgreSQL closes or rolls back the process's in-flight
+sessions. These locks coordinate access only; the active and pending records in
+the mint database remain the configuration source of truth.
 
 ### Bootstrap Settings
 
@@ -182,9 +197,17 @@ bootstrap settings, not competing operational configuration:
   `CDK_MINTD_DATABASE_URL`), and related PostgreSQL bootstrap variables.
 - SQLCipher password when an invocation opens the local encrypted database.
   When their bootstrap database is SQLite, daemon startup, `config init`, and
-  `config ... --offline` therefore require `--password <password>`; online RPC
-  commands, `config validate`, and PostgreSQL-backed invocations do not.
-- Management client connection: `--rpc-address` and `--rpc-tls-dir`.
+  direct `config apply/show/export/discard-pending` therefore require
+  `--password <password>`; RPC config commands, `config validate`, and
+  PostgreSQL-backed invocations do not.
+- Management client connection: `--rpc-address` for field-specific management
+  commands, or the config command's explicit `--rpc`; both use
+  `--rpc-tls-dir` for client certificates.
+
+`config validate` only parses and validates the supplied document and therefore
+does not open or lock the database. `config apply --validate-only` also checks
+constraints against persisted state, so it follows the selected direct or RPC
+transport and the same concurrency rules as a real apply.
 
 `config init` opens the database selected by the same bootstrap settings as
 normal startup and rejects an import document whose primary database settings
@@ -239,10 +262,15 @@ replace configuration, edit a file and run the explicit apply command:
 
 ```bash
 cdk-mintd config validate --file /path/to/changed-config.toml
+# Stop mintd before this direct database access.
 cdk-mintd config apply --file /path/to/changed-config.toml
 # Review active and pending state, then restart mintd.
 cdk-mintd config show
 ```
+
+To stage through a running local or remote daemon instead, add
+`--rpc <endpoint>` to the apply command. Choosing one transport never causes an
+automatic fallback to the other.
 
 Exported documents include only operator-managed NUT-04 and NUT-05 method
 policy. Other advertised NUT capabilities are derived by mintd. An apply is
@@ -502,9 +530,14 @@ cdk-mintd
 # Initialize once from a TOML import document
 cdk-mintd config init --file /path/to/config.toml
 
-# Validate or explicitly stage a changed document
+# Validate or explicitly stage a changed document directly while stopped
 cdk-mintd config validate --file /path/to/config.toml
 cdk-mintd config apply --file /path/to/config.toml
+
+# Or explicitly stage through a running daemon
+cdk-mintd config apply --file /path/to/config.toml \
+  --rpc https://127.0.0.1:8086 \
+  --rpc-tls-dir /path/to/tls
 
 # Select the bootstrap working directory
 cdk-mintd --work-dir /path/to/work/dir

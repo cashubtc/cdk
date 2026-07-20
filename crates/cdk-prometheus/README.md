@@ -35,9 +35,9 @@ cdk-mintd --work-dir ~/.cdk-mintd config init --file mint.toml
 cdk-mintd --work-dir ~/.cdk-mintd
 ```
 
-Later configuration-file edits require an explicit `config apply` through the
-management RPC (or `config apply --offline` while stopped) and a restart; normal
-startup does not reload the file.
+Later configuration-file edits require stopping mintd, running an explicit
+`config apply`, and restarting; normal startup does not reload the file. Add
+`--rpc <endpoint>` to stage through a running daemon instead.
 
 Check Prometheus and Grafana:
 

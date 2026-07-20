@@ -54,8 +54,8 @@ cdk-mintd config init --file mint.toml
 cdk-mintd
 ```
 
-For later edits, run `cdk-mintd config apply --file mint.toml` through the
-management RPC, or add `--offline` while the daemon is stopped, then restart.
+For later edits, stop the daemon, run `cdk-mintd config apply --file mint.toml`,
+then restart. Add `--rpc <endpoint>` to stage through a running daemon instead.
 
 ### Resources
 - **Explorer/Faucet**: <https://mutinynet.com>
@@ -128,8 +128,8 @@ cdk-mintd config apply --file mint.toml
 # Restart cdk-mintd to activate the staged configuration.
 ```
 
-If the management RPC is disabled, stop the daemon and add `--offline` to the
-apply command.
+Direct database apply is the default and does not require management RPC. It
+requires the daemon to be stopped; add `--rpc <endpoint>` only for online apply.
 
 ## Regtest (Development)
 
@@ -181,8 +181,8 @@ Set logging in the imported configuration:
 console_level = "debug"
 ```
 
-Apply the complete document through the management RPC, or with `--offline`
-while the daemon is stopped, and restart for the change to take effect.
+Apply the complete document while the daemon is stopped, and restart for the
+change to take effect. Add `--rpc <endpoint>` to stage it online instead.
 
 ### Performance Tips
 - Use RGS for faster gossip sync

@@ -195,7 +195,7 @@ impl ConfigurationService {
         *self.canonical_source.write().await = Some(CanonicalSource::Live(mint));
     }
 
-    /// Attaches an offline canonical snapshot for complete show/export output.
+    /// Attaches a direct-access canonical snapshot for complete show/export output.
     pub(crate) async fn attach_canonical_snapshot(
         &self,
         mint_info: Option<cdk::nuts::MintInfo>,
@@ -227,7 +227,7 @@ impl ConfigurationService {
     }
 
     /// Initializes database-backed configuration for service-level tests.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "sqlite", feature = "fakewallet"))]
     async fn initialize(
         &self,
         document: &str,
@@ -303,10 +303,8 @@ impl ConfigurationService {
     /// pending until the caller successfully constructs the mint and promotes it.
     pub(crate) async fn startup_candidate(
         &self,
-    ) -> Result<
-        (ResolvedConfiguration, Option<String>, SigningIdentity),
-        ConfigurationServiceError,
-    > {
+    ) -> Result<(ResolvedConfiguration, Option<String>, SigningIdentity), ConfigurationServiceError>
+    {
         let _operation = self.operation_lock.lock().await;
         let pending = self.repository.pending().await?;
         let (document, pending_document) = match pending {
@@ -375,7 +373,7 @@ impl ConfigurationService {
         Ok(())
     }
 
-    /// Returns the durable canonical rollback point for offline active-config
+    /// Returns the durable canonical rollback point for direct active-config
     /// inspection after an interrupted pending startup.
     pub(crate) async fn canonical_backup(
         &self,

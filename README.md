@@ -36,13 +36,14 @@ cdk-mintd
 
 Normal startup does not reread TOML or apply operational environment
 overrides. Use `cdk-mintd config apply --file mint.toml` to explicitly stage a
-replacement through management RPC; it becomes active after a successful
-restart. The same binary provides `config show`, `config export`,
+replacement directly while mintd is stopped; it becomes active after a
+successful restart. Add `--rpc <endpoint>` to apply through a running daemon.
+The same binary provides `config show`, `config export`,
 `config discard-pending`, and field-specific management commands such as
 `get-info` and `update-motd`.
 
 If a staged configuration prevents startup, the same configuration commands
-support stopped-daemon database recovery with `--offline`.
+access the database directly after the daemon is stopped.
 
 Work-directory, primary-database, SQLCipher, and RPC connection values remain
 bootstrap inputs. Persisted secret fields use `env:VARIABLE` or
