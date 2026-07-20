@@ -1,0 +1,1645 @@
+# Federated CDK Bark-FROST BOLT11 backend implementation plan
+
+Date: 2026-07-19
+
+Status: architecture and implementation plan; no production Bark integration exists yet
+
+Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
+
+Related documents:
+
+- `docs/federated-cashu-implementation-plan.md`
+- `docs/federated-cashu-bdk-frost-implementation-plan.md`
+- `bark:cdk-implementation-plan.md`
+
+## Repository path notation
+
+This document deliberately avoids machine-specific absolute paths.
+
+- `cdk:<path>` means a path in the CDK repository.
+- `bark:<path>` means a path in the Bark repository on the reviewed `frost-wallet` branch.
+
+## Executive outcome
+
+The integration is feasible, and the existing Bark branch has already completed the most invasive Bark-wide refactor: money-moving code now uses the signer-neutral `VtxoCustody` boundary instead of assuming a local seed-backed keypair. Its standard FROST, virtual MuSig2, and threshold-DH cryptographic tests pass for the reviewed branch.
+
+It is not yet safe to connect that prototype directly to a CDK federation. The remaining blockers are architectural rather than cosmetic:
+
+1. Bark participant nonces, completed shares, burned sessions, and coordinator MuSig state are process-local.
+2. Bark has no complete bounded canonical wire contract for a remote participant transport.
+3. Bark authorizes custody requests with an opaque byte vector and internally creates random session IDs that cannot be reconstructed from an accepted CDK operation.
+4. Bark allocates VTXO indexes from a member-local database and mutates local locks and movements before federation consensus.
+5. Incoming invoice creation creates the preimage, contacts the Ark server, and only then persists the action checkpoint. Loss of that member can make a paid invoice unclaimable.
+6. Bark action checkpoints provide useful local crash recovery, but raw Bark SQLite state is neither deterministic consensus state nor safely replicable state.
+7. Bark's current application derivation is not the same contract as CDK's registered `cdk-frost` application derivation. Exporting the CDK root share into Bark would violate the existing non-exporting root boundary.
+8. Bark deducts a receive fee from the invoice amount before creating HTLC VTXOs. Issuing the nominal Cashu quote amount without accounting for that deduction would undercollateralize the mint.
+
+The recommended design is therefore:
+
+- add a new `cdk-bark` crate that owns all Bark-specific planning, validation, projection, execution, and `MintPayment` adaptation;
+- keep the ordinary Cashu quote, mint, melt, swap, and saga logic unchanged;
+- add one feature-gated, nested Bark operation family to the federation journal instead of a generic opaque plugin framework or many top-level CDK operation variants;
+- add a small Bark-specific incoming BOLT11 route seam and a small Bark driver seam in the existing federation payment probes;
+- implement Bark's `VtxoCustody` in `cdk-bark` using the existing CDK root share and an extended `cdk-frost` durable protocol ledger;
+- use Bark's wallet and action state machines as a member-local execution engine after an exact plan has been accepted;
+- treat the CDK journal and its deterministic Bark projection as authority, and treat each member's Bark SQLite database as a rebuildable execution cache;
+- require a fresh Bark application registration and fresh Bark wallet database for the first release; and
+- add only new forward migrations. Previously shipped standalone and federation migrations must never be edited.
+
+This is intentionally similar to the federated BDK integration in authority and recovery semantics, but it does not force Ark's VTXO model into the on-chain UTXO/PSBT model.
+
+## Integration constraints
+
+These constraints are release requirements, not implementation preferences.
+
+### Preserve Cashu behavior
+
+- Public NUT-04 and NUT-05 BOLT11 request and response shapes remain unchanged.
+- Standalone CLN, LND, LNbits, LDK Node, fake-wallet, and gRPC processor behavior remains unchanged.
+- Existing `MintPayment` implementations remain unchanged unless a small additive trait clarification is unavoidable.
+- Existing mint, melt, swap, proof-state, and saga rules remain the business authority.
+- Federation-specific failures must not introduce new states or semantics for standalone mints.
+
+### Preserve federation invariants
+
+- Consensus accepts an exact payment plan before any threshold signature, preimage disclosure, VTXO reservation with external consequences, or Ark server payment side effect.
+- No Ark server call, chain call, clock read, random selection, or local database observation occurs during deterministic apply.
+- Actor failover changes the executor, not the accepted invoice, payment hash, VTXOs, derivation indexes, fees, Ark server, signer attempt, or recovery path.
+- Backend observations are evidence. They become CDK payment authority only through accepted federation operations and the configured observation policy.
+- Restart, replay, catch-up, checkpoint restore, and local Bark projection rebuild converge to the same public state.
+
+### Preserve the root-share boundary
+
+- The canonical `cdk-frost` root share remains sealed and non-exporting.
+- No code path reconstructs the federation root secret or imports its plaintext share into `frost_federation_core::ParticipantPackage`.
+- Bark is a separately registered application under the reusable root, with an independent application ID, key epoch, derivation version, authorization policy, and transcript domains.
+- Ordinary BDK signing, Bark FROST signing, Bark virtual MuSig2, Bark threshold DH, and receive-secret acknowledgement use disjoint protocol domains and session namespaces.
+
+### Keep the CDK change reviewable
+
+- Bark protocol and runtime code lives in `cdk-bark` whenever it does not have to be in `cdk-common`, `cdk`, `cdk-axum`, or `cdk-mintd`.
+- The federation journal receives one nested `FederationBarkOperation` family, not a large collection of unrelated top-level variants.
+- CDK core stores stable federation-domain records, not serialized Bark implementation checkpoints.
+- Do not add a dynamic payment-backend consensus plugin registry for one backend. A generic opaque payload would make deterministic semantic admission harder to audit and would expand the federation core more than an explicit nested Bark family.
+- Bark runtime behavior and Bark dependencies are behind `federation-bark`; `federation` without Bark and all non-federation builds continue to compile and behave as before.
+- Lightweight Bark federation wire/domain types may remain under `cdk-common/federation` so tools can decode the operation format without linking Bark. Admission of Bark operations still requires a Bark-enabled public config and runtime protocol version.
+
+### Migration rule
+
+Only new, forward-only migrations may be added.
+
+- Do not modify any pre-existing SQLite migration.
+- Do not modify any pre-existing PostgreSQL migration.
+- Do not fold Bark tables into `20260712000000_create_federation_schema.sql` or any other historical migration.
+- Add paired new SQLite and PostgreSQL migration files with a timestamp later than the current latest migration.
+- Keep and extend checksum tests that prove historical standalone and federation migration bytes are unchanged.
+- Test empty-database install and upgrade from the latest pre-Bark schema for both SQL backends.
+
+## 1. Review scope and evidence
+
+### CDK material reviewed
+
+The review traced the following boundaries rather than relying only on the existing plans:
+
+- reusable root, application derivation, sealed share, signing session, wire, and durable nonce code in `cdk:crates/cdk-frost/`;
+- BIP32/BDK application configuration in `cdk:crates/cdk-frost-bip32/` and `cdk:crates/cdk-common/src/federation/frost_config.rs`;
+- watch-only federated BDK construction and scoping in `cdk:crates/cdk-bdk/src/federation.rs`;
+- the non-mutating BDK payment adapter in `cdk:crates/cdk-mintd/src/federated_bdk_backend.rs`;
+- federation operation envelopes, conflict keys, journal application, payment observations, actor leases, convergence projections, checkpoints, and private transport in `cdk:crates/cdk-common/src/federation/`, `cdk:crates/cdk/src/mint/federation/`, and `cdk:crates/cdk-axum/src/federation/`;
+- the federation-aware on-chain mint-quote seam in `cdk:crates/cdk-axum/src/custom_handlers.rs` and `cdk:crates/cdk/src/mint/issue/mod.rs`;
+- Lightning backend configuration and construction in `cdk:crates/cdk-mintd/src/config.rs` and `cdk:crates/cdk-mintd/src/lib.rs`;
+- federation database traits, SQL application code, materialized-state digest code, and migrations in `cdk:crates/cdk-common/src/database/mint/`, `cdk:crates/cdk-sql-common/src/mint/`, `cdk:crates/cdk-sqlite/`, and `cdk:crates/cdk-postgres/`.
+
+### Bark material reviewed
+
+The review covered the full `master..frost-wallet` change shape and the relevant implementation paths:
+
+- `bark:bark/src/custody.rs`;
+- `bark:bark-frost/src/{authorization,builder,coordinator,participant,transport}.rs`;
+- `bark:frost-federation-core/src/`;
+- wallet construction, key allocation, and key-source persistence in `bark:bark/src/lib.rs` and `bark:bark/src/persist/`;
+- Lightning send and receive state machines in `bark:bark/src/actions/lightning/` and their public wrappers in `bark:bark/src/lightning/`;
+- action checkpoint execution in `bark:bark/src/actions/mod.rs`;
+- arkoor, round, board, offboard, unilateral-exit, mailbox, and VTXO signing paths;
+- Ark server Lightning initiation, status, co-sign, receive, and claim paths in `bark:server/src/ln/`;
+- the Bark-side integration analysis in `bark:cdk-implementation-plan.md`.
+
+### Verification run
+
+The following targeted Bark command passed on the reviewed revision:
+
+```text
+cargo test -p frost-federation-core -p bark-frost --locked
+```
+
+Results:
+
+- `bark-frost`: 4 passed;
+- `frost-federation-core`: 4 passed;
+- doc tests: passed.
+
+This verifies the current cryptographic prototype and in-process adapter tests. It does not verify durable participants, remote transport, CDK authorization, multi-process failover, or Ark/CDK end-to-end behavior because those facilities do not exist yet.
+
+## 2. Existing architecture to preserve
+
+### CDK federation authority
+
+CDK currently separates four important concerns:
+
+1. AlephBFT orders bounded, signed federation operations.
+2. The federation application deterministically validates and applies those operations in one database transaction.
+3. Side-effecting workers operate outside apply and report results through new operations or member observations.
+4. Existing Cashu quotes, sagas, proof states, and signatures remain the public business model.
+
+The Bark backend must fit this arrangement. It must not make Bark SQLite, a mailbox notification, or one member's Ark client response authoritative.
+
+### Federated BDK pattern to reuse
+
+The BDK integration provides the following useful pattern:
+
+- derive a separate application from a reusable FROST root;
+- keep the local wallet watch-only;
+- allocate addresses and reserve spend state through accepted operations;
+- authorize a signature only by reconstructing an accepted proposal;
+- keep nonce material durable and participant-local;
+- perform network and signing coordination outside deterministic apply;
+- project accepted state independently on every member;
+- expose a payment adapter that cannot accidentally perform standalone custody mutations.
+
+The Bark implementation should copy these authority boundaries, not BDK's UTXO, descriptor, PSBT, fee-bump, or confirmation data model.
+
+### Bark machinery to reuse
+
+The Bark branch already provides valuable pieces:
+
+- `VtxoCustody`, which removes local-key assumptions from the relevant signing paths;
+- `KeySourceDescriptor`, which prevents opening a Frost wallet database under the wrong custody source;
+- deterministic public VTXO key derivation through `VtxoKeyLocator`;
+- ordinary BIP340 FROST signing;
+- a virtual user MuSig2 partial produced by a threshold federation for Bark's outer user/server MuSig2;
+- threshold DH with DLEQ verification for mailbox blinding;
+- Lightning send and receive action state machines;
+- durable SQLite action checkpoints, VTXO locks, movements, paid-invoice records, and settled-receive records;
+- payment-hash-based Ark server lookup and retry behavior.
+
+These should be hardened and exposed through a restricted federation facade, not reimplemented in CDK.
+
+## 3. Detailed readiness findings
+
+| ID | Finding | Consequence | Required disposition |
+|---|---|---|---|
+| B1 | `FrostParticipant` keeps pending/completed FROST and MuSig sessions and burned IDs in process-local maps. | A crash can lose a returned nonce commitment, lose retry data, or reopen a session unsafely. | Do not use it as CDK's production participant. Extend `cdk-frost` and reuse its durable store. |
+| B2 | `FrostVtxoCustody` keeps pending coordinator MuSig sessions in a process-local map. | The coordinator cannot safely resume after a returned aggregate nonce or fail over to another member. | Make all coordinator inputs reconstructible from accepted state and durable participant replies; persist only rebuildable local execution state. |
+| B3 | `ParticipantTransport` has only an in-process implementation, and several response types lack complete public validating wire APIs. | A production member-to-member transport would need unsafe ad hoc serialization or access to private fields. | Add bounded versioned canonical encodings and public decoders before remote use. |
+| B4 | `BarkAuthorizationRequest.authorization` is an opaque `Vec<u8>`. | A participant cannot prove that a digest, locator, signer set, or phase belongs to one exact accepted CDK operation. | Replace it with a typed accepted-operation reference and transcript commitment. |
+| B5 | Bark constructs `CustodySessionId::random()` inside many money-moving paths. | Consensus cannot pre-bind the session or distinguish retries and actor failover deterministically. | Inject deterministic session context derived from accepted operation ID, phase, object ordinal, signer set, and attempt. |
+| B6 | The Bark coordinator hardcodes attempt `1`, uses a fixed initial signer subset, and calls participants sequentially. | One unavailable selected signer can stall progress, and retry/failover lineage is not explicit. | Use consensus-derived attempt numbers, deterministic eligible subsets, bounded parallel collection, and accepted lease rotation. |
+| B7 | Bark's `peek_next_vtxo_public_key` and `derive_store_next_vtxo_public_key` advance a member-local frontier. | Members can choose different destination keys and collide indexes. | Add explicit `derive/reveal/store at locator` APIs and allocate indexes in consensus. |
+| B8 | Lightning send selects and locks local VTXOs, allocates two keys, and creates a movement before any accepted plan. | Members can double-select VTXOs or execute a different payment plan. | Split planning from apply; accept exact inputs, outputs, keys, fee, and expiry before local locks or server I/O. |
+| B9 | Lightning receive generates the preimage, contacts the Ark server, allocates a local key, and only then persists its checkpoint. | A crash can lose the only claim secret or destination allocation for a live invoice. | Persist and acknowledge protected receive-secret material and accept the intent before Ark invoice creation. |
+| B10 | `WalletAction::advance` can mutate Bark state or call the server before the returned next checkpoint is persisted. | A crash can leave local state ahead of its checkpoint. | Rely on the accepted CDK plan plus stable Ark idempotency to reconstruct; tighten Bark step persistence where an API is not idempotent. |
+| B11 | Bark action checkpoints contain implementation-specific state and plaintext receive preimages. | Replicating checkpoints would couple consensus to Bark versions and leak secrets into public federation state. | Replicate stable semantic records only; keep checkpoints and secrets member-local. |
+| B12 | Bark's operational `WalletSeed` still owns mailbox identity, database fingerprint, and ephemeral operational keys. | Sharing it would create an unnecessary common secret; keeping it local makes mailbox-only state differ. | Keep per-member operational seeds; make mailbox a notification source, not authority, and add explicit receive-secret recovery. |
+| B13 | Bark's application/root derivation formula is independent of CDK's `ApplicationRegistration`. | The same root input does not imply identical Bark keys under the two implementations. | Freeze one CDK-owned Bark application derivation and add cross-implementation vectors. |
+| B14 | `frost_federation_core::ParticipantPackage::import` needs a raw share, while `CanonicalRootKeyPackage` intentionally does not export one. | Directly constructing Bark participants would break the root isolation model. | Implement Bark `VtxoCustody` on top of `ParticipantKeyManager`; never export the share. |
+| B15 | Bark needs ordinary FROST, virtual MuSig2, and threshold DH, while `cdk-frost` currently owns only ordinary FROST session persistence. | A second nonce manager would duplicate sensitive lifecycle logic. | Add protocol-separated MuSig2 and threshold-DH records to the same CDK participant ledger. |
+| B16 | The Ark server mostly keys Lightning status by payment hash, but exact plan deduplication is not a complete federation contract. | Different actors could retry the same payment hash with different VTXO sets or output plans. | Add stable federation action IDs and exact request commitments to Bark/Ark calls or prove existing RPCs return the same logical result. |
+| B17 | VTXOs expire and failed Lightning HTLCs require revocation or exit. | A backend that only sends and receives can still strand federation funds. | Include refresh, revocation, and emergency exit in the first production scope. |
+| B18 | The reviewed Bark code is on an unreleased work branch. | An absolute path or floating branch dependency is not reproducible. | Upstream required APIs and consume a released crate or an explicitly reviewed immutable revision. |
+| B19 | Receive fees are deducted from the gross invoice amount before HTLC VTXOs are granted. | Treating gross Lightning payment as net federation assets can issue more ecash than the Bark wallet receives. | Commit gross amount, receive fee, and minimum net VTXO value; require net accepted value to cover Cashu issuance. |
+| B20 | Receive anti-DoS currently selects a local VTXO attestation opportunistically, uses an optional token, and may retry without either. | An empty federation wallet may be unable to claim its first receive, and local selection would bypass consensus. | Make anti-DoS policy explicit; reserve an exact attestation VTXO or configure a protected operator token/no-proof policy accepted by the Ark server. |
+
+## 4. Goals
+
+The first production release must:
+
+- expose BOLT11 mint and melt support backed by one configured Ark server;
+- custody every Bark VTXO under a threshold-derived Bark application key;
+- reuse the federation's existing sealed FROST root share without exporting it;
+- keep ordinary CDK Lightning backends and business logic intact;
+- accept exact receive, send, claim, revocation, refresh, and exit plans before side effects;
+- support deterministic member-local projection and VTXO reservation;
+- support actor failover without changing a plan;
+- survive participant, coordinator, mint, Bark SQLite, and network restarts;
+- make incoming preimages recoverable by an eligible replacement set;
+- use authenticated bounded member transport and durable protocol state;
+- classify paid, failed, pending, and ambiguous states conservatively;
+- integrate with existing mint/melt payment-observation quorum and saga finalization;
+- provide startup validation, readiness, metrics, operator inspection, backups, and recovery procedures;
+- run on SQLite and PostgreSQL federation databases; and
+- retain CDK's MSRV and lint requirements.
+
+## 5. Non-goals for the first production release
+
+- General-purpose user-facing Bark wallet APIs through CDK.
+- Arbitrary arkoor sends unrelated to Cashu payments.
+- User-selected offboards through the BOLT11 backend.
+- Multiple Ark servers in one Bark application epoch.
+- Automatic Ark server migration.
+- Root or Bark application key rotation.
+- Migrating an existing seed-custodied Bark wallet into federation custody.
+- Importing a database produced by the current experimental Bark derivation.
+- A generic dynamic federation payment-backend plugin framework.
+- Replicating raw Bark SQLite files or Bark action checkpoint JSON through consensus.
+- Hiding incoming payment preimages from every individual member in v1. The recommended v1 scheme provides threshold availability but allows acknowledged members to know the preimage; this is an explicit griefing limitation, not a custody break.
+- Running a trusted dealer in production. Dealer-backed examples remain test-only.
+- BOLT12 in the initial integration. It may reuse the architecture after BOLT11 is complete.
+
+## 6. Security and correctness requirements
+
+### Custody
+
+- Fewer than the configured signature threshold cannot sign a Bark asset key.
+- No participant API signs an arbitrary digest without an accepted Bark authorization reference.
+- The Ark server key and network are part of the immutable Bark application configuration.
+- No local `WalletSeed` keypair fallback is reachable for VTXO custody in federation mode.
+- Operational seeds, transport identities, sealed-storage keys, and Bark application shares have distinct purposes and domains.
+
+### Consensus before action
+
+- Receive intent is accepted before invoice RPC.
+- Receive claim plan is accepted before claim signing or preimage disclosure.
+- Send plan is accepted before input reservation is mirrored into Bark and before HTLC co-sign RPC.
+- Failed-payment recovery is accepted before revocation signing.
+- Refresh and emergency exit plans are accepted before signing or publication.
+- A coordinator may only request transcripts derivable from the currently accepted plan and attempt.
+
+### Deterministic apply
+
+- Apply reads only the accepted operation, prior materialized state, immutable public config, and deterministic policy constants.
+- Canonical VTXO and Ark artifact decoders reject malformed or non-canonical bytes.
+- All vectors are bounded and canonically ordered.
+- All amounts use checked arithmetic and explicit satoshi units.
+- State transitions are monotonic, idempotent, and conflict-detecting.
+- Terminal paid/failed transitions cannot be reversed by stale observations.
+
+### External ambiguity
+
+- A lost response is not treated as a failed payment.
+- An outgoing payment becomes `Failed` only after the Ark payment is terminally failed and the federation has either restored spendable value through accepted revocation or committed an accepted recovery path.
+- An incoming quote becomes paid only after the accepted Bark state and configured observation quorum prove the required value is claimable or settled under federation custody.
+- A preimage-revealed receive remains pending/recovery-required until its claim or exit is accepted as terminal.
+
+### Availability
+
+- Actor leases rotate deterministically over accepted journal progress.
+- Signer attempts and subsets are explicit and durable.
+- A failed actor cannot force re-selection of VTXOs or keys.
+- A clean member can rebuild its Bark public projection from accepted operations.
+- A participant restart burns unsafe incomplete nonce material and can return cached identical completed shares.
+
+### Balance and fee accounting
+
+Bark's receive fee changes the usual Lightning-backend accounting. Define:
+
+- `cashu_amount_sat`: the amount of ecash the quote may issue;
+- `invoice_amount_sat`: the gross BOLT11 amount paid by the user;
+- `receive_fee_sat`: the Ark/Bark receive fee calculated on the gross amount;
+- `net_vtxo_amount_sat`: the accepted value under federation-controlled VTXOs.
+
+The receive intent must choose the smallest policy-valid gross invoice amount such that:
+
+```text
+invoice_amount_sat - receive_fee_sat >= cashu_amount_sat
+```
+
+The public quote continues to represent `cashu_amount_sat`; the invoice may be higher to cover the disclosed backend fee. Mint issuance is not permitted until accepted VTXO value, net of Bark fees, is at least the quote amount. Any bounded excess is accounted as federation fee/surplus, never silently counted twice.
+
+Milestone 0 must verify that existing NUT-04 wallets correctly handle an invoice whose gross amount is higher than the requested ecash amount. If that is not interoperable, the first release must require the Ark receive fee to be zero or fund it from an explicit, auditable federation revenue reserve. Silently issuing against the smaller net VTXO amount is never an acceptable fallback.
+
+For outgoing melts:
+
+- the accepted input VTXO value covers invoice amount plus actual Bark/Ark fee;
+- actual fee must not exceed the Cashu melt fee reserve or accepted fee policy;
+- `total_spent` is derived from accepted VTXO balance effects, not an unverified Ark response;
+- unused Cashu fee reserve follows the existing melt change path.
+
+The Bark application config pins a maximum fee formula and CLTV policy. If the Ark server advertises values outside it, the backend degrades rather than silently changing quote economics. A future fee-policy update requires an explicit accepted config/policy epoch.
+
+## 7. Target architecture
+
+```text
+Cashu HTTP routes and ordinary mint/melt sagas
+                 |
+                 | existing quote/mint/melt/payment-observation operations
+                 v
+CDK federation application ---- AlephBFT journal/checkpoints/backups
+                 |
+                 | nested, typed FederationBarkOperation records
+                 v
+            cdk-bark
+      +----------+-----------+
+      |                      |
+pure validation/projection   member-local worker
+      |                      |
+federation SQL state         Bark federation facade ---- Ark server/chain
+                             |
+                             +---- member-local Bark SQLite cache
+                             |
+                             +---- CdkFrostVtxoCustody
+                                        |
+                                  authenticated private REST
+                                        |
+                                  cdk-frost participant manager
+                                  and one durable protocol ledger
+```
+
+### Authority boundaries
+
+| Concern | Authority | Non-authoritative evidence/cache |
+|---|---|---|
+| Cashu quote and proof state | Existing accepted CDK operations and sagas | HTTP request owner, local task state |
+| Bark application identity | Signed federation public config | Local TOML |
+| VTXO key indexes | Accepted Bark records | Bark's local last-key index |
+| Spendable/reserved/spent VTXOs | Deterministic Bark projection | Bark SQLite VTXO state |
+| Send/claim/recovery plan | Accepted Bark plan | Actor candidate plan |
+| Payment result | Accepted action results plus existing member-observation policy | One Ark response or mailbox event |
+| Threshold signature authorization | Accepted plan and exact signing transcript | Coordinator request label |
+| Nonce lifecycle | Participant-local durable `cdk-frost` ledger | In-memory maps |
+| Worker lease | Deterministic journal-derived actor selection | Process locks |
+| Incoming preimage availability | Protected member records plus accepted signed acknowledgements | Invoice actor memory |
+| External execution recovery | Accepted plan, stable idempotency IDs, and accepted results | Bark checkpoint alone |
+
+### Four persistence layers
+
+1. **Federation SQL authority**
+   - accepted Bark operations;
+   - materialized VTXO, derivation, action, reservation, and result rows;
+   - included in materialized-state digest, checkpoint, backup, and catch-up.
+
+2. **Member-local Bark SQLite execution cache**
+   - Bark action checkpoints, movements, locks, server metadata, and imported VTXOs;
+   - independently rebuilt from accepted Bark records;
+   - never copied between members and never authoritative for consensus.
+
+3. **Member-local `cdk-frost` protocol ledger**
+   - sealed ordinary FROST nonces and cached shares;
+   - sealed virtual MuSig2 nonce state and cached partials;
+   - threshold-DH completed results or tombstones;
+   - attempt high-water marks and permanent replay tombstones.
+
+4. **Member-local protected receive-secret store**
+   - preimage and binding metadata;
+   - encrypted at rest;
+   - keyed by receive intent and commitment;
+   - backed up under the existing private federation backup policy, not the public materialized-state snapshot.
+
+## 8. Bark FROST application and key model
+
+### Application registration
+
+Add a distinct immutable Bark application under the existing root:
+
+```text
+canonical federation FROST root epoch
+  +-- CDK on-chain application epoch
+  +-- Bark VTXO application epoch
+```
+
+The Bark registration includes:
+
+- stable Bark application ID;
+- application key epoch;
+- application derivation version;
+- authorization-policy commitment;
+- root epoch;
+- federation ID;
+- network;
+- exact Ark server public key;
+- VTXO derivation policy version;
+- Lightning fee/CLTV/recovery policy versions;
+- gross-to-net receive fee formula and maximum outgoing fee formula;
+- receive anti-DoS policy;
+- threshold and complete verification-share roster.
+
+Do not overload `FederationFrostApplicationConfig`, which currently contains BDK-specific descriptors and confirmation policy. Add a Bark-specific config that contains a small shared application identity record plus Bark policy. Avoid reshaping the existing on-chain config in the same pull request.
+
+For the first release, the Bark application must be present in the finalized setup config. Adding Bark to an already-active federation requires a separately designed, signed federation-config upgrade and is not silently inferred from local TOML.
+
+### Canonical VTXO derivation
+
+Freeze one derivation specification owned by CDK:
+
+- derive the Bark application from `ApplicationRegistration` using `cdk-frost`;
+- derive each VTXO public key from an explicit `u32` locator and a Bark VTXO role domain;
+- bind network, root epoch, application key epoch, and derivation version;
+- define point parity and full compressed-key conversion explicitly;
+- reject overflow, zero, invalid, or unsupported locators;
+- publish test vectors for 2-of-3 and 3-of-5 roots;
+- compare CDK-derived public group keys and every verification share with Bark's expected `VtxoCustody::derive_public_key` result.
+
+Do not assume the reviewed `frost-federation-core` derivation is byte-for-byte compatible. Either adapt Bark's custody implementation to the CDK formula or upstream a shared formula after vectors prove equivalence. The canonical CDK root package remains the source of truth.
+
+### Protocols under the Bark application
+
+The custody adapter requires three separately namespaced protocols:
+
+1. **BIP340 FROST** for direct Schnorr requests.
+2. **Virtual MuSig2** for the threshold federation's partial contribution to Bark's outer user/Ark-server MuSig2.
+3. **Threshold DH with DLEQ** for blinded mailbox identifiers.
+
+Each protocol context binds:
+
+- federation and Bark application IDs;
+- root and application epochs;
+- accepted operation ID and journal index;
+- Bark action ID and phase;
+- exact object ordinal;
+- locator;
+- message/transcript commitment;
+- signer set;
+- attempt;
+- Ark server and network;
+- protocol namespace.
+
+Ordinary FROST and MuSig2 nonce IDs must never collide even if all other fields are equal.
+
+### `CdkFrostVtxoCustody`
+
+Implement Bark's `VtxoCustody` in `cdk-bark` rather than constructing `bark-frost::FrostParticipant`:
+
+- `descriptor()` returns the accepted Bark application identity;
+- `derive_public_key(locator)` uses CDK's registered application package;
+- `sign_schnorr()` authorizes and coordinates existing durable CDK FROST;
+- `begin_musig2()` and `finish_musig2()` use the extended durable CDK MuSig protocol;
+- `blind_mailbox()` uses authorized threshold-DH shares and verifies DLEQ proofs;
+- `abort_session()` burns the exact protocol attempt and retains a tombstone;
+- `local_keypair()` always returns `None`.
+
+No method accepts an untyped arbitrary authorization payload.
+
+## 9. Typed authorization and session design
+
+Add a canonical `FederationBarkAuthorizationReference` containing at least:
+
+- authorization version;
+- federation ID;
+- Bark application ID and epochs;
+- accepted operation ID and journal index;
+- action ID;
+- semantic phase;
+- object ordinal;
+- operation kind;
+- exact plan or result hash;
+- VTXO locator;
+- protocol kind;
+- message/transcript hash;
+- signer set;
+- attempt.
+
+Participant authorization must:
+
+1. Load the referenced accepted journal entry and current materialized Bark state.
+2. Verify the operation is applied and not superseded or terminally incompatible.
+3. Reconstruct the expected Bark object, locator, message, Ark server, and policy.
+4. Reconstruct the exact protocol transcript.
+5. Compare every request field to the reconstruction.
+6. Check that this participant is in the accepted signer set.
+7. Only then reserve a nonce, return a commitment, release a share, or return a DH contribution.
+
+The deterministic session slot is derived from the authorization reference without the attempt or signer set. The full session ID includes the attempt and signer set. A higher accepted attempt burns an older active attempt; an equal attempt must reproduce the same full context; a lower attempt is stale.
+
+Bark must stop creating random custody sessions in federation mode. Add an explicit session provider or pass the typed context through the restricted action APIs. Avoid thread-local or ambient global context.
+
+## 10. Consensus operation model
+
+Add one top-level journal variant:
+
+```text
+FederationOperation::Bark(FederationBarkOperation)
+```
+
+`FederationBarkOperation` is a stable CDK federation-domain enum. It must not contain Bark's internal `WalletActionCheckpoint` JSON. The recommended compact family is:
+
+### 10.1 `ReceiveIntent`
+
+Commits to:
+
+- Cashu quote ID;
+- Cashu amount, gross invoice amount, receive fee, minimum net VTXO amount, unit, and description commitment;
+- payment hash and preimage commitment;
+- signed receive-secret acknowledgements;
+- exact VTXO destination locator;
+- mailbox scope or explicit mailbox ID;
+- Ark server and network;
+- minimum CLTV and fee policy versions;
+- explicit anti-DoS policy and either a protected-token commitment or an exact accepted attestation VTXO reference;
+- intent expiry;
+- deterministic action ID.
+
+Acceptance reserves the quote, payment hash, destination locator, and action ID. It does not call the Ark server.
+
+### 10.2 `ReceivePrepared`
+
+Commits to:
+
+- accepted receive intent;
+- exact canonical BOLT11 invoice;
+- payment hash, amount, network, expiry, and description validation;
+- Ark server response/request commitment;
+- actual fee and CLTV values within accepted policy;
+- proof that the invoice's gross amount and expected net VTXO amount satisfy the accepted Cashu collateral invariant;
+- stable external idempotency ID.
+
+Acceptance makes the invoice eligible to become the ordinary CDK mint quote request. It does not mark the quote paid.
+
+### 10.3 `ActionPlan`
+
+A typed sub-enum covers:
+
+- outgoing Lightning send;
+- incoming HTLC claim;
+- failed outgoing HTLC revocation;
+- VTXO refresh;
+- emergency unilateral exit.
+
+Every plan commits to exact input VTXOs, exact output policies and canonical artifact hashes, derivation locators, fee bounds, expiries, recovery policy, signer attempt, and predecessor state.
+
+Acceptance atomically reserves every input VTXO and locator. A retry cannot select replacements unless a separately accepted superseding plan first releases or transitions the old reservation according to policy.
+
+### 10.4 `ActionTransition`
+
+Records one externally observed semantic transition with exact result artifacts, for example:
+
+- receive HTLCs ready;
+- receive preimage disclosed;
+- receive claimed;
+- send HTLC package co-signed;
+- payment initiated;
+- payment succeeded with proof/preimage commitment;
+- payment terminally failed;
+- revocation completed;
+- refresh completed;
+- exit registered/published/confirmed.
+
+The transition references its plan, predecessor transition, actor, attempt, external request commitment, and canonical result. Apply validates the transition without network access and updates the authoritative Bark projection.
+
+### 10.5 `MemberObservation`
+
+Records bounded member evidence needed to reach an internal Bark transition or an existing CDK payment observation:
+
+- observer;
+- source scope and observation epoch;
+- quote/action/payment hash;
+- Ark or chain status;
+- exact artifact/result commitment;
+- amount and fee where relevant.
+
+Use existing `MintQuotePayment` and `MeltQuotePayment` operations for final Cashu payment authority. Do not duplicate their quorum and saga rules in Bark operations.
+
+### 10.6 `RecoveryPlan`
+
+Use a separate explicit recovery operation only when the normal `ActionPlan` lineage cannot express the transition clearly. It covers:
+
+- coordinator-attempt replacement;
+- actor takeover after an ambiguous response;
+- receive-claim retry after preimage disclosure;
+- revocation escalation;
+- emergency exit;
+- terminal abandonment after value is proven safe.
+
+Prefer `ActionPlan` with a recovery subtype when possible; do not add a variant per error string.
+
+### Conflict keys
+
+Derive conflict keys from typed data, including:
+
+- Cashu quote ID;
+- Bark action ID and phase;
+- payment hash;
+- VTXO ID;
+- derivation locator;
+- input reservation;
+- predecessor transition;
+- external idempotency ID;
+- signing slot and attempt.
+
+Never accept caller-supplied opaque conflict keys.
+
+### Admission rules
+
+Every Bark operation must have:
+
+- bounded canonical serialization;
+- stateless envelope validation;
+- deterministic stateful validation in apply;
+- checked balance conservation where applicable;
+- policy-version validation;
+- exact predecessor validation;
+- idempotent identical replay;
+- conflict rejection for different contents under the same keys;
+- materialized-row key registration and digest coverage;
+- operation result lookup for route/worker waiting.
+
+## 11. Authoritative Bark projection
+
+The minimum deterministic projection contains:
+
+- Bark application scope and policy version;
+- derivation-locator ownership and high-water state;
+- VTXO records keyed by canonical VTXO ID;
+- VTXO state: observed, spendable, reserved, pending-spend, spent, exiting, exited;
+- complete accepted VTXO bytes and ancestry needed for independent validation;
+- action records and semantic phase;
+- plan and predecessor hashes;
+- quote/payment-hash/action indexes;
+- reservation owner and operation index;
+- accepted external request/result commitments;
+- receive preparation and settlement state;
+- outgoing payment, revocation, and recovery state;
+- gross, fee, net, and issued-liability accounting for every receive/send action;
+- materialized-row fingerprints.
+
+Projection rows are consensus authority and must be included in `federation_materialized_state_snapshot()`. Bark SQLite rows are checked against this projection during readiness but are not included directly.
+
+The projection must answer, without Ark I/O:
+
+- Is this receive intent accepted and prepared?
+- Is this payment hash already owned by another quote/action?
+- Which VTXOs are accepted as spendable?
+- Which plan reserves each VTXO and locator?
+- Which semantic action phase is accepted?
+- Is a custody request authorized at the current attempt?
+- Is a paid or failed CDK payment observation now admissible?
+- What exact records must a clean Bark SQLite database replay?
+
+## 12. Bark-side prerequisite changes
+
+These changes should land upstream in Bark before CDK consumes the integration.
+
+### P1. Explicit locator APIs
+
+Add public idempotent APIs equivalent to:
+
+- `derive_vtxo_public_key(locator)`;
+- `reveal_vtxo_public_key(locator)`;
+- `import_accepted_vtxo(locator, vtxo, origin)`;
+- `validate_accepted_vtxo(locator, vtxo)`.
+
+Federation mode must never call `peek_next_vtxo_public_key` or `derive_store_next_vtxo_public_key`.
+
+### P2. Federation-safe receive preparation
+
+Split current invoice creation so the caller supplies:
+
+- payment preimage or a protected secret handle;
+- payment hash;
+- destination locator;
+- mailbox identity/scope;
+- exact amount, description, CLTV, policy, and idempotency ID.
+- exact Cashu amount, gross invoice amount, receive fee bound, and minimum net amount;
+- an explicit anti-DoS token handle, accepted attestation input, or configured no-proof policy.
+
+The API must validate supplied values, call the Ark server only after CDK accepts the intent, and persist or reconstruct a local checkpoint from the accepted intent. It must never silently generate a replacement secret or locator on retry.
+
+### P3. Pure send planning and accepted-plan apply
+
+Add a two-stage interface:
+
+1. Build a candidate from an explicit accepted VTXO view without locks, movements, key advancement, or server I/O.
+2. Apply an accepted exact plan idempotently, mirror its locks/movement/checkpoint locally, and drive it without reselecting inputs or locators.
+
+Expose independent plan validation so every member can validate the candidate before voting/apply.
+
+### P4. Typed custody context
+
+Replace opaque authorization bytes in federation mode with an embedding-defined typed reference or canonical byte type that Bark treats as required. Every internal signing call must receive the caller-supplied deterministic session and authorization context. Keep local-wallet convenience generation only for `LocalVtxoCustody` paths.
+
+### P5. Stable semantic action results
+
+Expose versioned result types that `cdk-bark` can translate into accepted transitions without serializing implementation checkpoints. The facade should export:
+
+- exact request commitment;
+- semantic phase before and after;
+- canonical VTXO/artifact bytes;
+- amount/fee/expiry data;
+- payment status and proof commitments;
+- whether retry is safe, terminal, or ambiguous.
+
+### P6. External idempotency audit
+
+For every Ark RPC used by the backend, either:
+
+- accept and persist a stable federation action/request ID; or
+- document and test that the existing payment hash/artifact ID returns the same logical result for an identical request and rejects a conflicting request.
+
+This includes invoice creation, receive status/claim/cancel, HTLC co-sign, payment initiation/status, revocation, refresh, and exit registration.
+
+### P7. Canonical remote protocol types
+
+Provide bounded versioned encoders/decoders and public constructors for:
+
+- FROST request, commitment set, and signature share;
+- virtual MuSig request, commitment set, and partial share;
+- threshold-DH request, share, and DLEQ proof;
+- authorization reference;
+- abort and completed-session acknowledgement.
+
+Decoders reject unknown versions, trailing data, oversized collections, unsorted or duplicate members, invalid points/scalars, cross-protocol substitutions, and mismatched sessions.
+
+### P8. Projection rebuild hooks
+
+The restricted facade must support:
+
+- opening a member-scoped Frost wallet database;
+- clearing/rebuilding only the rebuildable accepted projection;
+- applying accepted VTXOs, locators, reservations, and actions idempotently;
+- reporting divergence without automatically trusting local rows;
+- keeping member-local operational seed state separate.
+
+## 13. `cdk-frost` extensions
+
+Extend the existing key manager instead of adding a second production participant manager.
+
+### Ordinary FROST
+
+Reuse the existing `SigningAuthorizationScope`, `SigningSessionContext`, durable attempt high-water logic, sealed nonce records, cached shares, restart burn, and Redb store. Add only the Bark derivation and authorization adapters needed by the new application.
+
+### Virtual MuSig2
+
+Add a separate record and API family with lifecycle:
+
+```text
+generated -> reserved -> commitment_sent -> partial_signing
+          -> partial_produced -> consumed -> tombstone
+          \-> burned ---------------------> tombstone
+```
+
+Requirements:
+
+- different record/table namespace from ordinary FROST;
+- same atomic attempt and slot rules;
+- sealed secret nonce persisted before commitment return;
+- secret removed or irreversibly burned before partial return;
+- completed identical partial cached for retry;
+- verification against the participant's derived verification share and final outer MuSig transcript;
+- restart and failure-injection tests.
+
+Add new Redb tables rather than changing the serialized meaning of existing ordinary-FROST tables. Opening an existing BDK nonce database must remain compatible.
+
+### Threshold DH
+
+Threshold DH has no reusable signing nonce, but it still needs:
+
+- typed authorization;
+- domain-separated derivation;
+- DLEQ proof generation and verification;
+- bounded wire encoding;
+- durable completed-result cache or terminal request tombstone for exact retry/audit;
+- request conflict rejection.
+
+### Private REST
+
+Extend the existing authenticated federation private API with protocol-specific endpoints or one tagged custody endpoint. Reuse:
+
+- member identity authentication;
+- federation and member routing;
+- request body bounds;
+- timeouts and concurrency limits;
+- replay protection and response validation;
+- metrics and redaction.
+
+Do not expose participant custody endpoints on the public Cashu router.
+
+## 14. `cdk-bark` crate design
+
+Add `cdk:crates/cdk-bark/` with no dependency on `cdk` itself, preventing a dependency cycle. It may depend on:
+
+- `cashu` and `cdk-common` for payment and federation domain types;
+- `cdk-frost` for application and participant custody;
+- the reviewed/released Bark wallet and Ark libraries;
+- narrow crypto/serialization dependencies already shared by the workspace.
+
+Suggested modules:
+
+```text
+src/
+  adapter.rs          MintPayment adapter
+  config.rs           accepted and local configuration validation
+  custody.rs          CdkFrostVtxoCustody
+  authorization.rs    accepted-state transcript reconstruction
+  protocol.rs         canonical Bark federation records and hashing
+  policy.rs           pure fee/CLTV/VTXO validation
+  projection.rs       deterministic apply and query model
+  runtime.rs          member-local Bark facade and readiness
+  receive.rs          receive intent/preparation/claim worker
+  send.rs             send planning/execution/status worker
+  recovery.rs         revocation/refresh/exit worker
+  secret_store.rs     protected receive secrets and acknowledgements
+  transport.rs        authenticated CDK participant client
+  error.rs            typed errors and ambiguity classification
+  tests/
+```
+
+### Runtime API
+
+The runtime should expose a narrow API similar in spirit to federated BDK:
+
+- `scope()`;
+- `ensure_ready(frontier)`;
+- `validate_operation(operation, prior_state)`;
+- `apply_accepted_operation(transaction, entry)`;
+- `replay_accepted_operations(entries)`;
+- `prepare_receive_intent(...)`;
+- `execute_accepted_receive_intent(...)`;
+- `prepare_send_plan(...)`;
+- `execute_accepted_action(...)`;
+- `observe_action(...)`;
+- `prepare_recovery_plan(...)`;
+- `reconcile_local_projection()`;
+- `projection_report()`;
+- `degraded_reason()`.
+
+Network-capable methods are never called by deterministic apply.
+
+### Payment adapter behavior
+
+`FederatedBarkPaymentAdapter` advertises only the configured BOLT11 unit and limits.
+
+| `MintPayment` method | Behavior |
+|---|---|
+| `get_settings` | Return supported BOLT11 settings and accepted limits. |
+| `create_incoming_payment_request` | Return a consensus-only error; the federation route owns receive intent and preparation. |
+| `get_payment_quote` | Parse the invoice and return a conservative fee reserve derived from the accepted maximum fee formula and accepted public VTXO view. No VTXO reservation. |
+| `make_payment` | Return a consensus-only error; the accepted Bark worker owns the exact send plan. |
+| `wait_payment_event` | Pending stream initially; add a projection-backed event bridge only if it is simple and deterministic. |
+| `check_incoming_payment_status` | Return projection-derived evidence only, or a consensus-only error if the federation observer calls the runtime directly. |
+| `check_outgoing_payment` | Return projection-derived evidence only, or a consensus-only error if the federation observer calls the runtime directly. |
+
+Keep the adapter incapable of falling back to a standalone seed-backed Bark wallet.
+
+## 15. Minimal CDK integration seams
+
+### Feature and dependency wiring
+
+Add:
+
+```text
+federation-bark -> federation + cdk-bark + required Bark dependencies
+```
+
+Do not add Bark to `cdk-mintd` default features initially. `federation` without Bark must not pull Bark into its build graph.
+
+### Public config
+
+Extend the FROST wallet config with an optional Bark application config using `serde(default, skip_serializing_if = "Option::is_none")`. Validate it against the root and federation roster. Preserve byte-for-byte interpretation and validation of existing version-1 BDK-only snapshots. Introduce and require a new aggregate/protocol version when the Bark application is present; do not silently reinterpret a version-1 snapshot as Bark-capable. Older binaries must fail before joining a Bark-enabled federation, not after receiving an unknown accepted operation.
+
+Add local `[federation.bark]` settings for:
+
+- enabled flag;
+- network;
+- Ark endpoint and expected server public key;
+- Bark SQLite path or member-local data directory;
+- operational seed provider/reference;
+- chain source;
+- receive-secret store;
+- worker concurrency/timeouts;
+- local policy values that must equal accepted public policy.
+
+Never put endpoints, credentials, local paths, operational seed material, or preimages in public config or debug output.
+
+### Lightning backend selection
+
+Add `LnBackend::FederatedBark` behind `federation-bark`. Startup rejects:
+
+- federation disabled;
+- missing accepted Bark application;
+- network, Ark server, threshold, roster, or policy mismatch;
+- standalone Bark VTXO seed custody;
+- missing durable Frost store or receive-secret store;
+- Bark database bound to another custody descriptor;
+- trusted-dealer setup outside test-only builds;
+- Bark backend configured for multiple units or unsupported units.
+
+The initial backend supports `CurrencyUnit::Sat` only. Do not emulate millisatoshi accounting by rounding Bark's satoshi-denominated VTXOs.
+
+### Incoming quote seam
+
+Add one federation-only BOLT11 branch next to the existing federated on-chain branch in `create_mint_quote_for_route`:
+
+1. Allocate a quote ID before backend work.
+2. Validate the ordinary request.
+3. Ask `cdk-bark` to prepare, submit, and await `ReceiveIntent` and `ReceivePrepared`.
+4. Call a new narrow `prepare_bolt11_mint_quote_with_invoice(quote_id, request, invoice)` helper.
+5. Submit the existing `MintQuote` operation and return the ordinary response.
+
+Do not add a quote ID to every standalone `Bolt11IncomingPaymentOptions` solely for Bark.
+
+### Federation payment probes
+
+Add feature-gated Bark branches in:
+
+- `probe_federation_mint_quote_payment`;
+- `probe_federation_melt_quote_payment`.
+
+The branches delegate to `cdk-bark`. They return the existing `FederationMintQuotePaymentObservation` and `FederationMeltQuotePaymentObservation` only when the Bark projection permits them. The ordinary observation quorum and saga finalization code remains unchanged.
+
+### Apply dispatch
+
+Add one Bark dispatch arm in federation admission/apply and one Bark projection section in materialized-state snapshot generation. Keep all Bark semantic validation functions in `cdk-bark` or Bark-specific modules.
+
+### Expected file-level change map
+
+| Repository area | Expected change |
+|---|---|
+| `cdk:Cargo.toml` | Add `cdk-bark` and reviewed Bark/Ark workspace dependencies. |
+| `cdk:crates/cdk-common/src/federation/operation.rs` plus a new Bark domain module | Add one nested Bark operation family, kinds, conflict keys, canonical bounds, and authorization claims. |
+| `cdk:crates/cdk-common/src/federation/frost_config.rs` | Add Bark application public config without reshaping the existing BDK application type. |
+| `cdk:crates/cdk-common/src/federation/config.rs` | Validate Bark-enabled protocol/config compatibility. |
+| `cdk:crates/cdk-common/src/database/mint/mod.rs` | Add narrowly scoped Bark projection transaction/query traits. |
+| `cdk:crates/cdk-frost/src/{key_manager,nonce,wire}.rs` and new protocol modules | Add durable virtual MuSig2, threshold-DH records, and canonical wire APIs while preserving existing FROST records. |
+| `cdk:crates/cdk-bark/` | Own Bark custody, policy, projection, runtime, workers, secret store, and payment adapter. |
+| `cdk:crates/cdk/src/mint/federation/` | Add the Bark apply/probe dispatch and existing-observation bridge. |
+| `cdk:crates/cdk/src/mint/issue/mod.rs` | Add a narrow prepared BOLT11 quote helper using an already accepted invoice. |
+| `cdk:crates/cdk-axum/src/custom_handlers.rs` | Add the federation-only Bark incoming quote branch. |
+| `cdk:crates/cdk-axum/src/federation/` | Wire Bark workers, private custody/secret endpoints, readiness, and actor leases. |
+| `cdk:crates/cdk-mintd/src/{config,lib}.rs` | Add opt-in backend selection, local settings, startup checks, and runtime construction. |
+| `cdk:crates/cdk-sql-common/src/mint/federation/` | Implement Bark projection persistence and snapshot queries. |
+| `cdk:crates/cdk-sql-common/src/mint/migrations/{sqlite,postgres}/` | Add new paired forward migrations only. |
+| `cdk:crates/cdk-sqlite/` and `cdk:crates/cdk-postgres/` | Add backend parity, empty-install, and upgrade tests. |
+| `bark:bark/src/{custody,lib}.rs` | Add typed deterministic custody contexts and explicit locator APIs. |
+| `bark:bark/src/actions/lightning/` and `bark:bark/src/lightning/` | Split pure planning, accepted-plan apply, supplied receive intent, and semantic result export. |
+| `bark:bark/src/persist/` | Add only new migrations/metadata needed for accepted-operation projection and rebuild. |
+| `bark:bark-frost/` and `bark:frost-federation-core/` | Complete public wire types/vectors; retain as reference/test code where CDK's durable participant supersedes it. |
+
+## 16. Incoming BOLT11 flow
+
+### Phase A: protect the receive secret
+
+1. The request owner allocates a quote ID, random preimage, payment hash, action ID, and candidate destination locator, and computes the smallest accepted gross invoice amount whose net value covers the Cashu quote, all without Ark I/O.
+2. It sends the preimage and complete binding metadata over authenticated private member transport to eligible members.
+3. Each member persists the preimage encrypted at rest before signing an acknowledgement over quote, payment hash, preimage commitment, locator, Ark server, network, Cashu amount, gross amount, fee/net invariant, anti-DoS policy, and intent expiry.
+4. The owner collects at least the configured receive-secret acknowledgement threshold.
+5. Orphan protected records expire if no intent is accepted.
+
+Recommended v1 policy: use the signature threshold and select future receive actors only from acknowledged members until the secret is re-replicated. Every acknowledging member can learn/reveal the preimage, which permits griefing but does not permit redirecting or spending the federated VTXO. Document this explicitly.
+
+### Phase B: accept the intent and create the invoice
+
+6. Submit `ReceiveIntent` containing acknowledgements but not the plaintext preimage.
+7. Deterministic apply verifies acknowledgement signatures and reserves quote, payment hash, locator, and action.
+8. The lease actor loads the protected preimage and any protected anti-DoS token, reconstructs the accepted request, and calls the Ark invoice RPC with the stable action ID.
+9. The actor validates invoice signature, network, amount, payment hash, description, expiry, and CLTV/fee bounds.
+10. Submit `ReceivePrepared` with the exact invoice and result commitment.
+11. Every member validates it deterministically.
+12. The public route creates and submits the ordinary `MintQuote` using the accepted invoice, then returns the standard response.
+
+### Phase C: observe and claim
+
+13. Members poll by payment hash; mailbox notifications only trigger polling.
+14. Members submit bounded evidence for ready HTLC VTXOs.
+15. Once policy is satisfied, propose an exact receive-claim `ActionPlan` containing HTLC VTXOs, destination locator, package, fee, expiry safety, and signing attempt.
+16. Consensus accepts the plan before any claim signature or preimage disclosure.
+17. The actor obtains threshold custody results, executes the exact claim, and submits semantic `ActionTransition` records.
+18. If the preimage has been disclosed and the claim is ambiguous, the action remains pending and follows an accepted retry or exit plan.
+19. Members emit the existing mint-quote paid observation only when accepted policy considers at least `cashu_amount_sat` of net value safely claimable/settled under federation custody.
+20. Existing CDK quorum and mint issuance logic completes the quote.
+
+## 17. Outgoing BOLT11 flow
+
+1. CDK parses the invoice and creates the ordinary melt quote.
+2. `cdk-bark` computes a conservative fee reserve from accepted policy without reserving VTXOs.
+3. The wallet submits the melt; the existing accepted `Melt` operation moves proofs to pending.
+4. The existing deterministic actor lease selects a Bark planning actor, or a Bark-specific lease derived by the same rule selects one.
+5. The actor reads the accepted Bark projection and builds a candidate with exact input VTXOs, payment amount, fee, HTLC/change locator, revocation locator, expiry, and Ark artifact commitment. Planning makes no mutation.
+6. Every member can independently validate the candidate against the invoice, melt, VTXO state, amount conservation, fee reserve, and policy.
+7. Consensus accepts the send `ActionPlan`, atomically reserving inputs and locators.
+8. The actor applies the accepted plan to its local Bark execution cache and creates the exact checkpoint/locks/movement idempotently.
+9. Every participant reconstructs the plan before returning FROST or virtual MuSig material.
+10. The actor submits the exact HTLC co-sign request and records the accepted result transition.
+11. The actor initiates payment using the stable payment hash/action ID and records the accepted initiation transition.
+12. All members poll status and submit observations.
+13. On success, an accepted transition records the proof/preimage commitment, exact VTXO effects, and actual total spent. Existing `MeltQuotePayment` quorum finalizes the Cashu melt and returns any unused fee reserve through the ordinary path.
+14. On terminal external failure, consensus first accepts a revocation plan. Only after value is restored or an accepted recovery path owns it may members emit terminal failed observations.
+15. If status is ambiguous, proofs remain pending and actor failover repeats the exact request; it never creates a different send plan.
+
+## 18. Maintenance and emergency recovery
+
+Bark VTXO expiry makes maintenance part of custody safety.
+
+### Refresh
+
+- Members observe expiry/tip data from independent sources.
+- An actor proposes exact VTXOs, round context, outputs, locators, fees, and timing.
+- Consensus reserves inputs and outputs before round participation or signatures.
+- Bark drives the accepted round plan and records exact result artifacts.
+- Missed rounds do not silently generate replacement plans.
+
+### Failed outgoing revocation
+
+- Terminal payment-failure evidence is accepted.
+- A revocation plan fixes HTLC VTXOs, revocation locator, destination, fee, expiry, and attempt.
+- Threshold signing and Ark RPC occur only after acceptance.
+- Failure to revoke remains recovery-required; it is not reported to Cashu as safely failed while value is unresolved.
+
+### Incoming claim exit
+
+- Once a preimage is disclosed, cancellation is impossible.
+- If cooperative claim cannot complete, consensus accepts an exact unilateral-exit plan.
+- The plan binds HTLC VTXOs, preimage commitment, exit transactions, fee policy, destination, and chain context.
+- Publication and confirmation are observed and accepted before terminal accounting.
+
+### General emergency exit
+
+- Operators can propose exits only for accepted federation-owned VTXOs.
+- Exit destinations should use the existing federated BDK application when configured; otherwise the Bark application needs a separately accepted threshold-controlled on-chain recovery destination.
+- This dependency must be resolved in Milestone 0. A production Bark backend cannot promise emergency recovery to a member-local seed address.
+
+## 19. Failure and ambiguity matrix
+
+| Failure point | Required behavior |
+|---|---|
+| Actor crashes before secret acknowledgements | No accepted state or Ark invoice; orphan member secret records expire. |
+| Actor crashes after `ReceiveIntent`, before invoice RPC | Lease rotates to an acknowledged member, which uses the same preimage and locator. |
+| Invoice RPC succeeds but response is lost | Retry by stable action ID/payment hash or query status; never generate another preimage. |
+| `ReceivePrepared` accepted but HTTP owner disconnects | Quote/result lookup returns the same invoice on retry. |
+| Incoming HTLC observed by one member only | No payment authority until required accepted evidence exists. |
+| Preimage disclosed, claim response lost | Remain pending; retry exact claim or accept exit. Never mark unpaid. |
+| Planner crashes before send plan acceptance | No external side effect; another actor may propose a plan from current state. |
+| Send plan accepted, actor crashes before HTLC RPC | Another actor applies and executes the same plan. |
+| FROST commitment returned, participant crashes | Restart burns unsafe incomplete state or returns the exact durable commitment/share according to lifecycle. |
+| One selected signer is unavailable | Accept a higher attempt with a deterministic new eligible subset; old attempt is burned. |
+| HTLC RPC succeeds, response lost | Query/retry by exact action ID; do not select different inputs. |
+| Payment initiation response lost | Treat as pending/unknown and query by payment hash. |
+| Payment terminally fails, revocation pending | Cashu melt remains pending until value recovery is accepted. |
+| Bark SQLite is deleted | Reopen scoped wallet and rebuild accepted public state from journal; protected secrets and Frost ledger restore separately. |
+| Member is far behind | Disable Bark worker/signing readiness until journal, projection, and policy frontier catch up. |
+| Ark server key/config changes | Fail closed; require a new application/config epoch. |
+
+## 20. Persistence and migration plan
+
+### New federation SQL state
+
+Add new forward migrations for tables such as:
+
+- `federation_bark_actions`;
+- `federation_bark_vtxos`;
+- `federation_bark_derivation_allocations`;
+- `federation_bark_reservations`;
+- `federation_bark_transitions`;
+- `federation_bark_observations`.
+
+The final schema can consolidate these where it improves integrity, but must retain explicit unique constraints for quote, payment hash, action/phase, VTXO reservation, locator, predecessor, and operation ID.
+
+Requirements:
+
+- paired new SQLite and PostgreSQL files;
+- no historical migration edits;
+- foreign keys or equivalent deterministic validation to accepted operations where practical;
+- idempotent identical insert behavior and conflict on different bytes;
+- rows registered in `federation_materialized_state_keys`;
+- complete projection snapshot/digest support;
+- empty install, pre-Bark upgrade, rollback-on-failure, and backend parity tests.
+
+### Bark SQLite
+
+Use Bark's own forward migration system for member-local execution-cache changes. Never edit an already released Bark migration. Add a new migration if the restricted facade needs accepted-operation IDs, locators, request commitments, or projection origin metadata.
+
+### Frost Redb
+
+Open existing stores compatibly and create new protocol-specific tables. Do not change the meaning of existing ordinary-FROST serialized records or table keys. Test opening an existing BDK-only store, using Bark, restarting, and continuing BDK signing.
+
+### Protected secret store
+
+Store:
+
+- receive intent/action ID;
+- quote ID;
+- payment hash and preimage commitment;
+- encrypted preimage;
+- locator and Ark server binding;
+- accepted operation reference when available;
+- acknowledgement state;
+- lifecycle and retention metadata.
+
+Never include plaintext secrets in logs, public checkpoints, materialized-state rows, or operator status.
+
+## 21. Configuration, dependencies, and release provenance
+
+### Bark dependency
+
+Preferred order:
+
+1. Upstream the restricted facade and required custody/wire changes.
+2. Consume a released Bark wallet/Ark crate version.
+3. If release timing blocks development, use an immutable reviewed git revision temporarily and record it in the plan/lockfile.
+
+Forbidden:
+
+- absolute path dependencies;
+- a floating `frost-wallet` branch;
+- copying Bark source into CDK;
+- production `[patch]` entries that depend on a developer checkout.
+
+### Compatibility gates
+
+- CDK MSRV 1.85.0 with the Bark dependency graph;
+- Rust 2021/2024 boundary review;
+- one compatible `bitcoin`/`lightning` type graph or explicit checked conversions;
+- no duplicate incompatible secp/MuSig types crossing public interfaces;
+- license and supply-chain review;
+- reproducible locked build.
+
+## 22. Implementation milestones
+
+### Milestone 0: freeze protocol and threat model
+
+Deliverables:
+
+- approve the authority/state model in this document;
+- decide emergency-exit destination dependency on federated BDK;
+- fix Bark application ID, epochs, derivation, locator, and policy versions;
+- choose receive-secret acknowledgement threshold and retention;
+- choose the gross-to-net receive fee formula and explicit first-receive anti-DoS policy;
+- define terminal paid/failed rules;
+- define Ark RPC idempotency requirements;
+- freeze operation and wire size limits;
+- record non-goals and fresh-database requirement.
+
+Exit criteria:
+
+- security review agrees no external side effect precedes the required accepted plan;
+- no design requires root-share export or shared Bark operational seed;
+- standalone CDK behavior has an explicit regression baseline.
+
+### Milestone 1: upstream explicit Bark federation facade
+
+Deliverables:
+
+- explicit locator derive/reveal/import APIs;
+- pure send candidate planning;
+- accepted-plan apply without reselection;
+- receive start with supplied secret, locator, mailbox, and action ID;
+- typed custody session injection;
+- stable semantic result exports;
+- local projection rebuild hooks.
+
+Tests:
+
+- two clean Bark databases replay identical accepted records;
+- no federation path calls local next-key allocation;
+- no federation path reaches `local_keypair()`;
+- restart between every action step returns to the same semantic plan.
+
+### Milestone 2: canonical Bark wire and authorization contract
+
+Deliverables:
+
+- public bounded encodings for all three custody protocols;
+- typed accepted-operation authorization reference;
+- exact transcript reconstruction specification;
+- cross-protocol and malformed-input rejection tests.
+
+Exit criteria:
+
+- a remote transport can be implemented without private-field access;
+- changing any plan field causes every honest participant to deny the request.
+
+### Milestone 3: register Bark under the CDK root
+
+Deliverables:
+
+- Bark application config and validation;
+- setup/DKG activation derivation from the existing root;
+- public and private config persistence;
+- application derivation vectors for 2-of-3 and 3-of-5;
+- no-export custody construction.
+
+Exit criteria:
+
+- BDK and Bark derive different application keys from the same root;
+- every member derives the same Bark group key and verification-share map;
+- opening with wrong network/server/epoch fails.
+
+### Milestone 4: durable virtual MuSig2 and threshold DH in `cdk-frost`
+
+Deliverables:
+
+- protocol-separated durable record types and Redb tables;
+- atomic nonce lifecycle and attempt high-water behavior;
+- completed retry cache and tombstones;
+- threshold-DH authorization/result audit records;
+- failure-injection, restart, and BDK coexistence tests.
+
+Exit criteria:
+
+- kill-at-every-write tests cannot reuse a nonce;
+- an identical completed request returns the same safe result after restart;
+- a conflicting request for the same slot is rejected permanently.
+
+### Milestone 5: authenticated Bark custody transport
+
+Deliverables:
+
+- private REST request/response types;
+- participant handlers backed by `cdk-frost`;
+- bounded parallel coordinator client;
+- timeouts, concurrency limits, replay protection, and redacted metrics;
+- accepted signer-attempt/subset handling.
+
+Exit criteria:
+
+- no in-process aggregate participant set is used in a multi-member deployment;
+- unavailable signer replacement uses a higher accepted attempt;
+- stale and mixed-attempt shares are rejected.
+
+### Milestone 6: `cdk-bark` skeleton and fail-closed construction
+
+Deliverables:
+
+- crate, features, typed errors, config, and runtime scope;
+- `CdkFrostVtxoCustody`;
+- member-local Bark wallet open with separate operational seed;
+- custody descriptor validation;
+- readiness/degraded reporting;
+- non-mutating payment adapter.
+
+Exit criteria:
+
+- no Bark dependency is built without `federation-bark`;
+- startup rejects every config/custody mismatch;
+- debug output contains no path, endpoint credential, secret, or nonce.
+
+### Milestone 7: typed Bark federation operations
+
+Deliverables:
+
+- nested operation family and conflict keys;
+- canonical bounds and hashes;
+- authorization/author rules;
+- result lookup;
+- journal, transport, checkpoint, suffix-verifier, and backup compatibility.
+
+Exit criteria:
+
+- replay and duplicate operations are idempotent;
+- conflicting quote, payment hash, VTXO, locator, phase, and attempt operations are rejected;
+- non-Bark federation operation behavior is unchanged.
+
+### Milestone 8: Bark SQL projection and append-only migrations
+
+Deliverables:
+
+- new paired SQL migrations only;
+- database traits and SQLite/PostgreSQL implementations;
+- deterministic state machine and materialized digest rows;
+- migration checksum locks for all historical migrations.
+
+Exit criteria:
+
+- empty and pre-Bark databases reach the same schema;
+- SQLite and PostgreSQL projections have byte-equivalent snapshots;
+- no previously existing migration byte changes.
+
+### Milestone 9: protected receive-secret distribution
+
+Deliverables:
+
+- authenticated prepare-secret request;
+- encrypted local persistence-before-acknowledgement;
+- signed canonical acknowledgements;
+- orphan cleanup and accepted-intent retention;
+- backup/restore and actor-eligibility rules.
+
+Exit criteria:
+
+- permanent loss of the invoice creator does not lose an accepted invoice secret;
+- acknowledgement cannot be forged or replayed for another quote/hash/locator;
+- plaintext never enters public federation state.
+
+### Milestone 10: incoming quote preparation
+
+Deliverables:
+
+- federation-only BOLT11 route seam;
+- receive intent and prepared operations;
+- supplied-secret Bark invoice API;
+- exact invoice validation;
+- gross/fee/net collateral validation and anti-DoS handling;
+- ordinary `MintQuote` reuse and idempotent response lookup.
+
+Exit criteria:
+
+- crash before and after every invoice boundary returns one invoice/payment hash;
+- no Ark invoice exists without an accepted intent;
+- standalone BOLT11 quote tests are unchanged.
+
+### Milestone 11: incoming observation and claim
+
+Deliverables:
+
+- independent status polling and mailbox-triggered polling;
+- accepted HTLC evidence;
+- exact receive-claim plan;
+- FROST/MuSig authorization;
+- accepted result transitions;
+- existing mint-payment observation bridge.
+
+Exit criteria:
+
+- one member's false paid report cannot mark a quote paid;
+- preimage disclosure cannot precede claim-plan acceptance;
+- post-disclosure ambiguity follows retry/exit rather than unpaid.
+
+### Milestone 12: outgoing planning and reservation
+
+Deliverables:
+
+- conservative quote fee calculation;
+- pure candidate selection;
+- complete send-plan validation;
+- atomic VTXO/locator reservation;
+- local Bark plan apply/rebuild.
+
+Exit criteria:
+
+- two concurrent melts cannot reserve one VTXO;
+- failover cannot alter inputs, keys, fee, expiry, or invoice;
+- insufficient-balance and fee-bound errors occur before external I/O.
+
+### Milestone 13: outgoing execution and finalization
+
+Deliverables:
+
+- exact HTLC co-sign execution;
+- payment initiation/status reconciliation;
+- accepted semantic transitions;
+- success proof handling;
+- existing melt-payment observation and saga bridge.
+
+Exit criteria:
+
+- lost responses never produce a second logical payment;
+- paid payment finalizes exactly once;
+- unknown remains pending.
+
+### Milestone 14: revocation and failure safety
+
+Deliverables:
+
+- terminal-failure evidence rules;
+- accepted revocation plan and execution;
+- revocation-stuck readiness/alerting;
+- emergency exit escalation;
+- safe failed-observation gate.
+
+Exit criteria:
+
+- Cashu proofs are not released/compensated while Bark value is unresolved;
+- revocation retry uses exact accepted VTXOs and key;
+- failure paths preserve amount conservation.
+
+### Milestone 15: refresh and emergency exit
+
+Deliverables:
+
+- expiry observations and maintenance candidate planning;
+- accepted refresh plans and round execution;
+- accepted exit plans, publication, and confirmation evidence;
+- operator controls and policy bounds.
+
+Exit criteria:
+
+- expiring VTXOs are visible before safety margin;
+- no maintenance signature occurs without an accepted plan;
+- clean replay reconstructs pending maintenance/recovery.
+
+### Milestone 16: full restart, replay, and catch-up
+
+Test restarts at:
+
+- receive secret persisted, acknowledgement not returned;
+- intent accepted, invoice not created;
+- invoice created, response lost;
+- receive prepared, quote not returned;
+- HTLC ready, claim plan not accepted;
+- claim nonce committed/shared;
+- preimage disclosed, claim result lost;
+- send plan accepted, local Bark plan absent;
+- MuSig commitment returned;
+- HTLC result lost;
+- payment initiated, status unknown;
+- revocation/refresh/exit in every phase;
+- checkpoint restore and projection deletion.
+
+Exit criteria:
+
+- no nonce reuse, double payment, VTXO double reservation, secret loss, or divergent projection;
+- a rebuilt member becomes ready only after all local layers match the accepted frontier.
+
+### Milestone 17: observability and operator tooling
+
+Deliverables:
+
+- scoped readiness and degraded reasons;
+- VTXO balance by accepted state;
+- expiring VTXO and recovery-required counts;
+- action phase, actor lease, signer attempt, and age;
+- protocol nonce/session counts without secrets;
+- receive-secret acknowledgement coverage;
+- Ark/chain source scope warnings;
+- safe retry/reconcile commands.
+
+Exit criteria:
+
+- operators can distinguish consensus lag, Bark projection lag, signer failure, Ark ambiguity, and recovery-required value;
+- tooling cannot print preimages, nonces, shares, credentials, or private paths.
+
+### Milestone 18: adversarial release gate
+
+Run:
+
+- Byzantine conflicting proposals and observations;
+- malformed canonical artifacts and oversized messages;
+- stale attempt, mixed signer set, and cross-protocol substitution;
+- actor and signer partitions;
+- Ark timeout/rejection/duplicate/ambiguous response;
+- chain-source disagreement;
+- database transaction and disk failures;
+- SQLite/PostgreSQL parity;
+- MSRV, fmt, clippy, docs, and workspace tests;
+- regtest multi-process mint/Ark/Lightning scenarios;
+- independent cryptographic and federation-state review.
+
+Exit criteria:
+
+- all definition-of-done items below pass;
+- no unresolved critical/high finding remains;
+- production enablement remains opt-in.
+
+## 23. Test matrix
+
+### Cryptography
+
+- BIP340 signatures for 2-of-3 and 3-of-5.
+- Virtual MuSig2 partial accepted byte-for-byte by Bark's MuSig implementation.
+- Threshold-DH combined result and every DLEQ proof.
+- Application and locator derivation vectors.
+- Parity/full compressed-key edge cases.
+- Cross-application and cross-protocol rejection.
+
+### Durable protocol state
+
+- duplicate commitment request;
+- conflicting same-session request;
+- completed-share retry after restart;
+- crash before/after every CAS transition;
+- higher attempt burns lower attempt atomically;
+- tombstone compaction retains replay denial;
+- BDK and Bark share one Redb database without record collision.
+
+### Consensus and projection
+
+- operation canonicalization and size bounds;
+- every conflict-key class;
+- invalid predecessor/phase;
+- VTXO and amount conservation;
+- locator collision and high-water behavior;
+- deterministic replay under shuffled local observations;
+- snapshot/digest equality across members and SQL backends;
+- checkpoint restore and suffix verification.
+
+### Incoming
+
+- secret acknowledgement threshold and invalid acknowledgements;
+- invoice actor loss before/after RPC;
+- invoice validation mismatch;
+- gross invoice, receive fee, and net VTXO accounting boundaries;
+- first receive into an empty wallet with each accepted anti-DoS mode;
+- duplicate HTTP request returns same invoice;
+- HTLC pending/ready/canceled;
+- claim success, rejection, timeout, and response loss;
+- preimage disclosure followed by cooperative recovery or exit;
+- false/missing observer reports.
+
+### Outgoing
+
+- amountless/fixed invoice rules;
+- insufficient funds and fee overflow;
+- concurrent coin selection;
+- actor failover before/after every RPC;
+- signer subset failover;
+- success, failure, pending, and unknown status;
+- revocation success/stuck/exit;
+- exact-once Cashu saga finalization.
+
+### Maintenance and recovery
+
+- expiry threshold boundaries;
+- rejected VTXO in round;
+- missed round retry with a new accepted plan;
+- forced exit and fee policy;
+- local Bark database deletion;
+- private secret restore;
+- member catch-up from stale frontier.
+
+### Standalone regression
+
+- existing CDK library and integration tests without `federation-bark`;
+- all existing Lightning backends;
+- existing federated BDK tests;
+- existing migration checksum and upgrade tests;
+- build with federation disabled;
+- build with federation enabled and Bark disabled.
+
+## 24. Observability requirements
+
+Metrics and status should expose identifiers only in bounded/redacted form:
+
+- Bark application/root epoch and accepted config digest;
+- accepted journal and local Bark projection frontier;
+- spendable/reserved/pending/recovery/exiting VTXO counts and amounts;
+- oldest action by semantic phase;
+- current actor lease and attempt number;
+- participant response counts and latency;
+- pending/burned/completed protocol sessions;
+- receive-secret acknowledgement count;
+- Ark status/latency/error class;
+- ambiguous result and recovery-required counters;
+- refresh deadline margin.
+
+Never expose:
+
+- root/application shares;
+- nonce material;
+- receive preimages;
+- unredacted invoices in high-cardinality labels;
+- operational seeds;
+- credentials, tokens, private endpoints, or local paths.
+
+## 25. Suggested pull request sequence
+
+1. Bark: explicit locators, supplied receive intent, pure send plan, accepted-plan apply.
+2. Bark: typed custody contexts, deterministic sessions, semantic result API.
+3. Bark/core: complete canonical wire APIs and idempotency tests.
+4. CDK: Bark application registration and derivation vectors.
+5. CDK: durable MuSig2/threshold-DH extensions and private transport.
+6. CDK: `cdk-bark` skeleton, custody adapter, fail-closed config.
+7. CDK: nested Bark operations and pure projection.
+8. CDK: new append-only SQL migrations and digest/backup support.
+9. CDK: receive-secret distribution and incoming invoice preparation.
+10. CDK: incoming observation/claim and mint-payment bridge.
+11. CDK: outgoing planning/reservation/execution and melt bridge.
+12. CDK/Bark: revocation, refresh, and emergency exit.
+13. Recovery, operator tooling, adversarial tests, and independent review.
+
+Keep Bark and CDK changes independently reviewable. Do not combine cryptographic-store redesign, public route integration, SQL schema, and full payment execution in one pull request.
+
+## 26. Recommended decisions for open design points
+
+| Question | Recommended first-release decision |
+|---|---|
+| Where does production participant state live? | Extend the existing `cdk-frost` Redb ledger; do not use Bark's process-local participant. |
+| How is the CDK root reused? | Register a separate Bark application; never export/import the root share. |
+| How are VTXO indexes allocated? | In accepted Bark intents/plans, with explicit conflict keys and high-water validation. |
+| What is authoritative Bark state? | CDK journal plus deterministic Bark SQL projection. |
+| What is Bark SQLite? | Independent member-local, rebuildable execution cache. |
+| How are incoming preimages recovered? | Private persist-before-ack distribution to at least the signature threshold before `ReceiveIntent`; accepted acknowledgements prove availability. |
+| Does one acknowledged member know the preimage? | Yes in v1, explicitly documented as a griefing limitation; custody still requires threshold VTXO signing. |
+| How are external retries identified? | Stable action/request ID plus payment hash and exact request commitment. |
+| Should CDK use an opaque backend operation? | No. Use one nested typed Bark operation family. |
+| Should existing `MintPayment` be widened globally? | No unless implementation proves the narrow federation seams cannot work. |
+| Are existing Bark Frost databases migrated? | No; start with a fresh Bark application-scoped database. |
+| Are historical CDK migrations edited? | Never. Add forward-only migrations and checksum locks. |
+| Is federated BDK required? | Decide at Milestone 0 for emergency-exit destination; production Bark must have a threshold-controlled exit destination either way. |
+
+## 27. Definition of done
+
+The federated Bark backend is production-ready only when all of the following are true:
+
+- Bark is a distinct, validated application under the existing CDK FROST root.
+- No plaintext root/application share is exported, reconstructed, or copied into Bark.
+- No production code uses process-local Bark participant nonce maps.
+- Ordinary FROST, virtual MuSig2, and threshold DH use authenticated bounded protocols and durable participant state.
+- Every custody request is reconstructed from one exact accepted operation and attempt.
+- All VTXO locators are consensus allocated.
+- Incoming receive secrets survive permanent invoice-actor loss.
+- Invoice creation follows accepted intent and returns one stable invoice.
+- Accepted net Bark value covers the Cashu amount issued after receive fees.
+- Outgoing inputs, keys, fees, expiries, and Ark artifacts are accepted before side effects.
+- Outgoing actual spend never exceeds the accepted fee reserve and is derived from accepted balance effects.
+- Actor and signer failover preserve the exact plan.
+- Paid, failed, pending, and ambiguous results follow conservative accepted-state rules.
+- Revocation, refresh, and emergency exit are implemented and tested.
+- CDK journal/projection is authority; Bark SQLite can be deleted and rebuilt.
+- SQLite and PostgreSQL migrations and projections agree.
+- No prior migration file was modified.
+- Existing federation checkpoint, backup, recovery, and materialized-state audits include Bark rows.
+- Existing Cashu business logic and standalone Lightning backends remain unchanged.
+- `federation-bark` is optional and absent from default builds.
+- MSRV, formatting, clippy, unit, integration, doc, restart, adversarial, and regtest gates pass.
+- Operator status is sufficient to diagnose lag, ambiguity, signer failure, expiring funds, and recovery-required value without leaking secrets.
+- An independent review covers application derivation, virtual MuSig math, threshold DH, nonce persistence, typed authorization, VTXO accounting, payment ambiguity, and emergency recovery.
+
+## 28. First implementation slice
+
+The first coding slice should not attempt a payment. It should prove the irreversible foundations with a small diff:
+
+1. Add Bark application public config derived from the existing root.
+2. Add stable application/locator derivation vectors and confirm they can implement Bark's `derive_public_key` expectation.
+3. Add `cdk-bark` with `CdkFrostVtxoCustody::descriptor()` and `derive_public_key()` only.
+4. Open a fresh Bark wallet using that external custody descriptor and a separate local operational seed.
+5. Add fail-closed startup checks and a read-only readiness report.
+6. Keep signing and all `MintPayment` mutation methods disabled.
+
+That slice validates dependency compatibility, root reuse, database scoping, and Bark construction without risking funds or forcing premature consensus/schema decisions. The next slice should be durable virtual MuSig2/threshold-DH and typed authorization; only after those pass should incoming or outgoing payment work begin.
