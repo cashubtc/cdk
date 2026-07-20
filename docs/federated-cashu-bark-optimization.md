@@ -23,6 +23,95 @@ orchestration thin; and prefer deleting measured work or delay over adding new
 machinery. Each change must remain narrow, evidenced, tested, documented, and
 independently committed.
 
+### Execution location
+
+Run every test federation, repeated performance sample, fault injection, and
+adverse-ordering workload on the local computer, not on the Nocean server. Use
+a local five-member release federation because it is faster, easier to reset,
+and produces cleaner comparisons. A local federation may still use the real
+Signet Ark server, faucet, and store when the milestone needs end-to-end Bark
+evidence. Nocean is limited to read-only field evidence and a narrowly scoped
+final deployment smoke check after all local gates pass; it is not the test or
+benchmark host.
+
+### Repeatable 2nd.dev Signet payment workflow
+
+Use these workflows for every real-payment sample. They were verified against
+`signet.2nd.dev` on 2026-07-21. Keep the five mint processes and the local CLI
+on the local computer; only the test Lightning payment crosses to 2nd.dev.
+Never record the raw invoice, preimage, payment hash, browser cookie, or wallet
+state in this document or a commit.
+
+#### Incoming: faucet pays the federation invoice
+
+1. Start a local CLI mint against the local five-member candidate and keep it
+   waiting. Capture the BOLT11 invoice outside the repository. After importing
+   the local federation into the wallet once, the repeatable command is:
+
+   ```bash
+   target/release/cdk-cli \
+     --work-dir "$WALLET_DIR" --non-interactive --unit sat \
+     mint "$MINT_URL" "$AMOUNT_SAT" --wait-duration 600
+   ```
+
+   Run the faucet helper from a second terminal while this command waits.
+2. Run `scripts/second_signet_faucet.sh "$INVOICE"`. The helper validates the
+   Signet invoice, copies it to the macOS clipboard, and opens the exact faucet
+   page. It never reads or persists browser cookies.
+3. If the faucet shows `Sign in with GitHub`, the OAuth session has expired.
+   Sign in, wait for the faucet to return, and rerun the helper so the intended
+   invoice—not a value retained by the page—is on the clipboard.
+4. Select `Lightning`, paste the invoice, and click `Send sats`. The underlying
+   endpoint is `POST /api/v1/faucet/lightning` with an `invoice` JSON field, but
+   it returns HTTP 401 without the authenticated browser session; do not work
+   around that boundary by copying cookies into a script.
+5. Record the click and success times, then let the local CLI drive quote GET
+   and POST mint fan-out. Verify issuance and five-member convergence locally.
+
+#### Outgoing: federation pays a store invoice
+
+1. Create a fresh invoice without navigating the store UI:
+   `scripts/second_signet_store_invoice.sh --json 1000`. Valid product amounts
+   are 1,000, 5,000, and 10,000 sats. The public helper calls
+   `POST /api/v1/order/create` and returns only `order_id` and the Signet BOLT11
+   invoice.
+2. Extract the order ID and invoice in the shell; keep both outside the
+   repository.
+
+   ```bash
+   store_order="$(scripts/second_signet_store_invoice.sh --json 1000)"
+   ORDER_ID="$(jq -r .order_id <<<"$store_order")"
+   INVOICE="$(jq -r .invoice <<<"$store_order")"
+   ```
+
+3. Start the bounded store-status check in the background. It mirrors the
+   store's one-second status cadence for at most ten minutes and never prints
+   the returned payment hash.
+
+   ```bash
+   scripts/second_signet_store_status.sh --wait "$ORDER_ID" &
+   STORE_STATUS_PID=$!
+   ```
+
+4. Give the invoice to the local CLI melt command against the local
+   five-member federation:
+
+   ```bash
+   target/release/cdk-cli \
+     --work-dir "$WALLET_DIR" --non-interactive --unit sat \
+     melt --mint-url "$MINT_URL" --method bolt11 --invoice "$INVOICE"
+   wait "$STORE_STATUS_PID"
+   ```
+
+5. Record quote creation, POST melt, Bark/Ark settlement, Cashu finalization,
+   CLI response, and store `PAID` times separately; then verify local
+   convergence, balances, quote/saga state, and VTXO accounting.
+
+If either public store response schema changes, stop and re-verify the current
+page implementation before changing the helper. The browser store remains the
+fallback: open `https://signet.2nd.dev/store`, choose a product, click `Buy
+now`, and copy the displayed invoice.
+
 ## Purpose
 
 This is the living implementation plan, evidence record, and development
@@ -62,8 +151,9 @@ This plan covers the complete federated Bark BOLT11 lifecycle:
   latency, authenticated FROST traffic, Ark RPC volume, and member CPU;
 - restart, replay, checkpoint restore, member loss, ambiguous payment state,
   expired work, and terminal cleanup; and
-- focused local harnesses, the local `cdk-cli`, the five-member Nocean
-  deployment, and real Signet payment demonstrations.
+- focused local harnesses, a local five-member release federation, the local
+  `cdk-cli`, real Signet payment demonstrations, and a final Nocean deployment
+  smoke check.
 
 The first optimization release must not:
 
@@ -172,19 +262,20 @@ its total duration is not a successful-payment performance baseline. Milestone
 ### Current consensus-entry cardinality
 
 Let `n` be the member count, `t` the Bark/FROST threshold, and `q` the generic
-payment-observation threshold. Nocean normally has `n = 5`, `t = 3`, and
-`q = 3`.
+payment-observation threshold. The active Nocean public config was checked on
+2026-07-21 and has `n = 5`, `t = 3`, and `q = 4`; signed status independently
+reported `required=4` for both mint and melt payment observations.
 
 These counts cover Bark and payment-observation entries. Incoming quote
 creation, outgoing melt quote/reservation, the final Cashu mint operation, raw
 AlephBFT protocol packets, private FROST messages, Ark RPCs, and wallet HTTP
 fan-out are reported separately.
 
-| Flow | Minimum formula | 3-of-5 minimum | Current 5-member range |
+| Flow | Minimum formula | Nocean minimum (`t=3`, `q=4`) | Current 5-member range |
 | --- | ---: | ---: | ---: |
-| Incoming success | `6 + 2t + q` | 15 | 15-21 |
-| Outgoing success | `4 + t + q` | 10 | 10-14 |
-| Outgoing failure plus revocation | `6 + 2t + q` | 15 | 15-21 |
+| Incoming success | `6 + 2t + q` | 16 | 16-21 |
+| Outgoing success | `4 + t + q` | 11 | 11-14 |
+| Outgoing failure plus revocation | `6 + 2t + q` | 16 | 16-21 |
 
 The two production incoming traces reached the upper part of the range because
 all five members submitted each Bark observation family and four members then
@@ -290,9 +381,10 @@ every milestone.
 
 ### Keep-or-revert rule
 
-- Run at least three equivalent local samples and three equivalent Signet or
-  Nocean samples for a noisy end-to-end comparison. Compare medians and report
-  p95 when the sample count is sufficient; never report only the best trace.
+- Run at least three equivalent deterministic or controlled local samples and
+  three equivalent local-federation Signet samples for a noisy end-to-end
+  comparison. Compare medians and report p95 when the sample count is
+  sufficient; never report only the best trace.
 - A latency candidate is retained when its directly targeted median stage
   improves by at least 15%, the direct delay/work counter moves as predicted,
   and no other primary stage regresses by more than 5%.
@@ -430,10 +522,11 @@ counter cannot be exercised meaningfully at a higher one.
    threshold three, normal AlephBFT, the local release `cdk-cli`, and either a
    controlled Bark/Ark test facade or Signet Bark. Capture server-only and warm
    persistent-wallet latency separately from cold CLI startup.
-3. **Nocean and real Signet.** Deploy the exact release binaries and source
-   commit. Use the real five-member deployment, public Ark server, local CLI,
-   Signet faucet, and Signet store. Require final convergence across all five
-   members.
+3. **Local federation and real Signet.** Run the exact release binaries and
+   source commit as five local members against the public Ark server. Use the
+   local CLI, Signet faucet, and Signet store. Require final convergence across
+   all five local members. Nocean is used only for the final deployment smoke
+   check after these measurements pass.
 
 ### Reproducible Signet demonstrations
 
@@ -549,7 +642,7 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 5 | Remove duplicate wallet submissions and any proven redundant serial Bark operation | Not started | - |
 | 6 | Isolate Bark maintenance from payment hot paths and terminalize permanent failures | Not started | - |
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Not started | - |
-| 8 | Pass sustained local, Nocean, CLI, and browser-based Signet release gates | Not started | - |
+| 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Not started | - |
 
 ## Milestone 0: causal baseline
 
@@ -591,7 +684,7 @@ milestone.
 - [ ] Run at least three release incoming and three release outgoing
       lifecycles on a five-member local deployment using the local CLI.
 - [ ] Run at least three incoming and outgoing Signet lifecycles against the
-      same candidate on Nocean, using the faucet and store.
+      same local five-member candidate, using the faucet and store.
 - [ ] Include one outgoing terminal failure and safe revocation, but report it
       separately from successful latency.
 - [ ] Record cold CLI, warm wallet, server-only, payer-controlled, and external
@@ -624,6 +717,17 @@ baseline, joined measurements, reproducible harness, and repeated local/Signet
 samples remain open. Permanent observability work is not required: disposable
 probes are allowed only where existing evidence is insufficient and must be
 removed before completion. No production optimization has been made.
+
+The execution location was corrected during this milestone: a planned remote
+sample was stopped before any federation mint quote or payment was submitted,
+and all repeated tests now target a local five-member release federation. The
+active Nocean public config and signed status corrected the assumed generic
+payment threshold from three to four. Faucet UI/OAuth behavior and the public
+store order APIs were verified; several disposable 1,000-sat store orders were
+created but deliberately left unpaid while checking response schemas. The
+three redacted helpers in `scripts/` passed shell syntax, invalid-input, live
+invoice-creation, and pending-status smoke checks. The faucet helper retains no
+authentication material.
 
 ## Milestone 1: generic progress pump and inter-operation wakes
 
@@ -767,13 +871,13 @@ threshold and does not make an actor result authoritative.
 
 One accepted Bark result family may replace the generic payment family only
 when it contains enough distinct members for both authorities. Define
-`r = max(t, q)`. Nocean has `t = q = r = 3`.
+`r = max(t, q)`. Nocean has `t = 3`, `q = 4`, and `r = 4`.
 
 | Flow | Current minimum | Candidate minimum | General reduction | Nocean reduction |
 | --- | ---: | ---: | ---: | ---: |
-| Incoming success | `6 + 2t + q` | `6 + t + r` | `min(t, q)` | 15 -> 12, save 3 |
-| Outgoing success | `4 + t + q` | `4 + r` | `min(t, q)` | 10 -> 7, save 3 |
-| Outgoing failure/revocation | `6 + 2t + q` | `6 + t + r` | `min(t, q)` | 15 -> 12, save 3 |
+| Incoming success | `6 + 2t + q` | `6 + t + r` | `min(t, q)` | 16 -> 13, save 3 |
+| Outgoing success | `4 + t + q` | `4 + r` | `min(t, q)` | 11 -> 8, save 3 |
+| Outgoing failure/revocation | `6 + 2t + q` | `6 + t + r` | `min(t, q)` | 16 -> 13, save 3 |
 
 Cashu quote creation/reservation and final mint issuance remain separately
 counted and are not hidden by this table.
@@ -817,7 +921,7 @@ counted and are not hidden by this table.
 ### Success criteria
 
 - The direct operation counter falls by exactly `min(t, q)` for all three flows,
-  which is three entries in the Nocean 3-of-5 configuration.
+  which is three entries with Nocean's `t = 3` and `q = 4`.
 - No generic Bark-backed payment observation appears after result quorum.
 - Median result-quorum-to-quote-final latency improves by at least 15%, with no
   other primary stage regressing by more than 5%.
@@ -860,8 +964,9 @@ backoff without recreating the shared-IP rate-limit incident.
 
 ### Tests
 
-- [ ] Healthy Nocean incoming evidence uses three primary observers for every
-      current evidence family because `t = q = 3`.
+- [ ] Healthy incoming HTLC evidence uses three primary observers; a Bark
+      result family carrying Cashu authority uses four because `t = 3`, `q =
+      4`, and `max(t, q) = 4`.
 - [ ] One unavailable primary activates fallback and completes safely.
 - [ ] Two unavailable primaries leave the quote pending without unsafe claim.
 - [ ] Accepted evidence suppresses all later Ark I/O by that member and epoch.
@@ -1066,10 +1171,10 @@ and single favorable payments cannot complete this milestone.
   - [ ] wallet GET/POST fan-out during backoff; and
   - [ ] old expired work plus new healthy payments.
 - [ ] Run at least five incoming and five outgoing real Signet samples with the
-      local CLI, faucet, and store.
+      local five-member federation, local CLI, faucet, and store.
 - [ ] Deploy the exact candidate to Nocean only after local gates pass.
-- [ ] Repeat at least five incoming and five outgoing Nocean samples, including
-      one slow or offline surplus member.
+- [ ] Perform only a narrowly scoped Nocean deployment smoke check; do not run
+      the repeated workload or member-failure matrix on the remote server.
 - [ ] Verify exact journal, application, finalized-item, Bark projection,
       materialized-state, quote, saga, VTXO, and balance convergence.
 - [ ] Verify idle CPU and automatic-work counters return to a bounded floor.
@@ -1176,6 +1281,8 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-20 | pre-optimization deployment | Nocean, five members, Bark Signet | 10,123-sat incoming success | about 101s quote-to-issuance; about 58s after first visible post-payment activity; 22 accepted operations; four duplicate finalized mint items | Baseline confirms serial federation delays and excess observation/submission work; no rate-limit error in this trace |
 | 2026-07-20 | pre-optimization deployment | Nocean, five members, Bark Signet | 50,000-sat incoming paid, not issued | actor claim RPC about 170ms; five HTLC observations, five result observations, four generic paid observations; all members `PAID`; no mint operation or signatures | Bark settlement succeeded; missing client POST issuance is a separate wallet-visible stage and must not be attributed to Ark or consensus failure |
 | 2026-07-21 | static consensus review | 3-of-5 model | incoming/outgoing cardinality | incoming success minimum 15, outgoing success 10, outgoing failure/revocation 15 Bark/payment entries; practical five-member ranges reach 21/14/21 | Establishes exact consensus-reduction counters before production changes |
+| 2026-07-21 | active public config and signed status | Nocean, read-only field evidence | threshold correction | Bark/FROST threshold is 3; mint and melt payment-observation threshold is 4; active minimums are therefore 16/11/16, not 15/10/15 | Milestone 3 must use `max(t, q) = 4`; the three-operation reduction remains unchanged |
+| 2026-07-21 | workflow verification | local browser and shell against 2nd.dev Signet | payment-helper smoke, no payment submitted | faucet login succeeded through GitHub OAuth; unauthenticated faucet API returned 401; public store create/status returned a redacted Signet invoice and `PENDING`; disposable orders were left unpaid | Repeated samples can avoid store UI navigation while faucet authentication remains correctly confined to the browser |
 
 ## Completion checklist
 
@@ -1193,8 +1300,8 @@ Append future evidence here rather than rewriting historical results.
 - [ ] Every remaining serial Bark operation protects a documented distinct
       safety or side-effect boundary.
 - [ ] Maintenance does not compete with active payments and terminal work stops.
-- [ ] Repeated local, Nocean, CLI, faucet, and store measurements satisfy the
-      retained milestone gates.
+- [ ] Repeated local federation, CLI, faucet, and store measurements satisfy
+      the retained milestone gates; the Nocean deployment smoke check passes.
 - [ ] Restart, replay, catch-up, member loss, rate limit, threshold failure,
       federated BDK, and standalone regressions pass.
 - [ ] Production observability explains every material delay without logging
