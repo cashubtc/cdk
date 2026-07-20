@@ -9,16 +9,36 @@ service KeysetService {
 }
 
 message RotateNextKeysetRequest {
+    // Currency unit the new keyset signs, e.g. "sat". Matched case-
+    // insensitively. A unit the mint cannot derive a keyset for fails with
+    // gRPC status INVALID_ARGUMENT.
     string unit = 1;
+    // Token denominations the keyset can sign, e.g. [1, 2, 4, 8, 16]. If
+    // empty, the amounts of the currently active keyset for this unit are
+    // reused; rotating a unit that has no active keyset requires a non-empty
+    // list.
     repeated uint64 amounts = 2;
+    // Input fee charged per input, in parts per thousand. Defaults to 0 when
+    // omitted.
     optional uint64 input_fee_ppk = 3;
+    // When true (the default), emit a NUT-02 Version01 keyset; when false,
+    // a Version00 keyset. Defaults to true if omitted.
     optional bool use_keyset_v2 = 4;
+    // Absolute expiry as seconds since the UNIX epoch. Omit for a keyset
+    // that never expires.
     optional uint64 final_expiry = 5;
 }
 
+// Describes the keyset the mint activated. On failure a gRPC error status is
+// returned instead.
 message RotateNextKeysetResponse {
+    // Hex-encoded ID of the new active keyset.
     string id = 1;
+    // Currency unit the keyset signs, normalized to lowercase (e.g. a
+    // request of "SAT" returns "sat").
     string unit = 2;
+    // Token denominations the new keyset can sign.
     repeated uint64 amounts = 3;
+    // Input fee per input, in parts per thousand, applied to this keyset.
     uint64 input_fee_ppk = 4;
 }
