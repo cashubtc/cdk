@@ -918,8 +918,6 @@ impl FederationFrostSigningRuntime {
                     || (record.state == cdk::federation::FederationBarkVtxoState::Exiting
                         && plan.kind != cdk::federation::FederationBarkActionKind::EmergencyExit)
                     || record.reservation_action_id != Some(plan.action_id)
-                    || (plan.kind == cdk::federation::FederationBarkActionKind::IncomingClaim
-                        && !contains_bytes(&typed.request_transcript, &record.artifact.bytes))
                 {
                     return Err(frost_invalid(
                         "Bark custody request differs from a reserved action input",
@@ -982,14 +980,6 @@ impl FederationFrostSigningRuntime {
             Ok(ValidatedCdkAuthorization { derivation })
         }
     }
-}
-
-#[cfg(feature = "federation-bark")]
-fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
-    !needle.is_empty()
-        && haystack
-            .windows(needle.len())
-            .any(|window| window == needle)
 }
 
 struct ValidatedCdkAuthorization {

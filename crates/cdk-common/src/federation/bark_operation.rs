@@ -2806,7 +2806,9 @@ pub struct FederationBarkFrostAuthorization {
     pub message: [u8; 32],
     /// Canonical [`cdk_frost::SigningDerivation`] wire bytes.
     pub signing_derivation: Vec<u8>,
-    /// Exact bounded Bark request transcript independently checked by members.
+    /// Exact bounded Bark request transcript independently checked by members,
+    /// hex-encoded on the wire.
+    #[serde(with = "hex_bytes")]
     pub request_transcript: Vec<u8>,
 }
 
@@ -3979,7 +3981,7 @@ mod tests {
 
     #[test]
     fn frost_authorization_binds_exact_canonical_transcript() {
-        let transcript = b"exact accepted Bark custody request".to_vec();
+        let transcript = vec![0xab; 6_000];
         let application_id =
             FederationFrostApplicationId::from_bytes([7; 32]).expect("application ID");
         let reference = FederationBarkAuthorizationReference {

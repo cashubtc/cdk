@@ -275,9 +275,9 @@ impl Mint {
                         .iter()
                         .find(|record| record.vtxo_id == output.vtxo_id)
                         .ok_or(Error::Internal)?;
-                    if record.state
-                        != cdk_common::federation::FederationBarkVtxoState::Spendable
-                        || record.locator != output.locator
+                    // Later accepted operations may already have advanced the
+                    // claimed output from its original Spendable state.
+                    if record.locator != output.locator
                         || record.amount != output.amount
                         || record.artifact.hash != output.artifact_hash
                     {

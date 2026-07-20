@@ -3379,6 +3379,37 @@ Progress checkpoint:
   single source of truth when validating accepted artifacts. A Bark regression
   vector asserts that the two expiries differ and that the HTLC policy expiry
   is retained. This changes no Ark RPC or wire protocol;
+- traced the remaining claim failure to Bark's local checkpoint namespace.
+  Ordinary receives are stored as `ln_recv.<payment-hash>`, while accepted
+  federated operations are deliberately stored as `federation.<action-id>`.
+  The settled preimage was present in the latter checkpoint, but the claim
+  lookup searched only the former. Bark now falls back to its existing active
+  action checkpoints and returns the preimage only from a matching
+  `LightningReceive` checkpoint. This is a local wallet lookup and adds no Ark
+  request, polling loop, persistence format, or protocol extension;
+- removed a CDK signer condition that required an incoming-claim transcript to
+  contain the complete serialized VTXO as a literal byte substring. The
+  original Bark transcript binds the accepted plan commitment plus the Arkoor
+  inputs, outputs, and intents; the accepted plan already binds the exact
+  artifact, while CDK separately verifies the operation, locator, amount, and
+  reservation. The literal-substring condition was not an original Bark
+  authorization requirement and made a valid claim impossible;
+- reproduced the next rejection at the exact serialization boundary: a valid
+  Bark FROST authorization serialized to 16,683 bytes because canonical JSON
+  expanded the bounded request transcript into an integer array, exceeding
+  CDK's existing 16,384-byte limit. The transcript is now encoded with the
+  federation module's existing exact-byte hexadecimal serde helper. The bound
+  was not raised, and a 6,000-byte round-trip regression case proves the
+  compact representation;
+- identified the final paid-quote race from accepted history and the live Bark
+  projection. After the receive claim made its output spendable, ordinary
+  automatic Bark maintenance could immediately reserve that output for a
+  refresh. CDK's payment probe incorrectly required the output's *current*
+  state to remain `Spendable`, even though it also verified the immutable
+  accepted claim transition and threshold-success observations. The probe now
+  permits later accepted operations to advance the output state while retaining
+  every identity, locator, amount, artifact-hash, accepted-transition, and
+  observation check;
 - retained consensus-frontier lease rotation for both outgoing payment workers
   and the incoming first-prepare worker. Every replica validates the full
   evidence returned by the ready-state prepare call before submitting its
@@ -3418,6 +3449,14 @@ cdk-cli mint --wait-duration 1 <member-1> 100 \
   "federated Bark Signet compatibility"
   result: valid Signet BOLT11 invoice; quote UNPAID on all 3 members
   expected final result: unpaid one-second wallet timeout
+
+fresh paid local Signet demonstration after the receive fixes:
+3 members; BLS/FROST threshold 2; BDK on-chain and Bark BOLT11 enabled
+external Signet faucet paid a fresh 323 sat federation invoice
+  result: Bark reached HtlcsReady and ReceiveClaimed; the mint quote became
+  PAID and then ISSUED; the clean cdk-cli wallet minted and received 323 sat
+  without a member restart, operator retry, or recovery-only code path
+  compatibility: existing public Ark service and original Bark protocol only
 ```
 
 This is a checkpoint, not completion of the release gate. The remaining
