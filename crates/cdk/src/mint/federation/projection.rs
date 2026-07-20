@@ -564,10 +564,12 @@ impl Mint {
                         "Lightning send inputs are not the deterministic accepted selection",
                     ));
                 }
-                let expected_expiry = minimum_expiry
-                    .checked_sub(application.policy.emergency_exit_before_expiry_blocks)
-                    .filter(|height| *height != 0)
-                    .ok_or_else(|| bark_state_error("Lightning send expiry is unsafe"))?;
+                let plan_expiry = u32::try_from(plan.expires_at)
+                    .map_err(|_| bark_state_error("Lightning send expiry exceeds u32"))?;
+                cdk_common::federation::validate_federation_bark_lightning_send_expiry(
+                    minimum_expiry,
+                    plan_expiry,
+                )?;
                 let output_index = snapshot
                     .derivation_allocations
                     .iter()
@@ -593,10 +595,9 @@ impl Mint {
                     || output.amount != expected_change
                     || plan.revocation_locator
                         != Some(FederationBarkVtxoLocator::vtxo_custody(revocation_index))
-                    || plan.expires_at != u64::from(expected_expiry)
                 {
                     return Err(bark_state_error(
-                        "Lightning send change, locators, or expiry is not deterministic",
+                        "Lightning send change or locators are not deterministic",
                     ));
                 }
             }

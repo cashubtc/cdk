@@ -488,6 +488,10 @@ pub(super) async fn advance_federated_bark_melt_quote(
         .copied()
         .take(usize::from(application.threshold))
         .collect::<Vec<_>>();
+    let expires_at = runtime
+        .lightning_send_expiry_height()
+        .await
+        .map_err(|_| cdk::Error::InvalidPaymentRequest)?;
     let plan = runtime
         .propose_lightning_send(
             &quote,
@@ -497,6 +501,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 actor,
                 signer_set,
                 attempt: 1,
+                expires_at,
             },
         )
         .map_err(|_| cdk::Error::InvalidPaymentRequest)?;

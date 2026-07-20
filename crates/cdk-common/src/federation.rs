@@ -64,11 +64,12 @@ pub use self::backup::{
 pub use self::bark_operation::{
     federation_bark_custody_transcript_hash, federation_bark_description_hash,
     federation_bark_exit_allocation_quote, federation_bark_mailbox_scope,
-    federation_bark_receive_request_hash, FederationBarkActionId, FederationBarkActionKind,
-    FederationBarkActionPlan, FederationBarkActionTransition, FederationBarkArtifact,
-    FederationBarkArtifactKind, FederationBarkAuthorizationReference, FederationBarkConflictKey,
-    FederationBarkCustodyProtocol, FederationBarkDigest, FederationBarkExitRequest,
-    FederationBarkExternalId, FederationBarkFrostAuthorization, FederationBarkMemberObservation,
+    federation_bark_receive_request_hash, validate_federation_bark_lightning_send_expiry,
+    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionPlan,
+    FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
+    FederationBarkAuthorizationReference, FederationBarkConflictKey, FederationBarkCustodyProtocol,
+    FederationBarkDigest, FederationBarkExitRequest, FederationBarkExternalId,
+    FederationBarkFrostAuthorization, FederationBarkMemberObservation,
     FederationBarkObservationStatus, FederationBarkOperation, FederationBarkOperationKind,
     FederationBarkOperationRecord, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
     FederationBarkReceiveProof, FederationBarkReceiveSecretAcknowledgement,
@@ -79,7 +80,8 @@ pub use self::bark_operation::{
     FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_BARK_ARTIFACT_AGGREGATE_BYTES,
     FEDERATION_MAX_BARK_ARTIFACT_BYTES, FEDERATION_MAX_BARK_AUTHORIZATION_BYTES,
     FEDERATION_MAX_BARK_COLLECTION_ENTRIES, FEDERATION_MAX_BARK_DESCRIPTION_BYTES,
-    FEDERATION_MAX_BARK_INVOICE_BYTES, FEDERATION_MAX_BARK_OPERATION_BYTES,
+    FEDERATION_MAX_BARK_INVOICE_BYTES, FEDERATION_MAX_BARK_LIGHTNING_SEND_EXPIRY_EXTENSION_BLOCKS,
+    FEDERATION_MAX_BARK_OPERATION_BYTES,
 };
 pub use self::bark_operator_status::{
     FederationBarkActionStatus, FederationBarkOperatorStatus, FederationBarkProtocolStatus,

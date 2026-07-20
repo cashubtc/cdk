@@ -3395,12 +3395,26 @@ Progress checkpoint:
   reservation. The literal-substring condition was not an original Bark
   authorization requirement and made a valid claim impossible;
 - reproduced the next rejection at the exact serialization boundary: a valid
-  Bark FROST authorization serialized to 16,683 bytes because canonical JSON
-  expanded the bounded request transcript into an integer array, exceeding
-  CDK's existing 16,384-byte limit. The transcript is now encoded with the
-  federation module's existing exact-byte hexadecimal serde helper. The bound
-  was not raised, and a 6,000-byte round-trip regression case proves the
-  compact representation;
+  outgoing Bark FROST authorization reached 21,422 bytes because the private
+  participant envelope encoded Bark's already-bounded binary transcript as
+  JSON/hex, exceeding CDK's existing 16,384-byte limit. Only that private
+  envelope now uses deterministic compact CBOR with a native byte string. The
+  exact Bark transcript remains intact, the bound was not raised, and a
+  12,000-byte canonical round-trip regression case proves the compact
+  representation;
+- reproduced outgoing execution through input hydration, Ark registration,
+  FROST authorization, and virtual-MuSig package construction. The public Ark
+  server then rejected the accepted HTLC expiry as too low. Its live ArkInfo
+  advertises `htlc_send_expiry_delta = 256`; CDK had derived the height from the
+  selected input's expiry (`minimum_input_expiry - emergency_margin`) instead
+  of Bark's required `current_tip + htlc_send_expiry_delta` rule;
+- added one narrow Bark federation-facade query that performs the same outgoing
+  expiry calculation as ordinary Bark. The replaceable proposal actor reads it
+  before consensus, and CDK commits the returned absolute height into the exact
+  send plan and authorization transcript. Deterministic replay performs no
+  chain or Ark I/O and enforces a fixed two-week upper extension relative to
+  the earliest accepted input. The Ark server retains the live lower-bound
+  check. No Ark RPC, protobuf, database, or public-server behavior changed;
 - identified the final paid-quote race from accepted history and the live Bark
   projection. After the receive claim made its output spendable, ordinary
   automatic Bark maintenance could immediately reserve that output for a
@@ -3457,6 +3471,25 @@ external Signet faucet paid a fresh 323 sat federation invoice
   PAID and then ISSUED; the clean cdk-cli wallet minted and received 323 sat
   without a member restart, operator retry, or recovery-only code path
   compatibility: existing public Ark service and original Bark protocol only
+
+outgoing Signet diagnosis and verification:
+public ArkInfo: htlc_send_expiry_delta=256
+pre-fix accepted plan: input expiry 314076; outgoing expiry 314058
+public Ark response: requested expiry too low; server tip 314023
+post-fix rule: Bark facade returns current tip + advertised send delta and CDK
+  commits that exact bounded height before custody
+cargo test -p cdk-common --features federation bark_operation::tests --offline
+  passed: 15 focused Bark operation tests, including the 12 KB authorization
+  and outgoing-expiry bounds
+cargo check -p cdk-bark --offline
+cargo check -p cdk-axum --features federation-bark --offline
+  passed
+live post-fix Cashu melt: blocked before Bark planning by an independent fresh
+  federation BLS issuance failure. A single-output 2,048-sat mint response still
+  failed the wallet's aggregate pairing check, after every member share had
+  passed member-share validation. No proof-verification bypass was added. This
+  is not evidence that the outgoing gate has passed; the local mint-signing
+  setup must be repaired or replaced before the final Signet melt is rerun.
 ```
 
 This is a checkpoint, not completion of the release gate. The remaining

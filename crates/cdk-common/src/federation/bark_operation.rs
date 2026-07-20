@@ -41,6 +41,13 @@ pub const FEDERATION_MAX_BARK_INVOICE_BYTES: usize = 64 * 1024;
 pub const FEDERATION_MAX_BARK_DESCRIPTION_BYTES: usize = 4 * 1024;
 /// Frozen v1 emergency-exit drain fee rate (10 sat/vB).
 pub const FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU: u64 = 2_500;
+/// Largest accepted outgoing HTLC extension beyond the earliest input expiry.
+///
+/// The Ark server chooses the lower bound from its live tip and advertised
+/// send delta. This two-week upper bound keeps an actor-proposed absolute
+/// height bounded without consulting external state during deterministic
+/// replay.
+pub const FEDERATION_MAX_BARK_LIGHTNING_SEND_EXPIRY_EXTENSION_BLOCKS: u32 = 2_016;
 
 const BARK_OPERATION_HASH_DOMAIN: &[u8] = b"cdk/federation/bark-operation/v1";
 const BARK_AUTHORIZATION_HASH_DOMAIN: &[u8] = b"cdk/federation/bark-authorization/v1";
@@ -71,6 +78,22 @@ pub fn federation_bark_custody_transcript_hash(bytes: &[u8]) -> Result<Federatio
         ));
     }
     domain_hash(BARK_CUSTODY_TRANSCRIPT_DOMAIN, bytes)
+}
+
+/// Validate the bounded absolute expiry proposed from Bark's live server view.
+pub fn validate_federation_bark_lightning_send_expiry(
+    minimum_input_expiry: u32,
+    proposed_expiry: u32,
+) -> Result<()> {
+    let maximum_expiry = minimum_input_expiry
+        .checked_add(FEDERATION_MAX_BARK_LIGHTNING_SEND_EXPIRY_EXTENSION_BLOCKS)
+        .ok_or_else(|| invalid_bark("Bark Lightning send expiry bound overflows"))?;
+    if minimum_input_expiry == 0 || proposed_expiry == 0 || proposed_expiry > maximum_expiry {
+        return Err(invalid_bark(
+            "Bark Lightning send expiry is outside its accepted bound",
+        ));
+    }
+    Ok(())
 }
 
 /// Deterministic address-allocation label for an emergency-exit destination.
@@ -2806,9 +2829,10 @@ pub struct FederationBarkFrostAuthorization {
     pub message: [u8; 32],
     /// Canonical [`cdk_frost::SigningDerivation`] wire bytes.
     pub signing_derivation: Vec<u8>,
-    /// Exact bounded Bark request transcript independently checked by members,
-    /// hex-encoded on the wire.
-    #[serde(with = "hex_bytes")]
+    /// Exact bounded Bark request transcript independently checked by members.
+    ///
+    /// The participant authorization wire uses a compact CBOR byte string.
+    #[serde(with = "compact_bytes")]
     pub request_transcript: Vec<u8>,
 }
 
@@ -2859,12 +2883,12 @@ impl FederationBarkFrostAuthorization {
         Ok(())
     }
 
-    /// Decode and require sorted-key canonical JSON.
+    /// Decode and require the canonical compact participant wire format.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > FEDERATION_MAX_BARK_AUTHORIZATION_BYTES {
             return Err(invalid_bark("Bark FROST authorization exceeds its bound"));
         }
-        let value: Self = serde_json::from_slice(bytes)
+        let value: Self = ciborium::from_reader(bytes)
             .map_err(|error| invalid_bark(format!("invalid Bark FROST authorization: {error}")))?;
         value.validate()?;
         if value.canonical_bytes()? != bytes {
@@ -2875,9 +2899,12 @@ impl FederationBarkFrostAuthorization {
         Ok(value)
     }
 
-    /// Return sorted-key canonical JSON bytes.
+    /// Return canonical compact participant wire bytes.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
-        canonical_json_bytes(self)
+        let mut bytes = Vec::new();
+        ciborium::into_writer(self, &mut bytes)
+            .map_err(|error| invalid_bark(format!("invalid Bark FROST authorization: {error}")))?;
+        Ok(bytes)
     }
 
     /// Decode the exact signing derivation.
@@ -3097,6 +3124,51 @@ mod hex_bytes {
     {
         let value = String::deserialize(deserializer)?;
         crate::util::hex::decode(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+mod compact_bytes {
+    use core::fmt;
+
+    use serde::de::Visitor;
+    use serde::{Deserializer, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(bytes)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct ByteVisitor;
+
+        impl<'de> Visitor<'de> for ByteVisitor {
+            type Value = Vec<u8>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a bounded byte string")
+            }
+
+            fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(value.to_vec())
+            }
+
+            fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                Ok(value)
+            }
+        }
+
+        deserializer.deserialize_byte_buf(ByteVisitor)
     }
 }
 
@@ -3980,8 +4052,19 @@ mod tests {
     }
 
     #[test]
+    fn lightning_send_expiry_is_bounded_from_accepted_inputs() {
+        validate_federation_bark_lightning_send_expiry(314_076, 314_279)
+            .expect("current Ark expiry is bounded");
+        validate_federation_bark_lightning_send_expiry(314_076, 314_075)
+            .expect("the Ark server owns the live lower-bound check");
+        assert!(validate_federation_bark_lightning_send_expiry(0, 1).is_err());
+        assert!(validate_federation_bark_lightning_send_expiry(1, 0).is_err());
+        assert!(validate_federation_bark_lightning_send_expiry(1, 2_018).is_err());
+    }
+
+    #[test]
     fn frost_authorization_binds_exact_canonical_transcript() {
-        let transcript = vec![0xab; 6_000];
+        let transcript = vec![0xab; 12_000];
         let application_id =
             FederationFrostApplicationId::from_bytes([7; 32]).expect("application ID");
         let reference = FederationBarkAuthorizationReference {
@@ -4015,6 +4098,7 @@ mod tests {
         )
         .expect("valid exact authorization");
         let canonical = authorization.canonical_bytes().expect("canonical bytes");
+        assert!(canonical.len() <= FEDERATION_MAX_BARK_AUTHORIZATION_BYTES);
         assert_eq!(
             FederationBarkFrostAuthorization::from_bytes(&canonical).expect("canonical round trip"),
             authorization

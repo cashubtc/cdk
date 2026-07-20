@@ -30,13 +30,14 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::{FeeRate, ScriptBuf, Transaction};
 use cdk_common::federation::{
     ark_server_commitment, federation_bark_exit_allocation_quote,
-    federation_bark_receive_request_hash, FederationAllocatedAddressRef, FederationBarkActionId,
-    FederationBarkActionKind, FederationBarkActionPlan, FederationBarkActionStatus,
-    FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
-    FederationBarkDigest, FederationBarkExternalId, FederationBarkMemberObservation,
-    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkOperatorStatus,
-    FederationBarkPolicyConfig, FederationBarkProjectionSnapshot, FederationBarkProtocolStatus,
-    FederationBarkReceiveIntent, FederationBarkReceivePrepared, FederationBarkReceiveSecretBinding,
+    federation_bark_receive_request_hash, validate_federation_bark_lightning_send_expiry,
+    FederationAllocatedAddressRef, FederationBarkActionId, FederationBarkActionKind,
+    FederationBarkActionPlan, FederationBarkActionStatus, FederationBarkActionTransition,
+    FederationBarkArtifact, FederationBarkArtifactKind, FederationBarkDigest,
+    FederationBarkExternalId, FederationBarkMemberObservation, FederationBarkObservationStatus,
+    FederationBarkOperation, FederationBarkOperatorStatus, FederationBarkPolicyConfig,
+    FederationBarkProjectionSnapshot, FederationBarkProtocolStatus, FederationBarkReceiveIntent,
+    FederationBarkReceivePrepared, FederationBarkReceiveSecretBinding,
     FederationBarkReceiveSecretCoverage, FederationBarkSemanticPhase, FederationBarkVtxoId,
     FederationBarkVtxoInput, FederationBarkVtxoLocator, FederationBarkVtxoOutput,
     FederationBarkVtxoState, FederationBarkVtxoStatusCount, FederationBarkVtxoTransition,
@@ -160,6 +161,8 @@ pub struct FederatedBarkSendProposal {
     pub signer_set: Vec<MemberId>,
     /// Non-zero custody attempt.
     pub attempt: u32,
+    /// Absolute outgoing HTLC expiry derived from Bark's live Ark view.
+    pub expires_at: u32,
 }
 
 /// Result of driving one already accepted refresh plan.
@@ -393,6 +396,15 @@ impl FederatedBarkRuntime {
             .map_err(|_| Error::InvalidChainSource)
     }
 
+    /// Read Bark's standard outgoing expiry from the current chain tip and
+    /// the Ark server's advertised send delta.
+    pub async fn lightning_send_expiry_height(&self) -> Result<u32, Error> {
+        self.wallet
+            .lightning_send_expiry_height()
+            .await
+            .map_err(|_| Error::InvalidChainSource)
+    }
+
     /// Purely derive one accepted locator without database or network I/O.
     pub fn derive_public_key(&self, index: u32) -> Result<PublicKey, Error> {
         self.wallet
@@ -453,10 +465,8 @@ impl FederatedBarkRuntime {
             return Err(Error::InsufficientAcceptedBalance);
         }
         selected.sort();
-        let expires_at = minimum_expiry
-            .checked_sub(application.policy.emergency_exit_before_expiry_blocks)
-            .filter(|height| *height != 0)
-            .ok_or(Error::SendPlanInvalid)?;
+        validate_federation_bark_lightning_send_expiry(minimum_expiry, proposal.expires_at)
+            .map_err(|_| Error::SendPlanInvalid)?;
         let output_index = projection
             .derivation_allocations
             .iter()
@@ -513,7 +523,7 @@ impl FederatedBarkRuntime {
             external_id,
             signer_set: proposal.signer_set,
             attempt: proposal.attempt,
-            expires_at: u64::from(expires_at),
+            expires_at: u64::from(proposal.expires_at),
         };
         plan.bind_lightning_send_artifacts(invoice)
             .map_err(|_| Error::SendPlanInvalid)?;
