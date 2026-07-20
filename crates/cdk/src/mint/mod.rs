@@ -11,6 +11,7 @@ use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
+use cdk_common::stream::{supervise_stream, BackoffPolicy};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
@@ -809,98 +810,105 @@ impl Mint {
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
     ) -> Result<(), Error> {
-        let shutdown_future = shutdown.notified();
-        tokio::pin!(shutdown_future);
+        // The supervisor waits `initial` before every reconnect, including a
+        // clean close. This is a deliberate change from the old loop, which
+        // reconnected immediately after a clean close: the floor stops a backend
+        // that accepts, delivers, and instantly drops from spinning in a hot
+        // reconnect loop. Keep `initial` short so payment-detection latency stays
+        // low when a healthy backend cycles its stream, while the exponential
+        // backoff still protects against a backend that keeps failing.
+        let policy = BackoffPolicy {
+            initial: Duration::from_millis(250),
+            max: Duration::from_secs(30),
+        };
 
-        loop {
-            tokio::select! {
-                _ = &mut shutdown_future => {
-                    processor.cancel_payment_event_stream();
-                    break;
+        // supervise_stream owns the reconnect/backoff/shutdown loop. The backend
+        // event stream is already decoded to `payment::Event` and never yields a
+        // stream-level error, so wrap each item in `Ok`.
+        let connect_processor = Arc::clone(&processor);
+        supervise_stream(
+            policy,
+            shutdown.notified(),
+            move || {
+                let processor = Arc::clone(&connect_processor);
+                async move {
+                    processor
+                        .wait_payment_event()
+                        .await
+                        .map(|stream| stream.map(Ok::<_, std::convert::Infallible>))
                 }
-                result = processor.wait_payment_event() => {
-                    match result {
-                        Ok(mut stream) => {
-                            loop {
-                                tokio::select! {
-                                    _ = &mut shutdown_future => {
-                                        processor.cancel_payment_event_stream();
-                                        return Ok(());
-                                    }
-                                    maybe_event = stream.next() => {
-                                        let Some(event) = maybe_event else {
-                                            break;
-                                        };
-
-                                        match event {
-                                            cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
-                                                if let Err(e) = Self::handle_payment_notification(
-                                                    &localstore,
-                                                    &pubsub_manager,
-                                                    wait_payment_response,
-                                                ).await {
-                                                    tracing::warn!("Payment notification error: {:?}", e);
-                                                }
-                                            }
-                                            cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => {
-                                                tracing::info!(
-                                                    "Outgoing payment confirmed for quote {}: status {}",
-                                                    quote_id,
-                                                    details.status,
-                                                );
-
-                                                if let Err(e) = Self::handle_successful_melt_payment_event(
-                                                    &mint,
-                                                    &localstore,
-                                                    &pubsub_manager,
-                                                    &quote_id,
-                                                    details,
-                                                )
-                                                .await
-                                                {
-                                                    tracing::warn!(
-                                                        "Failed to process successful payment event for quote {}: {}",
-                                                        quote_id,
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                            cdk_common::payment::Event::PaymentFailed { quote_id, reason } => {
-                                                tracing::warn!(
-                                                    "Outgoing payment failed for quote {}: {}",
-                                                    quote_id,
-                                                    reason,
-                                                );
-
-                                                if let Err(e) = Self::handle_failed_melt_payment_event(
-                                                    &mint,
-                                                    &localstore,
-                                                    &pubsub_manager,
-                                                    &quote_id,
-                                                )
-                                                .await
-                                                {
-                                                    tracing::warn!(
-                                                        "Failed to process failed payment event for quote {}: {}",
-                                                        quote_id,
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+            },
+            |event| {
+                let mint = Arc::clone(&mint);
+                let localstore = Arc::clone(&localstore);
+                let pubsub_manager = Arc::clone(&pubsub_manager);
+                async move {
+                    match event {
+                        cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
+                            if let Err(e) = Self::handle_payment_notification(
+                                &localstore,
+                                &pubsub_manager,
+                                wait_payment_response,
+                            )
+                            .await
+                            {
+                                tracing::warn!("Payment notification error: {:?}", e);
                             }
                         }
+                        cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => {
+                            tracing::info!(
+                                "Outgoing payment confirmed for quote {}: status {}",
+                                quote_id,
+                                details.status,
+                            );
 
-                        Err(e) => {
-                            tracing::warn!("Failed to get payment stream: {}", e);
-                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            if let Err(e) = Self::handle_successful_melt_payment_event(
+                                &mint,
+                                &localstore,
+                                &pubsub_manager,
+                                &quote_id,
+                                details,
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    "Failed to process successful payment event for quote {}: {}",
+                                    quote_id,
+                                    e
+                                );
+                            }
+                        }
+                        cdk_common::payment::Event::PaymentFailed { quote_id, reason } => {
+                            tracing::warn!(
+                                "Outgoing payment failed for quote {}: {}",
+                                quote_id,
+                                reason,
+                            );
+
+                            if let Err(e) = Self::handle_failed_melt_payment_event(
+                                &mint,
+                                &localstore,
+                                &pubsub_manager,
+                                &quote_id,
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    "Failed to process failed payment event for quote {}: {}",
+                                    quote_id,
+                                    e
+                                );
+                            }
                         }
                     }
                 }
-            }
-        }
+            },
+        )
+        .await;
+
+        // The loop stopped because shutdown fired; run the teardown the old
+        // inner and outer shutdown arms performed.
+        processor.cancel_payment_event_stream();
         Ok(())
     }
 
