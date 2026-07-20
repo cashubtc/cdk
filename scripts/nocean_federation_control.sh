@@ -509,7 +509,7 @@ start_fresh() {
     echo "Started fresh federation ceremony in tmux session $SESSION"
 }
 
-restart_runtime() {
+start_runtime() {
     [[ -f "$FINAL_PUBLIC" ]] || die "finalized public config is missing; run fresh first"
     if [[ "$PAYMENT_MODE" == "federated-bdk" ]]; then
         jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null \
@@ -518,7 +518,9 @@ restart_runtime() {
         jq -e '.frost_wallet == null' "$FINAL_PUBLIC" >/dev/null \
             || die "fakewallet public config unexpectedly contains a FROST wallet"
     fi
-    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+        die "federation tmux session is already running; use restart or stop first"
+    fi
     local member
     tmux new-session -d -s "$SESSION" -n federation -x 240 -y 80 -c "$PWD" \
         "exec bash scripts/nocean_federation_control.sh runtime-member 1"
@@ -533,6 +535,20 @@ restart_runtime() {
     tmux split-window -t "$SESSION:0" -c "$PWD" "exec bash scripts/nocean_federation_control.sh status-loop"
     tmux select-pane -T status
     tmux select-layout -t "$SESSION:0" tiled >/dev/null
+}
+
+stop_runtime() {
+    if tmux has-session -t "$SESSION" 2>/dev/null; then
+        tmux kill-session -t "$SESSION"
+        echo "Stopped federation tmux session $SESSION"
+    else
+        echo "Federation tmux session $SESSION is not running"
+    fi
+}
+
+restart_runtime() {
+    stop_runtime
+    start_runtime
 }
 
 status() {
@@ -574,6 +590,8 @@ status_loop() {
 require_commands
 case "${1:-}" in
     fresh) start_fresh ;;
+    start) start_runtime ;;
+    stop) stop_runtime ;;
     restart) restart_runtime ;;
     setup-member) run_setup_member "${2:?member ID required}" ;;
     runtime-member) run_runtime_member "${2:?member ID required}" ;;
@@ -581,5 +599,5 @@ case "${1:-}" in
     status) status ;;
     runtime-metrics) runtime_metrics ;;
     status-loop) status_loop ;;
-    *) die "usage: $0 {fresh|restart|status}" ;;
+    *) die "usage: $0 {fresh|start|stop|restart|status}" ;;
 esac
