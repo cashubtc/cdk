@@ -6,6 +6,8 @@ THRESHOLD="${THRESHOLD:-3}"
 PORT_START="${PORT_START:-21885}"
 PROMETHEUS_PORT_START="${PROMETHEUS_PORT_START:-21985}"
 PUBLIC_BASE_DOMAIN="${PUBLIC_BASE_DOMAIN:-nocean.xyz}"
+PUBLIC_URL_MODE="${PUBLIC_URL_MODE:-domain}"
+LOCAL_MEMBER_HOST="${LOCAL_MEMBER_HOST:-127.0.0.1}"
 NETWORK="${NETWORK:-signet}"
 MINIMUM_CONFIRMATIONS="${MINIMUM_CONFIRMATIONS:-1}"
 FEE_POLICY_VERSION="${FEE_POLICY_VERSION:-1}"
@@ -17,7 +19,7 @@ CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS
 CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
 STATUS_TIMEOUT_SECS="${STATUS_TIMEOUT_SECS:-900}"
 STATUS_POLL_SECS="${STATUS_POLL_SECS:-2}"
-SESSION="cdk-federation"
+SESSION="${SESSION:-cdk-federation}"
 
 MINTD="$PWD/bin/cdk-mintd"
 SETUP_PUBLIC="$PWD/config/dkg-setup-public.json"
@@ -30,7 +32,12 @@ die() {
 }
 
 member_url() {
-    printf 'https://cdk-%s.%s' "$1" "$PUBLIC_BASE_DOMAIN"
+    local member="$1"
+    if [[ "$PUBLIC_URL_MODE" == "loopback" ]]; then
+        printf 'http://%s:%s' "$LOCAL_MEMBER_HOST" "$((PORT_START + member - 1))"
+        return
+    fi
+    printf 'https://cdk-%s.%s' "$member" "$PUBLIC_BASE_DOMAIN"
 }
 
 member_dir() {
@@ -59,7 +66,7 @@ work_dir() {
 
 require_commands() {
     local command
-    for command in tmux curl jq timeout awk find ps seq; do
+    for command in tmux curl jq awk find ps seq; do
         command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
     done
     [[ -x "$MINTD" ]] || die "missing executable $MINTD"
@@ -73,6 +80,10 @@ require_commands() {
         || die "NETWORK must be bitcoin, testnet, signet, or regtest"
     [[ "$PAYMENT_MODE" =~ ^(federated-bdk|fakewallet)$ ]] \
         || die "PAYMENT_MODE must be federated-bdk or fakewallet"
+    [[ "$PUBLIC_URL_MODE" == "domain" || "$PUBLIC_URL_MODE" == "loopback" ]] \
+        || die "PUBLIC_URL_MODE must be domain or loopback"
+    [[ "$LOCAL_MEMBER_HOST" =~ ^[A-Za-z0-9.-]+$ ]] \
+        || die "LOCAL_MEMBER_HOST contains unsupported characters"
     [[ "$CHAIN_SOURCE_ID" =~ ^[A-Za-z0-9._-]+$ ]] \
         || die "CHAIN_SOURCE_ID contains unsupported characters"
     [[ "$ESPLORA_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
@@ -474,11 +485,24 @@ orchestrate() {
             || die "fakewallet public config unexpectedly contains an active FROST wallet"
     fi
 
-    echo "Starting finalized $PAYMENT_MODE runtimes..."
+    echo "Stopping setup runtimes before activating finalized member configs..."
     for member in $(seq 1 "$MEMBERS"); do
         pane="$(member_pane "$member")"
         [[ -n "$pane" ]] || die "could not find tmux pane for member $member"
+        tmux respawn-pane -k -t "$pane" "exit 0"
+    done
+    sleep 1
+    for member in $(seq 1 "$MEMBERS"); do
+        pane="$(member_pane "$member")"
+        [[ "$(tmux display-message -p -t "$pane" '#{pane_dead}')" == "1" ]] \
+            || die "setup runtime for member $member did not stop cleanly"
+    done
+
+    echo "Starting finalized $PAYMENT_MODE runtimes..."
+    for member in $(seq 1 "$MEMBERS"); do
+        pane="$(member_pane "$member")"
         tmux respawn-pane -k -t "$pane" \
+            -e "SESSION=$SESSION" \
             "cd '$PWD' && exec bash scripts/nocean_federation_control.sh runtime-member '$member'"
     done
 
@@ -493,16 +517,19 @@ start_fresh() {
     initialize
     local member
     tmux new-session -d -s "$SESSION" -n federation -x 240 -y 80 -c "$PWD" \
+        -e "SESSION=$SESSION" \
         "exec bash scripts/nocean_federation_control.sh setup-member 1"
     tmux set-option -t "$SESSION" remain-on-exit on
     tmux select-pane -t "$SESSION:0.0" -T member-1
     for member in $(seq 2 "$MEMBERS"); do
         tmux split-window -t "$SESSION:0" -c "$PWD" \
+            -e "SESSION=$SESSION" \
             "exec bash scripts/nocean_federation_control.sh setup-member '$member'"
         tmux select-pane -T "member-$member"
         tmux select-layout -t "$SESSION:0" tiled >/dev/null
     done
     tmux split-window -t "$SESSION:0" -c "$PWD" \
+        -e "SESSION=$SESSION" \
         "exec bash scripts/nocean_federation_control.sh orchestrate"
     tmux select-pane -T status
     tmux select-layout -t "$SESSION:0" tiled >/dev/null
@@ -523,16 +550,20 @@ start_runtime() {
     fi
     local member
     tmux new-session -d -s "$SESSION" -n federation -x 240 -y 80 -c "$PWD" \
+        -e "SESSION=$SESSION" \
         "exec bash scripts/nocean_federation_control.sh runtime-member 1"
     tmux set-option -t "$SESSION" remain-on-exit on
     tmux select-pane -t "$SESSION:0.0" -T member-1
     for member in $(seq 2 "$MEMBERS"); do
         tmux split-window -t "$SESSION:0" -c "$PWD" \
+            -e "SESSION=$SESSION" \
             "exec bash scripts/nocean_federation_control.sh runtime-member '$member'"
         tmux select-pane -T "member-$member"
         tmux select-layout -t "$SESSION:0" tiled >/dev/null
     done
-    tmux split-window -t "$SESSION:0" -c "$PWD" "exec bash scripts/nocean_federation_control.sh status-loop"
+    tmux split-window -t "$SESSION:0" -c "$PWD" \
+        -e "SESSION=$SESSION" \
+        "exec bash scripts/nocean_federation_control.sh status-loop"
     tmux select-pane -T status
     tmux select-layout -t "$SESSION:0" tiled >/dev/null
 }

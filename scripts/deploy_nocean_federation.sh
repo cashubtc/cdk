@@ -28,6 +28,7 @@ PROMETHEUS_PORT_START="${PROMETHEUS_PORT_START:-21985}"
 CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS:-20}"
 CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
 CONTROL_SCRIPT="$SCRIPT_DIR/nocean_federation_control.sh"
+CONTROL_RENDERER="$SCRIPT_DIR/render_bark_federation_control.py"
 BARK_REPO_ROOT="${BARK_REPO_ROOT:-$REPO_ROOT/../bark-cdk}"
 
 usage() {
@@ -98,6 +99,7 @@ fi
 [[ "$PAYMENT_MODE" == "federated-bdk-bark" || "$PAYMENT_MODE" == "fakewallet" ]] \
     || die "PAYMENT_MODE must be federated-bdk-bark or fakewallet"
 [[ -f "$CONTROL_SCRIPT" ]] || die "missing deployment control script: $CONTROL_SCRIPT"
+[[ -f "$CONTROL_RENDERER" ]] || die "missing Bark control renderer: $CONTROL_RENDERER"
 [[ -f "$BARK_REPO_ROOT/bark/Cargo.toml" ]] \
     || die "BARK_REPO_ROOT must point to the Bark frost-wallet checkout"
 BARK_REPO_ROOT="$(cd -- "$BARK_REPO_ROOT" && pwd)"
@@ -129,163 +131,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 - "$CONTROL_SCRIPT" "$GENERATED_CONTROL_SCRIPT" \
-    "$BARK_SERVER_ADDRESS" "$BARK_ESPLORA_URL" \
-    "$BARK_ARK_SERVER_PUBLIC_KEY" "$BARK_APPLICATION_KEY_EPOCH" <<'PY'
-from pathlib import Path
-import sys
-
-source = Path(sys.argv[1])
-destination = Path(sys.argv[2])
-bark_server_address = sys.argv[3]
-bark_esplora_url = sys.argv[4]
-bark_ark_server_public_key = sys.argv[5]
-bark_application_key_epoch = sys.argv[6]
-text = source.read_text()
-
-
-def replace_once(old: str, new: str) -> None:
-    global text
-    count = text.count(old)
-    if count != 1:
-        raise SystemExit(
-            f"control-script renderer expected one match, found {count}: {old[:80]!r}"
-        )
-    text = text.replace(old, new)
-
-
-if "federated-bdk" not in text:
-    raise SystemExit("control-script renderer could not find the BDK payment mode")
-text = text.replace("federated-bdk", "federated-bdk-bark")
-text = text.replace("https://mutinynet.com/api", "https://esplora.signet.2nd.dev/")
-text = text.replace("mutinynet-public-esplora", "2nddev-signet-esplora")
-text = text.replace("Mutinynet federated Cashu", "Signet federated Cashu")
-
-replace_once(
-    'PAYMENT_MODE="${PAYMENT_MODE:-federated-bdk-bark}"\n',
-    f'''PAYMENT_MODE="${{PAYMENT_MODE:-federated-bdk-bark}}"
-BARK_SERVER_ADDRESS="${{BARK_SERVER_ADDRESS:-{bark_server_address}}}"
-BARK_ESPLORA_URL="${{BARK_ESPLORA_URL:-{bark_esplora_url}}}"
-BARK_ARK_SERVER_PUBLIC_KEY="${{BARK_ARK_SERVER_PUBLIC_KEY:-{bark_ark_server_public_key}}}"
-BARK_APPLICATION_KEY_EPOCH="${{BARK_APPLICATION_KEY_EPOCH:-{bark_application_key_epoch}}}"
-BARK_POLICY_CONFIG="$PWD/config/bark-policy.json"
-''',
-)
-replace_once(
-    'for command in tmux curl jq timeout awk find ps seq; do',
-    'for command in tmux curl jq timeout awk find ps seq openssl; do',
-)
-replace_once(
-    '    local wallet_config development_policy_config\n',
-    '''    local wallet_config bark_config development_policy_config
-    local operational_seed_hex receive_secret_key_hex
-''',
-)
-replace_once(
-    '''        wallet_config="enabled = false"
-        development_policy_config="allow_development_payment_observation_policy = true"
-''',
-    '''        wallet_config="enabled = false"
-        bark_config="enabled = false"
-        development_policy_config="allow_development_payment_observation_policy = true"
-''',
-)
-replace_once(
-    '''        ln_backend="none"
-        onchain_backend="federated-bdk-bark"
-        development_policy_config=""
-        wallet_config="$(printf '%s\\n' \\
-''',
-    '''        ln_backend="federated-bark"
-        onchain_backend="federated-bdk"
-        development_policy_config=""
-        operational_seed_hex="$(openssl rand -hex 64)"
-        receive_secret_key_hex="$(openssl rand -hex 32)"
-        wallet_config="$(printf '%s\\n' \\
-''',
-)
-replace_once(
-    '''            'sync_interval_secs = 15')"
-    fi
-    mkdir -p "$dir/work"
-''',
-    '''            'sync_interval_secs = 15')"
-        bark_config="$(printf '%s\\n' \\
-            'enabled = true' \\
-            "network = \\"$NETWORK\\"" \\
-            "ark_server_public_key = \\"$BARK_ARK_SERVER_PUBLIC_KEY\\"" \\
-            "server_address = \\"$BARK_SERVER_ADDRESS\\"" \\
-            "esplora_url = \\"$BARK_ESPLORA_URL\\"" \\
-            "data_directory = \\"$dir/work/federation-bark\\"" \\
-            "receive_secret_database_path = \\"$dir/work/federation-bark/receive-secrets.redb\\"" \\
-            "frost_protocol_storage_root = \\"$dir/work/frost-protocol\\"" \\
-            "operational_seed_hex = \\"$operational_seed_hex\\"" \\
-            "receive_secret_key_hex = \\"$receive_secret_key_hex\\"" \\
-            'create_if_missing = true' \\
-            'automatic_refresh = true' \\
-            'automatic_emergency_exit = false')"
-    fi
-    mkdir -p "$dir/work/frost-protocol"
-''',
-)
-replace_once(
-    '''[federation.onchain_wallet]
-$wallet_config
-EOF
-''',
-    '''[federation.onchain_wallet]
-$wallet_config
-
-[federation.bark]
-$bark_config
-EOF
-''',
-)
-replace_once(
-    '''    mkdir -p "$PWD/config" "$PWD/logs"
-
-    local member
-''',
-    '''    mkdir -p "$PWD/config" "$PWD/logs"
-
-    if [[ "$PAYMENT_MODE" == "federated-bdk-bark" ]]; then
-        cat > "$BARK_POLICY_CONFIG" <<'EOF'
-{
-  "version": 1,
-  "receive_base_fee_sat": 0,
-  "receive_fee_ppm": 0,
-  "maximum_outgoing_base_fee_sat": 20,
-  "maximum_outgoing_fee_ppm": 5000,
-  "minimum_incoming_cltv_delta": 18,
-  "minimum_outgoing_cltv_delta": 18,
-  "refresh_before_expiry_blocks": 144,
-  "emergency_exit_before_expiry_blocks": 18,
-  "receive_secret_retention_days": 30,
-  "receive_anti_dos": "no_proof"
-}
-EOF
-    fi
-
-    local member
-''',
-)
-replace_once(
-    '''            --frost-cdk-application-key-epoch "$APPLICATION_KEY_EPOCH"
-''',
-    '''            --frost-cdk-application-key-epoch "$APPLICATION_KEY_EPOCH"
-            --frost-bark-network "$NETWORK"
-            --frost-bark-ark-server-public-key "$BARK_ARK_SERVER_PUBLIC_KEY"
-            --frost-bark-application-key-epoch "$BARK_APPLICATION_KEY_EPOCH"
-            --frost-bark-policy-config "$BARK_POLICY_CONFIG"
-''',
-)
-text = text.replace(
-    ".frost_wallet != null'",
-    ".frost_wallet != null and .frost_wallet.bark_application != null'",
-)
-
-destination.write_text(text)
-PY
+python3 "$CONTROL_RENDERER" \
+    --source "$CONTROL_SCRIPT" \
+    --output "$GENERATED_CONTROL_SCRIPT" \
+    --server-address "$BARK_SERVER_ADDRESS" \
+    --esplora-url "$BARK_ESPLORA_URL" \
+    --ark-server-public-key "$BARK_ARK_SERVER_PUBLIC_KEY" \
+    --application-key-epoch "$BARK_APPLICATION_KEY_EPOCH"
 chmod 755 "$GENERATED_CONTROL_SCRIPT"
 
 RUST_VERSION="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' \

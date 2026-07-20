@@ -34,6 +34,21 @@ evidence. Nocean is limited to read-only field evidence and a narrowly scoped
 final deployment smoke check after all local gates pass; it is not the test or
 benchmark host.
 
+Use the repository runner for the repeatable five-member topology:
+
+```bash
+scripts/run_local_bark_federation.sh fresh
+BUILD=0 scripts/run_local_bark_federation.sh status
+BUILD=0 scripts/run_local_bark_federation.sh runtime-metrics
+```
+
+It builds release `cdk-mintd` and `cdk-cli`, renders the same Bark federation
+control script used by the deployment helper, runs all five public member URLs
+on loopback, and confines generated configs, secrets, databases, and logs to
+the ignored `target/local-bark-federation` directory. Use `BUILD=0` after the
+first build. `fresh` performs a new DKG ceremony and replaces only that
+disposable target directory's generated federation state.
+
 ### Repeatable 2nd.dev Signet payment workflow
 
 Use these workflows for every real-payment sample. They were verified against
@@ -729,6 +744,14 @@ three redacted helpers in `scripts/` passed shell syntax, invalid-input, live
 invoice-creation, and pending-status smoke checks. The faucet helper retains no
 authentication material.
 
+The shared deployment control renderer was extracted so local and Nocean Bark
+topologies cannot drift. A clean local release build, two DKG ceremonies, and a
+stop/restart cycle exposed and fixed two setup-to-runtime handoff defects: all
+setup members are now stopped before any finalized runtime starts, and the
+selected tmux session name is passed explicitly to every pane. The corrected
+`fresh` run reached five-member readiness without a manual restart. Generated
+private material and runtime state remained under the ignored target tree.
+
 ## Milestone 1: generic progress pump and inter-operation wakes
 
 ### Goal
@@ -1283,6 +1306,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | static consensus review | 3-of-5 model | incoming/outgoing cardinality | incoming success minimum 15, outgoing success 10, outgoing failure/revocation 15 Bark/payment entries; practical five-member ranges reach 21/14/21 | Establishes exact consensus-reduction counters before production changes |
 | 2026-07-21 | active public config and signed status | Nocean, read-only field evidence | threshold correction | Bark/FROST threshold is 3; mint and melt payment-observation threshold is 4; active minimums are therefore 16/11/16, not 15/10/15 | Milestone 3 must use `max(t, q) = 4`; the three-operation reduction remains unchanged |
 | 2026-07-21 | workflow verification | local browser and shell against 2nd.dev Signet | payment-helper smoke, no payment submitted | faucet login succeeded through GitHub OAuth; unauthenticated faucet API returned 401; public store create/status returned a redacted Signet invoice and `PENDING`; disposable orders were left unpaid | Repeated samples can avoid store UI navigation while faucet authentication remains correctly confined to the browser |
+| 2026-07-21 | local federation runner | local release, five loopback members, Bark Signet | DKG and runtime readiness, no payment submitted | clean release build passed; corrected `fresh` completed DKG and reached five-member quorum without intervention; restart reached readiness in about 12s | The same rendered control topology can now be reset and measured locally without using Nocean as a benchmark host |
 
 ## Completion checklist
 
