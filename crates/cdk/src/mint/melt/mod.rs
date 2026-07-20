@@ -904,7 +904,10 @@ impl Mint {
     ///
     /// Uses MeltSaga typestate pattern for atomic transaction handling with automatic rollback on failure.
     #[instrument(skip_all)]
-    pub async fn melt(&self, melt_request: &MeltRequest<QuoteId>) -> Result<PendingMelt, Error> {
+    pub async fn melt(
+        self: &std::sync::Arc<Mint>,
+        melt_request: &MeltRequest<QuoteId>,
+    ) -> Result<PendingMelt, Error> {
         // Check max outputs limit (if change outputs are provided)
         if let Some(outputs) = melt_request.outputs() {
             let outputs_count = outputs.len();
@@ -932,7 +935,7 @@ impl Mint {
             .ok_or(Error::UnknownQuote)?;
 
         let init_saga = MeltSaga::new(
-            std::sync::Arc::new(self.clone()),
+            self.clone(),
             self.localstore.clone(),
             std::sync::Arc::clone(&self.pubsub_manager),
         );
@@ -948,7 +951,7 @@ impl Mint {
         let pubsub = self.pubsub_manager();
 
         let quote_for_spawn = quote.clone();
-        let mint_for_spawn = Arc::new(self.clone());
+        let mint_for_spawn = self.clone();
         let completion = tokio::spawn(async move {
             tracing::debug!(
                 "Starting background melt completion for quote: {}",

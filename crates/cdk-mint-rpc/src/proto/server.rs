@@ -876,10 +876,12 @@ mod tests {
             .with_name("test mint".to_string())
             .with_description("test mint".to_string());
 
-        let mint = mint_builder
-            .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
-            .await
-            .unwrap();
+        let mint = Arc::new(
+            mint_builder
+                .build_with_seed(db.clone(), &mnemonic.to_seed_normalized(""))
+                .await
+                .unwrap(),
+        );
 
         mint.set_quote_ttl(QuoteTTL::new(10000, 10000))
             .await
@@ -889,7 +891,7 @@ mod tests {
 
         MintRPCServer {
             socket_addr: "127.0.0.1:0".parse().unwrap(),
-            mint: Arc::new(mint),
+            mint,
             shutdown: Arc::new(Notify::new()),
             handle: None,
         }

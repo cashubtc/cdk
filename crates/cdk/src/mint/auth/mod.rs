@@ -271,7 +271,7 @@ mod tests {
     use crate::mint::{MintBuilder, MintMeltLimits};
     use crate::types::FeeReserve;
 
-    async fn create_auth_enabled_mint() -> Mint {
+    async fn create_auth_enabled_mint() -> Arc<Mint> {
         let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
         let auth_db = Arc::new(
             cdk_sqlite::mint::MintSqliteAuthDatabase::new(":memory:")
@@ -304,17 +304,19 @@ mod tests {
             .expect("payment processor");
 
         let mnemonic = Mnemonic::generate(12).expect("mnemonic");
-        let mint = mint_builder
-            .with_auth(
-                auth_db,
-                "https://example.com/.well-known/openid-configuration".to_string(),
-                "test-client".to_string(),
-                vec![],
-            )
-            .with_blind_auth(50, vec![])
-            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
-            .await
-            .expect("mint");
+        let mint = Arc::new(
+            mint_builder
+                .with_auth(
+                    auth_db,
+                    "https://example.com/.well-known/openid-configuration".to_string(),
+                    "test-client".to_string(),
+                    vec![],
+                )
+                .with_blind_auth(50, vec![])
+                .build_with_seed(db, &mnemonic.to_seed_normalized(""))
+                .await
+                .expect("mint"),
+        );
 
         mint.start().await.expect("start mint");
         mint
