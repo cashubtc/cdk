@@ -2294,9 +2294,13 @@ impl FederatedBarkRuntime {
                 .await
                 .map_err(|_| Error::ReceiveObservationFailed)?,
             FederationLightningReceiveStatus::Accepted => return Ok(None),
+            // The original Ark status response contains VTXO IDs, not full
+            // VTXOs. Once ready, this endpoint is idempotent and returns the
+            // same complete evidence to every federation member.
             FederationLightningReceiveStatus::HtlcsReady => self
                 .wallet
-                .receive_htlc_evidence_from_observation(&receive, observation)
+                .prepare_lightning_receive_htlcs(&receive)
+                .await
                 .map_err(|_| Error::ReceiveObservationFailed)?,
         };
         let result_hash = receive_htlc_evidence_hash(&evidence)?;
