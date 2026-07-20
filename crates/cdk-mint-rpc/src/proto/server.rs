@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use cdk::mint::{Mint, MintQuote};
+use cdk::mint::{Mint, MintKeySetInfo, MintQuote};
 use cdk::nuts::nut04::MintMethodSettings;
 use cdk::nuts::nut05::MeltMethodSettings;
 use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
@@ -19,6 +19,7 @@ use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status};
 
 use crate::cdk_mint_server::{CdkMint, CdkMintServer};
+use crate::keyset::keyset_service_server::{KeysetService, KeysetServiceServer};
 use crate::{
     ContactInfo, GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest, GetQuoteTtlResponse,
     RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
@@ -136,25 +137,40 @@ impl MintRPCServer {
                     .identity(server_identity)
                     .client_ca_root(client_ca_cert);
 
-                Server::builder().tls_config(tls_config)?.add_service(
-                    CdkMintServer::with_interceptor(
+                Server::builder()
+                    .tls_config(tls_config)?
+                    .add_service(CdkMintServer::with_interceptor(
                         self.clone(),
                         create_version_check_interceptor(
                             cdk_common::grpc::VERSION_HEADER,
                             cdk_common::MINT_RPC_PROTOCOL_VERSION,
                         ),
-                    ),
-                )
+                    ))
+                    .add_service(KeysetServiceServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
             }
             None => {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
-                Server::builder().add_service(CdkMintServer::with_interceptor(
-                    self.clone(),
-                    create_version_check_interceptor(
-                        cdk_common::grpc::VERSION_HEADER,
-                        cdk_common::MINT_RPC_PROTOCOL_VERSION,
-                    ),
-                ))
+                Server::builder()
+                    .add_service(CdkMintServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
+                    .add_service(KeysetServiceServer::with_interceptor(
+                        self.clone(),
+                        create_version_check_interceptor(
+                            cdk_common::grpc::VERSION_HEADER,
+                            cdk_common::MINT_RPC_PROTOCOL_VERSION,
+                        ),
+                    ))
             }
         };
 
@@ -185,6 +201,30 @@ impl MintRPCServer {
 
         tracing::info!("Mint rpc server stopped");
         Ok(())
+    }
+
+    /// Rotates to the next keyset for the given unit
+    ///
+    /// Shared by the legacy [`CdkMint`] service and [`KeysetService`] while
+    /// both are served.
+    async fn rotate_keyset(
+        &self,
+        unit: CurrencyUnit,
+        amounts: Vec<u64>,
+        input_fee_ppk: Option<u64>,
+        use_keyset_v2: Option<bool>,
+        final_expiry: Option<u64>,
+    ) -> Result<MintKeySetInfo, Status> {
+        self.mint
+            .rotate_keyset(
+                unit,
+                amounts,
+                input_fee_ppk.unwrap_or(0),
+                use_keyset_v2.unwrap_or(true),
+                final_expiry,
+            )
+            .await
+            .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))
     }
 }
 
@@ -802,21 +842,48 @@ impl CdkMint for MintRPCServer {
         let unit = CurrencyUnit::from_str(&request.unit)
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
 
-        let amounts = request.amounts;
-
         let keyset_info = self
-            .mint
             .rotate_keyset(
                 unit,
-                amounts,
-                request.input_fee_ppk.unwrap_or(0),
-                request.use_keyset_v2.unwrap_or(true),
+                request.amounts,
+                request.input_fee_ppk,
+                request.use_keyset_v2,
                 request.final_expiry,
             )
-            .await
-            .map_err(|_| Status::invalid_argument("Could not rotate keyset".to_string()))?;
+            .await?;
 
         Ok(Response::new(RotateNextKeysetResponse {
+            id: keyset_info.id.to_string(),
+            unit: keyset_info.unit.to_string(),
+            amounts: keyset_info.amounts,
+            input_fee_ppk: keyset_info.input_fee_ppk,
+        }))
+    }
+}
+
+#[tonic::async_trait]
+impl KeysetService for MintRPCServer {
+    /// Rotates to the next keyset for the specified currency unit
+    async fn rotate_next_keyset(
+        &self,
+        request: Request<crate::keyset::RotateNextKeysetRequest>,
+    ) -> Result<Response<crate::keyset::RotateNextKeysetResponse>, Status> {
+        let request = request.into_inner();
+
+        let unit = CurrencyUnit::from_str(&request.unit)
+            .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
+
+        let keyset_info = self
+            .rotate_keyset(
+                unit,
+                request.amounts,
+                request.input_fee_ppk,
+                request.use_keyset_v2,
+                request.final_expiry,
+            )
+            .await?;
+
+        Ok(Response::new(crate::keyset::RotateNextKeysetResponse {
             id: keyset_info.id.to_string(),
             unit: keyset_info.unit.to_string(),
             amounts: keyset_info.amounts,
@@ -922,6 +989,30 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.into_inner().tos_url.unwrap(), tos);
+    }
+
+    #[tokio::test]
+    async fn test_keyset_service_rotate_next_keyset() {
+        let server = create_test_rpc_server().await;
+
+        let response = KeysetService::rotate_next_keyset(
+            &server,
+            Request::new(crate::keyset::RotateNextKeysetRequest {
+                unit: "sat".to_string(),
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: Some(1),
+                use_keyset_v2: Some(true),
+                final_expiry: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let response = response.into_inner();
+        assert!(!response.id.is_empty());
+        assert_eq!(response.unit, "sat");
+        assert_eq!(response.amounts, vec![1, 2, 4, 8]);
+        assert_eq!(response.input_fee_ppk, 1);
     }
 
     #[tokio::test]

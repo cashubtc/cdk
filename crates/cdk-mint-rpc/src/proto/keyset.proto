@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package cdk_mint_keyset_v1;
+
+// Keyset administration for a mint.
+service KeysetService {
+    // Rotates to the next keyset for the specified currency unit.
+    rpc RotateNextKeyset(RotateNextKeysetRequest) returns (RotateNextKeysetResponse) {}
+}
+
+message RotateNextKeysetRequest {
+    string unit = 1;
+    repeated uint64 amounts = 2;
+    optional uint64 input_fee_ppk = 3;
+    optional bool use_keyset_v2 = 4;
+    optional uint64 final_expiry = 5;
+}
+
+message RotateNextKeysetResponse {
+    string id = 1;
+    string unit = 2;
+    repeated uint64 amounts = 3;
+    uint64 input_fee_ppk = 4;
+}
