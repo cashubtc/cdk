@@ -422,11 +422,14 @@ build_android() {
     [[ -f "$host_library" ]] || die "host CDK library for Kotlin generation was not built"
 
     mkdir -p "$BUILD_ROOT/kotlin-generated"
-    "$bindgen" generate \
-        --library "$host_library" \
-        --language kotlin \
-        --out-dir "$BUILD_ROOT/kotlin-generated" \
-        --no-format
+    (
+        cd "$SOURCE_ROOT"
+        "$bindgen" generate \
+            --library "$host_library" \
+            --language kotlin \
+            --out-dir "$BUILD_ROOT/kotlin-generated" \
+            --no-format
+    )
     generated="$BUILD_ROOT/kotlin-generated/org/cashudevkit/cdk_ffi.kt"
     [[ -f "$generated" ]] || die "UniFFI did not generate the expected Kotlin source"
     mkdir -p "$dist/src/main/java/org/cashudevkit"
