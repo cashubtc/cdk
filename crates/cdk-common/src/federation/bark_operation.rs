@@ -16,8 +16,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::journal::{FederationJournalEntry, FederationOperationStatus};
 use super::operation::{canonical_json_bytes, FederationOperationSignature};
 use super::{
-    FederationError, FederationFrostApplicationId, FederationId, FederationOperation,
-    FederationOperationId, MemberId, Result,
+    FederationAllocatedAddressRef, FederationError, FederationFrostApplicationId, FederationId,
+    FederationOperation, FederationOperationId, MemberId, Result,
 };
 use crate::Amount;
 
@@ -55,6 +55,10 @@ const BARK_RECEIVE_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-receive-ext
 const BARK_SEND_REQUEST_DOMAIN: &str = "cdk/federation/bark-send-request/v1";
 const BARK_SEND_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-send-external-id/v1";
 const BARK_REVOCATION_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-revocation-external-id/v1";
+const BARK_REFRESH_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-refresh-external-id/v1";
+const BARK_EXIT_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-exit-external-id/v1";
+const BARK_REFRESH_REQUEST_DOMAIN: &str = "cdk/federation/bark-refresh-request/v1";
+const BARK_EXIT_REQUEST_DOMAIN: &str = "cdk/federation/bark-exit-request/v1";
 
 /// Commit to the exact bounded transcript presented to a Bark custody method.
 pub fn federation_bark_custody_transcript_hash(bytes: &[u8]) -> Result<FederationBarkDigest> {
@@ -287,6 +291,40 @@ impl FederationBarkExternalId {
         }
         let mut transcript = Vec::new();
         append_hash_bytes(&mut transcript, BARK_REVOCATION_EXTERNAL_ID_DOMAIN);
+        append_hash_bytes(&mut transcript, &action_id.to_bytes());
+        append_hash_bytes(&mut transcript, &predecessor_operation_id.to_bytes());
+        append_hash_bytes(&mut transcript, &attempt.to_be_bytes());
+        Self::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
+    }
+
+    /// Derive the frozen idempotency key for one refresh round.
+    pub fn derive_refresh(
+        action_id: FederationBarkActionId,
+        predecessor_operation_id: FederationOperationId,
+        attempt: u32,
+    ) -> Result<Self> {
+        if attempt == 0 {
+            return Err(invalid_bark("Bark refresh attempt must be non-zero"));
+        }
+        let mut transcript = Vec::new();
+        append_hash_bytes(&mut transcript, BARK_REFRESH_EXTERNAL_ID_DOMAIN);
+        append_hash_bytes(&mut transcript, &action_id.to_bytes());
+        append_hash_bytes(&mut transcript, &predecessor_operation_id.to_bytes());
+        append_hash_bytes(&mut transcript, &attempt.to_be_bytes());
+        Self::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
+    }
+
+    /// Derive the frozen idempotency key for one emergency exit.
+    pub fn derive_emergency_exit(
+        action_id: FederationBarkActionId,
+        predecessor_operation_id: FederationOperationId,
+        attempt: u32,
+    ) -> Result<Self> {
+        if attempt == 0 {
+            return Err(invalid_bark("Bark exit attempt must be non-zero"));
+        }
+        let mut transcript = Vec::new();
+        append_hash_bytes(&mut transcript, BARK_EXIT_EXTERNAL_ID_DOMAIN);
         append_hash_bytes(&mut transcript, &action_id.to_bytes());
         append_hash_bytes(&mut transcript, &predecessor_operation_id.to_bytes());
         append_hash_bytes(&mut transcript, &attempt.to_be_bytes());
@@ -633,6 +671,77 @@ struct FederationBarkLightningSendRequestBinding<'a> {
     signer_set: &'a [MemberId],
     attempt: u32,
     expires_at: u64,
+}
+
+/// Canonical round request bound by an accepted refresh plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkRefreshRequest {
+    /// Domain separator for the canonical request.
+    pub domain: String,
+    /// Request schema version.
+    pub version: u16,
+    /// Stable maintenance action.
+    pub action_id: FederationBarkActionId,
+    /// Exact predecessor used for deterministic selection.
+    pub predecessor_operation_id: FederationOperationId,
+    /// Exact sorted refresh inputs.
+    pub inputs: Vec<FederationBarkVtxoInput>,
+    /// Consensus-allocated round output locator.
+    pub output_locator: FederationBarkVtxoLocator,
+    /// Exact replacement value.
+    pub output_amount: Amount,
+    /// Accepted refresh fee.
+    pub fee: Amount,
+    /// First height at which refresh execution is permitted.
+    pub trigger_height: u32,
+    /// Height at which the plan must escalate to emergency exit.
+    pub emergency_height: u32,
+    /// Earliest expiry among the exact inputs.
+    pub minimum_expiry: u32,
+    /// Stable Ark retry identifier.
+    pub external_id: FederationBarkExternalId,
+    /// Accepted signer attempt.
+    pub attempt: u32,
+}
+
+/// Canonical emergency-exit request into an allocated federated BDK script.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkExitRequest {
+    /// Domain separator for the canonical request.
+    pub domain: String,
+    /// Request schema version.
+    pub version: u16,
+    /// Stable recovery action.
+    pub action_id: FederationBarkActionId,
+    /// Exact predecessor used for deterministic selection.
+    pub predecessor_operation_id: FederationOperationId,
+    /// Exact sorted exit inputs.
+    pub inputs: Vec<FederationBarkVtxoInput>,
+    /// Consensus allocation owned by the existing federated BDK application.
+    pub destination: FederationAllocatedAddressRef,
+    /// Exact destination script committed by the allocation.
+    #[serde(with = "hex_bytes")]
+    pub destination_script: Vec<u8>,
+    /// Immutable Bitcoin network.
+    pub network: Network,
+    /// Exact fee rate used for the final drain, in sat/kwu.
+    pub fee_rate_sat_per_kwu: u64,
+    /// Maximum fee accepted for the final drain.
+    pub fee_bound: Amount,
+    /// Minimum value that must arrive under federated BDK custody.
+    pub minimum_recovered: Amount,
+    /// First height at which emergency exit execution is permitted.
+    pub trigger_height: u32,
+    /// Earliest expiry among the exact inputs.
+    pub minimum_expiry: u32,
+    /// Required drain-transaction confirmation depth.
+    pub minimum_confirmations: u32,
+    /// Stable publication retry identifier.
+    pub external_id: FederationBarkExternalId,
+    /// Accepted signer attempt.
+    pub attempt: u32,
 }
 
 /// Semantic Bark state fixed by an action plan or accepted transition.
@@ -1561,11 +1670,156 @@ impl FederationBarkActionPlan {
         Ok(())
     }
 
+    /// Bind the exact round request and immutable input VTXOs to a refresh
+    /// plan. The output allocation points at the request commitment.
+    pub fn bind_refresh_artifacts(
+        &mut self,
+        trigger_height: u32,
+        minimum_expiry: u32,
+        input_vtxos: impl IntoIterator<Item = FederationBarkArtifact>,
+    ) -> Result<()> {
+        if self.kind != FederationBarkActionKind::Refresh {
+            return Err(invalid_bark("only a refresh may bind a round request"));
+        }
+        let output = self
+            .outputs
+            .first()
+            .filter(|_| self.outputs.len() == 1)
+            .ok_or_else(|| invalid_bark("Bark refresh must allocate one output"))?;
+        let emergency_height = u32::try_from(self.expires_at)
+            .map_err(|_| invalid_bark("Bark refresh deadline exceeds u32"))?;
+        let request = FederationBarkRefreshRequest {
+            domain: BARK_REFRESH_REQUEST_DOMAIN.to_string(),
+            version: self.version,
+            action_id: self.action_id,
+            predecessor_operation_id: self.predecessor_operation_id,
+            inputs: self.inputs.clone(),
+            output_locator: output.locator,
+            output_amount: output.amount,
+            fee: self.fee_amount,
+            trigger_height,
+            emergency_height,
+            minimum_expiry,
+            external_id: self.external_id,
+            attempt: self.attempt,
+        };
+        request.validate()?;
+        let request = bark_artifact(
+            FederationBarkArtifactKind::ArkRequest,
+            canonical_json_bytes(&request)?,
+        )?;
+        self.outputs[0].artifact_hash = request.hash;
+        self.artifacts = input_vtxos.into_iter().collect();
+        self.artifacts.push(request);
+        self.artifacts.sort();
+        self.artifacts.dedup();
+        Ok(())
+    }
+
+    /// Decode and canonically verify the exact refresh request artifact.
+    pub fn refresh_request(&self) -> Result<FederationBarkRefreshRequest> {
+        if self.kind != FederationBarkActionKind::Refresh {
+            return Err(invalid_bark("Bark action is not a refresh"));
+        }
+        let artifact = self
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest)
+            .ok_or_else(|| invalid_bark("Bark refresh request artifact is missing"))?;
+        let request = serde_json::from_slice::<FederationBarkRefreshRequest>(&artifact.bytes)
+            .map_err(|_| invalid_bark("Bark refresh request artifact is invalid"))?;
+        if canonical_json_bytes(&request)? != artifact.bytes {
+            return Err(invalid_bark("Bark refresh request is not canonical"));
+        }
+        request.validate()?;
+        Ok(request)
+    }
+
+    /// Bind the exact federated BDK recovery allocation, final-drain policy,
+    /// immutable input VTXOs, and precomputed exit transaction packages.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bind_emergency_exit_artifacts(
+        &mut self,
+        destination: FederationAllocatedAddressRef,
+        destination_script: Vec<u8>,
+        network: Network,
+        fee_rate_sat_per_kwu: u64,
+        trigger_height: u32,
+        minimum_confirmations: u32,
+        input_vtxos: impl IntoIterator<Item = FederationBarkArtifact>,
+        exit_transactions: impl IntoIterator<Item = Vec<u8>>,
+    ) -> Result<()> {
+        if self.kind != FederationBarkActionKind::EmergencyExit {
+            return Err(invalid_bark(
+                "only an emergency exit may bind a recovery destination",
+            ));
+        }
+        let minimum_expiry = u32::try_from(self.expires_at)
+            .map_err(|_| invalid_bark("Bark exit expiry exceeds u32"))?;
+        let request = FederationBarkExitRequest {
+            domain: BARK_EXIT_REQUEST_DOMAIN.to_string(),
+            version: self.version,
+            action_id: self.action_id,
+            predecessor_operation_id: self.predecessor_operation_id,
+            inputs: self.inputs.clone(),
+            destination,
+            destination_script,
+            network,
+            fee_rate_sat_per_kwu,
+            fee_bound: self.fee_bound,
+            minimum_recovered: self.external_amount,
+            trigger_height,
+            minimum_expiry,
+            minimum_confirmations,
+            external_id: self.external_id,
+            attempt: self.attempt,
+        };
+        request.validate()?;
+        let request = bark_artifact(
+            FederationBarkArtifactKind::ArkRequest,
+            canonical_json_bytes(&request)?,
+        )?;
+        self.artifacts = input_vtxos.into_iter().collect();
+        self.artifacts.push(request);
+        for transaction in exit_transactions {
+            self.artifacts.push(bark_artifact(
+                FederationBarkArtifactKind::Transaction,
+                transaction,
+            )?);
+        }
+        self.artifacts.sort();
+        self.artifacts.dedup();
+        Ok(())
+    }
+
+    /// Decode and canonically verify the exact emergency-exit request.
+    pub fn emergency_exit_request(&self) -> Result<FederationBarkExitRequest> {
+        if self.kind != FederationBarkActionKind::EmergencyExit {
+            return Err(invalid_bark("Bark action is not an emergency exit"));
+        }
+        let artifact = self
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest)
+            .ok_or_else(|| invalid_bark("Bark exit request artifact is missing"))?;
+        let request = serde_json::from_slice::<FederationBarkExitRequest>(&artifact.bytes)
+            .map_err(|_| invalid_bark("Bark exit request artifact is invalid"))?;
+        if canonical_json_bytes(&request)? != artifact.bytes {
+            return Err(invalid_bark("Bark exit request is not canonical"));
+        }
+        request.validate()?;
+        Ok(request)
+    }
+
     fn validate(&self) -> Result<()> {
         ensure_version(self.version)?;
         ensure_optional_quote(self.quote.as_deref())?;
         ensure_count("Bark inputs", self.inputs.len(), false)?;
-        ensure_count("Bark outputs", self.outputs.len(), false)?;
+        ensure_count(
+            "Bark outputs",
+            self.outputs.len(),
+            self.kind == FederationBarkActionKind::EmergencyExit,
+        )?;
         ensure_count("Bark signer set", self.signer_set.len(), false)?;
         ensure_count("Bark artifacts", self.artifacts.len(), true)?;
         ensure_strictly_sorted("Bark inputs", &self.inputs)?;
@@ -1677,7 +1931,9 @@ impl FederationBarkActionPlan {
                     "failed-send revocation must bind exact HTLC inputs and one recovery output",
                 ));
             }
-        } else if self.external_amount != Amount::ZERO || self.revocation_locator.is_some() {
+        } else if !matches!(self.kind, FederationBarkActionKind::EmergencyExit)
+            && (self.external_amount != Amount::ZERO || self.revocation_locator.is_some())
+        {
             return Err(invalid_bark(
                 "only Lightning send may move value outside Bark outputs or reserve a revocation key",
             ));
@@ -1697,6 +1953,90 @@ impl FederationBarkActionPlan {
                 "incoming claim must bind every input, one output allocation, and zero claim fee",
             ));
         }
+        if self.kind == FederationBarkActionKind::Refresh {
+            let request = self.refresh_request()?;
+            let request_artifact = self
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest)
+                .ok_or_else(|| invalid_bark("refresh request artifact is missing"))?;
+            let output = self
+                .outputs
+                .first()
+                .filter(|_| self.outputs.len() == 1)
+                .ok_or_else(|| invalid_bark("refresh must allocate one output"))?;
+            if self.quote.is_some()
+                || self.payment_hash.is_some()
+                || self.revocation_locator.is_some()
+                || self.external_amount != Amount::ZERO
+                || request.action_id != self.action_id
+                || request.predecessor_operation_id != self.predecessor_operation_id
+                || request.inputs != self.inputs
+                || request.output_locator != output.locator
+                || request.output_amount != output.amount
+                || request.fee != self.fee_amount
+                || request.emergency_height != u32::try_from(self.expires_at).unwrap_or(u32::MAX)
+                || request.external_id != self.external_id
+                || request.attempt != self.attempt
+                || output.artifact_hash != request_artifact.hash
+                || self.external_id
+                    != FederationBarkExternalId::derive_refresh(
+                        self.action_id,
+                        self.predecessor_operation_id,
+                        self.attempt,
+                    )?
+                || self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+                    .count()
+                    < self.inputs.len()
+            {
+                return Err(invalid_bark(
+                    "refresh must bind exact inputs, timing, fee, and one round output",
+                ));
+            }
+        }
+        if self.kind == FederationBarkActionKind::EmergencyExit {
+            let request = self.emergency_exit_request()?;
+            if self.quote.is_some()
+                || self.payment_hash.is_some()
+                || self.revocation_locator.is_some()
+                || !self.outputs.is_empty()
+                || self.external_amount == Amount::ZERO
+                || self.fee_amount != self.fee_bound
+                || request.action_id != self.action_id
+                || request.predecessor_operation_id != self.predecessor_operation_id
+                || request.inputs != self.inputs
+                || request.fee_bound != self.fee_bound
+                || request.minimum_recovered != self.external_amount
+                || request.minimum_expiry != u32::try_from(self.expires_at).unwrap_or(u32::MAX)
+                || request.external_id != self.external_id
+                || request.attempt != self.attempt
+                || self.external_id
+                    != FederationBarkExternalId::derive_emergency_exit(
+                        self.action_id,
+                        self.predecessor_operation_id,
+                        self.attempt,
+                    )?
+                || self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+                    .count()
+                    < self.inputs.len()
+                || self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+                    .count()
+                    == 0
+            {
+                return Err(invalid_bark(
+                    "emergency exit must bind exact inputs, BDK destination, transactions, and fee policy",
+                ));
+            }
+        }
         let inputs = checked_sum(self.inputs.iter().map(|input| input.amount))?;
         let outputs = checked_sum(self.outputs.iter().map(|output| output.amount))?;
         let accounted = outputs
@@ -1706,6 +2046,86 @@ impl FederationBarkActionPlan {
         if inputs != accounted {
             return Err(invalid_bark(
                 "Bark action inputs do not equal outputs, payment, and fee",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl FederationBarkRefreshRequest {
+    fn validate(&self) -> Result<()> {
+        ensure_version(self.version)?;
+        if self.domain != BARK_REFRESH_REQUEST_DOMAIN {
+            return Err(invalid_bark("Bark refresh request domain differs"));
+        }
+        ensure_count("Bark refresh inputs", self.inputs.len(), false)?;
+        ensure_strictly_sorted("Bark refresh inputs", &self.inputs)?;
+        self.output_locator.validate()?;
+        if self.inputs.iter().any(|input| input.amount == Amount::ZERO)
+            || self
+                .inputs
+                .iter()
+                .any(|input| input.locator == self.output_locator)
+            || self.output_amount == Amount::ZERO
+            || self.attempt == 0
+            || self.trigger_height == 0
+            || self.trigger_height >= self.emergency_height
+            || self.emergency_height >= self.minimum_expiry
+        {
+            return Err(invalid_bark("Bark refresh request is unsafe or incomplete"));
+        }
+        let input_amount = checked_sum(self.inputs.iter().map(|input| input.amount))?;
+        if input_amount.checked_sub(self.fee) != Some(self.output_amount)
+            || self.external_id
+                != FederationBarkExternalId::derive_refresh(
+                    self.action_id,
+                    self.predecessor_operation_id,
+                    self.attempt,
+                )?
+        {
+            return Err(invalid_bark(
+                "Bark refresh request amount or external id differs",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl FederationBarkExitRequest {
+    fn validate(&self) -> Result<()> {
+        ensure_version(self.version)?;
+        if self.domain != BARK_EXIT_REQUEST_DOMAIN {
+            return Err(invalid_bark("Bark exit request domain differs"));
+        }
+        ensure_count("Bark exit inputs", self.inputs.len(), false)?;
+        ensure_strictly_sorted("Bark exit inputs", &self.inputs)?;
+        ensure_quote(&self.destination.quote)?;
+        let destination_script = bitcoin::ScriptBuf::from_bytes(self.destination_script.clone());
+        if self.destination.application_key_epoch == 0
+            || self.destination.derivation_index > super::FEDERATION_MAX_DERIVATION_INDEX
+            || !destination_script.is_p2tr()
+            || self.inputs.iter().any(|input| input.amount == Amount::ZERO)
+            || self.fee_rate_sat_per_kwu == 0
+            || self.fee_bound == Amount::ZERO
+            || self.minimum_recovered == Amount::ZERO
+            || self.minimum_confirmations == 0
+            || self.attempt == 0
+            || self.trigger_height == 0
+            || self.trigger_height >= self.minimum_expiry
+        {
+            return Err(invalid_bark("Bark exit request is unsafe or incomplete"));
+        }
+        let input_amount = checked_sum(self.inputs.iter().map(|input| input.amount))?;
+        if input_amount.checked_sub(self.fee_bound) != Some(self.minimum_recovered)
+            || self.external_id
+                != FederationBarkExternalId::derive_emergency_exit(
+                    self.action_id,
+                    self.predecessor_operation_id,
+                    self.attempt,
+                )?
+        {
+            return Err(invalid_bark(
+                "Bark exit request amount or external id differs",
             ));
         }
         Ok(())
