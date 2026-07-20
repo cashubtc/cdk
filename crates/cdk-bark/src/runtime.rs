@@ -294,7 +294,6 @@ impl FederatedBarkRuntime {
             .map_err(|_| Error::ArkCapabilityMismatch)?;
         if ark_info.network != validated.network()
             || ark_info.server_pubkey != expected_server
-            || !ark_info.federation_receive_idempotency
             || ark_info.ln_receive_anti_dos_required
             || ark_info.fees.lightning_receive.base_fee != bitcoin::Amount::ZERO
             || ark_info.fees.lightning_receive.ppm.0 != 0

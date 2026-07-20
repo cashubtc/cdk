@@ -228,7 +228,7 @@ impl<'de> Deserialize<'de> for FederationBarkVtxoId {
 }
 bark_hash_type!(
     FederationBarkExternalId,
-    "Stable idempotency identifier for one external Bark or Ark request."
+    "Federation-internal identity for one accepted external side-effect request."
 );
 
 impl FederationBarkActionId {
@@ -272,7 +272,7 @@ impl FederationBarkActionId {
 }
 
 impl FederationBarkExternalId {
-    /// Derive the frozen idempotency key for one outgoing Lightning action.
+    /// Derive the frozen execution identity for one outgoing Lightning action.
     pub fn derive_lightning_send(
         action_id: FederationBarkActionId,
         predecessor_operation_id: FederationOperationId,
@@ -289,7 +289,7 @@ impl FederationBarkExternalId {
         Self::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
     }
 
-    /// Derive the frozen idempotency key for one failed-send revocation.
+    /// Derive the frozen execution identity for one failed-send revocation.
     pub fn derive_failed_send_revocation(
         action_id: FederationBarkActionId,
         predecessor_operation_id: FederationOperationId,
@@ -306,7 +306,7 @@ impl FederationBarkExternalId {
         Self::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
     }
 
-    /// Derive the frozen idempotency key for one refresh round.
+    /// Derive the frozen execution identity for one refresh round.
     pub fn derive_refresh(
         action_id: FederationBarkActionId,
         predecessor_operation_id: FederationOperationId,
@@ -323,7 +323,7 @@ impl FederationBarkExternalId {
         Self::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
     }
 
-    /// Derive the frozen idempotency key for one emergency exit.
+    /// Derive the frozen execution identity for one emergency exit.
     pub fn derive_emergency_exit(
         action_id: FederationBarkActionId,
         predecessor_operation_id: FederationOperationId,
@@ -680,7 +680,7 @@ pub struct FederationBarkActionPlan {
     pub fee_bound: Amount,
     /// Exact sorted canonical artifacts needed by the plan.
     pub artifacts: Vec<FederationBarkArtifact>,
-    /// Stable Ark request idempotency identifier.
+    /// Stable accepted execution identity; never sent as a custom Ark field.
     pub external_id: FederationBarkExternalId,
     /// Initial deterministic signer set, sorted by member.
     pub signer_set: Vec<MemberId>,
@@ -1077,9 +1077,9 @@ pub enum FederationBarkConflictKey {
         /// Exact predecessor operation.
         operation_id: FederationOperationId,
     },
-    /// One external idempotency identifier may bind only one request/result.
+    /// One accepted external-execution identity may bind only one request/result.
     ExternalId {
-        /// Stable external identifier.
+        /// Stable federation-internal execution identifier.
         external_id: FederationBarkExternalId,
     },
     /// One deterministic custody slot and attempt may bind one signer context.
