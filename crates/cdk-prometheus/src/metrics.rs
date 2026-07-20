@@ -633,6 +633,16 @@ pub struct CdkMetrics {
     federation_wallet_signing_failures: IntGaugeVec,
     federation_wallet_broadcast_health: IntGaugeVec,
     federation_wallet_broadcast_failures: IntGaugeVec,
+    federation_bark_readiness: IntGaugeVec,
+    federation_bark_projection_lag_operations: IntGaugeVec,
+    federation_bark_vtxos: IntGaugeVec,
+    federation_bark_value_sat: IntGaugeVec,
+    federation_bark_action_count: IntGaugeVec,
+    federation_bark_action_max_age_operations: IntGaugeVec,
+    federation_bark_exposure_count: IntGaugeVec,
+    federation_bark_exposure_value_sat: IntGaugeVec,
+    federation_bark_protocol_records: IntGaugeVec,
+    federation_bark_receive_secret_coverage: IntGaugeVec,
     federation_accepted_operations_total: IntCounterVec,
     federation_rejected_operations_total: IntCounterVec,
     federation_signing_share_latency: HistogramVec,
@@ -665,6 +675,16 @@ struct FederationMetricCollectors {
     wallet_signing_failures: IntGaugeVec,
     wallet_broadcast_health: IntGaugeVec,
     wallet_broadcast_failures: IntGaugeVec,
+    bark_readiness: IntGaugeVec,
+    bark_projection_lag_operations: IntGaugeVec,
+    bark_vtxos: IntGaugeVec,
+    bark_value_sat: IntGaugeVec,
+    bark_action_count: IntGaugeVec,
+    bark_action_max_age_operations: IntGaugeVec,
+    bark_exposure_count: IntGaugeVec,
+    bark_exposure_value_sat: IntGaugeVec,
+    bark_protocol_records: IntGaugeVec,
+    bark_receive_secret_coverage: IntGaugeVec,
     accepted_operations_total: IntCounterVec,
     rejected_operations_total: IntCounterVec,
     signing_share_latency: HistogramVec,
@@ -743,6 +763,19 @@ impl CdkMetrics {
             federation_wallet_signing_failures: federation_metrics.wallet_signing_failures,
             federation_wallet_broadcast_health: federation_metrics.wallet_broadcast_health,
             federation_wallet_broadcast_failures: federation_metrics.wallet_broadcast_failures,
+            federation_bark_readiness: federation_metrics.bark_readiness,
+            federation_bark_projection_lag_operations: federation_metrics
+                .bark_projection_lag_operations,
+            federation_bark_vtxos: federation_metrics.bark_vtxos,
+            federation_bark_value_sat: federation_metrics.bark_value_sat,
+            federation_bark_action_count: federation_metrics.bark_action_count,
+            federation_bark_action_max_age_operations: federation_metrics
+                .bark_action_max_age_operations,
+            federation_bark_exposure_count: federation_metrics.bark_exposure_count,
+            federation_bark_exposure_value_sat: federation_metrics.bark_exposure_value_sat,
+            federation_bark_protocol_records: federation_metrics.bark_protocol_records,
+            federation_bark_receive_secret_coverage: federation_metrics
+                .bark_receive_secret_coverage,
             federation_accepted_operations_total: federation_metrics.accepted_operations_total,
             federation_rejected_operations_total: federation_metrics.rejected_operations_total,
             federation_signing_share_latency: federation_metrics.signing_share_latency,
@@ -1106,6 +1139,87 @@ impl CdkMetrics {
         )?;
         registry.register(Box::new(federation_wallet_broadcast_failures.clone()))?;
 
+        let federation_bark_readiness = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_bark_readiness",
+                "Federated Bark readiness exported as fixed one-hot gauges",
+            ),
+            &["member", "state"],
+        )?;
+        registry.register(Box::new(federation_bark_readiness.clone()))?;
+        let federation_bark_projection_lag_operations = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_bark_projection_lag_operations",
+                "Accepted Bark operations not replayed into member-local Bark state",
+            ),
+            &["member"],
+        )?;
+        registry.register(Box::new(federation_bark_projection_lag_operations.clone()))?;
+        let federation_bark_vtxos = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_bark_vtxos",
+                "Accepted federated Bark VTXO count grouped by fixed state",
+            ),
+            &["member", "state"],
+        )?;
+        registry.register(Box::new(federation_bark_vtxos.clone()))?;
+        let federation_bark_value_sat = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_bark_value_sat",
+                "Accepted federated Bark value grouped by fixed VTXO state",
+            ),
+            &["member", "state"],
+        )?;
+        registry.register(Box::new(federation_bark_value_sat.clone()))?;
+        let federation_bark_action_count = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_bark_action_count",
+                "Active federated Bark actions grouped by fixed semantic phase",
+            ),
+            &["member", "phase"],
+        )?;
+        registry.register(Box::new(federation_bark_action_count.clone()))?;
+        let federation_bark_action_max_age_operations = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_bark_action_max_age_operations",
+                "Oldest active federated Bark action age grouped by fixed semantic phase",
+            ),
+            &["member", "phase"],
+        )?;
+        registry.register(Box::new(federation_bark_action_max_age_operations.clone()))?;
+        let federation_bark_exposure_count = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_bark_exposure_count",
+                "Federated Bark VTXO or action count grouped by fixed risk class",
+            ),
+            &["member", "risk"],
+        )?;
+        registry.register(Box::new(federation_bark_exposure_count.clone()))?;
+        let federation_bark_exposure_value_sat = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_bark_exposure_value_sat",
+                "Federated Bark value grouped by fixed risk class",
+            ),
+            &["member", "risk"],
+        )?;
+        registry.register(Box::new(federation_bark_exposure_value_sat.clone()))?;
+        let federation_bark_protocol_records = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_bark_protocol_records",
+                "Redacted federated Bark participant records grouped by fixed protocol",
+            ),
+            &["member", "protocol"],
+        )?;
+        registry.register(Box::new(federation_bark_protocol_records.clone()))?;
+        let federation_bark_receive_secret_coverage = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cdk_federation_bark_receive_secret_coverage",
+                "Redacted Bark receive-secret records grouped by fixed coverage class",
+            ),
+            &["member", "coverage"],
+        )?;
+        registry.register(Box::new(federation_bark_receive_secret_coverage.clone()))?;
+
         let federation_accepted_operations_total = IntCounterVec::new(
             prometheus::Opts::new(
                 "cdk_federation_accepted_operations_total",
@@ -1227,6 +1341,16 @@ impl CdkMetrics {
             wallet_signing_failures: federation_wallet_signing_failures,
             wallet_broadcast_health: federation_wallet_broadcast_health,
             wallet_broadcast_failures: federation_wallet_broadcast_failures,
+            bark_readiness: federation_bark_readiness,
+            bark_projection_lag_operations: federation_bark_projection_lag_operations,
+            bark_vtxos: federation_bark_vtxos,
+            bark_value_sat: federation_bark_value_sat,
+            bark_action_count: federation_bark_action_count,
+            bark_action_max_age_operations: federation_bark_action_max_age_operations,
+            bark_exposure_count: federation_bark_exposure_count,
+            bark_exposure_value_sat: federation_bark_exposure_value_sat,
+            bark_protocol_records: federation_bark_protocol_records,
+            bark_receive_secret_coverage: federation_bark_receive_secret_coverage,
             accepted_operations_total: federation_accepted_operations_total,
             rejected_operations_total: federation_rejected_operations_total,
             signing_share_latency: federation_signing_share_latency,
@@ -1497,6 +1621,81 @@ impl CdkMetrics {
     pub fn set_federation_wallet_broadcast_failures(&self, member: &str, count: i64) {
         self.federation_wallet_broadcast_failures
             .with_label_values(&[member])
+            .set(count);
+    }
+
+    /// Set one fixed one-hot federated Bark readiness gauge.
+    pub fn set_federation_bark_readiness(&self, member: &str, state: &str, active: bool) {
+        self.federation_bark_readiness
+            .with_label_values(&[member, state])
+            .set(if active { 1 } else { 0 });
+    }
+
+    /// Set accepted operations not yet replayed into local Bark state.
+    pub fn set_federation_bark_projection_lag(&self, member: &str, count: i64) {
+        self.federation_bark_projection_lag_operations
+            .with_label_values(&[member])
+            .set(count);
+    }
+
+    /// Set a fixed-state federated Bark VTXO count and value.
+    pub fn set_federation_bark_vtxos(&self, member: &str, state: &str, count: i64, value_sat: i64) {
+        self.federation_bark_vtxos
+            .with_label_values(&[member, state])
+            .set(count);
+        self.federation_bark_value_sat
+            .with_label_values(&[member, state])
+            .set(value_sat);
+    }
+
+    /// Set active Bark action count and maximum age for one fixed phase.
+    pub fn set_federation_bark_action_phase(
+        &self,
+        member: &str,
+        phase: &str,
+        count: i64,
+        max_age_operations: i64,
+    ) {
+        self.federation_bark_action_count
+            .with_label_values(&[member, phase])
+            .set(count);
+        self.federation_bark_action_max_age_operations
+            .with_label_values(&[member, phase])
+            .set(max_age_operations);
+    }
+
+    /// Set Bark count and value for one fixed risk class.
+    pub fn set_federation_bark_exposure(
+        &self,
+        member: &str,
+        risk: &str,
+        count: i64,
+        value_sat: i64,
+    ) {
+        self.federation_bark_exposure_count
+            .with_label_values(&[member, risk])
+            .set(count);
+        self.federation_bark_exposure_value_sat
+            .with_label_values(&[member, risk])
+            .set(value_sat);
+    }
+
+    /// Set one redacted participant-protocol record count.
+    pub fn set_federation_bark_protocol_records(&self, member: &str, protocol: &str, count: i64) {
+        self.federation_bark_protocol_records
+            .with_label_values(&[member, protocol])
+            .set(count);
+    }
+
+    /// Set one redacted receive-secret coverage count.
+    pub fn set_federation_bark_receive_secret_coverage(
+        &self,
+        member: &str,
+        coverage: &str,
+        count: i64,
+    ) {
+        self.federation_bark_receive_secret_coverage
+            .with_label_values(&[member, coverage])
             .set(count);
     }
 
@@ -2021,6 +2220,43 @@ mod tests {
                 .len(),
             5
         );
+    }
+
+    #[test]
+    fn federation_bark_metrics_use_only_fixed_redacted_labels() {
+        let metrics = CdkMetrics::new().expect("metrics should be created");
+        for readiness in ["ready", "behind_consensus", "degraded"] {
+            metrics.set_federation_bark_readiness("2", readiness, readiness == "degraded");
+        }
+        metrics.set_federation_bark_projection_lag("2", 3);
+        metrics.set_federation_bark_vtxos("2", "reserved", 2, 42_000);
+        metrics.set_federation_bark_action_phase("2", "payment_initiated", 1, 17);
+        metrics.set_federation_bark_exposure("2", "ambiguous", 1, 21_000);
+        metrics.set_federation_bark_protocol_records("2", "virtual_musig2", 2);
+        metrics.set_federation_bark_receive_secret_coverage("2", "locally_retained", 3);
+
+        let scrape = prometheus::TextEncoder::new()
+            .encode_to_string(&metrics.registry().gather())
+            .expect("encode metrics");
+        for expected in [
+            "state=\"degraded\"",
+            "state=\"reserved\"",
+            "phase=\"payment_initiated\"",
+            "risk=\"ambiguous\"",
+            "protocol=\"virtual_musig2\"",
+            "coverage=\"locally_retained\"",
+        ] {
+            assert!(scrape.contains(expected));
+        }
+        for secret in [
+            "lnbc-secret-invoice",
+            "receive-preimage-secret",
+            "frost-nonce-secret",
+            "ark-credential-secret",
+            "/sensitive/bark/path",
+        ] {
+            assert!(!scrape.contains(secret));
+        }
     }
 
     #[test]

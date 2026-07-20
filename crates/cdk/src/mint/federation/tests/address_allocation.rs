@@ -65,6 +65,7 @@ pub(super) fn attach_address_application(
                 .expect("confirmation policy"),
             fee_policy_version: 1,
         },
+        bark_application: None,
     });
     application_id
 }

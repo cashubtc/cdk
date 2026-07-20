@@ -175,6 +175,9 @@ pub enum PaymentBackendType {
     LdkNode,
     #[cfg(feature = "grpc-processor")]
     GrpcProcessor,
+    #[cfg(feature = "federation-bark")]
+    #[serde(rename = "federated-bark")]
+    FederatedBark,
 }
 
 impl std::str::FromStr for PaymentBackendType {
@@ -192,6 +195,8 @@ impl std::str::FromStr for PaymentBackendType {
             "ldk-node" | "ldknode" => Ok(PaymentBackendType::LdkNode),
             #[cfg(feature = "grpc-processor")]
             "grpcprocessor" => Ok(PaymentBackendType::GrpcProcessor),
+            #[cfg(feature = "federation-bark")]
+            "federated-bark" | "federatedbark" => Ok(PaymentBackendType::FederatedBark),
             _ => Err(format!("Unknown payment backend: {s}")),
         }
     }
@@ -1240,6 +1245,110 @@ pub struct Federation {
     /// Member-local watch-only BDK storage and chain source.
     #[serde(default)]
     pub onchain_wallet: FederationOnchainWallet,
+    /// Member-local Bark runtime configuration.
+    #[cfg(feature = "federation-bark")]
+    #[serde(default)]
+    pub bark: FederationBarkWallet,
+}
+
+/// Member-local Bark networking, storage, and secret configuration.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg(feature = "federation-bark")]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkWallet {
+    /// Explicitly enable the federated Bark runtime.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Expected accepted Bitcoin network.
+    pub network: Option<String>,
+    /// Expected accepted Ark server public key.
+    pub ark_server_public_key: Option<String>,
+    /// Ark gRPC endpoint.
+    pub server_address: Option<String>,
+    /// Optional Ark access token.
+    pub server_access_token: Option<String>,
+    /// Optional Esplora endpoint; exclusive with bitcoind.
+    pub esplora_url: Option<String>,
+    /// Optional Bitcoin Core RPC endpoint; exclusive with Esplora.
+    pub bitcoind_address: Option<String>,
+    /// Optional Bitcoin Core cookie file.
+    pub bitcoind_cookiefile: Option<PathBuf>,
+    /// Optional Bitcoin Core RPC username.
+    pub bitcoind_user: Option<String>,
+    /// Optional Bitcoin Core RPC password.
+    pub bitcoind_password: Option<String>,
+    /// Optional Bark data directory; defaults below the mint work directory.
+    pub data_directory: Option<PathBuf>,
+    /// Optional protected-secret database; defaults below the Bark data directory.
+    pub receive_secret_database_path: Option<PathBuf>,
+    /// Durable FROST protocol storage root required by custody workers.
+    pub frost_protocol_storage_root: Option<PathBuf>,
+    /// Hex-encoded 64-byte operational seed, never used for VTXO custody.
+    pub operational_seed_hex: Option<String>,
+    /// Hex-encoded 32-byte protected receive-secret encryption key.
+    pub receive_secret_key_hex: Option<String>,
+    /// Permit initialization of a fresh Bark projection database.
+    #[serde(default)]
+    pub create_if_missing: bool,
+    /// Automatically propose and execute refresh rounds at the accepted margin.
+    #[serde(default = "default_true")]
+    pub automatic_refresh: bool,
+    /// Automatically escalate overdue refreshes into the federated BDK wallet.
+    #[serde(default)]
+    pub automatic_emergency_exit: bool,
+}
+
+#[cfg(feature = "federation-bark")]
+impl Default for FederationBarkWallet {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            network: None,
+            ark_server_public_key: None,
+            server_address: None,
+            server_access_token: None,
+            esplora_url: None,
+            bitcoind_address: None,
+            bitcoind_cookiefile: None,
+            bitcoind_user: None,
+            bitcoind_password: None,
+            data_directory: None,
+            receive_secret_database_path: None,
+            frost_protocol_storage_root: None,
+            operational_seed_hex: None,
+            receive_secret_key_hex: None,
+            create_if_missing: false,
+            automatic_refresh: true,
+            automatic_emergency_exit: false,
+        }
+    }
+}
+
+#[cfg(feature = "federation-bark")]
+impl fmt::Debug for FederationBarkWallet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FederationBarkWallet")
+            .field("enabled", &self.enabled)
+            .field("network", &self.network)
+            .field("ark_server_public_key", &self.ark_server_public_key)
+            .field("server_address", &"<redacted>")
+            .field("server_access_token", &"<redacted>")
+            .field("esplora_url", &"<redacted>")
+            .field("bitcoind_address", &"<redacted>")
+            .field("bitcoind_cookiefile", &"<redacted>")
+            .field("bitcoind_user", &"<redacted>")
+            .field("bitcoind_password", &"<redacted>")
+            .field("data_directory", &"<redacted>")
+            .field("receive_secret_database_path", &"<redacted>")
+            .field("frost_protocol_storage_root", &"<redacted>")
+            .field("operational_seed_hex", &"<redacted>")
+            .field("receive_secret_key_hex", &"<redacted>")
+            .field("create_if_missing", &self.create_if_missing)
+            .field("automatic_refresh", &self.automatic_refresh)
+            .field("automatic_emergency_exit", &self.automatic_emergency_exit)
+            .finish()
+    }
 }
 
 /// Local chain access for the federated watch-only BDK wallet.
@@ -3187,4 +3296,19 @@ fn federation_config_rejects_removed_consensus_backend() {
         .expect_err("removed consensus backend must fail closed");
 
     assert!(err.to_string().contains("consensus_backend"));
+}
+
+#[cfg(feature = "federation-bark")]
+#[test]
+fn federated_bark_maintenance_defaults_to_refresh_without_exit() {
+    let configured = serde_json::from_value::<FederationBarkWallet>(serde_json::json!({
+        "enabled": true
+    }))
+    .expect("minimal Bark member config");
+    assert!(configured.automatic_refresh);
+    assert!(!configured.automatic_emergency_exit);
+
+    let defaulted = FederationBarkWallet::default();
+    assert!(defaulted.automatic_refresh);
+    assert!(!defaulted.automatic_emergency_exit);
 }

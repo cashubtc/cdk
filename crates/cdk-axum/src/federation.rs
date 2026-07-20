@@ -34,6 +34,16 @@ mod aleph_bft_routes;
 mod aleph_bft_runtime;
 mod aleph_bft_session;
 mod backup_routes;
+#[cfg(feature = "federation-bark")]
+pub(crate) mod bark_custody;
+#[cfg(feature = "federation-bark")]
+pub(crate) mod bark_incoming;
+#[cfg(feature = "federation-bark")]
+pub(crate) mod bark_maintenance;
+#[cfg(feature = "federation-bark")]
+mod bark_outgoing;
+#[cfg(feature = "federation-bark")]
+mod bark_secret;
 mod broadcast;
 mod catch_up_routes;
 mod checkpoint_catch_up;
@@ -47,7 +57,7 @@ mod node_runtime;
 mod operation_pipeline;
 mod operator_routes;
 mod payment_observation;
-mod peer_client;
+pub(crate) mod peer_client;
 mod private_request;
 pub(crate) mod runtime_components;
 mod status_routes;
@@ -73,6 +83,13 @@ pub(crate) use self::aleph_bft_session::{
     stop_current_federation_aleph_bft_session_for_catch_up, AlephBftSessionSupervisor,
 };
 use self::backup_routes::post_aleph_bft_backup;
+#[cfg(feature = "federation-bark")]
+use self::bark_custody::{
+    post_bark_custody_abort, post_bark_threshold_dh, post_bark_virtual_musig_commitment,
+    post_bark_virtual_musig_partial,
+};
+#[cfg(feature = "federation-bark")]
+use self::bark_secret::post_bark_receive_secret;
 pub(crate) use self::broadcast::FederationTransactionBroadcaster;
 use self::catch_up_routes::post_journal;
 use self::checkpoint_routes::{
@@ -103,6 +120,8 @@ use self::frost_signing::{
 pub(crate) use self::node_runtime::{
     apply_federation_journal_entry_for_replay, FederationNodeRuntime,
 };
+#[cfg(feature = "federation-bark")]
+use self::operator_routes::{post_bark_action_retry, post_bark_reconcile};
 use self::operator_routes::{post_wallet_rebroadcast, post_wallet_transaction_status};
 use self::payment_observation::payment_observation_report_summaries;
 pub(crate) use self::payment_observation::FederationPaymentObserver;
@@ -322,12 +341,31 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         )
         .route("/frost/signing/packages", post(post_frost_signing_package))
         .route("/frost/signing/aborts", post(post_frost_signing_abort))
-        .route("/frost/signing/results", post(post_frost_aggregate_result))
-        .layer(DefaultBodyLimit::max(
-            cdk::federation::FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES,
-        ));
+        .route("/frost/signing/results", post(post_frost_aggregate_result));
+    #[cfg(feature = "federation-bark")]
+    let frost_signing_router = frost_signing_router
+        .route(
+            "/frost/bark/musig2/commitments",
+            post(post_bark_virtual_musig_commitment),
+        )
+        .route(
+            "/frost/bark/musig2/partials",
+            post(post_bark_virtual_musig_partial),
+        )
+        .route("/frost/bark/threshold-dh", post(post_bark_threshold_dh))
+        .route("/frost/bark/aborts", post(post_bark_custody_abort));
+    let frost_signing_router = frost_signing_router.layer(DefaultBodyLimit::max(
+        cdk::federation::FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES,
+    ));
+    #[cfg(feature = "federation-bark")]
+    let bark_secret_router = Router::new().route(
+        "/bark/receive-secrets",
+        post(post_bark_receive_secret).layer(DefaultBodyLimit::max(
+            cdk::federation::FEDERATION_MAX_BARK_RECEIVE_SECRET_REQUEST_BYTES,
+        )),
+    );
 
-    Router::new()
+    let router = Router::new()
         .merge(dkg_router)
         .merge(frost_signing_router)
         .route("/config", get(get_public_config))
@@ -360,7 +398,13 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
             post(post_journal).layer(DefaultBodyLimit::max(
                 cdk::federation::FEDERATION_MAX_CHECKPOINT_CATCH_UP_REQUEST_BYTES,
             )),
-        )
+        );
+    #[cfg(feature = "federation-bark")]
+    let router = router
+        .merge(bark_secret_router)
+        .route("/bark/reconcile", post(post_bark_reconcile))
+        .route("/bark/actions/retry", post(post_bark_action_retry));
+    router
 }
 
 pub(crate) async fn get_public_config(

@@ -1411,6 +1411,7 @@ dependencies = [
  "futures",
  "maud",
  "moka",
+ "musig2",
  "parity-scale-codec",
  "paste",
  "redis",

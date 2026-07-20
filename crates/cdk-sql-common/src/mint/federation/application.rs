@@ -108,6 +108,14 @@ where
         .map(sql_row_to_federation_payment_observation_record)
         .collect()
     }
+
+    async fn apply_federation_bark_operation(
+        &mut self,
+        entry: &FederationJournalEntry,
+        operation: &FederationBarkOperation,
+    ) -> Result<(), Self::Err> {
+        super::bark_projection::apply_bark_operation(&self.inner, entry, operation).await
+    }
 }
 
 #[async_trait]
@@ -187,6 +195,17 @@ where
         .into_iter()
         .map(sql_row_to_federation_materialized_state_key)
         .collect()
+    }
+
+    async fn get_federation_bark_projection_snapshot(
+        &self,
+    ) -> Result<FederationBarkProjectionSnapshot, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        super::bark_projection::get_bark_projection_snapshot(&*conn).await
     }
 
     async fn get_federation_mint_quote_states(

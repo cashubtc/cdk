@@ -13,15 +13,15 @@ use super::{DbTransactionFinalizer, Error};
 #[cfg(feature = "federation")]
 use crate::federation::{
     FederationAlephBftFinalizedItem, FederationAlephBftPendingOperationRecord,
-    FederationApplicationState, FederationCheckpoint, FederationCheckpointFrontier,
-    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorum,
-    FederationCheckpointSignature, FederationConfigSnapshot, FederationDkgActivationRequest,
-    FederationDkgCeremonyRecord, FederationDkgMemberKeysetShare,
-    FederationDkgParticipantCommitment, FederationDkgParticipantCommitmentReveal,
-    FederationDkgParticipantState, FederationDkgSecretShareRequest,
-    FederationDkgTranscriptSignatureRequest, FederationFrostApplicationConfig,
-    FederationFrostDkgConfirmationRequest, FederationFrostDkgLocalState,
-    FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
+    FederationApplicationState, FederationBarkOperation, FederationBarkProjectionSnapshot,
+    FederationCheckpoint, FederationCheckpointFrontier, FederationCheckpointId,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
+    FederationConfigSnapshot, FederationDkgActivationRequest, FederationDkgCeremonyRecord,
+    FederationDkgMemberKeysetShare, FederationDkgParticipantCommitment,
+    FederationDkgParticipantCommitmentReveal, FederationDkgParticipantState,
+    FederationDkgSecretShareRequest, FederationDkgTranscriptSignatureRequest,
+    FederationFrostApplicationConfig, FederationFrostDkgConfirmationRequest,
+    FederationFrostDkgLocalState, FederationFrostDkgRound1Request, FederationFrostDkgRound2Record,
     FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
     FederationId, FederationJournalEntry, FederationJournalTip,
     FederationMaterializedStateKeyRecord, FederationOperationConflictKey, FederationOperationId,
@@ -942,6 +942,13 @@ pub trait FederationApplicationTransaction {
         context: FederationPaymentObservationContext,
         quote: &str,
     ) -> Result<Vec<FederationPaymentObservationRecord>, Self::Err>;
+
+    /// Deterministically apply one accepted Bark operation to its SQL projection.
+    async fn apply_federation_bark_operation(
+        &mut self,
+        entry: &FederationJournalEntry,
+        operation: &FederationBarkOperation,
+    ) -> Result<(), Self::Err>;
 }
 
 #[cfg(feature = "federation")]
@@ -1260,6 +1267,11 @@ pub trait FederationApplicationDatabase {
     async fn get_federation_materialized_state_keys(
         &self,
     ) -> Result<Vec<FederationMaterializedStateKeyRecord>, Self::Err>;
+
+    /// Get the complete deterministic Bark projection in primary-key order.
+    async fn get_federation_bark_projection_snapshot(
+        &self,
+    ) -> Result<FederationBarkProjectionSnapshot, Self::Err>;
 
     /// Get minimal mint-quote state for convergence projection in input order.
     async fn get_federation_mint_quote_states(

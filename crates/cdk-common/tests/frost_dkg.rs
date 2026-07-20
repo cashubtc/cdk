@@ -6,15 +6,18 @@ use std::str::FromStr;
 
 use cashu::MintUrl;
 use cdk_common::federation::{
-    FederationAddressKeychain, FederationConfig, FederationDkgCeremonyId,
-    FederationFrostApplicationConfig, FederationFrostDkgContext, FederationFrostDkgRound1Request,
-    FederationFrostDkgRound2Request, FederationFrostRootPrivateConfig,
-    FederationFrostRootPublicConfig, FederationFrostRootRecord, FederationFrostWalletConfig,
-    FederationOnchainConfirmationPolicy, MemberConfigPublic, MemberId, ThresholdParams,
+    FederationAddressKeychain, FederationBarkFrostApplicationConfig,
+    FederationBarkFrostRegistrationAdapter, FederationBarkPolicyConfig,
+    FederationBarkReceiveAntiDosPolicy, FederationCdkOnchainFrostAuthorizationAdapter,
+    FederationConfig, FederationDkgCeremonyId, FederationFrostApplicationConfig,
+    FederationFrostDkgContext, FederationFrostDkgRound1Request, FederationFrostDkgRound2Request,
+    FederationFrostRootPrivateConfig, FederationFrostRootPublicConfig, FederationFrostRootRecord,
+    FederationFrostWalletConfig, FederationOnchainConfirmationPolicy, MemberConfigPublic, MemberId,
+    ThresholdParams,
 };
 use cdk_common::SecretKey;
 use cdk_frost::rand_core::{OsRng, SeedableRng};
-use cdk_frost::{advance_dkg, finish_dkg, start_dkg, SecretEncryptionKey};
+use cdk_frost::{advance_dkg, finish_dkg, start_dkg, ParticipantKeyManager, SecretEncryptionKey};
 use cdk_frost_bip32::{FrostBip32, WalletBranch, WalletIndex};
 use rand_chacha::ChaCha20Rng;
 
@@ -23,7 +26,11 @@ fn member(id: u16) -> MemberId {
 }
 
 fn config() -> FederationConfig {
-    let members = (1..=3)
+    config_with_threshold(3, 2)
+}
+
+fn config_with_threshold(member_count: u16, threshold: u16) -> FederationConfig {
+    let members = (1..=member_count)
         .map(|id| {
             let secret = SecretKey::from_slice(&[id as u8; 32]).expect("identity secret");
             (
@@ -40,7 +47,7 @@ fn config() -> FederationConfig {
         })
         .collect::<BTreeMap<_, _>>();
     FederationConfig::new(
-        ThresholdParams::new(3, 2, 2).expect("thresholds"),
+        ThresholdParams::new(member_count, threshold, threshold).expect("thresholds"),
         members,
         Vec::new(),
     )
@@ -52,15 +59,31 @@ fn completed_roots() -> (
     Vec<FederationFrostRootRecord>,
     Vec<SecretEncryptionKey>,
 ) {
-    let config = config();
-    let context =
-        FederationFrostDkgContext::new(&config, FederationDkgCeremonyId::from_bytes([51; 32]), 1)
-            .expect("FROST context");
+    completed_roots_with_threshold(3, 2, [52; 32], [51; 32])
+}
+
+fn completed_roots_with_threshold(
+    member_count: u16,
+    threshold: u16,
+    rng_seed: [u8; 32],
+    ceremony_id: [u8; 32],
+) -> (
+    FederationConfig,
+    Vec<FederationFrostRootRecord>,
+    Vec<SecretEncryptionKey>,
+) {
+    let config = config_with_threshold(member_count, threshold);
+    let context = FederationFrostDkgContext::new(
+        &config,
+        FederationDkgCeremonyId::from_bytes(ceremony_id),
+        1,
+    )
+    .expect("FROST context");
     let frost_context = context.to_frost_context().expect("crypto context");
-    let mut rng = ChaCha20Rng::from_seed([52; 32]);
+    let mut rng = ChaCha20Rng::from_seed(rng_seed);
     let mut round1_secrets = BTreeMap::new();
     let mut round1_packages = BTreeMap::new();
-    for id in 1..=3 {
+    for id in 1..=member_count {
         let frost_member = cdk_frost::MemberId::new(id).expect("FROST member");
         let (secret, package) =
             start_dkg(frost_context.clone(), frost_member, &mut rng).expect("round one");
@@ -69,7 +92,7 @@ fn completed_roots() -> (
     }
     let mut round2_secrets = BTreeMap::new();
     let mut round2_packages = BTreeMap::new();
-    for id in 1..=3 {
+    for id in 1..=member_count {
         let received = round1_packages
             .iter()
             .filter(|(peer, _)| **peer != id)
@@ -84,7 +107,7 @@ fn completed_roots() -> (
     }
     let mut records = Vec::new();
     let mut storage_keys = Vec::new();
-    for id in 1..=3 {
+    for id in 1..=member_count {
         let frost_member = cdk_frost::MemberId::new(id).expect("FROST member");
         let received_round1 = round1_packages
             .iter()
@@ -335,4 +358,172 @@ fn frost_wallet_configs_round_trip_derive_addresses_and_reject_wrong_bindings() 
     let private_debug = format!("{private:?}");
     assert!(private_debug.contains("<redacted>"));
     assert!(!private_debug.contains(&format!("{:?}", private.encrypted_root_share)));
+}
+
+fn bark_policy() -> FederationBarkPolicyConfig {
+    FederationBarkPolicyConfig::new(
+        0,
+        0,
+        10,
+        5_000,
+        18,
+        18,
+        144,
+        18,
+        30,
+        FederationBarkReceiveAntiDosPolicy::ProtectedToken,
+    )
+    .expect("Bark policy")
+}
+
+fn ark_server(seed: u8) -> bitcoin::secp256k1::PublicKey {
+    let secret = bitcoin::secp256k1::SecretKey::from_slice(&[seed; 32]).expect("server secret");
+    secret.public_key(&bitcoin::secp256k1::Secp256k1::new())
+}
+
+fn point_hex(point: [u8; 33]) -> String {
+    point.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[test]
+fn bark_application_vectors_are_distinct_consistent_persistent_and_scope_bound() {
+    let mut actual_vectors = Vec::new();
+    for (member_count, threshold, rng_seed, ceremony_id) in
+        [(3, 2, [52; 32], [51; 32]), (5, 3, [82; 32], [81; 32])]
+    {
+        let (mut config, records, storage_keys) =
+            completed_roots_with_threshold(member_count, threshold, rng_seed, ceremony_id);
+        let root = FederationFrostRootPublicConfig::from_dkg_record(&config, &records[0])
+            .expect("public root");
+        let cdk_application = FederationFrostApplicationConfig::new_cdk_onchain(
+            &config,
+            &root,
+            1,
+            bitcoin::Network::Regtest,
+            FederationOnchainConfirmationPolicy::new(2).expect("confirmation policy"),
+            1,
+        )
+        .expect("CDK application");
+        let server = ark_server(91);
+        let bark_application = FederationBarkFrostApplicationConfig::new(
+            &config,
+            &root,
+            1,
+            bitcoin::Network::Regtest,
+            server,
+            bark_policy(),
+        )
+        .expect("Bark application");
+        assert_ne!(
+            cdk_application.derived_group_key, bark_application.derived_group_key,
+            "separate registrations must isolate BDK and Bark"
+        );
+
+        let public_adapter = bark_application
+            .open_public_adapter(&config, &root, bitcoin::Network::Regtest, server, 1, 1)
+            .expect("exact Bark scope");
+        let locator_zero = public_adapter
+            .derive(cdk_frost_bark::BarkKeyLocator::vtxo(0))
+            .expect("locator zero");
+        let locator_max = public_adapter
+            .derive(cdk_frost_bark::BarkKeyLocator::vtxo(u32::MAX))
+            .expect("maximum locator");
+
+        let expected_public = bark_application
+            .derived_public_package(&config, &root)
+            .expect("public package");
+        for (offset, record) in records.iter().enumerate() {
+            let member_id = member(u16::try_from(offset + 1).expect("member id"));
+            let private = FederationFrostRootPrivateConfig::from_dkg_record(&root, record)
+                .expect("private root config");
+            let private_json = serde_json::to_vec(&private).expect("private root JSON");
+            let reopened_private: FederationFrostRootPrivateConfig =
+                serde_json::from_slice(&private_json).expect("private root round trip");
+            let root_package = reopened_private
+                .open(&config, &root, member_id, &storage_keys[offset])
+                .expect("sealed root opens");
+            let nonce_key =
+                SecretEncryptionKey::new([150 + offset as u8; 32]).expect("nonce encryption key");
+            let mut manager = ParticipantKeyManager::new_in_memory(root_package, nonce_key)
+                .expect("participant manager");
+            manager
+                .register_application(
+                    FederationCdkOnchainFrostAuthorizationAdapter::new(&cdk_application)
+                        .expect("CDK adapter"),
+                )
+                .expect("register CDK");
+            let member_bark = manager
+                .register_application(
+                    FederationBarkFrostRegistrationAdapter::new(&bark_application)
+                        .expect("Bark adapter"),
+                )
+                .expect("derive Bark without exporting the share");
+            assert_eq!(member_bark, expected_public);
+            assert!(format!("{manager:?}").contains("<redacted>"));
+        }
+
+        let wallet = FederationFrostWalletConfig::new_with_bark(
+            &config,
+            root.clone(),
+            cdk_application,
+            bark_application.clone(),
+        )
+        .expect("Bark-capable wallet config");
+        assert_eq!(wallet.version, 2);
+        config.frost_wallet = Some(wallet);
+        config.validate().expect("Bark federation config");
+        let json = serde_json::to_vec(&config).expect("public config JSON");
+        let restored: FederationConfig =
+            serde_json::from_slice(&json).expect("public config round trip");
+        assert_eq!(restored, config);
+        let mut wrong_aggregate_version = restored;
+        wrong_aggregate_version
+            .frost_wallet
+            .as_mut()
+            .expect("wallet")
+            .version = 1;
+        assert!(wrong_aggregate_version.validate().is_err());
+
+        assert!(bark_application
+            .open_public_adapter(&config, &root, bitcoin::Network::Signet, server, 1, 1)
+            .is_err());
+        assert!(bark_application
+            .open_public_adapter(
+                &config,
+                &root,
+                bitcoin::Network::Regtest,
+                ark_server(92),
+                1,
+                1,
+            )
+            .is_err());
+        assert!(bark_application
+            .open_public_adapter(&config, &root, bitcoin::Network::Regtest, server, 2, 1,)
+            .is_err());
+        assert!(bark_application
+            .open_public_adapter(&config, &root, bitcoin::Network::Regtest, server, 1, 2,)
+            .is_err());
+
+        actual_vectors.push(format!(
+            "{threshold}-of-{member_count}:app={}:vtxo0={}:vtxomax={}:shares={}",
+            point_hex(bark_application.derived_group_key),
+            locator_zero.public_key(),
+            locator_max.public_key(),
+            bark_application
+                .verification_shares
+                .values()
+                .copied()
+                .map(point_hex)
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+
+    assert_eq!(
+        actual_vectors,
+        [
+            "2-of-3:app=023fe9d439c15afe4a670277c74fae52567fb686bed5300206ec764dd32d39b5d2:vtxo0=0300f5af8f73f0340cc963ed47346b349e996c0802e3a51932b6e74aa2637d3fd1:vtxomax=03059e314904e5ff6309812e3e04e083cc225419e048069b974c96fc9c5d3a7159:shares=0352d2d8d1fadceaa5e43cfa29b1b89a6d7156c9f47e364d98bdd78678068e8a28,03a45a2090f1b1008cef8e93ce5a4ef15fe598d2eb0141977ba7d33ccdb6aa9680,03b481ac05287d28b4f58c5a102f38286e92438083c54d77d3bf0fe64f6e0dbfd4",
+            "3-of-5:app=0213ae2a027ff4e715a175cf0c1aae9273bdb77c681bc9c308cbb09483fef1b163:vtxo0=0241b697ee0d7f7a01d445711d9cbf7f2e07f3b974c6cf494568508f2b2badeb2d:vtxomax=0262e8135ed230bc700502c63346dc833d2fbb044eb1901bcf46cfa5324e5b86cc:shares=026367d2ceb4f4d62a98a159d55bd31fe0a3d0368651e9022b08711dee11ab3f97,03cc3597e5d7845c4795517226cb67cf3fb737b79a4a8637e1ddb6e228745c01f5,03ed8f4b8425c88c1c7792aca1e3accb8e5ea5bfe75f9098b89560c6dfb310f833,026649f2728dff183f23a49b86feb85b04e1843ae59c26d7f791343c3ed6a9320b,0259e6ee0db02f8696b8f7aaea04309ed6651409e8896cb62a08ca4d841c7e7578",
+        ]
+    );
 }

@@ -48,6 +48,7 @@ fn local_status(
         wallet_recovery: None,
         wallet_liveness: None,
         wallet_operator: None,
+        bark_operator: None,
     }
     .with_materialized_state_digest(materialized_state_digest)
 }

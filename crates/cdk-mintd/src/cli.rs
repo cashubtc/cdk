@@ -375,6 +375,12 @@ pub enum FederationCommand {
     TransactionStatus(FederationWalletTransactionArgs),
     /// Immediately retry one exact durably signed transaction.
     Rebroadcast(FederationWalletRebroadcastArgs),
+    /// Replay accepted Bark state into one member's local wallet.
+    #[cfg(feature = "federation-bark")]
+    BarkReconcile(FederationBarkReconcileArgs),
+    /// Retry exactly one accepted Bark action.
+    #[cfg(feature = "federation-bark")]
+    BarkRetry(FederationBarkRetryArgs),
 }
 
 #[cfg(feature = "federation")]
@@ -542,6 +548,18 @@ pub struct FederationDkgStatusArgs {
     /// Initial application key epoch derived from the application-neutral FROST root.
     #[arg(long, requires_all = ["from_database", "final_config_dir"])]
     pub frost_cdk_application_key_epoch: Option<u64>,
+    /// Explicit Bitcoin network for the initial federated Bark application.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_bark_network: Option<String>,
+    /// Compressed public key of the single accepted Ark server.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_bark_ark_server_public_key: Option<String>,
+    /// Initial Bark application key epoch derived from the reusable FROST root.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_bark_application_key_epoch: Option<u64>,
+    /// JSON file containing the exact accepted Bark fee, CLTV, and recovery policy.
+    #[arg(long, requires_all = ["from_database", "final_config_dir"])]
+    pub frost_bark_policy_config: Option<PathBuf>,
 }
 
 #[cfg(feature = "federation")]
@@ -842,6 +860,40 @@ pub struct FederationWalletRebroadcastArgs {
     pub acknowledge_exact_byte_retry: bool,
 }
 
+#[cfg(all(feature = "federation", feature = "federation-bark"))]
+#[derive(Debug, Clone, Args)]
+pub struct FederationBarkReconcileArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign the operator request.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Member whose local Bark projection should be reconciled; defaults to the signing member.
+    #[arg(long)]
+    pub member: Option<u16>,
+}
+
+#[cfg(all(feature = "federation", feature = "federation-bark"))]
+#[derive(Debug, Clone, Args)]
+pub struct FederationBarkRetryArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign the operator request.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Exact accepted Bark action identity.
+    #[arg(long)]
+    pub action_id: String,
+    /// Member whose local worker should retry; defaults to the signing member.
+    #[arg(long)]
+    pub member: Option<u16>,
+    /// Acknowledge that the exact accepted action may repeat idempotent Ark effects.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub acknowledge_bark_side_effects: bool,
+}
+
 #[cfg(all(test, feature = "federation"))]
 mod tests {
     use super::*;
@@ -980,6 +1032,14 @@ mod tests {
             "1",
             "--frost-cdk-application-key-epoch",
             "1",
+            "--frost-bark-network",
+            "regtest",
+            "--frost-bark-ark-server-public-key",
+            "03774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb",
+            "--frost-bark-application-key-epoch",
+            "1",
+            "--frost-bark-policy-config",
+            "bark-policy.json",
             "--force",
         ])
         .expect("dkg status command parses");
@@ -1009,6 +1069,11 @@ mod tests {
             vec![PathBuf::from("member-1/dkg-transcript-signature.json")]
         );
         assert!(status.require_ready);
+        assert_eq!(status.frost_bark_network.as_deref(), Some("regtest"));
+        assert_eq!(
+            status.frost_bark_policy_config,
+            Some(PathBuf::from("bark-policy.json"))
+        );
         assert_eq!(
             status.final_config_dir,
             Some(PathBuf::from("member-1/finalized"))
@@ -1600,6 +1665,44 @@ mod tests {
             rebroadcast.command,
             FederationCommand::Rebroadcast(FederationWalletRebroadcastArgs {
                 acknowledge_exact_byte_retry: true,
+                ..
+            })
+        ));
+    }
+
+    #[cfg(feature = "federation-bark")]
+    #[test]
+    fn parses_federated_bark_operator_commands_and_guard() {
+        let reconcile =
+            CLIArgs::try_parse_from(["cdk-mintd", "federation", "bark-reconcile", "--member", "2"])
+                .expect("Bark reconcile command parses");
+        let Some(CliCommand::Federation(reconcile)) = reconcile.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            reconcile.command,
+            FederationCommand::BarkReconcile(FederationBarkReconcileArgs {
+                member: Some(2),
+                ..
+            })
+        ));
+
+        let retry = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "bark-retry",
+            "--action-id",
+            &"11".repeat(32),
+            "--acknowledge-bark-side-effects",
+        ])
+        .expect("Bark retry command parses");
+        let Some(CliCommand::Federation(retry)) = retry.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            retry.command,
+            FederationCommand::BarkRetry(FederationBarkRetryArgs {
+                acknowledge_bark_side_effects: true,
                 ..
             })
         ));

@@ -199,6 +199,31 @@ mod migration_tests {
     use super::MIGRATIONS;
 
     const FAILED_STATE_MIGRATION: &str = "20260707170000_allow_failed_melt_quote_state.sql";
+    const BARK_PROJECTION_MIGRATION: &str = "20260719000000_create_federation_bark_projection.sql";
+
+    fn historical_migration_digest(backend: &str) -> (usize, String) {
+        let mut migrations = MIGRATIONS
+            .iter()
+            .filter(|(candidate, name, _)| {
+                *candidate == backend
+                    && (*name < BARK_PROJECTION_MIGRATION
+                        || name.starts_with("1_")
+                        || name.starts_with("2_"))
+            })
+            .collect::<Vec<_>>();
+        migrations.sort_by_key(|(_, name, _)| *name);
+        let mut transcript = Vec::new();
+        for (_, name, sql) in &migrations {
+            transcript.extend_from_slice(name.as_bytes());
+            transcript.push(0);
+            transcript.extend_from_slice(sql.as_bytes());
+            transcript.push(0);
+        }
+        (
+            migrations.len(),
+            sha256::Hash::hash(&transcript).to_string(),
+        )
+    }
 
     #[test]
     fn historical_mint_migrations_keep_standalone_checksums() {
@@ -223,6 +248,53 @@ mod migration_tests {
                 !sql.contains("'FAILED'"),
                 "historical standalone migration must not be rewritten"
             );
+        }
+    }
+
+    #[test]
+    fn every_pre_bark_migration_is_checksum_locked() {
+        assert_eq!(
+            historical_migration_digest("postgres"),
+            (
+                30,
+                "451014e9fd14ed2d0eff78896d2b89afecb856b0eacb28bb45c412f1c42b9e42".to_string(),
+            )
+        );
+        assert_eq!(
+            historical_migration_digest("sqlite"),
+            (
+                53,
+                "bd5b556a409d37639f1315c475d9cd5467355da899f9ef73ba0ada89ff9a7f0d".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn bark_projection_is_one_new_paired_migration() {
+        let backends = MIGRATIONS
+            .iter()
+            .filter_map(|(backend, name, sql)| {
+                (*name == BARK_PROJECTION_MIGRATION).then_some((*backend, *sql))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            backends
+                .iter()
+                .map(|(backend, _)| *backend)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["postgres", "sqlite"])
+        );
+        for (_, sql) in backends {
+            for table in [
+                "federation_bark_actions",
+                "federation_bark_vtxos",
+                "federation_bark_derivation_allocations",
+                "federation_bark_reservations",
+                "federation_bark_transitions",
+                "federation_bark_observations",
+            ] {
+                assert!(sql.contains(table), "missing Bark table {table}");
+            }
         }
     }
 

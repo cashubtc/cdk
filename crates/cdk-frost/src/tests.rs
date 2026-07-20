@@ -5,17 +5,22 @@ use std::thread;
 use bitcoin::secp256k1::{schnorr, Message, PublicKey, Secp256k1};
 use frost_secp256k1_tr as frost;
 use frost_secp256k1_tr::rand_core::SeedableRng;
+use musig2::secp::Scalar as MusigScalar;
+use musig2::{BinaryEncoding, SecNonce};
 use rand_chacha::ChaCha20Rng;
 use sha2::{Digest, Sha256};
 
 use crate::canonical::CanonicalRootKeyPackage;
 use crate::{
-    ApplicationAuthorization, ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch,
-    ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, DurableNonceStore,
-    Error, MemberId, MemoryNonceStore, NonceBurnReason, NonceCommitmentSet, NonceId,
-    NonceLifecycle, NonceRecord, NonceReservation, ParticipantKeyManager, RedbNonceStore,
+    combine_threshold_dh_shares, combine_virtual_musig_partial_shares, ApplicationAuthorization,
+    ApplicationDerivationVersion, ApplicationId, ApplicationKeyEpoch, ApplicationRegistration,
+    AuthorizationRequest, AuthorizedSigningRequest, CustodyProtocol, DurableNonceStore,
+    DurableProtocolStore, Error, MemberId, MemoryNonceStore, NonceBurnReason, NonceCommitmentSet,
+    NonceId, NonceLifecycle, NonceRecord, NonceReservation, ParticipantKeyManager, RedbNonceStore,
     RootKeyEpoch, RootPublicPackage, SecretEncryptionKey, SignatureMode, SignatureShare,
     SigningAuthorizationScope, SigningDerivation, SigningSessionContext, SigningSessionId,
+    ThresholdDhRecord, ThresholdDhRequest, ThresholdDhReservation, VirtualMusigNonceCommitmentSet,
+    VirtualMusigNonceId, VirtualMusigRecord, VirtualMusigReservation, VirtualMusigTranscript,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -190,6 +195,35 @@ fn signing_context(
     .expect("signing context")
 }
 
+fn protocol_context(
+    registration: ApplicationRegistration,
+    derivation: &SigningDerivation,
+    authorization_reference: [u8; 32],
+    message_commitment: [u8; 32],
+    signer_indexes: &[usize],
+    attempt: u32,
+    protocol: CustodyProtocol,
+) -> SigningSessionContext {
+    let scope = SigningAuthorizationScope::new(
+        [0xf0; 32],
+        RootKeyEpoch::new(1).expect("root epoch"),
+        registration,
+        derivation.binding(),
+        authorization_reference,
+        message_commitment,
+    )
+    .expect("protocol authorization scope");
+    SigningSessionContext::new_for_protocol(
+        scope,
+        attempt,
+        signer_indexes
+            .iter()
+            .map(|index| MemberId::new((*index + 1) as u16).expect("signer member")),
+        protocol,
+    )
+    .expect("protocol context")
+}
+
 fn authorized_request(
     registration: ApplicationRegistration,
     session: SigningSessionId,
@@ -226,7 +260,7 @@ fn managers_with_store<S, F>(
     mut store_for_member: F,
 ) -> Vec<ParticipantKeyManager>
 where
-    S: DurableNonceStore,
+    S: DurableNonceStore + DurableProtocolStore,
     F: FnMut(MemberId) -> S,
 {
     let mut rng = ChaCha20Rng::from_seed([seed; 32]);
@@ -366,6 +400,91 @@ impl DurableNonceStore for FailingNonceStore {
     }
 }
 
+impl DurableProtocolStore for FailingNonceStore {
+    fn activate_virtual_musig_attempt(&self, context: &SigningSessionContext) -> Result<(), Error> {
+        self.fail_if_armed()?;
+        self.inner.activate_virtual_musig_attempt(context)
+    }
+
+    fn reserve_virtual_musig(
+        &self,
+        record: VirtualMusigRecord,
+    ) -> Result<VirtualMusigReservation, Error> {
+        self.fail_if_armed()?;
+        self.inner.reserve_virtual_musig(record)
+    }
+
+    fn load_virtual_musig_nonce(
+        &self,
+        nonce_id: VirtualMusigNonceId,
+    ) -> Result<Option<VirtualMusigRecord>, Error> {
+        self.inner.load_virtual_musig_nonce(nonce_id)
+    }
+
+    fn load_virtual_musig_session(
+        &self,
+        session_id: SigningSessionId,
+    ) -> Result<Option<VirtualMusigRecord>, Error> {
+        self.inner.load_virtual_musig_session(session_id)
+    }
+
+    fn compare_and_swap_virtual_musig(
+        &self,
+        expected: &VirtualMusigRecord,
+        replacement: VirtualMusigRecord,
+    ) -> Result<(), Error> {
+        self.fail_if_armed()?;
+        self.inner
+            .compare_and_swap_virtual_musig(expected, replacement)
+    }
+
+    fn nonterminal_virtual_musig_records(&self) -> Result<Vec<VirtualMusigRecord>, Error> {
+        self.inner.nonterminal_virtual_musig_records()
+    }
+
+    fn compact_virtual_musig(&self, retain_detailed: usize) -> Result<usize, Error> {
+        self.inner.compact_virtual_musig(retain_detailed)
+    }
+
+    fn activate_threshold_dh_attempt(&self, context: &SigningSessionContext) -> Result<(), Error> {
+        self.fail_if_armed()?;
+        self.inner.activate_threshold_dh_attempt(context)
+    }
+
+    fn reserve_threshold_dh(
+        &self,
+        record: ThresholdDhRecord,
+    ) -> Result<ThresholdDhReservation, Error> {
+        self.fail_if_armed()?;
+        self.inner.reserve_threshold_dh(record)
+    }
+
+    fn load_threshold_dh_session(
+        &self,
+        session_id: SigningSessionId,
+    ) -> Result<Option<ThresholdDhRecord>, Error> {
+        self.inner.load_threshold_dh_session(session_id)
+    }
+
+    fn compare_and_swap_threshold_dh(
+        &self,
+        expected: &ThresholdDhRecord,
+        replacement: ThresholdDhRecord,
+    ) -> Result<(), Error> {
+        self.fail_if_armed()?;
+        self.inner
+            .compare_and_swap_threshold_dh(expected, replacement)
+    }
+
+    fn nonterminal_threshold_dh_records(&self) -> Result<Vec<ThresholdDhRecord>, Error> {
+        self.inner.nonterminal_threshold_dh_records()
+    }
+
+    fn compact_threshold_dh(&self, retain_detailed: usize) -> Result<usize, Error> {
+        self.inner.compact_threshold_dh(retain_detailed)
+    }
+}
+
 fn sign_with_subset(
     managers: &mut [ParticipantKeyManager],
     signer_indexes: &[usize],
@@ -479,6 +598,7 @@ fn signing_transport_wire_round_trips_and_rejects_mutation() {
         SigningSessionContext::decode(&context.encode()).expect("context wire"),
         context
     );
+    assert_eq!(&context.encode()[..8], b"CDKFSC01");
     assert_eq!(
         SigningDerivation::decode(&derivation.encode()).expect("derivation wire"),
         derivation
@@ -1134,6 +1254,35 @@ fn signing_session_ids_bind_every_scope_attempt_and_signer_field() {
         0,
         vec![member_one, member_two],
     );
+    let protocol_scope = SigningAuthorizationScope::new(
+        [1; 32],
+        RootKeyEpoch::new(1).expect("root epoch"),
+        registration,
+        [2; 32],
+        [3; 32],
+        [4; 32],
+    )
+    .expect("protocol scope");
+    let virtual_musig = SigningSessionContext::new_for_protocol(
+        protocol_scope.clone(),
+        0,
+        [member_one, member_two],
+        CustodyProtocol::VirtualMusig2,
+    )
+    .expect("virtual MuSig2 session");
+    let threshold_dh = SigningSessionContext::new_for_protocol(
+        protocol_scope,
+        0,
+        [member_one, member_two],
+        CustodyProtocol::ThresholdDh,
+    )
+    .expect("threshold-DH session");
+    assert_ne!(base.session_id(), virtual_musig.session_id());
+    assert_ne!(base.session_id(), threshold_dh.session_id());
+    assert_ne!(virtual_musig.session_id(), threshold_dh.session_id());
+    assert_ne!(base.slot_id(), virtual_musig.slot_id());
+    assert_ne!(base.slot_id(), threshold_dh.slot_id());
+    assert_ne!(virtual_musig.slot_id(), threshold_dh.slot_id());
     let variants = [
         make(
             [9; 32],
@@ -1843,6 +1992,739 @@ fn redb_nonce_store_survives_reopen_and_compacts_to_replay_tombstone() {
     let reopened = RedbNonceStore::open(&database_path).expect("reopen compacted store");
     assert!(reopened.load_nonce(record.nonce_id()).is_err());
     assert!(reopened.reserve(record).is_err());
+}
+
+#[test]
+fn virtual_musig_and_threshold_dh_match_transparent_group_operations() {
+    let mut managers = managers(3, 2, 111);
+    let registration = wallet_registration();
+    let derivation = SigningDerivation::application_key();
+    let signers = [0, 2];
+    let message = [41; 32];
+    let musig_context = protocol_context(
+        registration,
+        &derivation,
+        [42; 32],
+        message,
+        &signers,
+        1,
+        CustodyProtocol::VirtualMusig2,
+    );
+    let mut rng = ChaCha20Rng::from_seed([43; 32]);
+    let commitments = signers
+        .iter()
+        .map(|index| {
+            managers[*index]
+                .commit_virtual_musig_nonce(&musig_context, derivation.clone(), &mut rng)
+                .expect("virtual MuSig2 commitment")
+        })
+        .collect::<Vec<_>>();
+    let commitment_set =
+        VirtualMusigNonceCommitmentSet::new(commitments.clone()).expect("commitment set");
+    assert_eq!(
+        SigningSessionContext::decode(&musig_context.encode()).expect("protocol context wire"),
+        musig_context
+    );
+    assert_eq!(&musig_context.encode()[..8], b"CDKFSC02");
+    for commitment in &commitments {
+        assert_eq!(
+            crate::VirtualMusigNonceCommitment::decode(&commitment.encode(), &musig_context)
+                .expect("virtual commitment wire"),
+            commitment.clone()
+        );
+    }
+    assert_eq!(
+        VirtualMusigNonceCommitmentSet::decode(&commitment_set.encode(), &musig_context)
+            .expect("virtual commitment-set wire"),
+        commitment_set
+    );
+    let mut trailing_commitment = commitments[0].encode();
+    trailing_commitment.push(0);
+    assert!(
+        crate::VirtualMusigNonceCommitment::decode(&trailing_commitment, &musig_context).is_err()
+    );
+    let commitment_set_bytes = commitment_set.encode();
+    assert!(VirtualMusigNonceCommitmentSet::decode(
+        &commitment_set_bytes[..commitment_set_bytes.len() - 1],
+        &musig_context,
+    )
+    .is_err());
+    let user_nonce = commitment_set
+        .aggregate_public_nonce()
+        .expect("aggregate user nonce");
+    let target = managers[0]
+        .signing_public_package(registration.id(), &derivation)
+        .expect("derived target");
+    let user_key =
+        musig2::secp::Point::try_from(&target.output_group_key()).expect("virtual user key");
+    let server_secret = MusigScalar::try_from([51; 32]).expect("server scalar");
+    let server_key = server_secret.base_point_mul();
+    let server_nonce = SecNonce::new(
+        MusigScalar::try_from([52; 32]).expect("server nonce one"),
+        MusigScalar::try_from([53; 32]).expect("server nonce two"),
+        server_key,
+    );
+    let transcript = VirtualMusigTranscript::new(
+        musig_context.session_id(),
+        [user_key.serialize(), server_key.serialize()],
+        user_key.serialize(),
+        user_nonce,
+        server_nonce.public_nonce().to_bytes(),
+        message,
+        Some([7; 32]),
+    )
+    .expect("outer MuSig2 transcript");
+    assert_eq!(
+        VirtualMusigTranscript::decode(&transcript.encode()).expect("virtual transcript wire"),
+        transcript
+    );
+    let mut trailing_transcript = transcript.encode();
+    trailing_transcript.push(0);
+    assert!(VirtualMusigTranscript::decode(&trailing_transcript).is_err());
+    let authorization = authorized_request(
+        registration,
+        musig_context.session_id(),
+        message,
+        b"wallet-test-policy/v1",
+    );
+    let partials = signers
+        .iter()
+        .zip(&commitments)
+        .map(|(index, commitment)| {
+            let partial = managers[*index]
+                .virtual_musig_partial(
+                    commitment.nonce_id(),
+                    &authorization,
+                    &commitment_set,
+                    &transcript,
+                )
+                .expect("virtual MuSig2 partial");
+            assert_eq!(
+                managers[*index]
+                    .virtual_musig_partial(
+                        commitment.nonce_id(),
+                        &authorization,
+                        &commitment_set,
+                        &transcript,
+                    )
+                    .expect("identical partial retry"),
+                partial
+            );
+            partial
+        })
+        .collect::<Vec<_>>();
+    for partial in &partials {
+        assert_eq!(
+            crate::VirtualMusigPartialShare::decode(&partial.encode())
+                .expect("virtual partial wire"),
+            partial.clone()
+        );
+    }
+    combine_virtual_musig_partial_shares(
+        &target,
+        musig_context.signer_set(),
+        &transcript,
+        commitments.clone().into_iter().zip(partials.clone()),
+    )
+    .expect("combined virtual partial");
+    let mut trailing_partial = partials[0].encode();
+    trailing_partial.push(0);
+    assert!(crate::VirtualMusigPartialShare::decode(&trailing_partial).is_err());
+    let mut wrong_context = musig_context.encode();
+    wrong_context[8] = 0;
+    assert!(SigningSessionContext::decode(&wrong_context).is_err());
+    let conflicting_nonce = SecNonce::new(
+        MusigScalar::try_from([54; 32]).expect("conflicting nonce one"),
+        MusigScalar::try_from([55; 32]).expect("conflicting nonce two"),
+        server_key,
+    );
+    let conflicting_transcript = VirtualMusigTranscript::new(
+        musig_context.session_id(),
+        [user_key.serialize(), server_key.serialize()],
+        user_key.serialize(),
+        user_nonce,
+        conflicting_nonce.public_nonce().to_bytes(),
+        message,
+        Some([7; 32]),
+    )
+    .expect("conflicting transcript");
+    assert!(managers[signers[0]]
+        .virtual_musig_partial(
+            commitment_set
+                .commitments()
+                .get(&MemberId::new(1).expect("member"))
+                .expect("first commitment")
+                .nonce_id(),
+            &authorization,
+            &commitment_set,
+            &conflicting_transcript,
+        )
+        .is_err());
+    let changed_signers = protocol_context(
+        registration,
+        &derivation,
+        [42; 32],
+        message,
+        &[0, 1],
+        1,
+        CustodyProtocol::VirtualMusig2,
+    );
+    assert!(managers[0]
+        .commit_virtual_musig_nonce(&changed_signers, derivation.clone(), &mut rng)
+        .is_err());
+    let higher_attempt = protocol_context(
+        registration,
+        &derivation,
+        [42; 32],
+        message,
+        &signers,
+        2,
+        CustodyProtocol::VirtualMusig2,
+    );
+    managers[0]
+        .commit_virtual_musig_nonce(&higher_attempt, derivation.clone(), &mut rng)
+        .expect("higher accepted attempt");
+    assert!(managers[0]
+        .commit_virtual_musig_nonce(&musig_context, derivation.clone(), &mut rng)
+        .is_err());
+
+    let dh_context_binding = [61; 32];
+    let dh_context = protocol_context(
+        registration,
+        &derivation,
+        [62; 32],
+        dh_context_binding,
+        &signers,
+        1,
+        CustodyProtocol::ThresholdDh,
+    );
+    let dh_server_secret = MusigScalar::try_from([63; 32]).expect("DH server scalar");
+    let dh_server_point = dh_server_secret.base_point_mul();
+    let dh_request = ThresholdDhRequest::new(
+        dh_context.session_id(),
+        dh_server_point.serialize(),
+        dh_context_binding,
+    )
+    .expect("threshold-DH request");
+    assert_eq!(
+        ThresholdDhRequest::decode(&dh_request.encode()).expect("threshold-DH request wire"),
+        dh_request
+    );
+    let dh_request_bytes = dh_request.encode();
+    assert!(ThresholdDhRequest::decode(&dh_request_bytes[..dh_request_bytes.len() - 1]).is_err());
+    assert!(VirtualMusigTranscript::decode(&dh_request_bytes).is_err());
+    let dh_authorization = authorized_request(
+        registration,
+        dh_context.session_id(),
+        dh_context_binding,
+        b"wallet-test-policy/v1",
+    );
+    let shares = signers
+        .iter()
+        .map(|index| {
+            let share = managers[*index]
+                .threshold_dh_share(
+                    &dh_context,
+                    derivation.clone(),
+                    &dh_authorization,
+                    &dh_request,
+                    &mut rng,
+                )
+                .expect("threshold-DH share");
+            assert_eq!(
+                managers[*index]
+                    .threshold_dh_share(
+                        &dh_context,
+                        derivation.clone(),
+                        &dh_authorization,
+                        &dh_request,
+                        &mut rng,
+                    )
+                    .expect("identical threshold-DH retry"),
+                share
+            );
+            share
+        })
+        .collect::<Vec<_>>();
+    for share in &shares {
+        assert_eq!(
+            crate::ThresholdDhShare::decode(&share.encode()).expect("threshold-DH share wire"),
+            share.clone()
+        );
+    }
+    let combined = combine_threshold_dh_shares(
+        &target,
+        dh_context.signer_set(),
+        &dh_request,
+        shares.clone(),
+    )
+    .expect("combined threshold-DH point");
+    let mut trailing_dh = shares[0].encode();
+    trailing_dh.push(0);
+    assert!(crate::ThresholdDhShare::decode(&trailing_dh).is_err());
+    assert_eq!(
+        combined,
+        (user_key * dh_server_secret).serialize(),
+        "threshold-DH result must equal the derived group secret times the peer point"
+    );
+    let conflicting_dh = ThresholdDhRequest::new(
+        dh_context.session_id(),
+        MusigScalar::try_from([64; 32])
+            .expect("conflicting DH scalar")
+            .base_point_mul()
+            .serialize(),
+        dh_context_binding,
+    )
+    .expect("conflicting threshold-DH request");
+    assert!(managers[signers[0]]
+        .threshold_dh_share(
+            &dh_context,
+            derivation,
+            &dh_authorization,
+            &conflicting_dh,
+            &mut rng,
+        )
+        .is_err());
+}
+
+#[test]
+fn protocol_redb_restart_retries_and_ordinary_frost_coexist() {
+    let directory = tempfile::tempdir().expect("temporary protocol directory");
+    let paths = (0..3)
+        .map(|member| directory.path().join(format!("member-{member}.redb")))
+        .collect::<Vec<_>>();
+    let stores = paths
+        .iter()
+        .map(RedbNonceStore::open)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("protocol stores");
+    let stores_for_managers = stores.clone();
+    let mut managers = managers_with_store(3, 2, 112, move |member| {
+        stores_for_managers[usize::from(member.get() - 1)].clone()
+    });
+    let registration = wallet_registration();
+    let derivation = SigningDerivation::application_key();
+    let signers = [0, 1];
+    let message = [71; 32];
+    let context = protocol_context(
+        registration,
+        &derivation,
+        [72; 32],
+        message,
+        &signers,
+        3,
+        CustodyProtocol::VirtualMusig2,
+    );
+    let mut rng = ChaCha20Rng::from_seed([73; 32]);
+    let commitments = signers
+        .iter()
+        .map(|index| {
+            managers[*index]
+                .commit_virtual_musig_nonce(&context, derivation.clone(), &mut rng)
+                .expect("durable commitment")
+        })
+        .collect::<Vec<_>>();
+    let set = VirtualMusigNonceCommitmentSet::new(commitments.clone()).expect("commitment set");
+    let target = managers[0]
+        .signing_public_package(registration.id(), &derivation)
+        .expect("derived target");
+    let user_key =
+        musig2::secp::Point::try_from(&target.output_group_key()).expect("virtual user key");
+    let server_secret = MusigScalar::try_from([74; 32]).expect("server scalar");
+    let server_key = server_secret.base_point_mul();
+    let server_nonce = SecNonce::new(
+        MusigScalar::try_from([75; 32]).expect("server nonce one"),
+        MusigScalar::try_from([76; 32]).expect("server nonce two"),
+        server_key,
+    );
+    let transcript = VirtualMusigTranscript::new(
+        context.session_id(),
+        [user_key.serialize(), server_key.serialize()],
+        user_key.serialize(),
+        set.aggregate_public_nonce().expect("user nonce"),
+        server_nonce.public_nonce().to_bytes(),
+        message,
+        None,
+    )
+    .expect("outer transcript");
+    let authorization = authorized_request(
+        registration,
+        context.session_id(),
+        message,
+        b"wallet-test-policy/v1",
+    );
+    let completed = signers
+        .iter()
+        .zip(&commitments)
+        .map(|(index, commitment)| {
+            managers[*index]
+                .virtual_musig_partial(commitment.nonce_id(), &authorization, &set, &transcript)
+                .expect("completed partial")
+        })
+        .collect::<Vec<_>>();
+    let dh_binding = [77; 32];
+    let dh_context = protocol_context(
+        registration,
+        &derivation,
+        [78; 32],
+        dh_binding,
+        &signers,
+        4,
+        CustodyProtocol::ThresholdDh,
+    );
+    let dh_server = MusigScalar::try_from([79; 32])
+        .expect("DH server scalar")
+        .base_point_mul();
+    let dh_request =
+        ThresholdDhRequest::new(dh_context.session_id(), dh_server.serialize(), dh_binding)
+            .expect("threshold-DH request");
+    let dh_authorization = authorized_request(
+        registration,
+        dh_context.session_id(),
+        dh_binding,
+        b"wallet-test-policy/v1",
+    );
+    let completed_dh = signers
+        .iter()
+        .map(|index| {
+            managers[*index]
+                .threshold_dh_share(
+                    &dh_context,
+                    derivation.clone(),
+                    &dh_authorization,
+                    &dh_request,
+                    &mut rng,
+                )
+                .expect("completed threshold-DH result")
+        })
+        .collect::<Vec<_>>();
+    drop(managers);
+    drop(stores);
+
+    let reopened = paths
+        .iter()
+        .map(RedbNonceStore::open)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("reopened protocol stores");
+    let stores_for_managers = reopened.clone();
+    let mut managers = managers_with_store(3, 2, 112, move |member| {
+        stores_for_managers[usize::from(member.get() - 1)].clone()
+    });
+    for ((index, commitment), expected) in signers.iter().zip(&commitments).zip(&completed) {
+        assert_eq!(
+            managers[*index]
+                .virtual_musig_partial(commitment.nonce_id(), &authorization, &set, &transcript,)
+                .expect("completed restart retry"),
+            *expected
+        );
+    }
+    for (index, expected) in signers.iter().zip(&completed_dh) {
+        assert_eq!(
+            managers[*index]
+                .threshold_dh_share(
+                    &dh_context,
+                    derivation.clone(),
+                    &dh_authorization,
+                    &dh_request,
+                    &mut rng,
+                )
+                .expect("completed threshold-DH restart retry"),
+            *expected
+        );
+    }
+
+    let (public, _, _, signature) = sign_with_subset(
+        &mut managers,
+        &signers,
+        registration,
+        session(113),
+        [113; 32],
+        b"wallet-test-policy/v1",
+        114,
+    );
+    verify_with_rust_bitcoin(&public, [113; 32], signature);
+    drop(managers);
+    for (index, commitment) in commitments.iter().enumerate() {
+        assert_eq!(
+            reopened[index]
+                .compact_virtual_musig(0)
+                .expect("compact virtual MuSig2 detail"),
+            1
+        );
+        assert_eq!(
+            reopened[index]
+                .compact_threshold_dh(0)
+                .expect("compact threshold-DH detail"),
+            1
+        );
+        assert!(reopened[index]
+            .load_virtual_musig_nonce(commitment.nonce_id())
+            .is_err());
+        assert!(reopened[index]
+            .load_threshold_dh_session(dh_context.session_id())
+            .is_err());
+    }
+}
+
+#[test]
+fn virtual_musig_kill_at_every_write_never_reopens_a_persisted_nonce() {
+    for completed_writes in 0..=4 {
+        let seed = 120 + completed_writes as u8;
+        let source_stores = (0..3)
+            .map(|_| FailingNonceStore::default())
+            .collect::<Vec<_>>();
+        let stores_for_managers = source_stores.clone();
+        let mut managers = managers_with_store(3, 2, seed, move |member| {
+            stores_for_managers[usize::from(member.get() - 1)].clone()
+        });
+        let context = protocol_context(
+            wallet_registration(),
+            &SigningDerivation::application_key(),
+            [seed; 32],
+            [81; 32],
+            &[0, 1],
+            1,
+            CustodyProtocol::VirtualMusig2,
+        );
+        if completed_writes < 4 {
+            source_stores[0].arm(completed_writes + 1);
+            assert!(managers[0]
+                .commit_virtual_musig_nonce(
+                    &context,
+                    SigningDerivation::application_key(),
+                    &mut ChaCha20Rng::from_seed([82; 32]),
+                )
+                .is_err());
+        } else {
+            let _lost_response = managers[0]
+                .commit_virtual_musig_nonce(
+                    &context,
+                    SigningDerivation::application_key(),
+                    &mut ChaCha20Rng::from_seed([82; 32]),
+                )
+                .expect("commitment before simulated process death");
+        }
+        let had_persisted_nonce = !source_stores[0]
+            .nonterminal_virtual_musig_records()
+            .expect("inspect pre-restart virtual records")
+            .is_empty();
+        drop(managers);
+
+        let stores_for_restart = source_stores.clone();
+        let mut restarted = managers_with_store(3, 2, seed, move |member| {
+            stores_for_restart[usize::from(member.get() - 1)].clone()
+        });
+        let retry = restarted[0].commit_virtual_musig_nonce(
+            &context,
+            SigningDerivation::application_key(),
+            &mut ChaCha20Rng::from_seed([83; 32]),
+        );
+        if had_persisted_nonce {
+            assert!(
+                retry.is_err(),
+                "a persisted nonce must be burned on restart"
+            );
+            let record = source_stores[0]
+                .load_virtual_musig_session(context.session_id())
+                .expect("load restarted virtual session")
+                .expect("persisted virtual session");
+            assert!(matches!(
+                record.lifecycle(),
+                crate::VirtualMusigLifecycle::Burned {
+                    reason: NonceBurnReason::RestartRecovery
+                }
+            ));
+        } else {
+            assert!(
+                retry.is_ok(),
+                "a crash before nonce persistence may start a fresh nonce"
+            );
+        }
+    }
+
+    for completed_writes in 0..=3 {
+        let seed = 130 + completed_writes as u8;
+        let source_stores = (0..3)
+            .map(|_| FailingNonceStore::default())
+            .collect::<Vec<_>>();
+        let stores_for_managers = source_stores.clone();
+        let mut managers = managers_with_store(3, 2, seed, move |member| {
+            stores_for_managers[usize::from(member.get() - 1)].clone()
+        });
+        let registration = wallet_registration();
+        let derivation = SigningDerivation::application_key();
+        let message = [91; 32];
+        let context = protocol_context(
+            registration,
+            &derivation,
+            [seed; 32],
+            message,
+            &[0, 1],
+            1,
+            CustodyProtocol::VirtualMusig2,
+        );
+        let mut rng = ChaCha20Rng::from_seed([92; 32]);
+        let commitments = [0, 1]
+            .iter()
+            .map(|index| {
+                managers[*index]
+                    .commit_virtual_musig_nonce(&context, derivation.clone(), &mut rng)
+                    .expect("commitment before round-two crash")
+            })
+            .collect::<Vec<_>>();
+        let set = VirtualMusigNonceCommitmentSet::new(commitments.clone())
+            .expect("round-two commitment set");
+        let target = managers[0]
+            .signing_public_package(registration.id(), &derivation)
+            .expect("derived target");
+        let user_key =
+            musig2::secp::Point::try_from(&target.output_group_key()).expect("virtual user key");
+        let server_key = MusigScalar::try_from([93; 32])
+            .expect("server key")
+            .base_point_mul();
+        let server_nonce = SecNonce::new(
+            MusigScalar::try_from([94; 32]).expect("server nonce one"),
+            MusigScalar::try_from([95; 32]).expect("server nonce two"),
+            server_key,
+        );
+        let transcript = VirtualMusigTranscript::new(
+            context.session_id(),
+            [user_key.serialize(), server_key.serialize()],
+            user_key.serialize(),
+            set.aggregate_public_nonce().expect("aggregate user nonce"),
+            server_nonce.public_nonce().to_bytes(),
+            message,
+            None,
+        )
+        .expect("round-two transcript");
+        let authorization = authorized_request(
+            registration,
+            context.session_id(),
+            message,
+            b"wallet-test-policy/v1",
+        );
+        let first_nonce_id = commitments[0].nonce_id();
+        let completed = if completed_writes < 3 {
+            source_stores[0].arm(completed_writes + 1);
+            assert!(managers[0]
+                .virtual_musig_partial(first_nonce_id, &authorization, &set, &transcript,)
+                .is_err());
+            None
+        } else {
+            Some(
+                managers[0]
+                    .virtual_musig_partial(first_nonce_id, &authorization, &set, &transcript)
+                    .expect("partial before simulated process death"),
+            )
+        };
+        drop(managers);
+
+        let stores_for_restart = source_stores.clone();
+        let mut restarted = managers_with_store(3, 2, seed, move |member| {
+            stores_for_restart[usize::from(member.get() - 1)].clone()
+        });
+        let retry =
+            restarted[0].virtual_musig_partial(first_nonce_id, &authorization, &set, &transcript);
+        match completed_writes {
+            0 | 1 => assert!(retry.is_err(), "secret-bearing or signing state must burn"),
+            2 => assert!(retry.is_ok(), "a durably cached partial must recover"),
+            3 => assert_eq!(retry.expect("completed retry"), completed.expect("partial")),
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn threshold_dh_write_failures_are_restart_safe_and_idempotent() {
+    for completed_writes in 0..=3 {
+        let seed = 140 + completed_writes as u8;
+        let source_stores = (0..3)
+            .map(|_| FailingNonceStore::default())
+            .collect::<Vec<_>>();
+        let stores_for_managers = source_stores.clone();
+        let mut managers = managers_with_store(3, 2, seed, move |member| {
+            stores_for_managers[usize::from(member.get() - 1)].clone()
+        });
+        let registration = wallet_registration();
+        let derivation = SigningDerivation::application_key();
+        let request_context = [101; 32];
+        let context = protocol_context(
+            registration,
+            &derivation,
+            [seed; 32],
+            request_context,
+            &[0, 1],
+            1,
+            CustodyProtocol::ThresholdDh,
+        );
+        let request = ThresholdDhRequest::new(
+            context.session_id(),
+            MusigScalar::try_from([102; 32])
+                .expect("DH peer scalar")
+                .base_point_mul()
+                .serialize(),
+            request_context,
+        )
+        .expect("threshold-DH request");
+        let authorization = authorized_request(
+            registration,
+            context.session_id(),
+            request_context,
+            b"wallet-test-policy/v1",
+        );
+        let completed = if completed_writes < 3 {
+            source_stores[0].arm(completed_writes + 1);
+            assert!(managers[0]
+                .threshold_dh_share(
+                    &context,
+                    derivation.clone(),
+                    &authorization,
+                    &request,
+                    &mut ChaCha20Rng::from_seed([103; 32]),
+                )
+                .is_err());
+            None
+        } else {
+            Some(
+                managers[0]
+                    .threshold_dh_share(
+                        &context,
+                        derivation.clone(),
+                        &authorization,
+                        &request,
+                        &mut ChaCha20Rng::from_seed([103; 32]),
+                    )
+                    .expect("threshold-DH result before simulated death"),
+            )
+        };
+        let had_pending_record = !source_stores[0]
+            .nonterminal_threshold_dh_records()
+            .expect("inspect threshold-DH records")
+            .is_empty();
+        drop(managers);
+
+        let stores_for_restart = source_stores.clone();
+        let mut restarted = managers_with_store(3, 2, seed, move |member| {
+            stores_for_restart[usize::from(member.get() - 1)].clone()
+        });
+        let retry = restarted[0].threshold_dh_share(
+            &context,
+            derivation,
+            &authorization,
+            &request,
+            &mut ChaCha20Rng::from_seed([104; 32]),
+        );
+        if let Some(completed) = completed {
+            assert_eq!(retry.expect("completed retry"), completed);
+        } else if had_pending_record {
+            assert!(retry.is_err(), "an interrupted request must remain burned");
+        } else {
+            assert!(
+                retry.is_ok(),
+                "a request may retry when no audit record was persisted"
+            );
+        }
+    }
 }
 
 fn assert_truncation_and_trailing_rejected(

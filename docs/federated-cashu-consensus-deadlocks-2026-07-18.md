@@ -2334,7 +2334,7 @@ in `crates/cdk/src/mint/federation/tests/melt.rs` was added.
 **Minimal fix:** One federation-only change in
 `crates/cdk/src/mint/federation.rs`. A durable, consensus-visible attempt
 lease replaces the permanent author veto:
-`FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS` (8 accepted journal items)
+`FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS` (8 accepted journal items)
 bounds the accepted envelope author's exclusive payment authority, and
 `Mint::federation_melt_payment_lease_actor` derives the current actor from
 consensus-ordered state only — the melt operation's journal index, the
@@ -2472,7 +2472,7 @@ with a backend idempotency key fixed before external I/O. Rotate authority after
 a bounded lease only when another member can safely query/continue the same
 payment. Test author crash before claim, after claim, during backend I/O, and
 after backend success. This is implemented and proven by this milestone:
-`FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS` (8 accepted journal items) bounds
+`FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS` (8 accepted journal items) bounds
 the author's exclusive epoch, the actor rotates deterministically through the
 roster from consensus-ordered state, and the takeover continues under the
 durable caller-supplied key persisted before external I/O (milestone 3). The

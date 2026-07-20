@@ -17,11 +17,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::journal::FederationJournalEntry;
 use super::{
-    FederatedKeyset, FederationAddressAllocationOperation, FederationChainObservation,
-    FederationConfig, FederationError, FederationId, FederationPaymentObservationContext,
-    FederationSignedTransaction, FederationTransactionBroadcastIntent,
-    FederationTransactionBroadcastObservation, FederationTransactionProposal, MemberConfigPrivate,
-    MemberId, Result,
+    FederatedKeyset, FederationAddressAllocationOperation, FederationBarkConflictKey,
+    FederationBarkOperation, FederationChainObservation, FederationConfig, FederationError,
+    FederationId, FederationPaymentObservationContext, FederationSignedTransaction,
+    FederationTransactionBroadcastIntent, FederationTransactionBroadcastObservation,
+    FederationTransactionProposal, MemberConfigPrivate, MemberId, Result,
 };
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::payment::PaymentIdentifier;
@@ -159,6 +159,8 @@ pub enum FederationOperationKind {
     TransactionBroadcastIntent,
     /// Persist one authenticated member broadcast result.
     TransactionBroadcastObservation,
+    /// Execute one typed federated Bark custody or Lightning state transition.
+    Bark,
 }
 
 impl fmt::Display for FederationOperationKind {
@@ -180,6 +182,7 @@ impl fmt::Display for FederationOperationKind {
             Self::TransactionBroadcastObservation => {
                 f.write_str("transaction_broadcast_observation")
             }
+            Self::Bark => f.write_str("bark"),
         }
     }
 }
@@ -295,6 +298,11 @@ pub enum FederationOperationConflictKey {
     OnchainReplacementLineage {
         /// Batch-bound replacement lineage.
         lineage: super::FederationOnchainBatchId,
+    },
+    /// Typed Bark reservation derived from a nested operation.
+    Bark {
+        /// Semantic Bark conflict key.
+        key: FederationBarkConflictKey,
     },
 }
 
@@ -742,7 +750,8 @@ impl FederationPaymentObservation {
             | FederationOperation::TransactionProposal(_)
             | FederationOperation::TransactionSigned(_)
             | FederationOperation::TransactionBroadcastIntent(_)
-            | FederationOperation::TransactionBroadcastObservation(_) => None,
+            | FederationOperation::TransactionBroadcastObservation(_)
+            | FederationOperation::Bark(_) => None,
         }
     }
 
@@ -1417,6 +1426,8 @@ pub enum FederationOperation {
     TransactionBroadcastIntent(FederationTransactionBroadcastIntent),
     /// Record one authenticated local-backend broadcast result.
     TransactionBroadcastObservation(FederationTransactionBroadcastObservation),
+    /// Execute one typed Bark custody or Lightning operation.
+    Bark(FederationBarkOperation),
 }
 
 impl FederationOperation {
@@ -1442,6 +1453,7 @@ impl FederationOperation {
             Self::TransactionBroadcastObservation(_) => {
                 FederationOperationKind::TransactionBroadcastObservation
             }
+            Self::Bark(_) => FederationOperationKind::Bark,
         }
     }
 
@@ -1543,6 +1555,11 @@ impl FederationOperation {
                 }));
                 keys
             }
+            Self::Bark(operation) => operation
+                .conflict_keys()
+                .into_iter()
+                .map(|key| FederationOperationConflictKey::Bark { key })
+                .collect(),
             Self::Swap(_)
             | Self::TransactionSigned(_)
             | Self::TransactionBroadcastIntent(_)
@@ -1565,6 +1582,7 @@ impl FederationOperation {
             Self::MeltQuote(operation) => Some(operation.quote.as_str()),
             Self::MeltQuotePayment(observation) => Some(observation.quote.as_str()),
             Self::Melt(operation) => Some(operation.request.quote().as_str()),
+            Self::Bark(operation) => operation.quote(),
             Self::Swap(_)
             | Self::KeysetRotation(_)
             | Self::TransactionProposal(_)
@@ -1591,6 +1609,7 @@ impl FederationOperation {
             Self::TransactionProposal(proposal) => proposal.validate()?,
             Self::TransactionBroadcastIntent(intent) => intent.settlement_policy.validate()?,
             Self::TransactionBroadcastObservation(observation) => observation.validate()?,
+            Self::Bark(operation) => operation.validate()?,
             Self::MintQuote(_)
             | Self::MintQuotePayment(_)
             | Self::Mint(_)
@@ -1622,6 +1641,10 @@ impl FederationOperation {
             | Self::TransactionSigned(_)
             | Self::TransactionBroadcastIntent(_)
             | Self::TransactionBroadcastObservation(_) => {
+                Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
+            }
+            Self::Bark(operation) => {
+                operation.validate()?;
                 Ok(FederationOperationBalanceAudit::unchecked(operation_kind))
             }
             Self::MintQuotePayment(observation) => FederationOperationBalanceAudit::checked(
@@ -1863,6 +1886,18 @@ impl FederationOperationEnvelope {
                 member_id: authorization.author,
             })?;
 
+        if matches!(&self.operation, FederationOperation::Bark(_))
+            && public_config
+                .frost_wallet
+                .as_ref()
+                .and_then(|wallet| wallet.bark_application.as_ref())
+                .is_none()
+        {
+            return Err(FederationError::BarkOperationInvalid {
+                reason: "Bark operation requires an accepted Bark application".to_string(),
+            });
+        }
+
         let claimed_observer = match &self.operation {
             FederationOperation::ChainObservation(observation) => Some(observation.observer()),
             FederationOperation::MintQuotePayment(observation) => Some(observation.observer),
@@ -1871,6 +1906,7 @@ impl FederationOperationEnvelope {
             FederationOperation::TransactionBroadcastObservation(observation) => {
                 Some(observation.observer)
             }
+            FederationOperation::Bark(operation) => Some(operation.claimed_author()),
             FederationOperation::AddressAllocation(_)
             | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)
@@ -1986,7 +2022,7 @@ fn operation_id_from_canonical(canonical: &[u8]) -> FederationOperationId {
     FederationOperationId::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
 }
 
-fn canonical_json_bytes<T>(value: &T) -> Result<Vec<u8>>
+pub(super) fn canonical_json_bytes<T>(value: &T) -> Result<Vec<u8>>
 where
     T: Serialize + ?Sized,
 {

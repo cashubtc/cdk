@@ -28,8 +28,11 @@ redis = ["cdk-axum/redis"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
 federation = ["bdk", "cdk/federation", "cdk/wallet", "cdk-common/federation", "cdk-axum/federation", "cdk-sqlite?/federation", "cdk-sqlite?/wallet", "cdk-postgres?/federation"]
+# Federated Bark is deliberately separate so ordinary federation builds do not
+# resolve or compile the Bark dependency graph.
+federation-bark = ["federation", "dep:cdk-bark", "cdk-bark/federation-bark", "cdk-axum/federation-bark"]
 # Local/regtest-only trusted-dealer setup and runtime admission.
-federation-test-utils = ["federation", "fakewallet"]
+federation-test-utils = ["federation", "fakewallet", "cdk-bark?/federation-test-utils"]
 
 [dependencies]
 anyhow.workspace = true
@@ -49,6 +52,7 @@ cdk-lnd = { workspace = true, optional = true }
 cdk-ldk-node = { workspace = true, optional = true }
 cdk-fake-wallet = { workspace = true, optional = true }
 cdk-bdk = { workspace = true, optional = true }
+cdk-bark = { workspace = true, optional = true }
 cdk-axum.workspace = true
 cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }

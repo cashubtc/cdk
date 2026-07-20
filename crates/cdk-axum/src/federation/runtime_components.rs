@@ -218,6 +218,10 @@ pub(super) struct FederationDkgCoordinator {
 pub(super) struct FederationWalletReconciler {
     pub(super) onchain_wallets: Vec<cdk_bdk::FederatedBdkWallet>,
     pub(super) frost_signing: Option<FederationFrostSigningRuntime>,
+    #[cfg(feature = "federation-bark")]
+    pub(super) bark: Option<Arc<cdk_bark::FederatedBarkRuntime>>,
+    #[cfg(feature = "federation-bark")]
+    pub(super) bark_incoming: Arc<tokio::sync::Mutex<()>>,
     bdk_degraded_reason: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
@@ -282,6 +286,7 @@ impl FederationRuntimeComponents {
         dkg_member_admission: Option<FederationDkgMemberAdmissionHandle>,
         onchain_wallets: Vec<cdk_bdk::FederatedBdkWallet>,
         frost_signing: Option<FederationFrostSigningRuntime>,
+        #[cfg(feature = "federation-bark")] bark: Option<Arc<cdk_bark::FederatedBarkRuntime>>,
     ) -> Self {
         Self {
             readiness: FederationReadinessCoordinator { sync },
@@ -292,6 +297,10 @@ impl FederationRuntimeComponents {
             wallet: FederationWalletReconciler {
                 onchain_wallets,
                 frost_signing,
+                #[cfg(feature = "federation-bark")]
+                bark,
+                #[cfg(feature = "federation-bark")]
+                bark_incoming: Arc::new(tokio::sync::Mutex::new(())),
                 bdk_degraded_reason: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             },
             ..Default::default()

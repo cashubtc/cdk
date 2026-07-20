@@ -6,13 +6,16 @@ use async_trait::async_trait;
 use cdk_common::federation::{
     generate_trusted_dealer_configs, FederationAlephBftBackupStatus,
     FederationAlephBftRecoveryCursor, FederationApplicationDigest, FederationApplicationFrontier,
-    FederationCheckpointId, FederationCheckpointKind, FederationCheckpointQuorumSummary,
-    FederationCheckpointStatus, FederationCheckpointSummary, FederationCommittedFrontier,
-    FederationConsensusRuntimeStatus, FederationFinalizedFrontier, FederationFinalizedItemDigest,
-    FederationInvalidOperationAlertSummary, FederationJournalDigest, FederationJournalFrontier,
-    FederationMaterializedStateDigest, FederationPaymentObservationContext,
-    FederationPaymentObservationEvidenceGroupSummary, FederationPeerStatus,
-    FederationWalletBroadcastHealth, FederationWalletOperationPhase,
+    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionStatus,
+    FederationBarkDigest, FederationBarkOperatorStatus, FederationBarkProtocolStatus,
+    FederationBarkReceiveSecretCoverage, FederationBarkSemanticPhase, FederationBarkVtxoState,
+    FederationBarkVtxoStatusCount, FederationCheckpointId, FederationCheckpointKind,
+    FederationCheckpointQuorumSummary, FederationCheckpointStatus, FederationCheckpointSummary,
+    FederationCommittedFrontier, FederationConsensusRuntimeStatus, FederationFinalizedFrontier,
+    FederationFinalizedItemDigest, FederationInvalidOperationAlertSummary, FederationJournalDigest,
+    FederationJournalFrontier, FederationMaterializedStateDigest,
+    FederationPaymentObservationContext, FederationPaymentObservationEvidenceGroupSummary,
+    FederationPeerStatus, FederationWalletBroadcastHealth, FederationWalletOperationPhase,
     FederationWalletOperationPhaseCount, FederationWalletOperatorStatus, FederationWalletUtxoState,
     FederationWalletUtxoStatusCount, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
@@ -212,6 +215,7 @@ fn local_status(
         wallet_recovery: None,
         wallet_liveness: None,
         wallet_operator: None,
+        bark_operator: None,
     }
 }
 
@@ -1126,4 +1130,97 @@ fn wallet_status_line_reports_fixed_phases_without_sensitive_material() {
     ] {
         assert!(!line.contains(secret));
     }
+}
+
+fn bark_operator_fixture() -> FederationBarkOperatorStatus {
+    FederationBarkOperatorStatus {
+        version: 1,
+        readiness: "ready".to_string(),
+        degraded_reason: None,
+        accepted_frontier: 9,
+        local_frontier: 9,
+        projection_lag_operations: 0,
+        root_key_epoch: 3,
+        application_key_epoch: 4,
+        network: "regtest".to_string(),
+        ark_server_scope: FederationBarkDigest::from_bytes([7; 32]).expect("scope"),
+        ark_source_scope: "shared_protocol_server".to_string(),
+        ark_source_correlated_warning: true,
+        chain_source_scope: "undeclared".to_string(),
+        chain_source_correlated_warning: true,
+        chain_tip_height: Some(100),
+        refresh_margin_blocks: 12,
+        vtxos: vec![FederationBarkVtxoStatusCount {
+            state: FederationBarkVtxoState::PendingSpend,
+            count: 1,
+            value_sat: 21_000,
+        }],
+        expiring_vtxo_count: Some(1),
+        expiring_value_sat: Some(21_000),
+        earliest_expiry_height: Some(105),
+        ambiguous_action_count: 1,
+        ambiguous_value_sat: 21_000,
+        recovery_required_action_count: 0,
+        recovery_required_value_sat: 0,
+        signer_retry_action_count: 0,
+        actions: vec![FederationBarkActionStatus {
+            action_id: FederationBarkActionId::from_bytes([8; 32]).expect("action"),
+            kind: Some(FederationBarkActionKind::LightningSend),
+            phase: FederationBarkSemanticPhase::PaymentInitiated,
+            signing_retry_phase: None,
+            actor: MemberId::new(1).expect("member"),
+            local_actor: true,
+            attempt: 2,
+            age_operations: 3,
+            value_sat: 21_000,
+        }],
+        protocols: FederationBarkProtocolStatus {
+            ordinary_frost_nonterminal: 1,
+            virtual_musig2_nonterminal: 2,
+            threshold_dh_nonterminal: 0,
+            aggregate_results_cached: 1,
+        },
+        receive_secrets: FederationBarkReceiveSecretCoverage {
+            accepted_actions: 1,
+            acknowledged_by_local_member: 1,
+            locally_retained: 1,
+            missing_acknowledged_nonterminal: 0,
+            minimum_acknowledgements: 2,
+            maximum_acknowledgements: 2,
+        },
+    }
+}
+
+#[test]
+fn bark_status_line_reports_risk_without_sensitive_material() {
+    let status = bark_operator_fixture();
+    let line = bark_operator_status_line(&status);
+    let action_line = bark_action_status_line(&status.actions[0]);
+    assert!(line.contains("readiness=ready"));
+    assert!(line.contains("ambiguous_actions=1"));
+    assert!(line.contains("receive_local_retained=1"));
+    assert!(action_line.contains("phase=payment_initiated"));
+    for secret in [
+        "lnbc-sensitive-invoice",
+        "preimage-secret",
+        "nonce-secret",
+        "ark-password",
+        "/sensitive/local/path",
+    ] {
+        assert!(!line.contains(secret));
+        assert!(!action_line.contains(secret));
+    }
+}
+
+#[test]
+fn ready_guard_rejects_bark_projection_lag() {
+    let (public_config, _) = status_fixture();
+    let mut status = local_status(&public_config, 1, 0);
+    let mut bark = bark_operator_fixture();
+    bark.readiness = "behind_consensus".to_string();
+    bark.projection_lag_operations = 1;
+    status.bark_operator = Some(bark);
+
+    let error = ensure_statuses_ready(&[status]).expect_err("Bark lag must fail readiness");
+    assert!(error.to_string().contains("projection_lag_operations=1"));
 }

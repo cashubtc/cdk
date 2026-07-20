@@ -12,22 +12,41 @@ use crate::types::{
     SigningDerivation, SigningSessionId, MAX_AUTHORIZATION_BYTES, MAX_COMMITMENT_BYTES,
     MAX_DERIVATION_STEPS, MAX_PARTICIPANTS,
 };
-use crate::{Error, SigningAuthorizationScope, SigningSessionContext};
+use crate::{
+    CustodyProtocol, Error, SigningAuthorizationScope, SigningSessionContext, ThresholdDhProof,
+    ThresholdDhRequest, ThresholdDhShare, VirtualMusigNonceCommitment,
+    VirtualMusigNonceCommitmentSet, VirtualMusigNonceId, VirtualMusigPartialShare,
+    VirtualMusigTranscript,
+};
 
 const ROOT_MAGIC: &[u8; 8] = b"CDKFRT01";
 const COMMITMENT_MAGIC: &[u8; 8] = b"CDKFNC03";
 const SHARE_MAGIC: &[u8; 8] = b"CDKFSH03";
 const SESSION_MAGIC: &[u8; 8] = b"CDKFSC01";
+const PROTOCOL_SESSION_MAGIC: &[u8; 8] = b"CDKFSC02";
 const DERIVATION_MAGIC: &[u8; 8] = b"CDKFSD01";
 const AUTHORIZATION_MAGIC: &[u8; 8] = b"CDKFAU01";
 const COMMITMENT_SET_MAGIC: &[u8; 8] = b"CDKFCS01";
+const VIRTUAL_MUSIG_COMMITMENT_MAGIC: &[u8; 8] = b"CDKFVM01";
+const VIRTUAL_MUSIG_COMMITMENT_SET_MAGIC: &[u8; 8] = b"CDKFVMS1";
+const VIRTUAL_MUSIG_TRANSCRIPT_MAGIC: &[u8; 8] = b"CDKFVMT1";
+const VIRTUAL_MUSIG_PARTIAL_MAGIC: &[u8; 8] = b"CDKFVMP1";
+const THRESHOLD_DH_REQUEST_MAGIC: &[u8; 8] = b"CDKFDHR1";
+const THRESHOLD_DH_SHARE_MAGIC: &[u8; 8] = b"CDKFDHS1";
 const ROOT_WIRE_MAX: usize = 128 + MAX_PARTICIPANTS * 35;
 const COMMITMENT_WIRE_MAX: usize = 192 + MAX_COMMITMENT_BYTES;
 const SHARE_WIRE_LEN: usize = 8 + 8 + 32 + 8 + 2 + 32 + 32 + 32 + 2 + 32;
-const SESSION_WIRE_MAX: usize = 256 + MAX_PARTICIPANTS * 2;
+const SESSION_WIRE_MAX: usize = 257 + MAX_PARTICIPANTS * 2;
 const DERIVATION_WIRE_MAX: usize = 80 + MAX_DERIVATION_STEPS * 32;
 const AUTHORIZATION_WIRE_MAX: usize = 96 + MAX_AUTHORIZATION_BYTES;
 const COMMITMENT_SET_WIRE_MAX: usize = 16 + MAX_PARTICIPANTS * (4 + COMMITMENT_WIRE_MAX);
+const VIRTUAL_MUSIG_COMMITMENT_WIRE_LEN: usize = 8 + 8 + 32 + 32 + 32 + 2 + 66;
+const VIRTUAL_MUSIG_COMMITMENT_SET_WIRE_MAX: usize =
+    8 + 2 + MAX_PARTICIPANTS * (4 + VIRTUAL_MUSIG_COMMITMENT_WIRE_LEN);
+const VIRTUAL_MUSIG_TRANSCRIPT_WIRE_MAX: usize = 8 + 32 + 66 + 33 + 66 + 66 + 32 + 1 + 32;
+const VIRTUAL_MUSIG_PARTIAL_WIRE_LEN: usize = 8 + 2 + 32 + 32 + 32;
+const THRESHOLD_DH_REQUEST_WIRE_LEN: usize = 8 + 32 + 33 + 32;
+const THRESHOLD_DH_SHARE_WIRE_LEN: usize = 8 + 2 + 32 + 32 + 33 + 33 + 33 + 32;
 
 impl RootPublicPackage {
     /// Encode the public root package canonically.
@@ -259,7 +278,13 @@ impl SigningSessionContext {
     pub fn encode(&self) -> Vec<u8> {
         let registration = self.registration();
         let mut output = Vec::with_capacity(224 + self.signer_set().len() * 2);
-        output.extend_from_slice(SESSION_MAGIC);
+        match self.protocol() {
+            CustodyProtocol::OrdinaryFrost => output.extend_from_slice(SESSION_MAGIC),
+            protocol => {
+                output.extend_from_slice(PROTOCOL_SESSION_MAGIC);
+                output.push(encode_protocol(protocol));
+            }
+        }
         output.extend_from_slice(&self.federation_id());
         output.extend_from_slice(&self.root_epoch().get().to_be_bytes());
         output.extend_from_slice(&registration.id().to_bytes());
@@ -286,7 +311,16 @@ impl SigningSessionContext {
             });
         }
         let mut reader = Reader::new(bytes, "signing session context");
-        reader.expect_magic(SESSION_MAGIC)?;
+        let protocol = match reader.bytes(8)? {
+            magic if magic == SESSION_MAGIC => CustodyProtocol::OrdinaryFrost,
+            magic if magic == PROTOCOL_SESSION_MAGIC => decode_protocol(reader.u8()?)?,
+            _ => {
+                return Err(Error::malformed(
+                    "signing session context",
+                    "wrong type or version header",
+                ));
+            }
+        };
         let federation_id = reader.array::<32>()?;
         let root_epoch = RootKeyEpoch::new(reader.u64()?)?;
         let registration = ApplicationRegistration::new(
@@ -318,7 +352,7 @@ impl SigningSessionContext {
             authorization_reference,
             message_commitment,
         )?;
-        let value = Self::new(scope, attempt, signers)?;
+        let value = Self::new_for_protocol(scope, attempt, signers, protocol)?;
         if value.encode() != bytes {
             return Err(Error::malformed(
                 "signing session context",
@@ -508,12 +542,336 @@ impl NonceCommitmentSet {
     }
 }
 
+impl VirtualMusigNonceCommitment {
+    /// Encode one protocol-bound public virtual MuSig2 nonce canonically.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut output = Vec::with_capacity(VIRTUAL_MUSIG_COMMITMENT_WIRE_LEN);
+        output.extend_from_slice(VIRTUAL_MUSIG_COMMITMENT_MAGIC);
+        output.extend_from_slice(&self.root_epoch().get().to_be_bytes());
+        output.extend_from_slice(&self.session_id().to_bytes());
+        output.extend_from_slice(&self.derivation_binding());
+        output.extend_from_slice(&self.nonce_id().to_bytes());
+        output.extend_from_slice(&self.participant().get().to_be_bytes());
+        output.extend_from_slice(&self.public_nonce());
+        output
+    }
+
+    /// Decode a fixed-size commitment against its complete expected session.
+    pub fn decode(bytes: &[u8], context: &SigningSessionContext) -> Result<Self, Error> {
+        if bytes.len() > VIRTUAL_MUSIG_COMMITMENT_WIRE_LEN {
+            return Err(Error::OversizedInput {
+                kind: "virtual MuSig2 commitment",
+                max: VIRTUAL_MUSIG_COMMITMENT_WIRE_LEN,
+            });
+        }
+        if context.protocol() != CustodyProtocol::VirtualMusig2 {
+            return Err(Error::WrongSession);
+        }
+        let mut reader = Reader::new(bytes, "virtual MuSig2 commitment");
+        reader.expect_magic(VIRTUAL_MUSIG_COMMITMENT_MAGIC)?;
+        let root_epoch = RootKeyEpoch::new(reader.u64()?)?;
+        let session_id = SigningSessionId::from_bytes(reader.array::<32>()?)?;
+        let derivation_binding = reader.array::<32>()?;
+        let nonce_id = VirtualMusigNonceId::from_bytes(reader.array::<32>()?)?;
+        let participant = MemberId::new(reader.u16()?)?;
+        let public_nonce = reader.array::<66>()?;
+        reader.finish()?;
+        if root_epoch != context.root_epoch()
+            || session_id != context.session_id()
+            || derivation_binding != context.derivation_binding()
+        {
+            return Err(Error::WrongSession);
+        }
+        let value = Self::new(context, participant, public_nonce)?;
+        if value.nonce_id() != nonce_id || value.encode() != bytes {
+            return Err(Error::malformed(
+                "virtual MuSig2 commitment",
+                "nonce identifier or canonical encoding is inconsistent",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl VirtualMusigNonceCommitmentSet {
+    /// Encode a complete canonically ordered virtual MuSig2 commitment set.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut output = Vec::new();
+        output.extend_from_slice(VIRTUAL_MUSIG_COMMITMENT_SET_MAGIC);
+        output.extend_from_slice(&(self.commitments().len() as u16).to_be_bytes());
+        for commitment in self.commitments().values() {
+            let encoded = commitment.encode();
+            output.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+            output.extend_from_slice(&encoded);
+        }
+        output
+    }
+
+    /// Decode a bounded commitment set against one expected protocol session.
+    pub fn decode(bytes: &[u8], context: &SigningSessionContext) -> Result<Self, Error> {
+        if bytes.len() > VIRTUAL_MUSIG_COMMITMENT_SET_WIRE_MAX {
+            return Err(Error::OversizedInput {
+                kind: "virtual MuSig2 commitment set",
+                max: VIRTUAL_MUSIG_COMMITMENT_SET_WIRE_MAX,
+            });
+        }
+        let mut reader = Reader::new(bytes, "virtual MuSig2 commitment set");
+        reader.expect_magic(VIRTUAL_MUSIG_COMMITMENT_SET_MAGIC)?;
+        let count = usize::from(reader.u16()?);
+        if count > MAX_PARTICIPANTS {
+            return Err(Error::OversizedInput {
+                kind: "virtual MuSig2 commitment set",
+                max: MAX_PARTICIPANTS,
+            });
+        }
+        let mut commitments = Vec::with_capacity(count);
+        for _ in 0..count {
+            let length = usize::try_from(reader.u32()?).map_err(|_| {
+                Error::malformed("virtual MuSig2 commitment set", "length overflow")
+            })?;
+            if length > VIRTUAL_MUSIG_COMMITMENT_WIRE_LEN {
+                return Err(Error::OversizedInput {
+                    kind: "virtual MuSig2 commitment",
+                    max: VIRTUAL_MUSIG_COMMITMENT_WIRE_LEN,
+                });
+            }
+            commitments.push(VirtualMusigNonceCommitment::decode(
+                reader.bytes(length)?,
+                context,
+            )?);
+        }
+        reader.finish()?;
+        let value = Self::new(commitments)?;
+        if value.encode() != bytes {
+            return Err(Error::malformed(
+                "virtual MuSig2 commitment set",
+                "encoding is not canonical",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl VirtualMusigTranscript {
+    /// Encode the exact final BIP327 outer transcript canonically.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut output = Vec::with_capacity(VIRTUAL_MUSIG_TRANSCRIPT_WIRE_MAX);
+        output.extend_from_slice(VIRTUAL_MUSIG_TRANSCRIPT_MAGIC);
+        output.extend_from_slice(&self.session_id().to_bytes());
+        for key in self.outer_pubkeys() {
+            output.extend_from_slice(key);
+        }
+        output.extend_from_slice(&self.user_pubkey());
+        output.extend_from_slice(&self.user_public_nonce());
+        output.extend_from_slice(&self.server_public_nonce());
+        output.extend_from_slice(&self.message());
+        match self.xonly_tweak() {
+            Some(tweak) => {
+                output.push(1);
+                output.extend_from_slice(&tweak);
+            }
+            None => output.push(0),
+        }
+        output
+    }
+
+    /// Decode a bounded canonical final BIP327 transcript.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > VIRTUAL_MUSIG_TRANSCRIPT_WIRE_MAX {
+            return Err(Error::OversizedInput {
+                kind: "virtual MuSig2 transcript",
+                max: VIRTUAL_MUSIG_TRANSCRIPT_WIRE_MAX,
+            });
+        }
+        let mut reader = Reader::new(bytes, "virtual MuSig2 transcript");
+        reader.expect_magic(VIRTUAL_MUSIG_TRANSCRIPT_MAGIC)?;
+        let session_id = SigningSessionId::from_bytes(reader.array::<32>()?)?;
+        let outer_pubkeys = [reader.array::<33>()?, reader.array::<33>()?];
+        let user_pubkey = reader.array::<33>()?;
+        let user_public_nonce = reader.array::<66>()?;
+        let server_public_nonce = reader.array::<66>()?;
+        let message = reader.array::<32>()?;
+        let xonly_tweak = match reader.u8()? {
+            0 => None,
+            1 => Some(reader.array::<32>()?),
+            _ => {
+                return Err(Error::malformed(
+                    "virtual MuSig2 transcript",
+                    "invalid optional tweak tag",
+                ));
+            }
+        };
+        reader.finish()?;
+        let value = Self::new(
+            session_id,
+            outer_pubkeys,
+            user_pubkey,
+            user_public_nonce,
+            server_public_nonce,
+            message,
+            xonly_tweak,
+        )?;
+        if value.encode() != bytes {
+            return Err(Error::malformed(
+                "virtual MuSig2 transcript",
+                "encoding is not canonical",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl VirtualMusigPartialShare {
+    /// Encode one transcript-bound virtual MuSig2 partial canonically.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut output = Vec::with_capacity(VIRTUAL_MUSIG_PARTIAL_WIRE_LEN);
+        output.extend_from_slice(VIRTUAL_MUSIG_PARTIAL_MAGIC);
+        output.extend_from_slice(&self.participant().get().to_be_bytes());
+        output.extend_from_slice(&self.session_id().to_bytes());
+        output.extend_from_slice(&self.transcript_binding());
+        output.extend_from_slice(&self.to_bytes());
+        output
+    }
+
+    /// Decode a fixed-size canonical virtual MuSig2 partial.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > VIRTUAL_MUSIG_PARTIAL_WIRE_LEN {
+            return Err(Error::OversizedInput {
+                kind: "virtual MuSig2 partial",
+                max: VIRTUAL_MUSIG_PARTIAL_WIRE_LEN,
+            });
+        }
+        let mut reader = Reader::new(bytes, "virtual MuSig2 partial");
+        reader.expect_magic(VIRTUAL_MUSIG_PARTIAL_MAGIC)?;
+        let participant = MemberId::new(reader.u16()?)?;
+        let session_id = SigningSessionId::from_bytes(reader.array::<32>()?)?;
+        let transcript_binding = reader.array::<32>()?;
+        let share = reader.array::<32>()?;
+        reader.finish()?;
+        let value = Self::from_parts(participant, session_id, transcript_binding, share)?;
+        if value.encode() != bytes {
+            return Err(Error::malformed(
+                "virtual MuSig2 partial",
+                "encoding is not canonical",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl ThresholdDhRequest {
+    /// Encode the exact operation-bound threshold-DH input canonically.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut output = Vec::with_capacity(THRESHOLD_DH_REQUEST_WIRE_LEN);
+        output.extend_from_slice(THRESHOLD_DH_REQUEST_MAGIC);
+        output.extend_from_slice(&self.session_id().to_bytes());
+        output.extend_from_slice(&self.server_point());
+        output.extend_from_slice(&self.context());
+        output
+    }
+
+    /// Decode a fixed-size canonical threshold-DH request.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > THRESHOLD_DH_REQUEST_WIRE_LEN {
+            return Err(Error::OversizedInput {
+                kind: "threshold-DH request",
+                max: THRESHOLD_DH_REQUEST_WIRE_LEN,
+            });
+        }
+        let mut reader = Reader::new(bytes, "threshold-DH request");
+        reader.expect_magic(THRESHOLD_DH_REQUEST_MAGIC)?;
+        let session_id = SigningSessionId::from_bytes(reader.array::<32>()?)?;
+        let server_point = reader.array::<33>()?;
+        let context = reader.array::<32>()?;
+        reader.finish()?;
+        let value = Self::new(session_id, server_point, context)?;
+        if value.encode() != bytes {
+            return Err(Error::malformed(
+                "threshold-DH request",
+                "encoding is not canonical",
+            ));
+        }
+        Ok(value)
+    }
+}
+
+impl ThresholdDhShare {
+    /// Encode one DLEQ-proven threshold-DH contribution canonically.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut output = Vec::with_capacity(THRESHOLD_DH_SHARE_WIRE_LEN);
+        output.extend_from_slice(THRESHOLD_DH_SHARE_MAGIC);
+        output.extend_from_slice(&self.participant().get().to_be_bytes());
+        output.extend_from_slice(&self.session_id().to_bytes());
+        output.extend_from_slice(&self.request_binding());
+        output.extend_from_slice(&self.shared_point());
+        output.extend_from_slice(&self.proof().commitment_g());
+        output.extend_from_slice(&self.proof().commitment_s());
+        output.extend_from_slice(&self.proof().response());
+        output
+    }
+
+    /// Decode a fixed-size canonical threshold-DH share and DLEQ proof.
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        if bytes.len() > THRESHOLD_DH_SHARE_WIRE_LEN {
+            return Err(Error::OversizedInput {
+                kind: "threshold-DH share",
+                max: THRESHOLD_DH_SHARE_WIRE_LEN,
+            });
+        }
+        let mut reader = Reader::new(bytes, "threshold-DH share");
+        reader.expect_magic(THRESHOLD_DH_SHARE_MAGIC)?;
+        let participant = MemberId::new(reader.u16()?)?;
+        let session_id = SigningSessionId::from_bytes(reader.array::<32>()?)?;
+        let request_binding = reader.array::<32>()?;
+        let shared_point = reader.array::<33>()?;
+        let proof = ThresholdDhProof::from_parts(
+            reader.array::<33>()?,
+            reader.array::<33>()?,
+            reader.array::<32>()?,
+        )?;
+        reader.finish()?;
+        let value = Self::from_parts(
+            participant,
+            session_id,
+            request_binding,
+            shared_point,
+            proof,
+        )?;
+        if value.encode() != bytes {
+            return Err(Error::malformed(
+                "threshold-DH share",
+                "encoding is not canonical",
+            ));
+        }
+        Ok(value)
+    }
+}
+
 impl AggregateSignature {
     /// Decode and validate a compact BIP340 aggregate signature.
     pub fn from_bytes(bytes: [u8; 64]) -> Result<Self, Error> {
         frost::Signature::deserialize(&bytes)
             .map_err(|error| Error::InvalidShare(error.to_string()))?;
         Ok(Self::from_bytes_unchecked(bytes))
+    }
+}
+
+fn encode_protocol(protocol: CustodyProtocol) -> u8 {
+    match protocol {
+        CustodyProtocol::OrdinaryFrost => 0,
+        CustodyProtocol::VirtualMusig2 => 1,
+        CustodyProtocol::ThresholdDh => 2,
+    }
+}
+
+fn decode_protocol(protocol: u8) -> Result<CustodyProtocol, Error> {
+    match protocol {
+        1 => Ok(CustodyProtocol::VirtualMusig2),
+        2 => Ok(CustodyProtocol::ThresholdDh),
+        _ => Err(Error::malformed(
+            "signing session context",
+            "invalid protocol namespace",
+        )),
     }
 }
 

@@ -53,6 +53,41 @@ async fn finish_federation_apply_transaction<T>(
     finish_federation_transaction(transaction, entry, "apply", outcome).await
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FederationBarkResultObservationKey {
+    action_id: cdk_common::federation::FederationBarkActionId,
+    status: cdk_common::federation::FederationBarkObservationStatus,
+    payment_hash: cdk_common::federation::FederationBarkDigest,
+    source_scope: cdk_common::federation::FederationBarkDigest,
+    amount: Amount,
+    fee: Amount,
+    result_hash: cdk_common::federation::FederationBarkDigest,
+}
+
+fn federation_bark_matching_result_observers(
+    projection: &cdk_common::federation::FederationBarkProjectionSnapshot,
+    key: FederationBarkResultObservationKey,
+) -> std::collections::BTreeSet<MemberId> {
+    projection
+        .observations
+        .iter()
+        .filter_map(|record| match &record.operation {
+            cdk_common::federation::FederationBarkOperation::MemberObservation(observation)
+                if observation.action_id == key.action_id
+                    && observation.status == key.status
+                    && observation.payment_hash == Some(key.payment_hash)
+                    && observation.source_scope == key.source_scope
+                    && observation.amount == key.amount
+                    && observation.fee == key.fee
+                    && observation.result_hash == key.result_hash =>
+            {
+                Some(observation.observer)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 impl Mint {
     fn claim_active_federation_melt_payment(
         &self,
@@ -72,18 +107,18 @@ impl Mint {
         })
     }
 
-    /// Compute the current payment-attempt lease actor for an accepted melt.
+    /// Compute the current external-action lease actor.
     ///
     /// The accepted envelope author holds the first lease epoch. Authority
     /// then rotates deterministically through the roster every
-    /// [`FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS`] accepted journal items,
+    /// [`FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS`] accepted journal items,
     /// so an offline or Byzantine author cannot veto the payment forever.
     /// The lease is derived only from consensus-ordered state (the melt
     /// operation's journal index and the roster), so every member with the
     /// same journal frontier computes the same single actor, and takeover is
-    /// safe because the caller-supplied idempotency key is durable before any
-    /// external I/O and contract-honoring backends deduplicate by it.
-    async fn federation_melt_payment_lease_actor(
+    /// safe because the operation's external identity and recovery state are
+    /// durable before any side effect.
+    pub(super) async fn federation_external_action_lease_actor(
         &self,
         config: &FederationRuntimeConfig,
         author: MemberId,
@@ -100,10 +135,67 @@ impl Mint {
             .await?
             .map_or(0, |tip| tip.index.saturating_add(1));
         let lease_epoch = journal_frontier.saturating_sub(operation_index.saturating_add(1))
-            / FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS;
+            / FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS;
         let epoch_steps = usize::try_from(lease_epoch % members.len() as u64).unwrap_or_default();
         let actor_position = (author_position + epoch_steps) % members.len();
         Ok(members[actor_position])
+    }
+
+    /// Return the deterministic current payment/planning actor for one applied melt.
+    pub async fn federation_melt_payment_actor(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Result<MemberId, Error> {
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        let entry = self
+            .localstore
+            .get_federation_journal_entry_by_operation_id(operation_id)
+            .await?
+            .ok_or(Error::Internal)?;
+        if entry.status() != FederationOperationStatus::Applied
+            || !matches!(entry.envelope.operation, FederationOperation::Melt(_))
+        {
+            return Err(Error::Internal);
+        }
+        let author = entry
+            .envelope
+            .verify_authorization(config.public_config())?;
+        self.federation_external_action_lease_actor(&config, author, entry.index)
+            .await
+    }
+
+    /// Return the replaceable receive-worker actor for one applied Bark receive intent.
+    pub async fn federation_bark_receive_actor(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Result<MemberId, Error> {
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        let entry = self
+            .localstore
+            .get_federation_journal_entry_by_operation_id(operation_id)
+            .await?
+            .ok_or(Error::Internal)?;
+        if entry.status() != FederationOperationStatus::Applied
+            || !matches!(
+                entry.envelope.operation,
+                FederationOperation::Bark(
+                    cdk_common::federation::FederationBarkOperation::ReceiveIntent(_)
+                )
+            )
+        {
+            return Err(Error::Internal);
+        }
+        let author = entry
+            .envelope
+            .verify_authorization(config.public_config())?;
+        self.federation_external_action_lease_actor(&config, author, entry.index)
+            .await
     }
 
     /// Probe an incoming payment backend without mutating federated quote state.
@@ -147,6 +239,85 @@ impl Mint {
         }
         if quote.state() == MintQuoteState::Issued {
             return Ok(None);
+        }
+        if config
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.bark_application.as_ref())
+            .is_some()
+        {
+            let projection = self.federation_bark_projection_snapshot().await?;
+            let quote_label = quote.id.to_string();
+            if let Some(action) = projection.actions.iter().find(|action| {
+                action.quote.as_deref() == Some(quote_label.as_str())
+                    && action.phase
+                        == cdk_common::federation::FederationBarkSemanticPhase::ReceiveClaimed
+            }) {
+                let intent = self
+                    .federation_bark_receive_intent(action.origin_operation_id)
+                    .await?
+                    .ok_or(Error::Internal)?;
+                let cdk_common::federation::FederationBarkOperation::ActionTransition(
+                    transition,
+                ) = &action.operation
+                else {
+                    return Err(Error::Internal);
+                };
+                let mut spendable_sat = 0_u64;
+                for output in transition.vtxo_transitions.iter().filter(|mutation| {
+                    mutation.previous_state.is_none()
+                        && mutation.new_state
+                            == cdk_common::federation::FederationBarkVtxoState::Spendable
+                }) {
+                    let record = projection
+                        .vtxos
+                        .iter()
+                        .find(|record| record.vtxo_id == output.vtxo_id)
+                        .ok_or(Error::Internal)?;
+                    // Later accepted operations may already have advanced the
+                    // claimed output from its original Spendable state.
+                    if record.locator != output.locator
+                        || record.amount != output.amount
+                        || record.artifact.hash != output.artifact_hash
+                    {
+                        return Err(Error::Internal);
+                    }
+                    spendable_sat = spendable_sat
+                        .checked_add(u64::from(output.amount))
+                        .ok_or(Error::Internal)?;
+                }
+                if spendable_sat >= u64::from(intent.cashu_amount) {
+                    let matching_result_observers = federation_bark_matching_result_observers(
+                        &projection,
+                        FederationBarkResultObservationKey {
+                            action_id: action.action_id,
+                            status:
+                                cdk_common::federation::FederationBarkObservationStatus::Succeeded,
+                            payment_hash: intent.payment_hash,
+                            source_scope: intent.ark_server,
+                            amount: Amount::from(spendable_sat),
+                            fee: Amount::ZERO,
+                            result_hash: transition.result_hash,
+                        },
+                    );
+                    if matching_result_observers.len()
+                        < usize::from(config.public_config().threshold_params.signature_threshold)
+                    {
+                        return Ok(None);
+                    }
+                    return Ok(Some(FederationMintQuotePaymentObservation {
+                        quote: quote.id.to_string(),
+                        observer: config.member_id(),
+                        method: quote.payment_method.clone(),
+                        state: MintQuoteState::Paid,
+                        amount_paid: intent.cashu_amount,
+                        amount_issued: quote.amount_issued().into(),
+                        payment_id: Some(PaymentIdentifier::QuoteId(quote.id.clone())),
+                        payment_proof: None,
+                    }));
+                }
+            }
         }
 
         let processor = self
@@ -262,6 +433,188 @@ impl Mint {
                 payment_proof: Some(receipt.outpoint.to_string()),
             }));
         }
+        if matches!(&quote.request, cdk_common::mint::MeltPaymentRequest::Bolt11 { .. })
+            && config
+                .public_config()
+                .frost_wallet
+                .as_ref()
+                .and_then(|wallet| wallet.bark_application.as_ref())
+                .is_some()
+        {
+            let projection = self.federation_bark_projection_snapshot().await?;
+            let quote_label = quote.id.to_string();
+            let Some(action) = projection.actions.iter().find(|action| {
+                action.quote.as_deref() == Some(quote_label.as_str())
+                    && matches!(
+                        action.phase,
+                        cdk_common::federation::FederationBarkSemanticPhase::SendPlanned
+                            | cdk_common::federation::FederationBarkSemanticPhase::SendHtlcsCosigned
+                            | cdk_common::federation::FederationBarkSemanticPhase::PaymentInitiated
+                            | cdk_common::federation::FederationBarkSemanticPhase::PaymentSucceeded
+                            | cdk_common::federation::FederationBarkSemanticPhase::PaymentFailed
+                            | cdk_common::federation::FederationBarkSemanticPhase::RevocationPlanned
+                            | cdk_common::federation::FederationBarkSemanticPhase::RevocationCompleted
+                    )
+            }) else {
+                return Ok(None);
+            };
+            if !matches!(
+                action.phase,
+                cdk_common::federation::FederationBarkSemanticPhase::PaymentSucceeded
+                    | cdk_common::federation::FederationBarkSemanticPhase::RevocationCompleted
+            ) {
+                return Ok(None);
+            }
+            let cdk_common::federation::FederationBarkOperation::ActionTransition(success) =
+                &action.operation
+            else {
+                return Err(Error::Internal);
+            };
+            if action.phase
+                == cdk_common::federation::FederationBarkSemanticPhase::RevocationCompleted
+            {
+                let revocation_entry = self
+                    .localstore
+                    .get_federation_journal_entry_by_operation_id(success.plan_operation_id)
+                    .await?
+                    .ok_or(Error::Internal)?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(revocation)) =
+                    &revocation_entry.envelope.operation
+                else {
+                    return Err(Error::Internal);
+                };
+                if revocation.kind
+                    != cdk_common::federation::FederationBarkActionKind::FailedSendRevocation
+                {
+                    return Err(Error::Internal);
+                }
+                let failed_entry = self
+                    .localstore
+                    .get_federation_journal_entry_by_operation_id(
+                        revocation.predecessor_operation_id,
+                    )
+                    .await?
+                    .ok_or(Error::Internal)?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionTransition(failed)) =
+                    &failed_entry.envelope.operation
+                else {
+                    return Err(Error::Internal);
+                };
+                if failed.phase
+                    != cdk_common::federation::FederationBarkSemanticPhase::PaymentFailed
+                {
+                    return Err(Error::Internal);
+                }
+                let send_entry = self
+                    .localstore
+                    .get_federation_journal_entry_by_operation_id(failed.plan_operation_id)
+                    .await?
+                    .ok_or(Error::Internal)?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &send_entry.envelope.operation
+                else {
+                    return Err(Error::Internal);
+                };
+                if plan.kind
+                    != cdk_common::federation::FederationBarkActionKind::LightningSend
+                {
+                    return Err(Error::Internal);
+                }
+                let application = config
+                    .public_config()
+                    .frost_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.bark_application.as_ref())
+                    .ok_or(Error::Internal)?;
+                let source_scope = cdk_common::federation::ark_server_commitment(
+                    &application.ark_server_public_key,
+                )?;
+                let payment_hash = plan.payment_hash.ok_or(Error::Internal)?;
+                let matching = federation_bark_matching_result_observers(
+                    &projection,
+                    FederationBarkResultObservationKey {
+                        action_id: plan.action_id,
+                        status: cdk_common::federation::FederationBarkObservationStatus::Failed,
+                        payment_hash,
+                        source_scope,
+                        amount: plan.external_amount,
+                        fee: plan.fee_amount,
+                        result_hash: success.result_hash,
+                    },
+                );
+                if matching.len()
+                    < usize::from(config.public_config().threshold_params.signature_threshold)
+                {
+                    return Ok(None);
+                }
+                return Ok(Some(FederationMeltQuotePaymentObservation {
+                    quote: quote.id.to_string(),
+                    observer: config.member_id(),
+                    method: quote.payment_method.clone(),
+                    state: cdk_common::MeltQuoteState::Failed,
+                    amount: quote.amount().into(),
+                    fee_reserve: quote.fee_reserve().into(),
+                    payment_id: Some(PaymentIdentifier::PaymentHash(payment_hash.to_bytes())),
+                    payment_proof: Some(success.result_hash.to_hex()),
+                }));
+            }
+            let plan_entry = self
+                .localstore
+                .get_federation_journal_entry_by_operation_id(success.plan_operation_id)
+                .await?
+                .ok_or(Error::Internal)?;
+            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                &plan_entry.envelope.operation
+            else {
+                return Err(Error::Internal);
+            };
+            projection::validate_payment_success_proof(plan, success)?;
+            let application = config
+                .public_config()
+                .frost_wallet
+                .as_ref()
+                .and_then(|wallet| wallet.bark_application.as_ref())
+                .ok_or(Error::Internal)?;
+            let source_scope = cdk_common::federation::ark_server_commitment(
+                &application.ark_server_public_key,
+            )?;
+            let payment_hash = plan.payment_hash.ok_or(Error::Internal)?;
+            let matching = federation_bark_matching_result_observers(
+                &projection,
+                FederationBarkResultObservationKey {
+                    action_id: plan.action_id,
+                    status:
+                        cdk_common::federation::FederationBarkObservationStatus::Succeeded,
+                    payment_hash,
+                    source_scope,
+                    amount: plan.external_amount,
+                    fee: plan.fee_amount,
+                    result_hash: success.result_hash,
+                },
+            );
+            if matching.len()
+                < usize::from(config.public_config().threshold_params.signature_threshold)
+            {
+                return Ok(None);
+            }
+            let proof = success
+                .artifacts
+                .iter()
+                .find(|artifact| {
+                    artifact.kind == cdk_common::federation::FederationBarkArtifactKind::Proof
+                })
+                .ok_or(Error::Internal)?;
+            return Ok(Some(FederationMeltQuotePaymentObservation {
+                quote: quote.id.to_string(),
+                observer: config.member_id(),
+                method: quote.payment_method.clone(),
+                state: cdk_common::MeltQuoteState::Paid,
+                amount: quote.amount().into(),
+                fee_reserve: quote.fee_reserve().into(),
+                payment_id: Some(PaymentIdentifier::PaymentHash(payment_hash.to_bytes())),
+                payment_proof: Some(crate::util::hex::encode(&proof.bytes)),
+            }));
+        }
         let entry = self
             .localstore
             .get_federation_journal_entry_by_operation_id(operation_id)
@@ -271,7 +624,7 @@ impl Mint {
             .envelope
             .verify_authorization(config.public_config())?;
         let lease_actor = self
-            .federation_melt_payment_lease_actor(&config, author, entry.index)
+            .federation_external_action_lease_actor(&config, author, entry.index)
             .await?;
         let is_payment_actor = lease_actor == config.member_id();
         let _active_payment = if is_payment_actor {
@@ -704,7 +1057,31 @@ impl Mint {
                     .await?;
                 Ok(true)
             }
+            FederationOperation::Bark(operation) => {
+                self.apply_federation_bark(entry, operation).await?;
+                Ok(true)
+            }
         }
+    }
+
+    async fn apply_federation_bark(
+        &self,
+        entry: &FederationJournalEntry,
+        operation: &FederationBarkOperation,
+    ) -> Result<(), Error> {
+        operation.validate()?;
+        self.validate_federation_bark_operation_submission(operation)
+            .await?;
+        if let FederationBarkOperation::ReceiveIntent(intent) = operation {
+            let runtime_config = self.federation_config().ok_or(Error::Internal)?;
+            intent.validate_secret_acknowledgements(runtime_config.public_config())?;
+        }
+        let mut transaction = self.localstore.begin_transaction().await?;
+        let outcome = transaction
+            .apply_federation_bark_operation(entry, operation)
+            .await
+            .map_err(Error::from);
+        finish_federation_apply_transaction(transaction, entry, outcome).await
     }
 
     async fn require_prior_applied_melt_quote(

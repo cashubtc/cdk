@@ -2399,7 +2399,7 @@ timeouts.
 > member was permitted to call the backend" when the accepted author is
 > offline) is now resolved. Payment authority rotates through the roster
 > after a bounded, consensus-derived attempt lease
-> (`FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS`), and the takeover member
+> (`FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS`), and the takeover member
 > safely continues the same payment under the durable caller-supplied
 > idempotency key. See milestone `P1` in
 > `docs/federated-cashu-consensus-deadlocks-2026-07-18.md` for the

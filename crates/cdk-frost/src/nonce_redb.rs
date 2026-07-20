@@ -28,7 +28,7 @@ const NEXT_TERMINAL_SEQUENCE: &str = "next_terminal_sequence";
 /// Transactional participant-local redb nonce store.
 #[derive(Clone)]
 pub struct RedbNonceStore {
-    database: Arc<Database>,
+    pub(crate) database: Arc<Database>,
 }
 
 impl fmt::Debug for RedbNonceStore {
@@ -48,6 +48,7 @@ impl RedbNonceStore {
             database: Arc::new(database),
         };
         store.initialize()?;
+        crate::protocol_redb::initialize_database(&store.database)?;
         Ok(store)
     }
 
@@ -503,6 +504,7 @@ fn persistence(error: impl fmt::Display) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DurableProtocolStore;
 
     #[test]
     fn debug_does_not_expose_database_path() {
@@ -512,5 +514,45 @@ mod tests {
         let debug = format!("{store:?}");
         assert!(debug.contains("<private local nonce database>"));
         assert!(!debug.contains(path.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn opening_ordinary_only_schema_adds_empty_protocol_tables() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("legacy-ordinary-nonces.redb");
+        {
+            let database = Database::create(&path).expect("legacy database");
+            let transaction = database.begin_write().expect("legacy transaction");
+            {
+                let _ = transaction.open_table(RECORDS).expect("records");
+                let _ = transaction.open_table(SESSIONS).expect("sessions");
+                let _ = transaction.open_table(ACTIVE_SLOTS).expect("active slots");
+                let _ = transaction
+                    .open_table(LATEST_ATTEMPTS)
+                    .expect("latest attempts");
+                let _ = transaction.open_table(TOMBSTONES).expect("tombstones");
+                let _ = transaction
+                    .open_table(TERMINAL_ORDER)
+                    .expect("terminal order");
+                let mut meta = transaction.open_table(META).expect("metadata");
+                meta.insert(NEXT_TERMINAL_SEQUENCE, 0)
+                    .expect("terminal sequence");
+            }
+            transaction.commit().expect("legacy commit");
+        }
+
+        let store = RedbNonceStore::open(&path).expect("upgrade-compatible open");
+        assert!(store
+            .nonterminal_records()
+            .expect("ordinary records")
+            .is_empty());
+        assert!(store
+            .nonterminal_virtual_musig_records()
+            .expect("virtual MuSig2 records")
+            .is_empty());
+        assert!(store
+            .nonterminal_threshold_dh_records()
+            .expect("threshold-DH records")
+            .is_empty());
     }
 }

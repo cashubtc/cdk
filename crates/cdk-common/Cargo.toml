@@ -27,7 +27,13 @@ grpc = ["dep:tonic"]
 # `Transport::resolve_dns_txt` gate (and the rate limiter's decorator of it)
 # lines up whenever the HTTP backend is present.
 bip353 = ["cdk-http-client?/bip353"]
-federation = ["cashu/federation", "dep:cdk-frost", "dep:cdk-frost-bip32"]
+federation = [
+    "cashu/federation",
+    "dep:cdk-frost",
+    "dep:cdk-frost-bark",
+    "dep:cdk-frost-bip32",
+    "dep:zeroize",
+]
 
 [dependencies]
 async-trait.workspace = true
@@ -51,7 +57,9 @@ jsonwebtoken.workspace = true
 tonic = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, default-features = false, optional = true }
 cdk-frost = { workspace = true, optional = true }
+cdk-frost-bark = { workspace = true, optional = true }
 cdk-frost-bip32 = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "test-util", "sync", "time"] }

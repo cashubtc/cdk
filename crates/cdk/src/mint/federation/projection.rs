@@ -6,9 +6,18 @@ use std::str::FromStr;
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederatedKeyset, FederationMaterializedStateKey, FederationMaterializedStateRow,
-    FederationMaterializedStateSnapshot, FederationOperationId, FederationPaymentObservationRecord,
+    ark_server_commitment, federation_bark_exit_allocation_quote, FederatedKeyset,
+    FederationAddressAllocationScope, FederationAddressKeychain, FederationBarkActionKind,
+    FederationBarkActionPlan, FederationBarkActionRecord, FederationBarkActionTransition,
+    FederationBarkArtifact, FederationBarkArtifactKind, FederationBarkDigest,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
+    FederationBarkReceiveIntent, FederationBarkSemanticPhase, FederationBarkVtxoInput,
+    FederationBarkVtxoLocator, FederationBarkVtxoState, FederationMaterializedStateKey,
+    FederationMaterializedStateRow, FederationMaterializedStateSnapshot, FederationOperation,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservationRecord,
+    FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU, FEDERATION_MAX_DERIVATION_INDEX,
 };
+use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::mint::Operation;
 use cdk_common::{Amount, PublicKey};
 use tracing::instrument;
@@ -19,6 +28,1641 @@ use crate::mint::{Mint, QuoteId};
 const MATERIALIZED_STATE_QUERY_BATCH_SIZE: usize = 500;
 
 impl Mint {
+    /// Load the canonical Bark action/VTXO projection for route orchestration and workers.
+    #[instrument(skip_all)]
+    pub async fn federation_bark_projection_snapshot(
+        &self,
+    ) -> Result<FederationBarkProjectionSnapshot, Error> {
+        Ok(self
+            .localstore()
+            .get_federation_bark_projection_snapshot()
+            .await?)
+    }
+
+    /// Load one applied receive intent by its accepted operation ID.
+    #[instrument(skip_all)]
+    pub async fn federation_bark_receive_intent(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Result<Option<FederationBarkReceiveIntent>, Error> {
+        let Some(entry) = self
+            .localstore()
+            .get_federation_journal_entry_by_operation_id(operation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let FederationOperation::Bark(FederationBarkOperation::ReceiveIntent(intent)) =
+            entry.envelope.operation
+        else {
+            return Ok(None);
+        };
+        Ok(Some(intent))
+    }
+
+    /// Validate ordered-state Bark preconditions that cannot be checked from
+    /// one operation in isolation.
+    #[instrument(skip_all)]
+    pub async fn validate_federation_bark_operation_submission(
+        &self,
+        operation: &FederationBarkOperation,
+    ) -> Result<(), Error> {
+        operation.validate()?;
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        let application = config
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.bark_application.as_ref())
+            .ok_or(Error::Internal)?;
+        let snapshot = self.federation_bark_projection_snapshot().await?;
+        let action = snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == operation.action_id());
+
+        match operation {
+            FederationBarkOperation::MemberObservation(observation) => {
+                let action = action.ok_or_else(|| bark_state_error("observation has no action"))?;
+                if action.quote.as_deref() != observation.quote.as_deref()
+                    || action.payment_hash != observation.payment_hash
+                    || observation.source_scope
+                        != ark_server_commitment(&application.ark_server_public_key)?
+                {
+                    return Err(bark_state_error(
+                        "observation differs from its action or Ark source",
+                    ));
+                }
+                if observation.status == FederationBarkObservationStatus::Succeeded {
+                    let FederationBarkOperation::ActionTransition(transition) = &action.operation
+                    else {
+                        return Err(bark_state_error(
+                            "successful observation does not follow an action result",
+                        ));
+                    };
+                    match action.phase {
+                        FederationBarkSemanticPhase::ReceiveClaimed => {
+                            let amount = transition
+                                .vtxo_transitions
+                                .iter()
+                                .filter(|mutation| {
+                                    mutation.previous_state.is_none()
+                                        && mutation.new_state == FederationBarkVtxoState::Spendable
+                                })
+                                .try_fold(Amount::ZERO, |sum, mutation| {
+                                    sum.checked_add(mutation.amount).ok_or_else(|| {
+                                        bark_state_error(
+                                            "claimed output observation amount overflow",
+                                        )
+                                    })
+                                })?;
+                            if observation.result_hash != transition.result_hash
+                                || observation.amount != amount
+                                || observation.fee != Amount::ZERO
+                            {
+                                return Err(bark_state_error(
+                                    "successful observation differs from the accepted claim result",
+                                ));
+                            }
+                        }
+                        FederationBarkSemanticPhase::PaymentSucceeded => {
+                            let plan_entry = self
+                                .localstore()
+                                .get_federation_journal_entry_by_operation_id(
+                                    transition.plan_operation_id,
+                                )
+                                .await?
+                                .ok_or_else(|| bark_state_error("send plan is missing"))?;
+                            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(
+                                plan,
+                            )) = &plan_entry.envelope.operation
+                            else {
+                                return Err(bark_state_error(
+                                    "payment success references a non-plan",
+                                ));
+                            };
+                            validate_payment_success_proof(plan, transition)?;
+                            if plan.kind != FederationBarkActionKind::LightningSend
+                                || observation.result_hash != transition.result_hash
+                                || observation.amount != plan.external_amount
+                                || observation.fee != plan.fee_amount
+                            {
+                                return Err(bark_state_error(
+                                    "successful observation differs from the accepted payment result",
+                                ));
+                            }
+                        }
+                        FederationBarkSemanticPhase::ExitPublished => {
+                            let plan_entry = self
+                                .localstore()
+                                .get_federation_journal_entry_by_operation_id(
+                                    transition.plan_operation_id,
+                                )
+                                .await?
+                                .ok_or_else(|| bark_state_error("exit plan is missing"))?;
+                            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(
+                                plan,
+                            )) = &plan_entry.envelope.operation
+                            else {
+                                return Err(bark_state_error(
+                                    "exit publication references a non-plan",
+                                ));
+                            };
+                            if plan.kind != FederationBarkActionKind::EmergencyExit
+                                || observation.amount != plan.external_amount
+                                || observation.fee != plan.fee_amount
+                            {
+                                return Err(bark_state_error(
+                                    "exit confirmation observation differs from its accepted plan",
+                                ));
+                            }
+                        }
+                        _ => {
+                            return Err(bark_state_error(
+                                "successful observation follows a non-terminal action phase",
+                            ));
+                        }
+                    }
+                } else if observation.status == FederationBarkObservationStatus::Failed {
+                    let FederationBarkOperation::ActionTransition(transition) = &action.operation
+                    else {
+                        return Err(bark_state_error(
+                            "failed observation does not follow an action result",
+                        ));
+                    };
+                    let (amount, fee, expected_result_hash) = match action.phase {
+                        FederationBarkSemanticPhase::PaymentInitiated => {
+                            let plan_entry = self
+                                .localstore()
+                                .get_federation_journal_entry_by_operation_id(
+                                    transition.plan_operation_id,
+                                )
+                                .await?
+                                .ok_or_else(|| bark_state_error("send plan is missing"))?;
+                            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(
+                                plan,
+                            )) = &plan_entry.envelope.operation
+                            else {
+                                return Err(bark_state_error(
+                                    "payment initiation references a non-plan",
+                                ));
+                            };
+                            validate_payment_initiated_result(plan, transition)?;
+                            if plan.kind != FederationBarkActionKind::LightningSend {
+                                return Err(bark_state_error(
+                                    "payment initiation references a non-send plan",
+                                ));
+                            }
+                            (
+                                plan.external_amount,
+                                plan.fee_amount,
+                                payment_failed_result_hash(plan, transition.result_hash)?,
+                            )
+                        }
+                        FederationBarkSemanticPhase::RevocationCompleted => {
+                            let revocation_entry = self
+                                .localstore()
+                                .get_federation_journal_entry_by_operation_id(
+                                    transition.plan_operation_id,
+                                )
+                                .await?
+                                .ok_or_else(|| bark_state_error("revocation plan is missing"))?;
+                            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(
+                                revocation,
+                            )) = &revocation_entry.envelope.operation
+                            else {
+                                return Err(bark_state_error(
+                                    "revocation result references a non-plan",
+                                ));
+                            };
+                            let failed_entry = self
+                                .localstore()
+                                .get_federation_journal_entry_by_operation_id(
+                                    revocation.predecessor_operation_id,
+                                )
+                                .await?
+                                .ok_or_else(|| bark_state_error("payment failure is missing"))?;
+                            let FederationOperation::Bark(
+                                FederationBarkOperation::ActionTransition(failed),
+                            ) = &failed_entry.envelope.operation
+                            else {
+                                return Err(bark_state_error(
+                                    "revocation predecessor is not a payment failure",
+                                ));
+                            };
+                            let send_entry = self
+                                .localstore()
+                                .get_federation_journal_entry_by_operation_id(
+                                    failed.plan_operation_id,
+                                )
+                                .await?
+                                .ok_or_else(|| bark_state_error("send plan is missing"))?;
+                            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(
+                                send,
+                            )) = &send_entry.envelope.operation
+                            else {
+                                return Err(bark_state_error(
+                                    "payment failure references a non-plan",
+                                ));
+                            };
+                            if send.kind != FederationBarkActionKind::LightningSend {
+                                return Err(bark_state_error(
+                                    "payment failure references a non-send plan",
+                                ));
+                            }
+                            (
+                                send.external_amount,
+                                send.fee_amount,
+                                transition.result_hash,
+                            )
+                        }
+                        _ => {
+                            return Err(bark_state_error(
+                                "failed observation follows an unsafe action phase",
+                            ));
+                        }
+                    };
+                    if observation.result_hash != expected_result_hash
+                        || observation.amount != amount
+                        || observation.fee != fee
+                    {
+                        return Err(bark_state_error(
+                            "failed observation differs from its accepted recovery phase",
+                        ));
+                    }
+                } else if observation.status == FederationBarkObservationStatus::Accepted
+                    && matches!(
+                        action.phase,
+                        FederationBarkSemanticPhase::RefreshPlanned
+                            | FederationBarkSemanticPhase::ExitPlanned
+                    )
+                {
+                    let FederationBarkOperation::ActionPlan(plan) = &action.operation else {
+                        return Err(bark_state_error(
+                            "maintenance trigger observation has no accepted plan",
+                        ));
+                    };
+                    let amount = if plan.kind == FederationBarkActionKind::Refresh {
+                        plan.inputs.iter().try_fold(Amount::ZERO, |sum, input| {
+                            sum.checked_add(input.amount).ok_or_else(|| {
+                                bark_state_error("maintenance observation amount overflow")
+                            })
+                        })?
+                    } else {
+                        plan.external_amount
+                    };
+                    if !matches!(
+                        plan.kind,
+                        FederationBarkActionKind::Refresh | FederationBarkActionKind::EmergencyExit
+                    ) || observation.amount != amount
+                        || observation.fee != plan.fee_amount
+                        || observation.result_hash
+                            != FederationBarkOperation::ActionPlan(plan.clone()).commitment()?
+                    {
+                        return Err(bark_state_error(
+                            "maintenance trigger observation differs from its accepted plan",
+                        ));
+                    }
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ReceiveHtlcsReady =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("HTLC evidence has no action"))?;
+                if action.phase != FederationBarkSemanticPhase::ReceivePrepared {
+                    return Err(bark_state_error(
+                        "HTLC evidence does not follow receive preparation",
+                    ));
+                }
+                let intent = self
+                    .federation_bark_receive_intent(action.origin_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("receive intent is missing"))?;
+                let amount = transition.vtxo_transitions.iter().try_fold(
+                    Amount::ZERO,
+                    |sum, mutation| {
+                        sum.checked_add(mutation.amount)
+                            .ok_or_else(|| bark_state_error("HTLC evidence amount overflow"))
+                    },
+                )?;
+                let fee = intent
+                    .gross_amount
+                    .checked_sub(amount)
+                    .ok_or_else(|| bark_state_error("HTLC evidence exceeds invoice amount"))?;
+                if amount < intent.minimum_net_amount || fee > intent.receive_fee {
+                    return Err(bark_state_error(
+                        "HTLC evidence does not cover the accepted Cashu liability",
+                    ));
+                }
+                let mut observers = BTreeSet::new();
+                for record in &snapshot.observations {
+                    let FederationBarkOperation::MemberObservation(observation) = &record.operation
+                    else {
+                        continue;
+                    };
+                    if observation.action_id == transition.action_id
+                        && observation.quote == transition.quote
+                        && observation.payment_hash == transition.payment_hash
+                        && observation.source_scope
+                            == ark_server_commitment(&application.ark_server_public_key)?
+                        && observation.status == FederationBarkObservationStatus::Accepted
+                        && observation.amount == amount
+                        && observation.fee == fee
+                        && observation.result_hash == transition.result_hash
+                    {
+                        observers.insert(observation.observer);
+                    }
+                }
+                if observers.len()
+                    < usize::from(config.public_config().threshold_params.signature_threshold)
+                {
+                    return Err(bark_state_error(
+                        "HTLC evidence has not reached the accepted member threshold",
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == FederationBarkActionKind::Refresh =>
+            {
+                self.validate_federation_bark_refresh_plan_submission(
+                    &config,
+                    application,
+                    &snapshot,
+                    action,
+                    plan,
+                )?;
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == FederationBarkActionKind::EmergencyExit =>
+            {
+                let allocations = self.federation_address_allocation_state().await?;
+                self.validate_federation_bark_exit_plan_submission(
+                    &config,
+                    application,
+                    &snapshot,
+                    action,
+                    plan,
+                    &allocations,
+                )?;
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == FederationBarkActionKind::IncomingClaim =>
+            {
+                let action = action.ok_or_else(|| bark_state_error("claim plan has no action"))?;
+                if action.phase != FederationBarkSemanticPhase::ReceiveHtlcsReady
+                    || plan.signer_set.len() < usize::from(application.threshold)
+                    || plan
+                        .signer_set
+                        .iter()
+                        .any(|member| !config.public_config().members.contains_key(member))
+                {
+                    return Err(bark_state_error(
+                        "claim plan is not backed by ready HTLCs and an eligible signer set",
+                    ));
+                }
+                for input in &plan.inputs {
+                    let vtxo = snapshot
+                        .vtxos
+                        .iter()
+                        .find(|vtxo| vtxo.vtxo_id == input.vtxo_id)
+                        .ok_or_else(|| bark_state_error("claim plan input is unknown"))?;
+                    if vtxo.state != FederationBarkVtxoState::Observed
+                        || vtxo.amount != input.amount
+                        || vtxo.locator != input.locator
+                        || vtxo.locator
+                            != self
+                                .federation_bark_receive_intent(action.origin_operation_id)
+                                .await?
+                                .ok_or_else(|| bark_state_error("receive intent is missing"))?
+                                .destination
+                    {
+                        return Err(bark_state_error(
+                            "claim plan input differs from accepted HTLC evidence",
+                        ));
+                    }
+                }
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == FederationBarkActionKind::LightningSend =>
+            {
+                if action.is_some() {
+                    return Err(bark_state_error("Lightning send action already exists"));
+                }
+                let predecessor = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(plan.predecessor_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("Lightning send predecessor is missing"))?;
+                let FederationOperation::Melt(melt) = &predecessor.envelope.operation else {
+                    return Err(bark_state_error(
+                        "Lightning send predecessor is not an accepted melt",
+                    ));
+                };
+                if predecessor.status() != FederationOperationStatus::Applied {
+                    return Err(bark_state_error(
+                        "Lightning send predecessor is not applied",
+                    ));
+                }
+                let quote_label = plan
+                    .quote
+                    .as_deref()
+                    .ok_or_else(|| bark_state_error("Lightning send quote is missing"))?;
+                if melt.request.quote() != quote_label {
+                    return Err(bark_state_error(
+                        "Lightning send quote differs from its melt",
+                    ));
+                }
+                let quote_id = QuoteId::from_str(quote_label)
+                    .map_err(|_| bark_state_error("Lightning send quote id is invalid"))?;
+                let quote = self
+                    .localstore()
+                    .get_melt_quote(&quote_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("Lightning send quote is missing"))?;
+                let MeltPaymentRequest::Bolt11 { bolt11 } = &quote.request else {
+                    return Err(bark_state_error("Lightning send quote is not BOLT11"));
+                };
+                if quote.state != cdk_common::MeltQuoteState::Pending
+                    || quote.unit != cdk_common::CurrencyUnit::Sat
+                    || bolt11.network() != application.network
+                    || plan.lightning_send_invoice()? != *bolt11
+                    || u64::from(plan.external_amount) != quote.amount().value()
+                    || u64::from(plan.fee_bound) != quote.fee_reserve().value()
+                    || plan.fee_amount != plan.fee_bound
+                    || application
+                        .policy
+                        .maximum_outgoing_fee(plan.external_amount)
+                        .map_err(Error::from)?
+                        != plan.fee_bound
+                {
+                    return Err(bark_state_error(
+                        "Lightning send differs from its accepted quote or fee policy",
+                    ));
+                }
+                let expected_action = cdk_common::federation::FederationBarkActionId::derive(
+                    config.federation_id(),
+                    plan.predecessor_operation_id,
+                    FederationBarkSemanticPhase::SendPlanned,
+                    0,
+                )?;
+                let author = predecessor
+                    .envelope
+                    .verify_authorization(config.public_config())?;
+                let expected_actor = self
+                    .federation_external_action_lease_actor(&config, author, predecessor.index)
+                    .await?;
+                let expected_signers = config
+                    .public_config()
+                    .members
+                    .keys()
+                    .copied()
+                    .take(usize::from(application.threshold))
+                    .collect::<Vec<_>>();
+                if plan.action_id != expected_action
+                    || plan.actor != expected_actor
+                    || plan.signer_set != expected_signers
+                    || plan.attempt != 1
+                {
+                    return Err(bark_state_error(
+                        "Lightning send actor, action, signer set, or attempt is not deterministic",
+                    ));
+                }
+
+                let target = plan
+                    .external_amount
+                    .checked_add(plan.fee_amount)
+                    .ok_or_else(|| bark_state_error("Lightning send target amount overflow"))?;
+                let mut expected_inputs = Vec::new();
+                let mut selected_amount = Amount::ZERO;
+                let mut minimum_expiry = u32::MAX;
+                for vtxo in snapshot
+                    .vtxos
+                    .iter()
+                    .filter(|vtxo| vtxo.state == FederationBarkVtxoState::Spendable)
+                {
+                    expected_inputs.push(FederationBarkVtxoInput {
+                        vtxo_id: vtxo.vtxo_id,
+                        locator: vtxo.locator,
+                        amount: vtxo.amount,
+                    });
+                    selected_amount =
+                        selected_amount.checked_add(vtxo.amount).ok_or_else(|| {
+                            bark_state_error("Lightning send selected amount overflow")
+                        })?;
+                    minimum_expiry = minimum_expiry.min(vtxo.expiry_height);
+                    if selected_amount >= target {
+                        break;
+                    }
+                }
+                expected_inputs.sort();
+                if selected_amount < target || expected_inputs != plan.inputs {
+                    return Err(bark_state_error(
+                        "Lightning send inputs are not the deterministic accepted selection",
+                    ));
+                }
+                let plan_expiry = u32::try_from(plan.expires_at)
+                    .map_err(|_| bark_state_error("Lightning send expiry exceeds u32"))?;
+                cdk_common::federation::validate_federation_bark_lightning_send_expiry(
+                    minimum_expiry,
+                    plan_expiry,
+                )?;
+                let output_index = snapshot
+                    .derivation_allocations
+                    .iter()
+                    .map(|allocation| allocation.locator.index)
+                    .max()
+                    .map_or(Ok(0), |index| {
+                        index
+                            .checked_add(1)
+                            .ok_or_else(|| bark_state_error("Bark locator space is exhausted"))
+                    })?;
+                let revocation_index = output_index
+                    .checked_add(1)
+                    .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
+                    .ok_or_else(|| bark_state_error("Bark locator space is exhausted"))?;
+                let output = plan
+                    .outputs
+                    .first()
+                    .ok_or_else(|| bark_state_error("Lightning send output is missing"))?;
+                let expected_change = selected_amount
+                    .checked_sub(target)
+                    .ok_or_else(|| bark_state_error("Lightning send change underflow"))?;
+                if output.locator != FederationBarkVtxoLocator::vtxo_custody(output_index)
+                    || output.amount != expected_change
+                    || plan.revocation_locator
+                        != Some(FederationBarkVtxoLocator::vtxo_custody(revocation_index))
+                {
+                    return Err(bark_state_error(
+                        "Lightning send change or locators are not deterministic",
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == FederationBarkActionKind::FailedSendRevocation =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("revocation plan has no action"))?;
+                if action.phase != FederationBarkSemanticPhase::PaymentFailed
+                    || plan.predecessor_operation_id != action.latest_operation_id
+                {
+                    return Err(bark_state_error(
+                        "revocation plan does not follow terminal payment failure",
+                    ));
+                }
+                let FederationBarkOperation::ActionTransition(failed) = &action.operation else {
+                    return Err(bark_state_error(
+                        "revocation plan predecessor is not a payment failure",
+                    ));
+                };
+                let send_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(failed.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted send plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(send)) =
+                    &send_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("payment failure references a non-plan"));
+                };
+                validate_payment_failed_result(send, failed)?;
+                let mut records = snapshot
+                    .vtxos
+                    .iter()
+                    .filter(|record| {
+                        record.state == FederationBarkVtxoState::PendingSpend
+                            && record.reservation_action_id == Some(send.action_id)
+                    })
+                    .collect::<Vec<_>>();
+                records.sort_by_key(|record| record.vtxo_id);
+                let expected_inputs = records
+                    .iter()
+                    .map(|record| FederationBarkVtxoInput {
+                        vtxo_id: record.vtxo_id,
+                        locator: record.locator,
+                        amount: record.amount,
+                    })
+                    .collect::<Vec<_>>();
+                let expected_amount =
+                    expected_inputs
+                        .iter()
+                        .try_fold(Amount::ZERO, |sum, input| {
+                            sum.checked_add(input.amount)
+                                .ok_or_else(|| bark_state_error("revocation input amount overflow"))
+                        })?;
+                let output = plan
+                    .outputs
+                    .first()
+                    .ok_or_else(|| bark_state_error("revocation output is missing"))?;
+                let expected_locator = send
+                    .revocation_locator
+                    .ok_or_else(|| bark_state_error("send revocation locator is missing"))?;
+                let request_bytes = failed_send_revocation_request_bytes(
+                    plan.action_id,
+                    plan.predecessor_operation_id,
+                    plan.payment_hash
+                        .ok_or_else(|| bark_state_error("revocation payment hash is missing"))?,
+                    output.locator,
+                    &plan.inputs,
+                )?;
+                let request_artifact = bark_projection_artifact(
+                    FederationBarkArtifactKind::ArkRequest,
+                    request_bytes,
+                )?;
+                let mut expected_artifacts = records
+                    .iter()
+                    .map(|record| record.artifact.clone())
+                    .collect::<Vec<_>>();
+                expected_artifacts.push(request_artifact.clone());
+                expected_artifacts.sort();
+                expected_artifacts.dedup();
+                if send.kind != FederationBarkActionKind::LightningSend
+                    || plan.action_id != send.action_id
+                    || plan.quote != send.quote
+                    || plan.actor != send.actor
+                    || plan.payment_hash != send.payment_hash
+                    || plan.signer_set != send.signer_set
+                    || plan.attempt != send.attempt
+                    || plan.expires_at != send.expires_at
+                    || plan.inputs != expected_inputs
+                    || expected_inputs.is_empty()
+                    || expected_amount
+                        != send
+                            .external_amount
+                            .checked_add(send.fee_amount)
+                            .ok_or_else(|| bark_state_error("revocation amount overflow"))?
+                    || output.locator != expected_locator
+                    || output.amount != expected_amount
+                    || output.artifact_hash != request_artifact.hash
+                    || plan.artifacts != expected_artifacts
+                {
+                    return Err(bark_state_error(
+                        "revocation plan differs from the exact failed HTLC recovery",
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::SendHtlcsCosigned =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("outgoing HTLC result has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted send plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error(
+                        "outgoing HTLC result references a non-plan",
+                    ));
+                };
+                validate_send_transition_header(action, plan_entry.operation_id, plan, transition)?;
+                if action.phase != FederationBarkSemanticPhase::SendPlanned
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                    || transition.request_hash
+                        != FederationBarkOperation::ActionPlan(plan.clone()).commitment()?
+                {
+                    return Err(bark_state_error(
+                        "outgoing HTLC result does not follow its accepted send plan",
+                    ));
+                }
+                let expected_inputs = plan
+                    .inputs
+                    .iter()
+                    .map(|input| input.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                let spent_inputs = transition
+                    .vtxo_transitions
+                    .iter()
+                    .filter(|mutation| {
+                        mutation.previous_state == Some(FederationBarkVtxoState::Reserved)
+                            && mutation.new_state == FederationBarkVtxoState::Spent
+                    })
+                    .map(|mutation| mutation.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                if spent_inputs != expected_inputs {
+                    return Err(bark_state_error(
+                        "outgoing HTLC result does not spend every accepted input",
+                    ));
+                }
+                for input in &plan.inputs {
+                    let record = snapshot
+                        .vtxos
+                        .iter()
+                        .find(|record| record.vtxo_id == input.vtxo_id)
+                        .ok_or_else(|| bark_state_error("reserved send input is missing"))?;
+                    let mutation = transition
+                        .vtxo_transitions
+                        .iter()
+                        .find(|mutation| mutation.vtxo_id == input.vtxo_id)
+                        .ok_or_else(|| bark_state_error("send input mutation is missing"))?;
+                    if record.state != FederationBarkVtxoState::Reserved
+                        || record.reservation_action_id != Some(plan.action_id)
+                        || record.locator != input.locator
+                        || record.amount != input.amount
+                        || mutation.locator != input.locator
+                        || mutation.amount != input.amount
+                        || mutation.expiry_height != record.expiry_height
+                        || mutation.artifact_hash != record.artifact.hash
+                    {
+                        return Err(bark_state_error(
+                            "outgoing HTLC input differs from its accepted reservation",
+                        ));
+                    }
+                }
+                let output = plan
+                    .outputs
+                    .first()
+                    .ok_or_else(|| bark_state_error("send change allocation is missing"))?;
+                let change_amount = transition
+                    .vtxo_transitions
+                    .iter()
+                    .filter(|mutation| {
+                        mutation.previous_state.is_none()
+                            && mutation.new_state == FederationBarkVtxoState::Spendable
+                    })
+                    .try_fold(Amount::ZERO, |sum, mutation| {
+                        if mutation.locator != output.locator {
+                            return Err(bark_state_error(
+                                "outgoing result uses an unallocated change locator",
+                            ));
+                        }
+                        sum.checked_add(mutation.amount)
+                            .ok_or_else(|| bark_state_error("send change amount overflow"))
+                    })?;
+                let htlc_amount = transition
+                    .vtxo_transitions
+                    .iter()
+                    .filter(|mutation| {
+                        mutation.previous_state.is_none()
+                            && mutation.new_state == FederationBarkVtxoState::PendingSpend
+                    })
+                    .try_fold(Amount::ZERO, |sum, mutation| {
+                        if mutation.locator != output.locator {
+                            return Err(bark_state_error(
+                                "outgoing HTLC uses an unallocated locator",
+                            ));
+                        }
+                        sum.checked_add(mutation.amount)
+                            .ok_or_else(|| bark_state_error("send HTLC amount overflow"))
+                    })?;
+                let expected_htlc = plan
+                    .external_amount
+                    .checked_add(plan.fee_amount)
+                    .ok_or_else(|| bark_state_error("send HTLC amount overflow"))?;
+                if change_amount != output.amount
+                    || htlc_amount != expected_htlc
+                    || transition
+                        .artifacts
+                        .iter()
+                        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+                        .all(|artifact| artifact.hash != transition.result_hash)
+                {
+                    return Err(bark_state_error(
+                        "outgoing HTLC result differs from accepted change or result evidence",
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::PaymentInitiated =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("payment initiation has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted send plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("payment initiation references a non-plan"));
+                };
+                validate_send_transition_header(action, plan_entry.operation_id, plan, transition)?;
+                let FederationBarkOperation::ActionTransition(previous) = &action.operation else {
+                    return Err(bark_state_error(
+                        "payment initiation does not follow an HTLC result",
+                    ));
+                };
+                if action.phase != FederationBarkSemanticPhase::SendHtlcsCosigned
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                    || transition.request_hash != previous.result_hash
+                {
+                    return Err(bark_state_error(
+                        "payment initiation differs from its accepted HTLC predecessor",
+                    ));
+                }
+                validate_payment_initiated_result(plan, transition)?;
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::PaymentSucceeded =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("payment success has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted send plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("payment success references a non-plan"));
+                };
+                validate_send_transition_header(action, plan_entry.operation_id, plan, transition)?;
+                let FederationBarkOperation::ActionTransition(previous) = &action.operation else {
+                    return Err(bark_state_error(
+                        "payment success does not follow payment initiation",
+                    ));
+                };
+                if action.phase != FederationBarkSemanticPhase::PaymentInitiated
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                    || transition.request_hash != previous.result_hash
+                {
+                    return Err(bark_state_error(
+                        "payment success differs from its accepted initiation predecessor",
+                    ));
+                }
+                validate_payment_success_proof(plan, transition)?;
+                let expected_inputs = snapshot
+                    .vtxos
+                    .iter()
+                    .filter(|record| {
+                        record.state == FederationBarkVtxoState::PendingSpend
+                            && record.reservation_action_id == Some(plan.action_id)
+                    })
+                    .map(|record| record.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                let spent_inputs = transition
+                    .vtxo_transitions
+                    .iter()
+                    .map(|mutation| mutation.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                if spent_inputs != expected_inputs {
+                    return Err(bark_state_error(
+                        "payment success does not spend every accepted send input",
+                    ));
+                }
+                if expected_inputs.is_empty() {
+                    return Err(bark_state_error(
+                        "payment success has no pending HTLC value",
+                    ));
+                }
+                let mut pending_amount = Amount::ZERO;
+                for input in snapshot.vtxos.iter().filter(|record| {
+                    record.state == FederationBarkVtxoState::PendingSpend
+                        && record.reservation_action_id == Some(plan.action_id)
+                }) {
+                    let mutation = transition
+                        .vtxo_transitions
+                        .iter()
+                        .find(|mutation| mutation.vtxo_id == input.vtxo_id)
+                        .ok_or_else(|| bark_state_error("spent send mutation is missing"))?;
+                    if mutation.locator != input.locator
+                        || mutation.amount != input.amount
+                        || mutation.expiry_height != input.expiry_height
+                        || mutation.artifact_hash != input.artifact.hash
+                    {
+                        return Err(bark_state_error(
+                            "payment success input differs from its pending spend",
+                        ));
+                    }
+                    pending_amount = pending_amount
+                        .checked_add(input.amount)
+                        .ok_or_else(|| bark_state_error("payment success amount overflow"))?;
+                }
+                if pending_amount
+                    != plan
+                        .external_amount
+                        .checked_add(plan.fee_amount)
+                        .ok_or_else(|| bark_state_error("payment success amount overflow"))?
+                {
+                    return Err(bark_state_error(
+                        "payment success does not consume the exact HTLC value",
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::PaymentFailed =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("payment failure has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted send plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("payment failure references a non-plan"));
+                };
+                validate_send_transition_header(action, plan_entry.operation_id, plan, transition)?;
+                let FederationBarkOperation::ActionTransition(previous) = &action.operation else {
+                    return Err(bark_state_error(
+                        "payment failure does not follow payment initiation",
+                    ));
+                };
+                if action.phase != FederationBarkSemanticPhase::PaymentInitiated
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                    || transition.request_hash != previous.result_hash
+                {
+                    return Err(bark_state_error(
+                        "payment failure differs from its accepted initiation predecessor",
+                    ));
+                }
+                validate_payment_failed_result(plan, transition)?;
+                let source_scope = ark_server_commitment(&application.ark_server_public_key)?;
+                let mut observers = BTreeSet::new();
+                for record in &snapshot.observations {
+                    let FederationBarkOperation::MemberObservation(observation) = &record.operation
+                    else {
+                        continue;
+                    };
+                    if observation.action_id == transition.action_id
+                        && observation.quote == transition.quote
+                        && observation.payment_hash == transition.payment_hash
+                        && observation.source_scope == source_scope
+                        && observation.status == FederationBarkObservationStatus::Failed
+                        && observation.amount == plan.external_amount
+                        && observation.fee == plan.fee_amount
+                        && observation.result_hash == transition.result_hash
+                    {
+                        observers.insert(observation.observer);
+                    }
+                }
+                if observers.len()
+                    < usize::from(config.public_config().threshold_params.signature_threshold)
+                {
+                    return Err(bark_state_error(
+                        "payment failure has not reached the accepted member threshold",
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::RevocationCompleted =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("revocation result has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted revocation plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("revocation result references a non-plan"));
+                };
+                if plan.kind != FederationBarkActionKind::FailedSendRevocation
+                    || action.phase != FederationBarkSemanticPhase::RevocationPlanned
+                    || action.latest_operation_id != plan_entry.operation_id
+                    || transition.action_id != plan.action_id
+                    || transition.quote != plan.quote
+                    || transition.plan_operation_id != plan_entry.operation_id
+                    || transition.predecessor_operation_id != plan_entry.operation_id
+                    || transition.payment_hash != plan.payment_hash
+                    || transition.actor != plan.actor
+                    || transition.attempt != plan.attempt
+                    || transition.signer_set != plan.signer_set
+                    || transition.external_id != plan.external_id
+                    || transition.request_hash
+                        != FederationBarkOperation::ActionPlan(plan.clone()).commitment()?
+                {
+                    return Err(bark_state_error(
+                        "revocation result differs from its accepted plan",
+                    ));
+                }
+                validate_revocation_completed_result(&snapshot, plan, transition)?;
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::RefreshCompleted =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("refresh result has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted refresh plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("refresh result references a non-plan"));
+                };
+                validate_maintenance_transition_header(
+                    action,
+                    plan_entry.operation_id,
+                    plan,
+                    transition,
+                    FederationBarkActionKind::Refresh,
+                )?;
+                if action.phase != FederationBarkSemanticPhase::RefreshPlanned
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                {
+                    return Err(bark_state_error(
+                        "refresh result does not follow its accepted plan",
+                    ));
+                }
+                validate_maintenance_trigger_quorum(
+                    &snapshot,
+                    config.public_config().threshold_params.signature_threshold,
+                    plan,
+                )?;
+                validate_refresh_completed_result(&snapshot, plan, transition)?;
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ExitRegistered =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("exit registration has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted exit plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("exit registration references a non-plan"));
+                };
+                validate_maintenance_transition_header(
+                    action,
+                    plan_entry.operation_id,
+                    plan,
+                    transition,
+                    FederationBarkActionKind::EmergencyExit,
+                )?;
+                if action.phase != FederationBarkSemanticPhase::ExitPlanned
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                {
+                    return Err(bark_state_error(
+                        "exit registration does not follow its accepted plan",
+                    ));
+                }
+                validate_maintenance_trigger_quorum(
+                    &snapshot,
+                    config.public_config().threshold_params.signature_threshold,
+                    plan,
+                )?;
+                validate_exit_registered_result(&snapshot, plan, transition)?;
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ExitPublished =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("exit publication has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted exit plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("exit publication references a non-plan"));
+                };
+                validate_maintenance_transition_header(
+                    action,
+                    plan_entry.operation_id,
+                    plan,
+                    transition,
+                    FederationBarkActionKind::EmergencyExit,
+                )?;
+                if action.phase != FederationBarkSemanticPhase::ExitRegistered
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                {
+                    return Err(bark_state_error(
+                        "exit publication does not follow accepted registration",
+                    ));
+                }
+                validate_exit_published_result(plan, transition)?;
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ExitConfirmed =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("exit confirmation has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted exit plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("exit confirmation references a non-plan"));
+                };
+                validate_maintenance_transition_header(
+                    action,
+                    plan_entry.operation_id,
+                    plan,
+                    transition,
+                    FederationBarkActionKind::EmergencyExit,
+                )?;
+                if action.phase != FederationBarkSemanticPhase::ExitPublished
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                {
+                    return Err(bark_state_error(
+                        "exit confirmation does not follow accepted publication",
+                    ));
+                }
+                let source_scope = ark_server_commitment(&application.ark_server_public_key)?;
+                let observers = snapshot
+                    .observations
+                    .iter()
+                    .filter_map(|record| match &record.operation {
+                        FederationBarkOperation::MemberObservation(observation)
+                            if observation.action_id == plan.action_id
+                                && observation.source_scope == source_scope
+                                && observation.status
+                                    == FederationBarkObservationStatus::Succeeded
+                                && observation.amount == plan.external_amount
+                                && observation.fee == plan.fee_amount
+                                && observation.result_hash == transition.result_hash =>
+                        {
+                            Some(observation.observer)
+                        }
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>();
+                if observers.len()
+                    < usize::from(config.public_config().threshold_params.signature_threshold)
+                {
+                    return Err(bark_state_error(
+                        "exit confirmation has not reached the accepted member threshold",
+                    ));
+                }
+                let FederationBarkOperation::ActionTransition(published) = &action.operation else {
+                    return Err(bark_state_error(
+                        "exit confirmation predecessor is not a publication",
+                    ));
+                };
+                validate_exit_confirmed_result(&snapshot, plan, published, transition)?;
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ReceivePreimageDisclosed =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("preimage disclosure has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted claim plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("claim transition references a non-plan"));
+                };
+                let transitioned = transition
+                    .vtxo_transitions
+                    .iter()
+                    .map(|mutation| mutation.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                let planned = plan
+                    .inputs
+                    .iter()
+                    .map(|input| input.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                if action.phase != FederationBarkSemanticPhase::ClaimPlanned
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                    || transitioned != planned
+                {
+                    return Err(bark_state_error(
+                        "preimage disclosure differs from the accepted claim plan",
+                    ));
+                }
+                for input in &plan.inputs {
+                    let vtxo = snapshot
+                        .vtxos
+                        .iter()
+                        .find(|vtxo| vtxo.vtxo_id == input.vtxo_id)
+                        .ok_or_else(|| bark_state_error("reserved claim input is missing"))?;
+                    if vtxo.state != FederationBarkVtxoState::Reserved
+                        || vtxo.reservation_action_id != Some(plan.action_id)
+                        || vtxo.amount != input.amount
+                    {
+                        return Err(bark_state_error(
+                            "preimage disclosure input is not reserved by its claim",
+                        ));
+                    }
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ReceiveClaimed =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("claimed receive has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted claim plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("claim result references a non-plan"));
+                };
+                let intent = self
+                    .federation_bark_receive_intent(action.origin_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("receive intent is missing"))?;
+                let spent = transition
+                    .vtxo_transitions
+                    .iter()
+                    .filter(|mutation| {
+                        mutation.previous_state == Some(FederationBarkVtxoState::PendingSpend)
+                            && mutation.new_state == FederationBarkVtxoState::Spent
+                    })
+                    .map(|mutation| mutation.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                let planned = plan
+                    .inputs
+                    .iter()
+                    .map(|input| input.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                let output = plan
+                    .outputs
+                    .first()
+                    .ok_or_else(|| bark_state_error("claim plan has no output allocation"))?;
+                let mut spendable_sat = 0_u64;
+                for mutation in transition.vtxo_transitions.iter().filter(|mutation| {
+                    mutation.previous_state.is_none()
+                        && mutation.new_state == FederationBarkVtxoState::Spendable
+                }) {
+                    if mutation.locator != output.locator {
+                        return Err(bark_state_error(
+                            "claim result uses an unallocated output locator",
+                        ));
+                    }
+                    spendable_sat = spendable_sat
+                        .checked_add(u64::from(mutation.amount))
+                        .ok_or_else(|| bark_state_error("claim result amount overflow"))?;
+                }
+                if action.phase != FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                    || spent != planned
+                    || spendable_sat < u64::from(intent.cashu_amount)
+                    || spendable_sat > u64::from(output.amount)
+                {
+                    return Err(bark_state_error(
+                        "claim result does not prove sufficient accepted spendable value",
+                    ));
+                }
+            }
+            FederationBarkOperation::ReceiveIntent(_)
+            | FederationBarkOperation::ReceivePrepared(_)
+            | FederationBarkOperation::ActionPlan(_)
+            | FederationBarkOperation::ActionTransition(_) => {}
+        }
+        Ok(())
+    }
+
+    fn validate_federation_bark_refresh_plan_submission(
+        &self,
+        config: &super::FederationRuntimeConfig,
+        application: &cdk_common::federation::FederationBarkFrostApplicationConfig,
+        snapshot: &FederationBarkProjectionSnapshot,
+        action: Option<&FederationBarkActionRecord>,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<(), Error> {
+        if action.is_some() {
+            return Err(bark_state_error("refresh action already exists"));
+        }
+        let minimum_expiry = snapshot
+            .vtxos
+            .iter()
+            .filter(|record| record.state == FederationBarkVtxoState::Spendable)
+            .map(|record| record.expiry_height)
+            .min()
+            .ok_or_else(|| bark_state_error("refresh has no spendable candidate"))?;
+        let mut records = snapshot
+            .vtxos
+            .iter()
+            .filter(|record| {
+                record.state == FederationBarkVtxoState::Spendable
+                    && record.expiry_height == minimum_expiry
+            })
+            .collect::<Vec<_>>();
+        records.sort_by_key(|record| record.vtxo_id);
+        let predecessor = records
+            .first()
+            .ok_or_else(|| bark_state_error("refresh has no deterministic predecessor"))?
+            .latest_operation_id;
+        let expected_inputs = records
+            .iter()
+            .map(|record| FederationBarkVtxoInput {
+                vtxo_id: record.vtxo_id,
+                locator: record.locator,
+                amount: record.amount,
+            })
+            .collect::<Vec<_>>();
+        let input_amount = expected_inputs
+            .iter()
+            .try_fold(Amount::ZERO, |sum, input| {
+                sum.checked_add(input.amount)
+                    .ok_or_else(|| bark_state_error("refresh input amount overflow"))
+            })?;
+        let trigger_height = minimum_expiry
+            .checked_sub(application.policy.refresh_before_expiry_blocks)
+            .filter(|height| *height != 0)
+            .ok_or_else(|| bark_state_error("refresh trigger is unsafe"))?;
+        let emergency_height = minimum_expiry
+            .checked_sub(application.policy.emergency_exit_before_expiry_blocks)
+            .filter(|height| *height > trigger_height)
+            .ok_or_else(|| bark_state_error("refresh emergency height is unsafe"))?;
+        let expected_action = cdk_common::federation::FederationBarkActionId::derive(
+            config.federation_id(),
+            predecessor,
+            FederationBarkSemanticPhase::RefreshPlanned,
+            0,
+        )?;
+        let expected_actor = config
+            .public_config()
+            .members
+            .keys()
+            .next()
+            .copied()
+            .ok_or(Error::Internal)?;
+        let expected_signers = config
+            .public_config()
+            .members
+            .keys()
+            .copied()
+            .take(usize::from(application.threshold))
+            .collect::<Vec<_>>();
+        let output_index = next_bark_locator_index(snapshot)?;
+        let output = plan
+            .outputs
+            .first()
+            .filter(|_| plan.outputs.len() == 1)
+            .ok_or_else(|| bark_state_error("refresh output is missing"))?;
+        let request = plan.refresh_request()?;
+        let request_artifact = plan
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest)
+            .ok_or_else(|| bark_state_error("refresh request artifact is missing"))?;
+        let mut expected_artifacts = records
+            .iter()
+            .map(|record| record.artifact.clone())
+            .collect::<Vec<_>>();
+        expected_artifacts.push(request_artifact.clone());
+        expected_artifacts.sort();
+        expected_artifacts.dedup();
+        let fee_bound = application
+            .policy
+            .maximum_outgoing_fee(input_amount)
+            .map_err(Error::from)?;
+        if plan.action_id != expected_action
+            || plan.actor != expected_actor
+            || plan.predecessor_operation_id != predecessor
+            || plan.inputs != expected_inputs
+            || plan.signer_set != expected_signers
+            || plan.attempt != 1
+            || plan.expires_at != u64::from(emergency_height)
+            || plan.fee_bound != fee_bound
+            || plan.fee_amount > fee_bound
+            || output.locator != FederationBarkVtxoLocator::vtxo_custody(output_index)
+            || request.action_id != plan.action_id
+            || request.predecessor_operation_id != predecessor
+            || request.inputs != expected_inputs
+            || request.output_locator != output.locator
+            || request.output_amount != output.amount
+            || request.fee != plan.fee_amount
+            || request.trigger_height != trigger_height
+            || request.emergency_height != emergency_height
+            || request.minimum_expiry != minimum_expiry
+            || plan.artifacts != expected_artifacts
+        {
+            return Err(bark_state_error(
+                "refresh plan is not the deterministic earliest-expiry maintenance plan",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_federation_bark_exit_plan_submission(
+        &self,
+        config: &super::FederationRuntimeConfig,
+        application: &cdk_common::federation::FederationBarkFrostApplicationConfig,
+        snapshot: &FederationBarkProjectionSnapshot,
+        action: Option<&FederationBarkActionRecord>,
+        plan: &FederationBarkActionPlan,
+        allocations: &cdk_common::federation::FederationAddressAllocationState,
+    ) -> Result<(), Error> {
+        let (records, predecessor, expected_action, expected_actor, expected_signers, attempt) =
+            match action {
+                Some(action) => {
+                    let FederationBarkOperation::ActionPlan(refresh) = &action.operation else {
+                        return Err(bark_state_error(
+                            "exit escalation predecessor is not a refresh plan",
+                        ));
+                    };
+                    if action.phase != FederationBarkSemanticPhase::RefreshPlanned
+                        || refresh.kind != FederationBarkActionKind::Refresh
+                        || plan.predecessor_operation_id != action.latest_operation_id
+                    {
+                        return Err(bark_state_error(
+                            "exit escalation does not follow an accepted refresh",
+                        ));
+                    }
+                    let mut records = Vec::with_capacity(refresh.inputs.len());
+                    for input in &refresh.inputs {
+                        let record = snapshot
+                            .vtxos
+                            .iter()
+                            .find(|record| record.vtxo_id == input.vtxo_id)
+                            .ok_or_else(|| bark_state_error("exit escalation input is missing"))?;
+                        if record.state != FederationBarkVtxoState::Reserved
+                            || record.reservation_action_id != Some(refresh.action_id)
+                            || record.locator != input.locator
+                            || record.amount != input.amount
+                        {
+                            return Err(bark_state_error(
+                                "exit escalation input differs from its refresh reservation",
+                            ));
+                        }
+                        records.push(record);
+                    }
+                    (
+                        records,
+                        action.latest_operation_id,
+                        refresh.action_id,
+                        refresh.actor,
+                        refresh.signer_set.clone(),
+                        refresh.attempt,
+                    )
+                }
+                None => {
+                    let minimum_expiry = snapshot
+                        .vtxos
+                        .iter()
+                        .filter(|record| record.state == FederationBarkVtxoState::Spendable)
+                        .map(|record| record.expiry_height)
+                        .min()
+                        .ok_or_else(|| bark_state_error("exit has no spendable candidate"))?;
+                    let mut records = snapshot
+                        .vtxos
+                        .iter()
+                        .filter(|record| {
+                            record.state == FederationBarkVtxoState::Spendable
+                                && record.expiry_height == minimum_expiry
+                        })
+                        .collect::<Vec<_>>();
+                    records.sort_by_key(|record| record.vtxo_id);
+                    let predecessor = records
+                        .first()
+                        .ok_or_else(|| bark_state_error("exit has no deterministic predecessor"))?
+                        .latest_operation_id;
+                    let action_id = cdk_common::federation::FederationBarkActionId::derive(
+                        config.federation_id(),
+                        predecessor,
+                        FederationBarkSemanticPhase::ExitPlanned,
+                        0,
+                    )?;
+                    let actor = config
+                        .public_config()
+                        .members
+                        .keys()
+                        .next()
+                        .copied()
+                        .ok_or(Error::Internal)?;
+                    let signers = config
+                        .public_config()
+                        .members
+                        .keys()
+                        .copied()
+                        .take(usize::from(application.threshold))
+                        .collect::<Vec<_>>();
+                    (records, predecessor, action_id, actor, signers, 1)
+                }
+            };
+        let mut records = records;
+        records.sort_by_key(|record| record.vtxo_id);
+        let expected_inputs = records
+            .iter()
+            .map(|record| FederationBarkVtxoInput {
+                vtxo_id: record.vtxo_id,
+                locator: record.locator,
+                amount: record.amount,
+            })
+            .collect::<Vec<_>>();
+        let input_amount = expected_inputs
+            .iter()
+            .try_fold(Amount::ZERO, |sum, input| {
+                sum.checked_add(input.amount)
+                    .ok_or_else(|| bark_state_error("exit input amount overflow"))
+            })?;
+        let minimum_expiry = records
+            .iter()
+            .map(|record| record.expiry_height)
+            .min()
+            .ok_or_else(|| bark_state_error("exit has no minimum expiry"))?;
+        let trigger_height = minimum_expiry
+            .checked_sub(application.policy.emergency_exit_before_expiry_blocks)
+            .filter(|height| *height != 0)
+            .ok_or_else(|| bark_state_error("exit trigger is unsafe"))?;
+        let fee_bound = application
+            .policy
+            .maximum_outgoing_fee(input_amount)
+            .map_err(Error::from)?;
+        let request = plan.emergency_exit_request()?;
+        let frost_wallet = config
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .ok_or(Error::Internal)?;
+        let onchain = &frost_wallet.cdk_onchain_application;
+        let expected_quote = federation_bark_exit_allocation_quote(expected_action);
+        let scope = FederationAddressAllocationScope {
+            application_id: onchain.application_id,
+            application_key_epoch: onchain.application_key_epoch,
+        };
+        let allocation = allocations
+            .allocation(scope, &expected_quote)
+            .ok_or_else(|| bark_state_error("exit destination allocation is missing"))?;
+        let expected_script = frost_wallet.derive_cdk_onchain_script(
+            config.public_config(),
+            onchain.application_id,
+            onchain.application_key_epoch,
+            FederationAddressKeychain::Internal,
+            allocation.derivation_index,
+        )?;
+        let mut expected_vtxo_artifacts = records
+            .iter()
+            .map(|record| record.artifact.clone())
+            .collect::<Vec<_>>();
+        expected_vtxo_artifacts.sort();
+        let mut actual_vtxo_artifacts = plan
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+            .cloned()
+            .collect::<Vec<_>>();
+        actual_vtxo_artifacts.sort();
+        let request_count = plan
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest)
+            .count();
+        let invalid_artifact = plan.artifacts.iter().any(|artifact| {
+            !matches!(
+                artifact.kind,
+                FederationBarkArtifactKind::Vtxo
+                    | FederationBarkArtifactKind::ArkRequest
+                    | FederationBarkArtifactKind::Transaction
+            )
+        });
+        if plan.action_id != expected_action
+            || plan.actor != expected_actor
+            || plan.predecessor_operation_id != predecessor
+            || plan.inputs != expected_inputs
+            || plan.signer_set != expected_signers
+            || plan.attempt != attempt
+            || plan.expires_at != u64::from(minimum_expiry)
+            || plan.fee_amount != fee_bound
+            || plan.fee_bound != fee_bound
+            || plan.external_amount
+                != input_amount.checked_sub(fee_bound).ok_or_else(|| {
+                    bark_state_error("exit fee bound consumes its accepted inputs")
+                })?
+            || request.action_id != expected_action
+            || request.predecessor_operation_id != predecessor
+            || request.inputs != expected_inputs
+            || request.destination.application_id != onchain.application_id
+            || request.destination.application_key_epoch != onchain.application_key_epoch
+            || request.destination.quote != expected_quote
+            || request.destination.keychain != FederationAddressKeychain::Internal
+            || request.destination.derivation_index != allocation.derivation_index
+            || request.destination_script != expected_script.as_bytes()
+            || request.network != onchain.network
+            || request.network != application.network
+            || request.fee_rate_sat_per_kwu != FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU
+            || request.fee_bound != fee_bound
+            || request.minimum_recovered != plan.external_amount
+            || request.trigger_height != trigger_height
+            || request.minimum_expiry != minimum_expiry
+            || request.minimum_confirmations != onchain.confirmation_policy.minimum_confirmations
+            || request.external_id != plan.external_id
+            || request.attempt != attempt
+            || actual_vtxo_artifacts != expected_vtxo_artifacts
+            || request_count != 1
+            || invalid_artifact
+        {
+            return Err(bark_state_error(
+                "emergency exit differs from its reservation, BDK destination, or fee policy",
+            ));
+        }
+        Ok(())
+    }
+
     /// Build the deterministic federation materialized-state snapshot.
     #[instrument(skip_all)]
     pub async fn federation_materialized_state_snapshot(
@@ -68,6 +1712,13 @@ impl Mint {
         {
             snapshot.push(row);
         }
+        for row in db
+            .get_federation_bark_projection_snapshot()
+            .await?
+            .materialized_rows()?
+        {
+            snapshot.push(row);
+        }
         let mut mint_quotes = BTreeSet::new();
         let mut melt_quotes = BTreeSet::new();
         let mut completed_operations = BTreeSet::new();
@@ -95,6 +1746,12 @@ impl Mint {
                 FederationMaterializedStateKey::KeysetRotation { keyset } => {
                     keyset_rotations.push((record.operation_index, record.operation_id, keyset));
                 }
+                FederationMaterializedStateKey::BarkAction { .. }
+                | FederationMaterializedStateKey::BarkVtxo { .. }
+                | FederationMaterializedStateKey::BarkDerivationAllocation { .. }
+                | FederationMaterializedStateKey::BarkReservation { .. }
+                | FederationMaterializedStateKey::BarkTransition { .. }
+                | FederationMaterializedStateKey::BarkObservation { .. } => {}
             }
         }
 
@@ -215,6 +1872,658 @@ impl Mint {
 
         Ok(snapshot)
     }
+}
+
+fn next_bark_locator_index(snapshot: &FederationBarkProjectionSnapshot) -> Result<u32, Error> {
+    snapshot
+        .derivation_allocations
+        .iter()
+        .map(|allocation| allocation.locator.index)
+        .max()
+        .map_or(Ok(0), |index| {
+            index
+                .checked_add(1)
+                .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
+                .ok_or_else(|| bark_state_error("Bark locator space is exhausted"))
+        })
+}
+
+fn validate_maintenance_transition_header(
+    action: &FederationBarkActionRecord,
+    plan_operation_id: FederationOperationId,
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+    expected_kind: FederationBarkActionKind,
+) -> Result<(), Error> {
+    if plan.kind != expected_kind
+        || transition.action_id != plan.action_id
+        || transition.quote.is_some()
+        || transition.plan_operation_id != plan_operation_id
+        || transition.payment_hash.is_some()
+        || transition.actor != plan.actor
+        || transition.attempt != plan.attempt
+        || transition.signer_set != plan.signer_set
+        || transition.external_id != plan.external_id
+        || transition.request_hash
+            != FederationBarkOperation::ActionPlan(plan.clone()).commitment()?
+        || action.action_id != plan.action_id
+        || action.quote.is_some()
+        || action.payment_hash.is_some()
+    {
+        return Err(bark_state_error(
+            "maintenance transition differs from its accepted plan",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_maintenance_trigger_quorum(
+    snapshot: &FederationBarkProjectionSnapshot,
+    threshold: u16,
+    plan: &FederationBarkActionPlan,
+) -> Result<(), Error> {
+    let commitment = FederationBarkOperation::ActionPlan(plan.clone()).commitment()?;
+    let amount = if plan.kind == FederationBarkActionKind::Refresh {
+        plan.inputs.iter().try_fold(Amount::ZERO, |sum, input| {
+            sum.checked_add(input.amount)
+                .ok_or_else(|| bark_state_error("maintenance quorum amount overflow"))
+        })?
+    } else {
+        plan.external_amount
+    };
+    let observers = snapshot
+        .observations
+        .iter()
+        .filter_map(|record| match &record.operation {
+            FederationBarkOperation::MemberObservation(observation)
+                if observation.action_id == plan.action_id
+                    && observation.status == FederationBarkObservationStatus::Accepted
+                    && observation.amount == amount
+                    && observation.fee == plan.fee_amount
+                    && observation.result_hash == commitment =>
+            {
+                Some(observation.observer)
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if observers.len() < usize::from(threshold) {
+        return Err(bark_state_error(
+            "maintenance trigger has not reached the accepted member threshold",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_refresh_completed_result(
+    snapshot: &FederationBarkProjectionSnapshot,
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    let spent_inputs = transition
+        .vtxo_transitions
+        .iter()
+        .filter(|mutation| {
+            mutation.previous_state == Some(FederationBarkVtxoState::Reserved)
+                && mutation.new_state == FederationBarkVtxoState::Spent
+        })
+        .map(|mutation| mutation.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    if expected_inputs != spent_inputs {
+        return Err(bark_state_error(
+            "refresh result does not spend every accepted input",
+        ));
+    }
+    for input in &plan.inputs {
+        let record = snapshot
+            .vtxos
+            .iter()
+            .find(|record| record.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("refresh reserved input is missing"))?;
+        let mutation = transition
+            .vtxo_transitions
+            .iter()
+            .find(|mutation| mutation.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("refresh input mutation is missing"))?;
+        if record.state != FederationBarkVtxoState::Reserved
+            || record.reservation_action_id != Some(plan.action_id)
+            || record.locator != input.locator
+            || record.amount != input.amount
+            || mutation.locator != input.locator
+            || mutation.amount != input.amount
+            || mutation.expiry_height != record.expiry_height
+            || mutation.artifact_hash != record.artifact.hash
+        {
+            return Err(bark_state_error(
+                "refresh result differs from its accepted reservation",
+            ));
+        }
+    }
+    let output = plan
+        .outputs
+        .first()
+        .ok_or_else(|| bark_state_error("refresh output allocation is missing"))?;
+    let output_amount = transition
+        .vtxo_transitions
+        .iter()
+        .filter(|mutation| {
+            mutation.previous_state.is_none()
+                && mutation.new_state == FederationBarkVtxoState::Spendable
+        })
+        .try_fold(Amount::ZERO, |sum, mutation| {
+            if mutation.locator != output.locator {
+                return Err(bark_state_error(
+                    "refresh result uses an unallocated output locator",
+                ));
+            }
+            sum.checked_add(mutation.amount)
+                .ok_or_else(|| bark_state_error("refresh output amount overflow"))
+        })?;
+    if output_amount != output.amount
+        || transition
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+            .all(|artifact| artifact.hash != transition.result_hash)
+    {
+        return Err(bark_state_error(
+            "refresh result differs from its accepted output or evidence",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exit_registered_result(
+    snapshot: &FederationBarkProjectionSnapshot,
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    let exiting = transition
+        .vtxo_transitions
+        .iter()
+        .map(|mutation| mutation.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    if expected_inputs != exiting {
+        return Err(bark_state_error(
+            "exit registration does not transition every accepted input",
+        ));
+    }
+    for input in &plan.inputs {
+        let record = snapshot
+            .vtxos
+            .iter()
+            .find(|record| record.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("exit reserved input is missing"))?;
+        let mutation = transition
+            .vtxo_transitions
+            .iter()
+            .find(|mutation| mutation.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("exit input mutation is missing"))?;
+        if record.state != FederationBarkVtxoState::Reserved
+            || record.reservation_action_id != Some(plan.action_id)
+            || mutation.locator != record.locator
+            || mutation.amount != record.amount
+            || mutation.expiry_height != record.expiry_height
+            || mutation.artifact_hash != record.artifact.hash
+        {
+            return Err(bark_state_error(
+                "exit registration differs from its accepted reservation",
+            ));
+        }
+    }
+    validate_exit_transaction_artifacts(plan, transition, false)
+}
+
+fn validate_exit_published_result(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    validate_exit_transaction_artifacts(plan, transition, true)
+}
+
+fn validate_exit_confirmed_result(
+    snapshot: &FederationBarkProjectionSnapshot,
+    plan: &FederationBarkActionPlan,
+    published: &FederationBarkActionTransition,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    let exited = transition
+        .vtxo_transitions
+        .iter()
+        .map(|mutation| mutation.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    if expected_inputs != exited {
+        return Err(bark_state_error(
+            "exit confirmation does not finalize every accepted input",
+        ));
+    }
+    for input in &plan.inputs {
+        let record = snapshot
+            .vtxos
+            .iter()
+            .find(|record| record.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("exiting input is missing"))?;
+        let mutation = transition
+            .vtxo_transitions
+            .iter()
+            .find(|mutation| mutation.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("exit confirmation mutation is missing"))?;
+        if record.state != FederationBarkVtxoState::Exiting
+            || record.reservation_action_id != Some(plan.action_id)
+            || mutation.locator != record.locator
+            || mutation.amount != record.amount
+            || mutation.expiry_height != record.expiry_height
+            || mutation.artifact_hash != record.artifact.hash
+        {
+            return Err(bark_state_error(
+                "exit confirmation differs from its exiting reservation",
+            ));
+        }
+    }
+    let published_transactions = published
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+        .collect::<BTreeSet<_>>();
+    let confirmed_transactions = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+        .collect::<BTreeSet<_>>();
+    if !published_transactions.is_subset(&confirmed_transactions)
+        || transition
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+            .all(|artifact| artifact.hash != transition.result_hash)
+    {
+        return Err(bark_state_error(
+            "exit confirmation does not retain the published transaction package",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exit_transaction_artifacts(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+    require_drain: bool,
+) -> Result<(), Error> {
+    let planned = plan
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+        .collect::<BTreeSet<_>>();
+    let actual = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+        .collect::<BTreeSet<_>>();
+    let result_count = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.kind == FederationBarkArtifactKind::ArkResult
+                && artifact.hash == transition.result_hash
+        })
+        .count();
+    if planned.is_empty()
+        || !planned.is_subset(&actual)
+        || (require_drain && actual.len() <= planned.len())
+        || result_count != 1
+    {
+        return Err(bark_state_error(
+            "exit evidence differs from its accepted transaction package",
+        ));
+    }
+    Ok(())
+}
+
+fn bark_state_error(reason: &str) -> Error {
+    Error::Custom(format!("invalid federated Bark state: {reason}"))
+}
+
+fn validate_send_transition_header(
+    action: &FederationBarkActionRecord,
+    plan_operation_id: FederationOperationId,
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    if plan.kind != FederationBarkActionKind::LightningSend
+        || transition.action_id != plan.action_id
+        || transition.quote != plan.quote
+        || transition.plan_operation_id != plan_operation_id
+        || transition.payment_hash != plan.payment_hash
+        || transition.actor != plan.actor
+        || transition.attempt != plan.attempt
+        || transition.signer_set != plan.signer_set
+        || transition.external_id != plan.external_id
+        || action.action_id != plan.action_id
+        || action.quote != plan.quote
+        || action.payment_hash != plan.payment_hash
+    {
+        return Err(bark_state_error(
+            "outgoing transition differs from its accepted send bindings",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_payment_success_proof(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let mut proofs = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Proof);
+    let proof = proofs
+        .next()
+        .ok_or_else(|| bark_state_error("payment success proof is missing"))?;
+    let preimage: [u8; 32] = proof
+        .bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| bark_state_error("payment success proof is not a 32-byte preimage"))?;
+    let payment_hash = plan
+        .payment_hash
+        .ok_or_else(|| bark_state_error("send plan payment hash is missing"))?;
+    let mut result_bytes = b"cdk/bark/send-payment-succeeded/v1".to_vec();
+    result_bytes.extend_from_slice(&plan.action_id.to_bytes());
+    result_bytes.extend_from_slice(&transition.request_hash.to_bytes());
+    result_bytes.extend_from_slice(&preimage);
+    let result_hash =
+        FederationBarkDigest::from_bytes(sha256::Hash::hash(&result_bytes).to_byte_array())?;
+    if proofs.next().is_some()
+        || sha256::Hash::hash(&preimage).to_byte_array() != payment_hash.to_bytes()
+        || transition.result_hash != result_hash
+    {
+        return Err(bark_state_error(
+            "payment success proof differs from the accepted invoice or result",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_payment_initiated_result(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let payment_hash = plan
+        .payment_hash
+        .ok_or_else(|| bark_state_error("send plan payment hash is missing"))?;
+    let mut result_bytes = b"cdk/bark/send-payment-initiated/v1".to_vec();
+    result_bytes.extend_from_slice(&plan.action_id.to_bytes());
+    result_bytes.extend_from_slice(&payment_hash.to_bytes());
+    result_bytes.extend_from_slice(&transition.request_hash.to_bytes());
+    result_bytes.extend_from_slice(&plan.external_id.to_bytes());
+    let mut artifacts = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult);
+    let artifact = artifacts
+        .next()
+        .ok_or_else(|| bark_state_error("payment initiation result is missing"))?;
+    let expected =
+        FederationBarkDigest::from_bytes(sha256::Hash::hash(&result_bytes).to_byte_array())?;
+    if artifacts.next().is_some()
+        || artifact.bytes != result_bytes
+        || artifact.hash != expected
+        || transition.result_hash != expected
+    {
+        return Err(bark_state_error(
+            "payment initiation result differs from its accepted request",
+        ));
+    }
+    Ok(())
+}
+
+fn payment_failed_result_hash(
+    plan: &FederationBarkActionPlan,
+    initiated_result_hash: FederationBarkDigest,
+) -> Result<FederationBarkDigest, Error> {
+    let bytes = payment_failed_result_bytes(plan, initiated_result_hash)?;
+    FederationBarkDigest::from_bytes(sha256::Hash::hash(&bytes).to_byte_array())
+        .map_err(Error::from)
+}
+
+fn payment_failed_result_bytes(
+    plan: &FederationBarkActionPlan,
+    initiated_result_hash: FederationBarkDigest,
+) -> Result<Vec<u8>, Error> {
+    let mut bytes = b"cdk/bark/send-payment-failed/v1".to_vec();
+    bytes.extend_from_slice(&plan.action_id.to_bytes());
+    bytes.extend_from_slice(&initiated_result_hash.to_bytes());
+    bytes.extend_from_slice(
+        &plan
+            .payment_hash
+            .ok_or_else(|| bark_state_error("send payment hash is missing"))?
+            .to_bytes(),
+    );
+    Ok(bytes)
+}
+
+fn validate_payment_failed_result(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let bytes = payment_failed_result_bytes(plan, transition.request_hash)?;
+    let expected = bark_projection_artifact(FederationBarkArtifactKind::ArkResult, bytes)?;
+    let mut results = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult);
+    if results.next() != Some(&expected)
+        || results.next().is_some()
+        || transition.result_hash != expected.hash
+    {
+        return Err(bark_state_error(
+            "payment failure result differs from its accepted initiation",
+        ));
+    }
+    Ok(())
+}
+
+fn failed_send_revocation_request_bytes(
+    action_id: cdk_common::federation::FederationBarkActionId,
+    failed_operation_id: FederationOperationId,
+    payment_hash: FederationBarkDigest,
+    output_locator: FederationBarkVtxoLocator,
+    inputs: &[FederationBarkVtxoInput],
+) -> Result<Vec<u8>, Error> {
+    let mut bytes = b"cdk/bark/send-revocation-request/v1".to_vec();
+    bytes.extend_from_slice(&action_id.to_bytes());
+    bytes.extend_from_slice(&failed_operation_id.to_bytes());
+    bytes.extend_from_slice(&payment_hash.to_bytes());
+    append_bark_locator(&mut bytes, output_locator);
+    bytes.extend_from_slice(
+        &u32::try_from(inputs.len())
+            .map_err(|_| bark_state_error("too many revocation inputs"))?
+            .to_be_bytes(),
+    );
+    for input in inputs {
+        bytes.extend_from_slice(&input.vtxo_id.to_bytes());
+        append_bark_locator(&mut bytes, input.locator);
+        bytes.extend_from_slice(&u64::from(input.amount).to_be_bytes());
+    }
+    Ok(bytes)
+}
+
+fn append_bark_locator(bytes: &mut Vec<u8>, locator: FederationBarkVtxoLocator) {
+    bytes.push(locator.role);
+    bytes.extend_from_slice(&locator.index.to_be_bytes());
+    bytes.extend_from_slice(&locator.version.to_be_bytes());
+}
+
+fn bark_projection_artifact(
+    kind: FederationBarkArtifactKind,
+    bytes: Vec<u8>,
+) -> Result<FederationBarkArtifact, Error> {
+    Ok(FederationBarkArtifact {
+        kind,
+        hash: FederationBarkDigest::from_bytes(sha256::Hash::hash(&bytes).to_byte_array())?,
+        bytes,
+    })
+}
+
+fn validate_revocation_completed_result(
+    snapshot: &FederationBarkProjectionSnapshot,
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    let spent_inputs = transition
+        .vtxo_transitions
+        .iter()
+        .filter(|mutation| {
+            mutation.previous_state == Some(FederationBarkVtxoState::Reserved)
+                && mutation.new_state == FederationBarkVtxoState::Spent
+        })
+        .map(|mutation| mutation.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    if expected_inputs.is_empty() || spent_inputs != expected_inputs {
+        return Err(bark_state_error(
+            "revocation result does not spend every accepted HTLC",
+        ));
+    }
+    let mut expected_artifacts = Vec::new();
+    for input in &plan.inputs {
+        let record = snapshot
+            .vtxos
+            .iter()
+            .find(|record| record.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("reserved revocation input is missing"))?;
+        let mutation = transition
+            .vtxo_transitions
+            .iter()
+            .find(|mutation| mutation.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("revocation input mutation is missing"))?;
+        if record.state != FederationBarkVtxoState::Reserved
+            || record.reservation_action_id != Some(plan.action_id)
+            || record.locator != input.locator
+            || record.amount != input.amount
+            || mutation.locator != input.locator
+            || mutation.amount != input.amount
+            || mutation.expiry_height != record.expiry_height
+            || mutation.artifact_hash != record.artifact.hash
+        {
+            return Err(bark_state_error(
+                "revocation input differs from its accepted reservation",
+            ));
+        }
+        expected_artifacts.push(record.artifact.clone());
+    }
+    let output = plan
+        .outputs
+        .first()
+        .ok_or_else(|| bark_state_error("revocation output allocation is missing"))?;
+    let outputs = transition
+        .vtxo_transitions
+        .iter()
+        .filter(|mutation| {
+            mutation.previous_state.is_none()
+                && mutation.new_state == FederationBarkVtxoState::Spendable
+        })
+        .collect::<Vec<_>>();
+    if outputs.is_empty() || transition.vtxo_transitions.len() != plan.inputs.len() + outputs.len()
+    {
+        return Err(bark_state_error(
+            "revocation result has incomplete or unexpected VTXO mutations",
+        ));
+    }
+    let mut recovered = Amount::ZERO;
+    let mut result_bytes = b"cdk/bark/send-revocation-result/v1".to_vec();
+    result_bytes.extend_from_slice(&plan.action_id.to_bytes());
+    result_bytes.extend_from_slice(
+        &FederationBarkOperation::ActionPlan(plan.clone())
+            .commitment()?
+            .to_bytes(),
+    );
+    result_bytes.extend_from_slice(
+        &plan
+            .payment_hash
+            .ok_or_else(|| bark_state_error("revocation payment hash is missing"))?
+            .to_bytes(),
+    );
+    result_bytes.extend_from_slice(
+        &u32::try_from(plan.inputs.len())
+            .map_err(|_| bark_state_error("too many revocation inputs"))?
+            .to_be_bytes(),
+    );
+    for input in &plan.inputs {
+        result_bytes.extend_from_slice(&input.vtxo_id.to_bytes());
+    }
+    result_bytes.extend_from_slice(
+        &u32::try_from(outputs.len())
+            .map_err(|_| bark_state_error("too many revocation outputs"))?
+            .to_be_bytes(),
+    );
+    for mutation in outputs {
+        if mutation.locator != output.locator {
+            return Err(bark_state_error(
+                "revocation result uses an unallocated output locator",
+            ));
+        }
+        let mut artifacts = transition.artifacts.iter().filter(|artifact| {
+            artifact.kind == FederationBarkArtifactKind::Vtxo
+                && artifact.hash == mutation.artifact_hash
+        });
+        let artifact = artifacts
+            .next()
+            .ok_or_else(|| bark_state_error("revocation output artifact is missing"))?;
+        if artifacts.next().is_some() {
+            return Err(bark_state_error("revocation output artifact is ambiguous"));
+        }
+        result_bytes.extend_from_slice(
+            &u64::try_from(artifact.bytes.len())
+                .map_err(|_| bark_state_error("revocation output artifact is oversized"))?
+                .to_be_bytes(),
+        );
+        result_bytes.extend_from_slice(&artifact.bytes);
+        recovered = recovered
+            .checked_add(mutation.amount)
+            .ok_or_else(|| bark_state_error("revocation output amount overflow"))?;
+        expected_artifacts.push(artifact.clone());
+    }
+    if recovered != output.amount {
+        return Err(bark_state_error(
+            "revocation result does not conserve the accepted HTLC value",
+        ));
+    }
+    let result = bark_projection_artifact(FederationBarkArtifactKind::ArkResult, result_bytes)?;
+    if result.hash != transition.result_hash {
+        return Err(bark_state_error(
+            "revocation result commitment differs from its exact outputs",
+        ));
+    }
+    expected_artifacts.push(result);
+    expected_artifacts.sort();
+    expected_artifacts.dedup();
+    if transition.artifacts != expected_artifacts {
+        return Err(bark_state_error(
+            "revocation result artifacts differ from its exact recovery",
+        ));
+    }
+    Ok(())
 }
 
 async fn append_proof_state_rows(
@@ -357,4 +2666,128 @@ fn payment_observation_materialized_row(
             .with_field("state", record.observation.state_label())
             .with_field("evidence_hash", sha256::Hash::hash(&canonical).to_string()),
     )
+}
+
+#[cfg(test)]
+mod outgoing_tests {
+    use super::*;
+    use cdk_common::federation::{
+        FederationBarkActionId, FederationBarkArtifact, FederationBarkExternalId,
+        FederationBarkVtxoOutput, MemberId, FEDERATION_BARK_OPERATION_VERSION,
+    };
+
+    fn digest(seed: u8) -> FederationBarkDigest {
+        FederationBarkDigest::from_bytes([seed; 32]).expect("non-zero digest")
+    }
+
+    fn send_plan(payment_hash: FederationBarkDigest) -> FederationBarkActionPlan {
+        FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: FederationBarkActionId::from_bytes([1; 32]).expect("action id"),
+            quote: Some("outgoing-proof-test".to_string()),
+            kind: FederationBarkActionKind::LightningSend,
+            actor: MemberId::new(1).expect("member"),
+            predecessor_operation_id: FederationOperationId::from_bytes([2; 32]),
+            payment_hash: Some(payment_hash),
+            inputs: Vec::new(),
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: FederationBarkVtxoLocator::vtxo_custody(1),
+                amount: Amount::ZERO,
+                artifact_hash: digest(3),
+            }],
+            revocation_locator: Some(FederationBarkVtxoLocator::vtxo_custody(2)),
+            external_amount: Amount::from(1),
+            fee_amount: Amount::from(2),
+            fee_bound: Amount::from(2),
+            artifacts: Vec::new(),
+            external_id: FederationBarkExternalId::from_bytes([4; 32]).expect("external id"),
+            signer_set: vec![MemberId::new(1).expect("member")],
+            attempt: 1,
+            expires_at: 1,
+        }
+    }
+
+    #[test]
+    fn outgoing_success_proof_binds_preimage_hash_and_predecessor() {
+        let preimage = [7; 32];
+        let payment_hash =
+            FederationBarkDigest::from_bytes(sha256::Hash::hash(&preimage).to_byte_array())
+                .expect("payment hash");
+        let plan = send_plan(payment_hash);
+        let request_hash = digest(8);
+        let mut result_bytes = b"cdk/bark/send-payment-succeeded/v1".to_vec();
+        result_bytes.extend_from_slice(&plan.action_id.to_bytes());
+        result_bytes.extend_from_slice(&request_hash.to_bytes());
+        result_bytes.extend_from_slice(&preimage);
+        let result_hash =
+            FederationBarkDigest::from_bytes(sha256::Hash::hash(&result_bytes).to_byte_array())
+                .expect("result hash");
+        let proof_hash =
+            FederationBarkDigest::from_bytes(sha256::Hash::hash(&preimage).to_byte_array())
+                .expect("proof hash");
+        let transition = FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: plan.action_id,
+            quote: plan.quote.clone(),
+            phase: FederationBarkSemanticPhase::PaymentSucceeded,
+            actor: plan.actor,
+            plan_operation_id: FederationOperationId::from_bytes([9; 32]),
+            predecessor_operation_id: FederationOperationId::from_bytes([10; 32]),
+            payment_hash: plan.payment_hash,
+            attempt: plan.attempt,
+            signer_set: plan.signer_set.clone(),
+            request_hash,
+            result_hash,
+            external_id: plan.external_id,
+            artifacts: vec![FederationBarkArtifact {
+                kind: FederationBarkArtifactKind::Proof,
+                hash: proof_hash,
+                bytes: preimage.to_vec(),
+            }],
+            vtxo_transitions: Vec::new(),
+        };
+        validate_payment_success_proof(&plan, &transition).expect("valid success proof");
+
+        let mut changed_proof = transition.clone();
+        changed_proof.artifacts[0].bytes[0] ^= 1;
+        assert!(validate_payment_success_proof(&plan, &changed_proof).is_err());
+        let mut changed_predecessor = transition;
+        changed_predecessor.request_hash = digest(11);
+        assert!(validate_payment_success_proof(&plan, &changed_predecessor).is_err());
+    }
+
+    #[test]
+    fn outgoing_failure_result_binds_the_initiated_result_and_payment_hash() {
+        let plan = send_plan(digest(12));
+        let initiated_result = digest(13);
+        let bytes =
+            payment_failed_result_bytes(&plan, initiated_result).expect("failure result bytes");
+        let artifact = bark_projection_artifact(FederationBarkArtifactKind::ArkResult, bytes)
+            .expect("failure artifact");
+        let transition = FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: plan.action_id,
+            quote: plan.quote.clone(),
+            phase: FederationBarkSemanticPhase::PaymentFailed,
+            actor: plan.actor,
+            plan_operation_id: FederationOperationId::from_bytes([14; 32]),
+            predecessor_operation_id: FederationOperationId::from_bytes([15; 32]),
+            payment_hash: plan.payment_hash,
+            attempt: plan.attempt,
+            signer_set: plan.signer_set.clone(),
+            request_hash: initiated_result,
+            result_hash: artifact.hash,
+            external_id: plan.external_id,
+            artifacts: vec![artifact],
+            vtxo_transitions: Vec::new(),
+        };
+        validate_payment_failed_result(&plan, &transition).expect("valid failure result");
+
+        let mut changed = transition.clone();
+        changed.request_hash = digest(16);
+        assert!(validate_payment_failed_result(&plan, &changed).is_err());
+        let mut changed = transition;
+        changed.artifacts[0].bytes.push(0);
+        assert!(validate_payment_failed_result(&plan, &changed).is_err());
+    }
 }

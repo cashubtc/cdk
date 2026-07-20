@@ -3254,6 +3254,8 @@ async fn federation_route_state_for_private_with_db_payment_and_finality(
                 )),
                 Vec::new(),
                 None,
+                #[cfg(feature = "federation-bark")]
+                None,
             ),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),

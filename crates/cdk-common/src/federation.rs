@@ -8,6 +8,10 @@ use thiserror::Error;
 
 mod address_allocation;
 mod backup;
+mod bark_operation;
+mod bark_operator_status;
+mod bark_projection;
+mod bark_secret;
 mod chain_observation;
 mod checkpoint;
 mod config;
@@ -56,6 +60,45 @@ pub use self::address_allocation::{
 pub use self::backup::{
     FederationDatabaseBackupManifest, FEDERATION_DATABASE_BACKUP_MANIFEST_VERSION,
     FEDERATION_DATABASE_BACKUP_SCHEMA_VERSION,
+};
+pub use self::bark_operation::{
+    federation_bark_custody_transcript_hash, federation_bark_description_hash,
+    federation_bark_exit_allocation_quote, federation_bark_mailbox_scope,
+    federation_bark_receive_request_hash, validate_federation_bark_lightning_send_expiry,
+    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionPlan,
+    FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
+    FederationBarkAuthorizationReference, FederationBarkConflictKey, FederationBarkCustodyProtocol,
+    FederationBarkDigest, FederationBarkExitRequest, FederationBarkExternalId,
+    FederationBarkFrostAuthorization, FederationBarkMemberObservation,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkOperationKind,
+    FederationBarkOperationRecord, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
+    FederationBarkReceiveProof, FederationBarkReceiveSecretAcknowledgement,
+    FederationBarkRefreshRequest, FederationBarkSemanticPhase, FederationBarkUnit,
+    FederationBarkVtxoId, FederationBarkVtxoInput, FederationBarkVtxoLocator,
+    FederationBarkVtxoOutput, FederationBarkVtxoState, FederationBarkVtxoTransition,
+    FEDERATION_BARK_AUTHORIZATION_VERSION, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
+    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_BARK_ARTIFACT_AGGREGATE_BYTES,
+    FEDERATION_MAX_BARK_ARTIFACT_BYTES, FEDERATION_MAX_BARK_AUTHORIZATION_BYTES,
+    FEDERATION_MAX_BARK_COLLECTION_ENTRIES, FEDERATION_MAX_BARK_DESCRIPTION_BYTES,
+    FEDERATION_MAX_BARK_INVOICE_BYTES, FEDERATION_MAX_BARK_LIGHTNING_SEND_EXPIRY_EXTENSION_BLOCKS,
+    FEDERATION_MAX_BARK_OPERATION_BYTES,
+};
+pub use self::bark_operator_status::{
+    FederationBarkActionStatus, FederationBarkOperatorStatus, FederationBarkProtocolStatus,
+    FederationBarkReceiveSecretCoverage, FederationBarkReconcileRequest,
+    FederationBarkReconcileResponse, FederationBarkRetryRequest, FederationBarkRetryResponse,
+    FederationBarkVtxoStatusCount, FEDERATION_BARK_OPERATOR_STATUS_VERSION,
+};
+pub use self::bark_projection::{
+    FederationBarkActionRecord, FederationBarkDerivationAllocationRecord,
+    FederationBarkObservationRecord, FederationBarkProjectionSnapshot,
+    FederationBarkReservationRecord, FederationBarkTransitionRecord, FederationBarkVtxoRecord,
+};
+pub use self::bark_secret::{
+    ark_server_commitment, payment_hash_for_preimage, preimage_commitment,
+    FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecret,
+    FederationBarkReceiveSecretBinding, FEDERATION_BARK_RECEIVE_SECRET_VERSION,
+    FEDERATION_MAX_BARK_RECEIVE_SECRET_REQUEST_BYTES,
 };
 pub use self::chain_observation::{
     FederationAllocatedAddressRef, FederationChainObservation, FederationChainObservationEvidence,
@@ -113,6 +156,8 @@ pub use self::dkg_driver::{
     FederationDkgDriverRecords, ValidatedFederationDkgParticipantState,
 };
 pub use self::frost_config::{
+    FederationBarkFrostApplicationConfig, FederationBarkFrostRegistrationAdapter,
+    FederationBarkPolicyConfig, FederationBarkReceiveAntiDosPolicy,
     FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostApplicationConfig,
     FederationFrostApplicationId, FederationFrostRootPrivateConfig,
     FederationFrostRootPublicConfig, FederationFrostSealedStorageMetadata,
@@ -187,15 +232,19 @@ pub use self::transport::{
     FederationAlephBftActivityRequest, FederationAlephBftActivityResponse,
     FederationAlephBftBackupRequest, FederationAlephBftBackupResponse,
     FederationAlephBftBackupStatus, FederationAlephBftNetworkMessageRequest,
-    FederationAlephBftNetworkMessageResponse, FederationCatchUpOperation,
-    FederationCheckpointAuditRequest, FederationCheckpointAuditResponse,
-    FederationCheckpointFetchRequest, FederationCheckpointFetchResponse,
-    FederationCheckpointQuorumRequest, FederationCheckpointQuorumResponse,
-    FederationCheckpointQuorumSummary, FederationCheckpointSignatureRequest,
-    FederationCheckpointSignatureResponse, FederationCheckpointStatus, FederationCheckpointSummary,
-    FederationCheckpointSummaryRequest, FederationCheckpointSummaryResponse,
-    FederationDkgActivationRequest, FederationDkgCommitmentRequest, FederationDkgReadinessRequest,
-    FederationDkgRevealRequest, FederationDkgSecretShareRequest, FederationDkgSetupResponse,
+    FederationAlephBftNetworkMessageResponse, FederationBarkCustodyAbortRequest,
+    FederationBarkThresholdDhRequest, FederationBarkThresholdDhResponse,
+    FederationBarkVirtualMusigCommitmentRequest, FederationBarkVirtualMusigCommitmentResponse,
+    FederationBarkVirtualMusigPartialRequest, FederationBarkVirtualMusigPartialResponse,
+    FederationCatchUpOperation, FederationCheckpointAuditRequest,
+    FederationCheckpointAuditResponse, FederationCheckpointFetchRequest,
+    FederationCheckpointFetchResponse, FederationCheckpointQuorumRequest,
+    FederationCheckpointQuorumResponse, FederationCheckpointQuorumSummary,
+    FederationCheckpointSignatureRequest, FederationCheckpointSignatureResponse,
+    FederationCheckpointStatus, FederationCheckpointSummary, FederationCheckpointSummaryRequest,
+    FederationCheckpointSummaryResponse, FederationDkgActivationRequest,
+    FederationDkgCommitmentRequest, FederationDkgReadinessRequest, FederationDkgRevealRequest,
+    FederationDkgSecretShareRequest, FederationDkgSetupResponse,
     FederationDkgTranscriptSignatureRequest, FederationFrostAggregateResultNotification,
     FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
     FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
@@ -444,6 +493,12 @@ pub enum FederationError {
     #[error("Federation chain observation state is invalid: {reason}")]
     ChainObservationStateInvalid {
         /// Stable validation reason without member-local source details.
+        reason: String,
+    },
+    /// A typed, canonical Bark consensus operation or authorization is invalid.
+    #[error("Federation Bark operation is invalid: {reason}")]
+    BarkOperationInvalid {
+        /// Stable validation reason without Bark database, endpoint, or secret details.
         reason: String,
     },
     /// Canonical on-chain intent, batch, or transaction proposal is malformed.

@@ -54,6 +54,16 @@ pub(crate) struct DerivedSigningLibraryPackage {
     pub(crate) key: frost::keys::KeyPackage,
 }
 
+impl DerivedSigningLibraryPackage {
+    pub(crate) fn signing_share_bytes(&self) -> Result<[u8; 32], Error> {
+        self.key
+            .signing_share()
+            .serialize()
+            .try_into()
+            .map_err(|_| Error::Internal("FROST signing share is not 32 bytes".to_string()))
+    }
+}
+
 impl CanonicalRootKeyPackage {
     pub(crate) fn from_library(
         participant: MemberId,
@@ -511,7 +521,7 @@ fn application_tweak(
     Ok(tweak)
 }
 
-fn scalar_from_bytes(bytes: &[u8; 32], kind: &'static str) -> Result<Scalar, Error> {
+pub(crate) fn scalar_from_bytes(bytes: &[u8; 32], kind: &'static str) -> Result<Scalar, Error> {
     let scalar = Option::<Scalar>::from(Scalar::from_repr((*bytes).into()))
         .ok_or_else(|| Error::malformed(kind, "invalid secp256k1 scalar"))?;
     if bool::from(scalar.is_zero()) {
@@ -520,7 +530,10 @@ fn scalar_from_bytes(bytes: &[u8; 32], kind: &'static str) -> Result<Scalar, Err
     Ok(scalar)
 }
 
-fn point_from_bytes(bytes: &[u8; 33], kind: &'static str) -> Result<ProjectivePoint, Error> {
+pub(crate) fn point_from_bytes(
+    bytes: &[u8; 33],
+    kind: &'static str,
+) -> Result<ProjectivePoint, Error> {
     let encoded =
         EncodedPoint::from_bytes(bytes).map_err(|err| Error::malformed(kind, err.to_string()))?;
     let affine = Option::<AffinePoint>::from(AffinePoint::from_encoded_point(&encoded))
@@ -528,7 +541,7 @@ fn point_from_bytes(bytes: &[u8; 33], kind: &'static str) -> Result<ProjectivePo
     Ok(ProjectivePoint::from(affine))
 }
 
-fn point_to_bytes(point: ProjectivePoint) -> [u8; 33] {
+pub(crate) fn point_to_bytes(point: ProjectivePoint) -> [u8; 33] {
     point
         .to_affine()
         .to_encoded_point(true)

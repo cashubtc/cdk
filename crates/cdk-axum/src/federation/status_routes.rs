@@ -93,6 +93,12 @@ pub(super) async fn post_local_status(
     let wallet_operator = federation_wallet_operator_status(&state, wallet_liveness.as_ref())
         .await
         .map_err(cdk_error_response)?;
+    #[cfg(feature = "federation-bark")]
+    let bark_operator = federation_bark_operator_status(&state)
+        .await
+        .map_err(anyhow_response)?;
+    #[cfg(not(feature = "federation-bark"))]
+    let bark_operator = None;
     let response = federation_local_status_response(
         peer_status,
         sync_status,
@@ -114,6 +120,7 @@ pub(super) async fn post_local_status(
         wallet_recovery,
         wallet_liveness,
         wallet_operator,
+        bark_operator,
     );
     #[cfg(feature = "prometheus")]
     record_federation_local_status_metrics(&response);
@@ -141,6 +148,7 @@ fn federation_local_status_response(
     wallet_recovery: Option<FederationWalletRecoveryStatus>,
     wallet_liveness: Option<cdk::federation::FederationWalletLivenessStatus>,
     wallet_operator: Option<cdk::federation::FederationWalletOperatorStatus>,
+    bark_operator: Option<cdk::federation::FederationBarkOperatorStatus>,
 ) -> FederationLocalStatusResponse {
     FederationLocalStatusResponse {
         version: FEDERATION_REST_API_VERSION,
@@ -174,7 +182,33 @@ fn federation_local_status_response(
         wallet_recovery,
         wallet_liveness,
         wallet_operator,
+        bark_operator,
     }
+}
+
+#[cfg(feature = "federation-bark")]
+async fn federation_bark_operator_status(
+    state: &MintState,
+) -> anyhow::Result<Option<cdk::federation::FederationBarkOperatorStatus>> {
+    let Some(runtime) = state.federation.bark_runtime() else {
+        return Ok(None);
+    };
+    let projection = state.mint.federation_bark_projection_snapshot().await?;
+    let accepted_frontier = projection.frontier().unwrap_or(0);
+    let protocols = match state.federation.frost_signing() {
+        Some(signing) => {
+            signing
+                .operator_protocol_status(runtime.scope().root_key_epoch())
+                .await?
+        }
+        None => cdk::federation::FederationBarkProtocolStatus::default(),
+    };
+    let chain_tip_height = runtime.chain_tip_height().await.ok();
+    Ok(Some(
+        runtime
+            .operator_status(accepted_frontier, &projection, protocols, chain_tip_height)
+            .await?,
+    ))
 }
 
 async fn federation_checkpoint_status(
@@ -399,6 +433,103 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
             &member,
             super::u64_to_i64_saturating(wallet.broadcast_failures),
         );
+    }
+    if let Some(bark) = &response.bark_operator {
+        for readiness in ["ready", "behind_consensus", "degraded"] {
+            cdk_prometheus::METRICS.set_federation_bark_readiness(
+                &member,
+                readiness,
+                readiness == bark.readiness,
+            );
+        }
+        cdk_prometheus::METRICS.set_federation_bark_projection_lag(
+            &member,
+            super::u64_to_i64_saturating(bark.projection_lag_operations),
+        );
+        for vtxo in &bark.vtxos {
+            cdk_prometheus::METRICS.set_federation_bark_vtxos(
+                &member,
+                vtxo.state.as_str(),
+                super::u64_to_i64_saturating(vtxo.count),
+                super::u64_to_i64_saturating(vtxo.value_sat),
+            );
+        }
+        let mut action_phases = BTreeMap::<&'static str, (u64, u64)>::new();
+        for phase in cdk::federation::FederationBarkSemanticPhase::ALL {
+            action_phases.insert(phase.as_str(), (0, 0));
+        }
+        for action in &bark.actions {
+            let phase = action.phase.as_str();
+            let (count, max_age) = action_phases.entry(phase).or_default();
+            *count = count.saturating_add(1);
+            *max_age = (*max_age).max(action.age_operations);
+        }
+        for (phase, (count, max_age)) in action_phases {
+            cdk_prometheus::METRICS.set_federation_bark_action_phase(
+                &member,
+                phase,
+                super::u64_to_i64_saturating(count),
+                super::u64_to_i64_saturating(max_age),
+            );
+        }
+        cdk_prometheus::METRICS.set_federation_bark_exposure(
+            &member,
+            "expiring",
+            bark.expiring_vtxo_count
+                .map(super::u64_to_i64_saturating)
+                .unwrap_or(-1),
+            bark.expiring_value_sat
+                .map(super::u64_to_i64_saturating)
+                .unwrap_or(-1),
+        );
+        cdk_prometheus::METRICS.set_federation_bark_exposure(
+            &member,
+            "ambiguous",
+            super::u64_to_i64_saturating(bark.ambiguous_action_count),
+            super::u64_to_i64_saturating(bark.ambiguous_value_sat),
+        );
+        cdk_prometheus::METRICS.set_federation_bark_exposure(
+            &member,
+            "recovery_required",
+            super::u64_to_i64_saturating(bark.recovery_required_action_count),
+            super::u64_to_i64_saturating(bark.recovery_required_value_sat),
+        );
+        cdk_prometheus::METRICS.set_federation_bark_exposure(
+            &member,
+            "signer_retry",
+            super::u64_to_i64_saturating(bark.signer_retry_action_count),
+            0,
+        );
+        for (protocol, count) in [
+            ("frost", bark.protocols.ordinary_frost_nonterminal),
+            ("virtual_musig2", bark.protocols.virtual_musig2_nonterminal),
+            ("threshold_dh", bark.protocols.threshold_dh_nonterminal),
+            ("aggregate_result", bark.protocols.aggregate_results_cached),
+        ] {
+            cdk_prometheus::METRICS.set_federation_bark_protocol_records(
+                &member,
+                protocol,
+                super::u64_to_i64_saturating(count),
+            );
+        }
+        for (coverage, count) in [
+            ("accepted", bark.receive_secrets.accepted_actions),
+            (
+                "locally_acknowledged",
+                bark.receive_secrets.acknowledged_by_local_member,
+            ),
+            ("locally_retained", bark.receive_secrets.locally_retained),
+            (
+                "missing_acknowledged_nonterminal",
+                bark.receive_secrets.missing_acknowledged_nonterminal,
+            ),
+        ] {
+            cdk_prometheus::METRICS.set_federation_bark_receive_secret_coverage(
+                &member,
+                coverage,
+                super::u64_to_i64_saturating(count),
+            );
+        }
     }
 }
 

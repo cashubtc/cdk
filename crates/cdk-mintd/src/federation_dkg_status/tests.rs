@@ -695,6 +695,109 @@ fn completed_dual_dkg_bootstraps_one_cdk_onchain_application() {
 }
 
 #[test]
+fn completed_dual_dkg_registers_bark_under_the_same_sealed_root() {
+    let fixture = dkg_completion_fixture(member_id(2));
+    let mut finalized = FederationDkgFinalizedMemberConfig::from_records(
+        &fixture.setup_public_config,
+        &fixture.setup_private_config,
+        std::slice::from_ref(&fixture.keyset_share),
+        &fixture.transcript_signatures,
+    )
+    .expect("finalized member config");
+    let root = completed_frost_root(&finalized.public_config);
+    attach_initial_frost_cdk_wallet(
+        &mut finalized,
+        std::slice::from_ref(&root),
+        FrostCdkBootstrap {
+            network: bitcoin::Network::Regtest,
+            minimum_confirmations: 1,
+            fee_policy_version: 1,
+            application_key_epoch: 1,
+        },
+    )
+    .expect("bootstrap recovery wallet");
+    let server_secret =
+        bitcoin::secp256k1::SecretKey::from_slice(&[73; 32]).expect("Ark server secret");
+    let server = server_secret.public_key(&bitcoin::secp256k1::Secp256k1::new());
+    let policy = FederationBarkPolicyConfig::new(
+        0,
+        0,
+        10,
+        5_000,
+        18,
+        18,
+        144,
+        18,
+        30,
+        cdk_common::federation::FederationBarkReceiveAntiDosPolicy::ProtectedToken,
+    )
+    .expect("Bark policy");
+    let mut wrong_network = finalized.clone();
+    let wrong_network_error = attach_initial_frost_bark_application(
+        &mut wrong_network,
+        FrostBarkBootstrap {
+            network: bitcoin::Network::Signet,
+            ark_server_public_key: server,
+            application_key_epoch: 1,
+            policy: policy.clone(),
+        },
+    )
+    .expect_err("Bark recovery network mismatch fails closed");
+    assert!(wrong_network_error
+        .to_string()
+        .contains("networks must match"));
+    assert!(wrong_network
+        .public_config
+        .frost_wallet
+        .as_ref()
+        .expect("wallet")
+        .bark_application
+        .is_none());
+    attach_initial_frost_bark_application(
+        &mut finalized,
+        FrostBarkBootstrap {
+            network: bitcoin::Network::Regtest,
+            ark_server_public_key: server,
+            application_key_epoch: 1,
+            policy: policy.clone(),
+        },
+    )
+    .expect("register Bark application");
+
+    let wallet = finalized
+        .public_config
+        .frost_wallet
+        .as_ref()
+        .expect("FROST wallet");
+    let bark = wallet.bark_application.as_ref().expect("Bark application");
+    assert_eq!(wallet.version, 2);
+    assert_eq!(bark.network, bitcoin::Network::Regtest);
+    assert_eq!(bark.ark_server_public_key, server.serialize());
+    assert_eq!(bark.policy, policy);
+    assert_eq!(bark.root_key_epoch, wallet.root.root_key_epoch);
+    assert_ne!(
+        bark.derived_group_key,
+        wallet.cdk_onchain_application.derived_group_key
+    );
+    finalized
+        .private_config
+        .validate_against_public(&finalized.public_config)
+        .expect("private member config remains bound to public snapshot");
+
+    let error = attach_initial_frost_bark_application(
+        &mut finalized,
+        FrostBarkBootstrap {
+            network: bitcoin::Network::Regtest,
+            ark_server_public_key: server,
+            application_key_epoch: 1,
+            policy,
+        },
+    )
+    .expect_err("existing or wrong-network Bark registration fails closed");
+    assert!(error.to_string().contains("existing Bark"));
+}
+
+#[test]
 fn frost_cdk_bootstrap_fails_closed_without_exactly_one_dual_dkg_root() {
     let fixture = dkg_completion_fixture(member_id(2));
     let mut finalized = FederationDkgFinalizedMemberConfig::from_records(

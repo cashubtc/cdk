@@ -146,6 +146,15 @@ impl MintBuilder {
         }
     }
 
+    /// Return the configured mint database.
+    ///
+    /// Payment adapters that provide read-only quotes from accepted public
+    /// federation projections use this handle before the [`Mint`] is built.
+    #[must_use]
+    pub fn localstore(&self) -> DynMintDatabase {
+        self.localstore.clone()
+    }
+
     /// Set the federation mode placeholder for this mint.
     ///
     /// This is intentionally inert until later federation milestones attach

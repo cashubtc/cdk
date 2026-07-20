@@ -1778,6 +1778,7 @@ async fn measure_synthetic_checkpoint_startup(
             BTreeMap::new(),
             CdkAlephBftActivityHint::default(),
             keychain,
+            crate::federation_aleph_bft_channel_capacity(),
         )
         .await
         .expect("load synthetic active-session backup");
@@ -2033,4 +2034,3 @@ async fn benchmark_checkpoint_startup_is_history_length_independent() {
         );
     }
 }
-

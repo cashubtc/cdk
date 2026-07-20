@@ -36,6 +36,8 @@ use cdk::federation::{
     FederationRestSequenceTracker, FederationSubmitOperationResponse, FederationSuffixVerifier,
     MemberId, VerifiedFederationCheckpointQuorum,
 };
+#[cfg(feature = "federation-bark")]
+use cdk::federation::{FederationBarkOperation, FederationOperation};
 use cdk::mint::Mint;
 #[cfg(feature = "federation")]
 use cdk_bdk::{
@@ -1219,6 +1221,7 @@ mod tests {
             version: 1,
             root,
             cdk_onchain_application: application,
+            bark_application: None,
         };
         let federation_id = cdk::federation::FederationId::from_bytes([11; 32]);
 
@@ -2392,6 +2395,38 @@ pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallet(
         federation_peer_sync_config,
         federation_dkg_config,
         federation_bdk_config,
+        #[cfg(feature = "federation-bark")]
+        None,
+        #[cfg(test)]
+        false,
+    )
+    .await
+}
+
+/// Create a mint router with both member-local federated wallet runtimes.
+#[cfg(all(feature = "federation", feature = "federation-bark"))]
+#[allow(unused_mut, unused_variables)]
+pub async fn create_mint_router_with_custom_cache_and_federation_dkg_and_wallets(
+    mint: Arc<Mint>,
+    cache: HttpCache,
+    custom_methods: Vec<String>,
+    enable_info_page: bool,
+    federation_peer_sync_config: FederationPeerSyncConfig,
+    federation_dkg_config: Option<FederationDkgAutoStartConfig>,
+    federation_bdk_config: Option<FederatedBdkLocalConfig>,
+    federation_bark_config: Option<cdk_bark::FederatedBarkLocalConfig>,
+) -> Result<Router> {
+    federation_peer_sync_config.validate()?;
+    create_mint_router_with_custom_cache_inner(
+        mint,
+        cache,
+        custom_methods,
+        enable_info_page,
+        true,
+        federation_peer_sync_config,
+        federation_dkg_config,
+        federation_bdk_config,
+        federation_bark_config,
         #[cfg(test)]
         false,
     )
@@ -2416,6 +2451,8 @@ pub(crate) async fn create_mint_router_without_federation_peer_sync(
         FederationPeerSyncConfig::default(),
         None,
         None,
+        #[cfg(feature = "federation-bark")]
+        None,
         true,
     )
     .await
@@ -2431,18 +2468,34 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation")] federation_peer_sync_config: FederationPeerSyncConfig,
     #[cfg(feature = "federation")] federation_dkg_config: Option<FederationDkgAutoStartConfig>,
     #[cfg(feature = "federation")] federation_bdk_config: Option<FederatedBdkLocalConfig>,
+    #[cfg(feature = "federation-bark")] federation_bark_config: Option<
+        cdk_bark::FederatedBarkLocalConfig,
+    >,
     #[cfg(all(test, feature = "federation"))] federation_local_finality_test: bool,
 ) -> Result<Router> {
     #[cfg(all(feature = "federation", feature = "prometheus"))]
     let federation_startup_started_at = std::time::Instant::now();
     #[cfg(feature = "federation")]
-    let (
-        federation_consensus,
-        federation_sequences,
-        federation_onchain_wallets,
-        federation_frost_signing,
-        federation_startup_bdk_degraded_reason,
-    ) = create_federation_runtime_state_with_wallet(&mint, federation_bdk_config).await?;
+    let federation_runtime_state = create_federation_runtime_state_with_wallet(
+        &mint,
+        federation_peer_sync_config,
+        federation_bdk_config,
+        #[cfg(feature = "federation-bark")]
+        federation_bark_config,
+    )
+    .await?;
+    #[cfg(feature = "federation")]
+    let federation_consensus = federation_runtime_state.consensus;
+    #[cfg(feature = "federation")]
+    let federation_sequences = federation_runtime_state.sequences;
+    #[cfg(feature = "federation")]
+    let federation_onchain_wallets = federation_runtime_state.onchain_wallets;
+    #[cfg(feature = "federation")]
+    let federation_frost_signing = federation_runtime_state.frost_signing;
+    #[cfg(feature = "federation-bark")]
+    let federation_bark = federation_runtime_state.bark;
+    #[cfg(feature = "federation")]
+    let federation_startup_bdk_degraded_reason = federation_runtime_state.bdk_degraded_reason;
     #[cfg(feature = "federation")]
     let federation_sync = federation_consensus
         .as_ref()
@@ -2481,6 +2534,8 @@ async fn create_mint_router_with_custom_cache_inner(
                 None,
                 federation_onchain_wallets,
                 federation_frost_signing,
+                #[cfg(feature = "federation-bark")]
+                federation_bark,
             ),
             aleph_bft_network_inbound: Arc::new(tokio::sync::RwLock::new(None)),
             aleph_bft_live_session: Arc::new(tokio::sync::RwLock::new(None)),
@@ -2604,6 +2659,8 @@ async fn create_mint_router_with_custom_cache_inner(
             .payment_observer
             .clone()
             .spawn(state.clone());
+        #[cfg(feature = "federation-bark")]
+        federation::bark_maintenance::spawn_federated_bark_maintenance(state.clone());
         state
             .federation
             .transaction_broadcaster
@@ -2830,37 +2887,107 @@ impl FederationCheckpointStartupVerifier<'_> {
 }
 
 #[cfg(feature = "federation")]
+struct FederationRuntimeState {
+    consensus: Option<FederationConsensusHandle>,
+    sequences: Option<FederationSequenceHandle>,
+    onchain_wallets: Vec<FederatedBdkWallet>,
+    frost_signing: Option<federation::frost_signing::FederationFrostSigningRuntime>,
+    #[cfg(feature = "federation-bark")]
+    bark: Option<Arc<cdk_bark::FederatedBarkRuntime>>,
+    bdk_degraded_reason: Option<String>,
+}
+
+#[cfg(feature = "federation")]
 async fn create_federation_runtime_state_with_wallet(
     mint: &Arc<Mint>,
+    _peer_sync_config: FederationPeerSyncConfig,
     local_wallet_config: Option<FederatedBdkLocalConfig>,
-) -> Result<(
-    Option<FederationConsensusHandle>,
-    Option<FederationSequenceHandle>,
-    Vec<FederatedBdkWallet>,
-    Option<federation::frost_signing::FederationFrostSigningRuntime>,
-    Option<String>,
-)> {
+    #[cfg(feature = "federation-bark")] local_bark_config: Option<
+        cdk_bark::FederatedBarkLocalConfig,
+    >,
+) -> Result<FederationRuntimeState> {
     let Some(config) = mint.federation_config() else {
         if local_wallet_config.is_some() {
             return Err(anyhow::anyhow!(
                 "federated BDK configuration requires an active federation mint"
             ));
         }
-        return Ok((None, None, Vec::new(), None, None));
+        #[cfg(feature = "federation-bark")]
+        if local_bark_config.is_some() {
+            return Err(anyhow::anyhow!(
+                "federated Bark configuration requires an active federation mint"
+            ));
+        }
+        return Ok(FederationRuntimeState {
+            consensus: None,
+            sequences: None,
+            onchain_wallets: Vec::new(),
+            frost_signing: None,
+            #[cfg(feature = "federation-bark")]
+            bark: None,
+            bdk_degraded_reason: None,
+        });
     };
     let db = mint.localstore();
     validate_and_materialize_frost_wallet_config(mint).await?;
-    let frost_signing = match local_wallet_config.as_ref() {
-        Some(local) => {
-            federation::frost_signing::FederationFrostSigningRuntime::open(
-                mint,
-                &local.storage_root,
-            )
-            .await?
+    let frost_storage_root = local_wallet_config
+        .as_ref()
+        .map(|local| local.storage_root.clone());
+    #[cfg(feature = "federation-bark")]
+    let frost_storage_root = frost_storage_root.or_else(|| {
+        local_bark_config
+            .as_ref()
+            .map(|local| local.data_directory.join("frost-signing"))
+    });
+    let frost_signing = match frost_storage_root {
+        Some(storage_root) => {
+            federation::frost_signing::FederationFrostSigningRuntime::open(mint, &storage_root)
+                .await?
         }
         None => None,
     };
     let onchain_wallets = initialize_federation_onchain_wallets(config, local_wallet_config)?;
+    #[cfg(feature = "federation-bark")]
+    let bark = match local_bark_config {
+        Some(local) => {
+            let wallet = config
+                .public_config()
+                .frost_wallet
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("federated Bark requires a FROST wallet"))?;
+            let application = wallet
+                .bark_application
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("federated Bark application is missing"))?;
+            let public =
+                application.derived_public_package(config.public_config(), &wallet.root)?;
+            let peer_client =
+                federation::peer_client::FederationRestPeerClient::new_with_validated_config(
+                    cdk_http_client::Async::default(),
+                    config.public_config(),
+                    config.private_config().clone(),
+                    _peer_sync_config,
+                )?;
+            let custody_client = Arc::new(
+                federation::bark_custody::FederatedBarkCustodyPeerClient::new(
+                    peer_client,
+                    config.public_config().clone(),
+                    public,
+                ),
+            );
+            Some(
+                cdk_bark::FederatedBarkRuntime::open(
+                    true,
+                    config.public_config(),
+                    config.member_id(),
+                    local,
+                    custody_client,
+                )
+                .await?,
+            )
+        }
+        None => None,
+    };
     let snapshot = FederationConfigSnapshot::new(config.public_config().clone())?;
     let mut tx = db.begin_transaction().await?;
     tx.set_federation_config(&snapshot).await?;
@@ -3097,13 +3224,570 @@ async fn create_federation_runtime_state_with_wallet(
     };
     let sequences = FederationRestSequenceTracker::from_dkg_sequences(dkg_sequences);
 
-    Ok((
-        Some(Arc::new(tokio::sync::Mutex::new(consensus))),
-        Some(Arc::new(tokio::sync::Mutex::new(sequences))),
+    #[cfg(feature = "federation-bark")]
+    if let Some(runtime) = bark.as_ref() {
+        let persisted_entries = db.get_federation_journal_entries().await?;
+        if let Err(err) = reconcile_federation_bark_runtime(mint, runtime, &persisted_entries).await
+        {
+            tracing::error!(
+                reason = %format!("{err:#}"),
+                "federation local Bark reconciliation failed during startup; member starts Bark-degraded"
+            );
+        }
+    }
+
+    Ok(FederationRuntimeState {
+        consensus: Some(Arc::new(tokio::sync::Mutex::new(consensus))),
+        sequences: Some(Arc::new(tokio::sync::Mutex::new(sequences))),
         onchain_wallets,
         frost_signing,
-        startup_bdk_degraded_reason,
-    ))
+        #[cfg(feature = "federation-bark")]
+        bark,
+        bdk_degraded_reason: startup_bdk_degraded_reason,
+    })
+}
+
+#[cfg(feature = "federation-bark")]
+async fn reconcile_federation_bark_runtime(
+    mint: &Mint,
+    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
+    entries: &[FederationJournalEntry],
+) -> Result<()> {
+    let store = runtime.receive_secret_store();
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.status() == FederationOperationStatus::Applied)
+    {
+        let FederationOperation::Bark(operation) = &entry.envelope.operation else {
+            continue;
+        };
+        match operation {
+            FederationBarkOperation::ReceiveIntent(intent) => {
+                if store
+                    .status(intent.action_id)
+                    .map_err(|_| anyhow::anyhow!("Bark receive-secret status is unavailable"))?
+                    .is_some()
+                {
+                    store
+                        .mark_intent_accepted(
+                            intent.action_id,
+                            cdk_bark::FederatedBarkReceiveSecretAcceptedRef {
+                                operation_id: entry.operation_id,
+                                operation_index: entry.index,
+                            },
+                        )
+                        .map_err(|_| {
+                            anyhow::anyhow!("Bark accepted receive secret could not be retained")
+                        })?;
+                }
+            }
+            FederationBarkOperation::ReceivePrepared(prepared) => {
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                let Some((intent, _, _)) =
+                    bark_receive_replay_context(runtime, mint, &projection, prepared.action_id)
+                        .await?
+                else {
+                    continue;
+                };
+                if runtime
+                    .apply_receive_prepared(&intent, prepared)
+                    .await
+                    .is_err()
+                {
+                    runtime
+                        .mark_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
+                        .await;
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark receive plan could not be materialized"
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == cdk::federation::FederationBarkActionKind::IncomingClaim =>
+            {
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                let Some((intent, _, prepared)) =
+                    bark_receive_replay_context(runtime, mint, &projection, plan.action_id).await?
+                else {
+                    continue;
+                };
+                if runtime
+                    .apply_receive_claim_plan(&intent, &prepared, entry)
+                    .await
+                    .is_err()
+                {
+                    runtime
+                        .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                        .await;
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark receive-claim plan could not be materialized"
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == cdk::federation::FederationBarkActionKind::LightningSend =>
+            {
+                let quote_id = plan
+                    .quote
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send quote is missing"))?
+                    .parse::<cdk::mint::QuoteId>()
+                    .map_err(|_| anyhow::anyhow!("accepted Bark send quote is invalid"))?;
+                let quote = mint
+                    .localstore()
+                    .get_melt_quote(&quote_id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send quote is missing"))?;
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                if runtime
+                    .apply_lightning_send_plan(&quote, &projection, plan)
+                    .await
+                    .is_err()
+                {
+                    runtime
+                        .mark_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
+                        .await;
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark send plan could not be materialized"
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if matches!(
+                    transition.phase,
+                    cdk::federation::FederationBarkSemanticPhase::ReceiveHtlcsReady
+                        | cdk::federation::FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                        | cdk::federation::FederationBarkSemanticPhase::ReceiveClaimed
+                ) =>
+            {
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                let Some((intent, prepared_operation_id, prepared)) =
+                    bark_receive_replay_context(runtime, mint, &projection, transition.action_id)
+                        .await?
+                else {
+                    continue;
+                };
+                let replay = match transition.phase {
+                    cdk::federation::FederationBarkSemanticPhase::ReceiveHtlcsReady => {
+                        runtime
+                            .apply_receive_htlcs_ready(
+                                &intent,
+                                prepared_operation_id,
+                                &prepared,
+                                entry,
+                            )
+                            .await
+                    }
+                    cdk::federation::FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                    | cdk::federation::FederationBarkSemanticPhase::ReceiveClaimed => {
+                        let plan_entry = mint
+                            .localstore()
+                            .get_federation_journal_entry_by_operation_id(
+                                transition.plan_operation_id,
+                            )
+                            .await?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("accepted Bark receive-claim plan is missing")
+                            })?;
+                        runtime
+                            .apply_receive_claim_plan(&intent, &prepared, &plan_entry)
+                            .await?;
+                        runtime
+                            .apply_receive_claim_transition(&intent, &prepared, &plan_entry, entry)
+                            .await
+                    }
+                    _ => unreachable!("receive replay phase was matched above"),
+                };
+                if replay.is_err() {
+                    runtime
+                        .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                        .await;
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark receive transition could not be materialized"
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if matches!(
+                    transition.phase,
+                    cdk::federation::FederationBarkSemanticPhase::SendHtlcsCosigned
+                        | cdk::federation::FederationBarkSemanticPhase::PaymentInitiated
+                        | cdk::federation::FederationBarkSemanticPhase::PaymentSucceeded
+                        | cdk::federation::FederationBarkSemanticPhase::PaymentFailed
+                        | cdk::federation::FederationBarkSemanticPhase::RevocationCompleted
+                ) =>
+            {
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                let send_plan_operation_id = projection
+                    .transitions
+                    .iter()
+                    .find(|record| {
+                        record.action_id == transition.action_id
+                            && record.phase
+                                == cdk::federation::FederationBarkSemanticPhase::SendPlanned
+                    })
+                    .map(|record| record.operation_id)
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send plan is missing"))?;
+                let plan_entry = mint
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(send_plan_operation_id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark send transition references a non-plan"
+                    ));
+                };
+                let quote_id = plan
+                    .quote
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send quote is missing"))?
+                    .parse::<cdk::mint::QuoteId>()
+                    .map_err(|_| anyhow::anyhow!("accepted Bark send quote is invalid"))?;
+                let quote = mint
+                    .localstore()
+                    .get_melt_quote(&quote_id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send quote is missing"))?;
+                let replay = match transition.phase {
+                    cdk::federation::FederationBarkSemanticPhase::SendHtlcsCosigned => {
+                        runtime
+                            .apply_lightning_send_htlcs(&quote, &projection, &plan_entry, entry)
+                            .await
+                    }
+                    cdk::federation::FederationBarkSemanticPhase::PaymentInitiated => {
+                        runtime
+                            .apply_lightning_send_initiated(&quote, &projection, &plan_entry, entry)
+                            .await
+                    }
+                    cdk::federation::FederationBarkSemanticPhase::PaymentSucceeded => runtime
+                        .apply_lightning_send_succeeded(&quote, &projection, &plan_entry, entry, 1)
+                        .await
+                        .map(|_| ()),
+                    cdk::federation::FederationBarkSemanticPhase::PaymentFailed => {
+                        let result = runtime
+                            .apply_lightning_send_failed(&quote, &projection, &plan_entry, entry)
+                            .await;
+                        if result.is_ok() {
+                            runtime
+                                .mark_degraded(
+                                    cdk_bark::FederatedBarkDegradedReason::RecoveryRequired,
+                                )
+                                .await;
+                        }
+                        result
+                    }
+                    cdk::federation::FederationBarkSemanticPhase::RevocationCompleted => {
+                        let revocation_plan_entry = mint
+                            .localstore()
+                            .get_federation_journal_entry_by_operation_id(
+                                transition.plan_operation_id,
+                            )
+                            .await?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("accepted Bark revocation plan is missing")
+                            })?;
+                        let result = runtime
+                            .apply_failed_send_revocation(
+                                &quote,
+                                &projection,
+                                &plan_entry,
+                                &revocation_plan_entry,
+                                entry,
+                                1,
+                            )
+                            .await
+                            .map(|_| ());
+                        if result.is_ok() {
+                            runtime
+                                .clear_degraded(
+                                    cdk_bark::FederatedBarkDegradedReason::RecoveryRequired,
+                                )
+                                .await;
+                        }
+                        result
+                    }
+                    _ => unreachable!("send transition phase was matched above"),
+                };
+                if replay.is_err() {
+                    let reason = match transition.phase {
+                        cdk::federation::FederationBarkSemanticPhase::PaymentFailed
+                        | cdk::federation::FederationBarkSemanticPhase::RevocationCompleted => {
+                            cdk_bark::FederatedBarkDegradedReason::RecoveryRequired
+                        }
+                        _ => cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid,
+                    };
+                    runtime.mark_degraded(reason).await;
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark send transition could not be materialized"
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionPlan(_)
+            | FederationBarkOperation::ActionTransition(_)
+            | FederationBarkOperation::MemberObservation(_) => {}
+        }
+    }
+    reconcile_federation_bark_maintenance(mint, runtime).await?;
+    if let Some(frontier) = mint.federation_bark_projection_snapshot().await?.frontier() {
+        runtime.record_projection_frontier(frontier).await;
+    }
+    runtime
+        .clear_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
+        .await;
+    Ok(())
+}
+
+#[cfg(feature = "federation-bark")]
+pub(crate) async fn federation_bark_ready_projection(
+    mint: &Mint,
+    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
+) -> Result<cdk::federation::FederationBarkProjectionSnapshot> {
+    let mut projection = mint.federation_bark_projection_snapshot().await?;
+    let required_frontier = projection.frontier().unwrap_or(0);
+    if runtime.ensure_ready(required_frontier).await.is_err() {
+        let entries = mint.localstore().get_federation_journal_entries().await?;
+        reconcile_federation_bark_runtime(mint, runtime, &entries).await?;
+        projection = mint.federation_bark_projection_snapshot().await?;
+    }
+    runtime
+        .ensure_ready(projection.frontier().unwrap_or(0))
+        .await
+        .map_err(|_| anyhow::anyhow!("federation Bark runtime is behind or degraded"))?;
+    Ok(projection)
+}
+
+#[cfg(feature = "federation-bark")]
+async fn reconcile_federation_bark_maintenance(
+    mint: &Mint,
+    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
+) -> Result<()> {
+    let projection = mint.federation_bark_projection_snapshot().await?;
+    for action in &projection.actions {
+        match action.phase {
+            cdk::federation::FederationBarkSemanticPhase::RefreshPlanned => {
+                let plan_entry = bark_maintenance_plan_entry(
+                    mint,
+                    action,
+                    cdk::federation::FederationBarkActionKind::Refresh,
+                )
+                .await?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    unreachable!("maintenance plan lookup returned a non-plan");
+                };
+                runtime
+                    .apply_refresh_plan(&projection, plan)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("accepted Bark refresh plan could not be replayed")
+                    })?;
+            }
+            cdk::federation::FederationBarkSemanticPhase::RefreshCompleted => {
+                let plan_entry = bark_maintenance_plan_entry(
+                    mint,
+                    action,
+                    cdk::federation::FederationBarkActionKind::Refresh,
+                )
+                .await?;
+                let completed_entry = bark_maintenance_transition_entry(
+                    mint,
+                    &projection,
+                    action.action_id,
+                    cdk::federation::FederationBarkSemanticPhase::RefreshCompleted,
+                )
+                .await?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    unreachable!("maintenance plan lookup returned a non-plan");
+                };
+                runtime
+                    .apply_refresh_plan(&projection, plan)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("accepted Bark refresh plan could not be replayed")
+                    })?;
+                runtime
+                    .apply_refresh_completed(&projection, &plan_entry, &completed_entry)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("accepted Bark refresh result could not be replayed")
+                    })?;
+            }
+            cdk::federation::FederationBarkSemanticPhase::ExitPlanned => {
+                let plan_entry = bark_maintenance_plan_entry(
+                    mint,
+                    action,
+                    cdk::federation::FederationBarkActionKind::EmergencyExit,
+                )
+                .await?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    unreachable!("maintenance plan lookup returned a non-plan");
+                };
+                runtime
+                    .apply_emergency_exit_plan(&projection, plan)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("accepted Bark exit plan could not be replayed")
+                    })?;
+            }
+            cdk::federation::FederationBarkSemanticPhase::ExitRegistered
+            | cdk::federation::FederationBarkSemanticPhase::ExitPublished
+            | cdk::federation::FederationBarkSemanticPhase::ExitConfirmed => {
+                let plan_entry = bark_maintenance_plan_entry(
+                    mint,
+                    action,
+                    cdk::federation::FederationBarkActionKind::EmergencyExit,
+                )
+                .await?;
+                let registered_entry = bark_maintenance_transition_entry(
+                    mint,
+                    &projection,
+                    action.action_id,
+                    cdk::federation::FederationBarkSemanticPhase::ExitRegistered,
+                )
+                .await?;
+                runtime
+                    .apply_emergency_exit_registered(&projection, &plan_entry, &registered_entry)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("accepted Bark exit registration could not be replayed")
+                    })?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "federation-bark")]
+async fn bark_receive_replay_context(
+    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
+    mint: &Mint,
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    action_id: cdk::federation::FederationBarkActionId,
+) -> Result<
+    Option<(
+        cdk::federation::FederationBarkReceiveIntent,
+        cdk::federation::FederationOperationId,
+        cdk::federation::FederationBarkReceivePrepared,
+    )>,
+> {
+    let action = projection
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark receive action is missing"))?;
+    let intent = mint
+        .federation_bark_receive_intent(action.origin_operation_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark receive intent is missing"))?;
+    if runtime
+        .receive_secret_store()
+        .status(action_id)
+        .map_err(|_| anyhow::anyhow!("Bark receive-secret status is unavailable"))?
+        .is_none()
+    {
+        let acknowledged = intent
+            .secret_acknowledgements
+            .iter()
+            .any(|acknowledgement| acknowledgement.member == runtime.member_id());
+        if acknowledged
+            && action.phase != cdk::federation::FederationBarkSemanticPhase::ReceiveClaimed
+        {
+            runtime
+                .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                .await;
+            return Err(anyhow::anyhow!(
+                "accepted Bark receive secret is missing before terminal settlement"
+            ));
+        }
+        return Ok(None);
+    }
+    let (prepared_operation_id, prepared) = projection
+        .transitions
+        .iter()
+        .find_map(|record| {
+            if record.action_id != action_id
+                || record.phase != cdk::federation::FederationBarkSemanticPhase::ReceivePrepared
+            {
+                return None;
+            }
+            match &record.operation {
+                FederationBarkOperation::ReceivePrepared(prepared) => {
+                    Some((record.operation_id, prepared.clone()))
+                }
+                _ => None,
+            }
+        })
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark receive preparation is missing"))?;
+    Ok(Some((intent, prepared_operation_id, prepared)))
+}
+
+#[cfg(feature = "federation-bark")]
+async fn bark_maintenance_plan_entry(
+    mint: &Mint,
+    action: &cdk::federation::FederationBarkActionRecord,
+    kind: cdk::federation::FederationBarkActionKind,
+) -> Result<FederationJournalEntry> {
+    let operation_id = action
+        .plan_operation_id
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance plan is missing"))?;
+    let entry = mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(operation_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance plan is missing"))?;
+    if entry.status() != FederationOperationStatus::Applied
+        || !matches!(
+            &entry.envelope.operation,
+            FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan))
+                if plan.action_id == action.action_id && plan.kind == kind
+        )
+    {
+        return Err(anyhow::anyhow!(
+            "accepted Bark maintenance plan does not match its durable projection"
+        ));
+    }
+    Ok(entry)
+}
+
+#[cfg(feature = "federation-bark")]
+async fn bark_maintenance_transition_entry(
+    mint: &Mint,
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    action_id: cdk::federation::FederationBarkActionId,
+    phase: cdk::federation::FederationBarkSemanticPhase,
+) -> Result<FederationJournalEntry> {
+    let operation_id = projection
+        .transitions
+        .iter()
+        .find(|record| record.action_id == action_id && record.phase == phase)
+        .map(|record| record.operation_id)
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance transition is missing"))?;
+    let entry = mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(operation_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance transition is missing"))?;
+    if entry.status() != FederationOperationStatus::Applied
+        || !matches!(
+            &entry.envelope.operation,
+            FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition))
+                if transition.action_id == action_id && transition.phase == phase
+        )
+    {
+        return Err(anyhow::anyhow!(
+            "accepted Bark maintenance transition does not match its durable projection"
+        ));
+    }
+    Ok(entry)
 }
 
 #[cfg(feature = "federation")]
@@ -3174,9 +3858,15 @@ async fn create_federation_runtime_state(
     Option<FederationConsensusHandle>,
     Option<FederationSequenceHandle>,
 )> {
-    let (consensus, sequences, _, _, _) =
-        create_federation_runtime_state_with_wallet(mint, None).await?;
-    Ok((consensus, sequences))
+    let state = create_federation_runtime_state_with_wallet(
+        mint,
+        FederationPeerSyncConfig::default(),
+        None,
+        #[cfg(feature = "federation-bark")]
+        None,
+    )
+    .await?;
+    Ok((state.consensus, state.sequences))
 }
 
 #[cfg(feature = "federation")]

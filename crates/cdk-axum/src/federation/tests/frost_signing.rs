@@ -1,11 +1,14 @@
-use cdk::federation::FederationFrostCommitmentRequest;
+use cdk::federation::{FederationBarkVirtualMusigPartialRequest, FederationFrostCommitmentRequest};
 use cdk_frost::{
     advance_dkg, derive_application_public, finish_dkg, start_dkg, ApplicationAuthorization,
-    ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, DkgContext,
-    DkgRound1Package, DkgRound2Package, MemoryNonceStore, ParticipantKeyManager, RootKeyEpoch,
-    SecretEncryptionKey, SigningAuthorizationScope, SigningDerivation, SigningSessionContext,
+    ApplicationRegistration, AuthorizationRequest, AuthorizedSigningRequest, CustodyProtocol,
+    DkgContext, DkgRound1Package, DkgRound2Package, MemoryNonceStore, ParticipantKeyManager,
+    RootKeyEpoch, SecretEncryptionKey, SigningAuthorizationScope, SigningDerivation,
+    SigningSessionContext, ThresholdDhRequest, VirtualMusigTranscript,
 };
 use cdk_frost_bip32::application_registration;
+use musig2::secp::Scalar as MusigScalar;
+use musig2::{BinaryEncoding, SecNonce};
 
 use super::*;
 
@@ -497,4 +500,281 @@ async fn frost_coordinator_rejects_threshold_minus_one_before_transport() {
         .sign(&public_config, &context, &derivation, &authorization)
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn bark_custody_transport_rotates_attempts_and_retries_exact_results() {
+    let (public_config, first, second, third) = transport_config_three();
+    let private_configs = [first.clone(), second, third.clone()];
+    let registration = application_registration().expect("application registration");
+    let derivation = SigningDerivation::application_key();
+    let message = [141; 32];
+    let payload = b"typed-bark-transport-authorization-v1".to_vec();
+    let roots = frost_roots(public_config.federation_id.to_bytes(), 3, 2);
+    let public = derive_application_public(roots[0].public(), registration)
+        .expect("application public package");
+    let scope = SigningAuthorizationScope::new(
+        public_config.federation_id.to_bytes(),
+        RootKeyEpoch::new(1).expect("root epoch"),
+        registration,
+        derivation.binding(),
+        [142; 32],
+        message,
+    )
+    .expect("Bark authorization scope");
+    let member = |value| cdk_frost::MemberId::new(value).expect("member");
+    let initial = SigningSessionContext::new_for_protocol(
+        scope.clone(),
+        1,
+        [member(1), member(2)],
+        CustodyProtocol::VirtualMusig2,
+    )
+    .expect("initial virtual MuSig2 context");
+    let mixed_same_attempt = SigningSessionContext::new_for_protocol(
+        scope.clone(),
+        1,
+        [member(1), member(3)],
+        CustodyProtocol::VirtualMusig2,
+    )
+    .expect("mixed same-attempt context");
+    let retry = SigningSessionContext::new_for_protocol(
+        scope.clone(),
+        2,
+        [member(1), member(3)],
+        CustodyProtocol::VirtualMusig2,
+    )
+    .expect("higher virtual MuSig2 attempt");
+    let dh_context = SigningSessionContext::new_for_protocol(
+        scope,
+        1,
+        [member(1), member(3)],
+        CustodyProtocol::ThresholdDh,
+    )
+    .expect("threshold-DH context");
+    let authorization_for = |context: &SigningSessionContext| {
+        AuthorizationRequest::new(
+            registration.id(),
+            registration.key_epoch(),
+            registration.derivation_version(),
+            context.session_id(),
+            payload.clone(),
+        )
+        .expect("Bark authorization")
+    };
+    let initial_authorization = authorization_for(&initial);
+    let mixed_authorization = authorization_for(&mixed_same_attempt);
+    let retry_authorization = authorization_for(&retry);
+    let dh_authorization = authorization_for(&dh_context);
+    let accepted = [
+        (
+            initial.clone(),
+            initial_authorization.clone(),
+            derivation.clone(),
+        ),
+        (
+            mixed_same_attempt.clone(),
+            mixed_authorization.clone(),
+            derivation.clone(),
+        ),
+        (
+            retry.clone(),
+            retry_authorization.clone(),
+            derivation.clone(),
+        ),
+        (
+            dh_context.clone(),
+            dh_authorization.clone(),
+            derivation.clone(),
+        ),
+    ];
+
+    let transport = RouterFederationTransportRegistry::default();
+    for (index, (private, root)) in private_configs.iter().zip(roots).enumerate() {
+        let mut manager = ParticipantKeyManager::with_nonce_store(
+            root,
+            SecretEncryptionKey::new([u8::try_from(index + 151).expect("key byte"); 32])
+                .expect("nonce encryption key"),
+            MemoryNonceStore::default(),
+        )
+        .expect("key manager");
+        manager
+            .register_application(TestAuthorizationAdapter {
+                registration,
+                payload: payload.clone(),
+                message,
+                derivation: derivation.clone(),
+            })
+            .expect("register Bark test application");
+        let runtime = super::super::frost_signing::FederationFrostSigningRuntime::for_test(
+            BTreeMap::from([(1, Arc::new(tokio::sync::Mutex::new(manager)))]),
+            accepted.clone(),
+        );
+        let mut state =
+            federation_route_state_for_private(public_config.clone(), private.clone()).await;
+        state.federation.set_frost_signing_for_test(Some(runtime));
+        if index != 1 {
+            transport.insert(
+                public_config
+                    .member(private.member_id)
+                    .expect("configured member")
+                    .federation_api_url
+                    .clone(),
+                Router::new()
+                    .nest("/api/federation/v1", create_federation_router())
+                    .with_state(state),
+            );
+        }
+    }
+    let client = FederationRestPeerClient::new_with_config(
+        transport,
+        &public_config,
+        first.clone(),
+        FederationPeerSyncConfig {
+            private_rest_outbound_concurrency_limit: 1,
+            ..FederationPeerSyncConfig::default()
+        },
+    )
+    .expect("bounded Bark peer client");
+    let coordinator =
+        super::super::bark_custody::FederationBarkCustodyCoordinator::new(&client, public.clone());
+
+    coordinator
+        .collect_virtual_musig_commitments(
+            &public_config,
+            &initial,
+            &derivation,
+            &initial_authorization,
+        )
+        .await
+        .expect_err("unavailable selected signer must fail the accepted attempt");
+    coordinator
+        .collect_virtual_musig_commitments(
+            &public_config,
+            &mixed_same_attempt,
+            &derivation,
+            &mixed_authorization,
+        )
+        .await
+        .expect_err("signer replacement at the same attempt must remain rejected");
+    let commitments = coordinator
+        .collect_virtual_musig_commitments(
+            &public_config,
+            &retry,
+            &derivation,
+            &retry_authorization,
+        )
+        .await
+        .expect("higher accepted attempt replaces the unavailable signer");
+    assert_eq!(
+        coordinator
+            .collect_virtual_musig_commitments(
+                &public_config,
+                &retry,
+                &derivation,
+                &retry_authorization,
+            )
+            .await
+            .expect("exact commitment retry"),
+        commitments
+    );
+
+    let target = cdk_frost::derive_signing_public(&public, &derivation)
+        .expect("derived Bark signing target");
+    let user_key =
+        musig2::secp::Point::try_from(&target.output_group_key()).expect("virtual user key");
+    let server_secret = MusigScalar::try_from([161; 32]).expect("server scalar");
+    let server_key = server_secret.base_point_mul();
+    let server_nonce = SecNonce::new(
+        MusigScalar::try_from([162; 32]).expect("server nonce one"),
+        MusigScalar::try_from([163; 32]).expect("server nonce two"),
+        server_key,
+    );
+    let transcript = VirtualMusigTranscript::new(
+        retry.session_id(),
+        [user_key.serialize(), server_key.serialize()],
+        user_key.serialize(),
+        commitments
+            .aggregate_public_nonce()
+            .expect("aggregate virtual public nonce"),
+        server_nonce.public_nonce().to_bytes(),
+        message,
+        None,
+    )
+    .expect("final Bark outer transcript");
+    let combined = coordinator
+        .collect_virtual_musig_partial(
+            &public_config,
+            &retry,
+            &derivation,
+            &retry_authorization,
+            &commitments,
+            &transcript,
+        )
+        .await
+        .expect("remote virtual MuSig2 partial");
+    assert_eq!(
+        coordinator
+            .collect_virtual_musig_partial(
+                &public_config,
+                &retry,
+                &derivation,
+                &retry_authorization,
+                &commitments,
+                &transcript,
+            )
+            .await
+            .expect("exact completed virtual partial retry"),
+        combined
+    );
+    let own = commitments
+        .commitments()
+        .get(&member(1))
+        .expect("first virtual commitment");
+    let mut mixed_request = FederationBarkVirtualMusigPartialRequest::new(
+        &mixed_same_attempt,
+        own.nonce_id(),
+        &mixed_authorization,
+        &commitments,
+        &transcript,
+    );
+    mixed_request.transcript_binding[0] ^= 1;
+    assert!(mixed_request
+        .decode(public_config.federation_id, first.member_id)
+        .is_err());
+
+    let dh_request =
+        ThresholdDhRequest::new(dh_context.session_id(), server_key.serialize(), message)
+            .expect("threshold-DH request");
+    let shared = coordinator
+        .threshold_dh(
+            &public_config,
+            &dh_context,
+            &derivation,
+            &dh_authorization,
+            &dh_request,
+        )
+        .await
+        .expect("remote threshold-DH");
+    assert_eq!(
+        coordinator
+            .threshold_dh(
+                &public_config,
+                &dh_context,
+                &derivation,
+                &dh_authorization,
+                &dh_request,
+            )
+            .await
+            .expect("exact threshold-DH retry"),
+        shared
+    );
+    coordinator
+        .collect_virtual_musig_commitments(
+            &public_config,
+            &initial,
+            &derivation,
+            &initial_authorization,
+        )
+        .await
+        .expect_err("stale delayed attempt must remain rejected");
 }

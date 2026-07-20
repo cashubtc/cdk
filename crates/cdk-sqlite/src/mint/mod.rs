@@ -407,6 +407,15 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_bark_projection_persistence() {
+        cdk_common::database::mint::test::federation_bark_projection_persistence(
+            provide_db("federation_bark_projection_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_signature_share_persistence() {
         cdk_common::database::mint::test::federation_signature_share_persistence(
             provide_db("federation_signature_share_persistence".to_string()).await,
@@ -808,6 +817,12 @@ mod test {
             "federation_dkg_ceremonies",
             "federation_frost_dkg_records",
             "federation_frost_wallet_config",
+            "federation_bark_actions",
+            "federation_bark_vtxos",
+            "federation_bark_derivation_allocations",
+            "federation_bark_reservations",
+            "federation_bark_transitions",
+            "federation_bark_observations",
         ] {
             assert!(
                 table_names.contains(table),
@@ -840,6 +855,7 @@ mod test {
                 "20260712000000_create_federation_schema.sql".to_owned(),
                 "20260713000000_allow_federation_payment_observation_revisions.sql".to_owned(),
                 "20260714000000_chunk_federation_aleph_bft_backups.sql".to_owned(),
+                "20260719000000_create_federation_bark_projection.sql".to_owned(),
             ]
         );
 
@@ -937,6 +953,122 @@ mod test {
         let _ = remove_file(path);
     }
 
+    #[cfg(all(feature = "federation", not(feature = "sqlcipher")))]
+    #[tokio::test]
+    async fn pre_bark_sqlite_database_upgrades_with_only_the_forward_migration() {
+        let path = std::env::temp_dir().to_path_buf().join(format!(
+            "cdk-test-federation-pre-bark-migration-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = MintSqliteDatabase::new(path.clone())
+            .await
+            .expect("create current SQLite database");
+        drop(db);
+
+        let conn = rusqlite::Connection::open(&path).expect("open migration fixture");
+        conn.execute_batch(
+            r#"
+            DROP TABLE federation_bark_observations;
+            DROP TABLE federation_bark_transitions;
+            DROP TABLE federation_bark_reservations;
+            DROP TABLE federation_bark_derivation_allocations;
+            DROP TABLE federation_bark_vtxos;
+            DROP TABLE federation_bark_actions;
+            DELETE FROM migrations
+            WHERE name = '20260719000000_create_federation_bark_projection.sql';
+            "#,
+        )
+        .expect("rewind fixture to the pre-Bark schema");
+        drop(conn);
+
+        let upgraded = MintSqliteDatabase::new(path.clone())
+            .await
+            .expect("apply only the forward Bark migration");
+        drop(upgraded);
+        let conn = rusqlite::Connection::open(&path).expect("open upgraded fixture");
+        for table in [
+            "federation_bark_actions",
+            "federation_bark_vtxos",
+            "federation_bark_derivation_allocations",
+            "federation_bark_reservations",
+            "federation_bark_transitions",
+            "federation_bark_observations",
+        ] {
+            let count = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("query Bark projection table");
+            assert_eq!(count, 1, "missing upgraded Bark table {table}");
+        }
+        let proof_table = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'proof'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("query historical standalone table");
+        assert_eq!(proof_table, 1);
+        drop(conn);
+        let _ = remove_file(path);
+    }
+
+    #[cfg(all(feature = "federation", not(feature = "sqlcipher")))]
+    #[tokio::test]
+    async fn bark_projection_migration_failure_rolls_back_atomically() {
+        let path = std::env::temp_dir().to_path_buf().join(format!(
+            "cdk-test-federation-bark-migration-rollback-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = MintSqliteDatabase::new(path.clone())
+            .await
+            .expect("create current SQLite database");
+        drop(db);
+
+        let conn = rusqlite::Connection::open(&path).expect("open migration fixture");
+        conn.execute_batch(
+            r#"
+            DROP TABLE federation_bark_observations;
+            DROP TABLE federation_bark_transitions;
+            DROP TABLE federation_bark_reservations;
+            DROP TABLE federation_bark_derivation_allocations;
+            DROP TABLE federation_bark_vtxos;
+            DROP TABLE federation_bark_actions;
+            DELETE FROM migrations
+            WHERE name = '20260719000000_create_federation_bark_projection.sql';
+            CREATE TABLE federation_bark_transitions (conflict TEXT NOT NULL);
+            "#,
+        )
+        .expect("prepare a late migration conflict");
+        drop(conn);
+
+        assert!(
+            MintSqliteDatabase::new(path.clone()).await.is_err(),
+            "the deliberately conflicting migration must fail"
+        );
+        let conn = rusqlite::Connection::open(&path).expect("open rolled-back fixture");
+        let actions = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'federation_bark_actions'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("query rolled-back action table");
+        assert_eq!(actions, 0, "earlier statements must roll back on failure");
+        let migration_marker = conn
+            .query_row(
+                "SELECT COUNT(*) FROM migrations WHERE name = '20260719000000_create_federation_bark_projection.sql'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("query Bark migration marker");
+        assert_eq!(migration_marker, 0);
+        drop(conn);
+        let _ = remove_file(path);
+    }
+
     #[cfg(feature = "federation")]
     #[tokio::test]
     async fn federation_journal_hot_path_indexes_are_used() {
@@ -985,6 +1117,12 @@ mod test {
                   'federation_dkg_secret_share_contributions',
                   'federation_dkg_transcript_signatures',
                   'federation_dkg_activations',
+                  'federation_bark_actions',
+                  'federation_bark_vtxos',
+                  'federation_bark_derivation_allocations',
+                  'federation_bark_reservations',
+                  'federation_bark_transitions',
+                  'federation_bark_observations',
                   'blind_signature'
               )
             "#,
@@ -1037,6 +1175,21 @@ mod test {
             index_names.contains("idx_federation_payment_observations_quote"),
             "missing federation payment-observation quote index"
         );
+        for index in [
+            "idx_federation_bark_actions_phase",
+            "idx_federation_bark_vtxos_state",
+            "idx_federation_bark_vtxos_reservation",
+            "idx_federation_bark_allocations_action",
+            "idx_federation_bark_reservations_action",
+            "idx_federation_bark_reservations_operation",
+            "idx_federation_bark_transitions_action",
+            "idx_federation_bark_observations_action",
+        ] {
+            assert!(
+                index_names.contains(index),
+                "missing migrated index {index}"
+            );
+        }
         assert!(
             index_names.contains("idx_federation_signature_shares_operation_output"),
             "missing federation signature-share operation/output index"
