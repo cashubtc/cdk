@@ -543,6 +543,22 @@ pub enum FederationBarkVtxoState {
     Exited,
 }
 
+impl FederationBarkVtxoState {
+    /// Stable operator and metrics label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Observed => "observed",
+            Self::Spendable => "spendable",
+            Self::Reserved => "reserved",
+            Self::PendingSpend => "pending_spend",
+            Self::Spent => "spent",
+            Self::Exiting => "exiting",
+            Self::Exited => "exited",
+        }
+    }
+}
+
 /// Exact VTXO state mutation proven by one accepted Bark transition.
 ///
 /// The canonical VTXO bytes are carried once in the transition's artifact set
@@ -613,6 +629,20 @@ pub enum FederationBarkActionKind {
     Refresh,
     /// Exit Bark custody into the accepted federated on-chain wallet.
     EmergencyExit,
+}
+
+impl FederationBarkActionKind {
+    /// Stable operator and metrics label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LightningSend => "lightning_send",
+            Self::IncomingClaim => "incoming_claim",
+            Self::FailedSendRevocation => "failed_send_revocation",
+            Self::Refresh => "refresh",
+            Self::EmergencyExit => "emergency_exit",
+        }
+    }
 }
 
 /// Exact side-effecting plan accepted before Bark or Ark execution.
@@ -802,6 +832,59 @@ pub enum FederationBarkSemanticPhase {
 }
 
 impl FederationBarkSemanticPhase {
+    /// Complete fixed phase domain for bounded metrics.
+    pub const ALL: [Self; 21] = [
+        Self::ReceiveIntent,
+        Self::ReceivePrepared,
+        Self::SendPlanned,
+        Self::ClaimPlanned,
+        Self::RevocationPlanned,
+        Self::RefreshPlanned,
+        Self::ExitPlanned,
+        Self::SigningAttemptAdvanced,
+        Self::ReceiveHtlcsReady,
+        Self::ReceivePreimageDisclosed,
+        Self::ReceiveClaimed,
+        Self::SendHtlcsCosigned,
+        Self::PaymentInitiated,
+        Self::PaymentSucceeded,
+        Self::PaymentFailed,
+        Self::RevocationCompleted,
+        Self::RefreshCompleted,
+        Self::ExitRegistered,
+        Self::ExitPublished,
+        Self::ExitConfirmed,
+        Self::Observation,
+    ];
+
+    /// Stable operator and metrics label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReceiveIntent => "receive_intent",
+            Self::ReceivePrepared => "receive_prepared",
+            Self::SendPlanned => "send_planned",
+            Self::ClaimPlanned => "claim_planned",
+            Self::RevocationPlanned => "revocation_planned",
+            Self::RefreshPlanned => "refresh_planned",
+            Self::ExitPlanned => "exit_planned",
+            Self::SigningAttemptAdvanced => "signing_attempt_advanced",
+            Self::ReceiveHtlcsReady => "receive_htlcs_ready",
+            Self::ReceivePreimageDisclosed => "receive_preimage_disclosed",
+            Self::ReceiveClaimed => "receive_claimed",
+            Self::SendHtlcsCosigned => "send_htlcs_cosigned",
+            Self::PaymentInitiated => "payment_initiated",
+            Self::PaymentSucceeded => "payment_succeeded",
+            Self::PaymentFailed => "payment_failed",
+            Self::RevocationCompleted => "revocation_completed",
+            Self::RefreshCompleted => "refresh_completed",
+            Self::ExitRegistered => "exit_registered",
+            Self::ExitPublished => "exit_published",
+            Self::ExitConfirmed => "exit_confirmed",
+            Self::Observation => "observation",
+        }
+    }
+
     /// Stable v1 numeric code used by action and session derivation.
     #[must_use]
     pub const fn code(self) -> u16 {

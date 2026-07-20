@@ -68,6 +68,10 @@ pub enum FederationRestMessageKind {
     WalletTransactionStatus,
     /// Request an immediate exact-byte retry for one durable transaction.
     WalletRebroadcast,
+    /// Replay accepted Bark state into one member's local wallet.
+    BarkReconcile,
+    /// Retry exactly one accepted Bark action with explicit acknowledgement.
+    BarkActionRetry,
     /// Confirm that a peer is ready for the exact configured DKG ceremony.
     DkgReadiness,
     /// Publish a pre-reveal DKG commitment hash to a peer.
@@ -149,6 +153,8 @@ impl FederationRestMessageKind {
             Self::CheckpointAudit => b"checkpoint_audit",
             Self::WalletTransactionStatus => b"wallet_transaction_status",
             Self::WalletRebroadcast => b"wallet_rebroadcast",
+            Self::BarkReconcile => b"bark_reconcile",
+            Self::BarkActionRetry => b"bark_action_retry",
             Self::DkgReadiness => b"dkg_readiness",
             Self::DkgCommitment => b"dkg_commitment",
             Self::DkgReveal => b"dkg_reveal",
@@ -2950,6 +2956,9 @@ pub struct FederationLocalStatusResponse {
     /// Bounded accepted-state wallet diagnosis without addresses or transaction contents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallet_operator: Option<super::FederationWalletOperatorStatus>,
+    /// Bounded accepted-state Bark diagnosis without payment or custody secrets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bark_operator: Option<super::FederationBarkOperatorStatus>,
 }
 
 /// Scalar metadata for one stored, previously verified checkpoint quorum.
@@ -4246,6 +4255,7 @@ mod tests {
             ),
             wallet_liveness: Some(crate::federation::FederationWalletLivenessStatus::default()),
             wallet_operator: None,
+            bark_operator: None,
         };
 
         let value = serde_json::to_value(&status).expect("local status json");

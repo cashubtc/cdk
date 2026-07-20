@@ -11,13 +11,13 @@ use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
 use cdk::federation::{
     FederationBarkCustodyProtocol, FederationBarkFrostAuthorization,
-    FederationBarkFrostRegistrationAdapter, FederationCdkOnchainFrostAuthorization,
-    FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostAggregateResultNotification,
-    FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
-    FederationFrostInputSignatureAudit, FederationFrostSignatureShareResponse,
-    FederationFrostSigningAbortRequest, FederationFrostSigningAck,
-    FederationFrostSigningPackageRequest, FederationRestMessageKind, FederationSignedRequest,
-    FederationSignedTransaction, FederationTransactionProposalId,
+    FederationBarkFrostRegistrationAdapter, FederationBarkProtocolStatus,
+    FederationCdkOnchainFrostAuthorization, FederationCdkOnchainFrostAuthorizationAdapter,
+    FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
+    FederationFrostCommitmentResponse, FederationFrostInputSignatureAudit,
+    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
+    FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationRestMessageKind,
+    FederationSignedRequest, FederationSignedTransaction, FederationTransactionProposalId,
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
 use cdk_frost::{
@@ -36,6 +36,10 @@ use crate::MintState;
 use super::{admit_private_request, federation_error_response, federation_runtime_config};
 
 const RESULT_CACHE_LIMIT: usize = 1_024;
+
+fn usize_to_u64_saturating(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
 
 type AggregateResultCache = BTreeMap<[u8; 32], ([u8; 32], [u8; 64])>;
 
@@ -479,6 +483,38 @@ impl FederationFrostSigningRuntime {
                     .collect(),
             ),
         }
+    }
+
+    /// Return bounded nonterminal protocol counts for one public root epoch.
+    pub(crate) async fn operator_protocol_status(
+        &self,
+        root_epoch: u64,
+    ) -> anyhow::Result<FederationBarkProtocolStatus> {
+        let manager = self.manager(root_epoch)?;
+        let manager = manager.lock().await;
+        let ordinary_frost_nonterminal =
+            usize_to_u64_saturating(manager.nonce_store().nonterminal_records()?.len());
+        let virtual_musig2_nonterminal = usize_to_u64_saturating(
+            manager
+                .protocol_store()
+                .nonterminal_virtual_musig_records()?
+                .len(),
+        );
+        let threshold_dh_nonterminal = usize_to_u64_saturating(
+            manager
+                .protocol_store()
+                .nonterminal_threshold_dh_records()?
+                .len(),
+        );
+        drop(manager);
+        let aggregate_results_cached =
+            usize_to_u64_saturating(self.aggregate_results.lock().await.len());
+        Ok(FederationBarkProtocolStatus {
+            ordinary_frost_nonterminal,
+            virtual_musig2_nonterminal,
+            threshold_dh_nonterminal,
+            aggregate_results_cached,
+        })
     }
 
     async fn commit(

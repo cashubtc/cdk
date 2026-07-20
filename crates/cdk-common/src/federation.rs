@@ -9,6 +9,7 @@ use thiserror::Error;
 mod address_allocation;
 mod backup;
 mod bark_operation;
+mod bark_operator_status;
 mod bark_projection;
 mod bark_secret;
 mod chain_observation;
@@ -79,6 +80,12 @@ pub use self::bark_operation::{
     FEDERATION_MAX_BARK_ARTIFACT_BYTES, FEDERATION_MAX_BARK_AUTHORIZATION_BYTES,
     FEDERATION_MAX_BARK_COLLECTION_ENTRIES, FEDERATION_MAX_BARK_DESCRIPTION_BYTES,
     FEDERATION_MAX_BARK_INVOICE_BYTES, FEDERATION_MAX_BARK_OPERATION_BYTES,
+};
+pub use self::bark_operator_status::{
+    FederationBarkActionStatus, FederationBarkOperatorStatus, FederationBarkProtocolStatus,
+    FederationBarkReceiveSecretCoverage, FederationBarkReconcileRequest,
+    FederationBarkReconcileResponse, FederationBarkRetryRequest, FederationBarkRetryResponse,
+    FederationBarkVtxoStatusCount, FEDERATION_BARK_OPERATOR_STATUS_VERSION,
 };
 pub use self::bark_projection::{
     FederationBarkActionRecord, FederationBarkDerivationAllocationRecord,

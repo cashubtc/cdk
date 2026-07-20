@@ -90,6 +90,8 @@ pub mod env_vars;
 mod federated_bdk_backend;
 #[cfg(feature = "federation")]
 mod federation_backup;
+#[cfg(all(feature = "federation", feature = "federation-bark"))]
+mod federation_bark_operator;
 #[cfg(feature = "federation")]
 mod federation_checkpoint_audit;
 #[cfg(feature = "federation")]
@@ -209,6 +211,14 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 }
                 cli::FederationCommand::Rebroadcast(rebroadcast) => {
                     federation_wallet_operator::run_rebroadcast_command(args, rebroadcast).await?;
+                }
+                #[cfg(feature = "federation-bark")]
+                cli::FederationCommand::BarkReconcile(reconcile) => {
+                    federation_bark_operator::run_reconcile_command(args, reconcile).await?;
+                }
+                #[cfg(feature = "federation-bark")]
+                cli::FederationCommand::BarkRetry(retry) => {
+                    federation_bark_operator::run_retry_command(args, retry).await?;
                 }
             },
         }

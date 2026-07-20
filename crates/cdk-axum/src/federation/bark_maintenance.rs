@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use cdk::federation::{
     federation_bark_exit_allocation_quote, FederationAddressAllocationScope,
-    FederationAddressKeychain, FederationAllocatedAddressRef, FederationBarkDigest,
-    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
-    FederationBarkSemanticPhase, FederationOperation, MemberId,
+    FederationAddressKeychain, FederationAllocatedAddressRef, FederationBarkActionId,
+    FederationBarkDigest, FederationBarkObservationStatus, FederationBarkOperation,
+    FederationBarkProjectionSnapshot, FederationBarkSemanticPhase, FederationOperation, MemberId,
 };
 
 use crate::MintState;
@@ -44,6 +44,21 @@ pub(crate) fn spawn_federated_bark_maintenance(state: MintState) {
 pub(super) async fn advance_federated_bark_maintenance(
     state: MintState,
 ) -> Result<usize, cdk::Error> {
+    advance_federated_bark_maintenance_inner(state, None).await
+}
+
+/// Retry at most one consensus-visible step for one exact accepted action.
+pub(super) async fn retry_federated_bark_maintenance_action(
+    state: MintState,
+    action_id: FederationBarkActionId,
+) -> Result<usize, cdk::Error> {
+    advance_federated_bark_maintenance_inner(state, Some(action_id)).await
+}
+
+async fn advance_federated_bark_maintenance_inner(
+    state: MintState,
+    target_action_id: Option<FederationBarkActionId>,
+) -> Result<usize, cdk::Error> {
     let federation = state
         .mint
         .federation_config()
@@ -54,7 +69,10 @@ pub(super) async fn advance_federated_bark_maintenance(
         None => return Ok(0),
     };
     let controls = runtime.maintenance_controls();
-    if !controls.automatic_refresh && !controls.automatic_emergency_exit {
+    if target_action_id.is_none()
+        && !controls.automatic_refresh
+        && !controls.automatic_emergency_exit
+    {
         return Ok(0);
     }
     let projection = crate::federation_bark_ready_projection(&state.mint, &runtime)
@@ -64,17 +82,21 @@ pub(super) async fn advance_federated_bark_maintenance(
         .actions
         .iter()
         .find(|action| {
-            matches!(
-                action.phase,
-                FederationBarkSemanticPhase::RefreshPlanned
-                    | FederationBarkSemanticPhase::ExitPlanned
-                    | FederationBarkSemanticPhase::ExitRegistered
-                    | FederationBarkSemanticPhase::ExitPublished
-            )
+            target_action_id.is_none_or(|target| action.action_id == target)
+                && matches!(
+                    action.phase,
+                    FederationBarkSemanticPhase::RefreshPlanned
+                        | FederationBarkSemanticPhase::ExitPlanned
+                        | FederationBarkSemanticPhase::ExitRegistered
+                        | FederationBarkSemanticPhase::ExitPublished
+                )
         })
         .cloned();
 
     let Some(action) = active else {
+        if target_action_id.is_some() {
+            return Ok(0);
+        }
         if !controls.automatic_refresh {
             return Ok(0);
         }

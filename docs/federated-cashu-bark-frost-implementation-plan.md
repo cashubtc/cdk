@@ -3150,6 +3150,95 @@ not hidden as a successful default-stack run.
 
 ### Milestone 17: observability and operator tooling
 
+Status: complete on 2026-07-19.
+
+Implementation record:
+
+- added one bounded, versioned federated-Bark operator-status model in
+  `cdk-common`. It reports readiness/degradation, accepted and local projection
+  frontiers, accepted VTXO count/value buckets, expiry exposure, active action
+  phase/accepted actor/signer attempt/operation age/value, aggregate signer
+  protocol record counts, and receive-secret acknowledgement coverage;
+- derived the view from the accepted Bark projection and existing protected
+  receive-secret store. No new status database, journal scan, secret mirror, or
+  migration was added. The action actor is the actor fixed by the accepted
+  action head, and age is deterministic accepted-operation distance rather than
+  fabricated wall-clock lease time;
+- exposed only the Bark wallet's current chain height through a narrow read-only
+  facade method. Status commits to the Ark server identity, labels the Ark
+  source as shared/correlated, and labels the chain source as
+  undeclared/correlated until independent-source configuration is implemented;
+- added the bounded Bark summary to the existing signed local federation status
+  response and CLI. `--require-ready` now independently rejects Bark projection
+  lag and a locally acknowledged nonterminal receive whose protected record is
+  missing, while consensus synchronization remains visible through the existing
+  federation status fields;
+- added fixed-label Prometheus gauges for readiness, projection lag, VTXO
+  state/value, action phase/max operation age, expiring/ambiguous/recovery/signer
+  retry exposure, aggregate protocol records, and protected-secret coverage.
+  Action IDs, quote IDs, invoices, payment hashes, endpoints, credentials,
+  paths, nonces, shares, and session IDs are never metric labels;
+- added authenticated signed `bark-reconcile` and `bark-retry` operator
+  commands. Reconcile is replay-only and cannot perform Ark RPCs, allocate keys,
+  or start signing. Retry requires an exact accepted action ID and explicit
+  side-effect acknowledgement, then advances only that action through the
+  existing incoming, outgoing, receive-intent, or maintenance worker;
+- made targeted maintenance retry unable to create or advance unrelated
+  maintenance, and added the missing targeted receive-intent path without
+  duplicating payment-processor business logic;
+- centralized stable readiness, degradation, VTXO-state, action-kind, and
+  semantic-phase labels on their owning enums so status, CLI, and metrics cannot
+  drift into separate string taxonomies;
+- kept all routes, daemon wiring, CLI commands, and the Bark dependency behind
+  the existing `federation-bark` feature. No unfederated mint/payment behavior
+  or historical migration was changed.
+
+Verification record:
+
+```text
+cargo check -p cdk-bark --features federation-bark --all-targets
+cargo check -p cdk-axum \
+  --features federation,federation-bark,prometheus --lib
+cargo check -p cdk-mintd \
+  --features federation,federation-bark,prometheus --all-targets
+  passed
+
+cargo test -p cdk-common --features federation bark_operator_status --lib
+  passed: 3 tests
+cargo test -p cdk-mintd \
+  --features federation,federation-bark,prometheus bark_ --lib
+  passed: 6 tests
+cargo test -p cdk-prometheus \
+  federation_bark_metrics_use_only_fixed_redacted_labels --lib
+  passed
+
+cargo clippy -p cdk-common --features federation --all-targets -- -D warnings
+cargo clippy -p cdk-bark \
+  --features federation-bark --all-targets -- -D warnings
+cargo clippy -p cdk-prometheus --all-targets -- -D warnings
+cargo fmt -p cdk-common -p cdk-bark -p cdk-axum \
+  -p cdk-mintd -p cdk-prometheus -- --check
+git diff --check
+  passed
+
+cargo check -p bark-wallet --offline
+  passed for the read-only Bark chain-height facade
+```
+
+The Bark dependency still emits its two pre-existing `chain.rs` warnings. A
+workspace-wide Bark format check also remains noisy because that branch was
+formatted with a different rustfmt/import-order configuration; the single
+facade addition follows the surrounding file style and introduces no unrelated
+format rewrite.
+
+Two pre-existing feature/test-harness defects remain release-gate inputs rather
+than Milestone 17 scope expansion: federation-without-Bark currently reaches an
+unconditional `bark_custody` reference to the optional dependency, and the
+Axum all-target build has an existing test call to `CdkAlephBftSessionIo::from_db`
+with the old argument count. Strict whole-crate Axum and mintd clippy also remain
+blocked by the recorded Rust 1.95 lint backlog. The Milestone 17 library and
+daemon feature surfaces above compile and their focused tests pass.
+
 Deliverables:
 
 - scoped readiness and degraded reasons;

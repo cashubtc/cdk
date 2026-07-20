@@ -118,6 +118,8 @@ use self::frost_signing::{
 pub(crate) use self::node_runtime::{
     apply_federation_journal_entry_for_replay, FederationNodeRuntime,
 };
+#[cfg(feature = "federation-bark")]
+use self::operator_routes::{post_bark_action_retry, post_bark_reconcile};
 use self::operator_routes::{post_wallet_rebroadcast, post_wallet_transaction_status};
 use self::payment_observation::payment_observation_report_summaries;
 pub(crate) use self::payment_observation::FederationPaymentObserver;
@@ -394,7 +396,10 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
             )),
         );
     #[cfg(feature = "federation-bark")]
-    let router = router.merge(bark_secret_router);
+    let router = router
+        .merge(bark_secret_router)
+        .route("/bark/reconcile", post(post_bark_reconcile))
+        .route("/bark/actions/retry", post(post_bark_action_retry));
     router
 }
 

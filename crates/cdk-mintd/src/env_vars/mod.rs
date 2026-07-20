@@ -245,6 +245,8 @@ impl Settings {
                 PaymentBackendType::LdkNode => {}
                 #[cfg(feature = "grpc-processor")]
                 PaymentBackendType::GrpcProcessor => {}
+                #[cfg(feature = "federation-bark")]
+                PaymentBackendType::FederatedBark => {}
                 PaymentBackendType::None => {}
                 #[allow(unreachable_patterns)]
                 _ => bail!("Selected payment backend is not enabled in this build"),

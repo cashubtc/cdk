@@ -251,10 +251,88 @@ fn print_statuses(
         if let Some(wallet) = &status.wallet_operator {
             println!("{}", wallet_operator_status_line(wallet));
         }
+        if let Some(bark) = &status.bark_operator {
+            println!("{}", bark_operator_status_line(bark));
+            for action in &bark.actions {
+                println!("{}", bark_action_status_line(action));
+            }
+        }
         for report in &status.payment_observation_reports {
             print_payment_observation_report(report);
         }
     }
+}
+
+fn bark_operator_status_line(
+    bark: &cdk_common::federation::FederationBarkOperatorStatus,
+) -> String {
+    let vtxos = bark
+        .vtxos
+        .iter()
+        .map(|status| {
+            format!(
+                "{}:{}/{}sat",
+                status.state.as_str(),
+                status.count,
+                status.value_sat
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "  bark readiness={} degraded_reason={} accepted_frontier={} local_frontier={} lag_operations={} root_epoch={} application_epoch={} network={} vtxos={} chain_tip={} refresh_margin_blocks={} expiring_vtxos={} expiring_value_sat={} earliest_expiry={} ambiguous_actions={} ambiguous_value_sat={} recovery_actions={} recovery_value_sat={} signer_retry_actions={} frost_pending={} musig2_pending={} threshold_dh_pending={} aggregate_results_cached={} receive_actions={} receive_local_ack={} receive_local_retained={} receive_missing_acknowledged={} receive_ack_range={}-{} ark_scope={} ark_correlated={} chain_scope={} chain_correlated={}",
+        bark.readiness,
+        bark.degraded_reason.as_deref().unwrap_or("none"),
+        bark.accepted_frontier,
+        bark.local_frontier,
+        bark.projection_lag_operations,
+        bark.root_key_epoch,
+        bark.application_key_epoch,
+        bark.network,
+        vtxos,
+        option_u32(bark.chain_tip_height),
+        bark.refresh_margin_blocks,
+        option_u64(bark.expiring_vtxo_count),
+        option_u64(bark.expiring_value_sat),
+        option_u32(bark.earliest_expiry_height),
+        bark.ambiguous_action_count,
+        bark.ambiguous_value_sat,
+        bark.recovery_required_action_count,
+        bark.recovery_required_value_sat,
+        bark.signer_retry_action_count,
+        bark.protocols.ordinary_frost_nonterminal,
+        bark.protocols.virtual_musig2_nonterminal,
+        bark.protocols.threshold_dh_nonterminal,
+        bark.protocols.aggregate_results_cached,
+        bark.receive_secrets.accepted_actions,
+        bark.receive_secrets.acknowledged_by_local_member,
+        bark.receive_secrets.locally_retained,
+        bark.receive_secrets.missing_acknowledged_nonterminal,
+        bark.receive_secrets.minimum_acknowledgements,
+        bark.receive_secrets.maximum_acknowledgements,
+        bark.ark_server_scope,
+        bark.ark_source_correlated_warning,
+        bark.chain_source_scope,
+        bark.chain_source_correlated_warning,
+    )
+}
+
+fn bark_action_status_line(action: &cdk_common::federation::FederationBarkActionStatus) -> String {
+    format!(
+        "    bark_action id={} kind={} phase={} retry_phase={} actor={} local_actor={} attempt={} age_operations={} value_sat={}",
+        action.action_id,
+        action.kind.map(|kind| kind.as_str()).unwrap_or("unplanned"),
+        action.phase.as_str(),
+        action
+            .signing_retry_phase
+            .map(|phase| phase.as_str())
+            .unwrap_or("none"),
+        action.actor,
+        action.local_actor,
+        action.attempt,
+        action.age_operations,
+        action.value_sat,
+    )
 }
 
 fn wallet_operator_status_line(
@@ -422,6 +500,12 @@ fn option_u64(value: Option<u64>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "none".to_string())
+}
+
+fn option_u32(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn aleph_bft_status_fields(status: &FederationLocalStatusResponse) -> String {
@@ -592,6 +676,24 @@ fn ensure_statuses_ready(statuses: &[FederationLocalStatusResponse]) -> Result<(
                 status.aleph_bft_live_session_active,
                 status.aleph_bft_network_inbound_active
             );
+        }
+        if let Some(bark) = &status.bark_operator {
+            if bark.readiness != "ready" || bark.projection_lag_operations != 0 {
+                bail!(
+                    "federation member {} Bark backend is not ready: readiness={} degraded_reason={} projection_lag_operations={}",
+                    status.peer_status.member_id,
+                    bark.readiness,
+                    bark.degraded_reason.as_deref().unwrap_or("none"),
+                    bark.projection_lag_operations,
+                );
+            }
+            if bark.receive_secrets.missing_acknowledged_nonterminal != 0 {
+                bail!(
+                    "federation member {} Bark backend is missing {} locally acknowledged nonterminal receive-secret records",
+                    status.peer_status.member_id,
+                    bark.receive_secrets.missing_acknowledged_nonterminal,
+                );
+            }
         }
     }
 

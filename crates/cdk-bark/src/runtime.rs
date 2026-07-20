@@ -1,7 +1,7 @@
 //! Member-local Bark wallet runtime and bounded readiness reporting.
 
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use bark::actions::lightning::receive::LightningReceiveAntiDosMode;
@@ -30,17 +30,20 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::{FeeRate, ScriptBuf, Transaction};
 use cdk_common::federation::{
     ark_server_commitment, federation_bark_exit_allocation_quote,
-    federation_bark_receive_request_hash, FederationAllocatedAddressRef, FederationBarkActionKind,
-    FederationBarkActionPlan, FederationBarkActionTransition, FederationBarkArtifact,
-    FederationBarkArtifactKind, FederationBarkDigest, FederationBarkExternalId,
-    FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkPolicyConfig, FederationBarkProjectionSnapshot, FederationBarkReceiveIntent,
-    FederationBarkReceivePrepared, FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase,
-    FederationBarkVtxoId, FederationBarkVtxoInput, FederationBarkVtxoLocator,
-    FederationBarkVtxoOutput, FederationBarkVtxoState, FederationBarkVtxoTransition,
+    federation_bark_receive_request_hash, FederationAllocatedAddressRef, FederationBarkActionId,
+    FederationBarkActionKind, FederationBarkActionPlan, FederationBarkActionStatus,
+    FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
+    FederationBarkDigest, FederationBarkExternalId, FederationBarkMemberObservation,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkOperatorStatus,
+    FederationBarkPolicyConfig, FederationBarkProjectionSnapshot, FederationBarkProtocolStatus,
+    FederationBarkReceiveIntent, FederationBarkReceivePrepared, FederationBarkReceiveSecretBinding,
+    FederationBarkReceiveSecretCoverage, FederationBarkSemanticPhase, FederationBarkVtxoId,
+    FederationBarkVtxoInput, FederationBarkVtxoLocator, FederationBarkVtxoOutput,
+    FederationBarkVtxoState, FederationBarkVtxoStatusCount, FederationBarkVtxoTransition,
     FederationConfig, FederationJournalEntry, FederationOperation, FederationOperationId,
     FederationOperationStatus, MemberId, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
-    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
+    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_BARK_OPERATOR_STATUS_VERSION,
+    FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::{CurrencyUnit, MeltQuoteState};
@@ -66,6 +69,18 @@ pub enum FederatedBarkReadiness {
     Degraded,
 }
 
+impl FederatedBarkReadiness {
+    /// Stable operator and metrics label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::BehindConsensus => "behind_consensus",
+            Self::Degraded => "degraded",
+        }
+    }
+}
+
 /// Bounded reason for degraded operation; never an external error message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,6 +93,19 @@ pub enum FederatedBarkDegradedReason {
     ParticipantsUnavailable,
     /// Failed outgoing value requires accepted revocation or emergency exit.
     RecoveryRequired,
+}
+
+impl FederatedBarkDegradedReason {
+    /// Stable redacted operator label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WalletUnavailable => "wallet_unavailable",
+            Self::ProjectionInvalid => "projection_invalid",
+            Self::ParticipantsUnavailable => "participants_unavailable",
+            Self::RecoveryRequired => "recovery_required",
+        }
+    }
 }
 
 /// Public, redacted runtime status.
@@ -356,6 +384,14 @@ impl FederatedBarkRuntime {
     #[must_use]
     pub fn receive_secret_store(&self) -> Arc<FederatedBarkReceiveSecretStore> {
         Arc::clone(&self.receive_secrets)
+    }
+
+    /// Read the member-local chain height without exposing source details.
+    pub async fn chain_tip_height(&self) -> Result<u32, Error> {
+        self.wallet
+            .chain_tip_height()
+            .await
+            .map_err(|_| Error::InvalidChainSource)
     }
 
     /// Purely derive one accepted locator without database or network I/O.
@@ -2848,6 +2884,207 @@ impl FederatedBarkRuntime {
         }
     }
 
+    /// Build a bounded operator view from accepted state and local ledgers.
+    ///
+    /// The result deliberately excludes invoices, payment hashes, protocol
+    /// record identifiers, cryptographic material, endpoints, and paths.
+    pub async fn operator_status(
+        &self,
+        accepted_frontier: u64,
+        projection: &FederationBarkProjectionSnapshot,
+        protocols: FederationBarkProtocolStatus,
+        chain_tip_height: Option<u32>,
+    ) -> Result<FederationBarkOperatorStatus, Error> {
+        let runtime = self.status(accepted_frontier).await;
+        let application = self.bark_application();
+        let refresh_margin_blocks = application.policy.refresh_before_expiry_blocks;
+        let ark_server_scope = ark_server_commitment(&application.ark_server_public_key)
+            .map_err(|_| Error::InvalidPublicConfig)?;
+
+        let states = [
+            FederationBarkVtxoState::Observed,
+            FederationBarkVtxoState::Spendable,
+            FederationBarkVtxoState::Reserved,
+            FederationBarkVtxoState::PendingSpend,
+            FederationBarkVtxoState::Spent,
+            FederationBarkVtxoState::Exiting,
+            FederationBarkVtxoState::Exited,
+        ];
+        let vtxos = states
+            .into_iter()
+            .map(|state| {
+                let mut count = 0_u64;
+                let mut value_sat = 0_u64;
+                for vtxo in projection.vtxos.iter().filter(|vtxo| vtxo.state == state) {
+                    count = count.saturating_add(1);
+                    value_sat = value_sat.saturating_add(u64::from(vtxo.amount));
+                }
+                FederationBarkVtxoStatusCount {
+                    state,
+                    count,
+                    value_sat,
+                }
+            })
+            .collect();
+
+        let live_vtxos = projection
+            .vtxos
+            .iter()
+            .filter(|vtxo| !bark_vtxo_state_is_terminal(vtxo.state))
+            .collect::<Vec<_>>();
+        let earliest_expiry_height = live_vtxos.iter().map(|vtxo| vtxo.expiry_height).min();
+        let (expiring_vtxo_count, expiring_value_sat) = match chain_tip_height {
+            Some(tip) => {
+                let deadline = tip.saturating_add(refresh_margin_blocks);
+                let mut count = 0_u64;
+                let mut value_sat = 0_u64;
+                for vtxo in live_vtxos
+                    .iter()
+                    .filter(|vtxo| vtxo.expiry_height <= deadline)
+                {
+                    count = count.saturating_add(1);
+                    value_sat = value_sat.saturating_add(u64::from(vtxo.amount));
+                }
+                (Some(count), Some(value_sat))
+            }
+            None => (None, None),
+        };
+
+        let action_values = projection.vtxos.iter().fold(
+            BTreeMap::<FederationBarkActionId, u64>::new(),
+            |mut values, vtxo| {
+                if !bark_vtxo_state_is_terminal(vtxo.state) {
+                    if let Some(action_id) = vtxo.reservation_action_id {
+                        let value = values.entry(action_id).or_default();
+                        *value = value.saturating_add(u64::from(vtxo.amount));
+                    }
+                }
+                values
+            },
+        );
+        let mut ambiguous_action_count = 0_u64;
+        let mut ambiguous_value_sat = 0_u64;
+        let mut recovery_required_action_count = 0_u64;
+        let mut recovery_required_value_sat = 0_u64;
+        let mut signer_retry_action_count = 0_u64;
+        let mut actions = Vec::new();
+        for action in projection
+            .actions
+            .iter()
+            .filter(|action| !bark_action_phase_is_terminal(action.phase))
+        {
+            let value_sat = action_values.get(&action.action_id).copied().unwrap_or(0);
+            let effective_phase = action.signing_retry_phase.unwrap_or(action.phase);
+            if bark_action_phase_is_ambiguous(effective_phase) {
+                ambiguous_action_count = ambiguous_action_count.saturating_add(1);
+                ambiguous_value_sat = ambiguous_value_sat.saturating_add(value_sat);
+            }
+            if bark_action_phase_requires_recovery(effective_phase) {
+                recovery_required_action_count = recovery_required_action_count.saturating_add(1);
+                recovery_required_value_sat = recovery_required_value_sat.saturating_add(value_sat);
+            }
+            if action.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced {
+                signer_retry_action_count = signer_retry_action_count.saturating_add(1);
+            }
+            actions.push(FederationBarkActionStatus {
+                action_id: action.action_id,
+                kind: action.action_kind,
+                phase: action.phase,
+                signing_retry_phase: action.signing_retry_phase,
+                actor: action.actor,
+                local_actor: action.actor == self.member_id,
+                attempt: action.attempt,
+                age_operations: accepted_frontier.saturating_sub(action.origin_operation_index),
+                value_sat,
+            });
+        }
+        actions.sort_by_key(|action| action.action_id);
+
+        let mut receive_intents = BTreeMap::new();
+        for transition in &projection.transitions {
+            if let FederationBarkOperation::ReceiveIntent(intent) = &transition.operation {
+                receive_intents.insert(intent.action_id, intent);
+            }
+        }
+        let mut receive_secrets = FederationBarkReceiveSecretCoverage {
+            minimum_acknowledgements: if receive_intents.is_empty() {
+                0
+            } else {
+                u64::MAX
+            },
+            ..Default::default()
+        };
+        for (action_id, intent) in receive_intents {
+            receive_secrets.accepted_actions = receive_secrets.accepted_actions.saturating_add(1);
+            let acknowledgement_count =
+                usize_to_u64_saturating(intent.secret_acknowledgements.len());
+            receive_secrets.minimum_acknowledgements = receive_secrets
+                .minimum_acknowledgements
+                .min(acknowledgement_count);
+            receive_secrets.maximum_acknowledgements = receive_secrets
+                .maximum_acknowledgements
+                .max(acknowledgement_count);
+            let local_acknowledged = intent
+                .secret_acknowledgements
+                .iter()
+                .any(|acknowledgement| acknowledgement.member == self.member_id);
+            if local_acknowledged {
+                receive_secrets.acknowledged_by_local_member = receive_secrets
+                    .acknowledged_by_local_member
+                    .saturating_add(1);
+            }
+            let retained = self.receive_secrets.status(action_id)?.is_some();
+            if retained {
+                receive_secrets.locally_retained =
+                    receive_secrets.locally_retained.saturating_add(1);
+            }
+            let terminal = projection
+                .actions
+                .iter()
+                .find(|action| action.action_id == action_id)
+                .is_some_and(|action| bark_action_phase_is_terminal(action.phase));
+            if local_acknowledged && !terminal && !retained {
+                receive_secrets.missing_acknowledged_nonterminal = receive_secrets
+                    .missing_acknowledged_nonterminal
+                    .saturating_add(1);
+            }
+        }
+
+        Ok(FederationBarkOperatorStatus {
+            version: FEDERATION_BARK_OPERATOR_STATUS_VERSION,
+            readiness: runtime.readiness.as_str().to_string(),
+            degraded_reason: runtime
+                .degraded_reason
+                .map(FederatedBarkDegradedReason::as_str)
+                .map(str::to_string),
+            accepted_frontier,
+            local_frontier: runtime.local_frontier,
+            projection_lag_operations: accepted_frontier.saturating_sub(runtime.local_frontier),
+            root_key_epoch: self.scope.root_key_epoch(),
+            application_key_epoch: self.scope.application_key_epoch(),
+            network: self.network().to_string(),
+            ark_server_scope,
+            ark_source_scope: "shared_protocol_server".to_string(),
+            ark_source_correlated_warning: true,
+            chain_source_scope: "undeclared".to_string(),
+            chain_source_correlated_warning: true,
+            chain_tip_height,
+            refresh_margin_blocks,
+            vtxos,
+            expiring_vtxo_count,
+            expiring_value_sat,
+            earliest_expiry_height,
+            ambiguous_action_count,
+            ambiguous_value_sat,
+            recovery_required_action_count,
+            recovery_required_value_sat,
+            signer_retry_action_count,
+            actions,
+            protocols,
+            receive_secrets,
+        })
+    }
+
     /// Fail closed unless this member can serve the required accepted frontier.
     pub async fn ensure_ready(&self, required_frontier: u64) -> Result<(), Error> {
         match self.status(required_frontier).await.readiness {
@@ -2881,6 +3118,48 @@ impl FederatedBarkRuntime {
             health.degraded_reason = None;
         }
     }
+}
+
+const fn bark_vtxo_state_is_terminal(state: FederationBarkVtxoState) -> bool {
+    matches!(
+        state,
+        FederationBarkVtxoState::Spent | FederationBarkVtxoState::Exited
+    )
+}
+
+const fn bark_action_phase_is_terminal(phase: FederationBarkSemanticPhase) -> bool {
+    matches!(
+        phase,
+        FederationBarkSemanticPhase::ReceiveClaimed
+            | FederationBarkSemanticPhase::PaymentSucceeded
+            | FederationBarkSemanticPhase::RevocationCompleted
+            | FederationBarkSemanticPhase::RefreshCompleted
+            | FederationBarkSemanticPhase::ExitConfirmed
+            | FederationBarkSemanticPhase::Observation
+    )
+}
+
+const fn bark_action_phase_is_ambiguous(phase: FederationBarkSemanticPhase) -> bool {
+    matches!(
+        phase,
+        FederationBarkSemanticPhase::ReceivePreimageDisclosed
+            | FederationBarkSemanticPhase::PaymentInitiated
+    )
+}
+
+const fn bark_action_phase_requires_recovery(phase: FederationBarkSemanticPhase) -> bool {
+    matches!(
+        phase,
+        FederationBarkSemanticPhase::PaymentFailed
+            | FederationBarkSemanticPhase::RevocationPlanned
+            | FederationBarkSemanticPhase::ExitPlanned
+            | FederationBarkSemanticPhase::ExitRegistered
+            | FederationBarkSemanticPhase::ExitPublished
+    )
+}
+
+fn usize_to_u64_saturating(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn accepted_send_plan(entry: &FederationJournalEntry) -> Result<&FederationBarkActionPlan, Error> {

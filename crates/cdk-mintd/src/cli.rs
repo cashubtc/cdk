@@ -375,6 +375,12 @@ pub enum FederationCommand {
     TransactionStatus(FederationWalletTransactionArgs),
     /// Immediately retry one exact durably signed transaction.
     Rebroadcast(FederationWalletRebroadcastArgs),
+    /// Replay accepted Bark state into one member's local wallet.
+    #[cfg(feature = "federation-bark")]
+    BarkReconcile(FederationBarkReconcileArgs),
+    /// Retry exactly one accepted Bark action.
+    #[cfg(feature = "federation-bark")]
+    BarkRetry(FederationBarkRetryArgs),
 }
 
 #[cfg(feature = "federation")]
@@ -852,6 +858,40 @@ pub struct FederationWalletRebroadcastArgs {
     /// Acknowledge that only the exact persisted bytes are retried and no policy is bypassed.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub acknowledge_exact_byte_retry: bool,
+}
+
+#[cfg(all(feature = "federation", feature = "federation-bark"))]
+#[derive(Debug, Clone, Args)]
+pub struct FederationBarkReconcileArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign the operator request.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Member whose local Bark projection should be reconciled; defaults to the signing member.
+    #[arg(long)]
+    pub member: Option<u16>,
+}
+
+#[cfg(all(feature = "federation", feature = "federation-bark"))]
+#[derive(Debug, Clone, Args)]
+pub struct FederationBarkRetryArgs {
+    /// Shared public federation config JSON path.
+    #[arg(long)]
+    pub public_config: Option<PathBuf>,
+    /// Private member config JSON path used to sign the operator request.
+    #[arg(long)]
+    pub private_config: Option<PathBuf>,
+    /// Exact accepted Bark action identity.
+    #[arg(long)]
+    pub action_id: String,
+    /// Member whose local worker should retry; defaults to the signing member.
+    #[arg(long)]
+    pub member: Option<u16>,
+    /// Acknowledge that the exact accepted action may repeat idempotent Ark effects.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub acknowledge_bark_side_effects: bool,
 }
 
 #[cfg(all(test, feature = "federation"))]
@@ -1625,6 +1665,44 @@ mod tests {
             rebroadcast.command,
             FederationCommand::Rebroadcast(FederationWalletRebroadcastArgs {
                 acknowledge_exact_byte_retry: true,
+                ..
+            })
+        ));
+    }
+
+    #[cfg(feature = "federation-bark")]
+    #[test]
+    fn parses_federated_bark_operator_commands_and_guard() {
+        let reconcile =
+            CLIArgs::try_parse_from(["cdk-mintd", "federation", "bark-reconcile", "--member", "2"])
+                .expect("Bark reconcile command parses");
+        let Some(CliCommand::Federation(reconcile)) = reconcile.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            reconcile.command,
+            FederationCommand::BarkReconcile(FederationBarkReconcileArgs {
+                member: Some(2),
+                ..
+            })
+        ));
+
+        let retry = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "bark-retry",
+            "--action-id",
+            &"11".repeat(32),
+            "--acknowledge-bark-side-effects",
+        ])
+        .expect("Bark retry command parses");
+        let Some(CliCommand::Federation(retry)) = retry.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            retry.command,
+            FederationCommand::BarkRetry(FederationBarkRetryArgs {
+                acknowledge_bark_side_effects: true,
                 ..
             })
         ));

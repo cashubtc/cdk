@@ -374,6 +374,37 @@ pub(crate) async fn advance_federated_bark_mint_quote(
     }
 }
 
+/// Retry invoice preparation for one exact accepted receive intent.
+pub(crate) async fn advance_federated_bark_receive_intent(
+    state: &MintState,
+    action_id: FederationBarkActionId,
+) -> Result<usize, cdk::Error> {
+    let _guard = state.federation.bark_incoming_lock().lock().await;
+    let runtime = state
+        .federation
+        .bark_runtime()
+        .ok_or_else(bark_unavailable)?;
+    let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
+        .await
+        .map_err(|_| bark_unavailable())?;
+    let action = projection
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+        .ok_or(cdk::Error::Internal)?;
+    let FederationBarkOperation::ReceiveIntent(intent) = &action.operation else {
+        return Ok(0);
+    };
+    prepare_and_accept_invoice(
+        state,
+        action.latest_operation_id,
+        action.latest_operation_index,
+        intent,
+    )
+    .await?;
+    Ok(1)
+}
+
 /// Derive the stable quote ID used to recover an exact federated Bark request.
 ///
 /// NUT-19's quote public key is required only for this backend. Besides locking
