@@ -76,6 +76,11 @@ pub(crate) async fn advance_federated_bark_mint_quote(
 
     match action.phase {
         FederationBarkSemanticPhase::ReceivePrepared => {
+            let receive_actor = state
+                .mint
+                .federation_bark_receive_actor(action.origin_operation_id)
+                .await?;
+            let is_receive_actor = receive_actor == federation.member_id();
             let next_epoch = projection
                 .observations
                 .iter()
@@ -93,7 +98,13 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                 .checked_add(1)
                 .ok_or(cdk::Error::Internal)?;
             let Some((observation, transition)) = runtime
-                .observe_receive_htlcs(&intent, prepared_record.operation_id, prepared, next_epoch)
+                .observe_receive_htlcs(
+                    &intent,
+                    prepared_record.operation_id,
+                    prepared,
+                    next_epoch,
+                    is_receive_actor,
+                )
                 .await
                 .map_err(|_| bark_unavailable())?
             else {
@@ -141,13 +152,14 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                     _ => None,
                 })
                 .collect::<BTreeSet<_>>();
-            if matching_observers.len()
-                >= usize::from(
-                    federation
-                        .public_config()
-                        .threshold_params
-                        .signature_threshold,
-                )
+            if is_receive_actor
+                && matching_observers.len()
+                    >= usize::from(
+                        federation
+                            .public_config()
+                            .threshold_params
+                            .signature_threshold,
+                    )
             {
                 let envelope = federation.operation_envelope(FederationOperation::Bark(
                     FederationBarkOperation::ActionTransition(transition),

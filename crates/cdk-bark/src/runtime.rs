@@ -2257,12 +2257,15 @@ impl FederatedBarkRuntime {
     /// Poll and validate exact incoming HTLC evidence. The returned member
     /// observation is safe to order immediately; the transition candidate must
     /// wait until the federation has accepted the required matching evidence.
+    /// Only the current receive-worker lease holder may prepare an accepted
+    /// payment; every member can validate an already-ready package read-only.
     pub async fn observe_receive_htlcs(
         &self,
         intent: &FederationBarkReceiveIntent,
         prepared_operation_id: FederationOperationId,
         prepared: &FederationBarkReceivePrepared,
         observation_epoch: u64,
+        prepare_if_accepted: bool,
     ) -> Result<
         Option<(
             FederationBarkMemberObservation,
@@ -2279,20 +2282,23 @@ impl FederatedBarkRuntime {
             .poll_lightning_receive(&receive)
             .await
             .map_err(|_| Error::ReceiveObservationFailed)?;
-        match observation.status {
+        let evidence = match observation.status {
             FederationLightningReceiveStatus::AwaitingPayment
             | FederationLightningReceiveStatus::Canceled => return Ok(None),
             FederationLightningReceiveStatus::Settled => {
                 return Err(Error::ReceiveClaimRecoveryRequired)
             }
-            FederationLightningReceiveStatus::Accepted
-            | FederationLightningReceiveStatus::HtlcsReady => {}
-        }
-        let evidence = self
-            .wallet
-            .prepare_lightning_receive_htlcs(&receive)
-            .await
-            .map_err(|_| Error::ReceiveObservationFailed)?;
+            FederationLightningReceiveStatus::Accepted if prepare_if_accepted => self
+                .wallet
+                .prepare_lightning_receive_htlcs(&receive)
+                .await
+                .map_err(|_| Error::ReceiveObservationFailed)?,
+            FederationLightningReceiveStatus::Accepted => return Ok(None),
+            FederationLightningReceiveStatus::HtlcsReady => self
+                .wallet
+                .receive_htlc_evidence_from_observation(&receive, observation)
+                .map_err(|_| Error::ReceiveObservationFailed)?,
+        };
         let result_hash = receive_htlc_evidence_hash(&evidence)?;
         let member_observation = FederationBarkMemberObservation {
             version: FEDERATION_BARK_OPERATION_VERSION,

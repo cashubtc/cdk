@@ -110,8 +110,8 @@ const FEDERATION_BLS_PROOF_BATCH_MIN: usize = 8;
 /// computes the same single actor. A federation whose frontier never
 /// advances has no concurrent work competing for the same payment anyway;
 /// the first later operation expires the lease and lets the next member
-/// safely continue with the already-durable caller-supplied idempotency key.
-pub(crate) const FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS: u64 = 8;
+/// safely continue with the already-durable external identity and recovery state.
+pub(crate) const FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS: u64 = 8;
 
 pub use self::transaction_policy::{
     FederationCpfpPolicy, FederationFeeRateSource, FederationOnchainTransactionPolicy,

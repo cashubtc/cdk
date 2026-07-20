@@ -3343,7 +3343,24 @@ Progress checkpoint:
   invoice and reported the quote `UNPAID`; all three members returned the same
   quote ID, amount, unit, expiry, and state. The CLI then timed out after the
   configured one-second unpaid wait, as expected. No local Ark server was
-  launched and the public server was not modified.
+  launched and the public server was not modified;
+- diagnosed the first paid Nocean receive at the accepted-state boundary: the
+  public Ark server had produced one exact HTLC-receive VTXO, but CDK made all
+  members call the mutating prepare RPC before accepting observations. Only
+  the member whose prepare call succeeded retained local evidence, so the
+  four-member observation threshold could never be reached;
+- split receive advancement into one replaceable lease actor and read-only
+  verification by every member. Only that actor may turn Ark `Accepted` into
+  `HtlcsReady`; once `CheckLightningReceive` returns the exact ready VTXOs,
+  every member validates their signature, policy, payment hash, destination,
+  amount, fee, expiry, and canonical ordering without importing them first.
+  The existing consensus-frontier lease rotation now applies to both outgoing
+  payment workers and incoming prepare workers, while exact accepted VTXOs are
+  still imported only after the threshold-backed transition is accepted;
+- added a Bark regression proving server-returned HTLC evidence is derived
+  without changing the wallet database or invoking local custody keys. The
+  targeted Bark test, all nine `cdk-bark` tests, the existing CDK actor-lease
+  test, and the exact production `cdk-mintd` feature check passed.
 
 Compatibility verification executed on 2026-07-20:
 
@@ -3354,12 +3371,19 @@ cargo test -p bark-wallet federation --offline --lib
   passed: affected packages compile; 3 focused federation tests passed
 
 cdk:
+cargo test -p cdk --features federation --lib \
+  accepted_melt_author_is_the_only_payment_actor
 cargo check -p cdk-bark --features federation-bark --all-targets
 cargo test -p cdk-bark --features federation-bark --lib
 cargo check -p cdk-mintd --no-default-features \
   --features fakewallet,sqlite,info-page,federation-bark,prometheus
 cargo check -p cdk-axum --features federation,federation-bark --all-targets
   passed: 9 cdk-bark tests and all named production feature checks
+
+bark receive evidence regression:
+cargo test -p bark-wallet \
+  receive_htlc_poll_evidence_is_validated_without_wallet_mutation --lib
+  passed: exact ready VTXOs validated with no wallet mutation or local key use
 
 locked federation operator tool:
 cargo check --manifest-path scripts/fed-cdk-tui/Cargo.toml \

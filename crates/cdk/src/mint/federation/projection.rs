@@ -513,7 +513,7 @@ impl Mint {
                     .envelope
                     .verify_authorization(config.public_config())?;
                 let expected_actor = self
-                    .federation_melt_payment_lease_actor(&config, author, predecessor.index)
+                    .federation_external_action_lease_actor(&config, author, predecessor.index)
                     .await?;
                 let expected_signers = config
                     .public_config()

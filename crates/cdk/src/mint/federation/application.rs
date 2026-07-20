@@ -107,18 +107,18 @@ impl Mint {
         })
     }
 
-    /// Compute the current payment-attempt lease actor for an accepted melt.
+    /// Compute the current external-action lease actor.
     ///
     /// The accepted envelope author holds the first lease epoch. Authority
     /// then rotates deterministically through the roster every
-    /// [`FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS`] accepted journal items,
+    /// [`FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS`] accepted journal items,
     /// so an offline or Byzantine author cannot veto the payment forever.
     /// The lease is derived only from consensus-ordered state (the melt
     /// operation's journal index and the roster), so every member with the
     /// same journal frontier computes the same single actor, and takeover is
-    /// safe because the caller-supplied idempotency key is durable before any
-    /// external I/O and contract-honoring backends deduplicate by it.
-    pub(super) async fn federation_melt_payment_lease_actor(
+    /// safe because the operation's external identity and recovery state are
+    /// durable before any side effect.
+    pub(super) async fn federation_external_action_lease_actor(
         &self,
         config: &FederationRuntimeConfig,
         author: MemberId,
@@ -135,7 +135,7 @@ impl Mint {
             .await?
             .map_or(0, |tip| tip.index.saturating_add(1));
         let lease_epoch = journal_frontier.saturating_sub(operation_index.saturating_add(1))
-            / FEDERATION_MELT_PAYMENT_ACTOR_LEASE_ITEMS;
+            / FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS;
         let epoch_steps = usize::try_from(lease_epoch % members.len() as u64).unwrap_or_default();
         let actor_position = (author_position + epoch_steps) % members.len();
         Ok(members[actor_position])
@@ -163,7 +163,38 @@ impl Mint {
         let author = entry
             .envelope
             .verify_authorization(config.public_config())?;
-        self.federation_melt_payment_lease_actor(&config, author, entry.index)
+        self.federation_external_action_lease_actor(&config, author, entry.index)
+            .await
+    }
+
+    /// Return the replaceable receive-worker actor for one applied Bark receive intent.
+    pub async fn federation_bark_receive_actor(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Result<MemberId, Error> {
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        let entry = self
+            .localstore
+            .get_federation_journal_entry_by_operation_id(operation_id)
+            .await?
+            .ok_or(Error::Internal)?;
+        if entry.status() != FederationOperationStatus::Applied
+            || !matches!(
+                entry.envelope.operation,
+                FederationOperation::Bark(
+                    cdk_common::federation::FederationBarkOperation::ReceiveIntent(_)
+                )
+            )
+        {
+            return Err(Error::Internal);
+        }
+        let author = entry
+            .envelope
+            .verify_authorization(config.public_config())?;
+        self.federation_external_action_lease_actor(&config, author, entry.index)
             .await
     }
 
@@ -593,7 +624,7 @@ impl Mint {
             .envelope
             .verify_authorization(config.public_config())?;
         let lease_actor = self
-            .federation_melt_payment_lease_actor(&config, author, entry.index)
+            .federation_external_action_lease_actor(&config, author, entry.index)
             .await?;
         let is_payment_actor = lease_actor == config.member_id();
         let _active_payment = if is_payment_actor {
