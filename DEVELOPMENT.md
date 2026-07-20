@@ -127,8 +127,10 @@ cargo run --bin cdk-mintd -- config init --file crates/cdk-mintd/example.config.
 cargo run --bin cdk-mintd
 ```
 
-On later edits, stop the daemon and use `config apply --file ...`, then restart.
-To stage through a running daemon instead, explicitly add `--rpc <endpoint>`.
+On later edits, use `config apply --file ...`, then restart. Direct apply works
+while the daemon is running because direct and RPC mutations share the same
+database-scoped configuration lock. Use `--rpc <endpoint>` only to select the
+RPC transport explicitly.
 See the
 [`cdk-mintd` configuration guide](crates/cdk-mintd/README.md#configuration) for
 the full workflow.

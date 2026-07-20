@@ -37,6 +37,12 @@ pub enum ConfigurationError {
         /// Human-readable precondition failure.
         message: String,
     },
+    /// Another configuration mutation or startup activation owns the lock.
+    #[error("Configuration mutation busy: {message}")]
+    Busy {
+        /// Human-readable contention and retry guidance.
+        message: String,
+    },
     /// The configuration operation failed because of an internal error.
     #[error("Configuration operation failed: {message}")]
     Internal {
@@ -45,6 +51,11 @@ pub enum ConfigurationError {
     },
 }
 
+/// Held access to the database-scoped configuration mutation boundary.
+///
+/// The lock remains held until this guard is dropped.
+pub trait ConfigurationMutationGuard: Send {}
+
 /// Configuration manager used by management transports.
 ///
 /// The management RPC server deliberately deals only in TOML documents and
@@ -52,6 +63,11 @@ pub enum ConfigurationError {
 /// restart handling remain the responsibility of the mint daemon.
 #[tonic::async_trait]
 pub trait ConfigurationManager: Send + Sync {
+    /// Acquires the database-scoped configuration mutation lock.
+    async fn acquire_configuration_mutation(
+        &self,
+    ) -> Result<Box<dyn ConfigurationMutationGuard>, ConfigurationError>;
+
     /// Returns the redacted active and pending configuration.
     async fn get_configuration(&self) -> Result<ConfigurationSnapshot, ConfigurationError>;
 

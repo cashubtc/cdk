@@ -35,9 +35,9 @@ cdk-mintd --work-dir ~/.cdk-mintd config init --file mint.toml
 cdk-mintd --work-dir ~/.cdk-mintd
 ```
 
-Later configuration-file edits require stopping mintd, running an explicit
-`config apply`, and restarting; normal startup does not reload the file. Add
-`--rpc <endpoint>` to stage through a running daemon instead.
+Later configuration-file edits require an explicit `config apply` and restart;
+normal startup does not reload the file. Direct apply works beside an
+running daemon; use `--rpc <endpoint>` to select RPC explicitly.
 
 Check Prometheus and Grafana:
 

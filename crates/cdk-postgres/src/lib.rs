@@ -213,7 +213,8 @@ impl From<&str> for PgConfig {
 
 // This namespace participates in cross-version mutual exclusion. Changing it
 // would let daemons built from different CDK versions acquire different locks.
-const MINTD_ADVISORY_LOCK_NAMESPACE: &[u8] = b"cdk-mintd/database-access-lock/v1";
+const MINTD_DAEMON_LOCK_NAMESPACE: &[u8] = b"cdk-mintd/database-access-lock/v1";
+const MINTD_CONFIGURATION_LOCK_NAMESPACE: &[u8] = b"cdk-mintd/configuration-mutation-lock/v1";
 const FNV_1A_64_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_1A_64_PRIME: u64 = 0x00000100000001b3;
 
@@ -347,6 +348,23 @@ impl PgAdvisoryLock {
     /// otherwise PostgreSQL's current schema is used. The PostgreSQL endpoint must
     /// preserve session affinity; transaction-pooled proxies are not supported.
     pub async fn try_acquire(config: PgConfig) -> Result<Self, PgAdvisoryLockError> {
+        Self::try_acquire_with_namespace(config, MINTD_DAEMON_LOCK_NAMESPACE).await
+    }
+
+    /// Acquires mintd's short-lived configuration-mutation advisory lock.
+    ///
+    /// This lock is independent from the daemon-instance lock and serializes
+    /// startup activation with direct configuration commands.
+    pub async fn try_acquire_configuration_mutation(
+        config: PgConfig,
+    ) -> Result<Self, PgAdvisoryLockError> {
+        Self::try_acquire_with_namespace(config, MINTD_CONFIGURATION_LOCK_NAMESPACE).await
+    }
+
+    async fn try_acquire_with_namespace(
+        config: PgConfig,
+        namespace: &[u8],
+    ) -> Result<Self, PgAdvisoryLockError> {
         let configured_schema = config.schema.clone();
         let session = open_dedicated_lock_session(config).await?;
         let identity = session
@@ -358,7 +376,7 @@ impl PgAdvisoryLock {
         let schema = configured_schema
             .or(current_schema)
             .ok_or(PgAdvisoryLockError::MissingSchema)?;
-        let key = mintd_advisory_lock_key(&database, &schema);
+        let key = mintd_advisory_lock_key(namespace, &database, &schema);
         let acquired: bool = session
             .client()?
             .query_one("SELECT pg_try_advisory_lock($1::bigint)", &[&key])
@@ -425,9 +443,9 @@ async fn open_dedicated_lock_session(
     })
 }
 
-fn mintd_advisory_lock_key(database: &str, schema: &str) -> i64 {
+fn mintd_advisory_lock_key(namespace: &[u8], database: &str, schema: &str) -> i64 {
     let mut hash = FNV_1A_64_OFFSET_BASIS;
-    for byte in MINTD_ADVISORY_LOCK_NAMESPACE
+    for byte in namespace
         .iter()
         .chain([0].iter())
         .chain(database.as_bytes())
@@ -694,12 +712,25 @@ mod test {
 
     #[test]
     fn mintd_advisory_lock_key_is_stable_and_scoped() {
-        let key = mintd_advisory_lock_key("cdk_mint", "public");
+        let key = mintd_advisory_lock_key(MINTD_DAEMON_LOCK_NAMESPACE, "cdk_mint", "public");
 
         assert_eq!(key, 5_922_106_403_771_514_837);
-        assert_eq!(key, mintd_advisory_lock_key("cdk_mint", "public"));
-        assert_ne!(key, mintd_advisory_lock_key("other_mint", "public"));
-        assert_ne!(key, mintd_advisory_lock_key("cdk_mint", "tenant"));
+        assert_eq!(
+            key,
+            mintd_advisory_lock_key(MINTD_DAEMON_LOCK_NAMESPACE, "cdk_mint", "public")
+        );
+        assert_ne!(
+            key,
+            mintd_advisory_lock_key(MINTD_DAEMON_LOCK_NAMESPACE, "other_mint", "public")
+        );
+        assert_ne!(
+            key,
+            mintd_advisory_lock_key(MINTD_DAEMON_LOCK_NAMESPACE, "cdk_mint", "tenant")
+        );
+        assert_ne!(
+            key,
+            mintd_advisory_lock_key(MINTD_CONFIGURATION_LOCK_NAMESPACE, "cdk_mint", "public",)
+        );
     }
 
     #[tokio::test]
@@ -765,14 +796,22 @@ mod test {
         let first = PgAdvisoryLock::try_acquire(config.clone())
             .await
             .expect("first advisory lock should succeed");
+        let configuration = PgAdvisoryLock::try_acquire_configuration_mutation(config.clone())
+            .await
+            .expect("configuration lock must be independent from the daemon lock");
 
         let error = PgAdvisoryLock::try_acquire(config.clone())
             .await
             .expect_err("second advisory lock should contend");
         assert!(matches!(error, PgAdvisoryLockError::AlreadyHeld));
+        let error = PgAdvisoryLock::try_acquire_configuration_mutation(config.clone())
+            .await
+            .expect_err("second configuration lock should contend");
+        assert!(matches!(error, PgAdvisoryLockError::AlreadyHeld));
 
         drop(first);
         acquire_live_lock_eventually(config).await;
+        drop(configuration);
     }
 
     #[tokio::test]

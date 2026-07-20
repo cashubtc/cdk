@@ -129,7 +129,7 @@ async fn start_cln_mint(
             println!("CLN mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_with_shutdown(
+        match cdk_mintd::run_mintd_for_integration_tests_with_shutdown(
             &temp_dir,
             &settings,
             shutdown_future,
@@ -199,7 +199,7 @@ async fn start_lnd_mint(
             println!("LND mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_with_shutdown(
+        match cdk_mintd::run_mintd_for_integration_tests_with_shutdown(
             &lnd_work_dir,
             &settings,
             shutdown_future,
@@ -278,7 +278,7 @@ async fn start_ldk_mint(
             println!("LDK mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_with_shutdown(
+        match cdk_mintd::run_mintd_for_integration_tests_with_shutdown(
             &ldk_work_dir,
             &settings,
             shutdown_future,
@@ -594,7 +594,7 @@ async fn start_onchain_mint(
             println!("Onchain mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_with_shutdown(
+        match cdk_mintd::run_mintd_for_integration_tests_with_shutdown(
             &work_dir,
             &settings,
             shutdown_future,

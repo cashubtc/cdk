@@ -22,12 +22,13 @@ use tonic::{Request, Response, Status};
 use crate::cdk_mint_server::{CdkMint, CdkMintServer};
 use crate::{
     ApplyConfigurationRequest, ApplyConfigurationResponse, ConfigurationError,
-    ConfigurationManager, ConfigurationSnapshot, ContactInfo, DiscardPendingConfigurationRequest,
-    GetConfigurationRequest, GetConfigurationResponse, GetInfoRequest, GetInfoResponse,
-    GetQuoteTtlRequest, GetQuoteTtlResponse, RotateNextKeysetRequest, RotateNextKeysetResponse,
-    UpdateContactRequest, UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest,
-    UpdateNameRequest, UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request,
-    UpdateQuoteTtlRequest, UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
+    ConfigurationManager, ConfigurationMutationGuard, ConfigurationSnapshot, ContactInfo,
+    DiscardPendingConfigurationRequest, GetConfigurationRequest, GetConfigurationResponse,
+    GetInfoRequest, GetInfoResponse, GetQuoteTtlRequest, GetQuoteTtlResponse,
+    RotateNextKeysetRequest, RotateNextKeysetResponse, UpdateContactRequest,
+    UpdateDescriptionRequest, UpdateIconUrlRequest, UpdateMotdRequest, UpdateNameRequest,
+    UpdateNut04QuoteRequest, UpdateNut04Request, UpdateNut05Request, UpdateQuoteTtlRequest,
+    UpdateResponse, UpdateTosUrlRequest, UpdateUrlRequest,
 };
 
 /// Error
@@ -65,6 +66,7 @@ impl From<ConfigurationError> for Status {
             ConfigurationError::FailedPrecondition { message } => {
                 Self::failed_precondition(message)
             }
+            ConfigurationError::Busy { message } => Self::aborted(message),
             ConfigurationError::Internal { message } => Self::internal(message),
         }
     }
@@ -284,7 +286,14 @@ impl MintRPCServer {
         Ok(())
     }
 
-    async fn require_no_pending_configuration(&self) -> Result<(), Status> {
+    async fn begin_immediate_configuration_mutation(
+        &self,
+    ) -> Result<Box<dyn ConfigurationMutationGuard>, Status> {
+        let mutation = self
+            .configuration_manager
+            .acquire_configuration_mutation()
+            .await
+            .map_err(Status::from)?;
         let snapshot = self
             .configuration_manager
             .get_configuration()
@@ -296,7 +305,7 @@ impl MintRPCServer {
             ));
         }
 
-        Ok(())
+        Ok(mutation)
     }
 }
 
@@ -387,6 +396,11 @@ impl CdkMint for MintRPCServer {
         request: Request<ApplyConfigurationRequest>,
     ) -> Result<Response<ApplyConfigurationResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
+        let _database_configuration = self
+            .configuration_manager
+            .acquire_configuration_mutation()
+            .await
+            .map_err(Status::from)?;
         let request = request.into_inner();
         let outcome = self
             .configuration_manager
@@ -406,6 +420,11 @@ impl CdkMint for MintRPCServer {
         _request: Request<DiscardPendingConfigurationRequest>,
     ) -> Result<Response<GetConfigurationResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
+        let _database_configuration = self
+            .configuration_manager
+            .acquire_configuration_mutation()
+            .await
+            .map_err(Status::from)?;
         let snapshot = self
             .configuration_manager
             .discard_pending_configuration()
@@ -421,7 +440,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateMotdRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let motd = request.into_inner().motd;
         let mut info = self
             .mint
@@ -444,7 +463,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateDescriptionRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let description = request.into_inner().description;
         let mut info = self
             .mint
@@ -467,7 +486,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateDescriptionRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let description = request.into_inner().description;
         let mut info = self
             .mint
@@ -490,7 +509,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateNameRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let name = request.into_inner().name;
         let mut info = self
             .mint
@@ -513,7 +532,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateIconUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let icon_url = request.into_inner().icon_url;
 
         let mut info = self
@@ -537,7 +556,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateTosUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let tos_url = request.into_inner().tos_url;
 
         let mut info = self
@@ -561,7 +580,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let url = request.into_inner().url;
         let mut info = self
             .mint
@@ -586,7 +605,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let url = request.into_inner().url;
         let mut info = self
             .mint
@@ -615,7 +634,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateContactRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let request_inner = request.into_inner();
         let mut info = self
             .mint
@@ -642,7 +661,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateContactRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let request_inner = request.into_inner();
         let mut info = self
             .mint
@@ -669,7 +688,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateNut04Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let mut info = self
             .mint
             .mint_info()
@@ -748,7 +767,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateNut05Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let mut info = self
             .mint
             .mint_info()
@@ -825,7 +844,7 @@ impl CdkMint for MintRPCServer {
         request: Request<UpdateQuoteTtlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
         let _configuration = self.configuration_lock.lock().await;
-        self.require_no_pending_configuration().await?;
+        let _database_configuration = self.begin_immediate_configuration_mutation().await?;
         let current_ttl = self
             .mint
             .quote_ttl()
@@ -1019,6 +1038,7 @@ impl CdkMint for MintRPCServer {
 #[cfg(test)]
 mod tests {
     use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use bip39::Mnemonic;
@@ -1033,15 +1053,22 @@ mod tests {
     use crate::cdk_mint_server::CdkMint;
     use crate::{
         ApplyConfigurationOutcome, ApplyConfigurationRequest, ConfigurationError,
-        ConfigurationManager, ConfigurationSnapshot, DiscardPendingConfigurationRequest,
-        GetConfigurationRequest, GetInfoRequest, UpdateTosUrlRequest,
+        ConfigurationManager, ConfigurationMutationGuard, ConfigurationSnapshot,
+        DiscardPendingConfigurationRequest, GetConfigurationRequest, GetInfoRequest,
+        UpdateTosUrlRequest,
     };
+
+    #[derive(Debug)]
+    struct TestConfigurationMutationGuard;
+
+    impl ConfigurationMutationGuard for TestConfigurationMutationGuard {}
 
     #[derive(Debug)]
     struct TestConfigurationManager {
         snapshot: Mutex<ConfigurationSnapshot>,
         apply_outcome: ApplyConfigurationOutcome,
         last_apply: Mutex<Option<(String, bool)>>,
+        mutation_acquisitions: AtomicUsize,
     }
 
     impl Default for TestConfigurationManager {
@@ -1057,12 +1084,20 @@ mod tests {
                     changed_fields: vec!["ln".to_string()],
                 },
                 last_apply: Mutex::new(None),
+                mutation_acquisitions: AtomicUsize::new(0),
             }
         }
     }
 
     #[tonic::async_trait]
     impl ConfigurationManager for TestConfigurationManager {
+        async fn acquire_configuration_mutation(
+            &self,
+        ) -> Result<Box<dyn ConfigurationMutationGuard>, ConfigurationError> {
+            self.mutation_acquisitions.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(TestConfigurationMutationGuard))
+        }
+
         async fn get_configuration(&self) -> Result<ConfigurationSnapshot, ConfigurationError> {
             Ok(self.snapshot.lock().await.clone())
         }
@@ -1221,6 +1256,7 @@ mod tests {
         assert_eq!(snapshot.active_toml, "format_version = 1\n");
         assert!(snapshot.pending_toml.is_some());
         assert!(snapshot.restart_required);
+        assert_eq!(manager.mutation_acquisitions.load(Ordering::SeqCst), 0);
 
         let document = "format_version = 1\nname = \"new\"\n".to_string();
         let outcome = server
@@ -1234,6 +1270,7 @@ mod tests {
         assert!(outcome.restart_required);
         assert_eq!(outcome.changed_fields, vec!["ln"]);
         assert_eq!(*manager.last_apply.lock().await, Some((document, true)));
+        assert_eq!(manager.mutation_acquisitions.load(Ordering::SeqCst), 1);
 
         let snapshot = server
             .discard_pending_configuration(Request::new(DiscardPendingConfigurationRequest {}))
@@ -1242,6 +1279,7 @@ mod tests {
             .into_inner();
         assert!(snapshot.pending_toml.is_none());
         assert!(!snapshot.restart_required);
+        assert_eq!(manager.mutation_acquisitions.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -1252,12 +1290,16 @@ mod tests {
         let precondition = Status::from(ConfigurationError::FailedPrecondition {
             message: "not initialized".to_string(),
         });
+        let busy = Status::from(ConfigurationError::Busy {
+            message: "retry".to_string(),
+        });
         let internal = Status::from(ConfigurationError::Internal {
             message: "database unavailable".to_string(),
         });
 
         assert_eq!(invalid.code(), tonic::Code::InvalidArgument);
         assert_eq!(precondition.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(busy.code(), tonic::Code::Aborted);
         assert_eq!(internal.code(), tonic::Code::Internal);
     }
 
@@ -1318,7 +1360,7 @@ mod tests {
             snapshot.pending_toml = Some("name = \"pending\"\n".to_string());
             snapshot.restart_required = true;
         }
-        let server = create_test_rpc_server_with_manager(manager).await;
+        let server = create_test_rpc_server_with_manager(manager.clone()).await;
         let original_name = server.mint.mint_info().await.unwrap().name;
 
         let error = server
@@ -1330,5 +1372,6 @@ mod tests {
 
         assert_eq!(error.code(), tonic::Code::FailedPrecondition);
         assert_eq!(server.mint.mint_info().await.unwrap().name, original_name);
+        assert_eq!(manager.mutation_acquisitions.load(Ordering::SeqCst), 1);
     }
 }

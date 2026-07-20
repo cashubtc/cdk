@@ -71,6 +71,24 @@ where
         Ok(Self { pool })
     }
 
+    /// Opens an already-initialized mint database without running migrations.
+    ///
+    /// This is intended for short-lived concurrent clients while the daemon is
+    /// already running. Daemon startup remains responsible for migrations.
+    pub async fn open_existing<X>(db: X) -> Result<Self, Error>
+    where
+        X: Into<RM::Config>,
+    {
+        let pool = Pool::new(db.into());
+        drop(
+            pool.get()
+                .await
+                .map_err(|error| Error::Database(Box::new(error)))?,
+        );
+
+        Ok(Self { pool })
+    }
+
     /// Migrate
     async fn migrate(conn: PooledResource<RM>) -> Result<(), Error> {
         let tx = ConnectionWithTransaction::new(conn).await?;
