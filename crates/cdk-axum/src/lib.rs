@@ -2940,7 +2940,15 @@ async fn create_federation_runtime_state_with_wallet(
     #[cfg(feature = "federation-bark")]
     let bark = match local_bark_config {
         Some(local) => {
-            Some(cdk_bark::FederatedBarkRuntime::open(true, config.public_config(), local).await?)
+            Some(
+                cdk_bark::FederatedBarkRuntime::open(
+                    true,
+                    config.public_config(),
+                    config.member_id(),
+                    local,
+                )
+                .await?,
+            )
         }
         None => None,
     };

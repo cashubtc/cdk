@@ -48,6 +48,10 @@ impl FederationNodeRuntime {
                 .await?;
         }
         match &envelope.operation {
+            cdk::federation::FederationOperation::Bark(operation) => {
+                mint.validate_federation_bark_operation_submission(operation)
+                    .await?;
+            }
             cdk::federation::FederationOperation::TransactionBroadcastIntent(intent) => {
                 mint.validate_federation_transaction_broadcast_intent_submission(intent)
                     .await?;

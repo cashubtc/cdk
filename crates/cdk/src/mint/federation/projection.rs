@@ -6,8 +6,10 @@ use std::str::FromStr;
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederatedKeyset, FederationBarkOperation, FederationBarkProjectionSnapshot,
-    FederationBarkReceiveIntent, FederationMaterializedStateKey, FederationMaterializedStateRow,
+    ark_server_commitment, FederatedKeyset, FederationBarkActionKind,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
+    FederationBarkReceiveIntent, FederationBarkSemanticPhase, FederationBarkVtxoState,
+    FederationMaterializedStateKey, FederationMaterializedStateRow,
     FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
     FederationPaymentObservationRecord,
 };
@@ -51,6 +53,140 @@ impl Mint {
             return Ok(None);
         };
         Ok(Some(intent))
+    }
+
+    /// Validate ordered-state Bark preconditions that cannot be checked from
+    /// one operation in isolation.
+    #[instrument(skip_all)]
+    pub async fn validate_federation_bark_operation_submission(
+        &self,
+        operation: &FederationBarkOperation,
+    ) -> Result<(), Error> {
+        operation.validate()?;
+        let config = self.effective_federation_config().await?.ok_or(Error::Internal)?;
+        let application = config
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.bark_application.as_ref())
+            .ok_or(Error::Internal)?;
+        let snapshot = self.federation_bark_projection_snapshot().await?;
+        let action = snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == operation.action_id());
+
+        match operation {
+            FederationBarkOperation::MemberObservation(observation) => {
+                let action = action.ok_or_else(|| bark_state_error("observation has no action"))?;
+                if action.quote.as_deref() != observation.quote.as_deref()
+                    || action.payment_hash != observation.payment_hash
+                    || observation.source_scope
+                        != ark_server_commitment(&application.ark_server_public_key)?
+                {
+                    return Err(bark_state_error(
+                        "observation differs from its action or Ark source",
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ReceiveHtlcsReady =>
+            {
+                let action = action.ok_or_else(|| bark_state_error("HTLC evidence has no action"))?;
+                if action.phase != FederationBarkSemanticPhase::ReceivePrepared {
+                    return Err(bark_state_error(
+                        "HTLC evidence does not follow receive preparation",
+                    ));
+                }
+                let intent = self
+                    .federation_bark_receive_intent(action.origin_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("receive intent is missing"))?;
+                let amount = transition
+                    .vtxo_transitions
+                    .iter()
+                    .try_fold(Amount::ZERO, |sum, mutation| {
+                        sum.checked_add(mutation.amount)
+                            .ok_or_else(|| bark_state_error("HTLC evidence amount overflow"))
+                    })?;
+                let fee = intent
+                    .gross_amount
+                    .checked_sub(amount)
+                    .ok_or_else(|| bark_state_error("HTLC evidence exceeds invoice amount"))?;
+                if amount < intent.minimum_net_amount || fee > intent.receive_fee {
+                    return Err(bark_state_error(
+                        "HTLC evidence does not cover the accepted Cashu liability",
+                    ));
+                }
+                let mut observers = BTreeSet::new();
+                for record in &snapshot.observations {
+                    let FederationBarkOperation::MemberObservation(observation) = &record.operation
+                    else {
+                        continue;
+                    };
+                    if observation.action_id == transition.action_id
+                        && observation.quote == transition.quote
+                        && observation.payment_hash == transition.payment_hash
+                        && observation.source_scope
+                            == ark_server_commitment(&application.ark_server_public_key)?
+                        && observation.status == FederationBarkObservationStatus::Accepted
+                        && observation.amount == amount
+                        && observation.fee == fee
+                        && observation.result_hash == transition.result_hash
+                    {
+                        observers.insert(observation.observer);
+                    }
+                }
+                if observers.len()
+                    < usize::from(config.public_config().threshold_params.signature_threshold)
+                {
+                    return Err(bark_state_error(
+                        "HTLC evidence has not reached the accepted member threshold",
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == FederationBarkActionKind::IncomingClaim =>
+            {
+                let action = action.ok_or_else(|| bark_state_error("claim plan has no action"))?;
+                if action.phase != FederationBarkSemanticPhase::ReceiveHtlcsReady
+                    || plan.signer_set.len() < usize::from(application.threshold)
+                    || plan
+                        .signer_set
+                        .iter()
+                        .any(|member| !config.public_config().members.contains_key(member))
+                {
+                    return Err(bark_state_error(
+                        "claim plan is not backed by ready HTLCs and an eligible signer set",
+                    ));
+                }
+                for input in &plan.inputs {
+                    let vtxo = snapshot
+                        .vtxos
+                        .iter()
+                        .find(|vtxo| vtxo.vtxo_id == input.vtxo_id)
+                        .ok_or_else(|| bark_state_error("claim plan input is unknown"))?;
+                    if vtxo.state != FederationBarkVtxoState::Observed
+                        || vtxo.amount != input.amount
+                        || vtxo.locator
+                            != self
+                                .federation_bark_receive_intent(action.origin_operation_id)
+                                .await?
+                                .ok_or_else(|| bark_state_error("receive intent is missing"))?
+                                .destination
+                    {
+                        return Err(bark_state_error(
+                            "claim plan input differs from accepted HTLC evidence",
+                        ));
+                    }
+                }
+            }
+            FederationBarkOperation::ReceiveIntent(_)
+            | FederationBarkOperation::ReceivePrepared(_)
+            | FederationBarkOperation::ActionPlan(_)
+            | FederationBarkOperation::ActionTransition(_) => {}
+        }
+        Ok(())
     }
 
     /// Build the deterministic federation materialized-state snapshot.
@@ -262,6 +398,10 @@ impl Mint {
 
         Ok(snapshot)
     }
+}
+
+fn bark_state_error(reason: &str) -> Error {
+    Error::Custom(format!("invalid federated Bark state: {reason}"))
 }
 
 async fn append_proof_state_rows(

@@ -657,6 +657,7 @@ async fn reserve_input<C>(
     connection: &C,
     entry: &FederationJournalEntry,
     action_id: cdk_common::federation::FederationBarkActionId,
+    kind: cdk_common::federation::FederationBarkActionKind,
     input: &cdk_common::federation::FederationBarkVtxoInput,
 ) -> Result<(), Error>
 where
@@ -665,7 +666,13 @@ where
     let previous = get_vtxo(connection, input.vtxo_id)
         .await?
         .ok_or_else(|| invalid_projection("Bark action plan references an unknown VTXO"))?;
-    if previous.state != FederationBarkVtxoState::Spendable
+    let expected_state = match kind {
+        cdk_common::federation::FederationBarkActionKind::IncomingClaim => {
+            FederationBarkVtxoState::Observed
+        }
+        _ => FederationBarkVtxoState::Spendable,
+    };
+    if previous.state != expected_state
         || previous.amount != input.amount
         || previous.reservation_action_id.is_some()
     {
@@ -778,9 +785,13 @@ where
             let allocation = get_allocation(connection, mutation.locator)
                 .await?
                 .ok_or_else(|| invalid_projection("Bark VTXO locator was not allocated"))?;
+            let materialized_amount = allocation
+                .materialized_amount
+                .checked_add(mutation.amount)
+                .ok_or_else(|| invalid_projection("Bark allocation amount overflow"))?;
             if allocation.action_id != transition.action_id
-                || allocation.amount != mutation.amount
-                || allocation.vtxo_id.is_some()
+                || materialized_amount > allocation.amount
+                || allocation.vtxo_ids.contains(&mutation.vtxo_id)
             {
                 return Err(invalid_projection(
                     "Bark VTXO does not match its derivation allocation",
@@ -799,8 +810,13 @@ where
                 latest_operation_index: entry.index,
             };
             insert_vtxo(connection, &vtxo).await?;
+            let mut vtxo_ids = allocation.vtxo_ids.clone();
+            vtxo_ids.push(mutation.vtxo_id);
+            vtxo_ids.sort();
             let updated_allocation = FederationBarkDerivationAllocationRecord {
-                vtxo_id: Some(mutation.vtxo_id),
+                vtxo_id: allocation.vtxo_id.or(Some(mutation.vtxo_id)),
+                vtxo_ids,
+                materialized_amount,
                 operation_id: entry.operation_id,
                 operation_index: entry.index,
                 ..allocation.clone()
@@ -875,6 +891,8 @@ where
             amount: intent.minimum_net_amount,
             artifact_hash: None,
             vtxo_id: None,
+            vtxo_ids: Vec::new(),
+            materialized_amount: cdk_common::Amount::ZERO,
             operation_id: entry.operation_id,
             operation_index: entry.index,
         },
@@ -962,7 +980,7 @@ where
     }
 
     for input in &plan.inputs {
-        reserve_input(connection, entry, plan.action_id, input).await?;
+        reserve_input(connection, entry, plan.action_id, plan.kind, input).await?;
     }
     for output in &plan.outputs {
         insert_allocation(
@@ -973,6 +991,8 @@ where
                 amount: output.amount,
                 artifact_hash: Some(output.artifact_hash),
                 vtxo_id: None,
+                vtxo_ids: Vec::new(),
+                materialized_amount: cdk_common::Amount::ZERO,
                 operation_id: entry.operation_id,
                 operation_index: entry.index,
             },

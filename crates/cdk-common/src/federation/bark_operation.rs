@@ -137,10 +137,68 @@ bark_hash_type!(
     FederationBarkDigest,
     "Domain-specific commitment to canonical Bark data."
 );
-bark_hash_type!(
-    FederationBarkVtxoId,
-    "Canonical identifier for one Bark virtual transaction output."
-);
+/// Canonical 36-byte Bark virtual transaction output identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FederationBarkVtxoId([u8; 36]);
+
+impl FederationBarkVtxoId {
+    /// Construct an exact non-zero Bark VTXO identifier.
+    pub fn from_bytes(bytes: [u8; 36]) -> Result<Self> {
+        if bytes == [0; 36] {
+            return Err(invalid_bark("FederationBarkVtxoId must be non-zero"));
+        }
+        Ok(Self(bytes))
+    }
+
+    /// Parse the canonical hexadecimal identifier.
+    pub fn from_hex(value: &str) -> Result<Self> {
+        let bytes = crate::util::hex::decode(value)?;
+        let bytes: [u8; 36] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+            invalid_bark(format!(
+                "FederationBarkVtxoId must contain 36 bytes, found {}",
+                bytes.len()
+            ))
+        })?;
+        Self::from_bytes(bytes)
+    }
+
+    /// Return exact Bark VTXO identifier bytes.
+    #[must_use]
+    pub const fn to_bytes(self) -> [u8; 36] {
+        self.0
+    }
+
+    /// Return lowercase hexadecimal form.
+    #[must_use]
+    pub fn to_hex(self) -> String {
+        crate::util::hex::encode(self.0)
+    }
+}
+
+impl fmt::Display for FederationBarkVtxoId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.to_hex())
+    }
+}
+
+impl Serialize for FederationBarkVtxoId {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_hex())
+    }
+}
+
+impl<'de> Deserialize<'de> for FederationBarkVtxoId {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_hex(&value).map_err(serde::de::Error::custom)
+    }
+}
 bark_hash_type!(
     FederationBarkExternalId,
     "Stable idempotency identifier for one external Bark or Ark request."
@@ -1311,6 +1369,15 @@ impl FederationBarkActionPlan {
             if output.amount == Amount::ZERO {
                 return Err(invalid_bark("Bark action output must be non-zero"));
             }
+            if !self
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.hash == output.artifact_hash)
+            {
+                return Err(invalid_bark(
+                    "Bark action output does not reference a canonical artifact",
+                ));
+            }
         }
         if self.inputs.iter().any(|input| input.amount == Amount::ZERO) {
             return Err(invalid_bark("Bark action input must be non-zero"));
@@ -1337,6 +1404,21 @@ impl FederationBarkActionPlan {
         } else if self.external_amount != Amount::ZERO {
             return Err(invalid_bark(
                 "only Lightning send may move value outside Bark outputs",
+            ));
+        }
+        if matches!(self.kind, FederationBarkActionKind::IncomingClaim)
+            && (self.outputs.len() != 1
+                || self.fee_amount != Amount::ZERO
+                || self.fee_bound != Amount::ZERO
+                || self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+                    .count()
+                    < self.inputs.len())
+        {
+            return Err(invalid_bark(
+                "incoming claim must bind every input, one output allocation, and zero claim fee",
             ));
         }
         let inputs = checked_sum(self.inputs.iter().map(|input| input.amount))?;
@@ -1399,6 +1481,46 @@ impl FederationBarkActionTransition {
                 return Err(invalid_bark("invalid Bark VTXO state transition"));
             }
         }
+        match self.phase {
+            FederationBarkSemanticPhase::ReceiveHtlcsReady
+                if self.vtxo_transitions.is_empty()
+                    || self.vtxo_transitions.iter().any(|transition| {
+                        transition.previous_state.is_some()
+                            || transition.new_state != FederationBarkVtxoState::Observed
+                    }) =>
+            {
+                return Err(invalid_bark(
+                    "HTLC-ready evidence must introduce observed, unclaimed VTXOs",
+                ));
+            }
+            FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                if self.vtxo_transitions.is_empty()
+                    || self.vtxo_transitions.iter().any(|transition| {
+                        transition.previous_state != Some(FederationBarkVtxoState::Reserved)
+                            || transition.new_state != FederationBarkVtxoState::PendingSpend
+                    }) =>
+            {
+                return Err(invalid_bark(
+                    "preimage disclosure must leave every claim input pending spend",
+                ));
+            }
+            FederationBarkSemanticPhase::ReceiveClaimed => {
+                let has_spent_input = self.vtxo_transitions.iter().any(|transition| {
+                    transition.previous_state == Some(FederationBarkVtxoState::PendingSpend)
+                        && transition.new_state == FederationBarkVtxoState::Spent
+                });
+                let has_spendable_output = self.vtxo_transitions.iter().any(|transition| {
+                    transition.previous_state.is_none()
+                        && transition.new_state == FederationBarkVtxoState::Spendable
+                });
+                if !has_spent_input || !has_spendable_output {
+                    return Err(invalid_bark(
+                        "claimed receive must spend pending HTLCs and create spendable outputs",
+                    ));
+                }
+            }
+            _ => {}
+        }
         Ok(())
     }
 }
@@ -1414,7 +1536,7 @@ fn valid_vtxo_state_transition(
     matches!(
         (previous, new),
         (None, Observed | Spendable)
-            | (Some(Observed), Spendable | Exiting)
+            | (Some(Observed), Reserved | Spendable | Exiting)
             | (Some(Reserved), PendingSpend | Spent | Spendable | Exiting)
             | (Some(PendingSpend), Spent | Spendable | Exiting)
             | (Some(Exiting), Exited)
@@ -1935,7 +2057,7 @@ mod tests {
     }
 
     fn vtxo(seed: u8) -> FederationBarkVtxoId {
-        FederationBarkVtxoId::from_bytes([seed; 32]).expect("non-zero VTXO")
+        FederationBarkVtxoId::from_bytes([seed; 36]).expect("non-zero VTXO")
     }
 
     fn external(seed: u8) -> FederationBarkExternalId {

@@ -717,6 +717,8 @@ impl Mint {
         operation: &FederationBarkOperation,
     ) -> Result<(), Error> {
         operation.validate()?;
+        self.validate_federation_bark_operation_submission(operation)
+            .await?;
         if let FederationBarkOperation::ReceiveIntent(intent) = operation {
             let runtime_config = self.federation_config().ok_or(Error::Internal)?;
             intent.validate_secret_acknowledgements(runtime_config.public_config())?;

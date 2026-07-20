@@ -115,6 +115,15 @@ pub enum Error {
     /// The accepted receive plan could not be materialized locally.
     #[error("federated Bark receive projection failed")]
     ReceiveProjectionFailed,
+    /// Independent incoming status evidence could not be validated.
+    #[error("federated Bark receive observation failed")]
+    ReceiveObservationFailed,
+    /// Exact incoming claim planning failed closed.
+    #[error("federated Bark receive claim plan is invalid")]
+    ReceiveClaimPlanInvalid,
+    /// An accepted incoming claim could not be executed or recovered.
+    #[error("federated Bark receive claim requires recovery")]
+    ReceiveClaimRecoveryRequired,
     /// The runtime has not caught up to the required accepted frontier.
     #[error("federated Bark runtime is not ready")]
     NotReady,

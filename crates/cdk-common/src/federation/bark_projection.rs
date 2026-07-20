@@ -10,6 +10,10 @@ use super::{
 };
 use crate::Amount;
 
+fn amount_is_zero(amount: &Amount) -> bool {
+    *amount == Amount::ZERO
+}
+
 /// Current action head reconstructed from accepted Bark operations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,7 +145,17 @@ pub struct FederationBarkDerivationAllocationRecord {
     /// Expected VTXO template or policy commitment.
     pub artifact_hash: Option<FederationBarkDigest>,
     /// VTXO eventually materialized at the locator.
+    ///
+    /// Retained for compatibility with the original one-VTXO projection.
+    /// New code uses `vtxo_ids` because one Ark package may split one logical
+    /// output allocation into several VTXOs controlled by the same locator.
     pub vtxo_id: Option<FederationBarkVtxoId>,
+    /// Every VTXO materialized under this locator, sorted by identifier.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vtxo_ids: Vec<FederationBarkVtxoId>,
+    /// Aggregate value materialized under this allocation.
+    #[serde(default, skip_serializing_if = "amount_is_zero")]
+    pub materialized_amount: Amount,
     /// Operation that allocated or last materialized this locator.
     pub operation_id: FederationOperationId,
     /// Consensus index of that operation.

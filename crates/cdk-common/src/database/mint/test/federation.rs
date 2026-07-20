@@ -1949,7 +1949,7 @@ fn bark_action(seed: u8) -> FederationBarkActionId {
 }
 
 fn bark_vtxo(seed: u8) -> FederationBarkVtxoId {
-    FederationBarkVtxoId::from_bytes([seed; 32]).expect("non-zero Bark VTXO")
+    FederationBarkVtxoId::from_bytes([seed; 36]).expect("non-zero Bark VTXO")
 }
 
 fn bark_external(seed: u8) -> FederationBarkExternalId {
