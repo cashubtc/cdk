@@ -27,6 +27,69 @@ use super::peer_client::FederationRestPeerClient;
 const FEDERATION_BARK_RECEIVE_INTENT_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
 const FEDERATION_BARK_QUOTE_ID_DOMAIN: &[u8] = b"cdk-federation-bark-quote-id-v1";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FederatedBarkReceiveObservationStep<'a> {
+    PollArk,
+    WaitForQuorum,
+    AdvanceFromCache(&'a FederationBarkMemberObservation),
+}
+
+fn matching_receive_observers(
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    expected: &FederationBarkMemberObservation,
+) -> BTreeSet<cdk::federation::MemberId> {
+    projection
+        .observations
+        .iter()
+        .filter_map(|record| match &record.operation {
+            FederationBarkOperation::MemberObservation(existing)
+                if existing.action_id == expected.action_id
+                    && existing.status == FederationBarkObservationStatus::Accepted
+                    && existing.payment_hash == expected.payment_hash
+                    && existing.source_scope == expected.source_scope
+                    && existing.amount == expected.amount
+                    && existing.fee == expected.fee
+                    && existing.result_hash == expected.result_hash =>
+            {
+                Some(existing.observer)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn receive_observation_step<'a>(
+    projection: &'a cdk::federation::FederationBarkProjectionSnapshot,
+    action_id: FederationBarkActionId,
+    member_id: cdk::federation::MemberId,
+    is_receive_actor: bool,
+    threshold: usize,
+) -> FederatedBarkReceiveObservationStep<'a> {
+    let accepted = projection
+        .observations
+        .iter()
+        .filter_map(|record| match &record.operation {
+            FederationBarkOperation::MemberObservation(observation)
+                if observation.action_id == action_id
+                    && observation.observer == member_id
+                    && observation.status == FederationBarkObservationStatus::Accepted =>
+            {
+                Some((record.operation_index, observation))
+            }
+            _ => None,
+        })
+        .min_by_key(|(operation_index, _)| *operation_index)
+        .map(|(_, observation)| observation);
+    let Some(accepted) = accepted else {
+        return FederatedBarkReceiveObservationStep::PollArk;
+    };
+    if is_receive_actor && matching_receive_observers(projection, accepted).len() >= threshold {
+        FederatedBarkReceiveObservationStep::AdvanceFromCache(accepted)
+    } else {
+        FederatedBarkReceiveObservationStep::WaitForQuorum
+    }
+}
+
 /// Poll and advance one already-created federated Bark quote. Mailbox events
 /// call the same function; they never supply settlement truth themselves.
 pub(crate) async fn advance_federated_bark_mint_quote(
@@ -81,6 +144,41 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                 .federation_bark_receive_actor(action.origin_operation_id)
                 .await?;
             let is_receive_actor = receive_actor == federation.member_id();
+            let threshold = usize::from(
+                federation
+                    .public_config()
+                    .threshold_params
+                    .signature_threshold,
+            );
+            match receive_observation_step(
+                &projection,
+                action.action_id,
+                federation.member_id(),
+                is_receive_actor,
+                threshold,
+            ) {
+                FederatedBarkReceiveObservationStep::WaitForQuorum => return Ok(0),
+                FederatedBarkReceiveObservationStep::AdvanceFromCache(observation) => {
+                    let transition = runtime
+                        .receive_htlc_transition_from_accepted_observation(
+                            &intent,
+                            prepared_record.operation_id,
+                            prepared,
+                            observation,
+                        )
+                        .await
+                        .map_err(|_| bark_unavailable())?;
+                    let envelope = federation.operation_envelope(FederationOperation::Bark(
+                        FederationBarkOperation::ActionTransition(transition),
+                    ));
+                    state
+                        .submit_federation_envelope(envelope)
+                        .await?
+                        .ensure_accepted()?;
+                    return Ok(1);
+                }
+                FederatedBarkReceiveObservationStep::PollArk => {}
+            }
             let next_epoch = projection
                 .observations
                 .iter()
@@ -134,33 +232,8 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                 submitted = submitted.saturating_add(1);
             }
             let refreshed = state.mint.federation_bark_projection_snapshot().await?;
-            let matching_observers = refreshed
-                .observations
-                .iter()
-                .filter_map(|record| match &record.operation {
-                    FederationBarkOperation::MemberObservation(existing)
-                        if existing.action_id == observation.action_id
-                            && existing.status == FederationBarkObservationStatus::Accepted
-                            && existing.payment_hash == observation.payment_hash
-                            && existing.source_scope == observation.source_scope
-                            && existing.amount == observation.amount
-                            && existing.fee == observation.fee
-                            && existing.result_hash == observation.result_hash =>
-                    {
-                        Some(existing.observer)
-                    }
-                    _ => None,
-                })
-                .collect::<BTreeSet<_>>();
-            if is_receive_actor
-                && matching_observers.len()
-                    >= usize::from(
-                        federation
-                            .public_config()
-                            .threshold_params
-                            .signature_threshold,
-                    )
-            {
+            let matching_observers = matching_receive_observers(&refreshed, &observation);
+            if is_receive_actor && matching_observers.len() >= threshold {
                 let envelope = federation.operation_envelope(FederationOperation::Bark(
                     FederationBarkOperation::ActionTransition(transition),
                 ));
@@ -852,11 +925,19 @@ fn bark_unavailable() -> cdk::Error {
 
 #[cfg(test)]
 mod tests {
+    use cdk::federation::{
+        FederationBarkDigest, FederationBarkMemberObservation, FederationBarkObservationRecord,
+        FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
+        FederationOperationId, MemberId, FEDERATION_BARK_OPERATION_VERSION,
+    };
     use cdk::mint::MintQuoteRequest;
     use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request, PublicKey};
     use cdk::{Amount, Error};
 
-    use super::{federated_bark_quote_id, FederationId};
+    use super::{
+        federated_bark_quote_id, receive_observation_step, FederatedBarkReceiveObservationStep,
+        FederationBarkActionId, FederationId,
+    };
 
     fn request(pubkey: Option<PublicKey>, amount: u64) -> MintQuoteRequest {
         MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
@@ -865,6 +946,40 @@ mod tests {
             description: Some("stable retry".to_string()),
             pubkey,
         })
+    }
+
+    fn member(id: u16) -> MemberId {
+        MemberId::new(id).expect("member ID")
+    }
+
+    fn observation(
+        action_id: FederationBarkActionId,
+        observer: MemberId,
+        operation_index: u64,
+        result_seed: u8,
+    ) -> FederationBarkObservationRecord {
+        FederationBarkObservationRecord {
+            operation_id: FederationOperationId::from_bytes([operation_index as u8; 32]),
+            operation_index,
+            operation: FederationBarkOperation::MemberObservation(
+                FederationBarkMemberObservation {
+                    version: FEDERATION_BARK_OPERATION_VERSION,
+                    action_id,
+                    quote: Some("quote".to_string()),
+                    observer,
+                    observation_epoch: 1,
+                    source_scope: FederationBarkDigest::from_bytes([3; 32]).expect("source scope"),
+                    payment_hash: Some(
+                        FederationBarkDigest::from_bytes([4; 32]).expect("payment hash"),
+                    ),
+                    status: FederationBarkObservationStatus::Accepted,
+                    amount: Amount::from(10_000),
+                    fee: Amount::ZERO,
+                    result_hash: FederationBarkDigest::from_bytes([result_seed; 32])
+                        .expect("result hash"),
+                },
+            ),
+        }
     }
 
     #[test]
@@ -911,6 +1026,66 @@ mod tests {
         assert!(matches!(
             federated_bark_quote_id(FederationId::from_bytes([7; 32]), &request(None, 42)),
             Err(Error::PubkeyRequired)
+        ));
+    }
+
+    #[test]
+    fn receive_observer_without_accepted_evidence_polls_ark() {
+        let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
+        let projection = FederationBarkProjectionSnapshot {
+            observations: vec![observation(action_id, member(2), 1, 9)],
+            ..FederationBarkProjectionSnapshot::default()
+        };
+
+        assert_eq!(
+            receive_observation_step(&projection, action_id, member(1), false, 3),
+            FederatedBarkReceiveObservationStep::PollArk,
+        );
+    }
+
+    #[test]
+    fn accepted_receive_observer_waits_without_polling_ark() {
+        let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
+        let projection = FederationBarkProjectionSnapshot {
+            observations: vec![observation(action_id, member(1), 1, 9)],
+            ..FederationBarkProjectionSnapshot::default()
+        };
+
+        assert_eq!(
+            receive_observation_step(&projection, action_id, member(1), false, 3),
+            FederatedBarkReceiveObservationStep::WaitForQuorum,
+        );
+        assert_eq!(
+            receive_observation_step(&projection, action_id, member(1), true, 3),
+            FederatedBarkReceiveObservationStep::WaitForQuorum,
+        );
+    }
+
+    #[test]
+    fn receive_actor_advances_from_cache_only_after_matching_quorum() {
+        let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
+        let mut projection = FederationBarkProjectionSnapshot {
+            observations: vec![
+                observation(action_id, member(1), 1, 9),
+                observation(action_id, member(2), 2, 9),
+                observation(action_id, member(3), 3, 8),
+            ],
+            ..FederationBarkProjectionSnapshot::default()
+        };
+
+        assert_eq!(
+            receive_observation_step(&projection, action_id, member(1), true, 3),
+            FederatedBarkReceiveObservationStep::WaitForQuorum,
+            "conflicting evidence must not complete the quorum",
+        );
+
+        projection
+            .observations
+            .push(observation(action_id, member(3), 4, 9));
+        assert!(matches!(
+            receive_observation_step(&projection, action_id, member(1), true, 3),
+            FederatedBarkReceiveObservationStep::AdvanceFromCache(observation)
+                if observation.observer == member(1)
         ));
     }
 }

@@ -2366,6 +2366,57 @@ impl FederatedBarkRuntime {
         Ok(Some((member_observation, transition)))
     }
 
+    /// Rebuild an HTLC-ready transition from this member's durable evidence.
+    ///
+    /// A member observation is submitted only after Bark persists the exact
+    /// HTLC package, so the receive actor can continue from an accepted local
+    /// observation without polling Ark again while it waits for the remaining
+    /// federation observations.
+    pub async fn receive_htlc_transition_from_accepted_observation(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared_operation_id: FederationOperationId,
+        prepared: &FederationBarkReceivePrepared,
+        accepted: &FederationBarkMemberObservation,
+    ) -> Result<FederationBarkActionTransition, Error> {
+        if accepted.action_id != intent.action_id
+            || accepted.quote.as_deref() != Some(intent.quote.as_str())
+            || accepted.observer != self.member_id
+            || accepted.source_scope != intent.ark_server
+            || accepted.payment_hash != Some(intent.payment_hash)
+            || accepted.status != FederationBarkObservationStatus::Accepted
+        {
+            return Err(Error::ReceiveObservationFailed);
+        }
+        let receive = self.receive_plan(intent, prepared)?;
+        let evidence = self
+            .wallet
+            .prepare_lightning_receive_htlcs(&receive)
+            .await
+            .map_err(|error| {
+                tracing::warn!(
+                    action_id = %intent.action_id,
+                    error = %error,
+                    "Federated Bark accepted receive evidence reload failed"
+                );
+                Error::ReceiveObservationFailed
+            })?;
+        let result_hash = receive_htlc_evidence_hash(&evidence)?;
+        if accepted.amount != cdk_common::Amount::from(evidence.net_amount.to_sat())
+            || accepted.fee != cdk_common::Amount::from(evidence.fee.to_sat())
+            || accepted.result_hash != result_hash
+        {
+            return Err(Error::ReceiveObservationFailed);
+        }
+        receive_htlc_transition(
+            self.member_id,
+            prepared_operation_id,
+            intent,
+            &evidence,
+            result_hash,
+        )
+    }
+
     /// Construct one exact incoming-claim action plan from the local copy of
     /// already accepted HTLC evidence. This performs no custody operation and
     /// does not disclose the preimage.

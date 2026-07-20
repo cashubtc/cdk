@@ -6,8 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CDK_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OVERLAY_DIR="$SCRIPT_DIR/mobile-bindings"
 DEFAULT_WALLET_ROOT="$(cd "$CDK_ROOT/.." && pwd)/cashu-wallet"
+DEFAULT_BARK_ROOT="$(cd "$CDK_ROOT/.." && pwd)/bark"
 
 WALLET_ROOT="${CASHU_WALLET_ROOT:-$DEFAULT_WALLET_ROOT}"
+BARK_ROOT="${BARK_REPO_ROOT:-$DEFAULT_BARK_ROOT}"
 BUILD_IOS=1
 BUILD_ANDROID=1
 VERIFY_WALLETS=1
@@ -35,7 +37,8 @@ usage() {
 #
 # Environment overrides:
 #   CASHU_WALLET_ROOT, CARGO, RUSTC, RUSTDOC, DEVELOPER_DIR,
-#   ANDROID_NDK_HOME, ANDROID_API, IOS_DEPLOYMENT_TARGET, KEEP_BUILD_DIR
+#   ANDROID_NDK_HOME, ANDROID_API, IOS_DEPLOYMENT_TARGET, KEEP_BUILD_DIR,
+#   BARK_REPO_ROOT
 #
 # The script copies the current working tree, including uncommitted changes,
 # into a temporary directory. The federation FFI adapter is applied only to
@@ -91,6 +94,8 @@ done
 
 [[ -d "$WALLET_ROOT/ios" ]] || die "iOS wallet directory not found under $WALLET_ROOT"
 [[ -d "$WALLET_ROOT/android" ]] || die "Android wallet directory not found under $WALLET_ROOT"
+[[ -f "$BARK_ROOT/bark/Cargo.toml" ]] \
+    || die "Bark frost-wallet checkout not found under $BARK_ROOT"
 [[ -f "$OVERLAY_DIR/federation-ffi.patch" ]] || die "federation FFI patch is missing"
 [[ -f "$OVERLAY_DIR/federation.rs" ]] || die "federation FFI module is missing"
 
@@ -148,6 +153,17 @@ rsync -a \
     --exclude '.git/' \
     --exclude 'target/' \
     "$CDK_ROOT/" "$SOURCE_ROOT/"
+
+# cdk-bark uses the Docker-only /git/bark-relative path in the live tree.
+# The temporary copy has a different depth, so point that copy at the sibling
+# Bark checkout before Cargo resolves the workspace.
+BARK_ROOT="$(cd "$BARK_ROOT" && pwd)"
+BARK_WALLET_PATH="$BARK_ROOT/bark"
+export BARK_WALLET_PATH
+perl -0pi -e '
+    my $count = s#(bark = \{ package = "bark-wallet", path = ")[^"]+("[^\n]*\})#$1 . $ENV{BARK_WALLET_PATH} . $2#e;
+    die "expected exactly one bark-wallet path dependency, found $count\\n" unless $count == 1;
+' "$SOURCE_ROOT/crates/cdk-bark/Cargo.toml"
 
 log "Applying the federation FFI adapter to the temporary source copy"
 if ! patch --dry-run --silent -d "$SOURCE_ROOT" -p1 -i "$OVERLAY_DIR/federation-ffi.patch"; then
