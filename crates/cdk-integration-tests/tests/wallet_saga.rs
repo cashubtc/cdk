@@ -8,6 +8,8 @@
 //! Basic happy-path flows are covered by other integration tests (fake_wallet.rs,
 //! integration_tests_pure.rs, etc.)
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use cashu::{MeltQuoteState, PaymentMethod};
 use cdk::nuts::nut00::ProofsMethods;
@@ -29,7 +31,7 @@ async fn test_send_cancel_releases_proofs() -> Result<()> {
 
     // Fund wallet
     let initial_amount = Amount::from(1000);
-    fund_wallet(wallet.clone(), initial_amount.into(), None).await?;
+    fund_wallet(&wallet, initial_amount.into(), None).await?;
 
     let send_amount = Amount::from(400);
 
@@ -64,7 +66,7 @@ async fn test_reserved_proofs_excluded_from_selection() -> Result<()> {
     let wallet = create_test_wallet_for_mint(mint.clone()).await?;
 
     // Fund wallet with exact amount for two sends
-    fund_wallet(wallet.clone(), 600, None).await?;
+    fund_wallet(&wallet, 600, None).await?;
 
     // First prepare reserves some proofs
     let prepared1 = wallet
@@ -103,15 +105,15 @@ async fn test_reserved_proofs_excluded_from_selection() -> Result<()> {
 async fn test_concurrent_sends_isolated() -> Result<()> {
     setup_tracing();
     let mint = create_and_start_test_mint().await?;
-    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
+    let wallet = Arc::new(create_test_wallet_for_mint(mint.clone()).await?);
 
     // Fund wallet
     let initial_amount = Amount::from(2000);
-    fund_wallet(wallet.clone(), initial_amount.into(), None).await?;
+    fund_wallet(&wallet, initial_amount.into(), None).await?;
 
     // Prepare two sends concurrently
-    let wallet1 = wallet.clone();
-    let wallet2 = wallet.clone();
+    let wallet1 = Arc::clone(&wallet);
+    let wallet2 = Arc::clone(&wallet);
 
     let (prepared1, prepared2) = tokio::join!(
         wallet1.prepare_send(Amount::from(300), SendOptions::default()),
@@ -148,10 +150,10 @@ async fn test_concurrent_sends_isolated() -> Result<()> {
 async fn test_concurrent_melts_isolated() -> Result<()> {
     setup_tracing();
     let mint = create_and_start_test_mint().await?;
-    let wallet = create_test_wallet_for_mint(mint.clone()).await?;
+    let wallet = Arc::new(create_test_wallet_for_mint(mint.clone()).await?);
 
     // Fund wallet with enough for multiple melts
-    fund_wallet(wallet.clone(), 2000, None).await?;
+    fund_wallet(&wallet, 2000, None).await?;
 
     // Create two invoices
     let invoice1 = create_fake_invoice(200_000, "melt 1".to_string());
@@ -166,8 +168,8 @@ async fn test_concurrent_melts_isolated() -> Result<()> {
         .await?;
 
     // Execute both melts concurrently
-    let wallet1 = wallet.clone();
-    let wallet2 = wallet.clone();
+    let wallet1 = Arc::clone(&wallet);
+    let wallet2 = Arc::clone(&wallet);
     let quote_id1 = quote1.id.clone();
     let quote_id2 = quote2.id.clone();
 
@@ -245,7 +247,7 @@ async fn test_melt_saga_includes_input_fees() -> Result<()> {
     // Fund wallet with enough to cover melt amount + fee_reserve + input fees
     // Use larger amounts to ensure there are enough proofs of the right denominations
     let initial_amount = 500u64;
-    fund_wallet(wallet.clone(), initial_amount, None).await?;
+    fund_wallet(&wallet, initial_amount, None).await?;
 
     let initial_balance = wallet.total_balance().await?;
     assert_eq!(initial_balance, Amount::from(initial_amount));
@@ -339,7 +341,7 @@ async fn test_melt_with_swap_non_optimal_proofs() -> Result<()> {
     // may have more proofs than the "optimal" estimate
     let initial_amount = 200u64;
     fund_wallet(
-        wallet.clone(),
+        &wallet,
         initial_amount,
         Some(SplitTarget::Value(Amount::ONE)),
     )
@@ -436,7 +438,7 @@ async fn test_melt_swap_gap_recovery() -> Result<()> {
     // 500 sats total in 50-sat proofs.
     let initial_amount = 500u64;
     fund_wallet(
-        wallet.clone(),
+        &wallet,
         initial_amount,
         Some(SplitTarget::Value(Amount::from(50))),
     )
@@ -568,7 +570,7 @@ async fn test_send_with_swap_succeeds() -> Result<()> {
     // denominations during confirm.
     let initial_amount = 1000u64;
     fund_wallet(
-        wallet.clone(),
+        &wallet,
         initial_amount,
         Some(SplitTarget::Value(Amount::from(64))),
     )
@@ -637,7 +639,7 @@ async fn test_send_with_swap_then_receive() -> Result<()> {
     // forces a swap during confirm.
     let initial_amount = 1000u64;
     fund_wallet(
-        wallet1.clone(),
+        &wallet1,
         initial_amount,
         Some(SplitTarget::Value(Amount::from(64))),
     )
