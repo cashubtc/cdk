@@ -73,13 +73,13 @@ cdk-mintd
 Normal mintd startup never reads TOML or applies operational environment
 overrides. Configuration commands access the authoritative database directly
 by default. A later full-document replacement must be requested explicitly
-while mintd is stopped:
+using direct database access:
 
 ```bash
 # Validate against persisted configuration constraints without changing state
 cdk-mintd config apply --file changed.toml --validate-only
 
-# Stage directly; the active configuration is unchanged until restart
+# Stage directly; this also works beside a running daemon
 cdk-mintd config apply --file changed.toml
 
 # Inspect/export active state and inspect pending state
@@ -89,16 +89,18 @@ cdk-mintd config export --file backup.toml
 # Cancel the staged replacement before restart
 cdk-mintd config discard-pending
 
-# Explicitly stage through a running daemon instead
+# Explicitly stage through a management endpoint instead
 cdk-mintd config apply --file changed.toml --rpc https://mint.example:8086 \
   --rpc-tls-dir /var/lib/cdk-mintd/tls
 ```
 
 `config apply`, `show`, `export`, and `discard-pending` use RPC only when an
 endpoint is supplied with `--rpc`. They never probe RPC and never fall back to
-direct database access. Direct access acquires an exclusive lock before opening
-the database and therefore requires mintd to be stopped; contention fails with
-guidance to stop mintd or use `--rpc <endpoint>`.
+direct database access. Direct access uses a short-lived configuration lock and
+can run beside a steady daemon. Direct commands, startup activation, full-file
+RPC operations, and immediate RPC configuration updates all acquire the same
+database-scoped lock. `--rpc <endpoint>` explicitly selects RPC transport; it is
+not required merely because RPC is enabled.
 
 Full-document applies are staged until a successful restart. There are no
 configuration revisions or expected-revision parameters in this iteration.

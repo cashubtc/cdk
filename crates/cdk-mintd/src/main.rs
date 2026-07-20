@@ -536,9 +536,9 @@ mod tests {
             .truncate(false)
             .read(true)
             .write(true)
-            .open(work_dir.join("cdk-mintd.lock"))
+            .open(work_dir.join("cdk-mintd-config.lock"))
             .expect("open database lock file");
-        fs2::FileExt::try_lock_exclusive(&lock_file).expect("hold daemon database lock");
+        fs2::FileExt::try_lock_exclusive(&lock_file).expect("hold configuration mutation lock");
 
         let rpc_error = run_config_command(
             ConfigCommands::Show(cdk_mintd::cli::ConfigTransportArgs {
@@ -560,10 +560,10 @@ mod tests {
             None,
         )
         .await
-        .expect_err("direct transport must respect the daemon lock");
+        .expect_err("direct transport must respect configuration serialization");
         assert_eq!(
             direct_error.to_string(),
-            "mintd is running; stop it or use --rpc <endpoint>"
+            "configuration activation or another configuration command is in progress; retry"
         );
         assert!(!work_dir.join("cdk-mintd.sqlite").exists());
 

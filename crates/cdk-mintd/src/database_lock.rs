@@ -1,4 +1,4 @@
-//! Exclusive access guards for daemon and direct configuration database use.
+//! Database-scoped daemon-instance and configuration-mutation guards.
 
 #[cfg(feature = "sqlite")]
 use std::fs::{File, OpenOptions};
@@ -17,7 +17,28 @@ use thiserror::Error;
 use crate::config::{Database, DatabaseEngine};
 
 #[cfg(feature = "sqlite")]
-const SQLITE_LOCK_FILE: &str = "cdk-mintd.lock";
+const SQLITE_DAEMON_LOCK_FILE: &str = "cdk-mintd.lock";
+#[cfg(feature = "sqlite")]
+const SQLITE_CONFIGURATION_LOCK_FILE: &str = "cdk-mintd-config.lock";
+
+pub(crate) const CONFIGURATION_BUSY_MESSAGE: &str =
+    "configuration activation or another configuration command is in progress; retry";
+
+#[derive(Debug, Clone, Copy)]
+enum DatabaseLockPurpose {
+    DaemonInstance,
+    ConfigurationMutation,
+}
+
+impl DatabaseLockPurpose {
+    #[cfg(feature = "sqlite")]
+    fn sqlite_file(self) -> &'static str {
+        match self {
+            Self::DaemonInstance => SQLITE_DAEMON_LOCK_FILE,
+            Self::ConfigurationMutation => SQLITE_CONFIGURATION_LOCK_FILE,
+        }
+    }
+}
 
 /// Failure to acquire exclusive access to a mintd configuration database.
 #[derive(Debug, Error)]
@@ -70,16 +91,37 @@ pub(crate) enum DatabaseAccessGuard {
 }
 
 impl DatabaseAccessGuard {
-    /// Acquires the lock before any database connection or migration is run.
-    pub(crate) async fn try_acquire(
+    /// Acquires the lifetime lock that prevents two daemons from running.
+    pub(crate) async fn try_acquire_daemon_instance(
+        work_dir: &Path,
+        database: &Database,
+    ) -> Result<Self, DatabaseAccessError> {
+        Self::try_acquire(work_dir, database, DatabaseLockPurpose::DaemonInstance).await
+    }
+
+    /// Acquires the short-lived lock that serializes configuration mutation and activation.
+    pub(crate) async fn try_acquire_configuration_mutation(
+        work_dir: &Path,
+        database: &Database,
+    ) -> Result<Self, DatabaseAccessError> {
+        Self::try_acquire(
+            work_dir,
+            database,
+            DatabaseLockPurpose::ConfigurationMutation,
+        )
+        .await
+    }
+
+    async fn try_acquire(
         _work_dir: &Path,
         database: &Database,
+        purpose: DatabaseLockPurpose,
     ) -> Result<Self, DatabaseAccessError> {
         match database.engine {
             DatabaseEngine::Sqlite => {
                 #[cfg(feature = "sqlite")]
                 {
-                    Self::try_acquire_sqlite(_work_dir)
+                    Self::try_acquire_sqlite(_work_dir, purpose)
                 }
 
                 #[cfg(not(feature = "sqlite"))]
@@ -99,7 +141,17 @@ impl DatabaseAccessGuard {
                         postgres.connection_timeout_seconds,
                     );
 
-                    match cdk_postgres::PgAdvisoryLock::try_acquire(config).await {
+                    let acquisition = match purpose {
+                        DatabaseLockPurpose::DaemonInstance => {
+                            cdk_postgres::PgAdvisoryLock::try_acquire(config).await
+                        }
+                        DatabaseLockPurpose::ConfigurationMutation => {
+                            cdk_postgres::PgAdvisoryLock::try_acquire_configuration_mutation(config)
+                                .await
+                        }
+                    };
+
+                    match acquisition {
                         Ok(guard) => Ok(Self::Postgres(guard)),
                         Err(cdk_postgres::PgAdvisoryLockError::AlreadyHeld) => {
                             Err(DatabaseAccessError::Busy)
@@ -117,8 +169,11 @@ impl DatabaseAccessGuard {
     }
 
     #[cfg(feature = "sqlite")]
-    fn try_acquire_sqlite(work_dir: &Path) -> Result<Self, DatabaseAccessError> {
-        let path = work_dir.join(SQLITE_LOCK_FILE);
+    fn try_acquire_sqlite(
+        work_dir: &Path,
+        purpose: DatabaseLockPurpose,
+    ) -> Result<Self, DatabaseAccessError> {
+        let path = work_dir.join(purpose.sqlite_file());
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -207,23 +262,36 @@ mod tests {
 
     #[cfg(feature = "sqlite")]
     #[tokio::test]
-    async fn sqlite_lock_is_exclusive_and_released_on_drop() {
+    async fn sqlite_locks_are_exclusive_independent_and_released_on_drop() {
         let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_database_lock");
         fs::create_dir_all(&work_dir).expect("create temporary work directory");
         let database = Database::default();
 
-        let first = DatabaseAccessGuard::try_acquire(&work_dir, &database)
+        let first = DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
             .await
             .expect("first lock should succeed");
-        let second = DatabaseAccessGuard::try_acquire(&work_dir, &database)
+        let configuration =
+            DatabaseAccessGuard::try_acquire_configuration_mutation(&work_dir, &database)
+                .await
+                .expect("configuration lock should be independent from the daemon lock");
+        let second = DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
             .await
             .expect_err("second lock should be rejected");
         assert!(matches!(second, DatabaseAccessError::Busy));
+        let second_configuration =
+            DatabaseAccessGuard::try_acquire_configuration_mutation(&work_dir, &database)
+                .await
+                .expect_err("second configuration lock should be rejected");
+        assert!(matches!(second_configuration, DatabaseAccessError::Busy));
 
         drop(first);
-        DatabaseAccessGuard::try_acquire(&work_dir, &database)
+        DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
             .await
-            .expect("lock should be released when its guard is dropped");
+            .expect("daemon lock should be released when its guard is dropped");
+        drop(configuration);
+        DatabaseAccessGuard::try_acquire_configuration_mutation(&work_dir, &database)
+            .await
+            .expect("configuration lock should be released when its guard is dropped");
 
         fs::remove_dir_all(work_dir).expect("remove temporary work directory");
     }
@@ -237,10 +305,10 @@ mod tests {
         fs::create_dir_all(&second_dir).expect("create second temporary work directory");
         let database = Database::default();
 
-        let first = DatabaseAccessGuard::try_acquire(&first_dir, &database)
+        let first = DatabaseAccessGuard::try_acquire_daemon_instance(&first_dir, &database)
             .await
             .expect("first work directory should lock");
-        let second = DatabaseAccessGuard::try_acquire(&second_dir, &database)
+        let second = DatabaseAccessGuard::try_acquire_daemon_instance(&second_dir, &database)
             .await
             .expect("second work directory should lock independently");
 

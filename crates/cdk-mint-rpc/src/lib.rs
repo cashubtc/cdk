@@ -9,7 +9,8 @@ pub mod mint_rpc_cli;
 
 pub use client::{connect_client, ClientError};
 pub use configuration::{
-    ApplyConfigurationOutcome, ConfigurationError, ConfigurationManager, ConfigurationSnapshot,
+    ApplyConfigurationOutcome, ConfigurationError, ConfigurationManager,
+    ConfigurationMutationGuard, ConfigurationSnapshot,
 };
 pub use proto::*;
 

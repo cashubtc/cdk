@@ -6,6 +6,8 @@
 
 use std::fmt;
 use std::path::Path;
+#[cfg(feature = "management-rpc")]
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -728,12 +730,101 @@ fn rpc_error(error: ConfigurationServiceError) -> cdk_mint_rpc::ConfigurationErr
 }
 
 #[cfg(feature = "management-rpc")]
+#[derive(Debug)]
+pub(crate) struct RpcConfigurationManager {
+    service: Arc<ConfigurationService>,
+    work_dir: PathBuf,
+    database: crate::config::Database,
+}
+
+#[cfg(feature = "management-rpc")]
+impl RpcConfigurationManager {
+    pub(crate) fn new(
+        service: Arc<ConfigurationService>,
+        work_dir: PathBuf,
+        database: crate::config::Database,
+    ) -> Self {
+        Self {
+            service,
+            work_dir,
+            database,
+        }
+    }
+}
+
+#[cfg(feature = "management-rpc")]
+#[derive(Debug)]
+struct RpcConfigurationMutationGuard {
+    cancellation: Option<tokio::sync::oneshot::Sender<()>>,
+    _access: crate::database_lock::DatabaseAccessGuard,
+}
+
+#[cfg(feature = "management-rpc")]
+impl RpcConfigurationMutationGuard {
+    fn new(access: crate::database_lock::DatabaseAccessGuard) -> Self {
+        let lock_loss = access.loss_signal();
+        let (cancellation, cancelled) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = cancelled => {},
+                () = lock_loss.wait() => {
+                    crate::database_lock::fail_stop_after_lock_loss(
+                        "management RPC configuration mutation",
+                    )
+                },
+            }
+        });
+
+        Self {
+            cancellation: Some(cancellation),
+            _access: access,
+        }
+    }
+}
+
+#[cfg(feature = "management-rpc")]
+impl Drop for RpcConfigurationMutationGuard {
+    fn drop(&mut self) {
+        if let Some(cancellation) = self.cancellation.take() {
+            let _ = cancellation.send(());
+        }
+    }
+}
+
+#[cfg(feature = "management-rpc")]
+impl cdk_mint_rpc::ConfigurationMutationGuard for RpcConfigurationMutationGuard {}
+
+#[cfg(feature = "management-rpc")]
 #[async_trait::async_trait]
-impl cdk_mint_rpc::ConfigurationManager for ConfigurationService {
+impl cdk_mint_rpc::ConfigurationManager for RpcConfigurationManager {
+    async fn acquire_configuration_mutation(
+        &self,
+    ) -> Result<Box<dyn cdk_mint_rpc::ConfigurationMutationGuard>, cdk_mint_rpc::ConfigurationError>
+    {
+        let access = crate::database_lock::DatabaseAccessGuard::try_acquire_configuration_mutation(
+            &self.work_dir,
+            &self.database,
+        )
+        .await
+        .map_err(|error| match error {
+            crate::database_lock::DatabaseAccessError::Busy => {
+                cdk_mint_rpc::ConfigurationError::Busy {
+                    message: crate::database_lock::CONFIGURATION_BUSY_MESSAGE.to_owned(),
+                }
+            }
+            error => cdk_mint_rpc::ConfigurationError::Internal {
+                message: error.to_string(),
+            },
+        })?;
+
+        Ok(Box::new(RpcConfigurationMutationGuard::new(access)))
+    }
+
     async fn get_configuration(
         &self,
     ) -> Result<cdk_mint_rpc::ConfigurationSnapshot, cdk_mint_rpc::ConfigurationError> {
-        let snapshot = self.snapshot().await.map_err(rpc_error)?;
+        let snapshot = self.service.snapshot().await.map_err(rpc_error)?;
         let restart_required = snapshot.pending.is_some();
         Ok(cdk_mint_rpc::ConfigurationSnapshot {
             active_toml: snapshot.active,
@@ -748,6 +839,7 @@ impl cdk_mint_rpc::ConfigurationManager for ConfigurationService {
         validate_only: bool,
     ) -> Result<cdk_mint_rpc::ApplyConfigurationOutcome, cdk_mint_rpc::ConfigurationError> {
         let outcome = self
+            .service
             .apply(&config_toml, validate_only)
             .await
             .map_err(rpc_error)?;
@@ -760,7 +852,7 @@ impl cdk_mint_rpc::ConfigurationManager for ConfigurationService {
     async fn discard_pending_configuration(
         &self,
     ) -> Result<cdk_mint_rpc::ConfigurationSnapshot, cdk_mint_rpc::ConfigurationError> {
-        self.discard_pending().await.map_err(rpc_error)?;
+        self.service.discard_pending().await.map_err(rpc_error)?;
         self.get_configuration().await
     }
 }

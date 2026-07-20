@@ -184,9 +184,16 @@ async fn initial_setup(
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
     tracing::info!("Initializing database...");
-    let (localstore, keystore, kv) = setup_database(settings, work_dir, db_password).await?;
+    let (localstore, keystore, kv) =
+        setup_database(settings, work_dir, db_password, DatabaseOpenMode::Migrate).await?;
     tracing::info!("Database initialized successfully");
     Ok((localstore, keystore, kv))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DatabaseOpenMode {
+    Migrate,
+    Existing,
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
@@ -721,6 +728,7 @@ async fn setup_database(
     settings: &config::Settings,
     _work_dir: &Path,
     _db_password: Option<String>,
+    open_mode: DatabaseOpenMode,
 ) -> Result<(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
@@ -730,7 +738,7 @@ async fn setup_database(
     match settings.database.engine {
         #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
-            let db = setup_sqlite_database(_work_dir, _db_password).await?;
+            let db = setup_sqlite_database(_work_dir, _db_password, open_mode).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
@@ -755,7 +763,10 @@ async fn setup_database(
                 pg_config.connection_timeout_seconds,
             );
             #[cfg(feature = "postgres")]
-            let pg_db = Arc::new(MintPgDatabase::new(db_config).await?);
+            let pg_db = Arc::new(match open_mode {
+                DatabaseOpenMode::Migrate => MintPgDatabase::new(db_config).await?,
+                DatabaseOpenMode::Existing => MintPgDatabase::open_existing(db_config).await?,
+            });
             tracing::info!("PostgreSQL database connection established");
             #[cfg(feature = "postgres")]
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
@@ -787,12 +798,16 @@ async fn setup_database(
 async fn setup_sqlite_database(
     work_dir: &Path,
     _password: Option<String>,
+    open_mode: DatabaseOpenMode,
 ) -> Result<Arc<MintSqliteDatabase>> {
     let sql_db_path = work_dir.join("cdk-mintd.sqlite");
     tracing::info!("SQLite database path: {}", sql_db_path.display());
 
     #[cfg(not(feature = "sqlcipher"))]
-    let db = MintSqliteDatabase::new(&sql_db_path).await?;
+    let db = match open_mode {
+        DatabaseOpenMode::Migrate => MintSqliteDatabase::new(&sql_db_path).await?,
+        DatabaseOpenMode::Existing => MintSqliteDatabase::open_existing(&sql_db_path).await?,
+    };
     #[cfg(feature = "sqlcipher")]
     let db = {
         // Get password from command line arguments for sqlcipher
@@ -802,7 +817,12 @@ async fn setup_sqlite_database(
             )
         })?;
         tracing::info!("Using SQLCipher encryption for SQLite database");
-        MintSqliteDatabase::new((sql_db_path, password)).await?
+        match open_mode {
+            DatabaseOpenMode::Migrate => MintSqliteDatabase::new((sql_db_path, password)).await?,
+            DatabaseOpenMode::Existing => {
+                MintSqliteDatabase::open_existing((sql_db_path, password)).await?
+            }
+        }
     };
 
     tracing::info!("SQLite database initialized successfully");
@@ -1767,6 +1787,7 @@ async fn start_services_with_shutdown(
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     routers: Vec<Router>,
     auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
+    startup_ready: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
@@ -1781,11 +1802,17 @@ async fn start_services_with_shutdown(
             if rpc_settings.enabled {
                 let addr = rpc_settings.address.unwrap_or("127.0.0.1".to_string());
                 let port = rpc_settings.port.unwrap_or(8086);
+                let rpc_configuration_manager =
+                    Arc::new(config_service::RpcConfigurationManager::new(
+                        configuration_service.clone(),
+                        _work_dir.to_path_buf(),
+                        settings.database.clone(),
+                    ));
                 let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(
                     &addr,
                     port,
                     mint.clone(),
-                    configuration_service.clone(),
+                    rpc_configuration_manager,
                 )?;
 
                 let tls_dir = rpc_settings.tls_dir.unwrap_or(_work_dir.join("tls"));
@@ -2108,6 +2135,8 @@ async fn start_services_with_shutdown(
         }
     }
 
+    let _ = startup_ready.send(());
+
     #[cfg(feature = "prometheus")]
     let prometheus_handle = prepared_prometheus_server.map(|server| {
         let mut shutdown_rx = shutdown_tx.subscribe();
@@ -2205,6 +2234,7 @@ async fn run_mintd_with_database_and_shutdown(
     db_password: Option<String>,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
+    startup_ready: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
     let promote_pending = pending_document.is_some();
     let explicitly_override_mint_state = promote_pending;
@@ -2275,6 +2305,7 @@ async fn run_mintd_with_database_and_shutdown(
             shutdown_signal,
             routers,
             auth_localstore,
+            startup_ready,
         )
         .await
     }
@@ -2334,58 +2365,100 @@ fn database_bootstrap_matches(configured: &config::Database, bootstrap: &config:
     }
 }
 
-async fn acquire_direct_database_access(
+async fn acquire_configuration_mutation_access(
     work_dir: &Path,
     database: &config::Database,
 ) -> Result<database_lock::DatabaseAccessGuard> {
-    database_lock::DatabaseAccessGuard::try_acquire(work_dir, database)
+    database_lock::DatabaseAccessGuard::try_acquire_configuration_mutation(work_dir, database)
         .await
         .map_err(|error| match error {
             database_lock::DatabaseAccessError::Busy => {
-                anyhow!("mintd is running; stop it or use --rpc <endpoint>")
+                anyhow!(database_lock::CONFIGURATION_BUSY_MESSAGE)
             }
             error => error.into(),
         })
 }
 
-async fn acquire_daemon_database_access(
+async fn acquire_daemon_instance_access(
     work_dir: &Path,
     database: &config::Database,
 ) -> Result<database_lock::DatabaseAccessGuard> {
-    database_lock::DatabaseAccessGuard::try_acquire(work_dir, database)
+    database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(work_dir, database)
         .await
         .map_err(|error| match error {
-            database_lock::DatabaseAccessError::Busy => anyhow!(
-                "mintd configuration database is already in use by another daemon or direct configuration command"
-            ),
+            database_lock::DatabaseAccessError::Busy => {
+                anyhow!("mintd configuration database is already in use by another daemon")
+            }
             error => error.into(),
         })
 }
 
-/// Direct configuration service protected by exclusive database access.
+async fn wait_for_database_access_loss(
+    configuration_loss: database_lock::DatabaseLockLoss,
+    daemon_loss: Option<database_lock::DatabaseLockLoss>,
+) {
+    match daemon_loss {
+        Some(daemon_loss) => {
+            tokio::select! {
+                biased;
+                () = configuration_loss.wait() => {},
+                () = daemon_loss.wait() => {},
+            }
+        }
+        None => configuration_loss.wait().await,
+    }
+}
+
+/// Direct configuration service protected by serialized configuration access.
 ///
-/// The guard is intentionally owned by this wrapper so a caller cannot retain
-/// a direct service after releasing the stopped-daemon exclusion.
+/// When mintd is stopped, this wrapper also prevents a daemon from starting.
+/// Against a running daemon it shares the database-scoped mutation boundary
+/// used by management RPC operations and startup activation.
 #[derive(Debug)]
 pub struct DirectConfigurationService {
     service: config_service::ConfigurationService,
-    database_access: database_lock::DatabaseAccessGuard,
+    configuration_access: database_lock::DatabaseAccessGuard,
+    daemon_access: Option<database_lock::DatabaseAccessGuard>,
 }
 
 impl DirectConfigurationService {
+    fn access_is_lost(&self) -> bool {
+        self.configuration_access.loss_signal().is_lost()
+            || self
+                .daemon_access
+                .as_ref()
+                .is_some_and(|access| access.loss_signal().is_lost())
+    }
+
+    fn loss_signals(
+        &self,
+    ) -> (
+        database_lock::DatabaseLockLoss,
+        Option<database_lock::DatabaseLockLoss>,
+    ) {
+        (
+            self.configuration_access.loss_signal(),
+            self.daemon_access
+                .as_ref()
+                .map(database_lock::DatabaseAccessGuard::loss_signal),
+        )
+    }
+
     /// Validates and optionally stages a complete configuration document.
     pub async fn apply(
         &self,
         document: &str,
         validate_only: bool,
     ) -> Result<config_service::ApplyOutcome> {
-        let lock_loss = self.database_access.loss_signal();
+        let (configuration_loss, daemon_loss) = self.loss_signals();
         let result = tokio::select! {
             biased;
-            () = lock_loss.wait() => database_lock::fail_stop_after_lock_loss("direct configuration apply"),
+            () = wait_for_database_access_loss(configuration_loss, daemon_loss) => {
+                database_lock::fail_stop_after_lock_loss("direct configuration apply")
+            },
             result = self.service.apply(document, validate_only) => Ok(result?),
         };
-        if self.database_access.loss_signal().is_lost() {
+        if self.access_is_lost() {
             database_lock::fail_stop_after_lock_loss("direct configuration apply");
         }
         result
@@ -2393,13 +2466,15 @@ impl DirectConfigurationService {
 
     /// Returns the active and pending persisted documents.
     pub async fn snapshot(&self) -> Result<config_service::ConfigurationSnapshot> {
-        let lock_loss = self.database_access.loss_signal();
+        let (configuration_loss, daemon_loss) = self.loss_signals();
         let result = tokio::select! {
             biased;
-            () = lock_loss.wait() => database_lock::fail_stop_after_lock_loss("direct configuration read"),
+            () = wait_for_database_access_loss(configuration_loss, daemon_loss) => {
+                database_lock::fail_stop_after_lock_loss("direct configuration read")
+            },
             result = self.service.snapshot() => Ok(result?),
         };
-        if self.database_access.loss_signal().is_lost() {
+        if self.access_is_lost() {
             database_lock::fail_stop_after_lock_loss("direct configuration read");
         }
         result
@@ -2407,13 +2482,15 @@ impl DirectConfigurationService {
 
     /// Removes the document staged for activation.
     pub async fn discard_pending(&self) -> Result<()> {
-        let lock_loss = self.database_access.loss_signal();
+        let (configuration_loss, daemon_loss) = self.loss_signals();
         let result = tokio::select! {
             biased;
-            () = lock_loss.wait() => database_lock::fail_stop_after_lock_loss("discarding pending configuration"),
+            () = wait_for_database_access_loss(configuration_loss, daemon_loss) => {
+                database_lock::fail_stop_after_lock_loss("discarding pending configuration")
+            },
             result = self.service.discard_pending() => Ok(result?),
         };
-        if self.database_access.loss_signal().is_lost() {
+        if self.access_is_lost() {
             database_lock::fail_stop_after_lock_loss("discarding pending configuration");
         }
         result
@@ -2435,12 +2512,27 @@ pub async fn initialize_configuration(
             "Initialization document primary database settings do not match the bootstrap database settings; set CDK_MINTD_DATABASE/CDK_MINTD_POSTGRES_* for the database being initialized"
         );
     }
-    let database_access =
-        acquire_direct_database_access(work_dir, &bootstrap_settings.database).await?;
-    let lock_loss = database_access.loss_signal();
+    let configuration_access =
+        acquire_configuration_mutation_access(work_dir, &bootstrap_settings.database).await?;
+    let daemon_access = database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(
+        work_dir,
+        &bootstrap_settings.database,
+    )
+    .await
+    .map_err(|error| match error {
+        database_lock::DatabaseAccessError::Busy => {
+            anyhow!("mintd is running; config init requires the daemon to be stopped")
+        }
+        error => anyhow::Error::from(error),
+    })?;
+    let configuration_loss = configuration_access.loss_signal();
+    let daemon_loss = daemon_access.loss_signal();
     let result = tokio::select! {
         biased;
-        () = lock_loss.wait() => {
+        () = configuration_loss.wait() => {
+            database_lock::fail_stop_after_lock_loss("configuration initialization")
+        },
+        () = daemon_loss.wait() => {
             database_lock::fail_stop_after_lock_loss("configuration initialization")
         },
         result = async {
@@ -2484,35 +2576,59 @@ pub async fn initialize_configuration(
             Ok(())
         } => result,
     };
-    if database_access.loss_signal().is_lost() {
+    if configuration_access.loss_signal().is_lost() || daemon_access.loss_signal().is_lost() {
         database_lock::fail_stop_after_lock_loss("configuration initialization");
     }
     result
 }
 
 /// Opens the configuration service directly from primary-database bootstrap
-/// settings while holding exclusive stopped-daemon access.
+/// settings while serializing with startup activation and other configuration
+/// commands.
+///
+/// If mintd is already running, direct access opens the existing database
+/// without attempting migrations. All configuration writers share the same
+/// cross-process serialization boundary.
 pub async fn open_direct_configuration_service(
     work_dir: &Path,
     db_password: Option<String>,
 ) -> Result<DirectConfigurationService> {
     let bootstrap_settings = load_database_bootstrap_settings()?;
-    let database_access =
-        acquire_direct_database_access(work_dir, &bootstrap_settings.database).await?;
-    let lock_loss = database_access.loss_signal();
+    let configuration_access =
+        acquire_configuration_mutation_access(work_dir, &bootstrap_settings.database).await?;
+    let daemon_access = match database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(
+        work_dir,
+        &bootstrap_settings.database,
+    )
+    .await
+    {
+        Ok(access) => Some(access),
+        Err(database_lock::DatabaseAccessError::Busy) => None,
+        Err(error) => return Err(error.into()),
+    };
+    let open_mode = if daemon_access.is_some() {
+        DatabaseOpenMode::Migrate
+    } else {
+        DatabaseOpenMode::Existing
+    };
+    let configuration_loss = configuration_access.loss_signal();
+    let daemon_loss = daemon_access
+        .as_ref()
+        .map(database_lock::DatabaseAccessGuard::loss_signal);
     let service = tokio::select! {
         biased;
-        () = lock_loss.wait() => {
+        () = wait_for_database_access_loss(configuration_loss, daemon_loss) => {
             database_lock::fail_stop_after_lock_loss("opening direct configuration access")
         },
         result = async {
             let (localstore, _, kv) =
-                initial_setup(work_dir, &bootstrap_settings, db_password).await?;
+                setup_database(&bootstrap_settings, work_dir, db_password, open_mode).await?;
             let mint_builder = MintBuilder::new(localstore);
             let mint_info = mint_builder.mint_info_from_db().await?;
             let quote_ttl = mint_builder.quote_ttl_from_db().await?;
+            let repository = config_store::ConfigRepository::new(kv);
             let service = config_service::ConfigurationService::new(
-                config_store::ConfigRepository::new(kv),
+                repository,
                 bootstrap_settings.database,
             );
             let (mint_info, quote_ttl) = service
@@ -2525,13 +2641,59 @@ pub async fn open_direct_configuration_service(
             Result::<_>::Ok(service)
         } => result?,
     };
-    if database_access.loss_signal().is_lost() {
+    if configuration_access.loss_signal().is_lost()
+        || daemon_access
+            .as_ref()
+            .is_some_and(|access| access.loss_signal().is_lost())
+    {
         database_lock::fail_stop_after_lock_loss("opening direct configuration access");
     }
     Ok(DirectConfigurationService {
         service,
-        database_access,
+        configuration_access,
+        daemon_access,
     })
+}
+
+/// Starts mintd from programmatic settings for CDK integration-test launchers.
+///
+/// This feature-gated harness intentionally bypasses the operator-facing
+/// database-backed configuration workflow. Production binaries must use
+/// [`run_managed_mintd`] instead.
+#[cfg(feature = "integration-tests")]
+pub async fn run_mintd_for_integration_tests_with_shutdown(
+    work_dir: &Path,
+    settings: &config::Settings,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
+) -> Result<()> {
+    let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
+    let signing_identity = config_service::discover_signing_identity(settings).await?;
+    config_service::validate_authored_mint_pubkey(settings, &signing_identity)?;
+    let configuration_service = Arc::new(config_service::ConfigurationService::new(
+        config_store::ConfigRepository::new(kv.clone()),
+        settings.database.clone(),
+    ));
+    let (startup_ready, _startup_ready_receiver) = tokio::sync::oneshot::channel();
+
+    run_mintd_with_database_and_shutdown(
+        work_dir,
+        settings,
+        localstore,
+        keystore,
+        kv,
+        configuration_service,
+        &signing_identity,
+        None,
+        shutdown_signal,
+        db_password,
+        runtime,
+        routers,
+        startup_ready,
+    )
+    .await
 }
 
 /// Runs mintd exclusively from database-backed authoritative configuration.
@@ -2543,9 +2705,12 @@ pub async fn run_managed_mintd(
     routers: Vec<Router>,
 ) -> Result<()> {
     let bootstrap_settings = load_database_bootstrap_settings()?;
+    let configuration_access =
+        acquire_configuration_mutation_access(work_dir, &bootstrap_settings.database).await?;
     let database_access =
-        acquire_daemon_database_access(work_dir, &bootstrap_settings.database).await?;
+        acquire_daemon_instance_access(work_dir, &bootstrap_settings.database).await?;
     let startup_lock_loss = database_access.loss_signal();
+    let startup_configuration_loss = configuration_access.loss_signal();
     let (
         localstore,
         keystore,
@@ -2557,6 +2722,9 @@ pub async fn run_managed_mintd(
     ) = tokio::select! {
         biased;
         () = startup_lock_loss.wait() => {
+            database_lock::fail_stop_after_lock_loss("daemon configuration startup")
+        },
+        () = startup_configuration_loss.wait() => {
             database_lock::fail_stop_after_lock_loss("daemon configuration startup")
         },
         result = async {
@@ -2592,10 +2760,10 @@ pub async fn run_managed_mintd(
         None
     };
 
-    let runtime_lock_loss = database_access.loss_signal();
-    if runtime_lock_loss.is_lost() {
+    if database_access.loss_signal().is_lost() || configuration_access.loss_signal().is_lost() {
         database_lock::fail_stop_after_lock_loss("daemon service startup");
     }
+    let (startup_ready_tx, mut startup_ready_rx) = tokio::sync::oneshot::channel();
     let daemon = run_mintd_with_database_and_shutdown(
         work_dir,
         &candidate.settings,
@@ -2609,13 +2777,52 @@ pub async fn run_managed_mintd(
         db_password,
         runtime,
         routers,
+        startup_ready_tx,
     );
-    let result = tokio::select! {
+    tokio::pin!(daemon);
+
+    let startup_result = tokio::select! {
         biased;
-        () = runtime_lock_loss.wait() => {
+        () = database_access.loss_signal().wait() => {
             database_lock::fail_stop_after_lock_loss("daemon runtime")
         },
-        result = daemon => result,
+        () = configuration_access.loss_signal().wait() => {
+            database_lock::fail_stop_after_lock_loss("daemon runtime")
+        },
+        result = daemon.as_mut() => Some(result),
+        ready = &mut startup_ready_rx => {
+            match ready {
+                Ok(()) => None,
+                Err(_) => Some(tokio::select! {
+                    biased;
+                    () = database_access.loss_signal().wait() => {
+                        database_lock::fail_stop_after_lock_loss("daemon runtime")
+                    },
+                    () = configuration_access.loss_signal().wait() => {
+                        database_lock::fail_stop_after_lock_loss("daemon runtime")
+                    },
+                    result = daemon.as_mut() => result,
+                }),
+            }
+        },
+    };
+
+    let result = match startup_result {
+        Some(result) => result,
+        None => {
+            drop(configuration_access);
+            let runtime_lock_loss = database_access.loss_signal();
+            if runtime_lock_loss.is_lost() {
+                database_lock::fail_stop_after_lock_loss("daemon runtime");
+            }
+            tokio::select! {
+                biased;
+                () = runtime_lock_loss.wait() => {
+                    database_lock::fail_stop_after_lock_loss("daemon runtime")
+                },
+                result = daemon.as_mut() => result,
+            }
+        }
     };
 
     if let Some(guard) = _guard {
@@ -2671,24 +2878,87 @@ mod tests {
         assert!(!database_bootstrap_matches(&configured, &sqlite));
     }
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    fn direct_access_document(secret_file: &Path, name: &str, rpc_enabled: bool) -> String {
+        let rpc = if rpc_enabled {
+            r#"
+[mint_management_rpc]
+enabled = true
+allow_insecure = true
+"#
+        } else {
+            ""
+        };
+        format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[database]
+engine = "sqlite"
+
+[[ln]]
+ln_backend = "fakewallet"
+
+[mint_info]
+name = "{name}"
+{rpc}
+"#,
+            secret_file.display()
+        )
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    async fn initialize_active_direct_access_document(
+        work_dir: &Path,
+        password: Option<String>,
+        document: &str,
+    ) -> Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> {
+        let resolved = config_service::ConfigurationService::validate_document(document)
+            .expect("resolve test configuration");
+        let signing_identity = config_service::discover_signing_identity(&resolved.settings)
+            .await
+            .expect("discover test signing identity");
+        let (_, _, kv) = setup_database(
+            &config::Settings::default(),
+            work_dir,
+            password,
+            DatabaseOpenMode::Migrate,
+        )
+        .await
+        .expect("initialize test database");
+        config_store::ConfigRepository::new(kv.clone())
+            .initialize(resolved.document, signing_identity.fingerprint)
+            .await
+            .expect("initialize active configuration");
+        kv
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
     #[tokio::test]
-    async fn direct_database_access_reports_a_running_daemon() {
-        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_direct_access_busy");
+    #[allow(clippy::await_holding_lock)] // Serializes process-global environment access in this test.
+    async fn configuration_initialization_requires_a_stopped_daemon() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_init_running");
         fs::create_dir_all(&work_dir).expect("create temporary work directory");
+        let secret_file = work_dir.join("signing-secret");
+        fs::write(&secret_file, TEST_MNEMONIC).expect("write signing secret");
+        let document = direct_access_document(&secret_file, "initial", false);
         let database = config::Database::default();
-        let daemon_access = database_lock::DatabaseAccessGuard::try_acquire(&work_dir, &database)
-            .await
-            .expect("daemon should acquire database access");
+        let daemon_access =
+            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
+                .await
+                .expect("hold daemon instance lock");
 
-        let error = acquire_direct_database_access(&work_dir, &database)
+        let error = initialize_configuration(&work_dir, &document, None)
             .await
-            .expect_err("direct access must fail while the daemon lock is held");
-
+            .expect_err("initialization must not run beside a daemon");
         assert_eq!(
             error.to_string(),
-            "mintd is running; stop it or use --rpc <endpoint>"
+            "mintd is running; config init requires the daemon to be stopped"
         );
+
         drop(daemon_access);
         fs::remove_dir_all(work_dir).expect("remove temporary work directory");
     }
@@ -2710,16 +2980,37 @@ mod tests {
             .await
             .expect("open direct configuration service");
         let database = config::Database::default();
-        let error = database_lock::DatabaseAccessGuard::try_acquire(&work_dir, &database)
+        let configuration_error =
+            database_lock::DatabaseAccessGuard::try_acquire_configuration_mutation(
+                &work_dir, &database,
+            )
             .await
-            .expect_err("direct service must retain exclusive database access");
-        assert!(matches!(error, database_lock::DatabaseAccessError::Busy));
+            .expect_err("direct service must retain configuration serialization");
+        assert!(matches!(
+            configuration_error,
+            database_lock::DatabaseAccessError::Busy
+        ));
+        let daemon_error =
+            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
+                .await
+                .expect_err("stopped-daemon direct service must prevent daemon startup");
+        assert!(matches!(
+            daemon_error,
+            database_lock::DatabaseAccessError::Busy
+        ));
 
         drop(service);
-        let reacquired = database_lock::DatabaseAccessGuard::try_acquire(&work_dir, &database)
-            .await
-            .expect("dropping direct service must release database access");
-        drop(reacquired);
+        let configuration = database_lock::DatabaseAccessGuard::try_acquire_configuration_mutation(
+            &work_dir, &database,
+        )
+        .await
+        .expect("dropping direct service must release configuration access");
+        let daemon =
+            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
+                .await
+                .expect("dropping direct service must release daemon exclusion");
+        drop(configuration);
+        drop(daemon);
         fs::remove_dir_all(work_dir).expect("remove temporary work directory");
     }
 
@@ -2732,22 +3023,172 @@ mod tests {
         let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_direct_service_busy");
         fs::create_dir_all(&work_dir).expect("create temporary work directory");
         let database = config::Database::default();
-        let daemon_access = database_lock::DatabaseAccessGuard::try_acquire(&work_dir, &database)
+        let configuration_access =
+            database_lock::DatabaseAccessGuard::try_acquire_configuration_mutation(
+                &work_dir, &database,
+            )
             .await
-            .expect("daemon should acquire database access");
+            .expect("hold configuration mutation access");
 
         let error = open_direct_configuration_service(&work_dir, None)
             .await
-            .expect_err("direct service must fail while daemon access is held");
+            .expect_err("direct service must serialize configuration access");
 
-        assert_eq!(
-            error.to_string(),
-            "mintd is running; stop it or use --rpc <endpoint>"
-        );
+        assert_eq!(error.to_string(), database_lock::CONFIGURATION_BUSY_MESSAGE);
         assert!(
             !work_dir.join("cdk-mintd.sqlite").exists(),
             "direct access must lock before opening or migrating SQLite"
         );
+        drop(configuration_access);
+        fs::remove_dir_all(work_dir).expect("remove temporary work directory");
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // Serializes process-global environment access in this test.
+    async fn running_daemon_without_management_rpc_allows_direct_apply() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_running_direct_apply");
+        fs::create_dir_all(&work_dir).expect("create temporary work directory");
+        let secret_file = work_dir.join("signing-secret");
+        fs::write(&secret_file, TEST_MNEMONIC).expect("write signing secret");
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_owned());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password = None;
+        let active = direct_access_document(&secret_file, "active", false);
+        let kv =
+            initialize_active_direct_access_document(&work_dir, password.clone(), &active).await;
+        let database = config::Database::default();
+        let daemon_access =
+            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
+                .await
+                .expect("simulate a steady running daemon");
+
+        let service = open_direct_configuration_service(&work_dir, password)
+            .await
+            .expect("running RPC-disabled daemon should allow direct configuration access");
+        let pending = direct_access_document(&secret_file, "pending", false);
+        let outcome = service
+            .apply(&pending, false)
+            .await
+            .expect("stage configuration beside the running daemon");
+        assert!(outcome.restart_required);
+        assert!(config_store::ConfigRepository::new(kv)
+            .pending()
+            .await
+            .expect("read pending configuration")
+            .as_deref()
+            .is_some_and(|document| document.contains("pending")));
+
+        drop(service);
+        drop(daemon_access);
+        fs::remove_dir_all(work_dir).expect("remove temporary work directory");
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet", feature = "management-rpc"))]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // Serializes process-global environment access in this test.
+    async fn running_daemon_with_management_rpc_allows_direct_apply() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_running_rpc_direct");
+        fs::create_dir_all(&work_dir).expect("create temporary work directory");
+        let secret_file = work_dir.join("signing-secret");
+        fs::write(&secret_file, TEST_MNEMONIC).expect("write signing secret");
+        let active = direct_access_document(&secret_file, "active", true);
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_owned());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password = None;
+        let kv =
+            initialize_active_direct_access_document(&work_dir, password.clone(), &active).await;
+        let database = config::Database::default();
+        let daemon_access =
+            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
+                .await
+                .expect("simulate a steady running daemon");
+
+        let service = open_direct_configuration_service(&work_dir, password)
+            .await
+            .expect("RPC-enabled daemon should share direct configuration serialization");
+        let pending = direct_access_document(&secret_file, "pending", true);
+        service
+            .apply(&pending, false)
+            .await
+            .expect("stage configuration beside the RPC-enabled daemon");
+        assert!(config_store::ConfigRepository::new(kv)
+            .pending()
+            .await
+            .expect("read pending configuration")
+            .as_deref()
+            .is_some_and(|document| document.contains("pending")));
+
+        drop(service);
+        drop(daemon_access);
+        fs::remove_dir_all(work_dir).expect("remove temporary work directory");
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet", feature = "management-rpc"))]
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // Serializes process-global environment access in this test.
+    async fn rpc_and_direct_mutations_contend_on_the_same_database_lock() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_rpc_direct_lock");
+        fs::create_dir_all(&work_dir).expect("create temporary work directory");
+        let secret_file = work_dir.join("signing-secret");
+        fs::write(&secret_file, TEST_MNEMONIC).expect("write signing secret");
+        let active = direct_access_document(&secret_file, "active", true);
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_owned());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password = None;
+        let kv =
+            initialize_active_direct_access_document(&work_dir, password.clone(), &active).await;
+        let database = config::Database::default();
+        let daemon_access =
+            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
+                .await
+                .expect("simulate a steady running daemon");
+        let service = Arc::new(config_service::ConfigurationService::new(
+            config_store::ConfigRepository::new(kv),
+            database.clone(),
+        ));
+        let manager =
+            config_service::RpcConfigurationManager::new(service, work_dir.clone(), database);
+        let rpc_mutation =
+            cdk_mint_rpc::ConfigurationManager::acquire_configuration_mutation(&manager)
+                .await
+                .expect("RPC mutation should acquire database configuration lock");
+
+        let error = open_direct_configuration_service(&work_dir, password.clone())
+            .await
+            .expect_err("direct mutation must contend with RPC mutation");
+        assert_eq!(error.to_string(), database_lock::CONFIGURATION_BUSY_MESSAGE);
+
+        drop(rpc_mutation);
+        let direct_mutation = open_direct_configuration_service(&work_dir, password)
+            .await
+            .expect("direct mutation should proceed after RPC releases the lock");
+        let rpc_error = match cdk_mint_rpc::ConfigurationManager::acquire_configuration_mutation(
+            &manager,
+        )
+        .await
+        {
+            Ok(_) => panic!("RPC mutation must contend with direct mutation"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            rpc_error.to_string(),
+            format!(
+                "Configuration mutation busy: {}",
+                database_lock::CONFIGURATION_BUSY_MESSAGE
+            )
+        );
+
+        drop(direct_mutation);
         drop(daemon_access);
         fs::remove_dir_all(work_dir).expect("remove temporary work directory");
     }
@@ -2756,7 +3197,7 @@ mod tests {
     #[tokio::test]
     async fn opening_sqlcipher_database_without_password_has_actionable_error() {
         let temp_dir = crate::test_utils::unique_temp_path("missing_sqlcipher_password");
-        let error = setup_sqlite_database(&temp_dir, None)
+        let error = setup_sqlite_database(&temp_dir, None, DatabaseOpenMode::Migrate)
             .await
             .expect_err("opening the encrypted database must require a password");
 
