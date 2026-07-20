@@ -2,9 +2,9 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5, 7, and 9-16 complete,
-Milestones 6 and 8 are locally complete but retain the dependency-publication
-and PostgreSQL-runtime verification gates recorded below. Production incoming
+Status: implementation in progress; Milestones 0-5 and 7-17 are complete.
+Milestone 6 is locally complete but retains the dependency-publication gate
+recorded below. Production incoming
 quote preparation, observation, threshold claim, and settlement bridging now
 exist; outgoing quotes, consensus planning, atomic reservation, exact Ark
 execution, success/failure reconciliation, revocation, refresh, emergency exit,
@@ -38,7 +38,7 @@ machine-specific metadata in this document.
 | 5. Custody transport | Complete (2026-07-19) | Signed bounded REST routes, durable participant handlers, timeout/backpressure-aware bounded collection, exact retries, stale/mixed-attempt rejection, and higher-attempt signer replacement passed | `feat: add federated Bark custody transport` |
 | 6. `cdk-bark` skeleton | In progress (dependency publication gate) | Local construction, custody, redaction, feature-isolation, strict-clippy, and standalone regression gates pass; immutable Bark source is not remotely fetchable yet | `feat: add federated Bark runtime skeleton` (local-only progress commit) |
 | 7. Bark operations | Complete (2026-07-19) | Nested canonical operation family, typed authorization, conflict/idempotency tests, result lookup, full common regression suite, and workspace compatibility passed | `feat: add typed Bark federation operations` |
-| 8. SQL projection | In progress (PostgreSQL runtime gate) | New paired-only migrations, all 83 historical migrations byte-locked, deterministic action/VTXO projection, retry-state hardening, SQLite's 168 tests, strict changed-crate clippy, and workspace checks pass; PostgreSQL compiles but the local test role is absent | `feat: add deterministic Bark SQL projection` (local-only progress commit) |
+| 8. SQL projection | Complete (2026-07-20) | New paired-only migrations, all 83 historical migrations byte-locked, deterministic action/VTXO projection, retry-state hardening, SQLite's 168 tests, strict changed-crate clippy, workspace checks, PostgreSQL lifecycle parity, and PostgreSQL pre-Bark forward upgrade passed | `test: verify Bark PostgreSQL projection parity` |
 | 9. Receive secrets | Complete (2026-07-19) | Authenticated 4 KiB private transport, AES-GCM persistence-before-acknowledgement and crash recovery, threshold/actor signature checks, verified-checkpoint retention, encrypted backup/restore, and feature-isolation checks passed | `feat: protect federated Bark receive secrets` |
 | 10. Incoming preparation | Complete (2026-07-19; public-Ark compatibility corrected 2026-07-20) | Consensus-first secret protection and actor failover, exact signed-invoice validation, stable NUT-19/payment-hash retry identity over Bark's original protocol, ordinary `MintQuote` reuse, focused CDK/Bark tests, and production feature wiring passed | `feat: complete federated Bark quote preparation` |
 | 11. Incoming claim | Complete (2026-07-19) | Independent payment-hash polling, threshold-matched HTLC evidence, accepted exact claim plans, FROST/virtual-MuSig custody, durable preimage/result checkpoints, independently validated claimed VTXOs, two-layer result/payment quorums, and focused restart/adversarial tests passed | `feat: complete federated Bark incoming claims` |
@@ -2085,10 +2085,9 @@ Exit criteria:
 
 ### Milestone 8: Bark SQL projection and append-only migrations
 
-Status: implementation and SQLite verification complete on 2026-07-19;
-PostgreSQL execution is wired and compiles, but the local runtime gate remains
-pending because the available PostgreSQL server has no configured CDK test
-role.
+Status: complete on 2026-07-20. Implementation and SQLite verification
+completed on 2026-07-19; the remaining PostgreSQL runtime gate passed against
+an isolated PostgreSQL 16 instance on 2026-07-20.
 
 Implementation record:
 
@@ -2178,12 +2177,24 @@ git diff --check
   passed
 ```
 
-Remaining local verification gate:
+PostgreSQL runtime verification completed on 2026-07-20:
 
-- run the two PostgreSQL Bark tests against a configured test role. They use
-  the same backend-neutral lifecycle fixture and fixed snapshot vector as
-  SQLite, plus the PostgreSQL pre-Bark upgrade fixture. No implementation
-  change is expected; this is execution evidence only.
+```text
+cargo test -p cdk-postgres --features federation \
+  federation_bark_projection_persistence --offline
+  passed: 1 passed; 152 filtered out
+
+cargo test -p cdk-postgres --features federation \
+  pre_bark_postgres_database_upgrades_with_only_the_forward_migration --offline
+  passed: 1 passed; 152 filtered out
+```
+
+Both tests ran against an isolated PostgreSQL 16 instance with a dedicated
+test database. The first executed the same backend-neutral Bark lifecycle and
+fixed snapshot-vector fixture used by SQLite. The second rewound only the new
+Bark schema objects and migration row, reapplied the single forward Bark
+migration, and verified the historical standalone schema remained present.
+The disposable database was removed after the tests.
 
 Deliverables:
 
@@ -3305,6 +3316,10 @@ Progress checkpoint:
 - verified `cargo check -p cdk-axum --features federation --lib` and
   `cargo check -p cdk-axum --features federation,federation-bark,prometheus
   --all-targets`.
+- refreshed the independently locked `fed-cdk-tui` dependency graph after the
+  federation feature gained the lightweight `cdk-frost-bark` protocol crate,
+  and verified the tool still builds offline with `--locked`. The lockfile
+  does not include `bark-wallet` or enable the `federation-bark` runtime;
 - audited the deployed public Signet Ark endpoint against Bark's current
   protobuf and confirmed it exposes the original protocol, not the experimental
   federation receive capability. Restored the local Bark `frost-wallet` branch
@@ -3345,6 +3360,12 @@ cargo check -p cdk-mintd --no-default-features \
   --features fakewallet,sqlite,info-page,federation-bark,prometheus
 cargo check -p cdk-axum --features federation,federation-bark --all-targets
   passed: 9 cdk-bark tests and all named production feature checks
+
+locked federation operator tool:
+cargo check --manifest-path scripts/fed-cdk-tui/Cargo.toml \
+  --locked --offline
+  passed; the refreshed lock resolves the federation-only lightweight FROST
+  protocol crates without enabling bark-wallet
 
 fresh local Signet demonstration:
 3 members; BLS/FROST threshold 2; interrupted DKG resumed and finalized
