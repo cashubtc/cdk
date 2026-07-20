@@ -149,7 +149,7 @@ fn policy() -> FederationBarkPolicyConfig {
         144,
         18,
         30,
-        FederationBarkReceiveAntiDosPolicy::ProtectedToken,
+        FederationBarkReceiveAntiDosPolicy::NoProof,
     )
     .expect("policy")
 }
@@ -365,6 +365,43 @@ fn startup_rejects_every_member_local_binding_mismatch_before_io() {
     assert!(matches!(
         validates(&config, &local),
         Err(Error::InvalidChainSource)
+    ));
+}
+
+#[test]
+fn production_v1_rejects_receive_fees_and_anti_dos_modes_it_does_not_implement() {
+    let baseline = federated_config();
+
+    let mut config = baseline.clone();
+    let application = config
+        .frost_wallet
+        .as_mut()
+        .expect("wallet")
+        .bark_application
+        .as_mut()
+        .expect("Bark application");
+    application.policy.receive_base_fee_sat = 1;
+    let mut local = local_config(&baseline);
+    local.bindings.policy = application.policy.clone();
+    assert!(matches!(
+        validates(&config, &local),
+        Err(Error::UnsupportedReceivePolicy)
+    ));
+
+    let mut config = baseline.clone();
+    let application = config
+        .frost_wallet
+        .as_mut()
+        .expect("wallet")
+        .bark_application
+        .as_mut()
+        .expect("Bark application");
+    application.policy.receive_anti_dos = FederationBarkReceiveAntiDosPolicy::ProtectedToken;
+    let mut local = local_config(&baseline);
+    local.bindings.policy = application.policy.clone();
+    assert!(matches!(
+        validates(&config, &local),
+        Err(Error::UnsupportedReceivePolicy)
     ));
 }
 
@@ -598,6 +635,18 @@ fn protected_receive_secret_is_persisted_acknowledged_recoverable_and_retained()
     assert!(status.acknowledged);
     assert_eq!(status.received_at, 1_000);
     assert!(status.accepted.is_none());
+    let resumable = store
+        .find_by_quote(config.federation_id, &binding.quote)
+        .expect("quote recovery lookup")
+        .expect("resumable quote secret");
+    assert_eq!(resumable.binding, binding);
+    assert_eq!(resumable.acknowledgement, Some(acknowledgement));
+    assert!(resumable.accepted.is_none());
+    assert_eq!(resumable.secret.as_bytes(), &preimage);
+    assert!(store
+        .find_by_quote(config.federation_id, "unknown-quote")
+        .expect("unknown quote lookup")
+        .is_none());
 
     let debug = format!("{request:?} {store:?} {key:?}");
     assert!(!debug.contains(&cdk_common::util::hex::encode(preimage)));
@@ -633,6 +682,14 @@ fn protected_receive_secret_is_persisted_acknowledged_recoverable_and_retained()
     store
         .mark_intent_accepted(binding.action_id, accepted)
         .expect("retain accepted intent");
+    assert_eq!(
+        store
+            .find_by_quote(config.federation_id, &binding.quote)
+            .expect("accepted quote recovery")
+            .expect("accepted resumable quote")
+            .accepted,
+        Some(accepted)
+    );
     assert_eq!(
         store.cleanup(u64::MAX / 2, 30).expect("accepted cleanup"),
         0

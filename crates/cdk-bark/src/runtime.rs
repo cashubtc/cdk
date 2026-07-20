@@ -14,8 +14,9 @@ use bark::federation::{
 use bark::{OpenWalletArgs, Wallet, WalletProperties};
 use bitcoin::secp256k1::PublicKey;
 use cdk_common::federation::{
-    FederationBarkOperation, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
-    FederationBarkReceiveSecretBinding, FederationConfig, FederationOperationId,
+    federation_bark_receive_request_hash, FederationBarkReceiveIntent,
+    FederationBarkReceivePrepared, FederationBarkReceiveSecretBinding, FederationConfig,
+    FederationOperationId, MemberId,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -140,6 +141,7 @@ impl FederatedBarkRuntime {
             .map_err(|_| Error::ArkCapabilityMismatch)?;
         if ark_info.network != validated.network()
             || ark_info.server_pubkey != expected_server
+            || !ark_info.federation_receive_idempotency
             || ark_info.ln_receive_anti_dos_required
             || ark_info.fees.lightning_receive.base_fee != bitcoin::Amount::ZERO
             || ark_info.fees.lightning_receive.ppm.0 != 0
@@ -199,20 +201,22 @@ impl FederatedBarkRuntime {
     /// identity, secret, locator, mailbox, amount, or policy value.
     pub async fn prepare_receive_invoice(
         &self,
+        execution_actor: MemberId,
         intent_operation_id: FederationOperationId,
         intent: &FederationBarkReceiveIntent,
     ) -> Result<FederationBarkReceivePrepared, Error> {
         let binding =
             FederationBarkReceiveSecretBinding::from_intent(self.scope.federation_id(), intent);
         let secret = self.receive_secrets.load_secret(&binding)?;
-        let bark_intent = self.bark_receive_intent(intent, *secret.as_bytes())?;
+        let bark_intent =
+            self.bark_receive_intent(intent_operation_id, intent, *secret.as_bytes())?;
         let plan = self
             .wallet
             .start_lightning_receive(&bark_intent)
             .await
             .map_err(|_| Error::InvoicePreparationFailed)?;
         FederationBarkReceivePrepared::from_invoice(
-            intent.actor,
+            execution_actor,
             intent_operation_id,
             intent,
             plan.invoice,
@@ -232,7 +236,8 @@ impl FederatedBarkRuntime {
         let binding =
             FederationBarkReceiveSecretBinding::from_intent(self.scope.federation_id(), intent);
         let secret = self.receive_secrets.load_secret(&binding)?;
-        let bark_intent = self.bark_receive_intent(intent, *secret.as_bytes())?;
+        let bark_intent =
+            self.bark_receive_intent(prepared.intent_operation_id, intent, *secret.as_bytes())?;
         let plan = FederationLightningReceivePlan {
             action_id: bark_intent.action_id,
             request_commitment: bark_intent.request_commitment,
@@ -266,14 +271,14 @@ impl FederatedBarkRuntime {
 
     fn bark_receive_intent(
         &self,
+        intent_operation_id: FederationOperationId,
         intent: &FederationBarkReceiveIntent,
         preimage: [u8; 32],
     ) -> Result<FederationLightningReceiveIntent, Error> {
         let action_id = FederationActionId::from_bytes(intent.action_id.to_bytes())
             .map_err(|_| Error::InvoicePreparationFailed)?;
         let request_commitment = FederationRequestCommitment::from_bytes(
-            FederationBarkOperation::ReceiveIntent(intent.clone())
-                .commitment()
+            federation_bark_receive_request_hash(intent_operation_id, intent)
                 .map_err(|_| Error::InvoicePreparationFailed)?
                 .to_bytes(),
         )

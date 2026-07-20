@@ -7,14 +7,15 @@ use cdk::federation::{
     payment_hash_for_preimage, preimage_commitment, FederationBarkActionId,
     FederationBarkOperation, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
     FederationBarkReceiveProof, FederationBarkReceiveSecretBinding, FederationBarkUnit,
-    FederationBarkVtxoLocator, FederationOperation, FederationOperationId, MemberConfigPublic,
-    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
+    FederationBarkVtxoLocator, FederationId, FederationOperation, FederationOperationId,
+    MemberConfigPublic, FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk::mint::{MintQuoteRequest, MintQuoteResponse, QuoteId};
 use cdk::nuts::CurrencyUnit;
 use cdk::Amount;
 use cdk_frost::rand_core::{OsRng, RngCore};
 use cdk_http_client::Async;
+use sha2::{Digest, Sha256};
 
 use crate::MintState;
 
@@ -22,6 +23,33 @@ use super::bark_secret::FederationBarkReceiveSecretCoordinator;
 use super::peer_client::FederationRestPeerClient;
 
 const FEDERATION_BARK_RECEIVE_INTENT_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
+const FEDERATION_BARK_QUOTE_ID_DOMAIN: &[u8] = b"cdk-federation-bark-quote-id-v1";
+
+/// Derive the stable quote ID used to recover an exact federated Bark request.
+///
+/// NUT-19's quote public key is required only for this backend. Besides locking
+/// minting to the requester, it gives retries a protocol-native identity even
+/// when the original HTTP response (and its quote ID) was lost.
+pub(crate) fn federated_bark_quote_id(
+    federation_id: FederationId,
+    request: &MintQuoteRequest,
+) -> Result<QuoteId, cdk::Error> {
+    let MintQuoteRequest::Bolt11(request) = request else {
+        return Err(cdk::Error::InvalidPaymentRequest);
+    };
+    let pubkey = request.pubkey.ok_or(cdk::Error::PubkeyRequired)?;
+    let mut hasher = Sha256::new();
+    hasher.update(FEDERATION_BARK_QUOTE_ID_DOMAIN);
+    hasher.update(federation_id.to_bytes());
+    hasher.update(pubkey.to_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    // Use an RFC 9562 UUIDv8 container for the domain-specific hash prefix.
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Ok(uuid::Uuid::from_bytes(bytes).into())
+}
 
 /// Prepare the ordinary CDK quote from a consensus-accepted Bark invoice.
 pub(crate) async fn prepare_federated_bark_mint_quote(
@@ -285,7 +313,13 @@ async fn prepare_and_accept_invoice(
     intent: &FederationBarkReceiveIntent,
 ) -> Result<cdk::Bolt11Invoice, cdk::Error> {
     let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
-    if intent.actor != federation.member_id() {
+    let execution_actor = federation.member_id();
+    if !intent
+        .secret_acknowledgements
+        .iter()
+        .any(|acknowledgement| acknowledgement.member == execution_actor)
+        || unix_time()? >= intent.expires_at
+    {
         return Err(bark_unavailable());
     }
     let runtime = state
@@ -303,7 +337,7 @@ async fn prepare_and_accept_invoice(
         )
         .map_err(|_| bark_unavailable())?;
     let prepared = runtime
-        .prepare_receive_invoice(intent_operation_id, intent)
+        .prepare_receive_invoice(execution_actor, intent_operation_id, intent)
         .await
         .map_err(|_| bark_unavailable())?;
     let envelope = federation.operation_envelope(FederationOperation::Bark(
@@ -420,4 +454,69 @@ fn unix_time() -> Result<u64, cdk::Error> {
 
 fn bark_unavailable() -> cdk::Error {
     cdk::Error::Custom("federated Bark incoming backend is unavailable".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk::mint::MintQuoteRequest;
+    use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request, PublicKey};
+    use cdk::{Amount, Error};
+
+    use super::{federated_bark_quote_id, FederationId};
+
+    fn request(pubkey: Option<PublicKey>, amount: u64) -> MintQuoteRequest {
+        MintQuoteRequest::Bolt11(MintQuoteBolt11Request {
+            amount: Amount::from(amount),
+            unit: CurrencyUnit::Sat,
+            description: Some("stable retry".to_string()),
+            pubkey,
+        })
+    }
+
+    #[test]
+    fn federated_bark_quote_id_is_stable_and_scoped_to_requester() {
+        let first_key = PublicKey::from_hex(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .expect("generator public key");
+        let second_key = PublicKey::from_hex(
+            "0379be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .expect("second public key");
+        let federation = FederationId::from_bytes([7; 32]);
+        let quote = federated_bark_quote_id(federation, &request(Some(first_key), 42))
+            .expect("valid quote key");
+
+        assert_eq!(
+            quote,
+            federated_bark_quote_id(federation, &request(Some(first_key), 42))
+                .expect("identical retry")
+        );
+        assert_eq!(
+            quote,
+            federated_bark_quote_id(federation, &request(Some(first_key), 43))
+                .expect("the key, not mutable request fields, owns the retry identity")
+        );
+        assert_ne!(
+            quote,
+            federated_bark_quote_id(federation, &request(Some(second_key), 42))
+                .expect("different requester")
+        );
+        assert_ne!(
+            quote,
+            federated_bark_quote_id(
+                FederationId::from_bytes([8; 32]),
+                &request(Some(first_key), 42)
+            )
+            .expect("different federation")
+        );
+    }
+
+    #[test]
+    fn federated_bark_quote_id_requires_nut19_key() {
+        assert!(matches!(
+            federated_bark_quote_id(FederationId::from_bytes([7; 32]), &request(None, 42)),
+            Err(Error::PubkeyRequired)
+        ));
+    }
 }

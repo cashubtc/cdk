@@ -1112,7 +1112,7 @@ impl FederationBarkReceivePrepared {
             expires_at,
             final_cltv_delta,
             receive_fee: intent.receive_fee,
-            request_hash: receive_request_hash(intent_operation_id, intent)?,
+            request_hash: federation_bark_receive_request_hash(intent_operation_id, intent)?,
             result_hash: FederationBarkDigest::from_bytes([1; 32])?,
             external_id: receive_external_id(intent_operation_id, intent.action_id)?,
         };
@@ -1198,7 +1198,8 @@ impl FederationBarkReceivePrepared {
                 "prepared receive invoice expiry or final CLTV violates accepted policy",
             ));
         }
-        if self.request_hash != receive_request_hash(self.intent_operation_id, intent)?
+        if self.request_hash
+            != federation_bark_receive_request_hash(self.intent_operation_id, intent)?
             || self.external_id != receive_external_id(self.intent_operation_id, intent.action_id)?
             || self.result_hash != receive_result_hash(self)?
         {
@@ -1226,7 +1227,8 @@ pub fn federation_bark_mailbox_scope(mailbox_id: &[u8; 33]) -> Result<Federation
     domain_hash(BARK_MAILBOX_SCOPE_DOMAIN, mailbox_id)
 }
 
-fn receive_request_hash(
+/// Commit to the exact accepted receive request sent to the Ark adapter.
+pub fn federation_bark_receive_request_hash(
     intent_operation_id: FederationOperationId,
     intent: &FederationBarkReceiveIntent,
 ) -> Result<FederationBarkDigest> {
@@ -1912,7 +1914,11 @@ mod hex_array_33 {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, UNIX_EPOCH};
+
     use bitcoin::hashes::Hash;
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use lightning_invoice::{Currency, InvoiceBuilder, PaymentSecret};
 
     use super::*;
     use crate::federation::{
@@ -2025,6 +2031,43 @@ mod tests {
         })
     }
 
+    fn signed_receive_invoice(
+        currency: Currency,
+        payment_hash: [u8; 32],
+        amount_msat: Option<u64>,
+        description: &str,
+        timestamp: u64,
+        expiry_seconds: u64,
+        final_cltv_delta: u64,
+    ) -> Bolt11Invoice {
+        let mut builder = InvoiceBuilder::new(currency)
+            .description(description.to_string())
+            .payment_hash(Sha256Hash::from_byte_array(payment_hash))
+            .payment_secret(PaymentSecret([43; 32]))
+            .timestamp(UNIX_EPOCH + Duration::from_secs(timestamp))
+            .expiry_time(Duration::from_secs(expiry_seconds))
+            .min_final_cltv_expiry_delta(final_cltv_delta);
+        if let Some(amount_msat) = amount_msat {
+            builder = builder.amount_milli_satoshis(amount_msat);
+        }
+        let signing_key = SecretKey::from_slice(&[42; 32]).expect("invoice signing key");
+        builder
+            .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &signing_key))
+            .expect("signed receive invoice")
+    }
+
+    fn exact_receive_invoice() -> Bolt11Invoice {
+        signed_receive_invoice(
+            Currency::Regtest,
+            [3; 32],
+            Some(100_000),
+            "",
+            1_800_000_000,
+            3_600,
+            18,
+        )
+    }
+
     fn send_plan() -> FederationBarkOperation {
         FederationBarkOperation::ActionPlan(FederationBarkActionPlan {
             version: FEDERATION_BARK_OPERATION_VERSION,
@@ -2071,6 +2114,116 @@ mod tests {
             decoded.commitment().expect("commitment"),
             operation.commitment().expect("commitment")
         );
+    }
+
+    #[test]
+    fn prepared_receive_requires_the_exact_signed_invoice_and_intent_commitments() {
+        let FederationBarkOperation::ReceiveIntent(intent) = receive_intent() else {
+            panic!("receive intent")
+        };
+        let intent_operation_id = operation_id(1);
+        let prepared = FederationBarkReceivePrepared::from_invoice(
+            member(2),
+            intent_operation_id,
+            &intent,
+            exact_receive_invoice(),
+        )
+        .expect("exact prepared receive");
+        prepared
+            .validate_against_intent(&intent)
+            .expect("exact prepared receive validation");
+        assert_eq!(
+            prepared.request_hash,
+            federation_bark_receive_request_hash(intent_operation_id, &intent)
+                .expect("request commitment")
+        );
+
+        for invoice in [
+            signed_receive_invoice(
+                Currency::Regtest,
+                [3; 32],
+                Some(99_000),
+                "",
+                1_800_000_000,
+                3_600,
+                18,
+            ),
+            signed_receive_invoice(
+                Currency::Regtest,
+                [44; 32],
+                Some(100_000),
+                "",
+                1_800_000_000,
+                3_600,
+                18,
+            ),
+            signed_receive_invoice(
+                Currency::Bitcoin,
+                [3; 32],
+                Some(100_000),
+                "",
+                1_800_000_000,
+                3_600,
+                18,
+            ),
+            signed_receive_invoice(
+                Currency::Regtest,
+                [3; 32],
+                Some(100_000),
+                "changed",
+                1_800_000_000,
+                3_600,
+                18,
+            ),
+            signed_receive_invoice(
+                Currency::Regtest,
+                [3; 32],
+                Some(100_000),
+                "",
+                1_800_000_000,
+                3_600,
+                17,
+            ),
+            signed_receive_invoice(
+                Currency::Regtest,
+                [3; 32],
+                Some(100_000),
+                "",
+                1_899_999_000,
+                3_600,
+                18,
+            ),
+            signed_receive_invoice(
+                Currency::Regtest,
+                [3; 32],
+                None,
+                "",
+                1_800_000_000,
+                3_600,
+                18,
+            ),
+        ] {
+            assert!(FederationBarkReceivePrepared::from_invoice(
+                member(2),
+                intent_operation_id,
+                &intent,
+                invoice,
+            )
+            .is_err());
+        }
+
+        let mut changed = prepared.clone();
+        changed.actor = member(3);
+        assert!(changed.validate_against_intent(&intent).is_err());
+        let mut changed = prepared.clone();
+        changed.request_hash = digest(70);
+        assert!(changed.validate_against_intent(&intent).is_err());
+        let mut changed = prepared.clone();
+        changed.result_hash = digest(71);
+        assert!(changed.validate_against_intent(&intent).is_err());
+        let mut changed = prepared;
+        changed.external_id = external(72);
+        assert!(changed.validate_against_intent(&intent).is_err());
     }
 
     #[test]

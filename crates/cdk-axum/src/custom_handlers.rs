@@ -58,7 +58,11 @@ async fn create_mint_quote_for_route(
         if matches!(request, cdk::mint::MintQuoteRequest::Bolt11(_))
             && state.federation.bark_runtime().is_some()
         {
-            let quote_id = QuoteId::new();
+            let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+            let quote_id = crate::federation::bark_incoming::federated_bark_quote_id(
+                federation.federation_id(),
+                &request,
+            )?;
             state.mint.check_mint_request_acceptable(&request).await?;
             let (response, request_lookup_id) =
                 crate::federation::bark_incoming::prepare_federated_bark_mint_quote(

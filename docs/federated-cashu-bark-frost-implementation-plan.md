@@ -2,10 +2,11 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5, 7, and 9 complete,
+Status: implementation in progress; Milestones 0-5, 7, 9, and 10 complete,
 Milestones 6 and 8 are locally complete but retain the dependency-publication
-and PostgreSQL-runtime verification gates recorded below, and no production
-Bark payment backend exists yet
+and PostgreSQL-runtime verification gates recorded below. Production incoming
+quote preparation now exists; incoming payment observation/claim and outgoing
+payment execution remain gated on Milestones 11-14
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -34,7 +35,7 @@ machine-specific metadata in this document.
 | 7. Bark operations | Complete (2026-07-19) | Nested canonical operation family, typed authorization, conflict/idempotency tests, result lookup, full common regression suite, and workspace compatibility passed | `feat: add typed Bark federation operations` |
 | 8. SQL projection | In progress (PostgreSQL runtime gate) | New paired-only migrations, all 83 historical migrations byte-locked, deterministic action/VTXO projection, retry-state hardening, SQLite's 168 tests, strict changed-crate clippy, and workspace checks pass; PostgreSQL compiles but the local test role is absent | `feat: add deterministic Bark SQL projection` (local-only progress commit) |
 | 9. Receive secrets | Complete (2026-07-19) | Authenticated 4 KiB private transport, AES-GCM persistence-before-acknowledgement and crash recovery, threshold/actor signature checks, verified-checkpoint retention, encrypted backup/restore, and feature-isolation checks passed | `feat: protect federated Bark receive secrets` |
-| 10. Incoming preparation | Pending | — | — |
+| 10. Incoming preparation | Complete (2026-07-19) | Consensus-first secret protection and actor failover, exact signed-invoice validation, stable NUT-19 retry identity, restart-safe Ark reservation, ordinary `MintQuote` reuse, focused CDK/Bark tests, and production feature wiring passed | `feat: complete federated Bark quote preparation` |
 | 11. Incoming claim | Pending | — | — |
 | 12. Outgoing planning | Pending | — | — |
 | 13. Outgoing execution | Pending | — | — |
@@ -2084,9 +2085,11 @@ Implementation record:
   transcripts: 30 PostgreSQL files and 53 SQLite files, in addition to the
   existing representative per-file locks;
 - added backend-neutral typed projection records and a canonical complete
-  snapshot. The shared SQLite/PostgreSQL lifecycle test must produce fixed
-  SHA-256 vector
-  `b21be6c6673c788bdeffc74ca845df81b4ce9c308e1dda198b387af2206665d5`;
+  snapshot. Milestone 10 deliberately extended the previously frozen receive
+  intent with its exact direct description and mailbox bytes before activating
+  invoice creation; the shared SQLite/PostgreSQL lifecycle test now produces
+  fixed SHA-256 vector
+  `81cea4507814d6365ef32f3b2250e87269ef2256d72a978fc1a0b2bde0a738bb`;
 - added a bounded, sorted, defaulted `vtxo_transitions` field to Bark action
   transitions. It explicitly maps canonical VTXO artifacts to locator,
   amount, prior state, and new state, so CDK never parses Bark internals or
@@ -2271,6 +2274,124 @@ Exit criteria:
 - plaintext never enters public federation state.
 
 ### Milestone 10: incoming quote preparation
+
+Status: complete on 2026-07-19. This milestone stops at preparation: it can
+return one consensus-bound invoice and ordinary Cashu mint quote, but it cannot
+mark that quote paid. Independent HTLC observation and threshold claim remain
+the Milestone 11 gate.
+
+Implementation record:
+
+- added one `federation-bark` BOLT11 route branch alongside the existing
+  federated on-chain seam. The branch is active only when a validated Bark
+  runtime is installed; ordinary and standalone BOLT11 paths retain their
+  existing payment-backend flow;
+- require the existing optional NUT-19 quote public key for federated Bark and
+  derive a federation-scoped UUIDv8 quote ID from it. The key is both the
+  ordinary quote minting lock and the stable client retry identity: identical
+  retries recover the same action/invoice, while reusing the key with changed
+  amount or description conflicts against the accepted intent;
+- generate the preimage and candidate custody locator without Ark I/O, persist
+  the secret encrypted on a signature-threshold set, accept `ReceiveIntent`,
+  and only then permit invoice creation. Any acknowledging member may take over
+  before the accepted intent deadline, so loss of the original HTTP owner does
+  not lose the secret or force a new payment hash;
+- bind the exact direct description, mailbox bytes/scope, satoshi amount,
+  payment hash/preimage commitment, Ark server, network, CLTV, fee/anti-DoS
+  profile, locator, quote, and accepted intent operation ID into the canonical
+  request commitment. `ReceivePrepared` admission re-parses the signed BOLT11
+  invoice and verifies every corresponding field plus expiry, result, and
+  external retry commitments;
+- deliberately constrain production v1 to zero receive fees and `NoProof`
+  anti-DoS. Startup rejects other accepted policies, unit mismatch, missing
+  durable stores, Bark/roster/threshold/config mismatch, and an Ark server that
+  does not advertise the exact federation receive-idempotency capability;
+- extend Bark's supplied-secret receive facade with the raw federation action
+  ID and accepted-operation-bound request commitment. The ordinary Bark receive
+  call sends neither field and retains its existing semantics;
+- add only Bark server migration
+  `V54__federation_lightning_receive_idempotency.sql`. It durably reserves the
+  unique action ID, request commitment, payment hash, amount, CLTV, mailbox, and
+  description before CLN invoice creation, stores the canonical invoice, makes
+  exact retries idempotent, and rejects changed or cross-action reuse. No
+  previous Bark or CDK migration was changed;
+- make Bark restart recovery validate the exact signed invoice and exact
+  subscription mailbox. A canceled exact invoice is validated before external
+  I/O, re-injected, and stored with the requested mailbox; an active accepted,
+  HTLC-ready, or settled subscription is never presented as a fresh quote;
+- add a narrow CDK mint helper that constructs the ordinary BOLT11 `MintQuote`
+  from the already accepted invoice without proposer-local persistence. The
+  existing accepted `MintQuote` operation remains the only authoritative quote
+  persistence path; and
+- recover every preparation boundary through existing durable layers: protected
+  secret lookup by quote, accepted Bark projection lookup, Ark action/request
+  reservation, `ReceivePrepared` result lookup, and ordinary local quote lookup.
+
+Local Bark commits:
+
+- `feat: bind federated receive retries`;
+- `fix: validate federated receive reinjection`.
+
+Verification evidence:
+
+```text
+cargo check -p bark-wallet -p bark-server -p bark-server-rpc -p bark-json --offline
+cargo check -p bark-server --offline
+  passed; Bark retains two pre-existing wallet warnings outside this change
+
+cargo test -p ark-testing --test server --offline \
+  federation_lightning_receive_request_is_restart_safe_and_conflict_detecting \
+  -- --nocapture
+  1 passed; applies all migrations through new V54, verifies pending exact
+  retry, changed-request and cross-action conflict, exact subscription mailbox,
+  completion, database reconnect, and identical canonical invoice recovery
+
+cargo test -p cdk-common --features federation --offline bark_operation
+  9 passed; includes the signed invoice mutation matrix and exact commitments
+
+cargo test -p cdk-sqlite --features federation --offline \
+  federation_bark_projection_persistence
+  1 passed; changed prepared request commitment rolls back transactionally
+
+cargo test -p cdk-bark \
+  --features federation-bark,federation-test-utils --offline
+  8 passed; doc tests passed; includes secret-by-quote crash recovery and
+  unsupported receive fee/anti-DoS startup rejection
+
+cargo test -p cdk --features federation --lib \
+  federation_bolt11_quote_uses_exact_accepted_invoice_without_local_persistence \
+  --offline
+  1 passed
+
+cargo test -p cdk-axum --features federation-bark --offline \
+  federated_bark_quote_id -- --nocapture
+  2 passed; stable retry, federation/requester separation, and NUT-19 gate
+
+cargo test -p cdk-axum --features federation-bark --offline \
+  post_mint_custom_quote_ -- --nocapture
+  3 passed; existing public quote behavior remains green
+
+cargo test -p cdk-axum --features federation-bark --offline --no-run
+cargo check -p cdk-mintd --features federation-bark,sqlite --offline
+  passed
+
+cargo clippy -p cdk-common --features federation --all-targets \
+  --offline -- -D warnings
+cargo clippy -p cdk-bark \
+  --features federation-bark,federation-test-utils --all-targets \
+  --offline -- -D warnings
+  passed; the reviewed Bark dependency retains its two pre-existing warnings
+
+cargo clippy -p cdk-axum --features federation-bark --all-targets \
+  --offline -- -D warnings
+  reaches ten pre-existing Rust 1.95 lints in unchanged cdk federation/melt/
+  wallet code; no diagnostic points to this milestone's files
+
+cargo fmt -p cdk-common -p cdk-sql-common -p cdk-bark -p cdk \
+  -p cdk-axum -p cdk-mintd -- --check
+git diff --check
+  passed
+```
 
 Deliverables:
 

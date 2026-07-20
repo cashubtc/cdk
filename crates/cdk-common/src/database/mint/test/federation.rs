@@ -2079,6 +2079,35 @@ where
         bark_receive_invoice(invoice_payment_hash),
     )
     .expect("prepared receive");
+    let mut invalid_prepared = prepared_operation.clone();
+    invalid_prepared.request_hash = bark_digest(99);
+    let mut invalid_journal = journal.clone();
+    let invalid_prepared = append_bark_operation(
+        &mut invalid_journal,
+        FederationBarkOperation::ReceivePrepared(invalid_prepared),
+    );
+    let FederationOperation::Bark(invalid_operation) = &invalid_prepared.envelope.operation else {
+        panic!("expected invalid prepared receive")
+    };
+    let mut invalid_tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin invalid Bark projection transaction");
+    assert!(invalid_tx
+        .apply_federation_bark_operation(&invalid_prepared, invalid_operation)
+        .await
+        .is_err());
+    invalid_tx
+        .rollback()
+        .await
+        .expect("roll back invalid Bark projection operation");
+    let unchanged = db
+        .get_federation_bark_projection_snapshot()
+        .await
+        .expect("unchanged Bark projection");
+    assert!(matches!(
+        unchanged.actions.as_slice(),
+        [action] if matches!(action.operation, FederationBarkOperation::ReceiveIntent(_))
+    ));
     let prepared = append_bark_operation(
         &mut journal,
         FederationBarkOperation::ReceivePrepared(prepared_operation),
