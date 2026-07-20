@@ -283,6 +283,10 @@ every milestone.
   payment amount class, and host conditions for a before/after pair.
 - Record all attempted samples in execution order, including failures, stopped
   runs, rate limits, timeouts, and rejected candidates.
+- Temporary instrumentation may be added while measuring a milestone, but it
+  must be reverted before that milestone is completed. Any observability that
+  remains is a deliberate production feature and must be separately justified,
+  documented, bounded, low-cardinality, and low-overhead.
 
 ### Keep-or-revert rule
 
@@ -547,7 +551,7 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Not started | - |
 | 8 | Pass sustained local, Nocean, CLI, and browser-based Signet release gates | Not started | - |
 
-## Milestone 0: causal baseline and bounded observability
+## Milestone 0: causal baseline
 
 ### Goal
 
@@ -555,6 +559,10 @@ Measure successful incoming, successful outgoing, and safe outgoing failure
 with enough precision to attribute payer/routing wait, Ark discovery, Bark/FROST
 work, consensus finality, Cashu finalization, wallet fan-out, and issuance. No
 production scheduling or protocol optimization is allowed in this milestone.
+This is an evidence gate, not a production-observability deliverable: use
+existing logs and durable state first, add isolated disposable probes only for
+material gaps, and leave no instrumentation behind merely to satisfy this
+milestone.
 
 ### Current evidence
 
@@ -569,17 +577,15 @@ production scheduling or protocol optimization is allowed in this milestone.
 
 ### Checklist
 
-- [ ] Add one bounded structured timeline for every stage in the measurement
-      model, shared by incoming and outgoing where the stage is generic.
-- [ ] Add fixed-label histograms for quote creation, external evidence wait,
-      submit-to-finality, finality-to-apply, FROST, Ark side effect, quote
-      payment, Cashu finalization, and wallet response.
-- [ ] Add direct counters for accepted operation kind, duplicate finalized
-      item, Ark RPC method, payment-observer outcome, wake reason, FROST round,
-      and maintenance overlap.
-- [ ] Add a redacted CLI/operator command or script that prints one joined
-      lifecycle without invoice, preimage, raw payment hash, or unbounded metric
-      labels.
+- [ ] Reconstruct a redacted joined timeline from existing logs and durable
+      state for every material stage observable today.
+- [ ] Measure accepted operation kinds, duplicate finalized items, Ark RPCs,
+      observer attempts, FROST traffic, maintenance overlap, CPU, and RSS using
+      existing evidence or one-off measurements; do not add permanent counters
+      solely for this baseline.
+- [ ] For any material evidence gap, add the smallest isolated disposable probe
+      or local analysis tool, capture the result, and revert or delete it before
+      completing the milestone.
 - [ ] Extend a deterministic test harness to script incoming and outgoing Bark
       outcomes and fake time.
 - [ ] Run at least three release incoming and three release outgoing
@@ -592,8 +598,8 @@ production scheduling or protocol optimization is allowed in this milestone.
       routing time separately.
 - [ ] Confirm exact five-member convergence, quote accounting, balances, VTXO
       state, and absence of safety alerts after every sample.
-- [ ] Remove temporary high-cardinality instrumentation; retain only bounded
-      production metrics and the redacted timeline tool.
+- [ ] Confirm that no temporary instrumentation or one-off analysis artifact
+      remains in production code.
 
 ### Success criteria
 
@@ -614,8 +620,10 @@ Milestone 0 is `In progress`. The two production incoming traces and consensus
 cardinality review are recorded above. Source review confirmed the current
 five-second scan, asymmetric mint/melt scheduling, inactive CDK payment event
 stream, and available Bark mailbox primitives. The outgoing successful
-baseline, bounded causal instrumentation, reproducible harness, and repeated
-local/Signet samples remain open. No production optimization has been made.
+baseline, joined measurements, reproducible harness, and repeated local/Signet
+samples remain open. Permanent observability work is not required: disposable
+probes are allowed only where existing evidence is insufficient and must be
+removed before completion. No production optimization has been made.
 
 ## Milestone 1: generic progress pump and inter-operation wakes
 
@@ -1150,7 +1158,8 @@ under that milestone containing:
 6. focused correctness, adverse-ordering, restart/replay, distributed, and
    standalone test commands and results;
 7. explicit `Kept` or `Rejected` decision against this contract;
-8. temporary instrumentation removed or bounded production metrics retained;
+8. temporary instrumentation reverted and any retained production metrics
+   explicitly justified as bounded, low-cardinality, and low-overhead;
 9. document status and result-log update; and
 10. milestone commit subject and, once available, commit hash.
 
