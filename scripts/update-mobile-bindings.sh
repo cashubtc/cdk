@@ -253,15 +253,20 @@ build_swift() {
     cp "$SOURCE_ROOT/bindings/swift/resources/Info-iOS.plist" "$device_framework/Info.plist"
     cp "$SOURCE_ROOT/bindings/swift/resources/Info-iOSSimulator.plist" "$simulator_framework/Info.plist"
 
-    "$bindgen" "$device_lib" "$device_framework/Headers" --headers
-    "$bindgen" "$device_lib" "$device_framework/Modules" \
-        --xcframework --modulemap --module-name CashuDevKitFFI \
-        --modulemap-filename module.modulemap
-    "$bindgen" "$simulator_arm_lib" "$simulator_framework/Headers" --headers
-    "$bindgen" "$simulator_arm_lib" "$simulator_framework/Modules" \
-        --xcframework --modulemap --module-name CashuDevKitFFI \
-        --modulemap-filename module.modulemap
-    "$bindgen" "$device_lib" "$dist/Sources/Cdk" --swift-sources
+    # UniFFI invokes cargo metadata itself, so run it from the copied source
+    # tree where the Bark path dependency was rewritten above.
+    (
+        cd "$SOURCE_ROOT"
+        "$bindgen" "$device_lib" "$device_framework/Headers" --headers
+        "$bindgen" "$device_lib" "$device_framework/Modules" \
+            --xcframework --modulemap --module-name CashuDevKitFFI \
+            --modulemap-filename module.modulemap
+        "$bindgen" "$simulator_arm_lib" "$simulator_framework/Headers" --headers
+        "$bindgen" "$simulator_arm_lib" "$simulator_framework/Modules" \
+            --xcframework --modulemap --module-name CashuDevKitFFI \
+            --modulemap-filename module.modulemap
+        "$bindgen" "$device_lib" "$dist/Sources/Cdk" --swift-sources
+    )
     perl -pi -e 's/canImport\(cdk_ffiFFI\)/canImport(CashuDevKitFFI)/g; s/import cdk_ffiFFI/import CashuDevKitFFI/g' \
         "$dist/Sources/Cdk/"*.swift
 
