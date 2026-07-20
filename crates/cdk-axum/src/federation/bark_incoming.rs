@@ -1,12 +1,14 @@
 //! Consensus-first orchestration for federated Bark incoming BOLT11 quotes.
 
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cdk::federation::{
     ark_server_commitment, federation_bark_description_hash, federation_bark_mailbox_scope,
     payment_hash_for_preimage, preimage_commitment, FederationBarkActionId,
-    FederationBarkOperation, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
-    FederationBarkReceiveProof, FederationBarkReceiveSecretBinding, FederationBarkUnit,
+    FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
+    FederationBarkReceiveIntent, FederationBarkReceivePrepared, FederationBarkReceiveProof,
+    FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase, FederationBarkUnit,
     FederationBarkVtxoLocator, FederationId, FederationOperation, FederationOperationId,
     MemberConfigPublic, FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
 };
@@ -24,6 +26,351 @@ use super::peer_client::FederationRestPeerClient;
 
 const FEDERATION_BARK_RECEIVE_INTENT_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
 const FEDERATION_BARK_QUOTE_ID_DOMAIN: &[u8] = b"cdk-federation-bark-quote-id-v1";
+
+/// Poll and advance one already-created federated Bark quote. Mailbox events
+/// call the same function; they never supply settlement truth themselves.
+pub(crate) async fn advance_federated_bark_mint_quote(
+    state: &MintState,
+    quote_id: &QuoteId,
+) -> Result<usize, cdk::Error> {
+    let _guard = state.federation.bark_incoming_lock().lock().await;
+    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+    let runtime = state
+        .federation
+        .bark_runtime()
+        .ok_or_else(bark_unavailable)?;
+    let quote = quote_id.to_string();
+    let projection = state.mint.federation_bark_projection_snapshot().await?;
+    let Some(action) = projection
+        .actions
+        .iter()
+        .find(|action| action.quote.as_deref() == Some(quote.as_str()))
+        .cloned()
+    else {
+        return Ok(0);
+    };
+    let intent = state
+        .mint
+        .federation_bark_receive_intent(action.origin_operation_id)
+        .await?
+        .ok_or(cdk::Error::Internal)?;
+    let prepared_record = projection
+        .transitions
+        .iter()
+        .find(|record| {
+            record.action_id == action.action_id
+                && record.phase == FederationBarkSemanticPhase::ReceivePrepared
+        })
+        .ok_or(cdk::Error::Internal)?;
+    let FederationBarkOperation::ReceivePrepared(prepared) = &prepared_record.operation else {
+        return Err(cdk::Error::Internal);
+    };
+    if action.phase != FederationBarkSemanticPhase::ReceiveClaimed {
+        runtime
+            .apply_receive_prepared(&intent, prepared)
+            .await
+            .map_err(|_| bark_unavailable())?;
+    }
+
+    match action.phase {
+        FederationBarkSemanticPhase::ReceivePrepared => {
+            let next_epoch = projection
+                .observations
+                .iter()
+                .filter_map(|record| match &record.operation {
+                    FederationBarkOperation::MemberObservation(observation)
+                        if observation.action_id == action.action_id
+                            && observation.observer == federation.member_id() =>
+                    {
+                        Some(observation.observation_epoch)
+                    }
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or(cdk::Error::Internal)?;
+            let Some((observation, transition)) = runtime
+                .observe_receive_htlcs(&intent, prepared_record.operation_id, prepared, next_epoch)
+                .await
+                .map_err(|_| bark_unavailable())?
+            else {
+                return Ok(0);
+            };
+            let already_observed = projection.observations.iter().any(|record| {
+                matches!(
+                    &record.operation,
+                    FederationBarkOperation::MemberObservation(existing)
+                        if existing.action_id == observation.action_id
+                            && existing.observer == observation.observer
+                            && existing.status == observation.status
+                            && existing.result_hash == observation.result_hash
+                            && existing.amount == observation.amount
+                            && existing.fee == observation.fee
+                )
+            });
+            let mut submitted = 0_usize;
+            if !already_observed {
+                let envelope = federation.operation_envelope(FederationOperation::Bark(
+                    FederationBarkOperation::MemberObservation(observation.clone()),
+                ));
+                state
+                    .submit_federation_envelope(envelope)
+                    .await?
+                    .ensure_accepted()?;
+                submitted = submitted.saturating_add(1);
+            }
+            let refreshed = state.mint.federation_bark_projection_snapshot().await?;
+            let matching_observers = refreshed
+                .observations
+                .iter()
+                .filter_map(|record| match &record.operation {
+                    FederationBarkOperation::MemberObservation(existing)
+                        if existing.action_id == observation.action_id
+                            && existing.status == FederationBarkObservationStatus::Accepted
+                            && existing.payment_hash == observation.payment_hash
+                            && existing.source_scope == observation.source_scope
+                            && existing.amount == observation.amount
+                            && existing.fee == observation.fee
+                            && existing.result_hash == observation.result_hash =>
+                    {
+                        Some(existing.observer)
+                    }
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            if matching_observers.len()
+                >= usize::from(
+                    federation
+                        .public_config()
+                        .threshold_params
+                        .signature_threshold,
+                )
+            {
+                let envelope = federation.operation_envelope(FederationOperation::Bark(
+                    FederationBarkOperation::ActionTransition(transition),
+                ));
+                state
+                    .submit_federation_envelope(envelope)
+                    .await?
+                    .ensure_accepted()?;
+                submitted = submitted.saturating_add(1);
+            }
+            Ok(submitted)
+        }
+        FederationBarkSemanticPhase::ReceiveHtlcsReady => {
+            if action.actor != federation.member_id() {
+                return Ok(0);
+            }
+            let application = federation
+                .public_config()
+                .frost_wallet
+                .as_ref()
+                .and_then(|wallet| wallet.bark_application.as_ref())
+                .ok_or(cdk::Error::Internal)?;
+            let signer_set = federation
+                .public_config()
+                .members
+                .keys()
+                .copied()
+                .take(usize::from(application.threshold))
+                .collect::<Vec<_>>();
+            let next_index = projection
+                .derivation_allocations
+                .iter()
+                .map(|allocation| allocation.locator.index)
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or(cdk::Error::Internal)?;
+            if next_index > FEDERATION_MAX_DERIVATION_INDEX {
+                return Err(bark_unavailable());
+            }
+            let plan = runtime
+                .propose_receive_claim(
+                    &intent,
+                    prepared,
+                    action.latest_operation_id,
+                    cdk_bark::FederatedBarkReceiveClaimProposal {
+                        actor: federation.member_id(),
+                        signer_set,
+                        attempt: 1,
+                        output_locator: FederationBarkVtxoLocator::vtxo_custody(next_index),
+                    },
+                )
+                .await
+                .map_err(|_| bark_unavailable())?;
+            let envelope = federation.operation_envelope(FederationOperation::Bark(
+                FederationBarkOperation::ActionPlan(plan),
+            ));
+            state
+                .submit_federation_envelope(envelope)
+                .await?
+                .ensure_accepted()?;
+            Ok(1)
+        }
+        FederationBarkSemanticPhase::ClaimPlanned
+        | FederationBarkSemanticPhase::ReceivePreimageDisclosed => {
+            let plan_operation_id = match &action.operation {
+                FederationBarkOperation::ActionPlan(_) => action.latest_operation_id,
+                FederationBarkOperation::ActionTransition(transition) => {
+                    transition.plan_operation_id
+                }
+                _ => return Err(cdk::Error::Internal),
+            };
+            let plan_entry = state
+                .mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(plan_operation_id)
+                .await?
+                .ok_or(cdk::Error::Internal)?;
+            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                &plan_entry.envelope.operation
+            else {
+                return Err(cdk::Error::Internal);
+            };
+            if plan.actor != federation.member_id() {
+                return Ok(0);
+            }
+            let outcome = runtime
+                .execute_receive_claim(&intent, prepared, plan_entry)
+                .await
+                .map_err(|_| bark_unavailable())?;
+            match outcome {
+                cdk_bark::FederatedBarkReceiveClaimOutcome::RecoveryRequired {
+                    preimage_disclosed,
+                } => {
+                    if action.phase == FederationBarkSemanticPhase::ClaimPlanned {
+                        let envelope = federation.operation_envelope(FederationOperation::Bark(
+                            FederationBarkOperation::ActionTransition(preimage_disclosed),
+                        ));
+                        state
+                            .submit_federation_envelope(envelope)
+                            .await?
+                            .ensure_accepted()?;
+                        Ok(1)
+                    } else {
+                        Ok(0)
+                    }
+                }
+                cdk_bark::FederatedBarkReceiveClaimOutcome::Claimed {
+                    preimage_disclosed,
+                    result,
+                } => {
+                    let accepted_preimage = if action.phase
+                        == FederationBarkSemanticPhase::ClaimPlanned
+                    {
+                        let envelope = federation.operation_envelope(FederationOperation::Bark(
+                            FederationBarkOperation::ActionTransition(preimage_disclosed),
+                        ));
+                        let response = state.submit_federation_envelope(envelope).await?;
+                        response.ensure_accepted()?;
+                        response.outcome.entry().clone()
+                    } else {
+                        state
+                            .mint
+                            .localstore()
+                            .get_federation_journal_entry_by_operation_id(
+                                action.latest_operation_id,
+                            )
+                            .await?
+                            .ok_or(cdk::Error::Internal)?
+                    };
+                    let claimed = runtime
+                        .finalize_receive_claim(&accepted_preimage, *result)
+                        .map_err(|_| bark_unavailable())?;
+                    let envelope = federation.operation_envelope(FederationOperation::Bark(
+                        FederationBarkOperation::ActionTransition(claimed),
+                    ));
+                    state
+                        .submit_federation_envelope(envelope)
+                        .await?
+                        .ensure_accepted()?;
+                    runtime
+                        .acknowledge_receive_claim(&intent, prepared)
+                        .await
+                        .map_err(|_| bark_unavailable())?;
+                    Ok(
+                        if action.phase == FederationBarkSemanticPhase::ClaimPlanned {
+                            2
+                        } else {
+                            1
+                        },
+                    )
+                }
+            }
+        }
+        FederationBarkSemanticPhase::ReceiveClaimed => {
+            let FederationBarkOperation::ActionTransition(claimed) = &action.operation else {
+                return Err(cdk::Error::Internal);
+            };
+            let amount = runtime
+                .validate_receive_claim_result(claimed)
+                .await
+                .map_err(|_| bark_unavailable())?;
+            let next_epoch = projection
+                .observations
+                .iter()
+                .filter_map(|record| match &record.operation {
+                    FederationBarkOperation::MemberObservation(observation)
+                        if observation.action_id == action.action_id
+                            && observation.observer == federation.member_id() =>
+                    {
+                        Some(observation.observation_epoch)
+                    }
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or(cdk::Error::Internal)?;
+            let observation = FederationBarkMemberObservation {
+                version: FEDERATION_BARK_OPERATION_VERSION,
+                action_id: action.action_id,
+                quote: Some(intent.quote.clone()),
+                observer: federation.member_id(),
+                observation_epoch: next_epoch,
+                source_scope: intent.ark_server,
+                payment_hash: Some(intent.payment_hash),
+                status: FederationBarkObservationStatus::Succeeded,
+                amount,
+                fee: Amount::ZERO,
+                result_hash: claimed.result_hash,
+            };
+            let already_observed = projection.observations.iter().any(|record| {
+                matches!(
+                    &record.operation,
+                    FederationBarkOperation::MemberObservation(existing)
+                        if existing.action_id == observation.action_id
+                            && existing.observer == observation.observer
+                            && existing.status == observation.status
+                            && existing.result_hash == observation.result_hash
+                            && existing.amount == observation.amount
+                            && existing.fee == observation.fee
+                )
+            });
+            let mut submitted = 0_usize;
+            if !already_observed {
+                let envelope = federation.operation_envelope(FederationOperation::Bark(
+                    FederationBarkOperation::MemberObservation(observation),
+                ));
+                state
+                    .submit_federation_envelope(envelope)
+                    .await?
+                    .ensure_accepted()?;
+                submitted = submitted.saturating_add(1);
+            }
+            if action.actor == federation.member_id() {
+                runtime
+                    .acknowledge_receive_claim(&intent, prepared)
+                    .await
+                    .map_err(|_| bark_unavailable())?;
+            }
+            Ok(submitted)
+        }
+        _ => Ok(0),
+    }
+}
 
 /// Derive the stable quote ID used to recover an exact federated Bark request.
 ///

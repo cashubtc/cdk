@@ -1,5 +1,74 @@
 use super::*;
 
+#[test]
+fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
+    use cdk_common::federation::{
+        FederationBarkActionId, FederationBarkDigest, FederationBarkMemberObservation,
+        FederationBarkObservationRecord, FederationBarkObservationStatus, FederationBarkOperation,
+        FederationBarkProjectionSnapshot, FederationOperationId, FEDERATION_BARK_OPERATION_VERSION,
+    };
+
+    let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
+    let payment_hash = FederationBarkDigest::from_bytes([2; 32]).expect("payment hash");
+    let source_scope = FederationBarkDigest::from_bytes([3; 32]).expect("source scope");
+    let result_hash = FederationBarkDigest::from_bytes([4; 32]).expect("result hash");
+    let observation = |observer: MemberId, operation_index: u64| {
+        FederationBarkObservationRecord {
+            operation_id: FederationOperationId::from_bytes([operation_index as u8; 32]),
+            operation_index,
+            operation: FederationBarkOperation::MemberObservation(
+                FederationBarkMemberObservation {
+                    version: FEDERATION_BARK_OPERATION_VERSION,
+                    action_id,
+                    quote: Some("quote".to_string()),
+                    observer,
+                    observation_epoch: operation_index,
+                    source_scope,
+                    payment_hash: Some(payment_hash),
+                    status: FederationBarkObservationStatus::Succeeded,
+                    amount: Amount::from(42),
+                    fee: Amount::ZERO,
+                    result_hash,
+                },
+            ),
+        }
+    };
+    let dishonest = MemberId::new(1).expect("member one");
+    let honest = MemberId::new(2).expect("member two");
+    let mut projection = FederationBarkProjectionSnapshot {
+        observations: vec![observation(dishonest, 1), observation(dishonest, 2)],
+        ..FederationBarkProjectionSnapshot::default()
+    };
+
+    assert_eq!(
+        federation_bark_matching_result_observers(
+            &projection,
+            action_id,
+            payment_hash,
+            source_scope,
+            Amount::from(42),
+            result_hash,
+        )
+        .len(),
+        1,
+        "duplicate reports from one member remain one vote",
+    );
+
+    projection.observations.push(observation(honest, 3));
+    assert_eq!(
+        federation_bark_matching_result_observers(
+            &projection,
+            action_id,
+            payment_hash,
+            source_scope,
+            Amount::from(42),
+            result_hash,
+        )
+        .len(),
+        2,
+    );
+}
+
 /// Payment backend double whose incoming status returns one fixed,
 /// deliberately ordered payment list, to reproduce backend return-order
 /// dependence in settlement identity selection.

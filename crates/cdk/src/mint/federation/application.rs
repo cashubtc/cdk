@@ -53,6 +53,35 @@ async fn finish_federation_apply_transaction<T>(
     finish_federation_transaction(transaction, entry, "apply", outcome).await
 }
 
+fn federation_bark_matching_result_observers(
+    projection: &cdk_common::federation::FederationBarkProjectionSnapshot,
+    action_id: cdk_common::federation::FederationBarkActionId,
+    payment_hash: cdk_common::federation::FederationBarkDigest,
+    source_scope: cdk_common::federation::FederationBarkDigest,
+    amount: Amount,
+    result_hash: cdk_common::federation::FederationBarkDigest,
+) -> std::collections::BTreeSet<MemberId> {
+    projection
+        .observations
+        .iter()
+        .filter_map(|record| match &record.operation {
+            cdk_common::federation::FederationBarkOperation::MemberObservation(observation)
+                if observation.action_id == action_id
+                    && observation.status
+                        == cdk_common::federation::FederationBarkObservationStatus::Succeeded
+                    && observation.payment_hash == Some(payment_hash)
+                    && observation.source_scope == source_scope
+                    && observation.amount == amount
+                    && observation.fee == Amount::ZERO
+                    && observation.result_hash == result_hash =>
+            {
+                Some(observation.observer)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 impl Mint {
     fn claim_active_federation_melt_payment(
         &self,
@@ -147,6 +176,80 @@ impl Mint {
         }
         if quote.state() == MintQuoteState::Issued {
             return Ok(None);
+        }
+        if config
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.bark_application.as_ref())
+            .is_some()
+        {
+            let projection = self.federation_bark_projection_snapshot().await?;
+            let quote_label = quote.id.to_string();
+            if let Some(action) = projection.actions.iter().find(|action| {
+                action.quote.as_deref() == Some(quote_label.as_str())
+                    && action.phase
+                        == cdk_common::federation::FederationBarkSemanticPhase::ReceiveClaimed
+            }) {
+                let intent = self
+                    .federation_bark_receive_intent(action.origin_operation_id)
+                    .await?
+                    .ok_or(Error::Internal)?;
+                let cdk_common::federation::FederationBarkOperation::ActionTransition(
+                    transition,
+                ) = &action.operation
+                else {
+                    return Err(Error::Internal);
+                };
+                let mut spendable_sat = 0_u64;
+                for output in transition.vtxo_transitions.iter().filter(|mutation| {
+                    mutation.previous_state.is_none()
+                        && mutation.new_state
+                            == cdk_common::federation::FederationBarkVtxoState::Spendable
+                }) {
+                    let record = projection
+                        .vtxos
+                        .iter()
+                        .find(|record| record.vtxo_id == output.vtxo_id)
+                        .ok_or(Error::Internal)?;
+                    if record.state
+                        != cdk_common::federation::FederationBarkVtxoState::Spendable
+                        || record.locator != output.locator
+                        || record.amount != output.amount
+                        || record.artifact.hash != output.artifact_hash
+                    {
+                        return Err(Error::Internal);
+                    }
+                    spendable_sat = spendable_sat
+                        .checked_add(u64::from(output.amount))
+                        .ok_or(Error::Internal)?;
+                }
+                if spendable_sat >= u64::from(intent.cashu_amount) {
+                    let matching_result_observers = federation_bark_matching_result_observers(
+                        &projection,
+                        action.action_id,
+                        intent.payment_hash,
+                        intent.ark_server,
+                        Amount::from(spendable_sat),
+                        transition.result_hash,
+                    );
+                    if matching_result_observers.len()
+                        < usize::from(config.public_config().threshold_params.signature_threshold)
+                    {
+                        return Ok(None);
+                    }
+                    return Ok(Some(FederationMintQuotePaymentObservation {
+                        quote: quote.id.to_string(),
+                        observer: config.member_id(),
+                        method: quote.payment_method.clone(),
+                        state: MintQuoteState::Paid,
+                        amount_paid: intent.cashu_amount,
+                        amount_issued: quote.amount_issued().into(),
+                        payment_id: Some(PaymentIdentifier::QuoteId(quote.id.clone())),
+                        payment_proof: None,
+                    }));
+                }
+            }
         }
 
         let processor = self

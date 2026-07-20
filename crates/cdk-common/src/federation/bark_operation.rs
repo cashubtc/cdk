@@ -44,6 +44,7 @@ const BARK_OPERATION_HASH_DOMAIN: &[u8] = b"cdk/federation/bark-operation/v1";
 const BARK_AUTHORIZATION_HASH_DOMAIN: &[u8] = b"cdk/federation/bark-authorization/v1";
 const BARK_SIGNING_SLOT_DOMAIN: &[u8] = b"cdk/federation/bark-signing-slot/v1";
 const BARK_SESSION_ID_DOMAIN: &[u8] = b"cdk/federation/bark-session-id/v1";
+const BARK_CUSTODY_TRANSCRIPT_DOMAIN: &[u8] = b"cdk/federation/bark-custody-transcript/v1";
 const BARK_ACTION_ID_DOMAIN: &[u8] = b"cdk/federation/bark-action-id/v1";
 const BARK_RECEIVE_ALLOCATION_DOMAIN: &[u8] = b"cdk/federation/bark-receive-allocation/v1";
 const BARK_DESCRIPTION_DOMAIN: &[u8] = b"cdk/federation/bark-description/v1";
@@ -51,6 +52,16 @@ const BARK_MAILBOX_SCOPE_DOMAIN: &[u8] = b"cdk/federation/bark-mailbox-scope/v1"
 const BARK_RECEIVE_REQUEST_DOMAIN: &[u8] = b"cdk/federation/bark-receive-request/v1";
 const BARK_RECEIVE_RESULT_DOMAIN: &[u8] = b"cdk/federation/bark-receive-result/v1";
 const BARK_RECEIVE_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-receive-external-id/v1";
+
+/// Commit to the exact bounded transcript presented to a Bark custody method.
+pub fn federation_bark_custody_transcript_hash(bytes: &[u8]) -> Result<FederationBarkDigest> {
+    if bytes.is_empty() || bytes.len() > FEDERATION_MAX_BARK_AUTHORIZATION_BYTES {
+        return Err(invalid_bark(
+            "Bark custody transcript is empty or oversized",
+        ));
+    }
+    domain_hash(BARK_CUSTODY_TRANSCRIPT_DOMAIN, bytes)
+}
 
 fn invalid_bark(reason: impl Into<String>) -> FederationError {
     FederationError::BarkOperationInvalid {
@@ -1815,6 +1826,107 @@ impl FederationBarkAuthorizationReference {
     }
 }
 
+/// Complete application payload consumed by the Bark FROST registration.
+///
+/// The accepted-operation reference is revalidated against durable consensus
+/// before this payload reaches the generic key manager. Keeping the exact
+/// message and derivation in the payload lets the application adapter remain
+/// deterministic while avoiding an unrestricted digest-signing boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkFrostAuthorization {
+    /// Authorization payload format.
+    pub version: u16,
+    /// Accepted Bark operation and custody-object reference.
+    pub reference: FederationBarkAuthorizationReference,
+    /// Exact BIP340 message authorized by the accepted request.
+    pub message: [u8; 32],
+    /// Canonical [`cdk_frost::SigningDerivation`] wire bytes.
+    pub signing_derivation: Vec<u8>,
+    /// Exact bounded Bark request transcript independently checked by members.
+    pub request_transcript: Vec<u8>,
+}
+
+impl FederationBarkFrostAuthorization {
+    /// Construct a bounded authorization payload from reviewed inputs.
+    pub fn new(
+        reference: FederationBarkAuthorizationReference,
+        message: [u8; 32],
+        signing_derivation: &cdk_frost::SigningDerivation,
+        request_transcript: Vec<u8>,
+    ) -> Result<Self> {
+        let value = Self {
+            version: FEDERATION_BARK_AUTHORIZATION_VERSION,
+            reference,
+            message,
+            signing_derivation: signing_derivation.encode(),
+            request_transcript,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    /// Validate the accepted reference, message, derivation, and size bound.
+    pub fn validate(&self) -> Result<()> {
+        if self.version != FEDERATION_BARK_AUTHORIZATION_VERSION || self.message == [0; 32] {
+            return Err(invalid_bark(
+                "unsupported Bark FROST authorization version or empty message",
+            ));
+        }
+        self.reference.validate()?;
+        if self.request_transcript.is_empty()
+            || self.reference.transcript_hash != self.request_transcript_hash()?
+        {
+            return Err(invalid_bark(
+                "Bark request transcript is empty or differs from its accepted reference",
+            ));
+        }
+        let derivation = self.signing_derivation()?;
+        if derivation.binding() == [0; 32] {
+            return Err(invalid_bark("Bark signing derivation binding is empty"));
+        }
+        let actual = self.canonical_bytes()?.len();
+        if actual > FEDERATION_MAX_BARK_AUTHORIZATION_BYTES {
+            return Err(invalid_bark(format!(
+                "Bark FROST authorization is {actual} bytes, maximum is {FEDERATION_MAX_BARK_AUTHORIZATION_BYTES}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Decode and require sorted-key canonical JSON.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() > FEDERATION_MAX_BARK_AUTHORIZATION_BYTES {
+            return Err(invalid_bark("Bark FROST authorization exceeds its bound"));
+        }
+        let value: Self = serde_json::from_slice(bytes)
+            .map_err(|error| invalid_bark(format!("invalid Bark FROST authorization: {error}")))?;
+        value.validate()?;
+        if value.canonical_bytes()? != bytes {
+            return Err(invalid_bark(
+                "Bark FROST authorization encoding is not canonical",
+            ));
+        }
+        Ok(value)
+    }
+
+    /// Return sorted-key canonical JSON bytes.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        canonical_json_bytes(self)
+    }
+
+    /// Decode the exact signing derivation.
+    pub fn signing_derivation(&self) -> Result<cdk_frost::SigningDerivation> {
+        cdk_frost::SigningDerivation::decode(&self.signing_derivation)
+            .map_err(|error| invalid_bark(format!("invalid Bark signing derivation: {error}")))
+    }
+
+    /// Commit to the exact Bark custody request transcript.
+    pub fn request_transcript_hash(&self) -> Result<FederationBarkDigest> {
+        federation_bark_custody_transcript_hash(&self.request_transcript)
+    }
+}
+
 /// Compact operation metadata returned to routes and workers waiting for a result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2593,6 +2705,60 @@ mod tests {
         let mut incompatible = mutated;
         incompatible.operation_kind = FederationBarkOperationKind::ReceiveIntent;
         assert!(incompatible.validate().is_err());
+    }
+
+    #[test]
+    fn frost_authorization_binds_exact_canonical_transcript() {
+        let transcript = b"exact accepted Bark custody request".to_vec();
+        let application_id =
+            FederationFrostApplicationId::from_bytes([7; 32]).expect("application ID");
+        let reference = FederationBarkAuthorizationReference {
+            version: FEDERATION_BARK_AUTHORIZATION_VERSION,
+            federation_id: federation_id(),
+            application_id,
+            root_key_epoch: 1,
+            application_key_epoch: 1,
+            application_derivation_version: 1,
+            accepted_operation_id: operation_id(8),
+            accepted_operation_index: 9,
+            action_id: action(10),
+            phase: FederationBarkSemanticPhase::SendHtlcsCosigned,
+            object_ordinal: 0,
+            operation_kind: FederationBarkOperationKind::ActionTransition,
+            plan_or_result_hash: digest(11),
+            locator: FederationBarkVtxoLocator::vtxo_custody(12),
+            protocol: FederationBarkCustodyProtocol::Musig2,
+            transcript_hash: federation_bark_custody_transcript_hash(&transcript)
+                .expect("transcript hash"),
+            signer_set: vec![member(1), member(2)],
+            attempt: 1,
+            network: Network::Regtest,
+            ark_server_public_key: ark_server_key(),
+        };
+        let authorization = FederationBarkFrostAuthorization::new(
+            reference,
+            [42; 32],
+            &cdk_frost::SigningDerivation::application_key(),
+            transcript,
+        )
+        .expect("valid exact authorization");
+        let canonical = authorization.canonical_bytes().expect("canonical bytes");
+        assert_eq!(
+            FederationBarkFrostAuthorization::from_bytes(&canonical).expect("canonical round trip"),
+            authorization
+        );
+
+        let mut changed_transcript = authorization.clone();
+        changed_transcript.request_transcript.push(0);
+        assert!(changed_transcript.validate().is_err());
+
+        let mut empty_message = authorization.clone();
+        empty_message.message = [0; 32];
+        assert!(empty_message.validate().is_err());
+
+        let mut noncanonical = b" ".to_vec();
+        noncanonical.extend_from_slice(&canonical);
+        assert!(FederationBarkFrostAuthorization::from_bytes(&noncanonical).is_err());
     }
 
     #[test]

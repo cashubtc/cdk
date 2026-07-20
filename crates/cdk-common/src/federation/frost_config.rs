@@ -27,9 +27,9 @@ use cdk_frost_bip32::{
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{
-    append_bytes, FederationAddressKeychain, FederationCdkOnchainFrostAuthorization,
-    FederationConfig, FederationDkgCeremonyId, FederationError, FederationFrostRootRecord,
-    FederationId, MemberId, Result,
+    append_bytes, FederationAddressKeychain, FederationBarkFrostAuthorization,
+    FederationCdkOnchainFrostAuthorization, FederationConfig, FederationDkgCeremonyId,
+    FederationError, FederationFrostRootRecord, FederationId, MemberId, Result,
 };
 
 const ROOT_CONFIG_VERSION: u16 = 1;
@@ -756,11 +756,12 @@ impl FederationBarkFrostApplicationConfig {
     }
 }
 
-/// Registration-only Bark adapter used before typed Bark authorization is enabled.
+/// Bark adapter for a payload already revalidated against accepted state.
 ///
-/// Registering this adapter derives the participant-local Bark application share
-/// inside [`cdk_frost::ParticipantKeyManager`] without exposing it. Milestone 7
-/// replaces the fail-closed authorization decision with accepted-state lookup.
+/// This adapter performs the final application/epoch and canonical-payload
+/// checks inside [`cdk_frost::ParticipantKeyManager`]. The signing runtime must
+/// independently load and validate the referenced accepted operation before it
+/// invokes the key manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FederationBarkFrostRegistrationAdapter {
     registration: ApplicationRegistration,
@@ -782,11 +783,24 @@ impl ApplicationAuthorization for FederationBarkFrostRegistrationAdapter {
 
     fn authorize(
         &self,
-        _request: &AuthorizationRequest,
+        request: &AuthorizationRequest,
     ) -> std::result::Result<AuthorizedSigningRequest, cdk_frost::Error> {
-        Err(cdk_frost::Error::Application(
-            "Bark signing remains disabled until accepted-state authorization is installed"
-                .to_string(),
+        if request.application_id() != self.registration.id()
+            || request.application_key_epoch() != self.registration.key_epoch()
+            || request.derivation_version() != self.registration.derivation_version()
+        {
+            return Err(cdk_frost::Error::Application(
+                "Bark authorization uses an unregistered application epoch".to_string(),
+            ));
+        }
+        let authorization = FederationBarkFrostAuthorization::from_bytes(request.payload())
+            .map_err(|error| cdk_frost::Error::Application(error.to_string()))?;
+        let derivation = authorization
+            .signing_derivation()
+            .map_err(|error| cdk_frost::Error::Application(error.to_string()))?;
+        Ok(AuthorizedSigningRequest::new(
+            authorization.message,
+            derivation,
         ))
     }
 }

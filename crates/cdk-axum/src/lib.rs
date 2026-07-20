@@ -2478,6 +2478,7 @@ async fn create_mint_router_with_custom_cache_inner(
     #[cfg(feature = "federation")]
     let federation_runtime_state = create_federation_runtime_state_with_wallet(
         &mint,
+        federation_peer_sync_config,
         federation_bdk_config,
         #[cfg(feature = "federation-bark")]
         federation_bark_config,
@@ -2897,6 +2898,7 @@ struct FederationRuntimeState {
 #[cfg(feature = "federation")]
 async fn create_federation_runtime_state_with_wallet(
     mint: &Arc<Mint>,
+    peer_sync_config: FederationPeerSyncConfig,
     local_wallet_config: Option<FederatedBdkLocalConfig>,
     #[cfg(feature = "federation-bark")] local_bark_config: Option<
         cdk_bark::FederatedBarkLocalConfig,
@@ -2926,13 +2928,19 @@ async fn create_federation_runtime_state_with_wallet(
     };
     let db = mint.localstore();
     validate_and_materialize_frost_wallet_config(mint).await?;
-    let frost_signing = match local_wallet_config.as_ref() {
-        Some(local) => {
-            federation::frost_signing::FederationFrostSigningRuntime::open(
-                mint,
-                &local.storage_root,
-            )
-            .await?
+    let mut frost_storage_root = local_wallet_config
+        .as_ref()
+        .map(|local| local.storage_root.clone());
+    #[cfg(feature = "federation-bark")]
+    if frost_storage_root.is_none() {
+        frost_storage_root = local_bark_config
+            .as_ref()
+            .map(|local| local.data_directory.join("frost-signing"));
+    }
+    let frost_signing = match frost_storage_root {
+        Some(storage_root) => {
+            federation::frost_signing::FederationFrostSigningRuntime::open(mint, &storage_root)
+                .await?
         }
         None => None,
     };
@@ -2940,12 +2948,38 @@ async fn create_federation_runtime_state_with_wallet(
     #[cfg(feature = "federation-bark")]
     let bark = match local_bark_config {
         Some(local) => {
+            let wallet = config
+                .public_config()
+                .frost_wallet
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("federated Bark requires a FROST wallet"))?;
+            let application = wallet
+                .bark_application
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("federated Bark application is missing"))?;
+            let public =
+                application.derived_public_package(config.public_config(), &wallet.root)?;
+            let peer_client =
+                federation::peer_client::FederationRestPeerClient::new_with_validated_config(
+                    cdk_http_client::Async::default(),
+                    config.public_config(),
+                    config.private_config().clone(),
+                    peer_sync_config,
+                )?;
+            let custody_client = Arc::new(
+                federation::bark_custody::FederatedBarkCustodyPeerClient::new(
+                    peer_client,
+                    config.public_config().clone(),
+                    public,
+                ),
+            );
             Some(
                 cdk_bark::FederatedBarkRuntime::open(
                     true,
                     config.public_config(),
                     config.member_id(),
                     local,
+                    custody_client,
                 )
                 .await?,
             )
@@ -3353,6 +3387,7 @@ async fn create_federation_runtime_state(
 )> {
     let state = create_federation_runtime_state_with_wallet(
         mint,
+        FederationPeerSyncConfig::default(),
         None,
         #[cfg(feature = "federation-bark")]
         None,

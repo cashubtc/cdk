@@ -256,6 +256,18 @@ impl FederationPaymentObserver {
             if quote.state() == MintQuoteState::Issued {
                 continue;
             }
+            #[cfg(feature = "federation-bark")]
+            if state.federation.bark_runtime().is_some() {
+                match super::bark_incoming::advance_federated_bark_mint_quote(state, quote_id).await
+                {
+                    Ok(advanced) => submitted = submitted.saturating_add(advanced),
+                    Err(error) => tracing::debug!(
+                        quote = %quote_id,
+                        error = %error,
+                        "federated Bark receive advancement left quote pending"
+                    ),
+                }
+            }
             let Some(observation) = ({
                 let probe = std::panic::AssertUnwindSafe(async {
                     state

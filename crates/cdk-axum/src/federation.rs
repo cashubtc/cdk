@@ -52,7 +52,7 @@ mod node_runtime;
 mod operation_pipeline;
 mod operator_routes;
 mod payment_observation;
-mod peer_client;
+pub(crate) mod peer_client;
 mod private_request;
 pub(crate) mod runtime_components;
 mod status_routes;

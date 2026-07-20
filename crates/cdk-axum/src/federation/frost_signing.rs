@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
 use cdk::federation::{
+    FederationBarkCustodyProtocol, FederationBarkFrostAuthorization,
     FederationBarkFrostRegistrationAdapter, FederationCdkOnchainFrostAuthorization,
     FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostAggregateResultNotification,
     FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
@@ -487,7 +488,9 @@ impl FederationFrostSigningRuntime {
         derivation: &SigningDerivation,
         authorization: &AuthorizationRequest,
     ) -> Result<NonceCommitment, cdk::Error> {
-        let validated = self.validate_onchain(mint, context, authorization).await?;
+        let validated = self
+            .validate_signing_authorization(mint, context, authorization)
+            .await?;
         if &validated.derivation != derivation {
             return Err(frost_invalid("round-one derivation differs from accepted input").into());
         }
@@ -511,7 +514,8 @@ impl FederationFrostSigningRuntime {
         authorization: &AuthorizationRequest,
         commitments: &cdk_frost::NonceCommitmentSet,
     ) -> Result<SignatureShare, cdk::Error> {
-        self.validate_onchain(mint, context, authorization).await?;
+        self.validate_signing_authorization(mint, context, authorization)
+            .await?;
         let manager = self.manager(context.root_epoch().get())?;
         manager
             .lock()
@@ -528,7 +532,9 @@ impl FederationFrostSigningRuntime {
         package_hash: [u8; 32],
         signature: cdk_frost::AggregateSignature,
     ) -> Result<(), cdk::Error> {
-        let validated = self.validate_onchain(mint, context, authorization).await?;
+        let validated = self
+            .validate_signing_authorization(mint, context, authorization)
+            .await?;
         if package_hash == [0; 32] {
             return Err(frost_invalid("aggregate result package hash is empty").into());
         }
@@ -574,7 +580,8 @@ impl FederationFrostSigningRuntime {
         authorization: &AuthorizationRequest,
         reason: cdk_frost::NonceBurnReason,
     ) -> Result<(), cdk::Error> {
-        self.validate_onchain(mint, context, authorization).await?;
+        self.validate_signing_authorization(mint, context, authorization)
+            .await?;
         self.manager(context.root_epoch().get())?
             .lock()
             .await
@@ -712,6 +719,27 @@ impl FederationFrostSigningRuntime {
         validate_cdk_authorization(mint, context, authorization).await
     }
 
+    async fn validate_signing_authorization(
+        &self,
+        mint: &Mint,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+    ) -> Result<ValidatedCdkAuthorization, cdk::Error> {
+        let bark_application = mint
+            .federation_config()
+            .and_then(|runtime| runtime.public_config().frost_wallet.as_ref())
+            .and_then(|wallet| wallet.bark_application.as_ref());
+        match bark_application {
+            Some(application)
+                if authorization.application_id().to_bytes()
+                    == application.application_id.to_bytes() =>
+            {
+                self.validate_bark(mint, context, authorization).await
+            }
+            Some(_) | None => self.validate_onchain(mint, context, authorization).await,
+        }
+    }
+
     async fn validate_bark(
         &self,
         mint: &Mint,
@@ -730,12 +758,126 @@ impl FederationFrostSigningRuntime {
                 derivation: derivation.clone(),
             });
         }
-        let _ = (mint, context, authorization);
-        Err(frost_invalid(
-            "Bark custody requests remain disabled until accepted Bark operations are available",
-        )
-        .into())
+        #[cfg(not(feature = "federation-bark"))]
+        {
+            let _ = (mint, context, authorization);
+            return Err(frost_invalid("Bark custody support is not enabled").into());
+        }
+        #[cfg(feature = "federation-bark")]
+        {
+            let typed = FederationBarkFrostAuthorization::from_bytes(authorization.payload())?;
+            let entry = mint
+                .localstore()
+                .get_federation_journal_entry_by_operation_id(typed.reference.accepted_operation_id)
+                .await?
+                .ok_or_else(|| frost_invalid("accepted Bark operation is unavailable"))?;
+            let runtime = mint
+                .federation_config()
+                .ok_or_else(|| frost_invalid("federation configuration is unavailable"))?;
+            let public_config = runtime.public_config();
+            typed
+                .reference
+                .validate_accepted_operation(public_config, &entry)?;
+            let cdk::federation::FederationOperation::Bark(
+                cdk::federation::FederationBarkOperation::ActionPlan(plan),
+            ) = &entry.envelope.operation
+            else {
+                return Err(frost_invalid("Bark custody reference is not an action plan").into());
+            };
+            if plan.kind != cdk::federation::FederationBarkActionKind::IncomingClaim
+                || !typed
+                    .request_transcript
+                    .starts_with(&typed.reference.plan_or_result_hash.to_bytes())
+            {
+                return Err(frost_invalid(
+                    "Bark custody transcript is not bound to the accepted claim plan",
+                )
+                .into());
+            }
+            let projection = mint
+                .localstore()
+                .get_federation_bark_projection_snapshot()
+                .await?;
+            for input in &plan.inputs {
+                let record = projection
+                    .vtxos
+                    .iter()
+                    .find(|record| record.vtxo_id == input.vtxo_id)
+                    .ok_or_else(|| frost_invalid("accepted Bark claim input is unavailable"))?;
+                if record.locator != typed.reference.locator
+                    || record.amount != input.amount
+                    || record.state != cdk::federation::FederationBarkVtxoState::Reserved
+                    || record.reservation_action_id != Some(plan.action_id)
+                    || !contains_bytes(&typed.request_transcript, &record.artifact.bytes)
+                {
+                    return Err(frost_invalid(
+                        "Bark custody request differs from a reserved claim input",
+                    )
+                    .into());
+                }
+            }
+            let wallet = public_config
+                .frost_wallet
+                .as_ref()
+                .ok_or_else(|| frost_invalid("FROST wallet configuration is unavailable"))?;
+            let application = wallet
+                .bark_application
+                .as_ref()
+                .ok_or_else(|| frost_invalid("Bark application configuration is unavailable"))?;
+            let adapter = cdk_frost_bark::FrostBark::new(
+                application.derived_public_package(public_config, &wallet.root)?,
+            )
+            .map_err(|error| cdk::Error::from(frost_invalid(error)))?;
+            let locator = cdk_frost_bark::BarkKeyLocator::vtxo(typed.reference.locator.index);
+            let derived = adapter
+                .derive(locator)
+                .map_err(|error| cdk::Error::from(frost_invalid(error)))?;
+            let derivation = typed.signing_derivation()?;
+            let expected_protocol = match typed.reference.protocol {
+                FederationBarkCustodyProtocol::Frost => CustodyProtocol::OrdinaryFrost,
+                FederationBarkCustodyProtocol::Musig2 => CustodyProtocol::VirtualMusig2,
+                FederationBarkCustodyProtocol::ThresholdDh => CustodyProtocol::ThresholdDh,
+            };
+            let expected_signers = typed
+                .reference
+                .signer_set
+                .iter()
+                .map(|member| cdk_frost::MemberId::new(member.get()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(frost_boundary_error)?;
+            let reference_commitment = typed.reference.commitment()?.to_bytes();
+            if authorization.application_id() != adapter.application().registration().id()
+                || authorization.application_key_epoch()
+                    != adapter.application().registration().key_epoch()
+                || authorization.derivation_version()
+                    != adapter.application().registration().derivation_version()
+                || authorization.session_id() != context.session_id()
+                || context.protocol() != expected_protocol
+                || context.federation_id() != public_config.federation_id.to_bytes()
+                || context.root_epoch().get() != typed.reference.root_key_epoch
+                || context.registration() != adapter.application().registration()
+                || context.derivation_binding() != derivation.binding()
+                || context.authorization_reference() != reference_commitment
+                || context.message_commitment() != typed.message
+                || context.attempt() != typed.reference.attempt
+                || context.signer_set() != expected_signers
+                || derivation != *derived.signing_derivation()
+            {
+                return Err(frost_invalid(
+                    "Bark custody context differs from the accepted authorization",
+                )
+                .into());
+            }
+            Ok(ValidatedCdkAuthorization { derivation })
+        }
     }
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 struct ValidatedCdkAuthorization {

@@ -30,12 +30,13 @@ pub use self::config::{
     FederatedBarkStoreAvailability, ValidatedFederatedBarkConfig,
 };
 #[cfg(feature = "federation-bark")]
-pub use self::custody::CdkFrostVtxoCustody;
+pub use self::custody::{CdkFrostVtxoCustody, FederatedBarkCustodyClient};
 #[cfg(feature = "federation-bark")]
 pub use self::error::Error;
 #[cfg(feature = "federation-bark")]
 pub use self::runtime::{
-    FederatedBarkDegradedReason, FederatedBarkReadiness, FederatedBarkRuntime,
+    FederatedBarkDegradedReason, FederatedBarkReadiness, FederatedBarkReceiveClaimOutcome,
+    FederatedBarkReceiveClaimProposal, FederatedBarkReceiveClaimResult, FederatedBarkRuntime,
     FederatedBarkRuntimeStatus,
 };
 #[cfg(feature = "federation-bark")]

@@ -1,5 +1,6 @@
 //! Authenticated private transport for Bark-specific FROST custody protocols.
 
+use async_trait::async_trait;
 use axum::extract::{Json, State};
 use axum::response::Response;
 use cdk::federation::{
@@ -21,6 +22,93 @@ use crate::MintState;
 
 use super::frost_signing::{signing_error_response, signing_runtime, signing_unavailable_response};
 use super::{admit_private_request, federation_error_response, federation_runtime_config};
+
+/// Owned authenticated peer client installed behind `cdk-bark`'s custody
+/// boundary. It contains public verification material but no root share.
+#[derive(Debug)]
+pub(crate) struct FederatedBarkCustodyPeerClient {
+    client: super::peer_client::FederationRestPeerClient<cdk_http_client::Async>,
+    public_config: FederationConfig,
+    public: DerivedPublicPackage,
+}
+
+impl FederatedBarkCustodyPeerClient {
+    pub(crate) fn new(
+        client: super::peer_client::FederationRestPeerClient<cdk_http_client::Async>,
+        public_config: FederationConfig,
+        public: DerivedPublicPackage,
+    ) -> Self {
+        Self {
+            client,
+            public_config,
+            public,
+        }
+    }
+}
+
+#[async_trait]
+impl cdk_bark::FederatedBarkCustodyClient for FederatedBarkCustodyPeerClient {
+    async fn sign_frost(
+        &self,
+        context: &SigningSessionContext,
+        derivation: &SigningDerivation,
+        authorization: &AuthorizationRequest,
+    ) -> anyhow::Result<cdk_frost::AggregateSignature> {
+        super::frost_signing::FederationFrostSigningCoordinator::new(
+            &self.client,
+            self.public.clone(),
+        )
+        .sign(&self.public_config, context, derivation, authorization)
+        .await
+    }
+
+    async fn collect_virtual_musig_commitments(
+        &self,
+        context: &SigningSessionContext,
+        derivation: &SigningDerivation,
+        authorization: &AuthorizationRequest,
+    ) -> anyhow::Result<VirtualMusigNonceCommitmentSet> {
+        FederationBarkCustodyCoordinator::new(&self.client, self.public.clone())
+            .collect_virtual_musig_commitments(
+                &self.public_config,
+                context,
+                derivation,
+                authorization,
+            )
+            .await
+    }
+
+    async fn collect_virtual_musig_partial(
+        &self,
+        context: &SigningSessionContext,
+        derivation: &SigningDerivation,
+        authorization: &AuthorizationRequest,
+        commitments: &VirtualMusigNonceCommitmentSet,
+        transcript: &VirtualMusigTranscript,
+    ) -> anyhow::Result<[u8; 32]> {
+        FederationBarkCustodyCoordinator::new(&self.client, self.public.clone())
+            .collect_virtual_musig_partial(
+                &self.public_config,
+                context,
+                derivation,
+                authorization,
+                commitments,
+                transcript,
+            )
+            .await
+    }
+
+    async fn abort(
+        &self,
+        context: &SigningSessionContext,
+        authorization: &AuthorizationRequest,
+        reason: cdk_frost::NonceBurnReason,
+    ) {
+        FederationBarkCustodyCoordinator::new(&self.client, self.public.clone())
+            .abort_selected(&self.public_config, context, authorization, reason)
+            .await;
+    }
+}
 
 /// Coordinator for one accepted Bark signer attempt and exact signer subset.
 #[derive(Debug)]

@@ -2,11 +2,11 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5, 7, 9, and 10 complete,
+Status: implementation in progress; Milestones 0-5, 7, and 9-11 complete,
 Milestones 6 and 8 are locally complete but retain the dependency-publication
 and PostgreSQL-runtime verification gates recorded below. Production incoming
-quote preparation now exists; incoming payment observation/claim and outgoing
-payment execution remain gated on Milestones 11-14
+quote preparation, observation, threshold claim, and settlement bridging now
+exist; outgoing payment execution remains gated on Milestones 12-14
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -36,7 +36,7 @@ machine-specific metadata in this document.
 | 8. SQL projection | In progress (PostgreSQL runtime gate) | New paired-only migrations, all 83 historical migrations byte-locked, deterministic action/VTXO projection, retry-state hardening, SQLite's 168 tests, strict changed-crate clippy, and workspace checks pass; PostgreSQL compiles but the local test role is absent | `feat: add deterministic Bark SQL projection` (local-only progress commit) |
 | 9. Receive secrets | Complete (2026-07-19) | Authenticated 4 KiB private transport, AES-GCM persistence-before-acknowledgement and crash recovery, threshold/actor signature checks, verified-checkpoint retention, encrypted backup/restore, and feature-isolation checks passed | `feat: protect federated Bark receive secrets` |
 | 10. Incoming preparation | Complete (2026-07-19) | Consensus-first secret protection and actor failover, exact signed-invoice validation, stable NUT-19 retry identity, restart-safe Ark reservation, ordinary `MintQuote` reuse, focused CDK/Bark tests, and production feature wiring passed | `feat: complete federated Bark quote preparation` |
-| 11. Incoming claim | Pending | — | — |
+| 11. Incoming claim | Complete (2026-07-19) | Independent payment-hash polling, threshold-matched HTLC evidence, accepted exact claim plans, FROST/virtual-MuSig custody, durable preimage/result checkpoints, independently validated claimed VTXOs, two-layer result/payment quorums, and focused restart/adversarial tests passed | `feat: complete federated Bark incoming claims` |
 | 12. Outgoing planning | Pending | — | — |
 | 13. Outgoing execution | Pending | — | — |
 | 14. Failure recovery | Pending | — | — |
@@ -2409,6 +2409,118 @@ Exit criteria:
 - standalone BOLT11 quote tests are unchanged.
 
 ### Milestone 11: incoming observation and claim
+
+Status: complete on 2026-07-19.
+
+Bark support commit: `a882840d` (`feat: persist federated receive claim results`).
+
+Implementation record:
+
+- added an idempotent incoming worker under one member-local action lock. Its
+  five-second repair scan and existing payment-event wake-up both invoke the
+  same independent payment-hash poll; a notification can only make that poll
+  happen sooner and is never accepted as settlement evidence;
+- made every member poll and validate the exact Ark invoice, status, HTLC VTXO
+  chain, destination, amount, fee, expiry, and canonical evidence bytes. A
+  `ReceiveHtlcsReady` transition is admissible only after distinct matching
+  `Accepted` observations reach the configured signature threshold;
+- construct the receive-claim package without signing, reserve its exact HTLC
+  inputs and output locator in an accepted `ActionPlan`, and reconstruct the
+  complete package from member-local Bark evidence before execution. The plan
+  fixes actor, signer set, attempt, inputs, destination, expiry, artifacts, and
+  request commitment;
+- replaced the Bark FROST registration's fail-closed placeholder with a typed
+  authorization that carries canonical derivation bytes, the exact BIP340
+  message, accepted operation reference, and bounded request transcript.
+  Every participant reloads the applied plan and projection, checks the
+  reserved input bytes/locator/amount, re-derives the application key, and
+  verifies every signing-session field before ordinary FROST or virtual MuSig2
+  can release a contribution;
+- connected the Bark custody adapter to the authenticated CDK peer transport.
+  Ordinary Schnorr signing uses the existing threshold coordinator; virtual
+  MuSig2 uses durable participant commitments and partial-share ledgers, binds
+  the outer keys/nonces/message/tweak, and burns ambiguous sessions through the
+  existing abort protocol;
+- persist the `PreimageRevealed` checkpoint before the claim RPC and retain a
+  new durable `Claimed` checkpoint containing the output VTXO IDs until CDK
+  accepts the terminal transition. Exact retries hydrate the already stored
+  full outputs, while an error after disclosure returns `RecoveryRequired`
+  and can never be translated back to unpaid;
+- split the semantic result into ordered `Reserved -> PendingSpend` and
+  `PendingSpend -> Spent` transitions plus newly `Spendable` output VTXOs.
+  CDK admission requires the exact accepted predecessor/input set and at least
+  the Cashu amount, without exceeding the accepted output allocation;
+- added an independent result-attestation layer after the actor's claimed
+  transition. Each member decodes the opaque output bytes and validates their
+  canonical encoding, VTXO ID, amount, configured Ark key, FROST-derived
+  locator ownership, chain anchor, and complete signed transaction chain.
+  Only a threshold of distinct matching `Succeeded` Bark observations enables
+  the ordinary mint-payment observation bridge;
+- retained the existing `FederationMintQuotePaymentObservation` policy as the
+  only quote-paid finalizer. Consequently one member cannot mark a quote paid
+  either by forging a Bark result report or by emitting the outer CDK payment
+  observation; and
+- kept standalone payment backends and mint business logic unchanged. The
+  only core seam is a federation-Bark branch in the existing quote probe, and
+  it emits the ordinary quote-ID settlement identity after both inner and
+  outer evidence policies are satisfied.
+
+Verification record:
+
+```text
+bark:
+cargo check -p bark-wallet -p bark-server --offline
+  passed; two pre-existing bark/src/chain.rs warnings remain
+
+cargo test -p bark-wallet \
+  clean_databases_replay_identical_records_without_local_keys --offline
+  1 passed; includes the durable Claimed restart phase
+
+cdk:
+cargo check -p cdk -p cdk-bark -p cdk-axum \
+  --features federation-bark --offline
+  passed
+
+cargo test -p cdk-common --features federation \
+  frost_authorization_binds_exact_canonical_transcript --offline
+  1 passed
+
+cargo test -p cdk --features federation --lib \
+  one_false_bark_result_observer_cannot_form_the_inner_quorum --offline
+  1 passed
+
+cargo test -p cdk --features federation --lib \
+  proposer_only_invoice_visibility_cannot_form_payment_quorum --offline
+  1 passed
+
+cargo test -p cdk-bark \
+  --features federation-bark,federation-test-utils --offline
+  8 passed
+
+cargo test -p cdk-axum --features federation-bark --offline --no-run
+  passed
+
+cargo test -p cdk-axum --features federation-bark --offline \
+  bark_custody_transport_rotates_attempts_and_retries_exact_results -- --nocapture
+  1 passed
+
+cargo clippy -p cdk-common --features federation --all-targets \
+  --offline -- -D warnings
+cargo clippy -p cdk-bark \
+  --features federation-bark,federation-test-utils --all-targets \
+  --offline -- -D warnings
+  passed; the reviewed Bark dependency retains its two pre-existing warnings
+
+cargo clippy -p cdk --features federation --lib --offline -- -D warnings
+cargo clippy -p cdk-axum --features federation-bark --all-targets \
+  --offline -- -D warnings
+  reach the same ten pre-existing Rust 1.95 lints in unchanged CDK federation,
+  melt, mint-construction, and wallet code; no diagnostic points to Milestone 11
+
+cargo fmt -p cdk-common -p cdk-bark -p cdk -p cdk-axum -- --check
+git diff --check
+  passed
+```
 
 Deliverables:
 

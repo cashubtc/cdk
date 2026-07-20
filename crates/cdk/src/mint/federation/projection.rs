@@ -63,7 +63,10 @@ impl Mint {
         operation: &FederationBarkOperation,
     ) -> Result<(), Error> {
         operation.validate()?;
-        let config = self.effective_federation_config().await?.ok_or(Error::Internal)?;
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
         let application = config
             .public_config()
             .frost_wallet
@@ -88,11 +91,41 @@ impl Mint {
                         "observation differs from its action or Ark source",
                     ));
                 }
+                if observation.status == FederationBarkObservationStatus::Succeeded {
+                    let FederationBarkOperation::ActionTransition(transition) = &action.operation
+                    else {
+                        return Err(bark_state_error(
+                            "successful observation does not follow an action result",
+                        ));
+                    };
+                    let amount = transition
+                        .vtxo_transitions
+                        .iter()
+                        .filter(|mutation| {
+                            mutation.previous_state.is_none()
+                                && mutation.new_state == FederationBarkVtxoState::Spendable
+                        })
+                        .try_fold(Amount::ZERO, |sum, mutation| {
+                            sum.checked_add(mutation.amount).ok_or_else(|| {
+                                bark_state_error("claimed output observation amount overflow")
+                            })
+                        })?;
+                    if action.phase != FederationBarkSemanticPhase::ReceiveClaimed
+                        || observation.result_hash != transition.result_hash
+                        || observation.amount != amount
+                        || observation.fee != Amount::ZERO
+                    {
+                        return Err(bark_state_error(
+                            "successful observation differs from the accepted claim result",
+                        ));
+                    }
+                }
             }
             FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::ReceiveHtlcsReady =>
             {
-                let action = action.ok_or_else(|| bark_state_error("HTLC evidence has no action"))?;
+                let action =
+                    action.ok_or_else(|| bark_state_error("HTLC evidence has no action"))?;
                 if action.phase != FederationBarkSemanticPhase::ReceivePrepared {
                     return Err(bark_state_error(
                         "HTLC evidence does not follow receive preparation",
@@ -102,13 +135,13 @@ impl Mint {
                     .federation_bark_receive_intent(action.origin_operation_id)
                     .await?
                     .ok_or_else(|| bark_state_error("receive intent is missing"))?;
-                let amount = transition
-                    .vtxo_transitions
-                    .iter()
-                    .try_fold(Amount::ZERO, |sum, mutation| {
+                let amount = transition.vtxo_transitions.iter().try_fold(
+                    Amount::ZERO,
+                    |sum, mutation| {
                         sum.checked_add(mutation.amount)
                             .ok_or_else(|| bark_state_error("HTLC evidence amount overflow"))
-                    })?;
+                    },
+                )?;
                 let fee = intent
                     .gross_amount
                     .checked_sub(amount)
@@ -179,6 +212,117 @@ impl Mint {
                             "claim plan input differs from accepted HTLC evidence",
                         ));
                     }
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ReceivePreimageDisclosed =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("preimage disclosure has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted claim plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("claim transition references a non-plan"));
+                };
+                let transitioned = transition
+                    .vtxo_transitions
+                    .iter()
+                    .map(|mutation| mutation.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                let planned = plan
+                    .inputs
+                    .iter()
+                    .map(|input| input.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                if action.phase != FederationBarkSemanticPhase::ClaimPlanned
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                    || transitioned != planned
+                {
+                    return Err(bark_state_error(
+                        "preimage disclosure differs from the accepted claim plan",
+                    ));
+                }
+                for input in &plan.inputs {
+                    let vtxo = snapshot
+                        .vtxos
+                        .iter()
+                        .find(|vtxo| vtxo.vtxo_id == input.vtxo_id)
+                        .ok_or_else(|| bark_state_error("reserved claim input is missing"))?;
+                    if vtxo.state != FederationBarkVtxoState::Reserved
+                        || vtxo.reservation_action_id != Some(plan.action_id)
+                        || vtxo.amount != input.amount
+                    {
+                        return Err(bark_state_error(
+                            "preimage disclosure input is not reserved by its claim",
+                        ));
+                    }
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ReceiveClaimed =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("claimed receive has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted claim plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("claim result references a non-plan"));
+                };
+                let intent = self
+                    .federation_bark_receive_intent(action.origin_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("receive intent is missing"))?;
+                let spent = transition
+                    .vtxo_transitions
+                    .iter()
+                    .filter(|mutation| {
+                        mutation.previous_state == Some(FederationBarkVtxoState::PendingSpend)
+                            && mutation.new_state == FederationBarkVtxoState::Spent
+                    })
+                    .map(|mutation| mutation.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                let planned = plan
+                    .inputs
+                    .iter()
+                    .map(|input| input.vtxo_id)
+                    .collect::<BTreeSet<_>>();
+                let output = plan
+                    .outputs
+                    .first()
+                    .ok_or_else(|| bark_state_error("claim plan has no output allocation"))?;
+                let mut spendable_sat = 0_u64;
+                for mutation in transition.vtxo_transitions.iter().filter(|mutation| {
+                    mutation.previous_state.is_none()
+                        && mutation.new_state == FederationBarkVtxoState::Spendable
+                }) {
+                    if mutation.locator != output.locator {
+                        return Err(bark_state_error(
+                            "claim result uses an unallocated output locator",
+                        ));
+                    }
+                    spendable_sat = spendable_sat
+                        .checked_add(u64::from(mutation.amount))
+                        .ok_or_else(|| bark_state_error("claim result amount overflow"))?;
+                }
+                if action.phase != FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                    || spent != planned
+                    || spendable_sat < u64::from(intent.cashu_amount)
+                    || spendable_sat > u64::from(output.amount)
+                {
+                    return Err(bark_state_error(
+                        "claim result does not prove sufficient accepted spendable value",
+                    ));
                 }
             }
             FederationBarkOperation::ReceiveIntent(_)

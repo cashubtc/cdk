@@ -1,6 +1,7 @@
 //! Member-local Bark wallet runtime and bounded readiness reporting.
 
 use core::fmt;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use bark::actions::lightning::receive::LightningReceiveAntiDosMode;
@@ -9,9 +10,10 @@ use bark::ark::mailbox::MailboxIdentifier;
 use bark::ark::ProtocolEncoding;
 use bark::custody::{KeySourceDescriptor, KeySourceKind, VtxoCustody, VtxoKeyLocator};
 use bark::federation::{
-    FederationActionId, FederationLightningReceiveClaimPlan, FederationLightningReceiveIntent,
-    FederationLightningReceivePlan, FederationLightningReceiveStatus, FederationRequestCommitment,
-    FederationWallet,
+    FederationActionId, FederationLightningReceiveClaimExecution,
+    FederationLightningReceiveClaimPlan, FederationLightningReceiveIntent,
+    FederationLightningReceivePhase, FederationLightningReceivePlan,
+    FederationLightningReceiveStatus, FederationRequestCommitment, FederationWallet,
 };
 use bark::{OpenWalletArgs, Wallet, WalletProperties};
 use bitcoin::secp256k1::PublicKey;
@@ -19,19 +21,21 @@ use cdk_common::federation::{
     federation_bark_receive_request_hash, FederationBarkActionKind, FederationBarkActionPlan,
     FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
     FederationBarkDigest, FederationBarkExternalId, FederationBarkMemberObservation,
-    FederationBarkObservationStatus, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
-    FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase, FederationBarkVtxoId,
-    FederationBarkVtxoInput, FederationBarkVtxoLocator, FederationBarkVtxoOutput,
-    FederationBarkVtxoState, FederationBarkVtxoTransition, FederationConfig,
-    FederationOperationId, MemberId, FEDERATION_BARK_OPERATION_VERSION,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkReceiveIntent,
+    FederationBarkReceivePrepared, FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase,
+    FederationBarkVtxoId, FederationBarkVtxoInput, FederationBarkVtxoLocator,
+    FederationBarkVtxoOutput, FederationBarkVtxoState, FederationBarkVtxoTransition,
+    FederationConfig, FederationJournalEntry, FederationOperation, FederationOperationId,
+    FederationOperationStatus, MemberId, FEDERATION_BARK_OPERATION_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
 use crate::{
-    CdkFrostVtxoCustody, Error, FederatedBarkLimits, FederatedBarkLocalConfig,
-    FederatedBarkReceiveSecretStore, FederatedBarkScope, ValidatedFederatedBarkConfig,
+    CdkFrostVtxoCustody, Error, FederatedBarkCustodyClient, FederatedBarkLimits,
+    FederatedBarkLocalConfig, FederatedBarkReceiveSecretStore, FederatedBarkScope,
+    ValidatedFederatedBarkConfig,
 };
 
 /// Whether member-local Bark state can serve an accepted frontier.
@@ -70,6 +74,53 @@ pub struct FederatedBarkRuntimeStatus {
     pub degraded_reason: Option<FederatedBarkDegradedReason>,
 }
 
+/// Consensus transitions produced by one accepted incoming claim execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FederatedBarkReceiveClaimOutcome {
+    /// The preimage boundary and spendable output were both proven locally.
+    Claimed {
+        /// Point-of-no-return transition for the accepted inputs.
+        preimage_disclosed: FederationBarkActionTransition,
+        /// Exact locally verified result finalized after the disclosure
+        /// transition itself is accepted.
+        result: Box<FederatedBarkReceiveClaimResult>,
+    },
+    /// The point of no return is durable but the Ark result is ambiguous.
+    RecoveryRequired {
+        /// Transition that prevents the receive from reverting to unpaid.
+        preimage_disclosed: FederationBarkActionTransition,
+    },
+}
+
+/// Consensus-selected execution fields for an exact receive-claim proposal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederatedBarkReceiveClaimProposal {
+    /// Member authorized to execute the accepted attempt.
+    pub actor: MemberId,
+    /// Sorted eligible FROST signer set.
+    pub signer_set: Vec<MemberId>,
+    /// Non-zero custody attempt.
+    pub attempt: u32,
+    /// Consensus-allocated locator for the claimed output.
+    pub output_locator: FederationBarkVtxoLocator,
+}
+
+/// Exact cryptographic claim result retained between the two ordered result
+/// transitions. Fields remain private so callers cannot forge terminal value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederatedBarkReceiveClaimResult {
+    plan_operation_id: FederationOperationId,
+    action_id: cdk_common::federation::FederationBarkActionId,
+    quote: String,
+    payment_hash: cdk_common::federation::FederationBarkDigest,
+    attempt: u32,
+    signer_set: Vec<MemberId>,
+    input_transitions: Vec<FederationBarkVtxoTransition>,
+    output_transitions: Vec<FederationBarkVtxoTransition>,
+    artifacts: Vec<FederationBarkArtifact>,
+    result_hash: FederationBarkDigest,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RuntimeHealth {
     local_frontier: u64,
@@ -83,6 +134,7 @@ pub struct FederatedBarkRuntime {
     federation: FederationConfig,
     limits: FederatedBarkLimits,
     wallet: FederationWallet,
+    custody: Arc<CdkFrostVtxoCustody>,
     receive_secrets: Arc<FederatedBarkReceiveSecretStore>,
     health: RwLock<RuntimeHealth>,
 }
@@ -107,6 +159,7 @@ impl FederatedBarkRuntime {
         federation: &FederationConfig,
         member_id: MemberId,
         local: FederatedBarkLocalConfig,
+        custody_client: Arc<dyn FederatedBarkCustodyClient>,
     ) -> Result<Arc<Self>, Error> {
         let validated =
             ValidatedFederatedBarkConfig::validate(federation_enabled, federation, &local)?;
@@ -117,8 +170,13 @@ impl FederatedBarkRuntime {
             &local.receive_secret_store.database_path,
             Arc::clone(&local.receive_secret_store.encryption_key),
         )?);
-        let custody = Arc::new(CdkFrostVtxoCustody::new(validated.clone()));
+        let custody = Arc::new(CdkFrostVtxoCustody::with_client(
+            validated.clone(),
+            federation.clone(),
+            custody_client,
+        ));
         validated.validate_descriptor(&custody.descriptor())?;
+        let wallet_custody: Arc<dyn VtxoCustody> = custody.clone();
         let expected_operational_fingerprint = local.operational_seed.fingerprint();
         let expected_descriptor = custody.descriptor();
         let expected_server = validated.ark_server_public_key();
@@ -126,7 +184,7 @@ impl FederatedBarkRuntime {
         let wallet = Wallet::open_with_custody(
             validated.network(),
             local.operational_seed,
-            custody,
+            wallet_custody,
             local.bark,
             OpenWalletArgs {
                 run_daemon: false,
@@ -176,6 +234,7 @@ impl FederatedBarkRuntime {
             federation: federation.clone(),
             limits,
             wallet,
+            custody,
             receive_secrets,
             health: RwLock::new(RuntimeHealth {
                 local_frontier: 0,
@@ -373,10 +432,7 @@ impl FederatedBarkRuntime {
         intent: &FederationBarkReceiveIntent,
         prepared: &FederationBarkReceivePrepared,
         ready_operation_id: FederationOperationId,
-        actor: MemberId,
-        signer_set: Vec<MemberId>,
-        attempt: u32,
-        output_locator: FederationBarkVtxoLocator,
+        proposal: FederatedBarkReceiveClaimProposal,
     ) -> Result<FederationBarkActionPlan, Error> {
         let receive = self.receive_plan(intent, prepared)?;
         let evidence = self
@@ -389,17 +445,17 @@ impl FederatedBarkRuntime {
             .plan_lightning_receive_claim(
                 evidence,
                 VtxoKeyLocator {
-                    index: output_locator.index,
+                    index: proposal.output_locator.index,
                 },
-                attempt,
+                proposal.attempt,
             )
             .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
         self.claim_action_plan(
             intent,
             ready_operation_id,
-            actor,
-            signer_set,
-            output_locator,
+            proposal.actor,
+            proposal.signer_set,
+            proposal.output_locator,
             &claim,
         )
     }
@@ -426,10 +482,7 @@ impl FederatedBarkRuntime {
             .prepare_lightning_receive_htlcs(&receive)
             .await
             .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
-        let output = plan
-            .outputs
-            .first()
-            .ok_or(Error::ReceiveClaimPlanInvalid)?;
+        let output = plan.outputs.first().ok_or(Error::ReceiveClaimPlanInvalid)?;
         let claim = self
             .wallet
             .plan_lightning_receive_claim(
@@ -457,6 +510,213 @@ impl FederatedBarkRuntime {
         Ok(claim)
     }
 
+    /// Execute an already applied claim plan through threshold custody and
+    /// return only semantic transition candidates. An error after Bark's
+    /// durable preimage checkpoint is converted to `RecoveryRequired` so the
+    /// caller cannot reinterpret the quote as unpaid.
+    pub async fn execute_receive_claim(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared: &FederationBarkReceivePrepared,
+        accepted_plan: FederationJournalEntry,
+    ) -> Result<FederatedBarkReceiveClaimOutcome, Error> {
+        if accepted_plan.status() != FederationOperationStatus::Applied {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+            &accepted_plan.envelope.operation
+        else {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        };
+        let claim = self
+            .validate_receive_claim_plan(intent, prepared, plan)
+            .await?;
+        let receive = self.receive_plan(intent, prepared)?;
+        let operation = FederationBarkOperation::ActionPlan(plan.clone());
+        let plan_commitment = operation
+            .commitment()
+            .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+        let action_id = FederationActionId::from_bytes(plan.action_id.to_bytes())
+            .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+        let request_commitment =
+            FederationRequestCommitment::from_bytes(plan_commitment.to_bytes())
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+        let authorization_context = plan_commitment.to_bytes().to_vec();
+        self.custody
+            .activate_claim(
+                accepted_plan.clone(),
+                intent.destination,
+                authorization_context.clone(),
+            )
+            .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+        let execution = FederationLightningReceiveClaimExecution {
+            external_action_id: action_id,
+            request_commitment,
+            authorization_context,
+        };
+        let result = self
+            .wallet
+            .execute_lightning_receive_claim(&receive, &claim, &execution)
+            .await;
+        let disclosed = match &result {
+            Ok(_) => true,
+            Err(_) => matches!(
+                self.wallet.lightning_receive_phase(&receive).await,
+                Ok(FederationLightningReceivePhase::PreimageRevealed)
+            ),
+        };
+        self.custody.deactivate_claim();
+        if !disclosed {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let preimage_disclosed = receive_preimage_disclosed_transition(
+            self.member_id,
+            &accepted_plan,
+            intent,
+            plan,
+            &claim,
+            plan_commitment,
+        )?;
+        match result {
+            Ok(outputs) => Ok(FederatedBarkReceiveClaimOutcome::Claimed {
+                preimage_disclosed,
+                result: Box::new(receive_claim_result(
+                    &accepted_plan,
+                    intent,
+                    plan,
+                    &claim,
+                    outputs,
+                    plan_commitment,
+                )?),
+            }),
+            Err(_) => Ok(FederatedBarkReceiveClaimOutcome::RecoveryRequired { preimage_disclosed }),
+        }
+    }
+
+    /// Bind a verified local claim result to the now-applied disclosure
+    /// transition. This enforces the ordered `Reserved -> PendingSpend ->
+    /// Spent` projection rather than skipping the point-of-no-return record.
+    pub fn finalize_receive_claim(
+        &self,
+        accepted_preimage: &FederationJournalEntry,
+        result: FederatedBarkReceiveClaimResult,
+    ) -> Result<FederationBarkActionTransition, Error> {
+        if accepted_preimage.status() != FederationOperationStatus::Applied {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let FederationOperation::Bark(FederationBarkOperation::ActionTransition(disclosed)) =
+            &accepted_preimage.envelope.operation
+        else {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        };
+        if disclosed.phase != FederationBarkSemanticPhase::ReceivePreimageDisclosed
+            || disclosed.action_id != result.action_id
+            || disclosed.plan_operation_id != result.plan_operation_id
+        {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let mut transitions = result.input_transitions;
+        transitions.extend(result.output_transitions);
+        transitions.sort();
+        Ok(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: result.action_id,
+            quote: Some(result.quote),
+            phase: FederationBarkSemanticPhase::ReceiveClaimed,
+            actor: self.member_id,
+            plan_operation_id: result.plan_operation_id,
+            predecessor_operation_id: accepted_preimage.operation_id,
+            payment_hash: Some(result.payment_hash),
+            attempt: result.attempt,
+            signer_set: result.signer_set,
+            request_hash: disclosed.result_hash,
+            result_hash: result.result_hash,
+            external_id: receive_external_id(
+                b"cdk/bark/receive-claimed-external/v1",
+                result.action_id,
+                accepted_preimage.operation_id,
+                result.attempt,
+            )?,
+            artifacts: result.artifacts,
+            vtxo_transitions: transitions,
+        })
+    }
+
+    /// Acknowledge that the terminal claim transition is durably accepted and
+    /// allow Bark to remove its successful-result retry checkpoint.
+    pub async fn acknowledge_receive_claim(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared: &FederationBarkReceivePrepared,
+    ) -> Result<(), Error> {
+        let receive = self.receive_plan(intent, prepared)?;
+        self.wallet
+            .acknowledge_lightning_receive_claim(&receive)
+            .await
+            .map_err(|_| Error::ReceiveClaimRecoveryRequired)
+    }
+
+    /// Independently validate every spendable VTXO in an accepted claim
+    /// candidate before this member attests to the result. The transition's
+    /// opaque bytes are not trusted: they must canonically decode to the exact
+    /// ID, amount, and locator in the semantic mutation, use the configured
+    /// Ark key, and pass Bark's complete signed-chain validation.
+    pub async fn validate_receive_claim_result(
+        &self,
+        transition: &FederationBarkActionTransition,
+    ) -> Result<cdk_common::Amount, Error> {
+        if transition.phase != FederationBarkSemanticPhase::ReceiveClaimed {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let outputs = transition
+            .vtxo_transitions
+            .iter()
+            .filter(|mutation| {
+                mutation.previous_state.is_none()
+                    && mutation.new_state == FederationBarkVtxoState::Spendable
+            })
+            .collect::<Vec<_>>();
+        if outputs.is_empty() {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let mut ids = BTreeSet::new();
+        let mut amount = cdk_common::Amount::ZERO;
+        for output in outputs {
+            if !ids.insert(output.vtxo_id) {
+                return Err(Error::ReceiveClaimPlanInvalid);
+            }
+            let mut artifacts = transition.artifacts.iter().filter(|artifact| {
+                artifact.kind == FederationBarkArtifactKind::Vtxo
+                    && artifact.hash == output.artifact_hash
+            });
+            let artifact = artifacts.next().ok_or(Error::ReceiveClaimPlanInvalid)?;
+            if artifacts.next().is_some() {
+                return Err(Error::ReceiveClaimPlanInvalid);
+            }
+            let vtxo = bark::ark::vtxo::Vtxo::<bark::ark::vtxo::Full>::deserialize(&artifact.bytes)
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+            if vtxo.serialize() != artifact.bytes
+                || vtxo.id().to_bytes() != output.vtxo_id.to_bytes()
+                || vtxo.amount().to_sat() != u64::from(output.amount)
+            {
+                return Err(Error::ReceiveClaimPlanInvalid);
+            }
+            self.wallet
+                .validate_claimed_vtxo(
+                    VtxoKeyLocator {
+                        index: output.locator.index,
+                    },
+                    &vtxo,
+                )
+                .await
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+            amount = amount
+                .checked_add(output.amount)
+                .ok_or(Error::ReceiveClaimPlanInvalid)?;
+        }
+        Ok(amount)
+    }
+
     fn claim_action_plan(
         &self,
         intent: &FederationBarkReceiveIntent,
@@ -471,14 +731,16 @@ impl FederatedBarkRuntime {
         }
         signer_set.sort();
         signer_set.dedup();
-        if signer_set.len() < usize::from(
-            self.federation
-                .frost_wallet
-                .as_ref()
-                .and_then(|wallet| wallet.bark_application.as_ref())
-                .ok_or(Error::MissingApplication)?
-                .threshold,
-        ) {
+        if signer_set.len()
+            < usize::from(
+                self.federation
+                    .frost_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.bark_application.as_ref())
+                    .ok_or(Error::MissingApplication)?
+                    .threshold,
+            )
+        {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
         let mut inputs = claim
@@ -494,10 +756,8 @@ impl FederatedBarkRuntime {
             .collect::<Result<Vec<_>, Error>>()?;
         inputs.sort();
         let request_bytes = receive_claim_request_bytes(claim);
-        let request_artifact = bark_artifact(
-            FederationBarkArtifactKind::ArkRequest,
-            request_bytes,
-        )?;
+        let request_artifact =
+            bark_artifact(FederationBarkArtifactKind::ArkRequest, request_bytes)?;
         let mut artifacts = claim
             .input_vtxos
             .iter()
@@ -693,6 +953,144 @@ fn receive_htlc_transition(
         )?,
         artifacts,
         vtxo_transitions,
+    })
+}
+
+fn receive_preimage_disclosed_transition(
+    actor: MemberId,
+    accepted_plan: &FederationJournalEntry,
+    intent: &FederationBarkReceiveIntent,
+    plan: &FederationBarkActionPlan,
+    claim: &FederationLightningReceiveClaimPlan,
+    plan_commitment: FederationBarkDigest,
+) -> Result<FederationBarkActionTransition, Error> {
+    let mut artifacts = claim
+        .input_vtxos
+        .iter()
+        .map(|vtxo| bark_artifact(FederationBarkArtifactKind::Vtxo, vtxo.serialize()))
+        .collect::<Result<Vec<_>, _>>()?;
+    artifacts.sort();
+    let mut vtxo_transitions = claim
+        .input_vtxos
+        .iter()
+        .map(|vtxo| {
+            let bytes = vtxo.serialize();
+            Ok(FederationBarkVtxoTransition {
+                vtxo_id: FederationBarkVtxoId::from_bytes(vtxo.id().to_bytes())
+                    .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
+                locator: intent.destination,
+                amount: cdk_common::Amount::from(vtxo.amount().to_sat()),
+                previous_state: Some(FederationBarkVtxoState::Reserved),
+                new_state: FederationBarkVtxoState::PendingSpend,
+                artifact_hash: bark_digest(&bytes)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    vtxo_transitions.sort();
+    let mut result = Vec::new();
+    result.extend_from_slice(b"cdk/bark/receive-preimage-disclosed/v1");
+    result.extend_from_slice(&plan.action_id.to_bytes());
+    result.extend_from_slice(&accepted_plan.operation_id.to_bytes());
+    result.extend_from_slice(&intent.payment_hash.to_bytes());
+    result.extend_from_slice(&plan.attempt.to_be_bytes());
+    Ok(FederationBarkActionTransition {
+        version: FEDERATION_BARK_OPERATION_VERSION,
+        action_id: plan.action_id,
+        quote: Some(intent.quote.clone()),
+        phase: FederationBarkSemanticPhase::ReceivePreimageDisclosed,
+        actor,
+        plan_operation_id: accepted_plan.operation_id,
+        predecessor_operation_id: accepted_plan.operation_id,
+        payment_hash: Some(intent.payment_hash),
+        attempt: plan.attempt,
+        signer_set: plan.signer_set.clone(),
+        request_hash: plan_commitment,
+        result_hash: bark_digest(&result)?,
+        external_id: receive_external_id(
+            b"cdk/bark/receive-preimage-external/v1",
+            plan.action_id,
+            accepted_plan.operation_id,
+            plan.attempt,
+        )?,
+        artifacts,
+        vtxo_transitions,
+    })
+}
+
+fn receive_claim_result(
+    accepted_plan: &FederationJournalEntry,
+    intent: &FederationBarkReceiveIntent,
+    plan: &FederationBarkActionPlan,
+    claim: &FederationLightningReceiveClaimPlan,
+    outputs: Vec<bark::ark::vtxo::Vtxo<bark::ark::vtxo::Full>>,
+    plan_commitment: FederationBarkDigest,
+) -> Result<FederatedBarkReceiveClaimResult, Error> {
+    let output = plan.outputs.first().ok_or(Error::ReceiveClaimPlanInvalid)?;
+    let mut artifacts = Vec::new();
+    let mut input_transitions = Vec::new();
+    for vtxo in &claim.input_vtxos {
+        let bytes = vtxo.serialize();
+        artifacts.push(bark_artifact(
+            FederationBarkArtifactKind::Vtxo,
+            bytes.clone(),
+        )?);
+        input_transitions.push(FederationBarkVtxoTransition {
+            vtxo_id: FederationBarkVtxoId::from_bytes(vtxo.id().to_bytes())
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
+            locator: intent.destination,
+            amount: cdk_common::Amount::from(vtxo.amount().to_sat()),
+            previous_state: Some(FederationBarkVtxoState::PendingSpend),
+            new_state: FederationBarkVtxoState::Spent,
+            artifact_hash: bark_digest(&bytes)?,
+        });
+    }
+    let mut output_transitions = Vec::new();
+    let mut materialized_amount_sat = 0_u64;
+    let mut result_bytes = Vec::new();
+    result_bytes.extend_from_slice(b"cdk/bark/receive-claimed-result/v1");
+    result_bytes.extend_from_slice(&plan_commitment.to_bytes());
+    for vtxo in outputs {
+        let bytes = vtxo.serialize();
+        let amount = cdk_common::Amount::from(vtxo.amount().to_sat());
+        materialized_amount_sat = materialized_amount_sat
+            .checked_add(u64::from(amount))
+            .ok_or(Error::ReceiveClaimPlanInvalid)?;
+        append_bounded_bytes(&mut result_bytes, &bytes)?;
+        artifacts.push(bark_artifact(
+            FederationBarkArtifactKind::Vtxo,
+            bytes.clone(),
+        )?);
+        output_transitions.push(FederationBarkVtxoTransition {
+            vtxo_id: FederationBarkVtxoId::from_bytes(vtxo.id().to_bytes())
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
+            locator: output.locator,
+            amount,
+            previous_state: None,
+            new_state: FederationBarkVtxoState::Spendable,
+            artifact_hash: bark_digest(&bytes)?,
+        });
+    }
+    if output_transitions.is_empty()
+        || materialized_amount_sat < u64::from(intent.cashu_amount)
+        || materialized_amount_sat > u64::from(output.amount)
+    {
+        return Err(Error::ReceiveClaimPlanInvalid);
+    }
+    artifacts.sort();
+    artifacts.dedup();
+    input_transitions.sort();
+    output_transitions.sort();
+    Ok(FederatedBarkReceiveClaimResult {
+        plan_operation_id: accepted_plan.operation_id,
+        action_id: plan.action_id,
+        quote: intent.quote.clone(),
+        payment_hash: intent.payment_hash,
+        attempt: plan.attempt,
+        signer_set: plan.signer_set.clone(),
+        input_transitions,
+        output_transitions,
+        artifacts,
+        result_hash: bark_digest(&result_bytes)?,
     })
 }
 

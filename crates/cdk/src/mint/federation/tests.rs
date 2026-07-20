@@ -65,7 +65,7 @@ mod transaction_signing;
 
 use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 
-use super::FederationRuntimeConfig;
+use super::{federation_bark_matching_result_observers, FederationRuntimeConfig};
 
 fn runtime_configs() -> Vec<FederationRuntimeConfig> {
     let members = (1..=2)
