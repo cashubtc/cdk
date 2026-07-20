@@ -327,6 +327,36 @@ pub struct FederationBarkProjectionSnapshot {
 }
 
 impl FederationBarkProjectionSnapshot {
+    /// Highest accepted operation index represented by any materialized Bark row.
+    #[must_use]
+    pub fn frontier(&self) -> Option<u64> {
+        self.actions
+            .iter()
+            .map(|record| record.latest_operation_index)
+            .chain(
+                self.vtxos
+                    .iter()
+                    .map(|record| record.latest_operation_index),
+            )
+            .chain(
+                self.derivation_allocations
+                    .iter()
+                    .map(|record| record.operation_index),
+            )
+            .chain(
+                self.reservations
+                    .iter()
+                    .map(|record| record.operation_index),
+            )
+            .chain(self.transitions.iter().map(|record| record.operation_index))
+            .chain(
+                self.observations
+                    .iter()
+                    .map(|record| record.operation_index),
+            )
+            .max()
+    }
+
     /// Canonical backend-parity bytes.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(self)?)
@@ -391,5 +421,42 @@ fn operation_head_fields(
             Some(transition.predecessor_operation_id),
         ),
         FederationBarkOperation::MemberObservation(_) => (None, 0, None, None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FederationBarkObservationRecord, FederationBarkProjectionSnapshot};
+    use crate::federation::{
+        FederationBarkActionId, FederationBarkDigest, FederationBarkMemberObservation,
+        FederationBarkObservationStatus, FederationBarkOperation, FederationOperationId, MemberId,
+        FEDERATION_BARK_OPERATION_VERSION,
+    };
+    use crate::Amount;
+
+    #[test]
+    fn projection_frontier_covers_observation_only_progress() {
+        let mut snapshot = FederationBarkProjectionSnapshot::default();
+        assert_eq!(snapshot.frontier(), None);
+        snapshot.observations.push(FederationBarkObservationRecord {
+            operation_id: FederationOperationId::from_bytes([9; 32]),
+            operation_index: 17,
+            operation: FederationBarkOperation::MemberObservation(
+                FederationBarkMemberObservation {
+                    version: FEDERATION_BARK_OPERATION_VERSION,
+                    action_id: FederationBarkActionId::from_bytes([8; 32]).expect("action ID"),
+                    quote: None,
+                    observer: MemberId::new(1).expect("member ID"),
+                    observation_epoch: 1,
+                    source_scope: FederationBarkDigest::from_bytes([7; 32]).expect("source scope"),
+                    payment_hash: None,
+                    status: FederationBarkObservationStatus::Pending,
+                    amount: Amount::ZERO,
+                    fee: Amount::ZERO,
+                    result_hash: FederationBarkDigest::from_bytes([6; 32]).expect("result hash"),
+                },
+            ),
+        });
+        assert_eq!(snapshot.frontier(), Some(17));
     }
 }

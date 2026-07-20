@@ -31,7 +31,9 @@ pub(super) async fn advance_federated_bark_melt_quote(
     if quote.state != MeltQuoteState::Pending {
         return Ok(0);
     }
-    let projection = state.mint.federation_bark_projection_snapshot().await?;
+    let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
+        .await
+        .map_err(|_| cdk::Error::Internal)?;
     let quote_label = quote_id.to_string();
     let existing_action = projection.actions.iter().find(|action| {
         action.quote.as_deref() == Some(quote_label.as_str())

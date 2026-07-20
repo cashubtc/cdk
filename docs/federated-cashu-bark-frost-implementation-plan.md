@@ -2,14 +2,16 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5, 7, and 9-15 complete,
+Status: implementation in progress; Milestones 0-5, 7, and 9-16 complete,
 Milestones 6 and 8 are locally complete but retain the dependency-publication
 and PostgreSQL-runtime verification gates recorded below. Production incoming
 quote preparation, observation, threshold claim, and settlement bridging now
 exist; outgoing quotes, consensus planning, atomic reservation, exact Ark
 execution, success/failure reconciliation, revocation, refresh, emergency exit,
-and melt settlement bridging now exist. Full restart/catch-up testing,
-operations tooling, and the release gate remain in Milestones 16-18.
+and melt settlement bridging now exist. Accepted Bark state now replays through
+the complete receive, send, revocation, refresh, and exit lifecycles before a
+member is ready for more side effects. Operations tooling and the release gate
+remain in Milestones 17-18.
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -44,7 +46,7 @@ machine-specific metadata in this document.
 | 13. Outgoing execution | Complete (2026-07-19) | Accepted phase-at-a-time Ark execution, exact multi-input custody authorization, canonical HTLC/initiation/success transitions, restart replay, verified preimage proof, distinct-member result quorum, and existing melt-saga finalization passed | CDK: `feat: execute federated Bark outgoing payments`; Bark: `feat: add federated send phase execution` |
 | 14. Failure recovery | Complete (2026-07-19) | Threshold failure evidence, exact accepted revocation, safe recovery observations, startup replay, amount conservation, and focused/full regression checks passed | CDK: `feat: recover failed federated Bark payments`; Bark: `feat: recover failed federated Bark payments` |
 | 15. Refresh and exit | Complete (2026-07-19) | Earliest-expiry planning, accepted-plan custody gates, threshold trigger/confirmation evidence, BDK recovery allocation, replay-only startup reconstruction, focused/full regression checks, and production feature builds passed | CDK: `feat: bind federated Bark maintenance plans`, `feat: execute federated Bark maintenance`; Bark: `feat: add federated Bark maintenance primitives`, `feat: complete federated Bark maintenance execution` |
-| 16. Restart and replay | Pending | — | — |
+| 16. Restart and replay | Complete (2026-07-19) | Full-frontier readiness, durable-journal reconstruction, exact replay-only receive materialization, missing-secret fail-closed behavior, clean-database Bark rebuilds, 33 CDK restart/catch-up tests, and FROST nonce restart tests passed | CDK: `fix: complete federated Bark restart replay`; Bark: `feat: replay accepted federated Bark receives` |
 | 17. Operations tooling | Pending | — | — |
 | 18. Release gate | Pending | — | — |
 
@@ -3016,6 +3018,50 @@ Exit criteria:
 
 ### Milestone 16: full restart, replay, and catch-up
 
+Status: complete on 2026-07-19.
+
+Implementation record:
+
+- added one canonical Bark projection frontier that takes the maximum accepted
+  operation index across actions, VTXOs, derivation allocations, reservations,
+  transitions, and member observations. Observation-only progress therefore
+  cannot be omitted from the readiness target;
+- made startup and live reconciliation advance the member-local Bark frontier
+  only after replaying the accepted projection. Incoming, outgoing, and
+  maintenance workers now request the exact current frontier, retry a complete
+  idempotent journal-to-Bark catch-up when behind, and remain blocked when the
+  replay is degraded;
+- changed maintenance reconstruction to resolve its accepted plan and required
+  predecessor transitions from the durable journal by projected operation ID.
+  Replay is no longer coupled to whichever single operation or bounded catch-up
+  page triggered reconciliation;
+- added replay-only Bark APIs for accepted incoming HTLC and claim phases. They
+  import the exact accepted VTXO bytes, reconstruct the action checkpoint and
+  movement, preserve later local states during repeated replay, and never poll
+  Ark, allocate a key, create a nonce, sign, or disclose a preimage;
+- reconstruct the canonical incoming claim plan entirely from the accepted
+  plan and artifacts before applying it. HTLC-ready, preimage-disclosed, and
+  claimed transitions are checked against their accepted operation lineage,
+  hashes, VTXO IDs, amounts, locators, server, policy, and output bounds;
+- terminal receive replay restores spendable outputs, spent inputs, settled
+  invoice state, and the successful movement before acknowledging the accepted
+  terminal result. Non-terminal replay restores the exact durable retry point;
+- fail closed with `RecoveryRequired` when a member named by an accepted
+  receive-secret acknowledgement has lost that secret before terminal
+  settlement. A member that never acknowledged the secret is not falsely
+  treated as a secret holder; and
+- kept this recovery work inside the Bark facade, `cdk-bark`, and the
+  feature-gated federation runtime. No standalone payment backend, ordinary
+  Cashu business rule, SQL schema, or migration was changed.
+
+Restart coverage is intentionally layered. Bark's clean-database tests cover
+deterministic local projection and every durable send/receive checkpoint;
+`cdk-frost` covers nonce/session crash boundaries; and CDK's federation suite
+covers journal response loss, paged catch-up, checkpoint suffix recovery,
+SQLite restart, and live AlephBFT member restart. The local Ark/Lightning
+multi-process end-to-end restart scenario remains part of the Milestone 18
+release gate rather than being represented as a unit test.
+
 Test restarts at:
 
 - receive secret persisted, acknowledgement not returned;
@@ -3036,6 +3082,71 @@ Exit criteria:
 
 - no nonce reuse, double payment, VTXO double reservation, secret loss, or divergent projection;
 - a rebuilt member becomes ready only after all local layers match the accepted frontier.
+
+Verification record:
+
+```text
+cargo check -p bark-wallet --offline
+  passed; Bark retains two pre-existing warnings in bark/src/chain.rs
+
+cargo test -p bark-wallet \
+  clean_databases_replay_identical_records_without_local_keys --offline
+cargo test -p bark-wallet \
+  maintenance_plans_rebuild_identically_without_signing_or_publication --offline
+  passed: 1 focused test in each invocation
+
+cargo test -p cdk-common --features federation \
+  projection_frontier_covers_observation_only_progress --lib
+  passed: 1 focused test
+
+cargo test -p cdk-bark --features federation-bark --lib
+  passed: 9 tests, including persist-before-ack crash recovery, protected
+  secret backup/retention, and replay-binding rejection
+
+cargo test -p cdk-frost --lib restart -- --test-threads 1
+  passed: 4 restart tests covering nonce burns, write failures, threshold DH,
+  application separation, and ordinary-FROST coexistence
+
+RUST_MIN_STACK=8388608 cargo test -p cdk-axum \
+  --features federation,federation-bark --lib restart -- --test-threads 1
+  passed: 33 restart, response-loss, SQLite, checkpoint, catch-up, DKG, and
+  AlephBFT tests
+
+RUST_MIN_STACK=8388608 cargo test -p cdk-axum \
+  --features federation,federation-bark --lib \
+  lost_post_signer_response_burns_nonce_and_retry_attempt_succeeds \
+  -- --test-threads 1
+RUST_MIN_STACK=8388608 cargo test -p cdk-axum \
+  --features federation,federation-bark --lib \
+  bark_custody_transport_rotates_attempts_and_retries_exact_results \
+  -- --test-threads 1
+RUST_MIN_STACK=8388608 cargo test -p cdk-axum \
+  --features federation,federation-bark --lib \
+  startup_replays_accepted_but_unapplied_journal_entry_to_same_state_digest \
+  -- --test-threads 1
+  passed: all 3 focused tests
+
+cargo check -p cdk-bark --features federation-bark --all-targets
+cargo check -p cdk-axum --features federation,federation-bark --all-targets
+cargo clippy -p cdk-common --features federation --all-targets \
+  --no-deps -- -D warnings
+cargo clippy -p cdk-bark --features federation-bark --all-targets \
+  --no-deps -- -D warnings
+cargo fmt -p cdk-common -p cdk-bark -p cdk-axum -- --check
+git diff --check
+  passed
+
+cargo clippy -p cdk-axum --features federation,federation-bark \
+  --all-targets --no-deps -- -D warnings
+  remains blocked by the existing crate-wide Rust 1.95 lint backlog; filtered
+  diagnostics contain no new Milestone 16 line
+```
+
+The default Rust test-thread stack overflowed in an existing large SQLite melt
+restart test under the Bark-enabled feature set. Isolating that test with an
+8 MiB test-thread stack passed, and the complete 33-test restart filter then
+passed with the same setting. This is recorded as a test-harness constraint,
+not hidden as a successful default-stack run.
 
 ### Milestone 17: observability and operator tooling
 

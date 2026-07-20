@@ -40,7 +40,9 @@ pub(crate) async fn advance_federated_bark_mint_quote(
         .bark_runtime()
         .ok_or_else(bark_unavailable)?;
     let quote = quote_id.to_string();
-    let projection = state.mint.federation_bark_projection_snapshot().await?;
+    let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
+        .await
+        .map_err(|_| bark_unavailable())?;
     let Some(action) = projection
         .actions
         .iter()
@@ -446,7 +448,9 @@ async fn accepted_invoice(
     if amount < limits.minimum_sat() || amount > limits.maximum_sat() {
         return Err(cdk::Error::InvalidPaymentRequest);
     }
-    let projection = state.mint.federation_bark_projection_snapshot().await?;
+    let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
+        .await
+        .map_err(|_| bark_unavailable())?;
     let quote = quote_id.to_string();
     let action = projection
         .actions

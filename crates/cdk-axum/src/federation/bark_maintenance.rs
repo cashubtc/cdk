@@ -57,7 +57,9 @@ pub(super) async fn advance_federated_bark_maintenance(
     if !controls.automatic_refresh && !controls.automatic_emergency_exit {
         return Ok(0);
     }
-    let projection = state.mint.federation_bark_projection_snapshot().await?;
+    let projection = crate::federation_bark_ready_projection(&state.mint, &runtime)
+        .await
+        .map_err(|_| cdk::Error::Internal)?;
     let active = projection
         .actions
         .iter()

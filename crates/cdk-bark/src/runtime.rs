@@ -2185,6 +2185,40 @@ impl FederatedBarkRuntime {
         })
     }
 
+    /// Replay an accepted HTLC-ready transition from its exact VTXO artifacts
+    /// without polling Ark again.
+    pub async fn apply_receive_htlcs_ready(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared_operation_id: FederationOperationId,
+        prepared: &FederationBarkReceivePrepared,
+        accepted_ready: &FederationJournalEntry,
+    ) -> Result<(), Error> {
+        if accepted_ready.status() != FederationOperationStatus::Applied {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition)) =
+            &accepted_ready.envelope.operation
+        else {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        };
+        if transition.phase != FederationBarkSemanticPhase::ReceiveHtlcsReady
+            || transition.action_id != intent.action_id
+            || transition.quote.as_deref() != Some(intent.quote.as_str())
+            || transition.plan_operation_id != prepared_operation_id
+            || transition.predecessor_operation_id != prepared_operation_id
+            || transition.payment_hash != Some(intent.payment_hash)
+        {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let receive = self.receive_plan(intent, prepared)?;
+        let evidence = receive_htlc_evidence_from_transition(intent, transition)?;
+        self.wallet
+            .apply_lightning_receive_htlc_replay(&receive, &evidence.vtxos)
+            .await
+            .map_err(|_| Error::ReceiveClaimRecoveryRequired)
+    }
+
     /// Poll and validate exact incoming HTLC evidence. The returned member
     /// observation is safe to order immediately; the transition candidate must
     /// wait until the federation has accepted the required matching evidence.
@@ -2292,15 +2326,7 @@ impl FederatedBarkRuntime {
         prepared: &FederationBarkReceivePrepared,
         plan: &FederationBarkActionPlan,
     ) -> Result<FederationLightningReceiveClaimPlan, Error> {
-        if plan.kind != FederationBarkActionKind::IncomingClaim
-            || plan.action_id != intent.action_id
-            || plan.quote.as_deref() != Some(intent.quote.as_str())
-            || plan.payment_hash != Some(intent.payment_hash)
-            || plan.outputs.len() != 1
-        {
-            return Err(Error::ReceiveClaimPlanInvalid);
-        }
-        let receive = self.receive_plan(intent, prepared)?;
+        let (receive, accepted_claim) = self.accepted_receive_claim_plan(intent, prepared, plan)?;
         let evidence = self
             .wallet
             .prepare_lightning_receive_htlcs(&receive)
@@ -2317,6 +2343,76 @@ impl FederatedBarkRuntime {
                 plan.attempt,
             )
             .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+        if claim != accepted_claim {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        Ok(accepted_claim)
+    }
+
+    fn accepted_receive_claim_plan(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared: &FederationBarkReceivePrepared,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<
+        (
+            bark::federation::FederationLightningReceivePlan,
+            FederationLightningReceiveClaimPlan,
+        ),
+        Error,
+    > {
+        if plan.kind != FederationBarkActionKind::IncomingClaim
+            || plan.action_id != intent.action_id
+            || plan.quote.as_deref() != Some(intent.quote.as_str())
+            || plan.payment_hash != Some(intent.payment_hash)
+            || plan.outputs.len() != 1
+        {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let receive = self.receive_plan(intent, prepared)?;
+        let mut input_vtxos = plan
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+            .map(|artifact| {
+                let vtxo =
+                    bark::ark::vtxo::Vtxo::<bark::ark::vtxo::Full>::deserialize(&artifact.bytes)
+                        .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+                if vtxo.serialize() != artifact.bytes {
+                    return Err(Error::ReceiveClaimPlanInvalid);
+                }
+                Ok(vtxo)
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        input_vtxos.sort_by_key(bark::ark::vtxo::Vtxo::id);
+        if input_vtxos.len() != plan.inputs.len()
+            || plan.inputs.iter().zip(&input_vtxos).any(|(input, vtxo)| {
+                input.vtxo_id.to_bytes() != vtxo.id().to_bytes()
+                    || u64::from(input.amount) != vtxo.amount().to_sat()
+                    || input.locator != intent.destination
+            })
+        {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let output = plan.outputs.first().ok_or(Error::ReceiveClaimPlanInvalid)?;
+        let destination_locator = VtxoKeyLocator {
+            index: output.locator.index,
+        };
+        let destination = self
+            .custody
+            .derive_public_key(destination_locator)
+            .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+        let claim = FederationLightningReceiveClaimPlan {
+            action_id: FederationActionId::from_bytes(plan.action_id.to_bytes())
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
+            payment_hash: receive.payment_hash,
+            destination,
+            amount: bitcoin::Amount::from_sat(u64::from(output.amount)),
+            minimum_expiry: u32::try_from(plan.expires_at)
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
+            custody_attempt: plan.attempt,
+            input_vtxos,
+        };
         self.wallet
             .validate_lightning_receive_claim_plan(&receive, &claim)
             .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
@@ -2331,7 +2427,82 @@ impl FederatedBarkRuntime {
         if &expected != plan {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
-        Ok(claim)
+        Ok((receive, claim))
+    }
+
+    /// Replay an accepted incoming-claim plan without observing Ark or
+    /// releasing custody material. This reconstructs the exact HTLC inputs
+    /// from accepted artifacts and stops before preimage disclosure.
+    pub async fn apply_receive_claim_plan(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared: &FederationBarkReceivePrepared,
+        accepted_plan: &FederationJournalEntry,
+    ) -> Result<(), Error> {
+        let plan = accepted_claim_plan(accepted_plan)?;
+        let (receive, claim) = self.accepted_receive_claim_plan(intent, prepared, plan)?;
+        self.wallet
+            .apply_lightning_receive_claim_replay(
+                &receive,
+                &claim,
+                FederationLightningReceivePhase::HtlcsReady,
+                &[],
+            )
+            .await
+            .map_err(|_| Error::ReceiveClaimRecoveryRequired)
+    }
+
+    /// Replay an accepted preimage-disclosure or terminal claim transition
+    /// without signing or external I/O.
+    pub async fn apply_receive_claim_transition(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared: &FederationBarkReceivePrepared,
+        accepted_plan: &FederationJournalEntry,
+        accepted_transition: &FederationJournalEntry,
+    ) -> Result<(), Error> {
+        let plan = accepted_claim_plan(accepted_plan)?;
+        if accepted_transition.status() != FederationOperationStatus::Applied {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition)) =
+            &accepted_transition.envelope.operation
+        else {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        };
+        if transition.action_id != plan.action_id
+            || transition.quote.as_deref() != plan.quote.as_deref()
+            || transition.plan_operation_id != accepted_plan.operation_id
+            || transition.payment_hash != plan.payment_hash
+            || transition.attempt != plan.attempt
+            || transition.signer_set != plan.signer_set
+        {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let phase = match transition.phase {
+            FederationBarkSemanticPhase::ReceivePreimageDisclosed => {
+                FederationLightningReceivePhase::PreimageRevealed
+            }
+            FederationBarkSemanticPhase::ReceiveClaimed => FederationLightningReceivePhase::Claimed,
+            _ => return Err(Error::ReceiveClaimPlanInvalid),
+        };
+        let (receive, claim) = self.accepted_receive_claim_plan(intent, prepared, plan)?;
+        let outputs = if phase == FederationLightningReceivePhase::Claimed {
+            receive_claim_outputs(transition, &claim)?
+        } else {
+            Vec::new()
+        };
+        self.wallet
+            .apply_lightning_receive_claim_replay(&receive, &claim, phase, &outputs)
+            .await
+            .map_err(|_| Error::ReceiveClaimRecoveryRequired)?;
+        if phase == FederationLightningReceivePhase::Claimed {
+            self.wallet
+                .acknowledge_lightning_receive_claim(&receive)
+                .await
+                .map_err(|_| Error::ReceiveClaimRecoveryRequired)?;
+        }
+        Ok(())
     }
 
     /// Execute an already applied claim plan through threshold custody and
@@ -2514,7 +2685,7 @@ impl FederatedBarkRuntime {
                     && artifact.hash == output.artifact_hash
             });
             let artifact = artifacts.next().ok_or(Error::ReceiveClaimPlanInvalid)?;
-            if artifacts.next().is_some() {
+            if artifacts.next().is_some() || artifact.hash != bark_digest(&artifact.bytes)? {
                 return Err(Error::ReceiveClaimPlanInvalid);
             }
             let vtxo = bark::ark::vtxo::Vtxo::<bark::ark::vtxo::Full>::deserialize(&artifact.bytes)
@@ -2742,6 +2913,62 @@ fn accepted_revocation_plan(
         return Err(Error::SendReconciliationFailed);
     }
     Ok(plan)
+}
+
+fn accepted_claim_plan(entry: &FederationJournalEntry) -> Result<&FederationBarkActionPlan, Error> {
+    if entry.status() != FederationOperationStatus::Applied {
+        return Err(Error::ReceiveClaimPlanInvalid);
+    }
+    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+        &entry.envelope.operation
+    else {
+        return Err(Error::ReceiveClaimPlanInvalid);
+    };
+    if plan.kind != FederationBarkActionKind::IncomingClaim {
+        return Err(Error::ReceiveClaimPlanInvalid);
+    }
+    Ok(plan)
+}
+
+fn receive_claim_outputs(
+    transition: &FederationBarkActionTransition,
+    claim: &FederationLightningReceiveClaimPlan,
+) -> Result<Vec<bark::ark::vtxo::Vtxo<bark::ark::vtxo::Full>>, Error> {
+    let mut outputs = transition
+        .vtxo_transitions
+        .iter()
+        .filter(|mutation| {
+            mutation.previous_state.is_none()
+                && mutation.new_state == FederationBarkVtxoState::Spendable
+        })
+        .map(|mutation| {
+            if mutation.locator.index != claim.destination.locator.index {
+                return Err(Error::ReceiveClaimPlanInvalid);
+            }
+            let mut artifacts = transition.artifacts.iter().filter(|artifact| {
+                artifact.kind == FederationBarkArtifactKind::Vtxo
+                    && artifact.hash == mutation.artifact_hash
+            });
+            let artifact = artifacts.next().ok_or(Error::ReceiveClaimPlanInvalid)?;
+            if artifacts.next().is_some() {
+                return Err(Error::ReceiveClaimPlanInvalid);
+            }
+            let vtxo = bark::ark::vtxo::Vtxo::<bark::ark::vtxo::Full>::deserialize(&artifact.bytes)
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+            if vtxo.serialize() != artifact.bytes
+                || vtxo.id().to_bytes() != mutation.vtxo_id.to_bytes()
+                || vtxo.amount().to_sat() != u64::from(mutation.amount)
+            {
+                return Err(Error::ReceiveClaimPlanInvalid);
+            }
+            Ok(vtxo)
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    outputs.sort_by_key(bark::ark::vtxo::Vtxo::id);
+    if outputs.is_empty() || outputs.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
+        return Err(Error::ReceiveClaimPlanInvalid);
+    }
+    Ok(outputs)
 }
 
 fn accepted_maintenance_plan(
@@ -4077,6 +4304,86 @@ fn receive_htlc_evidence_hash(
         append_bounded_bytes(&mut bytes, &vtxo.serialize())?;
     }
     bark_digest(&bytes)
+}
+
+fn receive_htlc_evidence_from_transition(
+    intent: &FederationBarkReceiveIntent,
+    transition: &FederationBarkActionTransition,
+) -> Result<bark::federation::FederationLightningReceiveHtlcEvidence, Error> {
+    let mut vtxos = transition
+        .vtxo_transitions
+        .iter()
+        .map(|mutation| {
+            if mutation.previous_state.is_some()
+                || mutation.new_state != FederationBarkVtxoState::Observed
+                || mutation.locator != intent.destination
+            {
+                return Err(Error::ReceiveClaimPlanInvalid);
+            }
+            let mut artifacts = transition.artifacts.iter().filter(|artifact| {
+                artifact.kind == FederationBarkArtifactKind::Vtxo
+                    && artifact.hash == mutation.artifact_hash
+            });
+            let artifact = artifacts.next().ok_or(Error::ReceiveClaimPlanInvalid)?;
+            if artifacts.next().is_some() || artifact.hash != bark_digest(&artifact.bytes)? {
+                return Err(Error::ReceiveClaimPlanInvalid);
+            }
+            let vtxo = bark::ark::vtxo::Vtxo::<bark::ark::vtxo::Full>::deserialize(&artifact.bytes)
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+            if vtxo.serialize() != artifact.bytes
+                || vtxo.id().to_bytes() != mutation.vtxo_id.to_bytes()
+                || vtxo.amount().to_sat() != u64::from(mutation.amount)
+                || vtxo.expiry_height() != mutation.expiry_height
+            {
+                return Err(Error::ReceiveClaimPlanInvalid);
+            }
+            Ok(vtxo)
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    vtxos.sort_by_key(bark::ark::vtxo::Vtxo::id);
+    if vtxos.is_empty() || vtxos.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
+        return Err(Error::ReceiveClaimPlanInvalid);
+    }
+    let net_amount = vtxos
+        .iter()
+        .try_fold(bitcoin::Amount::ZERO, |amount, vtxo| {
+            amount
+                .checked_add(vtxo.amount())
+                .ok_or(Error::ReceiveClaimPlanInvalid)
+        })?;
+    let gross_amount = bitcoin::Amount::from_sat(u64::from(intent.gross_amount));
+    let fee = gross_amount
+        .checked_sub(net_amount)
+        .ok_or(Error::ReceiveClaimPlanInvalid)?;
+    let minimum_expiry = vtxos
+        .iter()
+        .map(bark::ark::vtxo::Vtxo::expiry_height)
+        .min()
+        .ok_or(Error::ReceiveClaimPlanInvalid)?;
+    let evidence = bark::federation::FederationLightningReceiveHtlcEvidence {
+        action_id: FederationActionId::from_bytes(intent.action_id.to_bytes())
+            .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
+        payment_hash: PaymentHash::from(intent.payment_hash.to_bytes()),
+        destination: VtxoKeyLocator {
+            index: intent.destination.index,
+        },
+        gross_amount,
+        net_amount,
+        fee,
+        minimum_expiry,
+        vtxos,
+    };
+    let mut request = b"cdk/bark/receive-htlc-request/v1".to_vec();
+    request.extend_from_slice(&transition.plan_operation_id.to_bytes());
+    request.extend_from_slice(&intent.action_id.to_bytes());
+    request.extend_from_slice(&intent.destination.index.to_be_bytes());
+    request.extend_from_slice(&minimum_expiry.to_be_bytes());
+    if transition.result_hash != receive_htlc_evidence_hash(&evidence)?
+        || transition.request_hash != bark_digest(&request)?
+    {
+        return Err(Error::ReceiveClaimPlanInvalid);
+    }
+    Ok(evidence)
 }
 
 fn receive_htlc_transition(

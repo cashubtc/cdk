@@ -3254,7 +3254,6 @@ async fn reconcile_federation_bark_runtime(
     entries: &[FederationJournalEntry],
 ) -> Result<()> {
     let store = runtime.receive_secret_store();
-    let mut frontier = None;
     for entry in entries
         .iter()
         .filter(|entry| entry.status() == FederationOperationStatus::Applied)
@@ -3262,7 +3261,6 @@ async fn reconcile_federation_bark_runtime(
         let FederationOperation::Bark(operation) = &entry.envelope.operation else {
             continue;
         };
-        frontier = Some(frontier.map_or(entry.index, |current: u64| current.max(entry.index)));
         match operation {
             FederationBarkOperation::ReceiveIntent(intent) => {
                 if store
@@ -3284,17 +3282,13 @@ async fn reconcile_federation_bark_runtime(
                 }
             }
             FederationBarkOperation::ReceivePrepared(prepared) => {
-                if store
-                    .status(prepared.action_id)
-                    .map_err(|_| anyhow::anyhow!("Bark receive-secret status is unavailable"))?
-                    .is_none()
-                {
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                let Some((intent, _, _)) =
+                    bark_receive_replay_context(runtime, mint, &projection, prepared.action_id)
+                        .await?
+                else {
                     continue;
-                }
-                let intent = mint
-                    .federation_bark_receive_intent(prepared.intent_operation_id)
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("accepted Bark receive intent is missing"))?;
+                };
                 if runtime
                     .apply_receive_prepared(&intent, prepared)
                     .await
@@ -3305,6 +3299,28 @@ async fn reconcile_federation_bark_runtime(
                         .await;
                     return Err(anyhow::anyhow!(
                         "accepted Bark receive plan could not be materialized"
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == cdk::federation::FederationBarkActionKind::IncomingClaim =>
+            {
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                let Some((intent, _, prepared)) =
+                    bark_receive_replay_context(runtime, mint, &projection, plan.action_id).await?
+                else {
+                    continue;
+                };
+                if runtime
+                    .apply_receive_claim_plan(&intent, &prepared, entry)
+                    .await
+                    .is_err()
+                {
+                    runtime
+                        .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                        .await;
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark receive-claim plan could not be materialized"
                     ));
                 }
             }
@@ -3333,6 +3349,61 @@ async fn reconcile_federation_bark_runtime(
                         .await;
                     return Err(anyhow::anyhow!(
                         "accepted Bark send plan could not be materialized"
+                    ));
+                }
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if matches!(
+                    transition.phase,
+                    cdk::federation::FederationBarkSemanticPhase::ReceiveHtlcsReady
+                        | cdk::federation::FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                        | cdk::federation::FederationBarkSemanticPhase::ReceiveClaimed
+                ) =>
+            {
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                let Some((intent, prepared_operation_id, prepared)) =
+                    bark_receive_replay_context(runtime, mint, &projection, transition.action_id)
+                        .await?
+                else {
+                    continue;
+                };
+                let replay = match transition.phase {
+                    cdk::federation::FederationBarkSemanticPhase::ReceiveHtlcsReady => {
+                        runtime
+                            .apply_receive_htlcs_ready(
+                                &intent,
+                                prepared_operation_id,
+                                &prepared,
+                                entry,
+                            )
+                            .await
+                    }
+                    cdk::federation::FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                    | cdk::federation::FederationBarkSemanticPhase::ReceiveClaimed => {
+                        let plan_entry = mint
+                            .localstore()
+                            .get_federation_journal_entry_by_operation_id(
+                                transition.plan_operation_id,
+                            )
+                            .await?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("accepted Bark receive-claim plan is missing")
+                            })?;
+                        runtime
+                            .apply_receive_claim_plan(&intent, &prepared, &plan_entry)
+                            .await?;
+                        runtime
+                            .apply_receive_claim_transition(&intent, &prepared, &plan_entry, entry)
+                            .await
+                    }
+                    _ => unreachable!("receive replay phase was matched above"),
+                };
+                if replay.is_err() {
+                    runtime
+                        .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                        .await;
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark receive transition could not be materialized"
                     ));
                 }
             }
@@ -3459,28 +3530,50 @@ async fn reconcile_federation_bark_runtime(
             | FederationBarkOperation::MemberObservation(_) => {}
         }
     }
-    reconcile_federation_bark_maintenance(mint, runtime, entries).await?;
-    if let Some(frontier) = frontier {
+    reconcile_federation_bark_maintenance(mint, runtime).await?;
+    if let Some(frontier) = mint.federation_bark_projection_snapshot().await?.frontier() {
         runtime.record_projection_frontier(frontier).await;
     }
+    runtime
+        .clear_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
+        .await;
     Ok(())
+}
+
+#[cfg(feature = "federation-bark")]
+pub(crate) async fn federation_bark_ready_projection(
+    mint: &Mint,
+    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
+) -> Result<cdk::federation::FederationBarkProjectionSnapshot> {
+    let mut projection = mint.federation_bark_projection_snapshot().await?;
+    let required_frontier = projection.frontier().unwrap_or(0);
+    if runtime.ensure_ready(required_frontier).await.is_err() {
+        let entries = mint.localstore().get_federation_journal_entries().await?;
+        reconcile_federation_bark_runtime(mint, runtime, &entries).await?;
+        projection = mint.federation_bark_projection_snapshot().await?;
+    }
+    runtime
+        .ensure_ready(projection.frontier().unwrap_or(0))
+        .await
+        .map_err(|_| anyhow::anyhow!("federation Bark runtime is behind or degraded"))?;
+    Ok(projection)
 }
 
 #[cfg(feature = "federation-bark")]
 async fn reconcile_federation_bark_maintenance(
     mint: &Mint,
     runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
-    entries: &[FederationJournalEntry],
 ) -> Result<()> {
     let projection = mint.federation_bark_projection_snapshot().await?;
     for action in &projection.actions {
         match action.phase {
             cdk::federation::FederationBarkSemanticPhase::RefreshPlanned => {
                 let plan_entry = bark_maintenance_plan_entry(
-                    entries,
-                    action.action_id,
+                    mint,
+                    action,
                     cdk::federation::FederationBarkActionKind::Refresh,
-                )?;
+                )
+                .await?;
                 let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
                     &plan_entry.envelope.operation
                 else {
@@ -3495,15 +3588,18 @@ async fn reconcile_federation_bark_maintenance(
             }
             cdk::federation::FederationBarkSemanticPhase::RefreshCompleted => {
                 let plan_entry = bark_maintenance_plan_entry(
-                    entries,
-                    action.action_id,
+                    mint,
+                    action,
                     cdk::federation::FederationBarkActionKind::Refresh,
-                )?;
+                )
+                .await?;
                 let completed_entry = bark_maintenance_transition_entry(
-                    entries,
+                    mint,
+                    &projection,
                     action.action_id,
                     cdk::federation::FederationBarkSemanticPhase::RefreshCompleted,
-                )?;
+                )
+                .await?;
                 let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
                     &plan_entry.envelope.operation
                 else {
@@ -3516,7 +3612,7 @@ async fn reconcile_federation_bark_maintenance(
                         anyhow::anyhow!("accepted Bark refresh plan could not be replayed")
                     })?;
                 runtime
-                    .apply_refresh_completed(&projection, plan_entry, completed_entry)
+                    .apply_refresh_completed(&projection, &plan_entry, &completed_entry)
                     .await
                     .map_err(|_| {
                         anyhow::anyhow!("accepted Bark refresh result could not be replayed")
@@ -3524,10 +3620,11 @@ async fn reconcile_federation_bark_maintenance(
             }
             cdk::federation::FederationBarkSemanticPhase::ExitPlanned => {
                 let plan_entry = bark_maintenance_plan_entry(
-                    entries,
-                    action.action_id,
+                    mint,
+                    action,
                     cdk::federation::FederationBarkActionKind::EmergencyExit,
-                )?;
+                )
+                .await?;
                 let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
                     &plan_entry.envelope.operation
                 else {
@@ -3544,17 +3641,20 @@ async fn reconcile_federation_bark_maintenance(
             | cdk::federation::FederationBarkSemanticPhase::ExitPublished
             | cdk::federation::FederationBarkSemanticPhase::ExitConfirmed => {
                 let plan_entry = bark_maintenance_plan_entry(
-                    entries,
-                    action.action_id,
+                    mint,
+                    action,
                     cdk::federation::FederationBarkActionKind::EmergencyExit,
-                )?;
+                )
+                .await?;
                 let registered_entry = bark_maintenance_transition_entry(
-                    entries,
+                    mint,
+                    &projection,
                     action.action_id,
                     cdk::federation::FederationBarkSemanticPhase::ExitRegistered,
-                )?;
+                )
+                .await?;
                 runtime
-                    .apply_emergency_exit_registered(&projection, plan_entry, registered_entry)
+                    .apply_emergency_exit_registered(&projection, &plan_entry, &registered_entry)
                     .await
                     .map_err(|_| {
                         anyhow::anyhow!("accepted Bark exit registration could not be replayed")
@@ -3567,41 +3667,127 @@ async fn reconcile_federation_bark_maintenance(
 }
 
 #[cfg(feature = "federation-bark")]
-fn bark_maintenance_plan_entry(
-    entries: &[FederationJournalEntry],
+async fn bark_receive_replay_context(
+    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
+    mint: &Mint,
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
     action_id: cdk::federation::FederationBarkActionId,
-    kind: cdk::federation::FederationBarkActionKind,
-) -> Result<&FederationJournalEntry> {
-    entries
+) -> Result<
+    Option<(
+        cdk::federation::FederationBarkReceiveIntent,
+        cdk::federation::FederationOperationId,
+        cdk::federation::FederationBarkReceivePrepared,
+    )>,
+> {
+    let action = projection
+        .actions
         .iter()
-        .find(|entry| {
-            entry.status() == FederationOperationStatus::Applied
-                && matches!(
-                    &entry.envelope.operation,
-                    FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan))
-                        if plan.action_id == action_id && plan.kind == kind
-                )
+        .find(|action| action.action_id == action_id)
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark receive action is missing"))?;
+    let intent = mint
+        .federation_bark_receive_intent(action.origin_operation_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark receive intent is missing"))?;
+    if runtime
+        .receive_secret_store()
+        .status(action_id)
+        .map_err(|_| anyhow::anyhow!("Bark receive-secret status is unavailable"))?
+        .is_none()
+    {
+        let acknowledged = intent
+            .secret_acknowledgements
+            .iter()
+            .any(|acknowledgement| acknowledgement.member == runtime.member_id());
+        if acknowledged
+            && action.phase != cdk::federation::FederationBarkSemanticPhase::ReceiveClaimed
+        {
+            runtime
+                .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                .await;
+            return Err(anyhow::anyhow!(
+                "accepted Bark receive secret is missing before terminal settlement"
+            ));
+        }
+        return Ok(None);
+    }
+    let (prepared_operation_id, prepared) = projection
+        .transitions
+        .iter()
+        .find_map(|record| {
+            if record.action_id != action_id
+                || record.phase != cdk::federation::FederationBarkSemanticPhase::ReceivePrepared
+            {
+                return None;
+            }
+            match &record.operation {
+                FederationBarkOperation::ReceivePrepared(prepared) => {
+                    Some((record.operation_id, prepared.clone()))
+                }
+                _ => None,
+            }
         })
-        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance plan is missing"))
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark receive preparation is missing"))?;
+    Ok(Some((intent, prepared_operation_id, prepared)))
 }
 
 #[cfg(feature = "federation-bark")]
-fn bark_maintenance_transition_entry(
-    entries: &[FederationJournalEntry],
+async fn bark_maintenance_plan_entry(
+    mint: &Mint,
+    action: &cdk::federation::FederationBarkActionRecord,
+    kind: cdk::federation::FederationBarkActionKind,
+) -> Result<FederationJournalEntry> {
+    let operation_id = action
+        .plan_operation_id
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance plan is missing"))?;
+    let entry = mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(operation_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance plan is missing"))?;
+    if entry.status() != FederationOperationStatus::Applied
+        || !matches!(
+            &entry.envelope.operation,
+            FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan))
+                if plan.action_id == action.action_id && plan.kind == kind
+        )
+    {
+        return Err(anyhow::anyhow!(
+            "accepted Bark maintenance plan does not match its durable projection"
+        ));
+    }
+    Ok(entry)
+}
+
+#[cfg(feature = "federation-bark")]
+async fn bark_maintenance_transition_entry(
+    mint: &Mint,
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
     action_id: cdk::federation::FederationBarkActionId,
     phase: cdk::federation::FederationBarkSemanticPhase,
-) -> Result<&FederationJournalEntry> {
-    entries
+) -> Result<FederationJournalEntry> {
+    let operation_id = projection
+        .transitions
         .iter()
-        .find(|entry| {
-            entry.status() == FederationOperationStatus::Applied
-                && matches!(
-                    &entry.envelope.operation,
-                    FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition))
-                        if transition.action_id == action_id && transition.phase == phase
-                )
-        })
-        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance transition is missing"))
+        .find(|record| record.action_id == action_id && record.phase == phase)
+        .map(|record| record.operation_id)
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance transition is missing"))?;
+    let entry = mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(operation_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance transition is missing"))?;
+    if entry.status() != FederationOperationStatus::Applied
+        || !matches!(
+            &entry.envelope.operation,
+            FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition))
+                if transition.action_id == action_id && transition.phase == phase
+        )
+    {
+        return Err(anyhow::anyhow!(
+            "accepted Bark maintenance transition does not match its durable projection"
+        ));
+    }
+    Ok(entry)
 }
 
 #[cfg(feature = "federation")]
