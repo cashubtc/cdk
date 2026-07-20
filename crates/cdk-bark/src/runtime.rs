@@ -15,6 +15,7 @@ use bark::federation::{
     FederationLightningReceivePhase, FederationLightningReceivePlan,
     FederationLightningReceiveStatus, FederationLightningSendCandidate,
     FederationLightningSendHtlcEvidence, FederationLightningSendPlan,
+    FederationLightningSendRevocationEvidence, FederationLightningSendRevocationPlan,
     FederationLightningSendStatus, FederationRequestCommitment, FederationSendInput,
     FederationVtxoImport, FederationVtxoState as BarkFederationVtxoState, FederationWallet,
 };
@@ -68,6 +69,8 @@ pub enum FederatedBarkDegradedReason {
     ProjectionInvalid,
     /// The selected participant set cannot satisfy the operation.
     ParticipantsUnavailable,
+    /// Failed outgoing value requires accepted revocation or emergency exit.
+    RecoveryRequired,
 }
 
 /// Public, redacted runtime status.
@@ -789,6 +792,371 @@ impl FederatedBarkRuntime {
         })
     }
 
+    /// Independently poll terminal failure. Pending, transport uncertainty,
+    /// and success do not create failure evidence.
+    pub async fn observe_lightning_send_failure(
+        &self,
+        quote: &MeltQuote,
+        projection: &FederationBarkProjectionSnapshot,
+        accepted_plan: &FederationJournalEntry,
+        accepted_initiated: &FederationJournalEntry,
+        observation_epoch: u64,
+    ) -> Result<Option<FederationBarkMemberObservation>, Error> {
+        if observation_epoch == 0 {
+            return Err(Error::SendReconciliationFailed);
+        }
+        let plan = accepted_send_plan(accepted_plan)?;
+        let initiated = accepted_send_transition(
+            accepted_initiated,
+            FederationBarkSemanticPhase::PaymentInitiated,
+        )?;
+        validate_send_transition_binding(accepted_plan, plan, initiated)?;
+        validate_payment_initiated_result(plan, initiated)?;
+        let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
+        if self
+            .wallet
+            .poll_lightning_send(&bark_plan)
+            .await
+            .map_err(|_| Error::SendReconciliationFailed)?
+            != FederationLightningSendStatus::Failed
+        {
+            return Ok(None);
+        }
+        let (_, result_hash) = payment_failed_result(plan, initiated.result_hash)?;
+        Ok(Some(FederationBarkMemberObservation {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: plan.action_id,
+            quote: plan.quote.clone(),
+            observer: self.member_id,
+            observation_epoch,
+            source_scope: ark_server_commitment(&self.bark_application().ark_server_public_key)
+                .map_err(|_| Error::SendReconciliationFailed)?,
+            payment_hash: plan.payment_hash,
+            status: FederationBarkObservationStatus::Failed,
+            amount: plan.external_amount,
+            fee: plan.fee_amount,
+            result_hash,
+        }))
+    }
+
+    /// Construct the terminal-payment-failure transition after the accepted
+    /// distinct-member evidence threshold is present.
+    pub fn finalize_lightning_send_failure(
+        &self,
+        accepted_plan: &FederationJournalEntry,
+        accepted_initiated: &FederationJournalEntry,
+    ) -> Result<FederationBarkActionTransition, Error> {
+        let plan = accepted_send_plan(accepted_plan)?;
+        if plan.actor != self.member_id {
+            return Err(Error::SendExecutionFailed);
+        }
+        let initiated = accepted_send_transition(
+            accepted_initiated,
+            FederationBarkSemanticPhase::PaymentInitiated,
+        )?;
+        validate_send_transition_binding(accepted_plan, plan, initiated)?;
+        validate_payment_initiated_result(plan, initiated)?;
+        let (artifact, result_hash) = payment_failed_result(plan, initiated.result_hash)?;
+        Ok(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: plan.action_id,
+            quote: plan.quote.clone(),
+            phase: FederationBarkSemanticPhase::PaymentFailed,
+            actor: self.member_id,
+            plan_operation_id: accepted_plan.operation_id,
+            predecessor_operation_id: accepted_initiated.operation_id,
+            payment_hash: plan.payment_hash,
+            attempt: plan.attempt,
+            signer_set: plan.signer_set.clone(),
+            request_hash: initiated.result_hash,
+            result_hash,
+            external_id: plan.external_id,
+            artifacts: vec![artifact],
+            vtxo_transitions: Vec::new(),
+        })
+    }
+
+    /// Replay accepted terminal failure into Bark while retaining all HTLC
+    /// value in the revocation-required checkpoint.
+    pub async fn apply_lightning_send_failed(
+        &self,
+        quote: &MeltQuote,
+        projection: &FederationBarkProjectionSnapshot,
+        accepted_plan: &FederationJournalEntry,
+        accepted_failed: &FederationJournalEntry,
+    ) -> Result<(), Error> {
+        let plan = accepted_send_plan(accepted_plan)?;
+        let failed =
+            accepted_send_transition(accepted_failed, FederationBarkSemanticPhase::PaymentFailed)?;
+        validate_send_transition_binding(accepted_plan, plan, failed)?;
+        validate_payment_failed_result(plan, failed)?;
+        let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
+        self.wallet
+            .apply_lightning_send_failed(&bark_plan)
+            .await
+            .map_err(|_| Error::SendReconciliationFailed)?;
+        Ok(())
+    }
+
+    /// Build the one exact recovery plan for the accepted failed payment.
+    pub fn propose_failed_send_revocation(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        send_plan_entry: &FederationJournalEntry,
+        accepted_failed: &FederationJournalEntry,
+    ) -> Result<FederationBarkActionPlan, Error> {
+        let send = accepted_send_plan(send_plan_entry)?;
+        if send.actor != self.member_id {
+            return Err(Error::SendExecutionFailed);
+        }
+        let failed =
+            accepted_send_transition(accepted_failed, FederationBarkSemanticPhase::PaymentFailed)?;
+        validate_send_transition_binding(send_plan_entry, send, failed)?;
+        validate_payment_failed_result(send, failed)?;
+        let mut records = projection
+            .vtxos
+            .iter()
+            .filter(|record| {
+                record.state == FederationBarkVtxoState::PendingSpend
+                    && record.reservation_action_id == Some(send.action_id)
+            })
+            .collect::<Vec<_>>();
+        records.sort_by_key(|record| record.vtxo_id);
+        if records.is_empty() {
+            return Err(Error::SendExecutionFailed);
+        }
+        let inputs = records
+            .iter()
+            .map(|record| FederationBarkVtxoInput {
+                vtxo_id: record.vtxo_id,
+                locator: record.locator,
+                amount: record.amount,
+            })
+            .collect::<Vec<_>>();
+        let amount = inputs
+            .iter()
+            .try_fold(cdk_common::Amount::ZERO, |sum, input| {
+                sum.checked_add(input.amount)
+                    .ok_or(Error::SendExecutionFailed)
+            })?;
+        if amount
+            != send
+                .external_amount
+                .checked_add(send.fee_amount)
+                .ok_or(Error::SendExecutionFailed)?
+        {
+            return Err(Error::SendExecutionFailed);
+        }
+        let output_locator = send.revocation_locator.ok_or(Error::SendExecutionFailed)?;
+        let request_bytes = failed_send_revocation_request_bytes(
+            send.action_id,
+            accepted_failed.operation_id,
+            send.payment_hash.ok_or(Error::SendExecutionFailed)?,
+            output_locator,
+            &inputs,
+        )?;
+        let request_artifact =
+            bark_artifact(FederationBarkArtifactKind::ArkRequest, request_bytes)?;
+        let mut artifacts = records
+            .iter()
+            .map(|record| record.artifact.clone())
+            .collect::<Vec<_>>();
+        artifacts.push(request_artifact.clone());
+        artifacts.sort();
+        artifacts.dedup();
+        let plan = FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: send.action_id,
+            quote: send.quote.clone(),
+            kind: FederationBarkActionKind::FailedSendRevocation,
+            actor: send.actor,
+            predecessor_operation_id: accepted_failed.operation_id,
+            payment_hash: send.payment_hash,
+            inputs,
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: output_locator,
+                amount,
+                artifact_hash: request_artifact.hash,
+            }],
+            revocation_locator: None,
+            external_amount: cdk_common::Amount::ZERO,
+            fee_amount: cdk_common::Amount::ZERO,
+            fee_bound: cdk_common::Amount::ZERO,
+            artifacts,
+            external_id: FederationBarkExternalId::derive_failed_send_revocation(
+                send.action_id,
+                accepted_failed.operation_id,
+                send.attempt,
+            )
+            .map_err(|_| Error::SendExecutionFailed)?,
+            signer_set: send.signer_set.clone(),
+            attempt: send.attempt,
+            expires_at: send.expires_at,
+        };
+        FederationBarkOperation::ActionPlan(plan.clone())
+            .validate()
+            .map_err(|_| Error::SendExecutionFailed)?;
+        Ok(plan)
+    }
+
+    /// Execute the accepted revocation plan once and return its exact semantic
+    /// result candidate.
+    pub async fn execute_failed_send_revocation(
+        &self,
+        quote: &MeltQuote,
+        projection: &FederationBarkProjectionSnapshot,
+        send_plan_entry: &FederationJournalEntry,
+        revocation_plan_entry: &FederationJournalEntry,
+    ) -> Result<FederationBarkActionTransition, Error> {
+        let send = accepted_send_plan(send_plan_entry)?;
+        let revocation = accepted_revocation_plan(revocation_plan_entry)?;
+        if revocation.actor != self.member_id {
+            return Err(Error::SendExecutionFailed);
+        }
+        let bark_send = self.validate_lightning_send_plan(quote, projection, send)?;
+        let bark_revocation = self.bark_revocation_plan(&bark_send, revocation)?;
+        let operation = FederationBarkOperation::ActionPlan(revocation.clone());
+        let commitment = operation
+            .commitment()
+            .map_err(|_| Error::SendExecutionFailed)?;
+        self.custody
+            .activate_revocation(
+                revocation_plan_entry.clone(),
+                commitment.to_bytes().to_vec(),
+            )
+            .map_err(|_| Error::SendExecutionFailed)?;
+        let result = self
+            .wallet
+            .execute_lightning_send_revocation(&bark_send, &bark_revocation)
+            .await;
+        self.custody.deactivate_revocation();
+        let evidence = result.map_err(|_| Error::SendExecutionFailed)?;
+        revocation_completed_transition(
+            self.member_id,
+            revocation_plan_entry,
+            revocation,
+            projection,
+            &evidence,
+            commitment,
+        )
+    }
+
+    /// Apply accepted recovered value locally and return the independently
+    /// validated failure observation that may safely release Cashu proofs.
+    pub async fn apply_failed_send_revocation(
+        &self,
+        quote: &MeltQuote,
+        projection: &FederationBarkProjectionSnapshot,
+        send_plan_entry: &FederationJournalEntry,
+        revocation_plan_entry: &FederationJournalEntry,
+        accepted_completed: &FederationJournalEntry,
+        observation_epoch: u64,
+    ) -> Result<FederationBarkMemberObservation, Error> {
+        if observation_epoch == 0 {
+            return Err(Error::SendReconciliationFailed);
+        }
+        let send = accepted_send_plan(send_plan_entry)?;
+        let revocation = accepted_revocation_plan(revocation_plan_entry)?;
+        let completed = accepted_send_transition(
+            accepted_completed,
+            FederationBarkSemanticPhase::RevocationCompleted,
+        )?;
+        if completed.plan_operation_id != revocation_plan_entry.operation_id
+            || completed.action_id != revocation.action_id
+            || completed.quote != revocation.quote
+            || completed.payment_hash != revocation.payment_hash
+            || completed.predecessor_operation_id != revocation_plan_entry.operation_id
+        {
+            return Err(Error::SendReconciliationFailed);
+        }
+        let bark_send = self.validate_lightning_send_plan(quote, projection, send)?;
+        let bark_revocation = self.bark_revocation_plan(&bark_send, revocation)?;
+        let evidence = revocation_evidence_from_transition(revocation, completed)?;
+        self.wallet
+            .apply_lightning_send_revocation(&bark_send, &bark_revocation, &evidence)
+            .await
+            .map_err(|_| Error::SendReconciliationFailed)?;
+        Ok(FederationBarkMemberObservation {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: send.action_id,
+            quote: send.quote.clone(),
+            observer: self.member_id,
+            observation_epoch,
+            source_scope: ark_server_commitment(&self.bark_application().ark_server_public_key)
+                .map_err(|_| Error::SendReconciliationFailed)?,
+            payment_hash: send.payment_hash,
+            status: FederationBarkObservationStatus::Failed,
+            amount: send.external_amount,
+            fee: send.fee_amount,
+            result_hash: completed.result_hash,
+        })
+    }
+
+    fn bark_revocation_plan(
+        &self,
+        send_plan: &FederationLightningSendPlan,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<FederationLightningSendRevocationPlan, Error> {
+        if plan.kind != FederationBarkActionKind::FailedSendRevocation
+            || plan.action_id.to_bytes() != send_plan.action_id.to_bytes()
+            || plan
+                .payment_hash
+                .map(|payment_hash| payment_hash.to_bytes().to_vec())
+                != Some(send_plan.invoice.payment_hash().to_vec())
+            || plan.outputs.len() != 1
+        {
+            return Err(Error::SendPlanInvalid);
+        }
+        let output = plan.outputs.first().ok_or(Error::SendPlanInvalid)?;
+        if output.locator.index != send_plan.revocation_key.locator.index {
+            return Err(Error::SendPlanInvalid);
+        }
+        let mut input_amount = cdk_common::Amount::ZERO;
+        let mut input_vtxo_ids = Vec::with_capacity(plan.inputs.len());
+        for input in &plan.inputs {
+            input_amount = input_amount
+                .checked_add(input.amount)
+                .ok_or(Error::SendPlanInvalid)?;
+            input_vtxo_ids.push(
+                bark::ark::VtxoId::from_slice(&input.vtxo_id.to_bytes())
+                    .map_err(|_| Error::SendPlanInvalid)?,
+            );
+        }
+        let operation = FederationBarkOperation::ActionPlan(plan.clone());
+        let commitment = operation.commitment().map_err(|_| Error::SendPlanInvalid)?;
+        let mut requests = plan
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest);
+        let request = requests.next().ok_or(Error::SendPlanInvalid)?;
+        let expected_request = failed_send_revocation_request_bytes(
+            plan.action_id,
+            plan.predecessor_operation_id,
+            plan.payment_hash.ok_or(Error::SendPlanInvalid)?,
+            output.locator,
+            &plan.inputs,
+        )?;
+        if requests.next().is_some()
+            || request.bytes != expected_request
+            || request.hash != bark_digest(&expected_request)?
+            || output.artifact_hash != request.hash
+            || output.amount != input_amount
+        {
+            return Err(Error::SendPlanInvalid);
+        }
+        Ok(FederationLightningSendRevocationPlan {
+            action_id: send_plan.action_id,
+            request_commitment: FederationRequestCommitment::from_bytes(commitment.to_bytes())
+                .map_err(|_| Error::SendPlanInvalid)?,
+            payment_hash: send_plan.invoice.payment_hash(),
+            input_vtxo_ids,
+            input_amount: bitcoin::Amount::from_sat(u64::from(input_amount)),
+            output_key: send_plan.revocation_key,
+            custody_attempt: plan.attempt,
+            expires_at: u32::try_from(plan.expires_at).map_err(|_| Error::SendPlanInvalid)?,
+        })
+    }
+
     fn validate_send_quote<'a>(
         &self,
         quote: &'a MeltQuote,
@@ -1433,6 +1801,14 @@ impl FederatedBarkRuntime {
     pub async fn mark_degraded(&self, reason: FederatedBarkDegradedReason) {
         self.health.write().await.degraded_reason = Some(reason);
     }
+
+    /// Clear one recovery condition without masking a different degradation.
+    pub async fn clear_degraded(&self, reason: FederatedBarkDegradedReason) {
+        let mut health = self.health.write().await;
+        if health.degraded_reason == Some(reason) {
+            health.degraded_reason = None;
+        }
+    }
 }
 
 fn accepted_send_plan(entry: &FederationJournalEntry) -> Result<&FederationBarkActionPlan, Error> {
@@ -1445,6 +1821,23 @@ fn accepted_send_plan(entry: &FederationJournalEntry) -> Result<&FederationBarkA
         return Err(Error::SendReconciliationFailed);
     };
     if plan.kind != FederationBarkActionKind::LightningSend {
+        return Err(Error::SendReconciliationFailed);
+    }
+    Ok(plan)
+}
+
+fn accepted_revocation_plan(
+    entry: &FederationJournalEntry,
+) -> Result<&FederationBarkActionPlan, Error> {
+    if entry.status() != FederationOperationStatus::Applied {
+        return Err(Error::SendReconciliationFailed);
+    }
+    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+        &entry.envelope.operation
+    else {
+        return Err(Error::SendReconciliationFailed);
+    };
+    if plan.kind != FederationBarkActionKind::FailedSendRevocation {
         return Err(Error::SendReconciliationFailed);
     }
     Ok(plan)
@@ -1517,7 +1910,7 @@ fn send_htlc_transition(
             amount: input.amount,
             expiry_height: record.expiry_height,
             previous_state: Some(FederationBarkVtxoState::Reserved),
-            new_state: FederationBarkVtxoState::PendingSpend,
+            new_state: FederationBarkVtxoState::Spent,
             artifact_hash: record.artifact.hash,
         });
     }
@@ -1532,6 +1925,19 @@ fn send_htlc_transition(
         )?);
     }
     let output = plan.outputs.first().ok_or(Error::SendExecutionFailed)?;
+    for vtxo in &evidence.htlc_vtxos {
+        let artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, vtxo.serialize())?;
+        vtxo_transitions.push(FederationBarkVtxoTransition {
+            vtxo_id: FederationBarkVtxoId::from_bytes(vtxo.id().to_bytes())
+                .map_err(|_| Error::SendExecutionFailed)?,
+            locator: output.locator,
+            amount: cdk_common::Amount::from(vtxo.amount().to_sat()),
+            expiry_height: vtxo.expiry_height(),
+            previous_state: None,
+            new_state: FederationBarkVtxoState::PendingSpend,
+            artifact_hash: artifact.hash,
+        });
+    }
     for vtxo in &evidence.change_vtxos {
         let artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, vtxo.serialize())?;
         vtxo_transitions.push(FederationBarkVtxoTransition {
@@ -1641,6 +2047,73 @@ fn validate_payment_initiated_result(
     Ok(())
 }
 
+fn payment_failed_result(
+    plan: &FederationBarkActionPlan,
+    initiated_result_hash: FederationBarkDigest,
+) -> Result<(FederationBarkArtifact, FederationBarkDigest), Error> {
+    let mut result_bytes = b"cdk/bark/send-payment-failed/v1".to_vec();
+    result_bytes.extend_from_slice(&plan.action_id.to_bytes());
+    result_bytes.extend_from_slice(&initiated_result_hash.to_bytes());
+    result_bytes.extend_from_slice(
+        &plan
+            .payment_hash
+            .ok_or(Error::SendExecutionFailed)?
+            .to_bytes(),
+    );
+    let artifact = bark_artifact(FederationBarkArtifactKind::ArkResult, result_bytes)?;
+    let result_hash = artifact.hash;
+    Ok((artifact, result_hash))
+}
+
+fn validate_payment_failed_result(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let (expected, result_hash) = payment_failed_result(plan, transition.request_hash)?;
+    let mut results = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult);
+    if results.next() != Some(&expected)
+        || results.next().is_some()
+        || transition.result_hash != result_hash
+    {
+        return Err(Error::SendReconciliationFailed);
+    }
+    Ok(())
+}
+
+fn failed_send_revocation_request_bytes(
+    action_id: cdk_common::federation::FederationBarkActionId,
+    failed_operation_id: FederationOperationId,
+    payment_hash: FederationBarkDigest,
+    output_locator: FederationBarkVtxoLocator,
+    inputs: &[FederationBarkVtxoInput],
+) -> Result<Vec<u8>, Error> {
+    let mut bytes = b"cdk/bark/send-revocation-request/v1".to_vec();
+    bytes.extend_from_slice(&action_id.to_bytes());
+    bytes.extend_from_slice(&failed_operation_id.to_bytes());
+    bytes.extend_from_slice(&payment_hash.to_bytes());
+    append_locator(&mut bytes, output_locator);
+    bytes.extend_from_slice(
+        &u32::try_from(inputs.len())
+            .map_err(|_| Error::SendPlanInvalid)?
+            .to_be_bytes(),
+    );
+    for input in inputs {
+        bytes.extend_from_slice(&input.vtxo_id.to_bytes());
+        append_locator(&mut bytes, input.locator);
+        bytes.extend_from_slice(&u64::from(input.amount).to_be_bytes());
+    }
+    Ok(bytes)
+}
+
+fn append_locator(bytes: &mut Vec<u8>, locator: FederationBarkVtxoLocator) {
+    bytes.push(locator.role);
+    bytes.extend_from_slice(&locator.index.to_be_bytes());
+    bytes.extend_from_slice(&locator.version.to_be_bytes());
+}
+
 fn payment_succeeded_transition(
     actor: MemberId,
     accepted_plan: &FederationJournalEntry,
@@ -1660,30 +2133,41 @@ fn payment_succeeded_transition(
     result_bytes.extend_from_slice(preimage.as_ref());
     let result_hash = bark_digest(&result_bytes)?;
     let mut artifacts = vec![proof];
-    let mut vtxo_transitions = Vec::with_capacity(plan.inputs.len());
-    for input in &plan.inputs {
-        let record = projection
-            .vtxos
-            .iter()
-            .find(|record| record.vtxo_id == input.vtxo_id)
+    let pending = projection
+        .vtxos
+        .iter()
+        .filter(|record| {
+            record.state == FederationBarkVtxoState::PendingSpend
+                && record.reservation_action_id == Some(plan.action_id)
+        })
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return Err(Error::SendExecutionFailed);
+    }
+    let mut pending_amount = cdk_common::Amount::ZERO;
+    let mut vtxo_transitions = Vec::with_capacity(pending.len());
+    for record in pending {
+        pending_amount = pending_amount
+            .checked_add(record.amount)
             .ok_or(Error::SendExecutionFailed)?;
-        if record.locator != input.locator
-            || record.amount != input.amount
-            || record.state != FederationBarkVtxoState::PendingSpend
-            || record.reservation_action_id != Some(plan.action_id)
-        {
-            return Err(Error::SendExecutionFailed);
-        }
         artifacts.push(record.artifact.clone());
         vtxo_transitions.push(FederationBarkVtxoTransition {
-            vtxo_id: input.vtxo_id,
-            locator: input.locator,
-            amount: input.amount,
+            vtxo_id: record.vtxo_id,
+            locator: record.locator,
+            amount: record.amount,
             expiry_height: record.expiry_height,
             previous_state: Some(FederationBarkVtxoState::PendingSpend),
             new_state: FederationBarkVtxoState::Spent,
             artifact_hash: record.artifact.hash,
         });
+    }
+    if pending_amount
+        != plan
+            .external_amount
+            .checked_add(plan.fee_amount)
+            .ok_or(Error::SendExecutionFailed)?
+    {
+        return Err(Error::SendExecutionFailed);
     }
     artifacts.sort();
     artifacts.dedup();
@@ -1704,6 +2188,265 @@ fn payment_succeeded_transition(
         external_id: plan.external_id,
         artifacts,
         vtxo_transitions,
+    })
+}
+
+fn revocation_completed_transition(
+    actor: MemberId,
+    accepted_plan: &FederationJournalEntry,
+    plan: &FederationBarkActionPlan,
+    projection: &FederationBarkProjectionSnapshot,
+    evidence: &FederationLightningSendRevocationEvidence,
+    plan_commitment: FederationBarkDigest,
+) -> Result<FederationBarkActionTransition, Error> {
+    let expected_commitment = FederationBarkOperation::ActionPlan(plan.clone())
+        .commitment()
+        .map_err(|_| Error::SendExecutionFailed)?;
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    let evidence_inputs = evidence
+        .input_vtxo_ids
+        .iter()
+        .map(|vtxo_id| vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    if evidence.action_id.to_bytes() != plan.action_id.to_bytes()
+        || evidence.request_commitment.to_bytes() != plan_commitment.to_bytes()
+        || expected_commitment != plan_commitment
+        || evidence.payment_hash.to_vec()
+            != plan
+                .payment_hash
+                .ok_or(Error::SendExecutionFailed)?
+                .to_bytes()
+        || evidence_inputs != expected_inputs
+        || evidence.output_vtxos.is_empty()
+    {
+        return Err(Error::SendExecutionFailed);
+    }
+    let mut artifacts = Vec::new();
+    let mut transitions = Vec::new();
+    for input in &plan.inputs {
+        let record = projection
+            .vtxos
+            .iter()
+            .find(|record| record.vtxo_id == input.vtxo_id)
+            .ok_or(Error::SendExecutionFailed)?;
+        if record.state != FederationBarkVtxoState::Reserved
+            || record.reservation_action_id != Some(plan.action_id)
+            || record.locator != input.locator
+            || record.amount != input.amount
+        {
+            return Err(Error::SendExecutionFailed);
+        }
+        artifacts.push(record.artifact.clone());
+        transitions.push(FederationBarkVtxoTransition {
+            vtxo_id: input.vtxo_id,
+            locator: input.locator,
+            amount: input.amount,
+            expiry_height: record.expiry_height,
+            previous_state: Some(FederationBarkVtxoState::Reserved),
+            new_state: FederationBarkVtxoState::Spent,
+            artifact_hash: record.artifact.hash,
+        });
+    }
+    let output = plan.outputs.first().ok_or(Error::SendExecutionFailed)?;
+    let mut recovered = cdk_common::Amount::ZERO;
+    for vtxo in &evidence.output_vtxos {
+        let artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, vtxo.serialize())?;
+        let amount = cdk_common::Amount::from(vtxo.amount().to_sat());
+        recovered = recovered
+            .checked_add(amount)
+            .ok_or(Error::SendExecutionFailed)?;
+        transitions.push(FederationBarkVtxoTransition {
+            vtxo_id: FederationBarkVtxoId::from_bytes(vtxo.id().to_bytes())
+                .map_err(|_| Error::SendExecutionFailed)?,
+            locator: output.locator,
+            amount,
+            expiry_height: vtxo.expiry_height(),
+            previous_state: None,
+            new_state: FederationBarkVtxoState::Spendable,
+            artifact_hash: artifact.hash,
+        });
+        artifacts.push(artifact);
+    }
+    if recovered != output.amount {
+        return Err(Error::SendExecutionFailed);
+    }
+    let result_artifact = bark_artifact(
+        FederationBarkArtifactKind::ArkResult,
+        revocation_result_bytes(evidence)?,
+    )?;
+    let result_hash = result_artifact.hash;
+    artifacts.push(result_artifact);
+    artifacts.sort();
+    artifacts.dedup();
+    transitions.sort();
+    Ok(FederationBarkActionTransition {
+        version: FEDERATION_BARK_OPERATION_VERSION,
+        action_id: plan.action_id,
+        quote: plan.quote.clone(),
+        phase: FederationBarkSemanticPhase::RevocationCompleted,
+        actor,
+        plan_operation_id: accepted_plan.operation_id,
+        predecessor_operation_id: accepted_plan.operation_id,
+        payment_hash: plan.payment_hash,
+        attempt: plan.attempt,
+        signer_set: plan.signer_set.clone(),
+        request_hash: plan_commitment,
+        result_hash,
+        external_id: plan.external_id,
+        artifacts,
+        vtxo_transitions: transitions,
+    })
+}
+
+fn revocation_result_bytes(
+    evidence: &FederationLightningSendRevocationEvidence,
+) -> Result<Vec<u8>, Error> {
+    let mut bytes = b"cdk/bark/send-revocation-result/v1".to_vec();
+    bytes.extend_from_slice(&evidence.action_id.to_bytes());
+    bytes.extend_from_slice(&evidence.request_commitment.to_bytes());
+    bytes.extend_from_slice(&evidence.payment_hash.to_vec());
+    bytes.extend_from_slice(
+        &u32::try_from(evidence.input_vtxo_ids.len())
+            .map_err(|_| Error::SendExecutionFailed)?
+            .to_be_bytes(),
+    );
+    for vtxo_id in &evidence.input_vtxo_ids {
+        bytes.extend_from_slice(&vtxo_id.to_bytes());
+    }
+    append_send_vtxos(&mut bytes, &evidence.output_vtxos)?;
+    Ok(bytes)
+}
+
+fn revocation_evidence_from_transition(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<FederationLightningSendRevocationEvidence, Error> {
+    let mut results = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult);
+    let result = results.next().ok_or(Error::SendReconciliationFailed)?;
+    if results.next().is_some()
+        || result.hash != transition.result_hash
+        || result.hash != bark_digest(&result.bytes)?
+    {
+        return Err(Error::SendReconciliationFailed);
+    }
+    let mut bytes = result.bytes.as_slice();
+    take_send_bytes(&mut bytes, b"cdk/bark/send-revocation-result/v1".len())
+        .filter(|domain| *domain == b"cdk/bark/send-revocation-result/v1")
+        .ok_or(Error::SendReconciliationFailed)?;
+    let action_id = take_send_array::<32>(&mut bytes)?;
+    let request_commitment = take_send_array::<32>(&mut bytes)?;
+    let payment_hash = take_send_array::<32>(&mut bytes)?;
+    let input_count = u32::from_be_bytes(take_send_array::<4>(&mut bytes)?);
+    if input_count > 1_024 {
+        return Err(Error::SendReconciliationFailed);
+    }
+    let input_vtxo_ids = (0..input_count)
+        .map(|_| {
+            bark::ark::VtxoId::from_slice(&take_send_array::<36>(&mut bytes)?)
+                .map_err(|_| Error::SendReconciliationFailed)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let output_vtxos = take_send_vtxos(&mut bytes)?;
+    let expected_commitment = FederationBarkOperation::ActionPlan(plan.clone())
+        .commitment()
+        .map_err(|_| Error::SendReconciliationFailed)?;
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    let decoded_inputs = input_vtxo_ids
+        .iter()
+        .map(|vtxo_id| vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    if !bytes.is_empty()
+        || action_id != plan.action_id.to_bytes()
+        || request_commitment != expected_commitment.to_bytes()
+        || request_commitment != transition.request_hash.to_bytes()
+        || payment_hash
+            != plan
+                .payment_hash
+                .ok_or(Error::SendReconciliationFailed)?
+                .to_bytes()
+        || decoded_inputs != expected_inputs
+        || output_vtxos.is_empty()
+    {
+        return Err(Error::SendReconciliationFailed);
+    }
+    let input_mutations = transition
+        .vtxo_transitions
+        .iter()
+        .filter(|mutation| {
+            mutation.previous_state == Some(FederationBarkVtxoState::Reserved)
+                && mutation.new_state == FederationBarkVtxoState::Spent
+        })
+        .map(|mutation| mutation.vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    if input_mutations != expected_inputs {
+        return Err(Error::SendReconciliationFailed);
+    }
+    let output = plan
+        .outputs
+        .first()
+        .ok_or(Error::SendReconciliationFailed)?;
+    let output_mutations = transition
+        .vtxo_transitions
+        .iter()
+        .filter(|mutation| {
+            mutation.previous_state.is_none()
+                && mutation.new_state == FederationBarkVtxoState::Spendable
+        })
+        .collect::<Vec<_>>();
+    if output_mutations.len() != output_vtxos.len()
+        || transition.vtxo_transitions.len() != plan.inputs.len() + output_vtxos.len()
+    {
+        return Err(Error::SendReconciliationFailed);
+    }
+    let mut recovered = cdk_common::Amount::ZERO;
+    for vtxo in &output_vtxos {
+        let encoded = vtxo.serialize();
+        let artifact = transition.artifacts.iter().filter(|artifact| {
+            artifact.kind == FederationBarkArtifactKind::Vtxo && artifact.bytes == encoded
+        });
+        if artifact.count() != 1 {
+            return Err(Error::SendReconciliationFailed);
+        }
+        let vtxo_id = FederationBarkVtxoId::from_bytes(vtxo.id().to_bytes())
+            .map_err(|_| Error::SendReconciliationFailed)?;
+        let amount = cdk_common::Amount::from(vtxo.amount().to_sat());
+        let mutation = output_mutations
+            .iter()
+            .find(|mutation| mutation.vtxo_id == vtxo_id)
+            .ok_or(Error::SendReconciliationFailed)?;
+        if mutation.locator != output.locator
+            || mutation.amount != amount
+            || mutation.expiry_height != vtxo.expiry_height()
+            || mutation.artifact_hash != bark_digest(&encoded)?
+        {
+            return Err(Error::SendReconciliationFailed);
+        }
+        recovered = recovered
+            .checked_add(amount)
+            .ok_or(Error::SendReconciliationFailed)?;
+    }
+    if recovered != output.amount {
+        return Err(Error::SendReconciliationFailed);
+    }
+    Ok(FederationLightningSendRevocationEvidence {
+        action_id: FederationActionId::from_bytes(action_id)
+            .map_err(|_| Error::SendReconciliationFailed)?,
+        request_commitment: FederationRequestCommitment::from_bytes(request_commitment)
+            .map_err(|_| Error::SendReconciliationFailed)?,
+        payment_hash: PaymentHash::from(payment_hash),
+        input_vtxo_ids,
+        output_vtxos,
     })
 }
 

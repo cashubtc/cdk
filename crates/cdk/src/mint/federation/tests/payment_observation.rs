@@ -39,16 +39,20 @@ fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
         observations: vec![observation(dishonest, 1), observation(dishonest, 2)],
         ..FederationBarkProjectionSnapshot::default()
     };
+    let key = |status, fee| FederationBarkResultObservationKey {
+        action_id,
+        status,
+        payment_hash,
+        source_scope,
+        amount: Amount::from(42),
+        fee: Amount::from(fee),
+        result_hash,
+    };
 
     assert_eq!(
         federation_bark_matching_result_observers(
             &projection,
-            action_id,
-            payment_hash,
-            source_scope,
-            Amount::from(42),
-            Amount::from(7),
-            result_hash,
+            key(FederationBarkObservationStatus::Succeeded, 7),
         )
         .len(),
         1,
@@ -56,12 +60,7 @@ fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
     );
     assert!(federation_bark_matching_result_observers(
         &projection,
-        action_id,
-        payment_hash,
-        source_scope,
-        Amount::from(42),
-        Amount::from(6),
-        result_hash,
+        key(FederationBarkObservationStatus::Succeeded, 6),
     )
     .is_empty());
 
@@ -69,15 +68,26 @@ fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
     assert_eq!(
         federation_bark_matching_result_observers(
             &projection,
-            action_id,
-            payment_hash,
-            source_scope,
-            Amount::from(42),
-            Amount::from(7),
-            result_hash,
+            key(FederationBarkObservationStatus::Succeeded, 7),
         )
         .len(),
         2,
+    );
+    let mut recovered_failure = observation(MemberId::new(3).expect("member three"), 4);
+    let FederationBarkOperation::MemberObservation(failed) = &mut recovered_failure.operation
+    else {
+        panic!("member observation")
+    };
+    failed.status = FederationBarkObservationStatus::Failed;
+    projection.observations.push(recovered_failure);
+    assert_eq!(
+        federation_bark_matching_result_observers(
+            &projection,
+            key(FederationBarkObservationStatus::Failed, 7),
+        )
+        .len(),
+        1,
+        "safe failure votes cannot be substituted with success votes",
     );
 }
 

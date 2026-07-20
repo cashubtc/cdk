@@ -511,7 +511,9 @@ where
     let rows_affected = query(
         r#"
         UPDATE federation_bark_derivation_allocations
-        SET vtxo_id = :vtxo_id,
+        SET amount = :amount,
+            artifact_hash = :artifact_hash,
+            vtxo_id = :vtxo_id,
             operation_id = :operation_id,
             operation_index = :operation_index,
             record_json = :record_json
@@ -521,6 +523,14 @@ where
           AND record_json = :expected_record_json
         "#,
     )?
+    .bind(
+        "amount",
+        sql_i64("allocation amount", u64::from(updated.amount))?,
+    )
+    .bind(
+        "artifact_hash",
+        updated.artifact_hash.map(|hash| hash.to_string()),
+    )
     .bind(
         "vtxo_id",
         updated.vtxo_id.map(|vtxo_id| vtxo_id.to_string()),
@@ -670,15 +680,23 @@ where
         cdk_common::federation::FederationBarkActionKind::IncomingClaim => {
             FederationBarkVtxoState::Observed
         }
+        cdk_common::federation::FederationBarkActionKind::FailedSendRevocation => {
+            FederationBarkVtxoState::PendingSpend
+        }
         _ => FederationBarkVtxoState::Spendable,
     };
     if previous.state != expected_state
         || previous.locator != input.locator
         || previous.amount != input.amount
-        || previous.reservation_action_id.is_some()
+        || match kind {
+            cdk_common::federation::FederationBarkActionKind::FailedSendRevocation => {
+                previous.reservation_action_id != Some(action_id)
+            }
+            _ => previous.reservation_action_id.is_some(),
+        }
     {
         return Err(invalid_projection(
-            "Bark action plan input is not an exact unreserved spendable VTXO",
+            "Bark action plan input is not in its exact reservable state",
         ));
     }
     let updated = FederationBarkVtxoRecord {
@@ -806,7 +824,12 @@ where
                 expiry_height: mutation.expiry_height,
                 state: mutation.new_state,
                 artifact,
-                reservation_action_id: None,
+                reservation_action_id: match mutation.new_state {
+                    FederationBarkVtxoState::Reserved
+                    | FederationBarkVtxoState::PendingSpend
+                    | FederationBarkVtxoState::Exiting => Some(transition.action_id),
+                    _ => None,
+                },
                 origin_operation_id: entry.operation_id,
                 origin_operation_index: entry.index,
                 latest_operation_id: entry.operation_id,
@@ -986,21 +1009,58 @@ where
         reserve_input(connection, entry, plan.action_id, plan.kind, input).await?;
     }
     for output in &plan.outputs {
-        insert_allocation(
-            connection,
-            &FederationBarkDerivationAllocationRecord {
-                locator: output.locator,
-                action_id: plan.action_id,
+        if plan.kind == cdk_common::federation::FederationBarkActionKind::FailedSendRevocation {
+            let previous = get_allocation(connection, output.locator)
+                .await?
+                .ok_or_else(|| invalid_projection("Bark revocation locator was not reserved"))?;
+            if previous.action_id != plan.action_id
+                || previous.amount != cdk_common::Amount::ZERO
+                || previous.artifact_hash.is_some()
+                || previous.vtxo_id.is_some()
+                || !previous.vtxo_ids.is_empty()
+                || previous.materialized_amount != cdk_common::Amount::ZERO
+            {
+                return Err(invalid_projection(
+                    "Bark revocation locator differs from its send reservation",
+                ));
+            }
+            let updated = FederationBarkDerivationAllocationRecord {
                 amount: output.amount,
                 artifact_hash: Some(output.artifact_hash),
-                vtxo_id: None,
-                vtxo_ids: Vec::new(),
-                materialized_amount: cdk_common::Amount::ZERO,
                 operation_id: entry.operation_id,
                 operation_index: entry.index,
-            },
-        )
-        .await?;
+                ..previous.clone()
+            };
+            materialize_allocation(connection, &previous, &updated).await?;
+        } else {
+            let amount =
+                if plan.kind == cdk_common::federation::FederationBarkActionKind::LightningSend {
+                    plan.inputs
+                        .iter()
+                        .try_fold(cdk_common::Amount::ZERO, |sum, input| {
+                            sum.checked_add(input.amount).ok_or_else(|| {
+                                invalid_projection("Bark send allocation amount overflow")
+                            })
+                        })?
+                } else {
+                    output.amount
+                };
+            insert_allocation(
+                connection,
+                &FederationBarkDerivationAllocationRecord {
+                    locator: output.locator,
+                    action_id: plan.action_id,
+                    amount,
+                    artifact_hash: Some(output.artifact_hash),
+                    vtxo_id: None,
+                    vtxo_ids: Vec::new(),
+                    materialized_amount: cdk_common::Amount::ZERO,
+                    operation_id: entry.operation_id,
+                    operation_index: entry.index,
+                },
+            )
+            .await?;
+        }
     }
     if let Some(locator) = plan.revocation_locator {
         insert_allocation(

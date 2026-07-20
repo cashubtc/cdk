@@ -2583,7 +2583,9 @@ where
     else {
         panic!("expected first send plan")
     };
+    let htlc_vtxo = bark_vtxo(49);
     let change_vtxo = bark_vtxo(50);
+    let htlc_artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, b"send-htlc");
     let change_artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, b"send-change");
     let htlc_result = bark_artifact(FederationBarkArtifactKind::ArkResult, b"send-htlc-result");
     let htlcs = append_bark_operation(
@@ -2607,6 +2609,7 @@ where
             artifacts: {
                 let mut artifacts = vec![
                     output_artifact.clone(),
+                    htlc_artifact.clone(),
                     change_artifact.clone(),
                     htlc_result,
                 ];
@@ -2620,8 +2623,17 @@ where
                     amount: Amount::from(100),
                     expiry_height: 900_000,
                     previous_state: Some(FederationBarkVtxoState::Reserved),
-                    new_state: FederationBarkVtxoState::PendingSpend,
+                    new_state: FederationBarkVtxoState::Spent,
                     artifact_hash: output_artifact.hash,
+                },
+                FederationBarkVtxoTransition {
+                    vtxo_id: htlc_vtxo,
+                    locator: send.outputs[0].locator,
+                    amount: Amount::from(95),
+                    expiry_height: 899_500,
+                    previous_state: None,
+                    new_state: FederationBarkVtxoState::PendingSpend,
+                    artifact_hash: htlc_artifact.hash,
                 },
                 FederationBarkVtxoTransition {
                     vtxo_id: change_vtxo,
@@ -2691,18 +2703,18 @@ where
             result_hash: bark_digest(52),
             external_id: send.external_id,
             artifacts: {
-                let mut artifacts = vec![output_artifact.clone(), proof];
+                let mut artifacts = vec![htlc_artifact.clone(), proof];
                 artifacts.sort();
                 artifacts
             },
             vtxo_transitions: vec![FederationBarkVtxoTransition {
-                vtxo_id: output_vtxo,
-                locator: output_locator,
-                amount: Amount::from(100),
-                expiry_height: 900_000,
+                vtxo_id: htlc_vtxo,
+                locator: send.outputs[0].locator,
+                amount: Amount::from(95),
+                expiry_height: 899_500,
                 previous_state: Some(FederationBarkVtxoState::PendingSpend),
                 new_state: FederationBarkVtxoState::Spent,
-                artifact_hash: output_artifact.hash,
+                artifact_hash: htlc_artifact.hash,
             }],
         }),
     );
@@ -2725,7 +2737,13 @@ where
         .iter()
         .find(|vtxo| vtxo.vtxo_id == change_vtxo)
         .expect("spendable outgoing change");
+    let spent_htlc = succeeded_snapshot
+        .vtxos
+        .iter()
+        .find(|vtxo| vtxo.vtxo_id == htlc_vtxo)
+        .expect("spent outgoing HTLC");
     assert_eq!(sent.state, FederationBarkVtxoState::Spent);
+    assert_eq!(spent_htlc.state, FederationBarkVtxoState::Spent);
     assert_eq!(change.state, FederationBarkVtxoState::Spendable);
     assert_eq!(
         succeeded_snapshot
@@ -2735,6 +2753,307 @@ where
             .expect("successful send action")
             .phase,
         FederationBarkSemanticPhase::PaymentSucceeded
+    );
+
+    let recovery_action = bark_action(53);
+    let recovery_predecessor = FederationOperationId::from_bytes([54; 32]);
+    let recovery_payment = sha256::Hash::hash(&[55]);
+    let recovery_invoice = bark_invoice(recovery_payment, 4_000);
+    let mut recovery_send = FederationBarkActionPlan {
+        version: FEDERATION_BARK_OPERATION_VERSION,
+        action_id: recovery_action,
+        quote: Some("send-recovery".to_string()),
+        kind: FederationBarkActionKind::LightningSend,
+        actor: MemberId::new(1).expect("member"),
+        predecessor_operation_id: recovery_predecessor,
+        payment_hash: Some(
+            FederationBarkDigest::from_bytes(recovery_payment.to_byte_array())
+                .expect("recovery payment hash"),
+        ),
+        inputs: vec![FederationBarkVtxoInput {
+            vtxo_id: change_vtxo,
+            locator: send.outputs[0].locator,
+            amount: Amount::from(5),
+        }],
+        outputs: vec![FederationBarkVtxoOutput {
+            locator: FederationBarkVtxoLocator::vtxo_custody(22),
+            amount: Amount::ZERO,
+            artifact_hash: bark_digest(56),
+        }],
+        revocation_locator: Some(FederationBarkVtxoLocator::vtxo_custody(23)),
+        external_amount: Amount::from(4),
+        fee_amount: Amount::from(1),
+        fee_bound: Amount::from(1),
+        artifacts: Vec::new(),
+        external_id: FederationBarkExternalId::derive_lightning_send(
+            recovery_action,
+            recovery_predecessor,
+            1,
+        )
+        .expect("recovery send external id"),
+        signer_set: vec![
+            MemberId::new(1).expect("member"),
+            MemberId::new(2).expect("member"),
+        ],
+        attempt: 1,
+        expires_at: 898_982,
+    };
+    recovery_send
+        .bind_lightning_send_artifacts(&recovery_invoice)
+        .expect("bind recovery send artifacts");
+    let recovery_plan = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionPlan(recovery_send.clone()),
+    );
+    apply_bark_entry(&db, &recovery_plan).await;
+
+    let recovery_htlc_vtxo = bark_vtxo(60);
+    let recovery_htlc_artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, b"recovery-htlc");
+    let recovery_htlc_result = bark_artifact(
+        FederationBarkArtifactKind::ArkResult,
+        b"recovery-htlc-result",
+    );
+    let recovery_htlcs = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: recovery_action,
+            quote: recovery_send.quote.clone(),
+            phase: FederationBarkSemanticPhase::SendHtlcsCosigned,
+            actor: recovery_send.actor,
+            plan_operation_id: recovery_plan.operation_id,
+            predecessor_operation_id: recovery_plan.operation_id,
+            payment_hash: recovery_send.payment_hash,
+            attempt: recovery_send.attempt,
+            signer_set: recovery_send.signer_set.clone(),
+            request_hash: FederationBarkOperation::ActionPlan(recovery_send.clone())
+                .commitment()
+                .expect("recovery send commitment"),
+            result_hash: recovery_htlc_result.hash,
+            external_id: recovery_send.external_id,
+            artifacts: {
+                let mut artifacts = vec![
+                    change_artifact.clone(),
+                    recovery_htlc_artifact.clone(),
+                    recovery_htlc_result.clone(),
+                ];
+                artifacts.sort();
+                artifacts
+            },
+            vtxo_transitions: vec![
+                FederationBarkVtxoTransition {
+                    vtxo_id: change_vtxo,
+                    locator: send.outputs[0].locator,
+                    amount: Amount::from(5),
+                    expiry_height: 899_000,
+                    previous_state: Some(FederationBarkVtxoState::Reserved),
+                    new_state: FederationBarkVtxoState::Spent,
+                    artifact_hash: change_artifact.hash,
+                },
+                FederationBarkVtxoTransition {
+                    vtxo_id: recovery_htlc_vtxo,
+                    locator: recovery_send.outputs[0].locator,
+                    amount: Amount::from(5),
+                    expiry_height: 898_500,
+                    previous_state: None,
+                    new_state: FederationBarkVtxoState::PendingSpend,
+                    artifact_hash: recovery_htlc_artifact.hash,
+                },
+            ],
+        }),
+    );
+    apply_bark_entry(&db, &recovery_htlcs).await;
+
+    let recovery_initiated_result = bark_artifact(
+        FederationBarkArtifactKind::ArkResult,
+        b"recovery-payment-initiated",
+    );
+    let recovery_initiated = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: recovery_action,
+            quote: recovery_send.quote.clone(),
+            phase: FederationBarkSemanticPhase::PaymentInitiated,
+            actor: recovery_send.actor,
+            plan_operation_id: recovery_plan.operation_id,
+            predecessor_operation_id: recovery_htlcs.operation_id,
+            payment_hash: recovery_send.payment_hash,
+            attempt: recovery_send.attempt,
+            signer_set: recovery_send.signer_set.clone(),
+            request_hash: recovery_htlc_result.hash,
+            result_hash: recovery_initiated_result.hash,
+            external_id: recovery_send.external_id,
+            artifacts: vec![recovery_initiated_result.clone()],
+            vtxo_transitions: Vec::new(),
+        }),
+    );
+    apply_bark_entry(&db, &recovery_initiated).await;
+
+    let recovery_failed_result = bark_artifact(
+        FederationBarkArtifactKind::ArkResult,
+        b"recovery-payment-failed",
+    );
+    let recovery_failed = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: recovery_action,
+            quote: recovery_send.quote.clone(),
+            phase: FederationBarkSemanticPhase::PaymentFailed,
+            actor: recovery_send.actor,
+            plan_operation_id: recovery_plan.operation_id,
+            predecessor_operation_id: recovery_initiated.operation_id,
+            payment_hash: recovery_send.payment_hash,
+            attempt: recovery_send.attempt,
+            signer_set: recovery_send.signer_set.clone(),
+            request_hash: recovery_initiated_result.hash,
+            result_hash: recovery_failed_result.hash,
+            external_id: recovery_send.external_id,
+            artifacts: vec![recovery_failed_result],
+            vtxo_transitions: Vec::new(),
+        }),
+    );
+    apply_bark_entry(&db, &recovery_failed).await;
+
+    let revocation_request = bark_artifact(
+        FederationBarkArtifactKind::ArkRequest,
+        b"accepted-revocation-request",
+    );
+    let revocation = FederationBarkActionPlan {
+        version: FEDERATION_BARK_OPERATION_VERSION,
+        action_id: recovery_action,
+        quote: recovery_send.quote.clone(),
+        kind: FederationBarkActionKind::FailedSendRevocation,
+        actor: recovery_send.actor,
+        predecessor_operation_id: recovery_failed.operation_id,
+        payment_hash: recovery_send.payment_hash,
+        inputs: vec![FederationBarkVtxoInput {
+            vtxo_id: recovery_htlc_vtxo,
+            locator: recovery_send.outputs[0].locator,
+            amount: Amount::from(5),
+        }],
+        outputs: vec![FederationBarkVtxoOutput {
+            locator: recovery_send
+                .revocation_locator
+                .expect("revocation locator"),
+            amount: Amount::from(5),
+            artifact_hash: revocation_request.hash,
+        }],
+        revocation_locator: None,
+        external_amount: Amount::ZERO,
+        fee_amount: Amount::ZERO,
+        fee_bound: Amount::ZERO,
+        artifacts: {
+            let mut artifacts = vec![recovery_htlc_artifact.clone(), revocation_request];
+            artifacts.sort();
+            artifacts
+        },
+        external_id: FederationBarkExternalId::derive_failed_send_revocation(
+            recovery_action,
+            recovery_failed.operation_id,
+            1,
+        )
+        .expect("revocation external id"),
+        signer_set: recovery_send.signer_set.clone(),
+        attempt: 1,
+        expires_at: recovery_send.expires_at,
+    };
+    let revocation_plan = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionPlan(revocation.clone()),
+    );
+    apply_bark_entry(&db, &revocation_plan).await;
+
+    let recovered_vtxo = bark_vtxo(62);
+    let recovered_artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, b"recovered-vtxo");
+    let revocation_result = bark_artifact(
+        FederationBarkArtifactKind::ArkResult,
+        b"accepted-revocation-result",
+    );
+    let completed = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: recovery_action,
+            quote: recovery_send.quote.clone(),
+            phase: FederationBarkSemanticPhase::RevocationCompleted,
+            actor: recovery_send.actor,
+            plan_operation_id: revocation_plan.operation_id,
+            predecessor_operation_id: revocation_plan.operation_id,
+            payment_hash: recovery_send.payment_hash,
+            attempt: revocation.attempt,
+            signer_set: revocation.signer_set.clone(),
+            request_hash: FederationBarkOperation::ActionPlan(revocation.clone())
+                .commitment()
+                .expect("revocation plan commitment"),
+            result_hash: revocation_result.hash,
+            external_id: revocation.external_id,
+            artifacts: {
+                let mut artifacts = vec![
+                    recovery_htlc_artifact.clone(),
+                    recovered_artifact.clone(),
+                    revocation_result,
+                ];
+                artifacts.sort();
+                artifacts
+            },
+            vtxo_transitions: vec![
+                FederationBarkVtxoTransition {
+                    vtxo_id: recovery_htlc_vtxo,
+                    locator: recovery_send.outputs[0].locator,
+                    amount: Amount::from(5),
+                    expiry_height: 898_500,
+                    previous_state: Some(FederationBarkVtxoState::Reserved),
+                    new_state: FederationBarkVtxoState::Spent,
+                    artifact_hash: recovery_htlc_artifact.hash,
+                },
+                FederationBarkVtxoTransition {
+                    vtxo_id: recovered_vtxo,
+                    locator: revocation.outputs[0].locator,
+                    amount: Amount::from(5),
+                    expiry_height: 898_000,
+                    previous_state: None,
+                    new_state: FederationBarkVtxoState::Spendable,
+                    artifact_hash: recovered_artifact.hash,
+                },
+            ],
+        }),
+    );
+    apply_bark_entry(&db, &completed).await;
+    apply_bark_entry(&db, &revocation_plan).await;
+    apply_bark_entry(&db, &completed).await;
+
+    let recovered_snapshot = db
+        .get_federation_bark_projection_snapshot()
+        .await
+        .expect("recovered send projection");
+    assert_eq!(
+        recovered_snapshot
+            .vtxos
+            .iter()
+            .find(|vtxo| vtxo.vtxo_id == recovery_htlc_vtxo)
+            .expect("recovery HTLC")
+            .state,
+        FederationBarkVtxoState::Spent
+    );
+    assert_eq!(
+        recovered_snapshot
+            .vtxos
+            .iter()
+            .find(|vtxo| vtxo.vtxo_id == recovered_vtxo)
+            .expect("recovered VTXO")
+            .state,
+        FederationBarkVtxoState::Spendable
+    );
+    assert_eq!(
+        recovered_snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == recovery_action)
+            .expect("recovered action")
+            .phase,
+        FederationBarkSemanticPhase::RevocationCompleted
     );
 }
 

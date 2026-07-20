@@ -54,6 +54,7 @@ const BARK_RECEIVE_RESULT_DOMAIN: &[u8] = b"cdk/federation/bark-receive-result/v
 const BARK_RECEIVE_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-receive-external-id/v1";
 const BARK_SEND_REQUEST_DOMAIN: &str = "cdk/federation/bark-send-request/v1";
 const BARK_SEND_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-send-external-id/v1";
+const BARK_REVOCATION_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-revocation-external-id/v1";
 
 /// Commit to the exact bounded transcript presented to a Bark custody method.
 pub fn federation_bark_custody_transcript_hash(bytes: &[u8]) -> Result<FederationBarkDigest> {
@@ -269,6 +270,23 @@ impl FederationBarkExternalId {
         }
         let mut transcript = Vec::new();
         append_hash_bytes(&mut transcript, BARK_SEND_EXTERNAL_ID_DOMAIN);
+        append_hash_bytes(&mut transcript, &action_id.to_bytes());
+        append_hash_bytes(&mut transcript, &predecessor_operation_id.to_bytes());
+        append_hash_bytes(&mut transcript, &attempt.to_be_bytes());
+        Self::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
+    }
+
+    /// Derive the frozen idempotency key for one failed-send revocation.
+    pub fn derive_failed_send_revocation(
+        action_id: FederationBarkActionId,
+        predecessor_operation_id: FederationOperationId,
+        attempt: u32,
+    ) -> Result<Self> {
+        if attempt == 0 {
+            return Err(invalid_bark("Bark revocation attempt must be non-zero"));
+        }
+        let mut transcript = Vec::new();
+        append_hash_bytes(&mut transcript, BARK_REVOCATION_EXTERNAL_ID_DOMAIN);
         append_hash_bytes(&mut transcript, &action_id.to_bytes());
         append_hash_bytes(&mut transcript, &predecessor_operation_id.to_bytes());
         append_hash_bytes(&mut transcript, &attempt.to_be_bytes());
@@ -1042,11 +1060,13 @@ impl FederationBarkOperation {
                         vtxo_id: input.vtxo_id,
                     }
                 }));
-                keys.extend(operation.outputs.iter().map(|output| {
-                    FederationBarkConflictKey::Locator {
-                        locator: output.locator,
-                    }
-                }));
+                if operation.kind != FederationBarkActionKind::FailedSendRevocation {
+                    keys.extend(operation.outputs.iter().map(|output| {
+                        FederationBarkConflictKey::Locator {
+                            locator: output.locator,
+                        }
+                    }));
+                }
                 if let Some(locator) = operation.revocation_locator {
                     keys.push(FederationBarkConflictKey::Locator { locator });
                 }
@@ -1624,6 +1644,39 @@ impl FederationBarkActionPlan {
                 ));
             }
             self.validate_lightning_send_artifacts()?;
+        } else if matches!(self.kind, FederationBarkActionKind::FailedSendRevocation) {
+            if self.outputs.len() != 1
+                || self.external_amount != Amount::ZERO
+                || self.fee_amount != Amount::ZERO
+                || self.fee_bound != Amount::ZERO
+                || self.revocation_locator.is_some()
+                || self
+                    .inputs
+                    .iter()
+                    .any(|input| input.locator == self.outputs[0].locator)
+                || self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest)
+                    .count()
+                    != 1
+                || self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+                    .count()
+                    < self.inputs.len()
+                || self.external_id
+                    != FederationBarkExternalId::derive_failed_send_revocation(
+                        self.action_id,
+                        self.predecessor_operation_id,
+                        self.attempt,
+                    )?
+            {
+                return Err(invalid_bark(
+                    "failed-send revocation must bind exact HTLC inputs and one recovery output",
+                ));
+            }
         } else if self.external_amount != Amount::ZERO || self.revocation_locator.is_some() {
             return Err(invalid_bark(
                 "only Lightning send may move value outside Bark outputs or reserve a revocation key",
@@ -1745,13 +1798,19 @@ impl FederationBarkActionTransition {
                 }
             }
             FederationBarkSemanticPhase::SendHtlcsCosigned => {
-                let has_pending_input = self.vtxo_transitions.iter().any(|transition| {
+                let has_spent_input = self.vtxo_transitions.iter().any(|transition| {
                     transition.previous_state == Some(FederationBarkVtxoState::Reserved)
+                        && transition.new_state == FederationBarkVtxoState::Spent
+                });
+                let has_pending_htlc = self.vtxo_transitions.iter().any(|transition| {
+                    transition.previous_state.is_none()
                         && transition.new_state == FederationBarkVtxoState::PendingSpend
                 });
                 let valid_shape = self.vtxo_transitions.iter().all(|transition| {
                     (transition.previous_state == Some(FederationBarkVtxoState::Reserved)
-                        && transition.new_state == FederationBarkVtxoState::PendingSpend)
+                        && transition.new_state == FederationBarkVtxoState::Spent)
+                        || (transition.previous_state.is_none()
+                            && transition.new_state == FederationBarkVtxoState::PendingSpend)
                         || (transition.previous_state.is_none()
                             && transition.new_state == FederationBarkVtxoState::Spendable)
                 });
@@ -1760,9 +1819,9 @@ impl FederationBarkActionTransition {
                     .iter()
                     .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
                     .count();
-                if !has_pending_input || !valid_shape || result_count != 1 {
+                if !has_spent_input || !has_pending_htlc || !valid_shape || result_count != 1 {
                     return Err(invalid_bark(
-                        "outgoing HTLC result must pend reserved inputs and bind one Ark result",
+                        "outgoing HTLC result must spend inputs, retain HTLC value, and bind one Ark result",
                     ));
                 }
             }
@@ -1796,6 +1855,45 @@ impl FederationBarkActionTransition {
                     ));
                 }
             }
+            FederationBarkSemanticPhase::PaymentFailed
+                if !self.vtxo_transitions.is_empty()
+                    || self
+                        .artifacts
+                        .iter()
+                        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+                        .count()
+                        != 1 =>
+            {
+                return Err(invalid_bark(
+                    "payment failure must retain HTLC value and bind one exact result",
+                ));
+            }
+            FederationBarkSemanticPhase::RevocationCompleted => {
+                let has_spent_input = self.vtxo_transitions.iter().any(|transition| {
+                    transition.previous_state == Some(FederationBarkVtxoState::Reserved)
+                        && transition.new_state == FederationBarkVtxoState::Spent
+                });
+                let has_spendable_output = self.vtxo_transitions.iter().any(|transition| {
+                    transition.previous_state.is_none()
+                        && transition.new_state == FederationBarkVtxoState::Spendable
+                });
+                let valid_shape = self.vtxo_transitions.iter().all(|transition| {
+                    (transition.previous_state == Some(FederationBarkVtxoState::Reserved)
+                        && transition.new_state == FederationBarkVtxoState::Spent)
+                        || (transition.previous_state.is_none()
+                            && transition.new_state == FederationBarkVtxoState::Spendable)
+                });
+                let result_count = self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+                    .count();
+                if !has_spent_input || !has_spendable_output || !valid_shape || result_count != 1 {
+                    return Err(invalid_bark(
+                        "revocation must spend exact HTLCs and restore spendable value",
+                    ));
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1812,7 +1910,7 @@ fn valid_vtxo_state_transition(
 
     matches!(
         (previous, new),
-        (None, Observed | Spendable)
+        (None, Observed | PendingSpend | Spendable)
             | (Some(Observed), Reserved | Spendable | Exiting)
             | (Some(Reserved), PendingSpend | Spent | Spendable | Exiting)
             | (Some(PendingSpend), Spent | Spendable | Exiting)
@@ -2954,6 +3052,78 @@ mod tests {
                 .validate()
                 .is_err());
         }
+    }
+
+    #[test]
+    fn failed_send_revocation_reuses_only_the_preallocated_recovery_locator() {
+        let FederationBarkOperation::ActionPlan(send) = send_plan() else {
+            panic!("action plan")
+        };
+        let predecessor = operation_id(50);
+        let input_artifact =
+            bark_artifact(FederationBarkArtifactKind::Vtxo, b"failed HTLC".to_vec())
+                .expect("HTLC artifact");
+        let request_artifact = bark_artifact(
+            FederationBarkArtifactKind::ArkRequest,
+            b"accepted revocation request".to_vec(),
+        )
+        .expect("request artifact");
+        let mut artifacts = vec![input_artifact, request_artifact.clone()];
+        artifacts.sort();
+        let revocation_locator = send.revocation_locator.expect("revocation locator");
+        let plan = FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: send.action_id,
+            quote: send.quote,
+            kind: FederationBarkActionKind::FailedSendRevocation,
+            actor: send.actor,
+            predecessor_operation_id: predecessor,
+            payment_hash: send.payment_hash,
+            inputs: vec![FederationBarkVtxoInput {
+                vtxo_id: vtxo(51),
+                locator: send.outputs[0].locator,
+                amount: Amount::from(105),
+            }],
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: revocation_locator,
+                amount: Amount::from(105),
+                artifact_hash: request_artifact.hash,
+            }],
+            revocation_locator: None,
+            external_amount: Amount::ZERO,
+            fee_amount: Amount::ZERO,
+            fee_bound: Amount::ZERO,
+            artifacts,
+            external_id: FederationBarkExternalId::derive_failed_send_revocation(
+                send.action_id,
+                predecessor,
+                send.attempt,
+            )
+            .expect("revocation external id"),
+            signer_set: send.signer_set,
+            attempt: send.attempt,
+            expires_at: send.expires_at,
+        };
+        let operation = FederationBarkOperation::ActionPlan(plan.clone());
+        operation.validate().expect("valid revocation plan");
+        assert!(operation.conflict_keys().iter().all(|key| {
+            !matches!(
+                key,
+                FederationBarkConflictKey::Locator { locator }
+                    if *locator == revocation_locator
+            )
+        }));
+
+        let mut changed = plan.clone();
+        changed.outputs[0].locator = changed.inputs[0].locator;
+        assert!(FederationBarkOperation::ActionPlan(changed)
+            .validate()
+            .is_err());
+        let mut changed = plan;
+        changed.outputs[0].amount = Amount::from(104);
+        assert!(FederationBarkOperation::ActionPlan(changed)
+            .validate()
+            .is_err());
     }
 
     #[test]

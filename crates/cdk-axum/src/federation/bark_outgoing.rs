@@ -1,10 +1,11 @@
 //! Consensus-stepped outgoing Bark execution and local checkpoint projection.
 
+use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use cdk::federation::{
     FederationBarkActionKind, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkSemanticPhase, FederationOperation, FederationOperationId,
+    FederationBarkSemanticPhase, FederationOperation, FederationOperationId, MemberId,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::MeltQuoteState;
@@ -41,17 +42,19 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     | FederationBarkSemanticPhase::PaymentInitiated
                     | FederationBarkSemanticPhase::PaymentSucceeded
                     | FederationBarkSemanticPhase::PaymentFailed
+                    | FederationBarkSemanticPhase::RevocationPlanned
+                    | FederationBarkSemanticPhase::RevocationCompleted
             )
     });
 
     if let Some(action) = existing_action {
-        let plan_operation_id = action.plan_operation_id.ok_or(cdk::Error::Internal)?;
-        let plan_entry = state
-            .mint
-            .localstore()
-            .get_federation_journal_entry_by_operation_id(plan_operation_id)
-            .await?
-            .ok_or(cdk::Error::Internal)?;
+        let plan_entry = send_transition_entry(
+            state,
+            &projection,
+            action.action_id,
+            FederationBarkSemanticPhase::SendPlanned,
+        )
+        .await?;
         let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
             &plan_entry.envelope.operation
         else {
@@ -68,6 +71,8 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 | FederationBarkSemanticPhase::PaymentInitiated
                 | FederationBarkSemanticPhase::PaymentSucceeded
                 | FederationBarkSemanticPhase::PaymentFailed
+                | FederationBarkSemanticPhase::RevocationPlanned
+                | FederationBarkSemanticPhase::RevocationCompleted
         ) {
             Some(
                 send_transition_entry(
@@ -93,6 +98,8 @@ pub(super) async fn advance_federated_bark_melt_quote(
             FederationBarkSemanticPhase::PaymentInitiated
                 | FederationBarkSemanticPhase::PaymentSucceeded
                 | FederationBarkSemanticPhase::PaymentFailed
+                | FederationBarkSemanticPhase::RevocationPlanned
+                | FederationBarkSemanticPhase::RevocationCompleted
         ) {
             Some(
                 send_transition_entry(
@@ -112,6 +119,52 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 .await
                 .map_err(|_| cdk::Error::Internal)?;
         }
+
+        let failed_entry = if matches!(
+            action.phase,
+            FederationBarkSemanticPhase::PaymentFailed
+                | FederationBarkSemanticPhase::RevocationPlanned
+                | FederationBarkSemanticPhase::RevocationCompleted
+        ) {
+            Some(
+                send_transition_entry(
+                    state,
+                    &projection,
+                    action.action_id,
+                    FederationBarkSemanticPhase::PaymentFailed,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        if let Some(failed) = &failed_entry {
+            runtime
+                .apply_lightning_send_failed(&quote, &projection, &plan_entry, failed)
+                .await
+                .map_err(|_| cdk::Error::Internal)?;
+            runtime
+                .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                .await;
+        }
+
+        let revocation_plan_entry = if matches!(
+            action.phase,
+            FederationBarkSemanticPhase::RevocationPlanned
+                | FederationBarkSemanticPhase::RevocationCompleted
+        ) {
+            Some(
+                send_transition_entry(
+                    state,
+                    &projection,
+                    action.action_id,
+                    FederationBarkSemanticPhase::RevocationPlanned,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
 
         return match action.phase {
             FederationBarkSemanticPhase::SendPlanned => {
@@ -152,13 +205,81 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 .await
             }
             FederationBarkSemanticPhase::PaymentInitiated => {
-                let Some(transition) = runtime
-                    .observe_lightning_send_success(
-                        &quote,
-                        &projection,
-                        &plan_entry,
-                        initiated_entry.as_ref().ok_or(cdk::Error::Internal)?,
+                let initiated = initiated_entry.as_ref().ok_or(cdk::Error::Internal)?;
+                let already_reported_failure = projection.observations.iter().any(|record| {
+                    matches!(
+                        &record.operation,
+                        FederationBarkOperation::MemberObservation(observation)
+                            if observation.action_id == action.action_id
+                                && observation.observer == federation.member_id()
+                                && observation.status
+                                    == FederationBarkObservationStatus::Failed
                     )
+                });
+                if !already_reported_failure {
+                    let next_epoch = next_observation_epoch(
+                        &projection,
+                        action.action_id,
+                        federation.member_id(),
+                    )?;
+                    if let Some(observation) = runtime
+                        .observe_lightning_send_failure(
+                            &quote,
+                            &projection,
+                            &plan_entry,
+                            initiated,
+                            next_epoch,
+                        )
+                        .await
+                        .map_err(|_| cdk::Error::Internal)?
+                    {
+                        return submit_bark_operation(
+                            state,
+                            federation.operation_envelope(FederationOperation::Bark(
+                                FederationBarkOperation::MemberObservation(observation),
+                            )),
+                        )
+                        .await;
+                    }
+                }
+                if plan.actor != federation.member_id() {
+                    return Ok(0);
+                }
+                let failed_observers = projection
+                    .observations
+                    .iter()
+                    .filter_map(|record| match &record.operation {
+                        FederationBarkOperation::MemberObservation(observation)
+                            if observation.action_id == action.action_id
+                                && observation.status
+                                    == FederationBarkObservationStatus::Failed =>
+                        {
+                            Some(observation.observer)
+                        }
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>();
+                if failed_observers.len()
+                    >= usize::from(
+                        federation
+                            .public_config()
+                            .threshold_params
+                            .signature_threshold,
+                    )
+                {
+                    let transition = runtime
+                        .finalize_lightning_send_failure(&plan_entry, initiated)
+                        .map_err(|_| cdk::Error::Internal)?;
+                    return submit_bark_operation(
+                        state,
+                        federation.operation_envelope(FederationOperation::Bark(
+                            FederationBarkOperation::ActionTransition(transition),
+                        )),
+                    )
+                    .await;
+                }
+                let Some(transition) = runtime
+                    .observe_lightning_send_success(&quote, &projection, &plan_entry, initiated)
                     .await
                     .map_err(|_| cdk::Error::Internal)?
                 else {
@@ -193,22 +314,8 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 if already_observed {
                     return Ok(0);
                 }
-                let next_epoch = projection
-                    .observations
-                    .iter()
-                    .filter_map(|record| match &record.operation {
-                        FederationBarkOperation::MemberObservation(observation)
-                            if observation.action_id == action.action_id
-                                && observation.observer == federation.member_id() =>
-                        {
-                            Some(observation.observation_epoch)
-                        }
-                        _ => None,
-                    })
-                    .max()
-                    .unwrap_or(0)
-                    .checked_add(1)
-                    .ok_or(cdk::Error::Internal)?;
+                let next_epoch =
+                    next_observation_epoch(&projection, action.action_id, federation.member_id())?;
                 let observation = runtime
                     .apply_lightning_send_succeeded(
                         &quote,
@@ -227,7 +334,123 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 )
                 .await
             }
-            FederationBarkSemanticPhase::PaymentFailed => Ok(0),
+            FederationBarkSemanticPhase::PaymentFailed => {
+                if plan.actor != federation.member_id() {
+                    return Ok(0);
+                }
+                let revocation = runtime
+                    .propose_failed_send_revocation(
+                        &projection,
+                        &plan_entry,
+                        failed_entry.as_ref().ok_or(cdk::Error::Internal)?,
+                    )
+                    .map_err(|_| cdk::Error::Internal)?;
+                submit_bark_operation(
+                    state,
+                    federation.operation_envelope(FederationOperation::Bark(
+                        FederationBarkOperation::ActionPlan(revocation),
+                    )),
+                )
+                .await
+            }
+            FederationBarkSemanticPhase::RevocationPlanned => {
+                if plan.actor != federation.member_id() {
+                    return Ok(0);
+                }
+                let revocation_plan_entry =
+                    revocation_plan_entry.as_ref().ok_or(cdk::Error::Internal)?;
+                let transition = match runtime
+                    .execute_failed_send_revocation(
+                        &quote,
+                        &projection,
+                        &plan_entry,
+                        revocation_plan_entry,
+                    )
+                    .await
+                {
+                    Ok(transition) => transition,
+                    Err(_) => {
+                        runtime
+                            .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                            .await;
+                        tracing::warn!(
+                            action_id = %action.action_id,
+                            "accepted Bark revocation remains recovery-required"
+                        );
+                        return Ok(0);
+                    }
+                };
+                submit_bark_operation(
+                    state,
+                    federation.operation_envelope(FederationOperation::Bark(
+                        FederationBarkOperation::ActionTransition(transition),
+                    )),
+                )
+                .await
+            }
+            FederationBarkSemanticPhase::RevocationCompleted => {
+                let completed_entry = send_transition_entry(
+                    state,
+                    &projection,
+                    action.action_id,
+                    FederationBarkSemanticPhase::RevocationCompleted,
+                )
+                .await?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionTransition(completed)) =
+                    &completed_entry.envelope.operation
+                else {
+                    return Err(cdk::Error::Internal);
+                };
+                let already_observed = projection.observations.iter().any(|record| {
+                    matches!(
+                        &record.operation,
+                        FederationBarkOperation::MemberObservation(observation)
+                            if observation.action_id == action.action_id
+                                && observation.observer == federation.member_id()
+                                && observation.status
+                                    == FederationBarkObservationStatus::Failed
+                                && observation.result_hash == completed.result_hash
+                    )
+                });
+                let next_epoch =
+                    next_observation_epoch(&projection, action.action_id, federation.member_id())?;
+                let observation = match runtime
+                    .apply_failed_send_revocation(
+                        &quote,
+                        &projection,
+                        &plan_entry,
+                        revocation_plan_entry.as_ref().ok_or(cdk::Error::Internal)?,
+                        &completed_entry,
+                        next_epoch,
+                    )
+                    .await
+                {
+                    Ok(observation) => observation,
+                    Err(_) => {
+                        runtime
+                            .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                            .await;
+                        tracing::error!(
+                            action_id = %action.action_id,
+                            "accepted Bark revocation result could not be validated locally"
+                        );
+                        return Ok(0);
+                    }
+                };
+                runtime
+                    .clear_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
+                    .await;
+                if already_observed {
+                    return Ok(0);
+                }
+                submit_bark_operation(
+                    state,
+                    federation.operation_envelope(FederationOperation::Bark(
+                        FederationBarkOperation::MemberObservation(observation),
+                    )),
+                )
+                .await
+            }
             _ => Err(cdk::Error::Internal),
         };
     }
@@ -320,6 +543,28 @@ async fn send_transition_entry(
         .localstore()
         .get_federation_journal_entry_by_operation_id(operation_id)
         .await?
+        .ok_or(cdk::Error::Internal)
+}
+
+fn next_observation_epoch(
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    action_id: cdk::federation::FederationBarkActionId,
+    member_id: MemberId,
+) -> Result<u64, cdk::Error> {
+    projection
+        .observations
+        .iter()
+        .filter_map(|record| match &record.operation {
+            FederationBarkOperation::MemberObservation(observation)
+                if observation.action_id == action_id && observation.observer == member_id =>
+            {
+                Some(observation.observation_epoch)
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
         .ok_or(cdk::Error::Internal)
 }
 

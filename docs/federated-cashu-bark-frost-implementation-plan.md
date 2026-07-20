@@ -2755,6 +2755,108 @@ Exit criteria:
 
 ### Milestone 14: revocation and failure safety
 
+Status: complete on 2026-07-19.
+
+Implementation commits:
+
+- CDK: `feat: recover failed federated Bark payments`
+- Bark: `582d4190 feat: recover failed federated Bark payments`
+
+Implementation record:
+
+- Terminal payment failure is now a consensus fact rather than an actor-local
+  decision. A `PaymentFailed` result is accepted only after threshold distinct
+  members submit exact failure observations for the same action, payment hash,
+  accepted send result, amount, fee, and predecessor phase. Pending, missing,
+  and transport-unknown Bark status remain non-terminal.
+- The accepted failure does not release Cashu proofs. It changes the action to
+  recovery-required and deterministically derives one
+  `FailedSendRevocation` request from the original accepted send plan. That
+  request reuses only its preallocated recovery locator and commits the exact
+  canonical HTLC VTXOs, payment hash, predecessor, policy, actor, and attempt.
+- Revocation custody authorization is domain separated and binds the accepted
+  revocation request commitment, payment hash, and ordered HTLC IDs. Every
+  signer reconstructs this transcript from consensus state; a failover member
+  cannot change the recovery inputs, key, or destination.
+- Bark's federation surface separates requesting a revocation from applying its
+  accepted result. The actor performs the single external revocation request;
+  followers validate and replay the canonical recovered VTXOs without issuing
+  a second request. Applying the result finishes the failed movement, spends
+  the exact HTLCs, stores the recovered spendable VTXOs, and is idempotent.
+- VTXO accounting now follows the actual Bark lifecycle. Creating the HTLCs
+  consumes the original reserved inputs, introduces the exact HTLC VTXOs as
+  `PendingSpend`, and introduces change as `Spendable`. Success consumes those
+  HTLCs. Revocation consumes the same HTLCs and introduces only the accepted
+  recovered outputs, preserving value conservation in either terminal branch.
+- Every member independently validates and applies the accepted revocation
+  result before submitting a safe `Failed` observation bound to
+  `RevocationCompleted`. The existing melt bridge exposes a failed payment and
+  releases reserved Cashu proofs only after threshold distinct safe recovery
+  observations. Failure votes from `PaymentInitiated` cannot substitute for
+  recovery-complete votes.
+- Startup reconciliation replays accepted payment failure and revocation
+  records into Bark. An unresolved or locally invalid recovery frontier leaves
+  the Bark backend in `RecoveryRequired`; successful replay clears that state.
+  This is the explicit emergency-exit/operator escalation point and prevents
+  automatic compensation while Bark value is unresolved.
+- The current, not-yet-released Bark projection migration was adjusted so one
+  accepted allocation may materialize the multiple VTXOs present in canonical
+  Bark evidence. No previous migration was modified. The exact action/locator
+  ownership checks remain in the stateful SQL projection.
+- The unfederated payment path is unchanged. The new logic remains confined to
+  Bark's federation adapter, federation-gated orchestration, semantic
+  projection, and the existing consensus payment-observation bridge.
+
+Verification evidence:
+
+```text
+cargo check -p bark-wallet --all-targets --locked
+  passed; Bark retains two pre-existing warnings
+
+cargo test -p bark-wallet --lib --locked -- --test-threads 1
+  passed: 106 tests
+
+cargo test -p cdk-bark --features federation-bark --lib
+  passed: 8 tests
+
+cargo clippy -p cdk-bark --features federation-bark --all-targets \
+  --no-deps -- -D warnings
+  passed
+
+cargo test -p cdk-common --features federation \
+  failed_send_revocation_reuses_only_the_preallocated_recovery_locator --lib
+  passed
+
+cargo test -p cdk-sqlite --features mint,federation \
+  federation_bark_projection_persistence --lib
+  passed: reserve -> failure -> revocation -> safe recovered state, including
+  idempotent replay
+
+cargo test -p cdk --lib --features mint,federation -- --test-threads 1
+  federation and new recovery tests passed as part of 783 passing tests;
+  the only three failures were unrelated wallet-repository tests for which the
+  execution sandbox denied binding a local test listener
+
+cargo check -p cdk-bark --features federation-bark --all-targets
+cargo check -p cdk --features mint,federation --all-targets
+cargo check -p cdk-axum --features federation,federation-bark --all-targets
+  passed; Bark retains its two pre-existing warnings
+
+cargo fmt -p cdk-common -p cdk-bark -p cdk -p cdk-axum -- --check
+cargo clippy -p cdk-common --features federation --all-targets \
+  --no-deps -- -D warnings
+cargo clippy -p cdk-sql-common --features federation --all-targets \
+  --no-deps -- -D warnings
+  passed
+
+cargo clippy -p cdk --features mint,federation --all-targets \
+  --no-deps -- -D warnings
+cargo clippy -p cdk-axum --features federation,federation-bark --all-targets \
+  --no-deps -- -D warnings
+  remain blocked by the existing crate-wide Rust 1.95 lint backlog; no
+  diagnostic identifies the new failure or revocation code
+```
+
 Deliverables:
 
 - terminal-failure evidence rules;

@@ -788,6 +788,7 @@ impl FederationFrostSigningRuntime {
                 plan.kind,
                 cdk::federation::FederationBarkActionKind::IncomingClaim
                     | cdk::federation::FederationBarkActionKind::LightningSend
+                    | cdk::federation::FederationBarkActionKind::FailedSendRevocation
             ) || !typed
                 .request_transcript
                 .starts_with(&typed.reference.plan_or_result_hash.to_bytes())
@@ -807,7 +808,7 @@ impl FederationFrostSigningRuntime {
                 )
                 .into());
             }
-            let send_authorization = match plan.kind {
+            let action_authorization = match plan.kind {
                 cdk::federation::FederationBarkActionKind::LightningSend => {
                     let payment_hash = plan.payment_hash.ok_or_else(|| {
                         frost_invalid("accepted Bark send payment hash is missing")
@@ -822,15 +823,27 @@ impl FederationFrostSigningRuntime {
                     }
                     Some(authorization)
                 }
+                cdk::federation::FederationBarkActionKind::FailedSendRevocation => {
+                    let payment_hash = plan.payment_hash.ok_or_else(|| {
+                        frost_invalid("accepted Bark revocation payment hash is missing")
+                    })?;
+                    let mut authorization = typed.reference.plan_or_result_hash.to_bytes().to_vec();
+                    authorization.extend_from_slice(b"bark/lightning-revocation-authorization/v1");
+                    authorization.extend_from_slice(&payment_hash.to_bytes());
+                    for input in &plan.inputs {
+                        authorization.extend_from_slice(&input.vtxo_id.to_bytes());
+                    }
+                    Some(authorization)
+                }
                 cdk::federation::FederationBarkActionKind::IncomingClaim => None,
                 _ => unreachable!("Bark custody action kind was matched above"),
             };
-            if send_authorization
+            if action_authorization
                 .as_ref()
                 .is_some_and(|authorization| !typed.request_transcript.starts_with(authorization))
             {
                 return Err(frost_invalid(
-                    "Bark custody request differs from the accepted send authorization",
+                    "Bark custody request differs from the accepted action authorization",
                 )
                 .into());
             }

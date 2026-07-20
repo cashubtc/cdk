@@ -246,6 +246,36 @@ impl CdkFrostVtxoCustody {
         )
     }
 
+    pub(crate) fn activate_revocation(
+        &self,
+        entry: FederationJournalEntry,
+        authorization_context: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            entry.status() == FederationOperationStatus::Applied,
+            "Bark custody requires an applied operation"
+        );
+        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+            &entry.envelope.operation
+        else {
+            anyhow::bail!("Bark custody requires an accepted action plan");
+        };
+        anyhow::ensure!(
+            plan.kind == FederationBarkActionKind::FailedSendRevocation
+                && !plan.inputs.is_empty()
+                && !authorization_context.is_empty(),
+            "accepted Bark revocation scope is invalid"
+        );
+        let input_locators = plan.inputs.iter().map(|input| input.locator).collect();
+        self.activate_action(
+            entry,
+            input_locators,
+            bark::custody::VtxoSigningOperation::LightningSend,
+            FederationBarkSemanticPhase::RevocationPlanned,
+            authorization_context,
+        )
+    }
+
     fn activate_action(
         &self,
         entry: FederationJournalEntry,
@@ -292,6 +322,10 @@ impl CdkFrostVtxoCustody {
     }
 
     pub(crate) fn deactivate_send(&self) {
+        self.deactivate_action();
+    }
+
+    pub(crate) fn deactivate_revocation(&self) {
         self.deactivate_action();
     }
 

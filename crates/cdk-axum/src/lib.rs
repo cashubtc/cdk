@@ -3340,11 +3340,25 @@ async fn reconcile_federation_bark_runtime(
                     cdk::federation::FederationBarkSemanticPhase::SendHtlcsCosigned
                         | cdk::federation::FederationBarkSemanticPhase::PaymentInitiated
                         | cdk::federation::FederationBarkSemanticPhase::PaymentSucceeded
+                        | cdk::federation::FederationBarkSemanticPhase::PaymentFailed
+                        | cdk::federation::FederationBarkSemanticPhase::RevocationCompleted
                 ) =>
             {
-                let plan_entry = entries
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                let send_plan_operation_id = projection
+                    .transitions
                     .iter()
-                    .find(|candidate| candidate.operation_id == transition.plan_operation_id)
+                    .find(|record| {
+                        record.action_id == transition.action_id
+                            && record.phase
+                                == cdk::federation::FederationBarkSemanticPhase::SendPlanned
+                    })
+                    .map(|record| record.operation_id)
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send plan is missing"))?;
+                let plan_entry = mint
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(send_plan_operation_id)
+                    .await?
                     .ok_or_else(|| anyhow::anyhow!("accepted Bark send plan is missing"))?;
                 let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
                     &plan_entry.envelope.operation
@@ -3364,28 +3378,75 @@ async fn reconcile_federation_bark_runtime(
                     .get_melt_quote(&quote_id)
                     .await?
                     .ok_or_else(|| anyhow::anyhow!("accepted Bark send quote is missing"))?;
-                let projection = mint.federation_bark_projection_snapshot().await?;
                 let replay = match transition.phase {
                     cdk::federation::FederationBarkSemanticPhase::SendHtlcsCosigned => {
                         runtime
-                            .apply_lightning_send_htlcs(&quote, &projection, plan_entry, entry)
+                            .apply_lightning_send_htlcs(&quote, &projection, &plan_entry, entry)
                             .await
                     }
                     cdk::federation::FederationBarkSemanticPhase::PaymentInitiated => {
                         runtime
-                            .apply_lightning_send_initiated(&quote, &projection, plan_entry, entry)
+                            .apply_lightning_send_initiated(&quote, &projection, &plan_entry, entry)
                             .await
                     }
                     cdk::federation::FederationBarkSemanticPhase::PaymentSucceeded => runtime
-                        .apply_lightning_send_succeeded(&quote, &projection, plan_entry, entry, 1)
+                        .apply_lightning_send_succeeded(&quote, &projection, &plan_entry, entry, 1)
                         .await
                         .map(|_| ()),
+                    cdk::federation::FederationBarkSemanticPhase::PaymentFailed => {
+                        let result = runtime
+                            .apply_lightning_send_failed(&quote, &projection, &plan_entry, entry)
+                            .await;
+                        if result.is_ok() {
+                            runtime
+                                .mark_degraded(
+                                    cdk_bark::FederatedBarkDegradedReason::RecoveryRequired,
+                                )
+                                .await;
+                        }
+                        result
+                    }
+                    cdk::federation::FederationBarkSemanticPhase::RevocationCompleted => {
+                        let revocation_plan_entry = mint
+                            .localstore()
+                            .get_federation_journal_entry_by_operation_id(
+                                transition.plan_operation_id,
+                            )
+                            .await?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("accepted Bark revocation plan is missing")
+                            })?;
+                        let result = runtime
+                            .apply_failed_send_revocation(
+                                &quote,
+                                &projection,
+                                &plan_entry,
+                                &revocation_plan_entry,
+                                entry,
+                                1,
+                            )
+                            .await
+                            .map(|_| ());
+                        if result.is_ok() {
+                            runtime
+                                .clear_degraded(
+                                    cdk_bark::FederatedBarkDegradedReason::RecoveryRequired,
+                                )
+                                .await;
+                        }
+                        result
+                    }
                     _ => unreachable!("send transition phase was matched above"),
                 };
                 if replay.is_err() {
-                    runtime
-                        .mark_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
-                        .await;
+                    let reason = match transition.phase {
+                        cdk::federation::FederationBarkSemanticPhase::PaymentFailed
+                        | cdk::federation::FederationBarkSemanticPhase::RevocationCompleted => {
+                            cdk_bark::FederatedBarkDegradedReason::RecoveryRequired
+                        }
+                        _ => cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid,
+                    };
+                    runtime.mark_degraded(reason).await;
                     return Err(anyhow::anyhow!(
                         "accepted Bark send transition could not be materialized"
                     ));

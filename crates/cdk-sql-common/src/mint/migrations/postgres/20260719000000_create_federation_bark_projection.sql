@@ -32,8 +32,7 @@ CREATE TABLE federation_bark_vtxos (
     origin_operation_index BIGINT NOT NULL,
     latest_operation_id TEXT NOT NULL,
     latest_operation_index BIGINT NOT NULL,
-    record_json TEXT NOT NULL,
-    UNIQUE (locator_role, locator_index, locator_version)
+    record_json TEXT NOT NULL
 );
 
 CREATE INDEX idx_federation_bark_vtxos_state
