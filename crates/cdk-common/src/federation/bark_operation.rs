@@ -1744,6 +1744,58 @@ impl FederationBarkActionTransition {
                     ));
                 }
             }
+            FederationBarkSemanticPhase::SendHtlcsCosigned => {
+                let has_pending_input = self.vtxo_transitions.iter().any(|transition| {
+                    transition.previous_state == Some(FederationBarkVtxoState::Reserved)
+                        && transition.new_state == FederationBarkVtxoState::PendingSpend
+                });
+                let valid_shape = self.vtxo_transitions.iter().all(|transition| {
+                    (transition.previous_state == Some(FederationBarkVtxoState::Reserved)
+                        && transition.new_state == FederationBarkVtxoState::PendingSpend)
+                        || (transition.previous_state.is_none()
+                            && transition.new_state == FederationBarkVtxoState::Spendable)
+                });
+                let result_count = self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+                    .count();
+                if !has_pending_input || !valid_shape || result_count != 1 {
+                    return Err(invalid_bark(
+                        "outgoing HTLC result must pend reserved inputs and bind one Ark result",
+                    ));
+                }
+            }
+            FederationBarkSemanticPhase::PaymentInitiated
+                if !self.vtxo_transitions.is_empty()
+                    || self
+                        .artifacts
+                        .iter()
+                        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+                        .count()
+                        != 1 =>
+            {
+                return Err(invalid_bark(
+                    "payment initiation must bind one Ark result without VTXO mutations",
+                ));
+            }
+            FederationBarkSemanticPhase::PaymentSucceeded => {
+                let valid_spends = !self.vtxo_transitions.is_empty()
+                    && self.vtxo_transitions.iter().all(|transition| {
+                        transition.previous_state == Some(FederationBarkVtxoState::PendingSpend)
+                            && transition.new_state == FederationBarkVtxoState::Spent
+                    });
+                let proofs = self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Proof)
+                    .collect::<Vec<_>>();
+                if !valid_spends || proofs.len() != 1 || proofs[0].bytes.len() != 32 {
+                    return Err(invalid_bark(
+                        "payment success must spend pending inputs and bind one 32-byte proof",
+                    ));
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1774,9 +1826,6 @@ impl FederationBarkMemberObservation {
         ensure_optional_quote(self.quote.as_deref())?;
         if self.observation_epoch == 0 {
             return Err(invalid_bark("Bark observation epoch must be non-zero"));
-        }
-        if self.fee > self.amount {
-            return Err(invalid_bark("Bark observation fee exceeds observed amount"));
         }
         Ok(())
     }

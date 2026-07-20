@@ -3334,6 +3334,63 @@ async fn reconcile_federation_bark_runtime(
                     ));
                 }
             }
+            FederationBarkOperation::ActionTransition(transition)
+                if matches!(
+                    transition.phase,
+                    cdk::federation::FederationBarkSemanticPhase::SendHtlcsCosigned
+                        | cdk::federation::FederationBarkSemanticPhase::PaymentInitiated
+                        | cdk::federation::FederationBarkSemanticPhase::PaymentSucceeded
+                ) =>
+            {
+                let plan_entry = entries
+                    .iter()
+                    .find(|candidate| candidate.operation_id == transition.plan_operation_id)
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark send transition references a non-plan"
+                    ));
+                };
+                let quote_id = plan
+                    .quote
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send quote is missing"))?
+                    .parse::<cdk::mint::QuoteId>()
+                    .map_err(|_| anyhow::anyhow!("accepted Bark send quote is invalid"))?;
+                let quote = mint
+                    .localstore()
+                    .get_melt_quote(&quote_id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send quote is missing"))?;
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                let replay = match transition.phase {
+                    cdk::federation::FederationBarkSemanticPhase::SendHtlcsCosigned => {
+                        runtime
+                            .apply_lightning_send_htlcs(&quote, &projection, plan_entry, entry)
+                            .await
+                    }
+                    cdk::federation::FederationBarkSemanticPhase::PaymentInitiated => {
+                        runtime
+                            .apply_lightning_send_initiated(&quote, &projection, plan_entry, entry)
+                            .await
+                    }
+                    cdk::federation::FederationBarkSemanticPhase::PaymentSucceeded => runtime
+                        .apply_lightning_send_succeeded(&quote, &projection, plan_entry, entry, 1)
+                        .await
+                        .map(|_| ()),
+                    _ => unreachable!("send transition phase was matched above"),
+                };
+                if replay.is_err() {
+                    runtime
+                        .mark_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
+                        .await;
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark send transition could not be materialized"
+                    ));
+                }
+            }
             FederationBarkOperation::ActionPlan(_)
             | FederationBarkOperation::ActionTransition(_)
             | FederationBarkOperation::MemberObservation(_) => {}

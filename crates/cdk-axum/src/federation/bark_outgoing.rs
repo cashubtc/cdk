@@ -1,20 +1,17 @@
-//! Pure outgoing Bark planning and accepted local checkpoint projection.
+//! Consensus-stepped outgoing Bark execution and local checkpoint projection.
 
 use std::str::FromStr;
 
 use cdk::federation::{
-    FederationBarkActionKind, FederationBarkOperation, FederationBarkSemanticPhase,
-    FederationOperation, FederationOperationId,
+    FederationBarkActionKind, FederationBarkObservationStatus, FederationBarkOperation,
+    FederationBarkSemanticPhase, FederationOperation, FederationOperationId,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::MeltQuoteState;
 
 use crate::MintState;
 
-/// Advance one accepted pending melt through plan acceptance only.
-///
-/// This function never starts Bark's executor. Milestone 13 owns the first
-/// Ark request after the exact plan has been ordered and projected locally.
+/// Advance one accepted pending melt by at most one consensus-visible phase.
 pub(super) async fn advance_federated_bark_melt_quote(
     state: &MintState,
     quote_id: &QuoteId,
@@ -35,7 +32,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
     }
     let projection = state.mint.federation_bark_projection_snapshot().await?;
     let quote_label = quote_id.to_string();
-    if let Some(action) = projection.actions.iter().find(|action| {
+    let existing_action = projection.actions.iter().find(|action| {
         action.quote.as_deref() == Some(quote_label.as_str())
             && matches!(
                 action.phase,
@@ -45,14 +42,194 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     | FederationBarkSemanticPhase::PaymentSucceeded
                     | FederationBarkSemanticPhase::PaymentFailed
             )
-    }) {
-        if let FederationBarkOperation::ActionPlan(plan) = &action.operation {
+    });
+
+    if let Some(action) = existing_action {
+        let plan_operation_id = action.plan_operation_id.ok_or(cdk::Error::Internal)?;
+        let plan_entry = state
+            .mint
+            .localstore()
+            .get_federation_journal_entry_by_operation_id(plan_operation_id)
+            .await?
+            .ok_or(cdk::Error::Internal)?;
+        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+            &plan_entry.envelope.operation
+        else {
+            return Err(cdk::Error::Internal);
+        };
+        runtime
+            .apply_lightning_send_plan(&quote, &projection, plan)
+            .await
+            .map_err(|_| cdk::Error::Internal)?;
+
+        let htlc_entry = if matches!(
+            action.phase,
+            FederationBarkSemanticPhase::SendHtlcsCosigned
+                | FederationBarkSemanticPhase::PaymentInitiated
+                | FederationBarkSemanticPhase::PaymentSucceeded
+                | FederationBarkSemanticPhase::PaymentFailed
+        ) {
+            Some(
+                send_transition_entry(
+                    state,
+                    &projection,
+                    action.action_id,
+                    FederationBarkSemanticPhase::SendHtlcsCosigned,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        if let Some(htlcs) = &htlc_entry {
             runtime
-                .apply_lightning_send_plan(&quote, &projection, plan)
+                .apply_lightning_send_htlcs(&quote, &projection, &plan_entry, htlcs)
                 .await
                 .map_err(|_| cdk::Error::Internal)?;
         }
-        return Ok(0);
+
+        let initiated_entry = if matches!(
+            action.phase,
+            FederationBarkSemanticPhase::PaymentInitiated
+                | FederationBarkSemanticPhase::PaymentSucceeded
+                | FederationBarkSemanticPhase::PaymentFailed
+        ) {
+            Some(
+                send_transition_entry(
+                    state,
+                    &projection,
+                    action.action_id,
+                    FederationBarkSemanticPhase::PaymentInitiated,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        if let Some(initiated) = &initiated_entry {
+            runtime
+                .apply_lightning_send_initiated(&quote, &projection, &plan_entry, initiated)
+                .await
+                .map_err(|_| cdk::Error::Internal)?;
+        }
+
+        return match action.phase {
+            FederationBarkSemanticPhase::SendPlanned => {
+                if plan.actor != federation.member_id() {
+                    return Ok(0);
+                }
+                let transition = runtime
+                    .execute_lightning_send_htlcs(&quote, &projection, &plan_entry)
+                    .await
+                    .map_err(|_| cdk::Error::Internal)?;
+                submit_bark_operation(
+                    state,
+                    federation.operation_envelope(FederationOperation::Bark(
+                        FederationBarkOperation::ActionTransition(transition),
+                    )),
+                )
+                .await
+            }
+            FederationBarkSemanticPhase::SendHtlcsCosigned => {
+                if plan.actor != federation.member_id() {
+                    return Ok(0);
+                }
+                let transition = runtime
+                    .initiate_lightning_send(
+                        &quote,
+                        &projection,
+                        &plan_entry,
+                        htlc_entry.as_ref().ok_or(cdk::Error::Internal)?,
+                    )
+                    .await
+                    .map_err(|_| cdk::Error::Internal)?;
+                submit_bark_operation(
+                    state,
+                    federation.operation_envelope(FederationOperation::Bark(
+                        FederationBarkOperation::ActionTransition(transition),
+                    )),
+                )
+                .await
+            }
+            FederationBarkSemanticPhase::PaymentInitiated => {
+                let Some(transition) = runtime
+                    .observe_lightning_send_success(
+                        &quote,
+                        &projection,
+                        &plan_entry,
+                        initiated_entry.as_ref().ok_or(cdk::Error::Internal)?,
+                    )
+                    .await
+                    .map_err(|_| cdk::Error::Internal)?
+                else {
+                    return Ok(0);
+                };
+                submit_bark_operation(
+                    state,
+                    federation.operation_envelope(FederationOperation::Bark(
+                        FederationBarkOperation::ActionTransition(transition),
+                    )),
+                )
+                .await
+            }
+            FederationBarkSemanticPhase::PaymentSucceeded => {
+                let success_entry = send_transition_entry(
+                    state,
+                    &projection,
+                    action.action_id,
+                    FederationBarkSemanticPhase::PaymentSucceeded,
+                )
+                .await?;
+                let already_observed = projection.observations.iter().any(|record| {
+                    matches!(
+                        &record.operation,
+                        FederationBarkOperation::MemberObservation(observation)
+                            if observation.action_id == action.action_id
+                                && observation.observer == federation.member_id()
+                                && observation.status
+                                    == FederationBarkObservationStatus::Succeeded
+                    )
+                });
+                if already_observed {
+                    return Ok(0);
+                }
+                let next_epoch = projection
+                    .observations
+                    .iter()
+                    .filter_map(|record| match &record.operation {
+                        FederationBarkOperation::MemberObservation(observation)
+                            if observation.action_id == action.action_id
+                                && observation.observer == federation.member_id() =>
+                        {
+                            Some(observation.observation_epoch)
+                        }
+                        _ => None,
+                    })
+                    .max()
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(cdk::Error::Internal)?;
+                let observation = runtime
+                    .apply_lightning_send_succeeded(
+                        &quote,
+                        &projection,
+                        &plan_entry,
+                        &success_entry,
+                        next_epoch,
+                    )
+                    .await
+                    .map_err(|_| cdk::Error::Internal)?;
+                submit_bark_operation(
+                    state,
+                    federation.operation_envelope(FederationOperation::Bark(
+                        FederationBarkOperation::MemberObservation(observation),
+                    )),
+                )
+                .await
+            }
+            FederationBarkSemanticPhase::PaymentFailed => Ok(0),
+            _ => Err(cdk::Error::Internal),
+        };
     }
 
     let saga = state
@@ -123,5 +300,36 @@ pub(super) async fn advance_federated_bark_melt_quote(
             "accepted Bark send plan could not be materialized locally"
         );
     }
+    Ok(1)
+}
+
+async fn send_transition_entry(
+    state: &MintState,
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    action_id: cdk::federation::FederationBarkActionId,
+    phase: FederationBarkSemanticPhase,
+) -> Result<cdk::federation::FederationJournalEntry, cdk::Error> {
+    let operation_id = projection
+        .transitions
+        .iter()
+        .find(|record| record.action_id == action_id && record.phase == phase)
+        .map(|record| record.operation_id)
+        .ok_or(cdk::Error::Internal)?;
+    state
+        .mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(operation_id)
+        .await?
+        .ok_or(cdk::Error::Internal)
+}
+
+async fn submit_bark_operation(
+    state: &MintState,
+    envelope: cdk::federation::FederationOperationEnvelope,
+) -> Result<usize, cdk::Error> {
+    state
+        .submit_federation_envelope(envelope)
+        .await?
+        .ensure_accepted()?;
     Ok(1)
 }

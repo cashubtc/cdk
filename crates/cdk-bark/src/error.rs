@@ -130,6 +130,12 @@ pub enum Error {
     /// An accepted outgoing plan could not be materialized locally.
     #[error("federated Bark send projection failed")]
     SendProjectionFailed,
+    /// The accepted outgoing HTLC or payment-initiation phase failed.
+    #[error("federated Bark send execution failed")]
+    SendExecutionFailed,
+    /// Accepted outgoing evidence could not be validated or replayed.
+    #[error("federated Bark send reconciliation failed")]
+    SendReconciliationFailed,
     /// An accepted incoming claim could not be executed or recovered.
     #[error("federated Bark receive claim requires recovery")]
     ReceiveClaimRecoveryRequired,

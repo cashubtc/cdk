@@ -59,6 +59,7 @@ fn federation_bark_matching_result_observers(
     payment_hash: cdk_common::federation::FederationBarkDigest,
     source_scope: cdk_common::federation::FederationBarkDigest,
     amount: Amount,
+    fee: Amount,
     result_hash: cdk_common::federation::FederationBarkDigest,
 ) -> std::collections::BTreeSet<MemberId> {
     projection
@@ -72,7 +73,7 @@ fn federation_bark_matching_result_observers(
                     && observation.payment_hash == Some(payment_hash)
                     && observation.source_scope == source_scope
                     && observation.amount == amount
-                    && observation.fee == Amount::ZERO
+                    && observation.fee == fee
                     && observation.result_hash == result_hash =>
             {
                 Some(observation.observer)
@@ -257,6 +258,7 @@ impl Mint {
                         intent.payment_hash,
                         intent.ark_server,
                         Amount::from(spendable_sat),
+                        Amount::ZERO,
                         transition.result_hash,
                     );
                     if matching_result_observers.len()
@@ -389,6 +391,92 @@ impl Mint {
                 fee_reserve: quote.fee_reserve().into(),
                 payment_id: Some(PaymentIdentifier::QuoteId(quote.id.clone())),
                 payment_proof: Some(receipt.outpoint.to_string()),
+            }));
+        }
+        if matches!(&quote.request, cdk_common::mint::MeltPaymentRequest::Bolt11 { .. })
+            && config
+                .public_config()
+                .frost_wallet
+                .as_ref()
+                .and_then(|wallet| wallet.bark_application.as_ref())
+                .is_some()
+        {
+            let projection = self.federation_bark_projection_snapshot().await?;
+            let quote_label = quote.id.to_string();
+            let Some(action) = projection.actions.iter().find(|action| {
+                action.quote.as_deref() == Some(quote_label.as_str())
+                    && matches!(
+                        action.phase,
+                        cdk_common::federation::FederationBarkSemanticPhase::SendPlanned
+                            | cdk_common::federation::FederationBarkSemanticPhase::SendHtlcsCosigned
+                            | cdk_common::federation::FederationBarkSemanticPhase::PaymentInitiated
+                            | cdk_common::federation::FederationBarkSemanticPhase::PaymentSucceeded
+                            | cdk_common::federation::FederationBarkSemanticPhase::PaymentFailed
+                    )
+            }) else {
+                return Ok(None);
+            };
+            if action.phase
+                != cdk_common::federation::FederationBarkSemanticPhase::PaymentSucceeded
+            {
+                return Ok(None);
+            }
+            let cdk_common::federation::FederationBarkOperation::ActionTransition(success) =
+                &action.operation
+            else {
+                return Err(Error::Internal);
+            };
+            let plan_entry = self
+                .localstore
+                .get_federation_journal_entry_by_operation_id(success.plan_operation_id)
+                .await?
+                .ok_or(Error::Internal)?;
+            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                &plan_entry.envelope.operation
+            else {
+                return Err(Error::Internal);
+            };
+            projection::validate_payment_success_proof(plan, success)?;
+            let application = config
+                .public_config()
+                .frost_wallet
+                .as_ref()
+                .and_then(|wallet| wallet.bark_application.as_ref())
+                .ok_or(Error::Internal)?;
+            let source_scope = cdk_common::federation::ark_server_commitment(
+                &application.ark_server_public_key,
+            )?;
+            let payment_hash = plan.payment_hash.ok_or(Error::Internal)?;
+            let matching = federation_bark_matching_result_observers(
+                &projection,
+                plan.action_id,
+                payment_hash,
+                source_scope,
+                plan.external_amount,
+                plan.fee_amount,
+                success.result_hash,
+            );
+            if matching.len()
+                < usize::from(config.public_config().threshold_params.signature_threshold)
+            {
+                return Ok(None);
+            }
+            let proof = success
+                .artifacts
+                .iter()
+                .find(|artifact| {
+                    artifact.kind == cdk_common::federation::FederationBarkArtifactKind::Proof
+                })
+                .ok_or(Error::Internal)?;
+            return Ok(Some(FederationMeltQuotePaymentObservation {
+                quote: quote.id.to_string(),
+                observer: config.member_id(),
+                method: quote.payment_method.clone(),
+                state: cdk_common::MeltQuoteState::Paid,
+                amount: quote.amount().into(),
+                fee_reserve: quote.fee_reserve().into(),
+                payment_id: Some(PaymentIdentifier::PaymentHash(payment_hash.to_bytes())),
+                payment_proof: Some(crate::util::hex::encode(&proof.bytes)),
             }));
         }
         let entry = self

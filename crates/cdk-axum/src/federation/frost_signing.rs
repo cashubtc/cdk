@@ -784,13 +784,53 @@ impl FederationFrostSigningRuntime {
             else {
                 return Err(frost_invalid("Bark custody reference is not an action plan").into());
             };
-            if plan.kind != cdk::federation::FederationBarkActionKind::IncomingClaim
-                || !typed
-                    .request_transcript
-                    .starts_with(&typed.reference.plan_or_result_hash.to_bytes())
+            if !matches!(
+                plan.kind,
+                cdk::federation::FederationBarkActionKind::IncomingClaim
+                    | cdk::federation::FederationBarkActionKind::LightningSend
+            ) || !typed
+                .request_transcript
+                .starts_with(&typed.reference.plan_or_result_hash.to_bytes())
             {
                 return Err(frost_invalid(
-                    "Bark custody transcript is not bound to the accepted claim plan",
+                    "Bark custody transcript is not bound to the accepted action plan",
+                )
+                .into());
+            }
+            if !plan
+                .inputs
+                .iter()
+                .any(|input| input.locator == typed.reference.locator)
+            {
+                return Err(frost_invalid(
+                    "Bark custody locator is not an input of the accepted action",
+                )
+                .into());
+            }
+            let send_authorization = match plan.kind {
+                cdk::federation::FederationBarkActionKind::LightningSend => {
+                    let payment_hash = plan.payment_hash.ok_or_else(|| {
+                        frost_invalid("accepted Bark send payment hash is missing")
+                    })?;
+                    let mut authorization = typed.reference.plan_or_result_hash.to_bytes().to_vec();
+                    authorization.extend_from_slice(b"bark/lightning-send-authorization/v1");
+                    authorization.extend_from_slice(&payment_hash.to_bytes());
+                    authorization.extend_from_slice(&u64::from(plan.external_amount).to_be_bytes());
+                    authorization.extend_from_slice(&u64::from(plan.fee_amount).to_be_bytes());
+                    for input in &plan.inputs {
+                        authorization.extend_from_slice(&input.vtxo_id.to_bytes());
+                    }
+                    Some(authorization)
+                }
+                cdk::federation::FederationBarkActionKind::IncomingClaim => None,
+                _ => unreachable!("Bark custody action kind was matched above"),
+            };
+            if send_authorization
+                .as_ref()
+                .is_some_and(|authorization| !typed.request_transcript.starts_with(authorization))
+            {
+                return Err(frost_invalid(
+                    "Bark custody request differs from the accepted send authorization",
                 )
                 .into());
             }
@@ -804,14 +844,15 @@ impl FederationFrostSigningRuntime {
                     .iter()
                     .find(|record| record.vtxo_id == input.vtxo_id)
                     .ok_or_else(|| frost_invalid("accepted Bark claim input is unavailable"))?;
-                if record.locator != typed.reference.locator
+                if record.locator != input.locator
                     || record.amount != input.amount
                     || record.state != cdk::federation::FederationBarkVtxoState::Reserved
                     || record.reservation_action_id != Some(plan.action_id)
-                    || !contains_bytes(&typed.request_transcript, &record.artifact.bytes)
+                    || (plan.kind == cdk::federation::FederationBarkActionKind::IncomingClaim
+                        && !contains_bytes(&typed.request_transcript, &record.artifact.bytes))
                 {
                     return Err(frost_invalid(
-                        "Bark custody request differs from a reserved claim input",
+                        "Bark custody request differs from a reserved action input",
                     )
                     .into());
                 }

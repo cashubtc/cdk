@@ -2577,6 +2577,165 @@ where
         .actions
         .iter()
         .all(|action| action.action_id != bark_action(43)));
+
+    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(send)) =
+        &first_send.envelope.operation
+    else {
+        panic!("expected first send plan")
+    };
+    let change_vtxo = bark_vtxo(50);
+    let change_artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, b"send-change");
+    let htlc_result = bark_artifact(FederationBarkArtifactKind::ArkResult, b"send-htlc-result");
+    let htlcs = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: send.action_id,
+            quote: send.quote.clone(),
+            phase: FederationBarkSemanticPhase::SendHtlcsCosigned,
+            actor: send.actor,
+            plan_operation_id: first_send.operation_id,
+            predecessor_operation_id: first_send.operation_id,
+            payment_hash: send.payment_hash,
+            attempt: send.attempt,
+            signer_set: send.signer_set.clone(),
+            request_hash: FederationBarkOperation::ActionPlan(send.clone())
+                .commitment()
+                .expect("send plan commitment"),
+            result_hash: htlc_result.hash,
+            external_id: send.external_id,
+            artifacts: {
+                let mut artifacts = vec![
+                    output_artifact.clone(),
+                    change_artifact.clone(),
+                    htlc_result,
+                ];
+                artifacts.sort();
+                artifacts
+            },
+            vtxo_transitions: vec![
+                FederationBarkVtxoTransition {
+                    vtxo_id: output_vtxo,
+                    locator: output_locator,
+                    amount: Amount::from(100),
+                    expiry_height: 900_000,
+                    previous_state: Some(FederationBarkVtxoState::Reserved),
+                    new_state: FederationBarkVtxoState::PendingSpend,
+                    artifact_hash: output_artifact.hash,
+                },
+                FederationBarkVtxoTransition {
+                    vtxo_id: change_vtxo,
+                    locator: send.outputs[0].locator,
+                    amount: send.outputs[0].amount,
+                    expiry_height: 899_000,
+                    previous_state: None,
+                    new_state: FederationBarkVtxoState::Spendable,
+                    artifact_hash: change_artifact.hash,
+                },
+            ],
+        }),
+    );
+    apply_bark_entry(&db, &htlcs).await;
+
+    let FederationOperation::Bark(FederationBarkOperation::ActionTransition(htlc_transition)) =
+        &htlcs.envelope.operation
+    else {
+        panic!("expected HTLC transition")
+    };
+    let initiated_result = bark_artifact(
+        FederationBarkArtifactKind::ArkResult,
+        b"send-payment-initiated",
+    );
+    let initiated = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: send.action_id,
+            quote: send.quote.clone(),
+            phase: FederationBarkSemanticPhase::PaymentInitiated,
+            actor: send.actor,
+            plan_operation_id: first_send.operation_id,
+            predecessor_operation_id: htlcs.operation_id,
+            payment_hash: send.payment_hash,
+            attempt: send.attempt,
+            signer_set: send.signer_set.clone(),
+            request_hash: htlc_transition.result_hash,
+            result_hash: initiated_result.hash,
+            external_id: send.external_id,
+            artifacts: vec![initiated_result],
+            vtxo_transitions: Vec::new(),
+        }),
+    );
+    apply_bark_entry(&db, &initiated).await;
+
+    let FederationOperation::Bark(FederationBarkOperation::ActionTransition(initiated_transition)) =
+        &initiated.envelope.operation
+    else {
+        panic!("expected initiated transition")
+    };
+    let proof = bark_artifact(FederationBarkArtifactKind::Proof, &[51; 32]);
+    let succeeded = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: send.action_id,
+            quote: send.quote.clone(),
+            phase: FederationBarkSemanticPhase::PaymentSucceeded,
+            actor: send.actor,
+            plan_operation_id: first_send.operation_id,
+            predecessor_operation_id: initiated.operation_id,
+            payment_hash: send.payment_hash,
+            attempt: send.attempt,
+            signer_set: send.signer_set.clone(),
+            request_hash: initiated_transition.result_hash,
+            result_hash: bark_digest(52),
+            external_id: send.external_id,
+            artifacts: {
+                let mut artifacts = vec![output_artifact.clone(), proof];
+                artifacts.sort();
+                artifacts
+            },
+            vtxo_transitions: vec![FederationBarkVtxoTransition {
+                vtxo_id: output_vtxo,
+                locator: output_locator,
+                amount: Amount::from(100),
+                expiry_height: 900_000,
+                previous_state: Some(FederationBarkVtxoState::PendingSpend),
+                new_state: FederationBarkVtxoState::Spent,
+                artifact_hash: output_artifact.hash,
+            }],
+        }),
+    );
+    apply_bark_entry(&db, &succeeded).await;
+    apply_bark_entry(&db, &htlcs).await;
+    apply_bark_entry(&db, &initiated).await;
+    apply_bark_entry(&db, &succeeded).await;
+
+    let succeeded_snapshot = db
+        .get_federation_bark_projection_snapshot()
+        .await
+        .expect("successful send projection");
+    let sent = succeeded_snapshot
+        .vtxos
+        .iter()
+        .find(|vtxo| vtxo.vtxo_id == output_vtxo)
+        .expect("spent outgoing input");
+    let change = succeeded_snapshot
+        .vtxos
+        .iter()
+        .find(|vtxo| vtxo.vtxo_id == change_vtxo)
+        .expect("spendable outgoing change");
+    assert_eq!(sent.state, FederationBarkVtxoState::Spent);
+    assert_eq!(change.state, FederationBarkVtxoState::Spendable);
+    assert_eq!(
+        succeeded_snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == send.action_id)
+            .expect("successful send action")
+            .phase,
+        FederationBarkSemanticPhase::PaymentSucceeded
+    );
 }
 
 /// Assert payment observations persist as durable per-member quorum evidence.

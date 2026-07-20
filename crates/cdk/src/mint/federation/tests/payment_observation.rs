@@ -27,7 +27,7 @@ fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
                     payment_hash: Some(payment_hash),
                     status: FederationBarkObservationStatus::Succeeded,
                     amount: Amount::from(42),
-                    fee: Amount::ZERO,
+                    fee: Amount::from(7),
                     result_hash,
                 },
             ),
@@ -47,12 +47,23 @@ fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
             payment_hash,
             source_scope,
             Amount::from(42),
+            Amount::from(7),
             result_hash,
         )
         .len(),
         1,
         "duplicate reports from one member remain one vote",
     );
+    assert!(federation_bark_matching_result_observers(
+        &projection,
+        action_id,
+        payment_hash,
+        source_scope,
+        Amount::from(42),
+        Amount::from(6),
+        result_hash,
+    )
+    .is_empty());
 
     projection.observations.push(observation(honest, 3));
     assert_eq!(
@@ -62,6 +73,7 @@ fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
             payment_hash,
             source_scope,
             Amount::from(42),
+            Amount::from(7),
             result_hash,
         )
         .len(),

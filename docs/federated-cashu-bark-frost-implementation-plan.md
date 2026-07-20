@@ -2,13 +2,14 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5, 7, and 9-12 complete,
+Status: implementation in progress; Milestones 0-5, 7, and 9-13 complete,
 Milestones 6 and 8 are locally complete but retain the dependency-publication
 and PostgreSQL-runtime verification gates recorded below. Production incoming
 quote preparation, observation, threshold claim, and settlement bridging now
-exist; outgoing quotes, consensus planning, atomic reservation, and local Bark
-checkpoint reconstruction now exist, while outgoing Ark execution remains
-gated on Milestones 13-14
+exist; outgoing quotes, consensus planning, atomic reservation, exact Ark
+execution, success reconciliation, and melt settlement bridging now exist.
+Terminal failure, revocation, and unresolved-value recovery remain gated on
+Milestone 14
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -40,7 +41,7 @@ machine-specific metadata in this document.
 | 10. Incoming preparation | Complete (2026-07-19) | Consensus-first secret protection and actor failover, exact signed-invoice validation, stable NUT-19 retry identity, restart-safe Ark reservation, ordinary `MintQuote` reuse, focused CDK/Bark tests, and production feature wiring passed | `feat: complete federated Bark quote preparation` |
 | 11. Incoming claim | Complete (2026-07-19) | Independent payment-hash polling, threshold-matched HTLC evidence, accepted exact claim plans, FROST/virtual-MuSig custody, durable preimage/result checkpoints, independently validated claimed VTXOs, two-layer result/payment quorums, and focused restart/adversarial tests passed | `feat: complete federated Bark incoming claims` |
 | 12. Outgoing planning | Complete (2026-07-19) | Conservative accepted-projection quotes, exact deterministic plans, adversarial binding checks, atomic competing-reservation rollback, local Bark `Start` checkpoint reconstruction, full common/CDK regressions, and production feature builds passed | `feat: complete federated Bark outgoing planning` |
-| 13. Outgoing execution | Pending | — | — |
+| 13. Outgoing execution | Complete (2026-07-19) | Accepted phase-at-a-time Ark execution, exact multi-input custody authorization, canonical HTLC/initiation/success transitions, restart replay, verified preimage proof, distinct-member result quorum, and existing melt-saga finalization passed | CDK: `feat: execute federated Bark outgoing payments`; Bark: `feat: add federated send phase execution` |
 | 14. Failure recovery | Pending | — | — |
 | 15. Refresh and exit | Pending | — | — |
 | 16. Restart and replay | Pending | — | — |
@@ -2635,6 +2636,108 @@ Exit criteria:
 - insufficient-balance and fee-bound errors occur before external I/O.
 
 ### Milestone 13: outgoing execution and finalization
+
+Status: complete on 2026-07-19.
+
+Implementation commits:
+
+- CDK: `feat: execute federated Bark outgoing payments`
+- Bark: `feat: add federated send phase execution`
+
+Implementation record:
+
+- Bark now exposes narrow federation-only methods for exactly one accepted
+  outgoing phase: execute the HTLC co-sign, apply accepted HTLC evidence,
+  initiate the already co-signed payment, apply accepted initiation, poll
+  without mutation, and settle an accepted success proof. The federation path
+  never starts Bark's general action executor or advances more than one phase.
+- The exact HTLC result commits the action and accepted request, payment hash,
+  mailbox, canonical full HTLC VTXOs, and canonical change VTXOs. Bark validates
+  the Ark server, policies, key, payment hash, expiry, total HTLC amount,
+  change amount, ordering, and uniqueness before applying it. Followers apply
+  accepted evidence without repeating the Ark co-sign request.
+- Bark checkpoints now retain the accepted change VTXO IDs. The field is
+  serde-defaulted and has a compatibility test proving that checkpoints from
+  before this field remain readable; no Bark migration was added or changed.
+- The accepted plan commitment prefixes every outgoing custody transcript.
+  CDK authorizes only the exact plan input locators and Lightning-send
+  operation. Each participant reconstructs the complete send authorization
+  prefix from the accepted plan (commitment, payment hash, amount, fee, and
+  ordered input IDs) before releasing a FROST or virtual-MuSig share.
+- The deterministic actor submits one consensus-visible phase at a time:
+  `SendHtlcsCosigned`, `PaymentInitiated`, then `PaymentSucceeded`. Stateful
+  admission binds every transition to the exact plan, actor, attempt, signer
+  set, external ID, predecessor operation, request/result evidence, reserved
+  inputs, allocated change, and accepted VTXO state.
+- HTLC acceptance moves every exact reserved input to `PendingSpend` and adds
+  only the accepted change as spendable. Initiation mutates no VTXO state.
+  Success requires one exact 32-byte preimage whose SHA-256 is the accepted
+  invoice payment hash, then moves every original pending input to `Spent`.
+- Payment polling treats pending, missing/transport-unknown status, and terminal
+  server failure as non-final for this milestone. No failed observation is
+  emitted and Cashu value remains locked; accepted revocation and failure
+  release are deliberately owned by Milestone 14.
+- Every member replays the accepted plan and phases into its local Bark database
+  at startup. Accepted success settlement is idempotent through Bark's paid
+  invoice, VTXO-state, and movement records; members then submit independently
+  bound success observations.
+- The existing federation melt observer remains the only bridge into the Cashu
+  melt saga. It does not call the ordinary Lightning backend for a Bark-enabled
+  BOLT11 quote. It reports `Paid` only after the accepted success proof and a
+  threshold of distinct, exact Bark observations matching action, source,
+  payment hash, amount, fee, and result. Existing outer payment-observation
+  quorum and saga logic then finalize the melt.
+- No SQL migration was added or modified. Changes outside the Bark adapter,
+  Bark-specific orchestration, and federation projection/observation branches
+  are limited to the typed semantic validation required by the accepted
+  operation family; unfederated CDK payment behavior is unchanged.
+
+Verification evidence:
+
+```text
+cargo check -p bark-wallet --all-targets --locked
+  passed; Bark retains two pre-existing warnings
+
+cargo test -p bark-wallet --lib --locked -- --test-threads 1
+  passed: 106 tests
+  note: an initial parallel run made two process-lock tests interfere; both
+  passed independently and the complete serial suite passed
+
+cargo test -p cdk-common --features federation --lib
+  passed: 442 tests; one explicit benchmark-style test ignored
+
+cargo test -p cdk-bark --features federation-bark --lib
+  passed: 8 tests
+
+cargo test -p cdk-sqlite --features federation \
+  federation_bark_projection_persistence --lib
+  passed: outgoing reserve -> HTLC -> initiation -> success and exact replay
+
+cargo test -p cdk --features mint,federation \
+  outgoing_success_proof_binds_preimage_hash_and_predecessor --lib
+cargo test -p cdk --features mint,federation \
+  one_false_bark_result_observer_cannot_form_the_inner_quorum --lib
+  passed: proof/predecessor mutations and amount/fee/distinct-member quorum
+
+cargo check -p cdk-bark --features federation-bark --all-targets
+cargo check -p cdk --features mint,federation --all-targets
+cargo check -p cdk-axum --features federation,federation-bark --all-targets
+  passed; Bark retains its two pre-existing warnings
+
+cargo fmt -p cdk-common -p cdk-bark -p cdk -p cdk-axum -- --check
+cargo clippy -p cdk-common --features federation --all-targets \
+  --no-deps -- -D warnings
+cargo clippy -p cdk-bark --features federation-bark --all-targets \
+  --no-deps -- -D warnings
+  passed
+
+cargo clippy -p cdk --features mint,federation --all-targets \
+  --no-deps -- -D warnings
+cargo clippy -p cdk-axum --features federation,federation-bark --all-targets \
+  --no-deps -- -D warnings
+  remain blocked by the existing crate-wide Rust 1.95 lint backlog; no
+  diagnostic identifies the new outgoing execution or finalization code
+```
 
 Deliverables:
 
