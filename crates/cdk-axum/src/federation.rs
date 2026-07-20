@@ -34,6 +34,7 @@ mod aleph_bft_routes;
 mod aleph_bft_runtime;
 mod aleph_bft_session;
 mod backup_routes;
+#[cfg(feature = "federation-bark")]
 pub(crate) mod bark_custody;
 #[cfg(feature = "federation-bark")]
 pub(crate) mod bark_incoming;
@@ -82,6 +83,7 @@ pub(crate) use self::aleph_bft_session::{
     stop_current_federation_aleph_bft_session_for_catch_up, AlephBftSessionSupervisor,
 };
 use self::backup_routes::post_aleph_bft_backup;
+#[cfg(feature = "federation-bark")]
 use self::bark_custody::{
     post_bark_custody_abort, post_bark_threshold_dh, post_bark_virtual_musig_commitment,
     post_bark_virtual_musig_partial,
@@ -339,7 +341,9 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         )
         .route("/frost/signing/packages", post(post_frost_signing_package))
         .route("/frost/signing/aborts", post(post_frost_signing_abort))
-        .route("/frost/signing/results", post(post_frost_aggregate_result))
+        .route("/frost/signing/results", post(post_frost_aggregate_result));
+    #[cfg(feature = "federation-bark")]
+    let frost_signing_router = frost_signing_router
         .route(
             "/frost/bark/musig2/commitments",
             post(post_bark_virtual_musig_commitment),
@@ -349,10 +353,10 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
             post(post_bark_virtual_musig_partial),
         )
         .route("/frost/bark/threshold-dh", post(post_bark_threshold_dh))
-        .route("/frost/bark/aborts", post(post_bark_custody_abort))
-        .layer(DefaultBodyLimit::max(
-            cdk::federation::FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES,
-        ));
+        .route("/frost/bark/aborts", post(post_bark_custody_abort));
+    let frost_signing_router = frost_signing_router.layer(DefaultBodyLimit::max(
+        cdk::federation::FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES,
+    ));
     #[cfg(feature = "federation-bark")]
     let bark_secret_router = Router::new().route(
         "/bark/receive-secrets",

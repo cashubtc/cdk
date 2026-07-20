@@ -3257,6 +3257,33 @@ Exit criteria:
 
 ### Milestone 18: adversarial release gate
 
+Status: in progress as of 2026-07-19.
+
+Progress checkpoint:
+
+- restored the required federation-without-Bark build boundary by compiling the
+  Bark custody module, imports, and private routes only with
+  `federation-bark`. The ordinary FROST routes retain the same bounded body
+  limit and remain available with federation alone;
+- removed the resulting feature-disabled dead imports/methods and kept Bark's
+  participant registration validation available without constructing a Bark
+  runtime;
+- updated the Prometheus synthetic-checkpoint test fixture for the already
+  accepted AlephBFT channel-capacity constructor argument. The Bark-enabled
+  Axum all-target build now compiles instead of failing in that stale fixture;
+- ran the complete `cdk-frost` unit suite single-threaded: all 29 tests passed,
+  including 2-of-3/3-of-5 BIP340 interoperability, canonical-wire mutation,
+  signer substitution, stale attempts, durable nonce restart/CAS failures,
+  replay tombstones, virtual MuSig2, and threshold-DH failure injection;
+- verified `cargo check -p cdk-axum --features federation --lib` and
+  `cargo check -p cdk-axum --features federation,federation-bark,prometheus
+  --all-targets`.
+
+This is a checkpoint, not completion of the release gate. The remaining
+database parity, complete adversarial/workspace suites, deterministic local
+regtest payment gate, opt-in Signet payment gate, and independent review below
+must still pass before this milestone or production readiness can be claimed.
+
 Run:
 
 - Byzantine conflicting proposals and observations;

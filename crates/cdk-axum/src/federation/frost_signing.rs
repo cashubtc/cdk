@@ -9,21 +9,27 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
+#[cfg(feature = "federation-bark")]
 use cdk::federation::{
-    FederationBarkCustodyProtocol, FederationBarkFrostAuthorization,
-    FederationBarkFrostRegistrationAdapter, FederationBarkProtocolStatus,
-    FederationCdkOnchainFrostAuthorization, FederationCdkOnchainFrostAuthorizationAdapter,
-    FederationFrostAggregateResultNotification, FederationFrostCommitmentRequest,
-    FederationFrostCommitmentResponse, FederationFrostInputSignatureAudit,
-    FederationFrostSignatureShareResponse, FederationFrostSigningAbortRequest,
-    FederationFrostSigningAck, FederationFrostSigningPackageRequest, FederationRestMessageKind,
-    FederationSignedRequest, FederationSignedTransaction, FederationTransactionProposalId,
+    FederationBarkCustodyProtocol, FederationBarkFrostAuthorization, FederationBarkProtocolStatus,
+};
+use cdk::federation::{
+    FederationBarkFrostRegistrationAdapter, FederationCdkOnchainFrostAuthorization,
+    FederationCdkOnchainFrostAuthorizationAdapter, FederationFrostAggregateResultNotification,
+    FederationFrostCommitmentRequest, FederationFrostCommitmentResponse,
+    FederationFrostInputSignatureAudit, FederationFrostSignatureShareResponse,
+    FederationFrostSigningAbortRequest, FederationFrostSigningAck,
+    FederationFrostSigningPackageRequest, FederationRestMessageKind, FederationSignedRequest,
+    FederationSignedTransaction, FederationTransactionProposalId,
 };
 use cdk::mint::{FederationRuntimeConfig, Mint};
 use cdk_frost::{
-    AuthorizationRequest, CustodyProtocol, DerivedPublicPackage, NonceCommitment,
-    ParticipantKeyManager, RedbNonceStore, SecretEncryptionKey, SignatureShare, SigningDerivation,
-    SigningSessionContext, ThresholdDhRequest, ThresholdDhShare, VirtualMusigNonceCommitment,
+    AuthorizationRequest, DerivedPublicPackage, NonceCommitment, ParticipantKeyManager,
+    RedbNonceStore, SecretEncryptionKey, SignatureShare, SigningDerivation, SigningSessionContext,
+};
+#[cfg(feature = "federation-bark")]
+use cdk_frost::{
+    CustodyProtocol, ThresholdDhRequest, ThresholdDhShare, VirtualMusigNonceCommitment,
     VirtualMusigNonceCommitmentSet, VirtualMusigNonceId, VirtualMusigPartialShare,
     VirtualMusigTranscript,
 };
@@ -37,6 +43,7 @@ use super::{admit_private_request, federation_error_response, federation_runtime
 
 const RESULT_CACHE_LIMIT: usize = 1_024;
 
+#[cfg(feature = "federation-bark")]
 fn usize_to_u64_saturating(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
@@ -486,6 +493,7 @@ impl FederationFrostSigningRuntime {
     }
 
     /// Return bounded nonterminal protocol counts for one public root epoch.
+    #[cfg(feature = "federation-bark")]
     pub(crate) async fn operator_protocol_status(
         &self,
         root_epoch: u64,
@@ -625,6 +633,7 @@ impl FederationFrostSigningRuntime {
             .map_err(frost_boundary_error)
     }
 
+    #[cfg(feature = "federation-bark")]
     pub(super) async fn commit_bark_virtual_musig(
         &self,
         mint: &Mint,
@@ -652,6 +661,7 @@ impl FederationFrostSigningRuntime {
             .map_err(frost_boundary_error)
     }
 
+    #[cfg(feature = "federation-bark")]
     pub(super) async fn sign_bark_virtual_musig(
         &self,
         mint: &Mint,
@@ -672,6 +682,7 @@ impl FederationFrostSigningRuntime {
             .map_err(frost_boundary_error)
     }
 
+    #[cfg(feature = "federation-bark")]
     pub(super) async fn bark_threshold_dh(
         &self,
         mint: &Mint,
@@ -700,6 +711,7 @@ impl FederationFrostSigningRuntime {
             .map_err(frost_boundary_error)
     }
 
+    #[cfg(feature = "federation-bark")]
     pub(super) async fn abort_bark_custody(
         &self,
         mint: &Mint,
@@ -972,6 +984,7 @@ impl FederationFrostSigningRuntime {
     }
 }
 
+#[cfg(feature = "federation-bark")]
 fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     !needle.is_empty()
         && haystack

@@ -7,7 +7,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 SSH_HOST="${SSH_HOST:-nocean}"
 REMOTE_DIR="${REMOTE_DIR:-cdk-federation}"
 PUBLIC_BASE_DOMAIN="${PUBLIC_BASE_DOMAIN:-nocean.xyz}"
-DEPLOY_MODE="${DEPLOY_MODE:-restart}"
+DEPLOY_MODE="${DEPLOY_MODE:-update}"
 STATUS_TIMEOUT_SECS="${STATUS_TIMEOUT_SECS:-1200}"
 STATUS_POLL_SECS="${STATUS_POLL_SECS:-3}"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
@@ -17,13 +17,18 @@ NETWORK="${NETWORK:-signet}"
 MINIMUM_CONFIRMATIONS="${MINIMUM_CONFIRMATIONS:-1}"
 FEE_POLICY_VERSION="${FEE_POLICY_VERSION:-1}"
 APPLICATION_KEY_EPOCH="${APPLICATION_KEY_EPOCH:-1}"
-ESPLORA_URL="${ESPLORA_URL:-https://mutinynet.com/api}"
-CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-mutinynet-public-esplora}"
-PAYMENT_MODE="${PAYMENT_MODE:-federated-bdk}"
+ESPLORA_URL="${ESPLORA_URL:-https://esplora.signet.2nd.dev/}"
+CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-2nddev-signet-esplora}"
+PAYMENT_MODE="${PAYMENT_MODE:-federated-bdk-bark}"
+BARK_SERVER_ADDRESS="${BARK_SERVER_ADDRESS:-https://ark.signet.2nd.dev/}"
+BARK_ESPLORA_URL="${BARK_ESPLORA_URL:-$ESPLORA_URL}"
+BARK_ARK_SERVER_PUBLIC_KEY="${BARK_ARK_SERVER_PUBLIC_KEY:-03244a5a493e5f0c7b2ff513575715c036100ae219e5765ea688eb542a06f85aed}"
+BARK_APPLICATION_KEY_EPOCH="${BARK_APPLICATION_KEY_EPOCH:-1}"
 PROMETHEUS_PORT_START="${PROMETHEUS_PORT_START:-21985}"
 CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS:-20}"
 CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
 CONTROL_SCRIPT="$SCRIPT_DIR/nocean_federation_control.sh"
+BARK_REPO_ROOT="${BARK_REPO_ROOT:-$REPO_ROOT/crates/cdk-bark/../../../../../../git/bark}"
 
 usage() {
     cat <<'EOF'
@@ -36,19 +41,22 @@ Usage:
   scripts/deploy_nocean_federation.sh
 
 Modes:
+  update   Preserve an existing finalized FROST federation, replace the
+           binaries, and restart it. This is the default.
   fresh    Erase all member databases and configs, run a new BLS+FROST DKG,
-           and start the selected payment runtime.
-  restart  Preserve an existing finalized FROST federation and replace only
-           the binaries before restarting it. This is the default.
+           and start federated BDK on-chain plus Bark BOLT11.
+  restart  Backward-compatible alias for update.
 
 Relevant environment overrides:
   SSH_HOST, REMOTE_DIR, PUBLIC_BASE_DOMAIN
-  DEPLOY_MODE=fresh|restart
-  PAYMENT_MODE=federated-bdk|fakewallet
+  DEPLOY_MODE=update|fresh|restart
+  PAYMENT_MODE=federated-bdk-bark|fakewallet
   STATUS_TIMEOUT_SECS, STATUS_POLL_SECS
   DOCKER_PLATFORM, CARGO_REGISTRY_VOLUME, RUST_IMAGE
   NETWORK, MINIMUM_CONFIRMATIONS, FEE_POLICY_VERSION
   APPLICATION_KEY_EPOCH, ESPLORA_URL, CHAIN_SOURCE_ID
+  BARK_REPO_ROOT, BARK_SERVER_ADDRESS, BARK_ESPLORA_URL
+  BARK_ARK_SERVER_PUBLIC_KEY, BARK_APPLICATION_KEY_EPOCH
   PROMETHEUS_PORT_START
   CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS, CHECKPOINT_INTERVAL_FINALIZED_ITEMS
 EOF
@@ -77,21 +85,29 @@ case "${1:-}" in
     *) usage >&2; die "unexpected argument: $1" ;;
 esac
 
-for command in docker scp ssh awk; do
+for command in docker scp ssh awk python3; do
     require_command "$command"
 done
-[[ "$DEPLOY_MODE" == "fresh" || "$DEPLOY_MODE" == "restart" ]] \
-    || die "DEPLOY_MODE must be fresh or restart"
-[[ "$PAYMENT_MODE" == "federated-bdk" || "$PAYMENT_MODE" == "fakewallet" ]] \
-    || die "PAYMENT_MODE must be federated-bdk or fakewallet"
+[[ "$DEPLOY_MODE" == "update" || "$DEPLOY_MODE" == "fresh" || "$DEPLOY_MODE" == "restart" ]] \
+    || die "DEPLOY_MODE must be update, fresh, or restart"
+if [[ "$DEPLOY_MODE" == "update" ]]; then
+    REMOTE_DEPLOY_MODE="restart"
+else
+    REMOTE_DEPLOY_MODE="$DEPLOY_MODE"
+fi
+[[ "$PAYMENT_MODE" == "federated-bdk-bark" || "$PAYMENT_MODE" == "fakewallet" ]] \
+    || die "PAYMENT_MODE must be federated-bdk-bark or fakewallet"
 [[ -f "$CONTROL_SCRIPT" ]] || die "missing deployment control script: $CONTROL_SCRIPT"
+[[ -f "$BARK_REPO_ROOT/bark/Cargo.toml" ]] \
+    || die "BARK_REPO_ROOT must point to the Bark frost-wallet checkout"
+BARK_REPO_ROOT="$(cd -- "$BARK_REPO_ROOT" && pwd)"
 [[ "$REMOTE_DIR" =~ ^[A-Za-z0-9._/-]+$ && "$REMOTE_DIR" != /* ]] \
     || die "REMOTE_DIR must be a safe path relative to the remote home"
 [[ "/$REMOTE_DIR/" != *"/../"* ]] || die "REMOTE_DIR must not contain '..'"
 [[ "$PUBLIC_BASE_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] \
     || die "PUBLIC_BASE_DOMAIN contains unsupported characters"
 for value in "$STATUS_TIMEOUT_SECS" "$STATUS_POLL_SECS" "$MINIMUM_CONFIRMATIONS" \
-    "$FEE_POLICY_VERSION" "$APPLICATION_KEY_EPOCH" \
+    "$FEE_POLICY_VERSION" "$APPLICATION_KEY_EPOCH" "$BARK_APPLICATION_KEY_EPOCH" \
     "$PROMETHEUS_PORT_START" \
     "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
     "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS"; do
@@ -99,6 +115,172 @@ for value in "$STATUS_TIMEOUT_SECS" "$STATUS_POLL_SECS" "$MINIMUM_CONFIRMATIONS"
 done
 ((PROMETHEUS_PORT_START + 5 - 1 <= 65535)) \
     || die "Prometheus member ports exceed 65535"
+[[ "$NETWORK" == "signet" ]] || die "this Bark deployment requires NETWORK=signet"
+[[ "$BARK_ARK_SERVER_PUBLIC_KEY" =~ ^0[23][0-9a-fA-F]{64}$ ]] \
+    || die "BARK_ARK_SERVER_PUBLIC_KEY must be a compressed secp256k1 public key"
+[[ "$BARK_SERVER_ADDRESS" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
+    || die "BARK_SERVER_ADDRESS must be a credential-free HTTPS URL"
+[[ "$BARK_ESPLORA_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
+    || die "BARK_ESPLORA_URL must be a credential-free HTTPS URL"
+
+GENERATED_CONTROL_SCRIPT="$(mktemp)"
+cleanup() {
+    rm -f "$GENERATED_CONTROL_SCRIPT"
+}
+trap cleanup EXIT
+
+python3 - "$CONTROL_SCRIPT" "$GENERATED_CONTROL_SCRIPT" <<'PY'
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+text = source.read_text()
+
+
+def replace_once(old: str, new: str) -> None:
+    global text
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(
+            f"control-script renderer expected one match, found {count}: {old[:80]!r}"
+        )
+    text = text.replace(old, new)
+
+
+if "federated-bdk" not in text:
+    raise SystemExit("control-script renderer could not find the BDK payment mode")
+text = text.replace("federated-bdk", "federated-bdk-bark")
+text = text.replace("https://mutinynet.com/api", "https://esplora.signet.2nd.dev/")
+text = text.replace("mutinynet-public-esplora", "2nddev-signet-esplora")
+text = text.replace("Mutinynet federated Cashu", "Signet federated Cashu")
+
+replace_once(
+    'PAYMENT_MODE="${PAYMENT_MODE:-federated-bdk-bark}"\n',
+    '''PAYMENT_MODE="${PAYMENT_MODE:-federated-bdk-bark}"
+BARK_SERVER_ADDRESS="${BARK_SERVER_ADDRESS:?BARK_SERVER_ADDRESS is required}"
+BARK_ESPLORA_URL="${BARK_ESPLORA_URL:?BARK_ESPLORA_URL is required}"
+BARK_ARK_SERVER_PUBLIC_KEY="${BARK_ARK_SERVER_PUBLIC_KEY:?BARK_ARK_SERVER_PUBLIC_KEY is required}"
+BARK_APPLICATION_KEY_EPOCH="${BARK_APPLICATION_KEY_EPOCH:?BARK_APPLICATION_KEY_EPOCH is required}"
+BARK_POLICY_CONFIG="$PWD/config/bark-policy.json"
+''',
+)
+replace_once(
+    'for command in tmux curl jq timeout awk find ps seq; do',
+    'for command in tmux curl jq timeout awk find ps seq openssl; do',
+)
+replace_once(
+    '    local wallet_config development_policy_config\n',
+    '''    local wallet_config bark_config development_policy_config
+    local operational_seed_hex receive_secret_key_hex
+''',
+)
+replace_once(
+    '''        wallet_config="enabled = false"
+        development_policy_config="allow_development_payment_observation_policy = true"
+''',
+    '''        wallet_config="enabled = false"
+        bark_config="enabled = false"
+        development_policy_config="allow_development_payment_observation_policy = true"
+''',
+)
+replace_once(
+    '''        ln_backend="none"
+        onchain_backend="federated-bdk-bark"
+        development_policy_config=""
+        wallet_config="$(printf '%s\\n' \\
+''',
+    '''        ln_backend="federated-bark"
+        onchain_backend="federated-bdk"
+        development_policy_config=""
+        operational_seed_hex="$(openssl rand -hex 64)"
+        receive_secret_key_hex="$(openssl rand -hex 32)"
+        wallet_config="$(printf '%s\\n' \\
+''',
+)
+replace_once(
+    '''            'sync_interval_secs = 15')"
+    fi
+    mkdir -p "$dir/work"
+''',
+    '''            'sync_interval_secs = 15')"
+        bark_config="$(printf '%s\\n' \\
+            'enabled = true' \\
+            "network = \\"$NETWORK\\"" \\
+            "ark_server_public_key = \\"$BARK_ARK_SERVER_PUBLIC_KEY\\"" \\
+            "server_address = \\"$BARK_SERVER_ADDRESS\\"" \\
+            "esplora_url = \\"$BARK_ESPLORA_URL\\"" \\
+            "data_directory = \\"$dir/work/federation-bark\\"" \\
+            "receive_secret_database_path = \\"$dir/work/federation-bark/receive-secrets.redb\\"" \\
+            "frost_protocol_storage_root = \\"$dir/work/frost-protocol\\"" \\
+            "operational_seed_hex = \\"$operational_seed_hex\\"" \\
+            "receive_secret_key_hex = \\"$receive_secret_key_hex\\"" \\
+            'create_if_missing = true' \\
+            'automatic_refresh = true' \\
+            'automatic_emergency_exit = false')"
+    fi
+    mkdir -p "$dir/work/frost-protocol"
+''',
+)
+replace_once(
+    '''[federation.onchain_wallet]
+$wallet_config
+EOF
+''',
+    '''[federation.onchain_wallet]
+$wallet_config
+
+[federation.bark]
+$bark_config
+EOF
+''',
+)
+replace_once(
+    '''    mkdir -p "$PWD/config" "$PWD/logs"
+
+    local member
+''',
+    '''    mkdir -p "$PWD/config" "$PWD/logs"
+
+    if [[ "$PAYMENT_MODE" == "federated-bdk-bark" ]]; then
+        cat > "$BARK_POLICY_CONFIG" <<'EOF'
+{
+  "version": 1,
+  "receive_base_fee_sat": 0,
+  "receive_fee_ppm": 0,
+  "maximum_outgoing_base_fee_sat": 20,
+  "maximum_outgoing_fee_ppm": 5000,
+  "minimum_incoming_cltv_delta": 18,
+  "minimum_outgoing_cltv_delta": 18,
+  "refresh_before_expiry_blocks": 144,
+  "emergency_exit_before_expiry_blocks": 18,
+  "receive_secret_retention_days": 30,
+  "receive_anti_dos": "no_proof"
+}
+EOF
+    fi
+
+    local member
+''',
+)
+replace_once(
+    '''            --frost-cdk-application-key-epoch "$APPLICATION_KEY_EPOCH"
+''',
+    '''            --frost-cdk-application-key-epoch "$APPLICATION_KEY_EPOCH"
+            --frost-bark-network "$NETWORK"
+            --frost-bark-ark-server-public-key "$BARK_ARK_SERVER_PUBLIC_KEY"
+            --frost-bark-application-key-epoch "$BARK_APPLICATION_KEY_EPOCH"
+            --frost-bark-policy-config "$BARK_POLICY_CONFIG"
+''',
+)
+text = text.replace(
+    ".frost_wallet != null'",
+    ".frost_wallet != null and .frost_wallet.bark_application != null'",
+)
+
+destination.write_text(text)
+PY
+chmod 755 "$GENERATED_CONTROL_SCRIPT"
 
 RUST_VERSION="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' \
     "$REPO_ROOT/rust-toolchain.toml")"
@@ -112,6 +294,7 @@ docker run --rm \
     --platform "$DOCKER_PLATFORM" \
     --env "RUSTUP_TOOLCHAIN=$RUST_VERSION" \
     --mount "type=bind,src=$REPO_ROOT,dst=/work" \
+    --mount "type=bind,src=$BARK_REPO_ROOT,dst=/git/bark,readonly" \
     --mount "type=volume,src=$CARGO_REGISTRY_VOLUME,dst=/usr/local/cargo/registry" \
     --workdir /work \
     "$RUST_IMAGE" \
@@ -122,7 +305,7 @@ docker run --rm \
         export CARGO_TARGET_DIR=/work/target/linux-x86_64
         cargo build --locked --release -p cdk-mintd \
             --no-default-features \
-            --features fakewallet,sqlite,info-page,federation,prometheus
+            --features fakewallet,sqlite,info-page,federation-bark,prometheus
         cargo build --locked --release -p cdk-cli \
             --no-default-features \
             --features federation
@@ -141,17 +324,19 @@ CLI_UPLOAD="cdk-cli.upload-$CLI_HASH"
 echo "Uploading locally built binaries and FROST deployment control with SCP..."
 scp "$MINTD" "$SSH_HOST:$REMOTE_DIR/bin/$MINTD_UPLOAD"
 scp "$CLI" "$SSH_HOST:$REMOTE_DIR/bin/$CLI_UPLOAD"
-scp "$CONTROL_SCRIPT" "$SSH_HOST:$REMOTE_DIR/scripts/nocean_federation_control.sh.upload"
+scp "$GENERATED_CONTROL_SCRIPT" "$SSH_HOST:$REMOTE_DIR/scripts/nocean_federation_control.sh.upload"
 
 echo "Installing and starting the $DEPLOY_MODE deployment..."
 ssh "$SSH_HOST" bash -s -- \
     "$REMOTE_DIR" "$MINTD_HASH" "$CLI_HASH" "$MINTD_UPLOAD" "$CLI_UPLOAD" \
-    "$DEPLOY_MODE" "$PUBLIC_BASE_DOMAIN" "$NETWORK" "$MINIMUM_CONFIRMATIONS" \
+    "$REMOTE_DEPLOY_MODE" "$PUBLIC_BASE_DOMAIN" "$NETWORK" "$MINIMUM_CONFIRMATIONS" \
     "$FEE_POLICY_VERSION" "$APPLICATION_KEY_EPOCH" "$ESPLORA_URL" "$CHAIN_SOURCE_ID" \
     "$STATUS_TIMEOUT_SECS" "$STATUS_POLL_SECS" \
     "$PROMETHEUS_PORT_START" \
     "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
-    "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" "$PAYMENT_MODE" <<'REMOTE_SCRIPT'
+    "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" "$PAYMENT_MODE" \
+    "$BARK_SERVER_ADDRESS" "$BARK_ESPLORA_URL" "$BARK_ARK_SERVER_PUBLIC_KEY" \
+    "$BARK_APPLICATION_KEY_EPOCH" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 
 REMOTE_DIR="$1"
@@ -173,6 +358,10 @@ export PROMETHEUS_PORT_START="${16}"
 export CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${17}"
 export CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${18}"
 export PAYMENT_MODE="${19}"
+export BARK_SERVER_ADDRESS="${20}"
+export BARK_ESPLORA_URL="${21}"
+export BARK_ARK_SERVER_PUBLIC_KEY="${22}"
+export BARK_APPLICATION_KEY_EPOCH="${23}"
 
 cd "$HOME/$REMOTE_DIR"
 for command in sha256sum tmux curl timeout awk find jq; do
@@ -228,7 +417,9 @@ private_state_is_healthy() {
             --argjson confirmations "$MINIMUM_CONFIRMATIONS" \
             '.frost_wallet != null
              and .frost_wallet.cdk_onchain_application.network == $network
-             and .frost_wallet.cdk_onchain_application.confirmation_policy.minimum_confirmations == $confirmations' \
+             and .frost_wallet.cdk_onchain_application.confirmation_policy.minimum_confirmations == $confirmations
+             and .frost_wallet.bark_application != null
+             and .frost_wallet.bark_application.network == $network' \
             "$public_config" >/dev/null || return 1
     fi
     timeout 45 bin/cdk-mintd federation status \
@@ -256,6 +447,17 @@ private_state_is_healthy() {
         printf 'payment_methods=%s\n' "$methods" >"$wallet_output"
         return 0
     fi
+    local methods
+    methods="$(curl -fsS --max-time 10 "https://cdk-1.$PUBLIC_BASE_DOMAIN/v1/info" \
+        | jq -r '
+            def payment_methods($nut):
+                [.nuts[$nut].methods[].method
+                 | select(. == "bolt11" or . == "onchain")]
+                | unique | sort | join(",");
+            payment_methods("4") + "|" + payment_methods("5")
+        ')" \
+        || return 1
+    [[ "$methods" == "bolt11,onchain|bolt11,onchain" ]] || return 1
     timeout 45 bin/cdk-mintd federation wallet-status \
         --public-config "$public_config" \
         --private-config "$private_config" \
