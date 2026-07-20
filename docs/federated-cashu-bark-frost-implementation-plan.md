@@ -3371,6 +3371,14 @@ Progress checkpoint:
   is persisted before return, so successful replicas stop calling prepare. The
   fix uses the original status and prepare RPCs and requires no public Ark
   server or protocol change;
+- diagnosed the accepted replay failure independently from the stored journal
+  commitments: receive evidence commits to the expiry in each
+  `ServerHtlcRecv` policy, while CDK replay incorrectly substituted the longer
+  enclosing VTXO lifetime. Bark now exposes its existing policy-aware evidence
+  reconstruction as a local, non-mutating facade operation, and CDK uses that
+  single source of truth when validating accepted artifacts. A Bark regression
+  vector asserts that the two expiries differ and that the HTLC policy expiry
+  is retained. This changes no Ark RPC or wire protocol;
 - retained consensus-frontier lease rotation for both outgoing payment workers
   and the incoming first-prepare worker. Every replica validates the full
   evidence returned by the ready-state prepare call before submitting its

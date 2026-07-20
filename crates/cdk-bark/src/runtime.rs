@@ -2247,11 +2247,19 @@ impl FederatedBarkRuntime {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
         let receive = self.receive_plan(intent, prepared)?;
-        let evidence = receive_htlc_evidence_from_transition(intent, transition)?;
+        let evidence =
+            receive_htlc_evidence_from_transition(&self.wallet, &receive, intent, transition)?;
         self.wallet
             .apply_lightning_receive_htlc_replay(&receive, &evidence.vtxos)
             .await
-            .map_err(|_| Error::ReceiveClaimRecoveryRequired)
+            .map_err(|error| {
+                tracing::warn!(
+                    action_id = %intent.action_id,
+                    error = %error,
+                    "Federated Bark accepted receive evidence replay failed"
+                );
+                Error::ReceiveClaimRecoveryRequired
+            })
     }
 
     /// Poll and validate exact incoming HTLC evidence. The returned member
@@ -2363,7 +2371,14 @@ impl FederatedBarkRuntime {
             .wallet
             .prepare_lightning_receive_htlcs(&receive)
             .await
-            .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+            .map_err(|error| {
+                tracing::warn!(
+                    action_id = %intent.action_id,
+                    error = %error,
+                    "Federated Bark receive claim evidence load failed"
+                );
+                Error::ReceiveClaimPlanInvalid
+            })?;
         let claim = self
             .wallet
             .plan_lightning_receive_claim(
@@ -2373,7 +2388,14 @@ impl FederatedBarkRuntime {
                 },
                 proposal.attempt,
             )
-            .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+            .map_err(|error| {
+                tracing::warn!(
+                    action_id = %intent.action_id,
+                    error = %error,
+                    "Federated Bark receive claim planning failed"
+                );
+                Error::ReceiveClaimPlanInvalid
+            })?;
         self.claim_action_plan(
             intent,
             ready_operation_id,
@@ -4616,6 +4638,8 @@ fn receive_htlc_evidence_hash(
 }
 
 fn receive_htlc_evidence_from_transition(
+    wallet: &FederationWallet,
+    plan: &FederationLightningReceivePlan,
     intent: &FederationBarkReceiveIntent,
     transition: &FederationBarkActionTransition,
 ) -> Result<bark::federation::FederationLightningReceiveHtlcEvidence, Error> {
@@ -4653,40 +4677,14 @@ fn receive_htlc_evidence_from_transition(
     if vtxos.is_empty() || vtxos.windows(2).any(|pair| pair[0].id() == pair[1].id()) {
         return Err(Error::ReceiveClaimPlanInvalid);
     }
-    let net_amount = vtxos
-        .iter()
-        .try_fold(bitcoin::Amount::ZERO, |amount, vtxo| {
-            amount
-                .checked_add(vtxo.amount())
-                .ok_or(Error::ReceiveClaimPlanInvalid)
-        })?;
-    let gross_amount = bitcoin::Amount::from_sat(u64::from(intent.gross_amount));
-    let fee = gross_amount
-        .checked_sub(net_amount)
-        .ok_or(Error::ReceiveClaimPlanInvalid)?;
-    let minimum_expiry = vtxos
-        .iter()
-        .map(bark::ark::vtxo::Vtxo::expiry_height)
-        .min()
-        .ok_or(Error::ReceiveClaimPlanInvalid)?;
-    let evidence = bark::federation::FederationLightningReceiveHtlcEvidence {
-        action_id: FederationActionId::from_bytes(intent.action_id.to_bytes())
-            .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
-        payment_hash: PaymentHash::from(intent.payment_hash.to_bytes()),
-        destination: VtxoKeyLocator {
-            index: intent.destination.index,
-        },
-        gross_amount,
-        net_amount,
-        fee,
-        minimum_expiry,
-        vtxos,
-    };
+    let evidence = wallet
+        .reconstruct_lightning_receive_htlc_evidence(plan, vtxos)
+        .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
     let mut request = b"cdk/bark/receive-htlc-request/v1".to_vec();
     request.extend_from_slice(&transition.plan_operation_id.to_bytes());
     request.extend_from_slice(&intent.action_id.to_bytes());
     request.extend_from_slice(&intent.destination.index.to_be_bytes());
-    request.extend_from_slice(&minimum_expiry.to_be_bytes());
+    request.extend_from_slice(&evidence.minimum_expiry.to_be_bytes());
     if transition.result_hash != receive_htlc_evidence_hash(&evidence)?
         || transition.request_hash != bark_digest(&request)?
     {
