@@ -141,13 +141,13 @@ pub(super) async fn advance_federated_bark_melt_quote(
             None
         };
         if let Some(failed) = &failed_entry {
+            // `PaymentFailed` is the input to the accepted revocation flow, not
+            // itself a runtime failure. Degrading here would make the readiness
+            // gate reject the projection needed to propose that revocation.
             runtime
                 .apply_lightning_send_failed(&quote, &projection, &plan_entry, failed)
                 .await
                 .map_err(|_| cdk::Error::Internal)?;
-            runtime
-                .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
-                .await;
         }
 
         let revocation_plan_entry = if matches!(

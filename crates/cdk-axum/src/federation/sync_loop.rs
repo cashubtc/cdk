@@ -1512,7 +1512,7 @@ where
         let local_full_status = local_peer_status(state).await?;
         if !state.federation.live_session_active().await
             && local_full_status.has_same_application_state(&peer_status)
-            && peer_status.aleph_bft_next_item_index.unwrap_or(0) > 0
+            && aleph_bft_session_has_progress(&peer_status)
         {
             if let Some(recovered_backup_status) = self
                 .recover_aleph_bft_backup_from_member(
@@ -1672,5 +1672,37 @@ fn format_aleph_bft_next_item_index(status: &FederationPeerStatus) -> String {
     match status.aleph_bft_next_item_index {
         Some(index) => index.to_string(),
         None => "none".to_string(),
+    }
+}
+
+fn aleph_bft_session_has_progress(status: &FederationPeerStatus) -> bool {
+    status
+        .aleph_bft_next_unit_index_by_member
+        .values()
+        .any(|next_unit_index| *next_unit_index > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_finalized_cursor_does_not_make_an_empty_session_require_backup() {
+        let member = MemberId::new(1).expect("member");
+        let mut status = FederationPeerStatus::new(
+            cdk::federation::FederationId::from_bytes([1; 32]),
+            member,
+            10,
+            Some(9),
+            cdk::federation::FederationJournalDigest::from_bytes([2; 32]),
+        )
+        .with_aleph_bft_session(6)
+        .with_aleph_bft_next_item_index(329)
+        .with_aleph_bft_next_unit_index_by_member(BTreeMap::from([(member, 0)]));
+
+        assert!(!aleph_bft_session_has_progress(&status));
+
+        status.aleph_bft_next_unit_index_by_member.insert(member, 1);
+        assert!(aleph_bft_session_has_progress(&status));
     }
 }

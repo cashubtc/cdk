@@ -3467,17 +3467,12 @@ async fn reconcile_federation_bark_runtime(
                         .await
                         .map(|_| ()),
                     cdk::federation::FederationBarkSemanticPhase::PaymentFailed => {
-                        let result = runtime
+                        // Keep the runtime ready for the normal failed-send
+                        // revocation phase. The error path below still marks a
+                        // genuine replay failure as recovery-required.
+                        runtime
                             .apply_lightning_send_failed(&quote, &projection, &plan_entry, entry)
-                            .await;
-                        if result.is_ok() {
-                            runtime
-                                .mark_degraded(
-                                    cdk_bark::FederatedBarkDegradedReason::RecoveryRequired,
-                                )
-                                .await;
-                        }
-                        result
+                            .await
                     }
                     cdk::federation::FederationBarkSemanticPhase::RevocationCompleted => {
                         let revocation_plan_entry = mint

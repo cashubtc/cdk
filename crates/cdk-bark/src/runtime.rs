@@ -423,6 +423,9 @@ impl FederatedBarkRuntime {
         projection: &FederationBarkProjectionSnapshot,
         mut proposal: FederatedBarkSendProposal,
     ) -> Result<FederationBarkActionPlan, Error> {
+        if quote.state != MeltQuoteState::Pending {
+            return Err(Error::SendPlanInvalid);
+        }
         let (invoice, amount, fee) = self.validate_send_quote(quote)?;
         if proposal.attempt == 0 || !self.federation.members.contains_key(&proposal.actor) {
             return Err(Error::SendPlanInvalid);
@@ -2117,7 +2120,7 @@ impl FederatedBarkRuntime {
         let MeltPaymentRequest::Bolt11 { bolt11 } = &quote.request else {
             return Err(Error::SendPlanInvalid);
         };
-        if quote.unit != CurrencyUnit::Sat || quote.state != MeltQuoteState::Pending {
+        if quote.unit != CurrencyUnit::Sat || !send_quote_state_is_replayable(quote.state) {
             return Err(Error::SendPlanInvalid);
         }
         bolt11
@@ -3230,6 +3233,27 @@ impl FederatedBarkRuntime {
         if health.degraded_reason == Some(reason) {
             health.degraded_reason = None;
         }
+    }
+}
+
+const fn send_quote_state_is_replayable(state: MeltQuoteState) -> bool {
+    matches!(
+        state,
+        MeltQuoteState::Pending | MeltQuoteState::Paid | MeltQuoteState::Failed
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepted_send_quotes_replay_after_terminal_resolution() {
+        assert!(send_quote_state_is_replayable(MeltQuoteState::Pending));
+        assert!(send_quote_state_is_replayable(MeltQuoteState::Paid));
+        assert!(send_quote_state_is_replayable(MeltQuoteState::Failed));
+        assert!(!send_quote_state_is_replayable(MeltQuoteState::Unpaid));
+        assert!(!send_quote_state_is_replayable(MeltQuoteState::Unknown));
     }
 }
 

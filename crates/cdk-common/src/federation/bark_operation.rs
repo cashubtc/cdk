@@ -3877,17 +3877,25 @@ mod tests {
             panic!("action plan")
         };
         let predecessor = operation_id(50);
-        let input_artifact =
-            bark_artifact(FederationBarkArtifactKind::Vtxo, b"failed HTLC".to_vec())
-                .expect("HTLC artifact");
+        let input_artifacts = [
+            b"failed split HTLC 1".to_vec(),
+            b"failed split HTLC 2".to_vec(),
+            b"failed split HTLC 3".to_vec(),
+        ]
+        .into_iter()
+        .map(|bytes| bark_artifact(FederationBarkArtifactKind::Vtxo, bytes))
+        .collect::<Result<Vec<_>>>()
+        .expect("HTLC artifacts");
         let request_artifact = bark_artifact(
             FederationBarkArtifactKind::ArkRequest,
             b"accepted revocation request".to_vec(),
         )
         .expect("request artifact");
-        let mut artifacts = vec![input_artifact, request_artifact.clone()];
+        let mut artifacts = input_artifacts;
+        artifacts.push(request_artifact.clone());
         artifacts.sort();
         let revocation_locator = send.revocation_locator.expect("revocation locator");
+        let htlc_locator = send.outputs[0].locator;
         let plan = FederationBarkActionPlan {
             version: FEDERATION_BARK_OPERATION_VERSION,
             action_id: send.action_id,
@@ -3896,14 +3904,26 @@ mod tests {
             actor: send.actor,
             predecessor_operation_id: predecessor,
             payment_hash: send.payment_hash,
-            inputs: vec![FederationBarkVtxoInput {
-                vtxo_id: vtxo(51),
-                locator: send.outputs[0].locator,
-                amount: Amount::from(105),
-            }],
+            inputs: vec![
+                FederationBarkVtxoInput {
+                    vtxo_id: vtxo(51),
+                    locator: htlc_locator,
+                    amount: Amount::from(201),
+                },
+                FederationBarkVtxoInput {
+                    vtxo_id: vtxo(52),
+                    locator: htlc_locator,
+                    amount: Amount::from(250),
+                },
+                FederationBarkVtxoInput {
+                    vtxo_id: vtxo(53),
+                    locator: htlc_locator,
+                    amount: Amount::from(574),
+                },
+            ],
             outputs: vec![FederationBarkVtxoOutput {
                 locator: revocation_locator,
-                amount: Amount::from(105),
+                amount: Amount::from(1_025),
                 artifact_hash: request_artifact.hash,
             }],
             revocation_locator: None,
@@ -3937,7 +3957,7 @@ mod tests {
             .validate()
             .is_err());
         let mut changed = plan;
-        changed.outputs[0].amount = Amount::from(104);
+        changed.outputs[0].amount = Amount::from(1_024);
         assert!(FederationBarkOperation::ActionPlan(changed)
             .validate()
             .is_err());

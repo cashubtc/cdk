@@ -42,6 +42,11 @@ use crate::MintState;
 use super::{admit_private_request, federation_error_response, federation_runtime_config};
 
 const RESULT_CACHE_LIMIT: usize = 1_024;
+#[cfg(feature = "federation-bark")]
+const BARK_CUSTODY_PROJECTION_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+#[cfg(feature = "federation-bark")]
+const BARK_CUSTODY_PROJECTION_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(20);
 
 #[cfg(feature = "federation-bark")]
 fn usize_to_u64_saturating(value: usize) -> u64 {
@@ -898,33 +903,7 @@ impl FederationFrostSigningRuntime {
                 )
                 .into());
             }
-            let projection = mint
-                .localstore()
-                .get_federation_bark_projection_snapshot()
-                .await?;
-            for input in &plan.inputs {
-                let record = projection
-                    .vtxos
-                    .iter()
-                    .find(|record| record.vtxo_id == input.vtxo_id)
-                    .ok_or_else(|| frost_invalid("accepted Bark claim input is unavailable"))?;
-                if record.locator != input.locator
-                    || record.amount != input.amount
-                    || !matches!(
-                        record.state,
-                        cdk::federation::FederationBarkVtxoState::Reserved
-                            | cdk::federation::FederationBarkVtxoState::Exiting
-                    )
-                    || (record.state == cdk::federation::FederationBarkVtxoState::Exiting
-                        && plan.kind != cdk::federation::FederationBarkActionKind::EmergencyExit)
-                    || record.reservation_action_id != Some(plan.action_id)
-                {
-                    return Err(frost_invalid(
-                        "Bark custody request differs from a reserved action input",
-                    )
-                    .into());
-                }
-            }
+            wait_for_bark_custody_projection(mint, plan).await?;
             let wallet = public_config
                 .frost_wallet
                 .as_ref()
@@ -980,6 +959,51 @@ impl FederationFrostSigningRuntime {
             Ok(ValidatedCdkAuthorization { derivation })
         }
     }
+}
+
+#[cfg(feature = "federation-bark")]
+async fn wait_for_bark_custody_projection(
+    mint: &Mint,
+    plan: &cdk::federation::FederationBarkActionPlan,
+) -> Result<(), cdk::Error> {
+    let deadline = tokio::time::Instant::now() + BARK_CUSTODY_PROJECTION_WAIT_TIMEOUT;
+    loop {
+        let projection = mint
+            .localstore()
+            .get_federation_bark_projection_snapshot()
+            .await?;
+        if bark_custody_inputs_are_reserved(plan, &projection) {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(
+                frost_invalid("Bark custody request differs from a reserved action input").into(),
+            );
+        }
+        tokio::time::sleep(BARK_CUSTODY_PROJECTION_POLL_INTERVAL).await;
+    }
+}
+
+#[cfg(feature = "federation-bark")]
+fn bark_custody_inputs_are_reserved(
+    plan: &cdk::federation::FederationBarkActionPlan,
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+) -> bool {
+    plan.inputs.iter().all(|input| {
+        projection.vtxos.iter().any(|record| {
+            record.vtxo_id == input.vtxo_id
+                && record.locator == input.locator
+                && record.amount == input.amount
+                && matches!(
+                    record.state,
+                    cdk::federation::FederationBarkVtxoState::Reserved
+                        | cdk::federation::FederationBarkVtxoState::Exiting
+                )
+                && (record.state != cdk::federation::FederationBarkVtxoState::Exiting
+                    || plan.kind == cdk::federation::FederationBarkActionKind::EmergencyExit)
+                && record.reservation_action_id == Some(plan.action_id)
+        })
+    })
 }
 
 struct ValidatedCdkAuthorization {
