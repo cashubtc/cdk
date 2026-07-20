@@ -129,12 +129,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 - "$CONTROL_SCRIPT" "$GENERATED_CONTROL_SCRIPT" <<'PY'
+python3 - "$CONTROL_SCRIPT" "$GENERATED_CONTROL_SCRIPT" \
+    "$BARK_SERVER_ADDRESS" "$BARK_ESPLORA_URL" \
+    "$BARK_ARK_SERVER_PUBLIC_KEY" "$BARK_APPLICATION_KEY_EPOCH" <<'PY'
 from pathlib import Path
 import sys
 
 source = Path(sys.argv[1])
 destination = Path(sys.argv[2])
+bark_server_address = sys.argv[3]
+bark_esplora_url = sys.argv[4]
+bark_ark_server_public_key = sys.argv[5]
+bark_application_key_epoch = sys.argv[6]
 text = source.read_text()
 
 
@@ -157,11 +163,11 @@ text = text.replace("Mutinynet federated Cashu", "Signet federated Cashu")
 
 replace_once(
     'PAYMENT_MODE="${PAYMENT_MODE:-federated-bdk-bark}"\n',
-    '''PAYMENT_MODE="${PAYMENT_MODE:-federated-bdk-bark}"
-BARK_SERVER_ADDRESS="${BARK_SERVER_ADDRESS:?BARK_SERVER_ADDRESS is required}"
-BARK_ESPLORA_URL="${BARK_ESPLORA_URL:?BARK_ESPLORA_URL is required}"
-BARK_ARK_SERVER_PUBLIC_KEY="${BARK_ARK_SERVER_PUBLIC_KEY:?BARK_ARK_SERVER_PUBLIC_KEY is required}"
-BARK_APPLICATION_KEY_EPOCH="${BARK_APPLICATION_KEY_EPOCH:?BARK_APPLICATION_KEY_EPOCH is required}"
+    f'''PAYMENT_MODE="${{PAYMENT_MODE:-federated-bdk-bark}}"
+BARK_SERVER_ADDRESS="${{BARK_SERVER_ADDRESS:-{bark_server_address}}}"
+BARK_ESPLORA_URL="${{BARK_ESPLORA_URL:-{bark_esplora_url}}}"
+BARK_ARK_SERVER_PUBLIC_KEY="${{BARK_ARK_SERVER_PUBLIC_KEY:-{bark_ark_server_public_key}}}"
+BARK_APPLICATION_KEY_EPOCH="${{BARK_APPLICATION_KEY_EPOCH:-{bark_application_key_epoch}}}"
 BARK_POLICY_CONFIG="$PWD/config/bark-policy.json"
 ''',
 )
