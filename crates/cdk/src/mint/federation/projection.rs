@@ -6,14 +6,16 @@ use std::str::FromStr;
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    ark_server_commitment, FederatedKeyset, FederationBarkActionKind, FederationBarkActionPlan,
-    FederationBarkActionRecord, FederationBarkActionTransition, FederationBarkArtifact,
-    FederationBarkArtifactKind, FederationBarkDigest, FederationBarkObservationStatus,
-    FederationBarkOperation, FederationBarkProjectionSnapshot, FederationBarkReceiveIntent,
-    FederationBarkSemanticPhase, FederationBarkVtxoInput, FederationBarkVtxoLocator,
-    FederationBarkVtxoState, FederationMaterializedStateKey, FederationMaterializedStateRow,
-    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservationRecord, FEDERATION_MAX_DERIVATION_INDEX,
+    ark_server_commitment, federation_bark_exit_allocation_quote, FederatedKeyset,
+    FederationAddressAllocationScope, FederationAddressKeychain, FederationBarkActionKind,
+    FederationBarkActionPlan, FederationBarkActionRecord, FederationBarkActionTransition,
+    FederationBarkArtifact, FederationBarkArtifactKind, FederationBarkDigest,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
+    FederationBarkReceiveIntent, FederationBarkSemanticPhase, FederationBarkVtxoInput,
+    FederationBarkVtxoLocator, FederationBarkVtxoState, FederationMaterializedStateKey,
+    FederationMaterializedStateRow, FederationMaterializedStateSnapshot, FederationOperation,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservationRecord,
+    FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU, FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::mint::Operation;
@@ -153,6 +155,31 @@ impl Mint {
                                 ));
                             }
                         }
+                        FederationBarkSemanticPhase::ExitPublished => {
+                            let plan_entry = self
+                                .localstore()
+                                .get_federation_journal_entry_by_operation_id(
+                                    transition.plan_operation_id,
+                                )
+                                .await?
+                                .ok_or_else(|| bark_state_error("exit plan is missing"))?;
+                            let FederationOperation::Bark(FederationBarkOperation::ActionPlan(
+                                plan,
+                            )) = &plan_entry.envelope.operation
+                            else {
+                                return Err(bark_state_error(
+                                    "exit publication references a non-plan",
+                                ));
+                            };
+                            if plan.kind != FederationBarkActionKind::EmergencyExit
+                                || observation.amount != plan.external_amount
+                                || observation.fee != plan.fee_amount
+                            {
+                                return Err(bark_state_error(
+                                    "exit confirmation observation differs from its accepted plan",
+                                ));
+                            }
+                        }
                         _ => {
                             return Err(bark_state_error(
                                 "successful observation follows a non-terminal action phase",
@@ -266,6 +293,39 @@ impl Mint {
                             "failed observation differs from its accepted recovery phase",
                         ));
                     }
+                } else if observation.status == FederationBarkObservationStatus::Accepted
+                    && matches!(
+                        action.phase,
+                        FederationBarkSemanticPhase::RefreshPlanned
+                            | FederationBarkSemanticPhase::ExitPlanned
+                    )
+                {
+                    let FederationBarkOperation::ActionPlan(plan) = &action.operation else {
+                        return Err(bark_state_error(
+                            "maintenance trigger observation has no accepted plan",
+                        ));
+                    };
+                    let amount = if plan.kind == FederationBarkActionKind::Refresh {
+                        plan.inputs.iter().try_fold(Amount::ZERO, |sum, input| {
+                            sum.checked_add(input.amount).ok_or_else(|| {
+                                bark_state_error("maintenance observation amount overflow")
+                            })
+                        })?
+                    } else {
+                        plan.external_amount
+                    };
+                    if !matches!(
+                        plan.kind,
+                        FederationBarkActionKind::Refresh | FederationBarkActionKind::EmergencyExit
+                    ) || observation.amount != amount
+                        || observation.fee != plan.fee_amount
+                        || observation.result_hash
+                            != FederationBarkOperation::ActionPlan(plan.clone()).commitment()?
+                    {
+                        return Err(bark_state_error(
+                            "maintenance trigger observation differs from its accepted plan",
+                        ));
+                    }
                 }
             }
             FederationBarkOperation::ActionTransition(transition)
@@ -324,6 +384,30 @@ impl Mint {
                         "HTLC evidence has not reached the accepted member threshold",
                     ));
                 }
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == FederationBarkActionKind::Refresh =>
+            {
+                self.validate_federation_bark_refresh_plan_submission(
+                    &config,
+                    application,
+                    &snapshot,
+                    action,
+                    plan,
+                )?;
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == FederationBarkActionKind::EmergencyExit =>
+            {
+                let allocations = self.federation_address_allocation_state().await?;
+                self.validate_federation_bark_exit_plan_submission(
+                    &config,
+                    application,
+                    &snapshot,
+                    action,
+                    plan,
+                    &allocations,
+                )?;
             }
             FederationBarkOperation::ActionPlan(plan)
                 if plan.kind == FederationBarkActionKind::IncomingClaim =>
@@ -956,6 +1040,171 @@ impl Mint {
                 validate_revocation_completed_result(&snapshot, plan, transition)?;
             }
             FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::RefreshCompleted =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("refresh result has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted refresh plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("refresh result references a non-plan"));
+                };
+                validate_maintenance_transition_header(
+                    action,
+                    plan_entry.operation_id,
+                    plan,
+                    transition,
+                    FederationBarkActionKind::Refresh,
+                )?;
+                if action.phase != FederationBarkSemanticPhase::RefreshPlanned
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                {
+                    return Err(bark_state_error(
+                        "refresh result does not follow its accepted plan",
+                    ));
+                }
+                validate_maintenance_trigger_quorum(
+                    &snapshot,
+                    config.public_config().threshold_params.signature_threshold,
+                    plan,
+                )?;
+                validate_refresh_completed_result(&snapshot, plan, transition)?;
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ExitRegistered =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("exit registration has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted exit plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("exit registration references a non-plan"));
+                };
+                validate_maintenance_transition_header(
+                    action,
+                    plan_entry.operation_id,
+                    plan,
+                    transition,
+                    FederationBarkActionKind::EmergencyExit,
+                )?;
+                if action.phase != FederationBarkSemanticPhase::ExitPlanned
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                {
+                    return Err(bark_state_error(
+                        "exit registration does not follow its accepted plan",
+                    ));
+                }
+                validate_maintenance_trigger_quorum(
+                    &snapshot,
+                    config.public_config().threshold_params.signature_threshold,
+                    plan,
+                )?;
+                validate_exit_registered_result(&snapshot, plan, transition)?;
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ExitPublished =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("exit publication has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted exit plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("exit publication references a non-plan"));
+                };
+                validate_maintenance_transition_header(
+                    action,
+                    plan_entry.operation_id,
+                    plan,
+                    transition,
+                    FederationBarkActionKind::EmergencyExit,
+                )?;
+                if action.phase != FederationBarkSemanticPhase::ExitRegistered
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                {
+                    return Err(bark_state_error(
+                        "exit publication does not follow accepted registration",
+                    ));
+                }
+                validate_exit_published_result(plan, transition)?;
+            }
+            FederationBarkOperation::ActionTransition(transition)
+                if transition.phase == FederationBarkSemanticPhase::ExitConfirmed =>
+            {
+                let action =
+                    action.ok_or_else(|| bark_state_error("exit confirmation has no action"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("accepted exit plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("exit confirmation references a non-plan"));
+                };
+                validate_maintenance_transition_header(
+                    action,
+                    plan_entry.operation_id,
+                    plan,
+                    transition,
+                    FederationBarkActionKind::EmergencyExit,
+                )?;
+                if action.phase != FederationBarkSemanticPhase::ExitPublished
+                    || transition.predecessor_operation_id != action.latest_operation_id
+                {
+                    return Err(bark_state_error(
+                        "exit confirmation does not follow accepted publication",
+                    ));
+                }
+                let source_scope = ark_server_commitment(&application.ark_server_public_key)?;
+                let observers = snapshot
+                    .observations
+                    .iter()
+                    .filter_map(|record| match &record.operation {
+                        FederationBarkOperation::MemberObservation(observation)
+                            if observation.action_id == plan.action_id
+                                && observation.source_scope == source_scope
+                                && observation.status
+                                    == FederationBarkObservationStatus::Succeeded
+                                && observation.amount == plan.external_amount
+                                && observation.fee == plan.fee_amount
+                                && observation.result_hash == transition.result_hash =>
+                        {
+                            Some(observation.observer)
+                        }
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>();
+                if observers.len()
+                    < usize::from(config.public_config().threshold_params.signature_threshold)
+                {
+                    return Err(bark_state_error(
+                        "exit confirmation has not reached the accepted member threshold",
+                    ));
+                }
+                let FederationBarkOperation::ActionTransition(published) = &action.operation else {
+                    return Err(bark_state_error(
+                        "exit confirmation predecessor is not a publication",
+                    ));
+                };
+                validate_exit_confirmed_result(&snapshot, plan, published, transition)?;
+            }
+            FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::ReceivePreimageDisclosed =>
             {
                 let action =
@@ -1070,6 +1319,345 @@ impl Mint {
             | FederationBarkOperation::ReceivePrepared(_)
             | FederationBarkOperation::ActionPlan(_)
             | FederationBarkOperation::ActionTransition(_) => {}
+        }
+        Ok(())
+    }
+
+    fn validate_federation_bark_refresh_plan_submission(
+        &self,
+        config: &super::FederationRuntimeConfig,
+        application: &cdk_common::federation::FederationBarkFrostApplicationConfig,
+        snapshot: &FederationBarkProjectionSnapshot,
+        action: Option<&FederationBarkActionRecord>,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<(), Error> {
+        if action.is_some() {
+            return Err(bark_state_error("refresh action already exists"));
+        }
+        let minimum_expiry = snapshot
+            .vtxos
+            .iter()
+            .filter(|record| record.state == FederationBarkVtxoState::Spendable)
+            .map(|record| record.expiry_height)
+            .min()
+            .ok_or_else(|| bark_state_error("refresh has no spendable candidate"))?;
+        let mut records = snapshot
+            .vtxos
+            .iter()
+            .filter(|record| {
+                record.state == FederationBarkVtxoState::Spendable
+                    && record.expiry_height == minimum_expiry
+            })
+            .collect::<Vec<_>>();
+        records.sort_by_key(|record| record.vtxo_id);
+        let predecessor = records
+            .first()
+            .ok_or_else(|| bark_state_error("refresh has no deterministic predecessor"))?
+            .latest_operation_id;
+        let expected_inputs = records
+            .iter()
+            .map(|record| FederationBarkVtxoInput {
+                vtxo_id: record.vtxo_id,
+                locator: record.locator,
+                amount: record.amount,
+            })
+            .collect::<Vec<_>>();
+        let input_amount = expected_inputs
+            .iter()
+            .try_fold(Amount::ZERO, |sum, input| {
+                sum.checked_add(input.amount)
+                    .ok_or_else(|| bark_state_error("refresh input amount overflow"))
+            })?;
+        let trigger_height = minimum_expiry
+            .checked_sub(application.policy.refresh_before_expiry_blocks)
+            .filter(|height| *height != 0)
+            .ok_or_else(|| bark_state_error("refresh trigger is unsafe"))?;
+        let emergency_height = minimum_expiry
+            .checked_sub(application.policy.emergency_exit_before_expiry_blocks)
+            .filter(|height| *height > trigger_height)
+            .ok_or_else(|| bark_state_error("refresh emergency height is unsafe"))?;
+        let expected_action = cdk_common::federation::FederationBarkActionId::derive(
+            config.federation_id(),
+            predecessor,
+            FederationBarkSemanticPhase::RefreshPlanned,
+            0,
+        )?;
+        let expected_actor = config
+            .public_config()
+            .members
+            .keys()
+            .next()
+            .copied()
+            .ok_or(Error::Internal)?;
+        let expected_signers = config
+            .public_config()
+            .members
+            .keys()
+            .copied()
+            .take(usize::from(application.threshold))
+            .collect::<Vec<_>>();
+        let output_index = next_bark_locator_index(snapshot)?;
+        let output = plan
+            .outputs
+            .first()
+            .filter(|_| plan.outputs.len() == 1)
+            .ok_or_else(|| bark_state_error("refresh output is missing"))?;
+        let request = plan.refresh_request()?;
+        let request_artifact = plan
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest)
+            .ok_or_else(|| bark_state_error("refresh request artifact is missing"))?;
+        let mut expected_artifacts = records
+            .iter()
+            .map(|record| record.artifact.clone())
+            .collect::<Vec<_>>();
+        expected_artifacts.push(request_artifact.clone());
+        expected_artifacts.sort();
+        expected_artifacts.dedup();
+        let fee_bound = application
+            .policy
+            .maximum_outgoing_fee(input_amount)
+            .map_err(Error::from)?;
+        if plan.action_id != expected_action
+            || plan.actor != expected_actor
+            || plan.predecessor_operation_id != predecessor
+            || plan.inputs != expected_inputs
+            || plan.signer_set != expected_signers
+            || plan.attempt != 1
+            || plan.expires_at != u64::from(emergency_height)
+            || plan.fee_bound != fee_bound
+            || plan.fee_amount > fee_bound
+            || output.locator != FederationBarkVtxoLocator::vtxo_custody(output_index)
+            || request.action_id != plan.action_id
+            || request.predecessor_operation_id != predecessor
+            || request.inputs != expected_inputs
+            || request.output_locator != output.locator
+            || request.output_amount != output.amount
+            || request.fee != plan.fee_amount
+            || request.trigger_height != trigger_height
+            || request.emergency_height != emergency_height
+            || request.minimum_expiry != minimum_expiry
+            || plan.artifacts != expected_artifacts
+        {
+            return Err(bark_state_error(
+                "refresh plan is not the deterministic earliest-expiry maintenance plan",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_federation_bark_exit_plan_submission(
+        &self,
+        config: &super::FederationRuntimeConfig,
+        application: &cdk_common::federation::FederationBarkFrostApplicationConfig,
+        snapshot: &FederationBarkProjectionSnapshot,
+        action: Option<&FederationBarkActionRecord>,
+        plan: &FederationBarkActionPlan,
+        allocations: &cdk_common::federation::FederationAddressAllocationState,
+    ) -> Result<(), Error> {
+        let (records, predecessor, expected_action, expected_actor, expected_signers, attempt) =
+            match action {
+                Some(action) => {
+                    let FederationBarkOperation::ActionPlan(refresh) = &action.operation else {
+                        return Err(bark_state_error(
+                            "exit escalation predecessor is not a refresh plan",
+                        ));
+                    };
+                    if action.phase != FederationBarkSemanticPhase::RefreshPlanned
+                        || refresh.kind != FederationBarkActionKind::Refresh
+                        || plan.predecessor_operation_id != action.latest_operation_id
+                    {
+                        return Err(bark_state_error(
+                            "exit escalation does not follow an accepted refresh",
+                        ));
+                    }
+                    let mut records = Vec::with_capacity(refresh.inputs.len());
+                    for input in &refresh.inputs {
+                        let record = snapshot
+                            .vtxos
+                            .iter()
+                            .find(|record| record.vtxo_id == input.vtxo_id)
+                            .ok_or_else(|| bark_state_error("exit escalation input is missing"))?;
+                        if record.state != FederationBarkVtxoState::Reserved
+                            || record.reservation_action_id != Some(refresh.action_id)
+                            || record.locator != input.locator
+                            || record.amount != input.amount
+                        {
+                            return Err(bark_state_error(
+                                "exit escalation input differs from its refresh reservation",
+                            ));
+                        }
+                        records.push(record);
+                    }
+                    (
+                        records,
+                        action.latest_operation_id,
+                        refresh.action_id,
+                        refresh.actor,
+                        refresh.signer_set.clone(),
+                        refresh.attempt,
+                    )
+                }
+                None => {
+                    let minimum_expiry = snapshot
+                        .vtxos
+                        .iter()
+                        .filter(|record| record.state == FederationBarkVtxoState::Spendable)
+                        .map(|record| record.expiry_height)
+                        .min()
+                        .ok_or_else(|| bark_state_error("exit has no spendable candidate"))?;
+                    let mut records = snapshot
+                        .vtxos
+                        .iter()
+                        .filter(|record| {
+                            record.state == FederationBarkVtxoState::Spendable
+                                && record.expiry_height == minimum_expiry
+                        })
+                        .collect::<Vec<_>>();
+                    records.sort_by_key(|record| record.vtxo_id);
+                    let predecessor = records
+                        .first()
+                        .ok_or_else(|| bark_state_error("exit has no deterministic predecessor"))?
+                        .latest_operation_id;
+                    let action_id = cdk_common::federation::FederationBarkActionId::derive(
+                        config.federation_id(),
+                        predecessor,
+                        FederationBarkSemanticPhase::ExitPlanned,
+                        0,
+                    )?;
+                    let actor = config
+                        .public_config()
+                        .members
+                        .keys()
+                        .next()
+                        .copied()
+                        .ok_or(Error::Internal)?;
+                    let signers = config
+                        .public_config()
+                        .members
+                        .keys()
+                        .copied()
+                        .take(usize::from(application.threshold))
+                        .collect::<Vec<_>>();
+                    (records, predecessor, action_id, actor, signers, 1)
+                }
+            };
+        let mut records = records;
+        records.sort_by_key(|record| record.vtxo_id);
+        let expected_inputs = records
+            .iter()
+            .map(|record| FederationBarkVtxoInput {
+                vtxo_id: record.vtxo_id,
+                locator: record.locator,
+                amount: record.amount,
+            })
+            .collect::<Vec<_>>();
+        let input_amount = expected_inputs
+            .iter()
+            .try_fold(Amount::ZERO, |sum, input| {
+                sum.checked_add(input.amount)
+                    .ok_or_else(|| bark_state_error("exit input amount overflow"))
+            })?;
+        let minimum_expiry = records
+            .iter()
+            .map(|record| record.expiry_height)
+            .min()
+            .ok_or_else(|| bark_state_error("exit has no minimum expiry"))?;
+        let trigger_height = minimum_expiry
+            .checked_sub(application.policy.emergency_exit_before_expiry_blocks)
+            .filter(|height| *height != 0)
+            .ok_or_else(|| bark_state_error("exit trigger is unsafe"))?;
+        let fee_bound = application
+            .policy
+            .maximum_outgoing_fee(input_amount)
+            .map_err(Error::from)?;
+        let request = plan.emergency_exit_request()?;
+        let frost_wallet = config
+            .public_config()
+            .frost_wallet
+            .as_ref()
+            .ok_or(Error::Internal)?;
+        let onchain = &frost_wallet.cdk_onchain_application;
+        let expected_quote = federation_bark_exit_allocation_quote(expected_action);
+        let scope = FederationAddressAllocationScope {
+            application_id: onchain.application_id,
+            application_key_epoch: onchain.application_key_epoch,
+        };
+        let allocation = allocations
+            .allocation(scope, &expected_quote)
+            .ok_or_else(|| bark_state_error("exit destination allocation is missing"))?;
+        let expected_script = frost_wallet.derive_cdk_onchain_script(
+            config.public_config(),
+            onchain.application_id,
+            onchain.application_key_epoch,
+            FederationAddressKeychain::Internal,
+            allocation.derivation_index,
+        )?;
+        let mut expected_vtxo_artifacts = records
+            .iter()
+            .map(|record| record.artifact.clone())
+            .collect::<Vec<_>>();
+        expected_vtxo_artifacts.sort();
+        let mut actual_vtxo_artifacts = plan
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+            .cloned()
+            .collect::<Vec<_>>();
+        actual_vtxo_artifacts.sort();
+        let request_count = plan
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest)
+            .count();
+        let invalid_artifact = plan.artifacts.iter().any(|artifact| {
+            !matches!(
+                artifact.kind,
+                FederationBarkArtifactKind::Vtxo
+                    | FederationBarkArtifactKind::ArkRequest
+                    | FederationBarkArtifactKind::Transaction
+            )
+        });
+        if plan.action_id != expected_action
+            || plan.actor != expected_actor
+            || plan.predecessor_operation_id != predecessor
+            || plan.inputs != expected_inputs
+            || plan.signer_set != expected_signers
+            || plan.attempt != attempt
+            || plan.expires_at != u64::from(minimum_expiry)
+            || plan.fee_amount != fee_bound
+            || plan.fee_bound != fee_bound
+            || plan.external_amount
+                != input_amount.checked_sub(fee_bound).ok_or_else(|| {
+                    bark_state_error("exit fee bound consumes its accepted inputs")
+                })?
+            || request.action_id != expected_action
+            || request.predecessor_operation_id != predecessor
+            || request.inputs != expected_inputs
+            || request.destination.application_id != onchain.application_id
+            || request.destination.application_key_epoch != onchain.application_key_epoch
+            || request.destination.quote != expected_quote
+            || request.destination.keychain != FederationAddressKeychain::Internal
+            || request.destination.derivation_index != allocation.derivation_index
+            || request.destination_script != expected_script.as_bytes()
+            || request.network != onchain.network
+            || request.network != application.network
+            || request.fee_rate_sat_per_kwu != FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU
+            || request.fee_bound != fee_bound
+            || request.minimum_recovered != plan.external_amount
+            || request.trigger_height != trigger_height
+            || request.minimum_expiry != minimum_expiry
+            || request.minimum_confirmations != onchain.confirmation_policy.minimum_confirmations
+            || request.external_id != plan.external_id
+            || request.attempt != attempt
+            || actual_vtxo_artifacts != expected_vtxo_artifacts
+            || request_count != 1
+            || invalid_artifact
+        {
+            return Err(bark_state_error(
+                "emergency exit differs from its reservation, BDK destination, or fee policy",
+            ));
         }
         Ok(())
     }
@@ -1283,6 +1871,326 @@ impl Mint {
 
         Ok(snapshot)
     }
+}
+
+fn next_bark_locator_index(snapshot: &FederationBarkProjectionSnapshot) -> Result<u32, Error> {
+    snapshot
+        .derivation_allocations
+        .iter()
+        .map(|allocation| allocation.locator.index)
+        .max()
+        .map_or(Ok(0), |index| {
+            index
+                .checked_add(1)
+                .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
+                .ok_or_else(|| bark_state_error("Bark locator space is exhausted"))
+        })
+}
+
+fn validate_maintenance_transition_header(
+    action: &FederationBarkActionRecord,
+    plan_operation_id: FederationOperationId,
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+    expected_kind: FederationBarkActionKind,
+) -> Result<(), Error> {
+    if plan.kind != expected_kind
+        || transition.action_id != plan.action_id
+        || transition.quote.is_some()
+        || transition.plan_operation_id != plan_operation_id
+        || transition.payment_hash.is_some()
+        || transition.actor != plan.actor
+        || transition.attempt != plan.attempt
+        || transition.signer_set != plan.signer_set
+        || transition.external_id != plan.external_id
+        || transition.request_hash
+            != FederationBarkOperation::ActionPlan(plan.clone()).commitment()?
+        || action.action_id != plan.action_id
+        || action.quote.is_some()
+        || action.payment_hash.is_some()
+    {
+        return Err(bark_state_error(
+            "maintenance transition differs from its accepted plan",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_maintenance_trigger_quorum(
+    snapshot: &FederationBarkProjectionSnapshot,
+    threshold: u16,
+    plan: &FederationBarkActionPlan,
+) -> Result<(), Error> {
+    let commitment = FederationBarkOperation::ActionPlan(plan.clone()).commitment()?;
+    let amount = if plan.kind == FederationBarkActionKind::Refresh {
+        plan.inputs.iter().try_fold(Amount::ZERO, |sum, input| {
+            sum.checked_add(input.amount)
+                .ok_or_else(|| bark_state_error("maintenance quorum amount overflow"))
+        })?
+    } else {
+        plan.external_amount
+    };
+    let observers = snapshot
+        .observations
+        .iter()
+        .filter_map(|record| match &record.operation {
+            FederationBarkOperation::MemberObservation(observation)
+                if observation.action_id == plan.action_id
+                    && observation.status == FederationBarkObservationStatus::Accepted
+                    && observation.amount == amount
+                    && observation.fee == plan.fee_amount
+                    && observation.result_hash == commitment =>
+            {
+                Some(observation.observer)
+            }
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if observers.len() < usize::from(threshold) {
+        return Err(bark_state_error(
+            "maintenance trigger has not reached the accepted member threshold",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_refresh_completed_result(
+    snapshot: &FederationBarkProjectionSnapshot,
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    let spent_inputs = transition
+        .vtxo_transitions
+        .iter()
+        .filter(|mutation| {
+            mutation.previous_state == Some(FederationBarkVtxoState::Reserved)
+                && mutation.new_state == FederationBarkVtxoState::Spent
+        })
+        .map(|mutation| mutation.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    if expected_inputs != spent_inputs {
+        return Err(bark_state_error(
+            "refresh result does not spend every accepted input",
+        ));
+    }
+    for input in &plan.inputs {
+        let record = snapshot
+            .vtxos
+            .iter()
+            .find(|record| record.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("refresh reserved input is missing"))?;
+        let mutation = transition
+            .vtxo_transitions
+            .iter()
+            .find(|mutation| mutation.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("refresh input mutation is missing"))?;
+        if record.state != FederationBarkVtxoState::Reserved
+            || record.reservation_action_id != Some(plan.action_id)
+            || record.locator != input.locator
+            || record.amount != input.amount
+            || mutation.locator != input.locator
+            || mutation.amount != input.amount
+            || mutation.expiry_height != record.expiry_height
+            || mutation.artifact_hash != record.artifact.hash
+        {
+            return Err(bark_state_error(
+                "refresh result differs from its accepted reservation",
+            ));
+        }
+    }
+    let output = plan
+        .outputs
+        .first()
+        .ok_or_else(|| bark_state_error("refresh output allocation is missing"))?;
+    let output_amount = transition
+        .vtxo_transitions
+        .iter()
+        .filter(|mutation| {
+            mutation.previous_state.is_none()
+                && mutation.new_state == FederationBarkVtxoState::Spendable
+        })
+        .try_fold(Amount::ZERO, |sum, mutation| {
+            if mutation.locator != output.locator {
+                return Err(bark_state_error(
+                    "refresh result uses an unallocated output locator",
+                ));
+            }
+            sum.checked_add(mutation.amount)
+                .ok_or_else(|| bark_state_error("refresh output amount overflow"))
+        })?;
+    if output_amount != output.amount
+        || transition
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+            .all(|artifact| artifact.hash != transition.result_hash)
+    {
+        return Err(bark_state_error(
+            "refresh result differs from its accepted output or evidence",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exit_registered_result(
+    snapshot: &FederationBarkProjectionSnapshot,
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    let exiting = transition
+        .vtxo_transitions
+        .iter()
+        .map(|mutation| mutation.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    if expected_inputs != exiting {
+        return Err(bark_state_error(
+            "exit registration does not transition every accepted input",
+        ));
+    }
+    for input in &plan.inputs {
+        let record = snapshot
+            .vtxos
+            .iter()
+            .find(|record| record.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("exit reserved input is missing"))?;
+        let mutation = transition
+            .vtxo_transitions
+            .iter()
+            .find(|mutation| mutation.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("exit input mutation is missing"))?;
+        if record.state != FederationBarkVtxoState::Reserved
+            || record.reservation_action_id != Some(plan.action_id)
+            || mutation.locator != record.locator
+            || mutation.amount != record.amount
+            || mutation.expiry_height != record.expiry_height
+            || mutation.artifact_hash != record.artifact.hash
+        {
+            return Err(bark_state_error(
+                "exit registration differs from its accepted reservation",
+            ));
+        }
+    }
+    validate_exit_transaction_artifacts(plan, transition, false)
+}
+
+fn validate_exit_published_result(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    validate_exit_transaction_artifacts(plan, transition, true)
+}
+
+fn validate_exit_confirmed_result(
+    snapshot: &FederationBarkProjectionSnapshot,
+    plan: &FederationBarkActionPlan,
+    published: &FederationBarkActionTransition,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    let exited = transition
+        .vtxo_transitions
+        .iter()
+        .map(|mutation| mutation.vtxo_id)
+        .collect::<BTreeSet<_>>();
+    if expected_inputs != exited {
+        return Err(bark_state_error(
+            "exit confirmation does not finalize every accepted input",
+        ));
+    }
+    for input in &plan.inputs {
+        let record = snapshot
+            .vtxos
+            .iter()
+            .find(|record| record.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("exiting input is missing"))?;
+        let mutation = transition
+            .vtxo_transitions
+            .iter()
+            .find(|mutation| mutation.vtxo_id == input.vtxo_id)
+            .ok_or_else(|| bark_state_error("exit confirmation mutation is missing"))?;
+        if record.state != FederationBarkVtxoState::Exiting
+            || record.reservation_action_id != Some(plan.action_id)
+            || mutation.locator != record.locator
+            || mutation.amount != record.amount
+            || mutation.expiry_height != record.expiry_height
+            || mutation.artifact_hash != record.artifact.hash
+        {
+            return Err(bark_state_error(
+                "exit confirmation differs from its exiting reservation",
+            ));
+        }
+    }
+    let published_transactions = published
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+        .collect::<BTreeSet<_>>();
+    let confirmed_transactions = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+        .collect::<BTreeSet<_>>();
+    if !published_transactions.is_subset(&confirmed_transactions)
+        || transition
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+            .all(|artifact| artifact.hash != transition.result_hash)
+    {
+        return Err(bark_state_error(
+            "exit confirmation does not retain the published transaction package",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_exit_transaction_artifacts(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+    require_drain: bool,
+) -> Result<(), Error> {
+    let planned = plan
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+        .collect::<BTreeSet<_>>();
+    let actual = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+        .collect::<BTreeSet<_>>();
+    let result_count = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.kind == FederationBarkArtifactKind::ArkResult
+                && artifact.hash == transition.result_hash
+        })
+        .count();
+    if planned.is_empty()
+        || !planned.is_subset(&actual)
+        || (require_drain && actual.len() <= planned.len())
+        || result_count != 1
+    {
+        return Err(bark_state_error(
+            "exit evidence differs from its accepted transaction package",
+        ));
+    }
+    Ok(())
 }
 
 fn bark_state_error(reason: &str) -> Error {

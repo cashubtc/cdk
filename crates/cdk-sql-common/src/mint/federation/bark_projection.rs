@@ -381,6 +381,7 @@ fn direct_transition_allowed(
             )
             | (Phase::PaymentFailed, Phase::RevocationPlanned)
             | (Phase::RevocationPlanned, Phase::RevocationCompleted)
+            | (Phase::RefreshPlanned, Phase::ExitPlanned)
             | (Phase::RefreshPlanned, Phase::RefreshCompleted)
             | (Phase::ExitPlanned, Phase::ExitRegistered)
             | (Phase::ExitRegistered, Phase::ExitPublished)
@@ -739,6 +740,29 @@ where
     Ok(())
 }
 
+async fn retain_refresh_reservation_for_exit<C>(
+    connection: &C,
+    action_id: cdk_common::federation::FederationBarkActionId,
+    input: &cdk_common::federation::FederationBarkVtxoInput,
+) -> Result<(), Error>
+where
+    C: DatabaseExecutor,
+{
+    let reserved = get_vtxo(connection, input.vtxo_id)
+        .await?
+        .ok_or_else(|| invalid_projection("Bark exit escalation references an unknown VTXO"))?;
+    if reserved.state != FederationBarkVtxoState::Reserved
+        || reserved.reservation_action_id != Some(action_id)
+        || reserved.locator != input.locator
+        || reserved.amount != input.amount
+    {
+        return Err(invalid_projection(
+            "Bark exit escalation differs from the existing refresh reservation",
+        ));
+    }
+    Ok(())
+}
+
 async fn apply_vtxo_transition<C>(
     connection: &C,
     entry: &FederationJournalEntry,
@@ -978,6 +1002,10 @@ where
         ));
     }
     let existing = get_action(connection, plan.action_id).await?;
+    let refresh_exit_escalation = existing.as_ref().is_some_and(|action| {
+        action.phase == cdk_common::federation::FederationBarkSemanticPhase::RefreshPlanned
+            && plan.kind == cdk_common::federation::FederationBarkActionKind::EmergencyExit
+    });
     let action = match &existing {
         Some(action) => {
             ensure_same_action_binding(action, operation)?;
@@ -1006,7 +1034,11 @@ where
     }
 
     for input in &plan.inputs {
-        reserve_input(connection, entry, plan.action_id, plan.kind, input).await?;
+        if refresh_exit_escalation {
+            retain_refresh_reservation_for_exit(connection, plan.action_id, input).await?;
+        } else {
+            reserve_input(connection, entry, plan.action_id, plan.kind, input).await?;
+        }
     }
     for output in &plan.outputs {
         if plan.kind == cdk_common::federation::FederationBarkActionKind::FailedSendRevocation {
@@ -1306,4 +1338,33 @@ where
     unpack_into!(let (record_json) = row);
     serde_json::from_str(&column_as_string!(&record_json))
         .map_err(|error| Error::Internal(format!("Invalid federation {label} JSON: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::direct_transition_allowed;
+    use cdk_common::federation::FederationBarkSemanticPhase as Phase;
+
+    #[test]
+    fn maintenance_projection_allows_only_the_frozen_lifecycle() {
+        for (previous, next) in [
+            (Phase::RefreshPlanned, Phase::RefreshCompleted),
+            (Phase::RefreshPlanned, Phase::ExitPlanned),
+            (Phase::ExitPlanned, Phase::ExitRegistered),
+            (Phase::ExitRegistered, Phase::ExitPublished),
+            (Phase::ExitPublished, Phase::ExitConfirmed),
+        ] {
+            assert!(direct_transition_allowed(previous, next));
+        }
+
+        for (previous, next) in [
+            (Phase::RefreshPlanned, Phase::ExitRegistered),
+            (Phase::ExitPlanned, Phase::ExitPublished),
+            (Phase::ExitRegistered, Phase::ExitConfirmed),
+            (Phase::ExitPublished, Phase::RefreshCompleted),
+            (Phase::ExitConfirmed, Phase::ExitPlanned),
+        ] {
+            assert!(!direct_transition_allowed(previous, next));
+        }
+    }
 }

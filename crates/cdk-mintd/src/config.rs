@@ -1252,7 +1252,7 @@ pub struct Federation {
 }
 
 /// Member-local Bark networking, storage, and secret configuration.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg(feature = "federation-bark")]
 #[serde(deny_unknown_fields)]
 pub struct FederationBarkWallet {
@@ -1290,6 +1290,38 @@ pub struct FederationBarkWallet {
     /// Permit initialization of a fresh Bark projection database.
     #[serde(default)]
     pub create_if_missing: bool,
+    /// Automatically propose and execute refresh rounds at the accepted margin.
+    #[serde(default = "default_true")]
+    pub automatic_refresh: bool,
+    /// Automatically escalate overdue refreshes into the federated BDK wallet.
+    #[serde(default)]
+    pub automatic_emergency_exit: bool,
+}
+
+#[cfg(feature = "federation-bark")]
+impl Default for FederationBarkWallet {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            network: None,
+            ark_server_public_key: None,
+            server_address: None,
+            server_access_token: None,
+            esplora_url: None,
+            bitcoind_address: None,
+            bitcoind_cookiefile: None,
+            bitcoind_user: None,
+            bitcoind_password: None,
+            data_directory: None,
+            receive_secret_database_path: None,
+            frost_protocol_storage_root: None,
+            operational_seed_hex: None,
+            receive_secret_key_hex: None,
+            create_if_missing: false,
+            automatic_refresh: true,
+            automatic_emergency_exit: false,
+        }
+    }
 }
 
 #[cfg(feature = "federation-bark")]
@@ -1313,6 +1345,8 @@ impl fmt::Debug for FederationBarkWallet {
             .field("operational_seed_hex", &"<redacted>")
             .field("receive_secret_key_hex", &"<redacted>")
             .field("create_if_missing", &self.create_if_missing)
+            .field("automatic_refresh", &self.automatic_refresh)
+            .field("automatic_emergency_exit", &self.automatic_emergency_exit)
             .finish()
     }
 }
@@ -3262,4 +3296,19 @@ fn federation_config_rejects_removed_consensus_backend() {
         .expect_err("removed consensus backend must fail closed");
 
     assert!(err.to_string().contains("consensus_backend"));
+}
+
+#[cfg(feature = "federation-bark")]
+#[test]
+fn federated_bark_maintenance_defaults_to_refresh_without_exit() {
+    let configured = serde_json::from_value::<FederationBarkWallet>(serde_json::json!({
+        "enabled": true
+    }))
+    .expect("minimal Bark member config");
+    assert!(configured.automatic_refresh);
+    assert!(!configured.automatic_emergency_exit);
+
+    let defaulted = FederationBarkWallet::default();
+    assert!(defaulted.automatic_refresh);
+    assert!(!defaulted.automatic_emergency_exit);
 }

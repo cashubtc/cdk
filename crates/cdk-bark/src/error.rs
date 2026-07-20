@@ -136,6 +136,18 @@ pub enum Error {
     /// Accepted outgoing evidence could not be validated or replayed.
     #[error("federated Bark send reconciliation failed")]
     SendReconciliationFailed,
+    /// Exact refresh or emergency-exit planning failed closed.
+    #[error("federated Bark maintenance plan is invalid")]
+    MaintenancePlanInvalid,
+    /// An accepted maintenance plan could not be materialized locally.
+    #[error("federated Bark maintenance projection failed")]
+    MaintenanceProjectionFailed,
+    /// The accepted refresh or exit action could not be executed safely.
+    #[error("federated Bark maintenance execution failed")]
+    MaintenanceExecutionFailed,
+    /// Accepted maintenance evidence could not be validated or replayed.
+    #[error("federated Bark maintenance reconciliation failed")]
+    MaintenanceReconciliationFailed,
     /// An accepted incoming claim could not be executed or recovered.
     #[error("federated Bark receive claim requires recovery")]
     ReceiveClaimRecoveryRequired,

@@ -38,6 +38,8 @@ pub(crate) mod bark_custody;
 #[cfg(feature = "federation-bark")]
 pub(crate) mod bark_incoming;
 #[cfg(feature = "federation-bark")]
+pub(crate) mod bark_maintenance;
+#[cfg(feature = "federation-bark")]
 mod bark_outgoing;
 #[cfg(feature = "federation-bark")]
 mod bark_secret;

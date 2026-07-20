@@ -10,20 +10,27 @@ use bark::ark::mailbox::MailboxIdentifier;
 use bark::ark::ProtocolEncoding;
 use bark::custody::{KeySourceDescriptor, KeySourceKind, VtxoCustody, VtxoKeyLocator};
 use bark::federation::{
-    FederationActionId, FederationLightningReceiveClaimExecution,
-    FederationLightningReceiveClaimPlan, FederationLightningReceiveIntent,
-    FederationLightningReceivePhase, FederationLightningReceivePlan,
-    FederationLightningReceiveStatus, FederationLightningSendCandidate,
-    FederationLightningSendHtlcEvidence, FederationLightningSendPlan,
-    FederationLightningSendRevocationEvidence, FederationLightningSendRevocationPlan,
-    FederationLightningSendStatus, FederationRequestCommitment, FederationSendInput,
-    FederationVtxoImport, FederationVtxoState as BarkFederationVtxoState, FederationWallet,
+    FederationActionId, FederationExitEvidence, FederationExitPhase, FederationExitPlan,
+    FederationLightningReceiveClaimExecution, FederationLightningReceiveClaimPlan,
+    FederationLightningReceiveIntent, FederationLightningReceivePhase,
+    FederationLightningReceivePlan, FederationLightningReceiveStatus,
+    FederationLightningSendCandidate, FederationLightningSendHtlcEvidence,
+    FederationLightningSendPlan, FederationLightningSendRevocationEvidence,
+    FederationLightningSendRevocationPlan, FederationLightningSendStatus,
+    FederationMaintenanceInput, FederationRefreshEvidence, FederationRefreshExecution,
+    FederationRefreshPlan, FederationRequestCommitment, FederationSendInput, FederationVtxoImport,
+    FederationVtxoState as BarkFederationVtxoState, FederationWallet,
 };
 use bark::{OpenWalletArgs, Wallet, WalletProperties};
+use bitcoin::consensus::{
+    deserialize as deserialize_transaction, serialize as serialize_transaction,
+};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::{FeeRate, ScriptBuf, Transaction};
 use cdk_common::federation::{
-    ark_server_commitment, federation_bark_receive_request_hash, FederationBarkActionKind,
+    ark_server_commitment, federation_bark_exit_allocation_quote,
+    federation_bark_receive_request_hash, FederationAllocatedAddressRef, FederationBarkActionKind,
     FederationBarkActionPlan, FederationBarkActionTransition, FederationBarkArtifact,
     FederationBarkArtifactKind, FederationBarkDigest, FederationBarkExternalId,
     FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
@@ -32,8 +39,8 @@ use cdk_common::federation::{
     FederationBarkVtxoId, FederationBarkVtxoInput, FederationBarkVtxoLocator,
     FederationBarkVtxoOutput, FederationBarkVtxoState, FederationBarkVtxoTransition,
     FederationConfig, FederationJournalEntry, FederationOperation, FederationOperationId,
-    FederationOperationStatus, MemberId, FEDERATION_BARK_OPERATION_VERSION,
-    FEDERATION_MAX_DERIVATION_INDEX,
+    FederationOperationStatus, MemberId, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
+    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::{CurrencyUnit, MeltQuoteState};
@@ -43,8 +50,8 @@ use tokio::sync::RwLock;
 
 use crate::{
     CdkFrostVtxoCustody, Error, FederatedBarkCustodyClient, FederatedBarkLimits,
-    FederatedBarkLocalConfig, FederatedBarkReceiveSecretStore, FederatedBarkScope,
-    ValidatedFederatedBarkConfig,
+    FederatedBarkLocalConfig, FederatedBarkMaintenanceControls, FederatedBarkReceiveSecretStore,
+    FederatedBarkScope, ValidatedFederatedBarkConfig,
 };
 
 /// Whether member-local Bark state can serve an accepted frontier.
@@ -127,6 +134,24 @@ pub struct FederatedBarkSendProposal {
     pub attempt: u32,
 }
 
+/// Result of driving one already accepted refresh plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FederatedBarkRefreshOutcome {
+    /// The Ark round remains unconfirmed and must be retried by the same plan.
+    Pending,
+    /// Exact confirmed replacement value ready for consensus admission.
+    Completed(Box<FederationBarkActionTransition>),
+}
+
+/// Result of driving one already accepted emergency-exit plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FederatedBarkExitOutcome {
+    /// Registration or publication is still pending.
+    Pending,
+    /// Exact final-drain publication ready for consensus admission.
+    Published(Box<FederationBarkActionTransition>),
+}
+
 /// Exact cryptographic claim result retained between the two ordered result
 /// transitions. Fields remain private so callers cannot forge terminal value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +180,7 @@ pub struct FederatedBarkRuntime {
     member_id: MemberId,
     federation: FederationConfig,
     limits: FederatedBarkLimits,
+    maintenance: FederatedBarkMaintenanceControls,
     wallet: FederationWallet,
     custody: Arc<CdkFrostVtxoCustody>,
     receive_secrets: Arc<FederatedBarkReceiveSecretStore>,
@@ -203,6 +229,7 @@ impl FederatedBarkRuntime {
         let expected_descriptor = custody.descriptor();
         let expected_server = validated.ark_server_public_key();
         let limits = local.limits;
+        let maintenance = local.maintenance;
         let wallet = Wallet::open_with_custody(
             validated.network(),
             local.operational_seed,
@@ -270,6 +297,7 @@ impl FederatedBarkRuntime {
             member_id,
             federation: federation.clone(),
             limits,
+            maintenance,
             wallet,
             custody,
             receive_secrets,
@@ -290,6 +318,12 @@ impl FederatedBarkRuntime {
     #[must_use]
     pub const fn limits(&self) -> FederatedBarkLimits {
         self.limits
+    }
+
+    /// Member-local automation switches; consensus safety bounds remain fixed.
+    #[must_use]
+    pub const fn maintenance_controls(&self) -> FederatedBarkMaintenanceControls {
+        self.maintenance
     }
 
     /// Accepted Bitcoin network for all Bark invoices and VTXOs.
@@ -1157,6 +1191,873 @@ impl FederatedBarkRuntime {
         })
     }
 
+    /// Build the deterministic earliest-expiry refresh plan once the local
+    /// chain tip reaches its accepted refresh margin.
+    pub async fn propose_refresh(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+    ) -> Result<Option<FederationBarkActionPlan>, Error> {
+        let minimum_expiry = match projection
+            .vtxos
+            .iter()
+            .filter(|record| record.state == FederationBarkVtxoState::Spendable)
+            .map(|record| record.expiry_height)
+            .min()
+        {
+            Some(expiry) => expiry,
+            None => return Ok(None),
+        };
+        let mut records = projection
+            .vtxos
+            .iter()
+            .filter(|record| {
+                record.state == FederationBarkVtxoState::Spendable
+                    && record.expiry_height == minimum_expiry
+            })
+            .collect::<Vec<_>>();
+        records.sort_by_key(|record| record.vtxo_id);
+        let predecessor_operation_id = records
+            .first()
+            .ok_or(Error::MaintenancePlanInvalid)?
+            .latest_operation_id;
+        let application = self.bark_application();
+        let trigger_height = minimum_expiry
+            .checked_sub(application.policy.refresh_before_expiry_blocks)
+            .filter(|height| *height != 0)
+            .ok_or(Error::MaintenancePlanInvalid)?;
+        let emergency_height = minimum_expiry
+            .checked_sub(application.policy.emergency_exit_before_expiry_blocks)
+            .filter(|height| *height > trigger_height)
+            .ok_or(Error::MaintenancePlanInvalid)?;
+        let action_id = cdk_common::federation::FederationBarkActionId::derive(
+            self.scope.federation_id(),
+            predecessor_operation_id,
+            FederationBarkSemanticPhase::RefreshPlanned,
+            0,
+        )
+        .map_err(|_| Error::MaintenancePlanInvalid)?;
+        let bark_action_id = FederationActionId::from_bytes(action_id.to_bytes())
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        let output_index = next_locator_index(projection)?;
+        let output_locator = FederationBarkVtxoLocator::vtxo_custody(output_index);
+        let output_key = self
+            .custody
+            .derive_public_key(VtxoKeyLocator {
+                index: output_locator.index,
+            })
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        let bark_inputs = self.maintenance_inputs_from_records(&records)?;
+        let preview = self
+            .wallet
+            .plan_refresh(
+                bark_action_id,
+                FederationRequestCommitment::from_bytes([1; 32])
+                    .map_err(|_| Error::MaintenancePlanInvalid)?,
+                bark_inputs,
+                output_key.locator,
+                trigger_height,
+                emergency_height,
+                1,
+            )
+            .await
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        let observation = self
+            .wallet
+            .observe_refresh_expiry(&preview)
+            .await
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        if observation.tip_height < trigger_height {
+            return Ok(None);
+        }
+        let inputs = records
+            .iter()
+            .map(|record| FederationBarkVtxoInput {
+                vtxo_id: record.vtxo_id,
+                locator: record.locator,
+                amount: record.amount,
+            })
+            .collect::<Vec<_>>();
+        let input_amount = cdk_common::Amount::from(preview.input_amount.to_sat());
+        let fee = cdk_common::Amount::from(preview.fee.to_sat());
+        let fee_bound = application
+            .policy
+            .maximum_outgoing_fee(input_amount)
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        if fee > fee_bound {
+            return Err(Error::MaintenancePlanInvalid);
+        }
+        let actor = self
+            .federation
+            .members
+            .keys()
+            .next()
+            .copied()
+            .ok_or(Error::MaintenancePlanInvalid)?;
+        let signer_set = self
+            .federation
+            .members
+            .keys()
+            .copied()
+            .take(usize::from(application.threshold))
+            .collect::<Vec<_>>();
+        let mut plan = FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: None,
+            kind: FederationBarkActionKind::Refresh,
+            actor,
+            predecessor_operation_id,
+            payment_hash: None,
+            inputs,
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: output_locator,
+                amount: cdk_common::Amount::from(preview.output_amount.to_sat()),
+                artifact_hash: FederationBarkDigest::from_bytes([1; 32])
+                    .map_err(|_| Error::MaintenancePlanInvalid)?,
+            }],
+            revocation_locator: None,
+            external_amount: cdk_common::Amount::ZERO,
+            fee_amount: fee,
+            fee_bound,
+            artifacts: Vec::new(),
+            external_id: FederationBarkExternalId::derive_refresh(
+                action_id,
+                predecessor_operation_id,
+                1,
+            )
+            .map_err(|_| Error::MaintenancePlanInvalid)?,
+            signer_set,
+            attempt: 1,
+            expires_at: u64::from(emergency_height),
+        };
+        plan.bind_refresh_artifacts(
+            trigger_height,
+            minimum_expiry,
+            records.iter().map(|record| record.artifact.clone()),
+        )
+        .map_err(|_| Error::MaintenancePlanInvalid)?;
+        FederationBarkOperation::ActionPlan(plan.clone())
+            .validate()
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        Ok(Some(plan))
+    }
+
+    /// Report that this member's chain view has crossed an accepted refresh or
+    /// exit trigger. The exact plan commitment is the quorum result hash.
+    pub async fn observe_maintenance_trigger(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        plan_entry: &FederationJournalEntry,
+        observation_epoch: u64,
+    ) -> Result<Option<FederationBarkMemberObservation>, Error> {
+        if observation_epoch == 0 {
+            return Err(Error::MaintenanceReconciliationFailed);
+        }
+        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+            &plan_entry.envelope.operation
+        else {
+            return Err(Error::MaintenancePlanInvalid);
+        };
+        let (tip_height, trigger_height, amount) = match plan.kind {
+            FederationBarkActionKind::Refresh => {
+                let bark_plan = self.bark_refresh_plan(projection, plan)?;
+                let observation = self
+                    .wallet
+                    .observe_refresh_expiry(&bark_plan)
+                    .await
+                    .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+                let amount =
+                    plan.inputs
+                        .iter()
+                        .try_fold(cdk_common::Amount::ZERO, |sum, input| {
+                            sum.checked_add(input.amount)
+                                .ok_or(Error::MaintenanceReconciliationFailed)
+                        })?;
+                (observation.tip_height, observation.trigger_height, amount)
+            }
+            FederationBarkActionKind::EmergencyExit => {
+                let bark_plan = self.bark_exit_plan(projection, plan)?;
+                let observation = self
+                    .wallet
+                    .observe_exit_expiry(&bark_plan)
+                    .await
+                    .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+                (
+                    observation.tip_height,
+                    observation.trigger_height,
+                    plan.external_amount,
+                )
+            }
+            _ => return Err(Error::MaintenancePlanInvalid),
+        };
+        if tip_height < trigger_height {
+            return Ok(None);
+        }
+        let commitment = FederationBarkOperation::ActionPlan(plan.clone())
+            .commitment()
+            .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+        Ok(Some(FederationBarkMemberObservation {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: plan.action_id,
+            quote: None,
+            observer: self.member_id,
+            observation_epoch,
+            source_scope: ark_server_commitment(&self.bark_application().ark_server_public_key)
+                .map_err(|_| Error::MaintenanceReconciliationFailed)?,
+            payment_hash: None,
+            status: FederationBarkObservationStatus::Accepted,
+            amount,
+            fee: plan.fee_amount,
+            result_hash: commitment,
+        }))
+    }
+
+    /// Return whether an accepted refresh has crossed its immutable emergency
+    /// escalation height in this member's chain view.
+    pub async fn emergency_exit_due(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        refresh_plan_entry: &FederationJournalEntry,
+    ) -> Result<bool, Error> {
+        let plan =
+            accepted_maintenance_plan(refresh_plan_entry, FederationBarkActionKind::Refresh)?;
+        let bark_plan = self.bark_refresh_plan(projection, plan)?;
+        let observation = self
+            .wallet
+            .observe_refresh_expiry(&bark_plan)
+            .await
+            .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+        Ok(observation.tip_height >= observation.emergency_height)
+    }
+
+    /// Apply or replay an accepted refresh plan without entering a round.
+    pub async fn apply_refresh_plan(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<(), Error> {
+        let bark_plan = self.bark_refresh_plan(projection, plan)?;
+        for input in &bark_plan.inputs {
+            self.wallet
+                .import_vtxo(&FederationVtxoImport {
+                    locator: input.locator,
+                    vtxo: input.vtxo.clone(),
+                    state: BarkFederationVtxoState::Spendable,
+                })
+                .await
+                .map_err(|_| Error::MaintenanceProjectionFailed)?;
+        }
+        self.wallet
+            .apply_refresh_plan(&bark_plan)
+            .await
+            .map_err(|_| Error::MaintenanceProjectionFailed)?;
+        Ok(())
+    }
+
+    /// Execute only the exact accepted refresh round.
+    pub async fn execute_refresh(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        accepted_plan: &FederationJournalEntry,
+    ) -> Result<FederatedBarkRefreshOutcome, Error> {
+        let plan = accepted_maintenance_plan(accepted_plan, FederationBarkActionKind::Refresh)?;
+        if plan.actor != self.member_id {
+            return Err(Error::MaintenanceExecutionFailed);
+        }
+        self.apply_refresh_plan(projection, plan).await?;
+        let bark_plan = self.bark_refresh_plan(projection, plan)?;
+        let operation = FederationBarkOperation::ActionPlan(plan.clone());
+        let commitment = operation
+            .commitment()
+            .map_err(|_| Error::MaintenanceExecutionFailed)?;
+        self.custody
+            .activate_refresh(accepted_plan.clone(), commitment.to_bytes().to_vec())
+            .map_err(|_| Error::MaintenanceExecutionFailed)?;
+        let execution = self.wallet.execute_refresh(&bark_plan).await;
+        self.custody.deactivate_refresh();
+        match execution.map_err(|_| Error::MaintenanceExecutionFailed)? {
+            FederationRefreshExecution::Pending { .. } => Ok(FederatedBarkRefreshOutcome::Pending),
+            FederationRefreshExecution::Completed(evidence) => {
+                let transition = refresh_completed_transition(
+                    self.member_id,
+                    accepted_plan,
+                    plan,
+                    projection,
+                    &evidence,
+                    commitment,
+                )?;
+                Ok(FederatedBarkRefreshOutcome::Completed(Box::new(transition)))
+            }
+        }
+    }
+
+    /// Apply a consensus-accepted confirmed refresh result locally.
+    pub async fn apply_refresh_completed(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        plan_entry: &FederationJournalEntry,
+        completed_entry: &FederationJournalEntry,
+    ) -> Result<(), Error> {
+        let plan = accepted_maintenance_plan(plan_entry, FederationBarkActionKind::Refresh)?;
+        let transition = accepted_send_transition(
+            completed_entry,
+            FederationBarkSemanticPhase::RefreshCompleted,
+        )?;
+        validate_maintenance_transition_binding(plan_entry, plan, transition)?;
+        let bark_plan = self.bark_refresh_plan(projection, plan)?;
+        let evidence = refresh_evidence_from_transition(plan, transition)?;
+        self.wallet
+            .apply_refresh_result(&bark_plan, &evidence)
+            .await
+            .map_err(|_| Error::MaintenanceReconciliationFailed)
+    }
+
+    fn bark_refresh_plan(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<FederationRefreshPlan, Error> {
+        FederationBarkOperation::ActionPlan(plan.clone())
+            .validate()
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        if plan.kind != FederationBarkActionKind::Refresh || plan.outputs.len() != 1 {
+            return Err(Error::MaintenancePlanInvalid);
+        }
+        let request = plan
+            .refresh_request()
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        let mut records = Vec::with_capacity(plan.inputs.len());
+        for input in &plan.inputs {
+            let record = projection
+                .vtxos
+                .iter()
+                .find(|record| record.vtxo_id == input.vtxo_id)
+                .ok_or(Error::MaintenancePlanInvalid)?;
+            if record.locator != input.locator
+                || record.amount != input.amount
+                || !matches!(
+                    record.state,
+                    FederationBarkVtxoState::Spendable
+                        | FederationBarkVtxoState::Reserved
+                        | FederationBarkVtxoState::Spent
+                )
+                || (record.state == FederationBarkVtxoState::Reserved
+                    && record.reservation_action_id != Some(plan.action_id))
+            {
+                return Err(Error::MaintenancePlanInvalid);
+            }
+            records.push(record);
+        }
+        records.sort_by_key(|record| record.vtxo_id);
+        let inputs = self.maintenance_inputs_from_records(&records)?;
+        let output = plan.outputs.first().ok_or(Error::MaintenancePlanInvalid)?;
+        let output_key = self
+            .custody
+            .derive_public_key(VtxoKeyLocator {
+                index: output.locator.index,
+            })
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        let commitment = FederationBarkOperation::ActionPlan(plan.clone())
+            .commitment()
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        Ok(FederationRefreshPlan {
+            action_id: FederationActionId::from_bytes(plan.action_id.to_bytes())
+                .map_err(|_| Error::MaintenancePlanInvalid)?,
+            request_commitment: FederationRequestCommitment::from_bytes(commitment.to_bytes())
+                .map_err(|_| Error::MaintenancePlanInvalid)?,
+            inputs,
+            input_amount: bitcoin::Amount::from_sat(
+                plan.inputs
+                    .iter()
+                    .map(|input| u64::from(input.amount))
+                    .try_fold(0_u64, u64::checked_add)
+                    .ok_or(Error::MaintenancePlanInvalid)?,
+            ),
+            output_key,
+            output_amount: bitcoin::Amount::from_sat(u64::from(output.amount)),
+            fee: bitcoin::Amount::from_sat(u64::from(plan.fee_amount)),
+            trigger_height: request.trigger_height,
+            emergency_height: request.emergency_height,
+            minimum_expiry: request.minimum_expiry,
+            custody_attempt: plan.attempt,
+        })
+    }
+
+    /// Escalate one accepted refresh reservation into an exact federated BDK
+    /// emergency-exit plan. No exit registration or signing occurs here.
+    pub fn propose_emergency_exit(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        refresh_plan_entry: &FederationJournalEntry,
+        destination: FederationAllocatedAddressRef,
+        destination_script: Vec<u8>,
+        minimum_confirmations: u32,
+    ) -> Result<FederationBarkActionPlan, Error> {
+        let refresh =
+            accepted_maintenance_plan(refresh_plan_entry, FederationBarkActionKind::Refresh)?;
+        if destination.quote != federation_bark_exit_allocation_quote(refresh.action_id)
+            || minimum_confirmations == 0
+        {
+            return Err(Error::MaintenancePlanInvalid);
+        }
+        let mut records = Vec::with_capacity(refresh.inputs.len());
+        for input in &refresh.inputs {
+            let record = projection
+                .vtxos
+                .iter()
+                .find(|record| record.vtxo_id == input.vtxo_id)
+                .ok_or(Error::MaintenancePlanInvalid)?;
+            if record.state != FederationBarkVtxoState::Reserved
+                || record.reservation_action_id != Some(refresh.action_id)
+                || record.locator != input.locator
+                || record.amount != input.amount
+            {
+                return Err(Error::MaintenancePlanInvalid);
+            }
+            records.push(record);
+        }
+        records.sort_by_key(|record| record.vtxo_id);
+        let bark_inputs = self.maintenance_inputs_from_records(&records)?;
+        let input_amount =
+            refresh
+                .inputs
+                .iter()
+                .try_fold(cdk_common::Amount::ZERO, |sum, input| {
+                    sum.checked_add(input.amount)
+                        .ok_or(Error::MaintenancePlanInvalid)
+                })?;
+        let fee_bound = self
+            .bark_application()
+            .policy
+            .maximum_outgoing_fee(input_amount)
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        let minimum_recovered = input_amount
+            .checked_sub(fee_bound)
+            .ok_or(Error::MaintenancePlanInvalid)?;
+        let minimum_expiry = records
+            .iter()
+            .map(|record| record.expiry_height)
+            .min()
+            .ok_or(Error::MaintenancePlanInvalid)?;
+        let trigger_height = minimum_expiry
+            .checked_sub(
+                self.bark_application()
+                    .policy
+                    .emergency_exit_before_expiry_blocks,
+            )
+            .filter(|height| *height != 0)
+            .ok_or(Error::MaintenancePlanInvalid)?;
+        let fee_rate = FeeRate::from_sat_per_kwu(FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU);
+        let bark_plan = self
+            .wallet
+            .plan_exit(
+                FederationActionId::from_bytes(refresh.action_id.to_bytes())
+                    .map_err(|_| Error::MaintenancePlanInvalid)?,
+                FederationRequestCommitment::from_bytes([1; 32])
+                    .map_err(|_| Error::MaintenancePlanInvalid)?,
+                bark_inputs.clone(),
+                ScriptBuf::from_bytes(destination_script.clone()),
+                fee_rate,
+                bitcoin::Amount::from_sat(u64::from(fee_bound)),
+                trigger_height,
+                minimum_confirmations,
+                refresh.attempt,
+            )
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        if bark_plan.minimum_recovered.to_sat() != u64::from(minimum_recovered)
+            || bark_plan.minimum_expiry != minimum_expiry
+        {
+            return Err(Error::MaintenancePlanInvalid);
+        }
+        let mut exit_transactions = Vec::new();
+        for input in &bark_inputs {
+            exit_transactions.extend(
+                input
+                    .vtxo
+                    .transactions()
+                    .map(|transaction| serialize_transaction(&transaction.tx)),
+            );
+        }
+        let mut plan = FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: refresh.action_id,
+            quote: None,
+            kind: FederationBarkActionKind::EmergencyExit,
+            actor: refresh.actor,
+            predecessor_operation_id: refresh_plan_entry.operation_id,
+            payment_hash: None,
+            inputs: refresh.inputs.clone(),
+            outputs: Vec::new(),
+            revocation_locator: None,
+            external_amount: minimum_recovered,
+            fee_amount: fee_bound,
+            fee_bound,
+            artifacts: Vec::new(),
+            external_id: FederationBarkExternalId::derive_emergency_exit(
+                refresh.action_id,
+                refresh_plan_entry.operation_id,
+                refresh.attempt,
+            )
+            .map_err(|_| Error::MaintenancePlanInvalid)?,
+            signer_set: refresh.signer_set.clone(),
+            attempt: refresh.attempt,
+            expires_at: u64::from(minimum_expiry),
+        };
+        plan.bind_emergency_exit_artifacts(
+            destination,
+            destination_script,
+            self.network(),
+            FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
+            trigger_height,
+            minimum_confirmations,
+            records.iter().map(|record| record.artifact.clone()),
+            exit_transactions,
+        )
+        .map_err(|_| Error::MaintenancePlanInvalid)?;
+        FederationBarkOperation::ActionPlan(plan.clone())
+            .validate()
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        Ok(plan)
+    }
+
+    /// Apply or replay an accepted emergency-exit plan without registration,
+    /// signing, or publication.
+    pub async fn apply_emergency_exit_plan(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<(), Error> {
+        let bark_plan = self.bark_exit_plan(projection, plan)?;
+        for input in &bark_plan.inputs {
+            self.wallet
+                .import_vtxo(&FederationVtxoImport {
+                    locator: input.locator,
+                    vtxo: input.vtxo.clone(),
+                    state: BarkFederationVtxoState::Spendable,
+                })
+                .await
+                .map_err(|_| Error::MaintenanceProjectionFailed)?;
+        }
+        self.wallet
+            .apply_exit_plan(&bark_plan)
+            .await
+            .map_err(|_| Error::MaintenanceProjectionFailed)?;
+        Ok(())
+    }
+
+    /// Register the exact VTXOs from an accepted emergency-exit plan.
+    pub async fn register_emergency_exit(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        accepted_plan: &FederationJournalEntry,
+    ) -> Result<FederationBarkActionTransition, Error> {
+        let plan =
+            accepted_maintenance_plan(accepted_plan, FederationBarkActionKind::EmergencyExit)?;
+        if plan.actor != self.member_id {
+            return Err(Error::MaintenanceExecutionFailed);
+        }
+        self.apply_emergency_exit_plan(projection, plan).await?;
+        let bark_plan = self.bark_exit_plan(projection, plan)?;
+        let mut evidence = self
+            .wallet
+            .register_exit(&bark_plan)
+            .await
+            .map_err(|_| Error::MaintenanceExecutionFailed)?;
+        if !matches!(
+            evidence.phase,
+            FederationExitPhase::Registered
+                | FederationExitPhase::Published
+                | FederationExitPhase::Claimable
+                | FederationExitPhase::DrainPublished
+                | FederationExitPhase::Confirmed
+        ) {
+            return Err(Error::MaintenanceExecutionFailed);
+        }
+        evidence.phase = FederationExitPhase::Registered;
+        evidence.drain_transaction = None;
+        evidence.confirmed_in = None;
+        exit_transition(
+            self.member_id,
+            accepted_plan,
+            accepted_plan.operation_id,
+            plan,
+            projection,
+            &evidence,
+            FederationBarkSemanticPhase::ExitRegistered,
+        )
+    }
+
+    /// Replay an accepted exit registration into member-local tracking without
+    /// progressing or publishing any transaction.
+    pub async fn apply_emergency_exit_registered(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        plan_entry: &FederationJournalEntry,
+        registered_entry: &FederationJournalEntry,
+    ) -> Result<(), Error> {
+        let plan = accepted_maintenance_plan(plan_entry, FederationBarkActionKind::EmergencyExit)?;
+        let registered = accepted_send_transition(
+            registered_entry,
+            FederationBarkSemanticPhase::ExitRegistered,
+        )?;
+        validate_maintenance_transition_binding(plan_entry, plan, registered)?;
+        self.apply_emergency_exit_plan(projection, plan).await?;
+        let bark_plan = self.bark_exit_plan(projection, plan)?;
+        self.wallet
+            .register_exit(&bark_plan)
+            .await
+            .map_err(|_| Error::MaintenanceProjectionFailed)?;
+        Ok(())
+    }
+
+    /// Progress an accepted registered exit and publish its deterministic
+    /// final drain once every exact input is claimable.
+    pub async fn publish_emergency_exit(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        accepted_plan: &FederationJournalEntry,
+        registered_entry: &FederationJournalEntry,
+    ) -> Result<FederatedBarkExitOutcome, Error> {
+        let plan =
+            accepted_maintenance_plan(accepted_plan, FederationBarkActionKind::EmergencyExit)?;
+        if plan.actor != self.member_id {
+            return Err(Error::MaintenanceExecutionFailed);
+        }
+        let registered = accepted_send_transition(
+            registered_entry,
+            FederationBarkSemanticPhase::ExitRegistered,
+        )?;
+        validate_maintenance_transition_binding(accepted_plan, plan, registered)?;
+        self.apply_emergency_exit_registered(projection, accepted_plan, registered_entry)
+            .await?;
+        let bark_plan = self.bark_exit_plan(projection, plan)?;
+        self.custody
+            .activate_exit(
+                accepted_plan.clone(),
+                registered.request_hash.to_bytes().to_vec(),
+            )
+            .map_err(|_| Error::MaintenanceExecutionFailed)?;
+        let result = async {
+            let evidence = self.wallet.progress_exit(&bark_plan).await?;
+            match evidence.phase {
+                FederationExitPhase::Claimable
+                | FederationExitPhase::DrainPublished
+                | FederationExitPhase::Confirmed => {
+                    let drain = self.wallet.build_exit_drain(&bark_plan).await?;
+                    self.wallet.publish_exit_drain(&bark_plan, &drain).await
+                }
+                FederationExitPhase::Planned
+                | FederationExitPhase::Registered
+                | FederationExitPhase::Published => Ok(evidence),
+            }
+        }
+        .await;
+        self.custody.deactivate_exit();
+        let evidence = result.map_err(|_| Error::MaintenanceExecutionFailed)?;
+        if !matches!(
+            evidence.phase,
+            FederationExitPhase::DrainPublished | FederationExitPhase::Confirmed
+        ) {
+            return Ok(FederatedBarkExitOutcome::Pending);
+        }
+        let transition = exit_transition(
+            self.member_id,
+            accepted_plan,
+            registered_entry.operation_id,
+            plan,
+            projection,
+            &evidence,
+            FederationBarkSemanticPhase::ExitPublished,
+        )?;
+        Ok(FederatedBarkExitOutcome::Published(Box::new(transition)))
+    }
+
+    /// Observe confirmation of the exact accepted drain transaction.
+    pub async fn observe_emergency_exit_confirmation(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        plan_entry: &FederationJournalEntry,
+        registered_entry: &FederationJournalEntry,
+        published_entry: &FederationJournalEntry,
+        observation_epoch: u64,
+    ) -> Result<Option<FederationBarkMemberObservation>, Error> {
+        if observation_epoch == 0 {
+            return Err(Error::MaintenanceReconciliationFailed);
+        }
+        let plan = accepted_maintenance_plan(plan_entry, FederationBarkActionKind::EmergencyExit)?;
+        let published =
+            accepted_send_transition(published_entry, FederationBarkSemanticPhase::ExitPublished)?;
+        validate_maintenance_transition_binding(plan_entry, plan, published)?;
+        let accepted_evidence = exit_evidence_from_transition(plan, published)?;
+        let drain = accepted_evidence
+            .drain_transaction
+            .as_ref()
+            .ok_or(Error::MaintenanceReconciliationFailed)?;
+        self.apply_emergency_exit_registered(projection, plan_entry, registered_entry)
+            .await?;
+        let bark_plan = self.bark_exit_plan(projection, plan)?;
+        let evidence = self
+            .wallet
+            .observe_exit(&bark_plan, Some(drain))
+            .await
+            .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+        if evidence.phase != FederationExitPhase::Confirmed {
+            return Ok(None);
+        }
+        let result_hash = bark_digest(&exit_result_bytes(&evidence)?)?;
+        Ok(Some(FederationBarkMemberObservation {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: plan.action_id,
+            quote: None,
+            observer: self.member_id,
+            observation_epoch,
+            source_scope: ark_server_commitment(&self.bark_application().ark_server_public_key)
+                .map_err(|_| Error::MaintenanceReconciliationFailed)?,
+            payment_hash: None,
+            status: FederationBarkObservationStatus::Succeeded,
+            amount: plan.external_amount,
+            fee: plan.fee_amount,
+            result_hash,
+        }))
+    }
+
+    /// Build the terminal exit transition after confirmation observations have
+    /// reached consensus threshold.
+    pub async fn confirm_emergency_exit(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        plan_entry: &FederationJournalEntry,
+        registered_entry: &FederationJournalEntry,
+        published_entry: &FederationJournalEntry,
+    ) -> Result<Option<FederationBarkActionTransition>, Error> {
+        let plan = accepted_maintenance_plan(plan_entry, FederationBarkActionKind::EmergencyExit)?;
+        let published =
+            accepted_send_transition(published_entry, FederationBarkSemanticPhase::ExitPublished)?;
+        let accepted_evidence = exit_evidence_from_transition(plan, published)?;
+        let drain = accepted_evidence
+            .drain_transaction
+            .as_ref()
+            .ok_or(Error::MaintenanceReconciliationFailed)?;
+        self.apply_emergency_exit_registered(projection, plan_entry, registered_entry)
+            .await?;
+        let bark_plan = self.bark_exit_plan(projection, plan)?;
+        let evidence = self
+            .wallet
+            .observe_exit(&bark_plan, Some(drain))
+            .await
+            .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+        if evidence.phase != FederationExitPhase::Confirmed {
+            return Ok(None);
+        }
+        exit_transition(
+            self.member_id,
+            plan_entry,
+            published_entry.operation_id,
+            plan,
+            projection,
+            &evidence,
+            FederationBarkSemanticPhase::ExitConfirmed,
+        )
+        .map(Some)
+    }
+
+    fn bark_exit_plan(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<FederationExitPlan, Error> {
+        FederationBarkOperation::ActionPlan(plan.clone())
+            .validate()
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        if plan.kind != FederationBarkActionKind::EmergencyExit {
+            return Err(Error::MaintenancePlanInvalid);
+        }
+        let request = plan
+            .emergency_exit_request()
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        let mut records = Vec::with_capacity(plan.inputs.len());
+        for input in &plan.inputs {
+            let record = projection
+                .vtxos
+                .iter()
+                .find(|record| record.vtxo_id == input.vtxo_id)
+                .ok_or(Error::MaintenancePlanInvalid)?;
+            if record.locator != input.locator
+                || record.amount != input.amount
+                || !matches!(
+                    record.state,
+                    FederationBarkVtxoState::Reserved
+                        | FederationBarkVtxoState::Exiting
+                        | FederationBarkVtxoState::Exited
+                )
+                || record
+                    .reservation_action_id
+                    .is_some_and(|action| action != plan.action_id)
+            {
+                return Err(Error::MaintenancePlanInvalid);
+            }
+            records.push(record);
+        }
+        records.sort_by_key(|record| record.vtxo_id);
+        let inputs = self.maintenance_inputs_from_records(&records)?;
+        let commitment = FederationBarkOperation::ActionPlan(plan.clone())
+            .commitment()
+            .map_err(|_| Error::MaintenancePlanInvalid)?;
+        Ok(FederationExitPlan {
+            action_id: FederationActionId::from_bytes(plan.action_id.to_bytes())
+                .map_err(|_| Error::MaintenancePlanInvalid)?,
+            request_commitment: FederationRequestCommitment::from_bytes(commitment.to_bytes())
+                .map_err(|_| Error::MaintenancePlanInvalid)?,
+            inputs,
+            input_amount: bitcoin::Amount::from_sat(
+                plan.inputs
+                    .iter()
+                    .map(|input| u64::from(input.amount))
+                    .try_fold(0_u64, u64::checked_add)
+                    .ok_or(Error::MaintenancePlanInvalid)?,
+            ),
+            destination_script: ScriptBuf::from_bytes(request.destination_script),
+            network: request.network,
+            fee_rate: FeeRate::from_sat_per_kwu(request.fee_rate_sat_per_kwu),
+            fee_bound: bitcoin::Amount::from_sat(u64::from(request.fee_bound)),
+            minimum_recovered: bitcoin::Amount::from_sat(u64::from(request.minimum_recovered)),
+            trigger_height: request.trigger_height,
+            minimum_expiry: request.minimum_expiry,
+            minimum_confirmations: request.minimum_confirmations,
+            custody_attempt: plan.attempt,
+        })
+    }
+
+    fn maintenance_inputs_from_records(
+        &self,
+        records: &[&cdk_common::federation::FederationBarkVtxoRecord],
+    ) -> Result<Vec<FederationMaintenanceInput>, Error> {
+        records
+            .iter()
+            .map(|record| {
+                let vtxo = bark::ark::vtxo::Vtxo::<bark::ark::vtxo::Full>::deserialize(
+                    &record.artifact.bytes,
+                )
+                .map_err(|_| Error::MaintenancePlanInvalid)?;
+                if vtxo.serialize() != record.artifact.bytes
+                    || vtxo.id().to_bytes() != record.vtxo_id.to_bytes()
+                    || vtxo.amount().to_sat() != u64::from(record.amount)
+                    || vtxo.expiry_height() != record.expiry_height
+                    || vtxo.server_pubkey().serialize()
+                        != self.bark_application().ark_server_public_key
+                {
+                    return Err(Error::MaintenancePlanInvalid);
+                }
+                Ok(FederationMaintenanceInput {
+                    locator: VtxoKeyLocator {
+                        index: record.locator.index,
+                    },
+                    vtxo,
+                })
+            })
+            .collect()
+    }
+
     fn validate_send_quote<'a>(
         &self,
         quote: &'a MeltQuote,
@@ -1843,6 +2744,47 @@ fn accepted_revocation_plan(
     Ok(plan)
 }
 
+fn accepted_maintenance_plan(
+    entry: &FederationJournalEntry,
+    kind: FederationBarkActionKind,
+) -> Result<&FederationBarkActionPlan, Error> {
+    if entry.status() != FederationOperationStatus::Applied {
+        return Err(Error::MaintenanceReconciliationFailed);
+    }
+    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+        &entry.envelope.operation
+    else {
+        return Err(Error::MaintenanceReconciliationFailed);
+    };
+    if plan.kind != kind {
+        return Err(Error::MaintenanceReconciliationFailed);
+    }
+    Ok(plan)
+}
+
+fn validate_maintenance_transition_binding(
+    plan_entry: &FederationJournalEntry,
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<(), Error> {
+    let commitment = FederationBarkOperation::ActionPlan(plan.clone())
+        .commitment()
+        .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+    if transition.action_id != plan.action_id
+        || transition.quote.is_some()
+        || transition.plan_operation_id != plan_entry.operation_id
+        || transition.payment_hash.is_some()
+        || transition.actor != plan.actor
+        || transition.attempt != plan.attempt
+        || transition.signer_set != plan.signer_set
+        || transition.external_id != plan.external_id
+        || transition.request_hash != commitment
+    {
+        return Err(Error::MaintenanceReconciliationFailed);
+    }
+    Ok(())
+}
+
 fn accepted_send_transition(
     entry: &FederationJournalEntry,
     phase: FederationBarkSemanticPhase,
@@ -2450,6 +3392,504 @@ fn revocation_evidence_from_transition(
     })
 }
 
+fn refresh_completed_transition(
+    actor: MemberId,
+    accepted_plan: &FederationJournalEntry,
+    plan: &FederationBarkActionPlan,
+    projection: &FederationBarkProjectionSnapshot,
+    evidence: &FederationRefreshEvidence,
+    plan_commitment: FederationBarkDigest,
+) -> Result<FederationBarkActionTransition, Error> {
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    let evidence_inputs = evidence
+        .input_vtxo_ids
+        .iter()
+        .map(|vtxo_id| vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    if evidence.action_id.to_bytes() != plan.action_id.to_bytes()
+        || evidence.request_commitment.to_bytes() != plan_commitment.to_bytes()
+        || evidence_inputs != expected_inputs
+        || evidence.output_vtxos.is_empty()
+    {
+        return Err(Error::MaintenanceExecutionFailed);
+    }
+    let mut artifacts = Vec::new();
+    let mut transitions = Vec::new();
+    for input in &plan.inputs {
+        let record = projection
+            .vtxos
+            .iter()
+            .find(|record| record.vtxo_id == input.vtxo_id)
+            .ok_or(Error::MaintenanceExecutionFailed)?;
+        if record.state != FederationBarkVtxoState::Reserved
+            || record.reservation_action_id != Some(plan.action_id)
+            || record.locator != input.locator
+            || record.amount != input.amount
+        {
+            return Err(Error::MaintenanceExecutionFailed);
+        }
+        artifacts.push(record.artifact.clone());
+        transitions.push(FederationBarkVtxoTransition {
+            vtxo_id: input.vtxo_id,
+            locator: input.locator,
+            amount: input.amount,
+            expiry_height: record.expiry_height,
+            previous_state: Some(FederationBarkVtxoState::Reserved),
+            new_state: FederationBarkVtxoState::Spent,
+            artifact_hash: record.artifact.hash,
+        });
+    }
+    let output = plan
+        .outputs
+        .first()
+        .ok_or(Error::MaintenanceExecutionFailed)?;
+    let mut output_amount = cdk_common::Amount::ZERO;
+    for vtxo in &evidence.output_vtxos {
+        let encoded = vtxo.serialize();
+        let artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, encoded)?;
+        let amount = cdk_common::Amount::from(vtxo.amount().to_sat());
+        output_amount = output_amount
+            .checked_add(amount)
+            .ok_or(Error::MaintenanceExecutionFailed)?;
+        transitions.push(FederationBarkVtxoTransition {
+            vtxo_id: FederationBarkVtxoId::from_bytes(vtxo.id().to_bytes())
+                .map_err(|_| Error::MaintenanceExecutionFailed)?,
+            locator: output.locator,
+            amount,
+            expiry_height: vtxo.expiry_height(),
+            previous_state: None,
+            new_state: FederationBarkVtxoState::Spendable,
+            artifact_hash: artifact.hash,
+        });
+        artifacts.push(artifact);
+    }
+    if output_amount != output.amount {
+        return Err(Error::MaintenanceExecutionFailed);
+    }
+    let result = bark_artifact(
+        FederationBarkArtifactKind::ArkResult,
+        refresh_result_bytes(evidence)?,
+    )?;
+    let result_hash = result.hash;
+    artifacts.push(result);
+    artifacts.sort();
+    artifacts.dedup();
+    transitions.sort();
+    Ok(FederationBarkActionTransition {
+        version: FEDERATION_BARK_OPERATION_VERSION,
+        action_id: plan.action_id,
+        quote: None,
+        phase: FederationBarkSemanticPhase::RefreshCompleted,
+        actor,
+        plan_operation_id: accepted_plan.operation_id,
+        predecessor_operation_id: accepted_plan.operation_id,
+        payment_hash: None,
+        attempt: plan.attempt,
+        signer_set: plan.signer_set.clone(),
+        request_hash: plan_commitment,
+        result_hash,
+        external_id: plan.external_id,
+        artifacts,
+        vtxo_transitions: transitions,
+    })
+}
+
+fn refresh_result_bytes(evidence: &FederationRefreshEvidence) -> Result<Vec<u8>, Error> {
+    let mut bytes = b"cdk/bark/refresh-result/v1".to_vec();
+    bytes.extend_from_slice(&evidence.action_id.to_bytes());
+    bytes.extend_from_slice(&evidence.request_commitment.to_bytes());
+    bytes.extend_from_slice(
+        &u32::try_from(evidence.input_vtxo_ids.len())
+            .map_err(|_| Error::MaintenanceExecutionFailed)?
+            .to_be_bytes(),
+    );
+    for vtxo_id in &evidence.input_vtxo_ids {
+        bytes.extend_from_slice(&vtxo_id.to_bytes());
+    }
+    bytes.extend_from_slice(&evidence.funding_txid.to_byte_array());
+    bytes.extend_from_slice(
+        &u32::try_from(evidence.output_vtxos.len())
+            .map_err(|_| Error::MaintenanceExecutionFailed)?
+            .to_be_bytes(),
+    );
+    for vtxo in &evidence.output_vtxos {
+        append_bounded_bytes(&mut bytes, &vtxo.serialize())?;
+    }
+    Ok(bytes)
+}
+
+fn refresh_evidence_from_transition(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<FederationRefreshEvidence, Error> {
+    let result = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+        .collect::<Vec<_>>();
+    if result.len() != 1
+        || result[0].hash != transition.result_hash
+        || bark_digest(&result[0].bytes)? != result[0].hash
+    {
+        return Err(Error::MaintenanceReconciliationFailed);
+    }
+    let mut bytes = result[0].bytes.as_slice();
+    take_send_bytes(&mut bytes, b"cdk/bark/refresh-result/v1".len())
+        .filter(|domain| *domain == b"cdk/bark/refresh-result/v1")
+        .ok_or(Error::MaintenanceReconciliationFailed)?;
+    let action_id =
+        take_send_array::<32>(&mut bytes).map_err(|_| Error::MaintenanceReconciliationFailed)?;
+    let request_commitment =
+        take_send_array::<32>(&mut bytes).map_err(|_| Error::MaintenanceReconciliationFailed)?;
+    let input_count = u32::from_be_bytes(
+        take_send_array::<4>(&mut bytes).map_err(|_| Error::MaintenanceReconciliationFailed)?,
+    );
+    let input_vtxo_ids = (0..input_count)
+        .map(|_| {
+            let id = take_send_array::<36>(&mut bytes)
+                .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+            bark::ark::VtxoId::from_slice(&id).map_err(|_| Error::MaintenanceReconciliationFailed)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let funding_txid = bitcoin::Txid::from_byte_array(
+        take_send_array::<32>(&mut bytes).map_err(|_| Error::MaintenanceReconciliationFailed)?,
+    );
+    let output_count = u32::from_be_bytes(
+        take_send_array::<4>(&mut bytes).map_err(|_| Error::MaintenanceReconciliationFailed)?,
+    );
+    let output_vtxos = (0..output_count)
+        .map(|_| {
+            let encoded = take_send_bounded(&mut bytes)
+                .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+            bark::ark::vtxo::Vtxo::deserialize(encoded)
+                .map_err(|_| Error::MaintenanceReconciliationFailed)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let expected_commitment = FederationBarkOperation::ActionPlan(plan.clone())
+        .commitment()
+        .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    if !bytes.is_empty()
+        || action_id != plan.action_id.to_bytes()
+        || request_commitment != expected_commitment.to_bytes()
+        || input_vtxo_ids
+            .iter()
+            .map(|vtxo_id| vtxo_id.to_bytes())
+            .collect::<Vec<_>>()
+            != expected_inputs
+        || output_vtxos.is_empty()
+    {
+        return Err(Error::MaintenanceReconciliationFailed);
+    }
+    Ok(FederationRefreshEvidence {
+        action_id: FederationActionId::from_bytes(action_id)
+            .map_err(|_| Error::MaintenanceReconciliationFailed)?,
+        request_commitment: FederationRequestCommitment::from_bytes(request_commitment)
+            .map_err(|_| Error::MaintenanceReconciliationFailed)?,
+        input_vtxo_ids,
+        funding_txid,
+        output_vtxos,
+    })
+}
+
+fn exit_transition(
+    actor: MemberId,
+    plan_entry: &FederationJournalEntry,
+    predecessor_operation_id: FederationOperationId,
+    plan: &FederationBarkActionPlan,
+    projection: &FederationBarkProjectionSnapshot,
+    evidence: &FederationExitEvidence,
+    phase: FederationBarkSemanticPhase,
+) -> Result<FederationBarkActionTransition, Error> {
+    let plan_commitment = FederationBarkOperation::ActionPlan(plan.clone())
+        .commitment()
+        .map_err(|_| Error::MaintenanceExecutionFailed)?;
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    let evidence_inputs = evidence
+        .input_vtxo_ids
+        .iter()
+        .map(|vtxo_id| vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    let valid_phase = match phase {
+        FederationBarkSemanticPhase::ExitRegistered => {
+            evidence.phase == FederationExitPhase::Registered
+        }
+        FederationBarkSemanticPhase::ExitPublished => {
+            matches!(
+                evidence.phase,
+                FederationExitPhase::DrainPublished | FederationExitPhase::Confirmed
+            ) && evidence.drain_transaction.is_some()
+        }
+        FederationBarkSemanticPhase::ExitConfirmed => {
+            evidence.phase == FederationExitPhase::Confirmed
+                && evidence.drain_transaction.is_some()
+                && evidence.confirmed_in.is_some()
+        }
+        _ => false,
+    };
+    if !valid_phase
+        || evidence.action_id.to_bytes() != plan.action_id.to_bytes()
+        || evidence.request_commitment.to_bytes() != plan_commitment.to_bytes()
+        || evidence_inputs != expected_inputs
+        || evidence.exit_transactions.is_empty()
+    {
+        return Err(Error::MaintenanceExecutionFailed);
+    }
+    let mut artifacts = Vec::new();
+    let mut transitions = Vec::new();
+    for input in &plan.inputs {
+        let record = projection
+            .vtxos
+            .iter()
+            .find(|record| record.vtxo_id == input.vtxo_id)
+            .ok_or(Error::MaintenanceExecutionFailed)?;
+        let state_pair = match phase {
+            FederationBarkSemanticPhase::ExitRegistered => (
+                FederationBarkVtxoState::Reserved,
+                FederationBarkVtxoState::Exiting,
+            ),
+            FederationBarkSemanticPhase::ExitConfirmed => (
+                FederationBarkVtxoState::Exiting,
+                FederationBarkVtxoState::Exited,
+            ),
+            FederationBarkSemanticPhase::ExitPublished => continue,
+            _ => return Err(Error::MaintenanceExecutionFailed),
+        };
+        if record.state != state_pair.0
+            || record.reservation_action_id != Some(plan.action_id)
+            || record.locator != input.locator
+            || record.amount != input.amount
+        {
+            return Err(Error::MaintenanceExecutionFailed);
+        }
+        artifacts.push(record.artifact.clone());
+        transitions.push(FederationBarkVtxoTransition {
+            vtxo_id: input.vtxo_id,
+            locator: input.locator,
+            amount: input.amount,
+            expiry_height: record.expiry_height,
+            previous_state: Some(state_pair.0),
+            new_state: state_pair.1,
+            artifact_hash: record.artifact.hash,
+        });
+    }
+    for transaction in evidence
+        .exit_transactions
+        .iter()
+        .chain(evidence.drain_transaction.iter())
+    {
+        artifacts.push(bark_artifact(
+            FederationBarkArtifactKind::Transaction,
+            serialize_transaction(transaction),
+        )?);
+    }
+    let result = bark_artifact(
+        FederationBarkArtifactKind::ArkResult,
+        exit_result_bytes(evidence)?,
+    )?;
+    let result_hash = result.hash;
+    artifacts.push(result);
+    artifacts.sort();
+    artifacts.dedup();
+    transitions.sort();
+    Ok(FederationBarkActionTransition {
+        version: FEDERATION_BARK_OPERATION_VERSION,
+        action_id: plan.action_id,
+        quote: None,
+        phase,
+        actor,
+        plan_operation_id: plan_entry.operation_id,
+        predecessor_operation_id,
+        payment_hash: None,
+        attempt: plan.attempt,
+        signer_set: plan.signer_set.clone(),
+        request_hash: plan_commitment,
+        result_hash,
+        external_id: plan.external_id,
+        artifacts,
+        vtxo_transitions: transitions,
+    })
+}
+
+fn exit_result_bytes(evidence: &FederationExitEvidence) -> Result<Vec<u8>, Error> {
+    let mut bytes = b"cdk/bark/exit-result/v1".to_vec();
+    bytes.extend_from_slice(&evidence.action_id.to_bytes());
+    bytes.extend_from_slice(&evidence.request_commitment.to_bytes());
+    bytes.push(exit_phase_tag(evidence.phase));
+    bytes.extend_from_slice(
+        &u32::try_from(evidence.input_vtxo_ids.len())
+            .map_err(|_| Error::MaintenanceExecutionFailed)?
+            .to_be_bytes(),
+    );
+    for vtxo_id in &evidence.input_vtxo_ids {
+        bytes.extend_from_slice(&vtxo_id.to_bytes());
+    }
+    bytes.extend_from_slice(
+        &u32::try_from(evidence.exit_transactions.len())
+            .map_err(|_| Error::MaintenanceExecutionFailed)?
+            .to_be_bytes(),
+    );
+    for transaction in &evidence.exit_transactions {
+        append_bounded_bytes(&mut bytes, &serialize_transaction(transaction))?;
+    }
+    match &evidence.drain_transaction {
+        Some(transaction) => {
+            bytes.push(1);
+            append_bounded_bytes(&mut bytes, &serialize_transaction(transaction))?;
+        }
+        None => bytes.push(0),
+    }
+    match evidence.confirmed_in {
+        Some(block) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&block.height.to_be_bytes());
+            bytes.extend_from_slice(&block.hash.to_byte_array());
+        }
+        None => bytes.push(0),
+    }
+    Ok(bytes)
+}
+
+fn exit_evidence_from_transition(
+    plan: &FederationBarkActionPlan,
+    transition: &FederationBarkActionTransition,
+) -> Result<FederationExitEvidence, Error> {
+    let result = transition
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+        .collect::<Vec<_>>();
+    if result.len() != 1
+        || result[0].hash != transition.result_hash
+        || bark_digest(&result[0].bytes)? != result[0].hash
+    {
+        return Err(Error::MaintenanceReconciliationFailed);
+    }
+    let mut bytes = result[0].bytes.as_slice();
+    take_send_bytes(&mut bytes, b"cdk/bark/exit-result/v1".len())
+        .filter(|domain| *domain == b"cdk/bark/exit-result/v1")
+        .ok_or(Error::MaintenanceReconciliationFailed)?;
+    let action_id =
+        take_send_array::<32>(&mut bytes).map_err(|_| Error::MaintenanceReconciliationFailed)?;
+    let request_commitment =
+        take_send_array::<32>(&mut bytes).map_err(|_| Error::MaintenanceReconciliationFailed)?;
+    let phase = take_send_bytes(&mut bytes, 1)
+        .and_then(|tag| tag.first().copied())
+        .and_then(exit_phase_from_tag)
+        .ok_or(Error::MaintenanceReconciliationFailed)?;
+    let input_count = u32::from_be_bytes(
+        take_send_array::<4>(&mut bytes).map_err(|_| Error::MaintenanceReconciliationFailed)?,
+    );
+    let input_vtxo_ids = (0..input_count)
+        .map(|_| {
+            bark::ark::VtxoId::from_slice(
+                &take_send_array::<36>(&mut bytes)
+                    .map_err(|_| Error::MaintenanceReconciliationFailed)?,
+            )
+            .map_err(|_| Error::MaintenanceReconciliationFailed)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let transaction_count = u32::from_be_bytes(
+        take_send_array::<4>(&mut bytes).map_err(|_| Error::MaintenanceReconciliationFailed)?,
+    );
+    let exit_transactions = (0..transaction_count)
+        .map(|_| {
+            deserialize_transaction::<Transaction>(
+                take_send_bounded(&mut bytes)
+                    .map_err(|_| Error::MaintenanceReconciliationFailed)?,
+            )
+            .map_err(|_| Error::MaintenanceReconciliationFailed)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let drain_transaction = match take_send_bytes(&mut bytes, 1) {
+        Some([0]) => None,
+        Some([1]) => Some(
+            deserialize_transaction::<Transaction>(
+                take_send_bounded(&mut bytes)
+                    .map_err(|_| Error::MaintenanceReconciliationFailed)?,
+            )
+            .map_err(|_| Error::MaintenanceReconciliationFailed)?,
+        ),
+        _ => return Err(Error::MaintenanceReconciliationFailed),
+    };
+    match take_send_bytes(&mut bytes, 1) {
+        Some([0]) => {}
+        Some([1]) => {
+            take_send_array::<4>(&mut bytes).map_err(|_| Error::MaintenanceReconciliationFailed)?;
+            take_send_array::<32>(&mut bytes)
+                .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+        }
+        _ => return Err(Error::MaintenanceReconciliationFailed),
+    }
+    let expected_commitment = FederationBarkOperation::ActionPlan(plan.clone())
+        .commitment()
+        .map_err(|_| Error::MaintenanceReconciliationFailed)?;
+    let expected_inputs = plan
+        .inputs
+        .iter()
+        .map(|input| input.vtxo_id.to_bytes())
+        .collect::<Vec<_>>();
+    if !bytes.is_empty()
+        || action_id != plan.action_id.to_bytes()
+        || request_commitment != expected_commitment.to_bytes()
+        || input_vtxo_ids
+            .iter()
+            .map(|vtxo_id| vtxo_id.to_bytes())
+            .collect::<Vec<_>>()
+            != expected_inputs
+        || exit_transactions.is_empty()
+    {
+        return Err(Error::MaintenanceReconciliationFailed);
+    }
+    Ok(FederationExitEvidence {
+        action_id: FederationActionId::from_bytes(action_id)
+            .map_err(|_| Error::MaintenanceReconciliationFailed)?,
+        request_commitment: FederationRequestCommitment::from_bytes(request_commitment)
+            .map_err(|_| Error::MaintenanceReconciliationFailed)?,
+        input_vtxo_ids,
+        phase,
+        tip_height: 0,
+        exit_transactions,
+        drain_transaction,
+        confirmed_in: None,
+    })
+}
+
+const fn exit_phase_tag(phase: FederationExitPhase) -> u8 {
+    match phase {
+        FederationExitPhase::Planned => 1,
+        FederationExitPhase::Registered => 2,
+        FederationExitPhase::Published => 3,
+        FederationExitPhase::Claimable => 4,
+        FederationExitPhase::DrainPublished => 5,
+        FederationExitPhase::Confirmed => 6,
+    }
+}
+
+const fn exit_phase_from_tag(tag: u8) -> Option<FederationExitPhase> {
+    match tag {
+        1 => Some(FederationExitPhase::Planned),
+        2 => Some(FederationExitPhase::Registered),
+        3 => Some(FederationExitPhase::Published),
+        4 => Some(FederationExitPhase::Claimable),
+        5 => Some(FederationExitPhase::DrainPublished),
+        6 => Some(FederationExitPhase::Confirmed),
+        _ => None,
+    }
+}
+
 fn send_htlc_result_bytes(
     evidence: &FederationLightningSendHtlcEvidence,
 ) -> Result<Vec<u8>, Error> {
@@ -2857,6 +4297,20 @@ fn receive_claim_request_bytes(claim: &FederationLightningReceiveClaimPlan) -> V
         bytes.extend_from_slice(&encoded);
     }
     bytes
+}
+
+fn next_locator_index(projection: &FederationBarkProjectionSnapshot) -> Result<u32, Error> {
+    projection
+        .derivation_allocations
+        .iter()
+        .map(|allocation| allocation.locator.index)
+        .max()
+        .map_or(Ok(0), |index| {
+            index
+                .checked_add(1)
+                .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
+                .ok_or(Error::MaintenancePlanInvalid)
+        })
 }
 
 fn bark_artifact(

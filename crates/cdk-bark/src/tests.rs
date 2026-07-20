@@ -33,10 +33,11 @@ use rand_chacha::ChaCha20Rng;
 use crate::runtime::validate_wallet_properties;
 use crate::{
     CdkFrostVtxoCustody, Error, FederatedBarkLimits, FederatedBarkLocalBindings,
-    FederatedBarkLocalConfig, FederatedBarkReceiveSecretAcceptedRef,
-    FederatedBarkReceiveSecretEncryptionKey, FederatedBarkReceiveSecretStore,
-    FederatedBarkReceiveSecretStoreConfig, FederatedBarkStoreAvailability,
-    ValidatedFederatedBarkConfig, FEDERATED_BARK_RECEIVE_SECRET_ORPHAN_RETENTION_SECONDS,
+    FederatedBarkLocalConfig, FederatedBarkMaintenanceControls,
+    FederatedBarkReceiveSecretAcceptedRef, FederatedBarkReceiveSecretEncryptionKey,
+    FederatedBarkReceiveSecretStore, FederatedBarkReceiveSecretStoreConfig,
+    FederatedBarkStoreAvailability, ValidatedFederatedBarkConfig,
+    FEDERATED_BARK_RECEIVE_SECRET_ORPHAN_RETENTION_SECONDS,
 };
 
 fn member(id: u16) -> MemberId {
@@ -230,11 +231,24 @@ fn local_config(config: &FederationConfig) -> FederatedBarkLocalConfig {
             ),
         },
         limits: FederatedBarkLimits::new(1, 1_000_000).expect("limits"),
+        maintenance: FederatedBarkMaintenanceControls::default(),
     }
 }
 
 fn validates(config: &FederationConfig, local: &FederatedBarkLocalConfig) -> Result<(), Error> {
     ValidatedFederatedBarkConfig::validate(true, config, local).map(|_| ())
+}
+
+#[test]
+fn maintenance_controls_default_to_refresh_only() {
+    let controls = FederatedBarkMaintenanceControls::default();
+    assert!(controls.automatic_refresh);
+    assert!(!controls.automatic_emergency_exit);
+
+    let config = federated_config();
+    let local = local_config(&config);
+    assert_eq!(local.maintenance, controls);
+    validates(&config, &local).expect("refresh-only maintenance controls");
 }
 
 #[tokio::test]

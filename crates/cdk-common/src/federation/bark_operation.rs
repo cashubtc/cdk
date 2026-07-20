@@ -39,6 +39,8 @@ pub const FEDERATION_MAX_BARK_AUTHORIZATION_BYTES: usize = 16 * 1024;
 pub const FEDERATION_MAX_BARK_INVOICE_BYTES: usize = 64 * 1024;
 /// Maximum UTF-8 bytes in a direct federated Bark invoice description.
 pub const FEDERATION_MAX_BARK_DESCRIPTION_BYTES: usize = 4 * 1024;
+/// Frozen v1 emergency-exit drain fee rate (10 sat/vB).
+pub const FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU: u64 = 2_500;
 
 const BARK_OPERATION_HASH_DOMAIN: &[u8] = b"cdk/federation/bark-operation/v1";
 const BARK_AUTHORIZATION_HASH_DOMAIN: &[u8] = b"cdk/federation/bark-authorization/v1";
@@ -59,6 +61,7 @@ const BARK_REFRESH_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-refresh-ext
 const BARK_EXIT_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-exit-external-id/v1";
 const BARK_REFRESH_REQUEST_DOMAIN: &str = "cdk/federation/bark-refresh-request/v1";
 const BARK_EXIT_REQUEST_DOMAIN: &str = "cdk/federation/bark-exit-request/v1";
+const BARK_EXIT_ALLOCATION_QUOTE_PREFIX: &str = "bark-exit-";
 
 /// Commit to the exact bounded transcript presented to a Bark custody method.
 pub fn federation_bark_custody_transcript_hash(bytes: &[u8]) -> Result<FederationBarkDigest> {
@@ -68,6 +71,12 @@ pub fn federation_bark_custody_transcript_hash(bytes: &[u8]) -> Result<Federatio
         ));
     }
     domain_hash(BARK_CUSTODY_TRANSCRIPT_DOMAIN, bytes)
+}
+
+/// Deterministic address-allocation label for an emergency-exit destination.
+#[must_use]
+pub fn federation_bark_exit_allocation_quote(action_id: FederationBarkActionId) -> String {
+    format!("{BARK_EXIT_ALLOCATION_QUOTE_PREFIX}{action_id}")
 }
 
 fn invalid_bark(reason: impl Into<String>) -> FederationError {
@@ -2102,6 +2111,7 @@ impl FederationBarkExitRequest {
         ensure_quote(&self.destination.quote)?;
         let destination_script = bitcoin::ScriptBuf::from_bytes(self.destination_script.clone());
         if self.destination.application_key_epoch == 0
+            || self.destination.quote != federation_bark_exit_allocation_quote(self.action_id)
             || self.destination.derivation_index > super::FEDERATION_MAX_DERIVATION_INDEX
             || !destination_script.is_p2tr()
             || self.inputs.iter().any(|input| input.amount == Amount::ZERO)
@@ -2311,6 +2321,95 @@ impl FederationBarkActionTransition {
                 if !has_spent_input || !has_spendable_output || !valid_shape || result_count != 1 {
                     return Err(invalid_bark(
                         "revocation must spend exact HTLCs and restore spendable value",
+                    ));
+                }
+            }
+            FederationBarkSemanticPhase::RefreshCompleted => {
+                let has_spent_input = self.vtxo_transitions.iter().any(|transition| {
+                    transition.previous_state == Some(FederationBarkVtxoState::Reserved)
+                        && transition.new_state == FederationBarkVtxoState::Spent
+                });
+                let has_spendable_output = self.vtxo_transitions.iter().any(|transition| {
+                    transition.previous_state.is_none()
+                        && transition.new_state == FederationBarkVtxoState::Spendable
+                });
+                let valid_shape = self.vtxo_transitions.iter().all(|transition| {
+                    (transition.previous_state == Some(FederationBarkVtxoState::Reserved)
+                        && transition.new_state == FederationBarkVtxoState::Spent)
+                        || (transition.previous_state.is_none()
+                            && transition.new_state == FederationBarkVtxoState::Spendable)
+                });
+                let result_count = self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+                    .count();
+                if !has_spent_input || !has_spendable_output || !valid_shape || result_count != 1 {
+                    return Err(invalid_bark(
+                        "refresh must spend reserved inputs, create spendable outputs, and bind one Ark result",
+                    ));
+                }
+            }
+            FederationBarkSemanticPhase::ExitRegistered => {
+                let valid_shape = !self.vtxo_transitions.is_empty()
+                    && self.vtxo_transitions.iter().all(|transition| {
+                        transition.previous_state == Some(FederationBarkVtxoState::Reserved)
+                            && transition.new_state == FederationBarkVtxoState::Exiting
+                    });
+                let transaction_count = self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+                    .count();
+                let result_count = self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+                    .count();
+                if !valid_shape || transaction_count == 0 || result_count != 1 {
+                    return Err(invalid_bark(
+                        "exit registration must move reserved inputs to exiting and bind exact transactions",
+                    ));
+                }
+            }
+            FederationBarkSemanticPhase::ExitPublished
+                if !self.vtxo_transitions.is_empty()
+                    || self
+                        .artifacts
+                        .iter()
+                        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+                        .count()
+                        == 0
+                    || self
+                        .artifacts
+                        .iter()
+                        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+                        .count()
+                        != 1 =>
+            {
+                return Err(invalid_bark(
+                    "exit publication must retain VTXO state and bind exact transaction evidence",
+                ));
+            }
+            FederationBarkSemanticPhase::ExitConfirmed => {
+                let valid_shape = !self.vtxo_transitions.is_empty()
+                    && self.vtxo_transitions.iter().all(|transition| {
+                        transition.previous_state == Some(FederationBarkVtxoState::Exiting)
+                            && transition.new_state == FederationBarkVtxoState::Exited
+                    });
+                let transaction_count = self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Transaction)
+                    .count();
+                let result_count = self
+                    .artifacts
+                    .iter()
+                    .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
+                    .count();
+                if !valid_shape || transaction_count == 0 || result_count != 1 {
+                    return Err(invalid_bark(
+                        "exit confirmation must finalize every exiting input with exact chain evidence",
                     ));
                 }
             }
@@ -2951,8 +3050,8 @@ mod tests {
 
     use super::*;
     use crate::federation::{
-        FederationConsensusItem, FederationJournalAppendOutcome, FederationOperationEnvelope,
-        InMemoryFederationJournal,
+        FederationAddressKeychain, FederationConsensusItem, FederationJournalAppendOutcome,
+        FederationOperationEnvelope, InMemoryFederationJournal,
     };
 
     fn digest(seed: u8) -> FederationBarkDigest {
@@ -3137,6 +3236,109 @@ mod tests {
         FederationBarkOperation::ActionPlan(plan)
     }
 
+    fn maintenance_input_artifact() -> FederationBarkArtifact {
+        bark_artifact(FederationBarkArtifactKind::Vtxo, vec![81; 96])
+            .expect("maintenance VTXO artifact")
+    }
+
+    fn refresh_plan() -> FederationBarkActionPlan {
+        let action_id = action(60);
+        let predecessor_operation_id = operation_id(59);
+        let input_artifact = maintenance_input_artifact();
+        let mut plan = FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: None,
+            kind: FederationBarkActionKind::Refresh,
+            actor: member(1),
+            predecessor_operation_id,
+            payment_hash: None,
+            inputs: vec![FederationBarkVtxoInput {
+                vtxo_id: vtxo(61),
+                locator: FederationBarkVtxoLocator::vtxo_custody(11),
+                amount: Amount::from(100),
+            }],
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: FederationBarkVtxoLocator::vtxo_custody(12),
+                amount: Amount::from(98),
+                artifact_hash: digest(62),
+            }],
+            revocation_locator: None,
+            external_amount: Amount::ZERO,
+            fee_amount: Amount::from(2),
+            fee_bound: Amount::from(3),
+            artifacts: Vec::new(),
+            external_id: FederationBarkExternalId::derive_refresh(
+                action_id,
+                predecessor_operation_id,
+                1,
+            )
+            .expect("refresh external id"),
+            signer_set: vec![member(1), member(2)],
+            attempt: 1,
+            expires_at: 880,
+        };
+        plan.bind_refresh_artifacts(800, 900, [input_artifact])
+            .expect("bind refresh request");
+        plan
+    }
+
+    fn emergency_exit_plan() -> FederationBarkActionPlan {
+        let action_id = action(60);
+        let predecessor_operation_id = operation_id(63);
+        let input_artifact = maintenance_input_artifact();
+        let mut destination_script = vec![0x51, 0x20];
+        destination_script.extend_from_slice(&[64; 32]);
+        let mut plan = FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: None,
+            kind: FederationBarkActionKind::EmergencyExit,
+            actor: member(1),
+            predecessor_operation_id,
+            payment_hash: None,
+            inputs: vec![FederationBarkVtxoInput {
+                vtxo_id: vtxo(61),
+                locator: FederationBarkVtxoLocator::vtxo_custody(11),
+                amount: Amount::from(100),
+            }],
+            outputs: Vec::new(),
+            revocation_locator: None,
+            external_amount: Amount::from(95),
+            fee_amount: Amount::from(5),
+            fee_bound: Amount::from(5),
+            artifacts: Vec::new(),
+            external_id: FederationBarkExternalId::derive_emergency_exit(
+                action_id,
+                predecessor_operation_id,
+                1,
+            )
+            .expect("exit external id"),
+            signer_set: vec![member(1), member(2)],
+            attempt: 1,
+            expires_at: 900,
+        };
+        plan.bind_emergency_exit_artifacts(
+            FederationAllocatedAddressRef {
+                application_id: FederationFrostApplicationId::from_bytes([65; 32])
+                    .expect("application id"),
+                application_key_epoch: 1,
+                quote: federation_bark_exit_allocation_quote(action_id),
+                keychain: FederationAddressKeychain::Internal,
+                derivation_index: 7,
+            },
+            destination_script,
+            Network::Regtest,
+            FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
+            850,
+            2,
+            [input_artifact],
+            [vec![66; 128]],
+        )
+        .expect("bind exit request");
+        plan
+    }
+
     fn envelope(operation: FederationBarkOperation) -> FederationOperationEnvelope {
         FederationOperationEnvelope::new(federation_id(), FederationOperation::Bark(operation))
     }
@@ -3154,6 +3356,44 @@ mod tests {
             decoded.commitment().expect("commitment"),
             operation.commitment().expect("commitment")
         );
+    }
+
+    #[test]
+    fn maintenance_plans_bind_exact_refresh_and_exit_requests() {
+        let refresh = refresh_plan();
+        FederationBarkOperation::ActionPlan(refresh.clone())
+            .validate()
+            .expect("valid exact refresh plan");
+        let request = refresh.refresh_request().expect("refresh request");
+        assert_eq!(request.trigger_height, 800);
+        assert_eq!(request.emergency_height, 880);
+        assert_eq!(request.minimum_expiry, 900);
+
+        let mut changed_refresh = refresh;
+        changed_refresh.expires_at = 879;
+        assert!(FederationBarkOperation::ActionPlan(changed_refresh)
+            .validate()
+            .is_err());
+
+        let exit = emergency_exit_plan();
+        FederationBarkOperation::ActionPlan(exit.clone())
+            .validate()
+            .expect("valid exact exit plan");
+        let request = exit.emergency_exit_request().expect("exit request");
+        assert_eq!(
+            request.destination.quote,
+            federation_bark_exit_allocation_quote(exit.action_id)
+        );
+        assert_eq!(
+            request.fee_rate_sat_per_kwu,
+            FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU
+        );
+
+        let mut changed_exit = exit;
+        changed_exit.fee_bound = Amount::from(6);
+        assert!(FederationBarkOperation::ActionPlan(changed_exit)
+            .validate()
+            .is_err());
     }
 
     #[test]

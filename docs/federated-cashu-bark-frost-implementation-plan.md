@@ -2,14 +2,14 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5, 7, and 9-13 complete,
+Status: implementation in progress; Milestones 0-5, 7, and 9-15 complete,
 Milestones 6 and 8 are locally complete but retain the dependency-publication
 and PostgreSQL-runtime verification gates recorded below. Production incoming
 quote preparation, observation, threshold claim, and settlement bridging now
 exist; outgoing quotes, consensus planning, atomic reservation, exact Ark
-execution, success reconciliation, and melt settlement bridging now exist.
-Terminal failure, revocation, and unresolved-value recovery remain gated on
-Milestone 14
+execution, success/failure reconciliation, revocation, refresh, emergency exit,
+and melt settlement bridging now exist. Full restart/catch-up testing,
+operations tooling, and the release gate remain in Milestones 16-18.
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -42,8 +42,8 @@ machine-specific metadata in this document.
 | 11. Incoming claim | Complete (2026-07-19) | Independent payment-hash polling, threshold-matched HTLC evidence, accepted exact claim plans, FROST/virtual-MuSig custody, durable preimage/result checkpoints, independently validated claimed VTXOs, two-layer result/payment quorums, and focused restart/adversarial tests passed | `feat: complete federated Bark incoming claims` |
 | 12. Outgoing planning | Complete (2026-07-19) | Conservative accepted-projection quotes, exact deterministic plans, adversarial binding checks, atomic competing-reservation rollback, local Bark `Start` checkpoint reconstruction, full common/CDK regressions, and production feature builds passed | `feat: complete federated Bark outgoing planning` |
 | 13. Outgoing execution | Complete (2026-07-19) | Accepted phase-at-a-time Ark execution, exact multi-input custody authorization, canonical HTLC/initiation/success transitions, restart replay, verified preimage proof, distinct-member result quorum, and existing melt-saga finalization passed | CDK: `feat: execute federated Bark outgoing payments`; Bark: `feat: add federated send phase execution` |
-| 14. Failure recovery | Pending | — | — |
-| 15. Refresh and exit | Pending | — | — |
+| 14. Failure recovery | Complete (2026-07-19) | Threshold failure evidence, exact accepted revocation, safe recovery observations, startup replay, amount conservation, and focused/full regression checks passed | CDK: `feat: recover failed federated Bark payments`; Bark: `feat: recover failed federated Bark payments` |
+| 15. Refresh and exit | Complete (2026-07-19) | Earliest-expiry planning, accepted-plan custody gates, threshold trigger/confirmation evidence, BDK recovery allocation, replay-only startup reconstruction, focused/full regression checks, and production feature builds passed | CDK: `feat: bind federated Bark maintenance plans`, `feat: execute federated Bark maintenance`; Bark: `feat: add federated Bark maintenance primitives`, `feat: complete federated Bark maintenance execution` |
 | 16. Restart and replay | Pending | — | — |
 | 17. Operations tooling | Pending | — | — |
 | 18. Release gate | Pending | — | — |
@@ -2872,6 +2872,134 @@ Exit criteria:
 - failure paths preserve amount conservation.
 
 ### Milestone 15: refresh and emergency exit
+
+Status: complete on 2026-07-19.
+
+Implementation commits:
+
+- CDK: `feat: bind federated Bark maintenance plans` and
+  `feat: execute federated Bark maintenance`
+- Bark: `feat: add federated Bark maintenance primitives` and
+  `feat: complete federated Bark maintenance execution`
+
+Implementation record:
+
+- Maintenance candidates are deterministic federation facts. Every member
+  selects the complete sorted group of spendable VTXOs at the earliest expiry,
+  derives the same predecessor, action ID, actor, threshold signer set, fresh
+  output locator, refresh trigger, emergency trigger, attempt, and policy fee
+  bound, then asks Bark only for the exact round output and fee. No candidate
+  reserves a VTXO, reveals the output, joins a round, or requests a signature.
+- Refresh and emergency-exit requests are canonical artifacts embedded in the
+  accepted Bark action plan. They bind every input VTXO and locator, amounts,
+  output or recovery destination, timing, fee policy, external idempotency ID,
+  and custody attempt. Stateful admission independently reconstructs these
+  fields from the accepted projection and rejects a changed or locally selected
+  plan before it can enter custody.
+- Members submit source-scoped trigger observations only after their chain view
+  crosses the immutable accepted height. The actor may execute a refresh or
+  register an exit only after a threshold of distinct members has accepted the
+  exact plan commitment. FROST and virtual-MuSig authorization now admit refresh
+  and emergency exit only through the accepted action-plan reference and exact
+  plan-commitment transcript; an unplanned maintenance signature remains
+  impossible.
+- Bark's federation facade separates preview, accepted-plan replay, execution,
+  and accepted-result replay. Refresh execution joins only the exact accepted
+  input/output round and returns either pending or canonical confirmed
+  replacement evidence. The result must spend every reservation, materialize
+  exactly the accepted output amount at the accepted locator, and bind the
+  confirmed funding transaction before consensus advances to
+  `RefreshCompleted`.
+- Emergency exit reuses the existing accepted refresh reservation instead of
+  releasing and re-reserving it. The destination is one ordinary
+  consensus-allocated internal address from the federated BDK application,
+  derived and checked against the accepted on-chain application, network, and
+  confirmation policy. The v1 drain fee rate is frozen at 2,500 sat/kwu and the
+  maximum recovery fee remains bounded by the Bark application policy.
+- Exit progression is split into `ExitPlanned`, `ExitRegistered`,
+  `ExitPublished`, and `ExitConfirmed`. Registration binds every exact exit
+  transaction and moves all inputs from reserved to exiting. Publication binds
+  the deterministic one-output BDK drain without changing VTXO state.
+  Confirmation requires matching distinct-member chain observations and moves
+  every input from exiting to exited. Bark's drain builder filters only the
+  accepted plan inputs, so unrelated claimable exits cannot enter the drain.
+- Response loss is safe at each side-effect boundary. Refresh retries retain
+  the same action and attempt. Exit registration is idempotent and normalized
+  to the accepted registration phase even when the local exit manager already
+  observes later progress. Drain bytes and txid are deterministic for the
+  accepted plan, so a publish retry cannot create a second logical recovery.
+- A dedicated bounded worker advances at most one consensus-visible maintenance
+  phase per five-second tick. Automatic refresh is enabled by default;
+  automatic emergency exit is deliberately disabled by default and must be
+  enabled by an operator. These switches can stop local automation but cannot
+  relax consensus timing, destination, fee, signer, or confirmation bounds.
+- Startup reconciliation reconstructs refresh plans/results and exit
+  plans/registrations from the applied journal and final Bark projection. It
+  performs no Ark request, round participation, signature, exit progression,
+  or broadcast. Pending work resumes only through the normal threshold-gated
+  worker after local replay succeeds.
+- No SQL migration was added or modified. The existing Bark projection state
+  machine gained only the narrow refresh-to-exit escalation and terminal
+  maintenance edges, retaining the exact existing reservation during
+  escalation. Changes outside Bark-specific and federation-gated code are
+  limited to typed validation and startup wiring; unfederated CDK behavior is
+  unchanged.
+
+Verification evidence:
+
+```text
+cargo test -p bark-wallet --lib \
+  maintenance_plans_rebuild_identically_without_signing_or_publication
+  passed
+
+cargo test -p bark-wallet --lib
+  new federation tests passed; 106 of 107 total tests passed
+  the only failure was the existing same-process pid_fcntl lock test
+
+cargo test -p cdk-bark --features federation-bark --lib
+  passed: 9 tests
+
+cargo test -p cdk-common --features federation --lib
+  passed: 444 tests; one explicit benchmark-style test ignored
+
+cargo test -p cdk-sql-common --features federation --lib
+  passed: 11 tests, including the frozen maintenance lifecycle and all
+  historical-migration checksum locks
+
+cargo test -p cdk --features mint,federation --lib \
+  mint::federation:: -- --test-threads 1
+  passed: 142 tests
+
+cargo test -p cdk-mintd --features federation,federation-bark \
+  federated_bark_maintenance_defaults_to_refresh_without_exit --lib
+  passed
+
+cargo check -p cdk-axum --features federation,federation-bark --all-targets
+cargo check -p cdk-mintd --features federation,federation-bark --all-targets
+  passed; Bark retains its two pre-existing warnings
+
+cargo clippy -p cdk-common --features federation --all-targets \
+  --no-deps -- -D warnings
+cargo clippy -p cdk-sql-common --features federation --all-targets \
+  --no-deps -- -D warnings
+cargo clippy -p cdk-bark --features federation-bark --all-targets \
+  --no-deps -- -D warnings
+  passed
+
+cargo clippy -p cdk --features mint,federation --all-targets \
+  --no-deps -- -D warnings
+cargo clippy -p cdk-axum --features federation,federation-bark --all-targets \
+  --no-deps -- -D warnings
+cargo clippy -p cdk-mintd --features federation,federation-bark --all-targets \
+  --no-deps -- -D warnings
+  remain blocked by the existing crate-wide Rust 1.95 lint backlogs; no
+  diagnostic identifies the new maintenance validation, worker, or config
+
+cargo fmt -p cdk-common -p cdk-sql-common -p cdk -p cdk-bark \
+  -p cdk-axum -p cdk-mintd -- --check
+git diff --check
+  passed
+```
 
 Deliverables:
 

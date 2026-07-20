@@ -176,6 +176,25 @@ pub struct FederatedBarkLimits {
     maximum_sat: u64,
 }
 
+/// Member-local automation switches. They can disable execution but never
+/// relax accepted federation timing, fee, destination, or signer bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FederatedBarkMaintenanceControls {
+    /// Automatically propose and execute accepted refresh rounds.
+    pub automatic_refresh: bool,
+    /// Automatically escalate an overdue accepted refresh to emergency exit.
+    pub automatic_emergency_exit: bool,
+}
+
+impl Default for FederatedBarkMaintenanceControls {
+    fn default() -> Self {
+        Self {
+            automatic_refresh: true,
+            automatic_emergency_exit: false,
+        }
+    }
+}
+
 impl FederatedBarkLimits {
     /// Construct non-zero, ordered payment limits.
     pub fn new(minimum_sat: u64, maximum_sat: u64) -> Result<Self, Error> {
@@ -222,6 +241,8 @@ pub struct FederatedBarkLocalConfig {
     pub receive_secret_store: FederatedBarkReceiveSecretStoreConfig,
     /// Accepted satoshi payment limits.
     pub limits: FederatedBarkLimits,
+    /// Explicit member-local maintenance automation controls.
+    pub maintenance: FederatedBarkMaintenanceControls,
 }
 
 impl FederatedBarkLocalConfig {
@@ -237,6 +258,7 @@ impl FederatedBarkLocalConfig {
         create_if_missing: bool,
         stores: FederatedBarkStoreAvailability,
         limits: FederatedBarkLimits,
+        maintenance: FederatedBarkMaintenanceControls,
     ) -> Result<Self, Error> {
         let mut bark = BarkConfig::network_default(bindings.network);
         bark.server_address = connection.server_address;
@@ -278,6 +300,7 @@ impl FederatedBarkLocalConfig {
                 encryption_key,
             },
             limits,
+            maintenance,
         })
     }
 }
@@ -295,6 +318,7 @@ impl fmt::Debug for FederatedBarkLocalConfig {
             .field("stores", &self.stores)
             .field("receive_secret_store", &self.receive_secret_store)
             .field("limits", &self.limits)
+            .field("maintenance", &self.maintenance)
             .finish()
     }
 }

@@ -26,8 +26,9 @@ pub use self::adapter::FederatedBarkPaymentAdapter;
 #[cfg(feature = "federation-bark")]
 pub use self::config::{
     FederatedBarkConnectionConfig, FederatedBarkLimits, FederatedBarkLocalBindings,
-    FederatedBarkLocalConfig, FederatedBarkReceiveSecretStoreConfig, FederatedBarkScope,
-    FederatedBarkStoreAvailability, ValidatedFederatedBarkConfig,
+    FederatedBarkLocalConfig, FederatedBarkMaintenanceControls,
+    FederatedBarkReceiveSecretStoreConfig, FederatedBarkScope, FederatedBarkStoreAvailability,
+    ValidatedFederatedBarkConfig,
 };
 #[cfg(feature = "federation-bark")]
 pub use self::custody::{CdkFrostVtxoCustody, FederatedBarkCustodyClient};
@@ -35,8 +36,9 @@ pub use self::custody::{CdkFrostVtxoCustody, FederatedBarkCustodyClient};
 pub use self::error::Error;
 #[cfg(feature = "federation-bark")]
 pub use self::runtime::{
-    FederatedBarkDegradedReason, FederatedBarkReadiness, FederatedBarkReceiveClaimOutcome,
-    FederatedBarkReceiveClaimProposal, FederatedBarkReceiveClaimResult, FederatedBarkRuntime,
+    FederatedBarkDegradedReason, FederatedBarkExitOutcome, FederatedBarkReadiness,
+    FederatedBarkReceiveClaimOutcome, FederatedBarkReceiveClaimProposal,
+    FederatedBarkReceiveClaimResult, FederatedBarkRefreshOutcome, FederatedBarkRuntime,
     FederatedBarkRuntimeStatus, FederatedBarkSendProposal,
 };
 #[cfg(feature = "federation-bark")]

@@ -2659,6 +2659,8 @@ async fn create_mint_router_with_custom_cache_inner(
             .payment_observer
             .clone()
             .spawn(state.clone());
+        #[cfg(feature = "federation-bark")]
+        federation::bark_maintenance::spawn_federated_bark_maintenance(state.clone());
         state
             .federation
             .transaction_broadcaster
@@ -3457,10 +3459,149 @@ async fn reconcile_federation_bark_runtime(
             | FederationBarkOperation::MemberObservation(_) => {}
         }
     }
+    reconcile_federation_bark_maintenance(mint, runtime, entries).await?;
     if let Some(frontier) = frontier {
         runtime.record_projection_frontier(frontier).await;
     }
     Ok(())
+}
+
+#[cfg(feature = "federation-bark")]
+async fn reconcile_federation_bark_maintenance(
+    mint: &Mint,
+    runtime: &Arc<cdk_bark::FederatedBarkRuntime>,
+    entries: &[FederationJournalEntry],
+) -> Result<()> {
+    let projection = mint.federation_bark_projection_snapshot().await?;
+    for action in &projection.actions {
+        match action.phase {
+            cdk::federation::FederationBarkSemanticPhase::RefreshPlanned => {
+                let plan_entry = bark_maintenance_plan_entry(
+                    entries,
+                    action.action_id,
+                    cdk::federation::FederationBarkActionKind::Refresh,
+                )?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    unreachable!("maintenance plan lookup returned a non-plan");
+                };
+                runtime
+                    .apply_refresh_plan(&projection, plan)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("accepted Bark refresh plan could not be replayed")
+                    })?;
+            }
+            cdk::federation::FederationBarkSemanticPhase::RefreshCompleted => {
+                let plan_entry = bark_maintenance_plan_entry(
+                    entries,
+                    action.action_id,
+                    cdk::federation::FederationBarkActionKind::Refresh,
+                )?;
+                let completed_entry = bark_maintenance_transition_entry(
+                    entries,
+                    action.action_id,
+                    cdk::federation::FederationBarkSemanticPhase::RefreshCompleted,
+                )?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    unreachable!("maintenance plan lookup returned a non-plan");
+                };
+                runtime
+                    .apply_refresh_plan(&projection, plan)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("accepted Bark refresh plan could not be replayed")
+                    })?;
+                runtime
+                    .apply_refresh_completed(&projection, plan_entry, completed_entry)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("accepted Bark refresh result could not be replayed")
+                    })?;
+            }
+            cdk::federation::FederationBarkSemanticPhase::ExitPlanned => {
+                let plan_entry = bark_maintenance_plan_entry(
+                    entries,
+                    action.action_id,
+                    cdk::federation::FederationBarkActionKind::EmergencyExit,
+                )?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    unreachable!("maintenance plan lookup returned a non-plan");
+                };
+                runtime
+                    .apply_emergency_exit_plan(&projection, plan)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("accepted Bark exit plan could not be replayed")
+                    })?;
+            }
+            cdk::federation::FederationBarkSemanticPhase::ExitRegistered
+            | cdk::federation::FederationBarkSemanticPhase::ExitPublished
+            | cdk::federation::FederationBarkSemanticPhase::ExitConfirmed => {
+                let plan_entry = bark_maintenance_plan_entry(
+                    entries,
+                    action.action_id,
+                    cdk::federation::FederationBarkActionKind::EmergencyExit,
+                )?;
+                let registered_entry = bark_maintenance_transition_entry(
+                    entries,
+                    action.action_id,
+                    cdk::federation::FederationBarkSemanticPhase::ExitRegistered,
+                )?;
+                runtime
+                    .apply_emergency_exit_registered(&projection, plan_entry, registered_entry)
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("accepted Bark exit registration could not be replayed")
+                    })?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "federation-bark")]
+fn bark_maintenance_plan_entry(
+    entries: &[FederationJournalEntry],
+    action_id: cdk::federation::FederationBarkActionId,
+    kind: cdk::federation::FederationBarkActionKind,
+) -> Result<&FederationJournalEntry> {
+    entries
+        .iter()
+        .find(|entry| {
+            entry.status() == FederationOperationStatus::Applied
+                && matches!(
+                    &entry.envelope.operation,
+                    FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan))
+                        if plan.action_id == action_id && plan.kind == kind
+                )
+        })
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance plan is missing"))
+}
+
+#[cfg(feature = "federation-bark")]
+fn bark_maintenance_transition_entry(
+    entries: &[FederationJournalEntry],
+    action_id: cdk::federation::FederationBarkActionId,
+    phase: cdk::federation::FederationBarkSemanticPhase,
+) -> Result<&FederationJournalEntry> {
+    entries
+        .iter()
+        .find(|entry| {
+            entry.status() == FederationOperationStatus::Applied
+                && matches!(
+                    &entry.envelope.operation,
+                    FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition))
+                        if transition.action_id == action_id && transition.phase == phase
+                )
+        })
+        .ok_or_else(|| anyhow::anyhow!("accepted Bark maintenance transition is missing"))
 }
 
 #[cfg(feature = "federation")]

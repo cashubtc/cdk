@@ -276,6 +276,66 @@ impl CdkFrostVtxoCustody {
         )
     }
 
+    pub(crate) fn activate_refresh(
+        &self,
+        entry: FederationJournalEntry,
+        authorization_context: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            entry.status() == FederationOperationStatus::Applied,
+            "Bark custody requires an applied operation"
+        );
+        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+            &entry.envelope.operation
+        else {
+            anyhow::bail!("Bark custody requires an accepted action plan");
+        };
+        anyhow::ensure!(
+            plan.kind == FederationBarkActionKind::Refresh
+                && !plan.inputs.is_empty()
+                && !authorization_context.is_empty(),
+            "accepted Bark refresh scope is invalid"
+        );
+        let input_locators = plan.inputs.iter().map(|input| input.locator).collect();
+        self.activate_action(
+            entry,
+            input_locators,
+            bark::custody::VtxoSigningOperation::Round,
+            FederationBarkSemanticPhase::RefreshPlanned,
+            authorization_context,
+        )
+    }
+
+    pub(crate) fn activate_exit(
+        &self,
+        entry: FederationJournalEntry,
+        authorization_context: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            entry.status() == FederationOperationStatus::Applied,
+            "Bark custody requires an applied operation"
+        );
+        let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+            &entry.envelope.operation
+        else {
+            anyhow::bail!("Bark custody requires an accepted action plan");
+        };
+        anyhow::ensure!(
+            plan.kind == FederationBarkActionKind::EmergencyExit
+                && !plan.inputs.is_empty()
+                && !authorization_context.is_empty(),
+            "accepted Bark exit scope is invalid"
+        );
+        let input_locators = plan.inputs.iter().map(|input| input.locator).collect();
+        self.activate_action(
+            entry,
+            input_locators,
+            bark::custody::VtxoSigningOperation::UnilateralExit,
+            FederationBarkSemanticPhase::ExitPlanned,
+            authorization_context,
+        )
+    }
+
     fn activate_action(
         &self,
         entry: FederationJournalEntry,
@@ -326,6 +386,14 @@ impl CdkFrostVtxoCustody {
     }
 
     pub(crate) fn deactivate_revocation(&self) {
+        self.deactivate_action();
+    }
+
+    pub(crate) fn deactivate_refresh(&self) {
+        self.deactivate_action();
+    }
+
+    pub(crate) fn deactivate_exit(&self) {
         self.deactivate_action();
     }
 

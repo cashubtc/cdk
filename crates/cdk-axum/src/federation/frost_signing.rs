@@ -789,6 +789,8 @@ impl FederationFrostSigningRuntime {
                 cdk::federation::FederationBarkActionKind::IncomingClaim
                     | cdk::federation::FederationBarkActionKind::LightningSend
                     | cdk::federation::FederationBarkActionKind::FailedSendRevocation
+                    | cdk::federation::FederationBarkActionKind::Refresh
+                    | cdk::federation::FederationBarkActionKind::EmergencyExit
             ) || !typed
                 .request_transcript
                 .starts_with(&typed.reference.plan_or_result_hash.to_bytes())
@@ -835,8 +837,9 @@ impl FederationFrostSigningRuntime {
                     }
                     Some(authorization)
                 }
-                cdk::federation::FederationBarkActionKind::IncomingClaim => None,
-                _ => unreachable!("Bark custody action kind was matched above"),
+                cdk::federation::FederationBarkActionKind::IncomingClaim
+                | cdk::federation::FederationBarkActionKind::Refresh
+                | cdk::federation::FederationBarkActionKind::EmergencyExit => None,
             };
             if action_authorization
                 .as_ref()
@@ -859,7 +862,13 @@ impl FederationFrostSigningRuntime {
                     .ok_or_else(|| frost_invalid("accepted Bark claim input is unavailable"))?;
                 if record.locator != input.locator
                     || record.amount != input.amount
-                    || record.state != cdk::federation::FederationBarkVtxoState::Reserved
+                    || !matches!(
+                        record.state,
+                        cdk::federation::FederationBarkVtxoState::Reserved
+                            | cdk::federation::FederationBarkVtxoState::Exiting
+                    )
+                    || (record.state == cdk::federation::FederationBarkVtxoState::Exiting
+                        && plan.kind != cdk::federation::FederationBarkActionKind::EmergencyExit)
                     || record.reservation_action_id != Some(plan.action_id)
                     || (plan.kind == cdk::federation::FederationBarkActionKind::IncomingClaim
                         && !contains_bytes(&typed.request_transcript, &record.artifact.bytes))

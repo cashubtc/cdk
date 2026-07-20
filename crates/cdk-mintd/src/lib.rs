@@ -1795,6 +1795,10 @@ fn federation_bark_local_config(
             u64::from(selected.min_mint),
             u64::from(selected.max_mint),
         )?,
+        cdk_bark::FederatedBarkMaintenanceControls {
+            automatic_refresh: wallet.automatic_refresh,
+            automatic_emergency_exit: wallet.automatic_emergency_exit,
+        },
     )?))
 }
 
@@ -4785,6 +4789,8 @@ engine = "sqlite"
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
+                #[cfg(feature = "federation-bark")]
+                bark: config::FederationBarkWallet::default(),
             }),
             ..Default::default()
         };
@@ -4837,6 +4843,8 @@ engine = "sqlite"
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
+                #[cfg(feature = "federation-bark")]
+                bark: config::FederationBarkWallet::default(),
             }),
             ..Default::default()
         };
@@ -4882,6 +4890,8 @@ engine = "sqlite"
                 },
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
+                #[cfg(feature = "federation-bark")]
+                bark: config::FederationBarkWallet::default(),
             }),
             ..Default::default()
         };
@@ -5138,6 +5148,8 @@ engine = "sqlite"
                 },
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
+                #[cfg(feature = "federation-bark")]
+                bark: config::FederationBarkWallet::default(),
             }),
             ..Default::default()
         };
@@ -5549,6 +5561,8 @@ engine = "sqlite"
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
+                #[cfg(feature = "federation-bark")]
+                bark: config::FederationBarkWallet::default(),
             }),
             ..Default::default()
         };
@@ -5597,6 +5611,8 @@ engine = "sqlite"
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
+                #[cfg(feature = "federation-bark")]
+                bark: config::FederationBarkWallet::default(),
             }),
             ..Default::default()
         };
@@ -5621,6 +5637,8 @@ engine = "sqlite"
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
+                #[cfg(feature = "federation-bark")]
+                bark: config::FederationBarkWallet::default(),
             }),
             ..Default::default()
         };
@@ -5668,6 +5686,8 @@ engine = "sqlite"
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
+                #[cfg(feature = "federation-bark")]
+                bark: config::FederationBarkWallet::default(),
             }),
             ..Default::default()
         };
@@ -5702,6 +5722,8 @@ engine = "sqlite"
                 peer_sync: config::FederationPeerSync::default(),
                 dkg: config::FederationDkg::default(),
                 onchain_wallet: config::FederationOnchainWallet::default(),
+                #[cfg(feature = "federation-bark")]
+                bark: config::FederationBarkWallet::default(),
             }),
             ..Default::default()
         };
@@ -5797,6 +5819,8 @@ engine = "sqlite"
                     peer_sync: config::FederationPeerSync::default(),
                     dkg: config::FederationDkg::default(),
                     onchain_wallet: config::FederationOnchainWallet::default(),
+                    #[cfg(feature = "federation-bark")]
+                    bark: config::FederationBarkWallet::default(),
                 }),
                 ..Default::default()
             };
