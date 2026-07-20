@@ -779,6 +779,11 @@ impl FederationJournalEntry {
                             locator: output.locator,
                         });
                     }
+                    if let Some(locator) = plan.revocation_locator {
+                        insert(FederationMaterializedStateKey::BarkDerivationAllocation {
+                            locator,
+                        });
+                    }
                 }
                 super::FederationBarkOperation::ActionTransition(transition) => {
                     insert(FederationMaterializedStateKey::BarkAction {

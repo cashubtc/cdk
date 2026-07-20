@@ -112,7 +112,7 @@ impl Mint {
     /// same journal frontier computes the same single actor, and takeover is
     /// safe because the caller-supplied idempotency key is durable before any
     /// external I/O and contract-honoring backends deduplicate by it.
-    async fn federation_melt_payment_lease_actor(
+    pub(super) async fn federation_melt_payment_lease_actor(
         &self,
         config: &FederationRuntimeConfig,
         author: MemberId,
@@ -133,6 +133,32 @@ impl Mint {
         let epoch_steps = usize::try_from(lease_epoch % members.len() as u64).unwrap_or_default();
         let actor_position = (author_position + epoch_steps) % members.len();
         Ok(members[actor_position])
+    }
+
+    /// Return the deterministic current payment/planning actor for one applied melt.
+    pub async fn federation_melt_payment_actor(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Result<MemberId, Error> {
+        let config = self
+            .effective_federation_config()
+            .await?
+            .ok_or(Error::Internal)?;
+        let entry = self
+            .localstore
+            .get_federation_journal_entry_by_operation_id(operation_id)
+            .await?
+            .ok_or(Error::Internal)?;
+        if entry.status() != FederationOperationStatus::Applied
+            || !matches!(entry.envelope.operation, FederationOperation::Melt(_))
+        {
+            return Err(Error::Internal);
+        }
+        let author = entry
+            .envelope
+            .verify_authorization(config.public_config())?;
+        self.federation_melt_payment_lease_actor(&config, author, entry.index)
+            .await
     }
 
     /// Probe an incoming payment backend without mutating federated quote state.

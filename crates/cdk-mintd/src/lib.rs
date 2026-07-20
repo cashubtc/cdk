@@ -2395,7 +2395,19 @@ async fn configure_payment_backends(
                     u64::from(backend_entry.min_mint),
                     u64::from(backend_entry.max_mint),
                 )?;
-                let adapter = cdk_bark::FederatedBarkPaymentAdapter::from_limits(limits);
+                let application = mint_builder
+                    .federation_config()
+                    .and_then(|runtime| runtime.public_config().frost_wallet.as_ref())
+                    .and_then(|wallet| wallet.bark_application.as_ref())
+                    .ok_or_else(|| {
+                        anyhow!("federated Bark requires an accepted Bark application")
+                    })?;
+                let adapter = cdk_bark::FederatedBarkPaymentAdapter::from_accepted_config(
+                    limits,
+                    application.network,
+                    application.policy.clone(),
+                    mint_builder.localstore(),
+                );
                 mint_builder = configure_backend_for_unit(
                     settings,
                     mint_builder,

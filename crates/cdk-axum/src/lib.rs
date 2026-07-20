@@ -3306,6 +3306,34 @@ async fn reconcile_federation_bark_runtime(
                     ));
                 }
             }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == cdk::federation::FederationBarkActionKind::LightningSend =>
+            {
+                let quote_id = plan
+                    .quote
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send quote is missing"))?
+                    .parse::<cdk::mint::QuoteId>()
+                    .map_err(|_| anyhow::anyhow!("accepted Bark send quote is invalid"))?;
+                let quote = mint
+                    .localstore()
+                    .get_melt_quote(&quote_id)
+                    .await?
+                    .ok_or_else(|| anyhow::anyhow!("accepted Bark send quote is missing"))?;
+                let projection = mint.federation_bark_projection_snapshot().await?;
+                if runtime
+                    .apply_lightning_send_plan(&quote, &projection, plan)
+                    .await
+                    .is_err()
+                {
+                    runtime
+                        .mark_degraded(cdk_bark::FederatedBarkDegradedReason::ProjectionInvalid)
+                        .await;
+                    return Err(anyhow::anyhow!(
+                        "accepted Bark send plan could not be materialized"
+                    ));
+                }
+            }
             FederationBarkOperation::ActionPlan(_)
             | FederationBarkOperation::ActionTransition(_)
             | FederationBarkOperation::MemberObservation(_) => {}

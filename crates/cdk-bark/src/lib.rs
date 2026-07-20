@@ -37,7 +37,7 @@ pub use self::error::Error;
 pub use self::runtime::{
     FederatedBarkDegradedReason, FederatedBarkReadiness, FederatedBarkReceiveClaimOutcome,
     FederatedBarkReceiveClaimProposal, FederatedBarkReceiveClaimResult, FederatedBarkRuntime,
-    FederatedBarkRuntimeStatus,
+    FederatedBarkRuntimeStatus, FederatedBarkSendProposal,
 };
 #[cfg(feature = "federation-bark")]
 pub use self::secret_store::{

@@ -31,6 +31,7 @@ use super::{
     FederationCdkOnchainFrostAuthorization, FederationConfig, FederationDkgCeremonyId,
     FederationError, FederationFrostRootRecord, FederationId, MemberId, Result,
 };
+use crate::Amount;
 
 const ROOT_CONFIG_VERSION: u16 = 1;
 const ROOT_PRIVATE_CONFIG_VERSION: u16 = 1;
@@ -564,6 +565,9 @@ impl FederationBarkPolicyConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        let outgoing_safety_window = self
+            .refresh_before_expiry_blocks
+            .saturating_sub(self.emergency_exit_before_expiry_blocks);
         if self.version != BARK_POLICY_CONFIG_VERSION
             || self.receive_fee_ppm > 1_000_000
             || self.maximum_outgoing_fee_ppm > 1_000_000
@@ -571,11 +575,30 @@ impl FederationBarkPolicyConfig {
             || self.minimum_outgoing_cltv_delta == 0
             || self.emergency_exit_before_expiry_blocks == 0
             || self.refresh_before_expiry_blocks <= self.emergency_exit_before_expiry_blocks
+            || outgoing_safety_window < self.minimum_outgoing_cltv_delta
             || self.receive_secret_retention_days < 30
         {
             return Err(invalid_config("unsupported or unsafe Bark policy config"));
         }
         Ok(())
+    }
+
+    /// Return the conservative accepted outgoing fee bound.
+    ///
+    /// The proportional component rounds up to the next satoshi so a quote
+    /// never understates the configured parts-per-million maximum.
+    pub fn maximum_outgoing_fee(&self, amount: Amount) -> Result<Amount> {
+        let proportional_numerator = u64::from(amount)
+            .checked_mul(u64::from(self.maximum_outgoing_fee_ppm))
+            .ok_or_else(|| invalid_config("Bark outgoing fee calculation overflow"))?;
+        let proportional = proportional_numerator
+            .checked_add(999_999)
+            .ok_or_else(|| invalid_config("Bark outgoing fee calculation overflow"))?
+            / 1_000_000;
+        self.maximum_outgoing_base_fee_sat
+            .checked_add(proportional)
+            .map(Amount::from)
+            .ok_or_else(|| invalid_config("Bark outgoing fee calculation overflow"))
     }
 }
 

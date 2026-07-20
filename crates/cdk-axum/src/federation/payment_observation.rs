@@ -319,6 +319,24 @@ impl FederationPaymentObserver {
         state: &MintState,
         quote_id: &QuoteId,
     ) -> Result<bool, cdk::Error> {
+        #[cfg(feature = "federation-bark")]
+        let planned = if state.federation.bark_runtime().is_some() {
+            match super::bark_outgoing::advance_federated_bark_melt_quote(state, quote_id).await {
+                Ok(advanced) => advanced > 0,
+                Err(error) => {
+                    tracing::debug!(
+                        quote = %quote_id,
+                        error = %error,
+                        "federated Bark send planning left quote pending"
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        #[cfg(not(feature = "federation-bark"))]
+        let planned = false;
         let Some(observation) = ({
             let probe = std::panic::AssertUnwindSafe(async {
                 state
@@ -335,27 +353,30 @@ impl FederationPaymentObserver {
                         error = %err,
                         "melt quote payment probe failed; quote left pending"
                     );
-                    return Ok(false);
+                    return Ok(planned);
                 }
                 Ok(Err(_panic)) => {
                     tracing::warn!(
                         quote = %quote_id,
                         "melt quote payment probe panicked; quote left pending"
                     );
-                    return Ok(false);
+                    return Ok(planned);
                 }
                 Err(_) => {
                     tracing::debug!(
                         quote = %quote_id,
                         "melt quote payment probe timed out; quote left pending"
                     );
-                    return Ok(false);
+                    return Ok(planned);
                 }
             }
         }) else {
-            return Ok(false);
+            return Ok(planned);
         };
-        submit_observation(state, FederationPaymentObservation::MeltQuote(observation)).await
+        Ok(
+            submit_observation(state, FederationPaymentObservation::MeltQuote(observation)).await?
+                || planned,
+        )
     }
 
     pub(crate) async fn observe_event(

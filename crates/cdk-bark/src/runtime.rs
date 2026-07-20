@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use bark::actions::lightning::receive::LightningReceiveAntiDosMode;
-use bark::ark::lightning::{PaymentHash, Preimage};
+use bark::ark::lightning::{Invoice, PaymentHash, Preimage};
 use bark::ark::mailbox::MailboxIdentifier;
 use bark::ark::ProtocolEncoding;
 use bark::custody::{KeySourceDescriptor, KeySourceKind, VtxoCustody, VtxoKeyLocator};
@@ -13,21 +13,27 @@ use bark::federation::{
     FederationActionId, FederationLightningReceiveClaimExecution,
     FederationLightningReceiveClaimPlan, FederationLightningReceiveIntent,
     FederationLightningReceivePhase, FederationLightningReceivePlan,
-    FederationLightningReceiveStatus, FederationRequestCommitment, FederationWallet,
+    FederationLightningReceiveStatus, FederationLightningSendCandidate,
+    FederationLightningSendPlan, FederationRequestCommitment, FederationSendInput,
+    FederationVtxoImport, FederationVtxoState as BarkFederationVtxoState, FederationWallet,
 };
 use bark::{OpenWalletArgs, Wallet, WalletProperties};
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::PublicKey;
 use cdk_common::federation::{
     federation_bark_receive_request_hash, FederationBarkActionKind, FederationBarkActionPlan,
     FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
     FederationBarkDigest, FederationBarkExternalId, FederationBarkMemberObservation,
-    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkReceiveIntent,
-    FederationBarkReceivePrepared, FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase,
-    FederationBarkVtxoId, FederationBarkVtxoInput, FederationBarkVtxoLocator,
-    FederationBarkVtxoOutput, FederationBarkVtxoState, FederationBarkVtxoTransition,
-    FederationConfig, FederationJournalEntry, FederationOperation, FederationOperationId,
-    FederationOperationStatus, MemberId, FEDERATION_BARK_OPERATION_VERSION,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkPolicyConfig,
+    FederationBarkProjectionSnapshot, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
+    FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase, FederationBarkVtxoId,
+    FederationBarkVtxoInput, FederationBarkVtxoLocator, FederationBarkVtxoOutput,
+    FederationBarkVtxoState, FederationBarkVtxoTransition, FederationConfig,
+    FederationJournalEntry, FederationOperation, FederationOperationId, FederationOperationStatus,
+    MemberId, FEDERATION_BARK_OPERATION_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
 };
+use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
+use cdk_common::{CurrencyUnit, MeltQuoteState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
@@ -103,6 +109,17 @@ pub struct FederatedBarkReceiveClaimProposal {
     pub attempt: u32,
     /// Consensus-allocated locator for the claimed output.
     pub output_locator: FederationBarkVtxoLocator,
+}
+
+/// Consensus-selected non-economic fields for a pure outgoing plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FederatedBarkSendProposal {
+    /// Member authorized to execute the accepted first attempt.
+    pub actor: MemberId,
+    /// Sorted eligible FROST signer set.
+    pub signer_set: Vec<MemberId>,
+    /// Non-zero custody attempt.
+    pub attempt: u32,
 }
 
 /// Exact cryptographic claim result retained between the two ordered result
@@ -211,6 +228,10 @@ impl FederatedBarkRuntime {
             .require_ark_info()
             .await
             .map_err(|_| Error::ArkCapabilityMismatch)?;
+        let minimum_outgoing_fee_bound = validated
+            .policy()
+            .maximum_outgoing_fee(cdk_common::Amount::from(limits.minimum_sat()))
+            .map_err(|_| Error::ArkCapabilityMismatch)?;
         if ark_info.network != validated.network()
             || ark_info.server_pubkey != expected_server
             || !ark_info.federation_receive_idempotency
@@ -219,6 +240,17 @@ impl FederatedBarkRuntime {
             || ark_info.fees.lightning_receive.ppm.0 != 0
             || u32::from(ark_info.max_user_invoice_cltv_delta)
                 < validated.policy().minimum_incoming_cltv_delta
+            || u32::from(ark_info.htlc_send_expiry_delta)
+                < validated.policy().minimum_outgoing_cltv_delta
+            || ark_info.fees.lightning_send.base_fee.to_sat()
+                > validated.policy().maximum_outgoing_base_fee_sat
+            || ark_info.fees.lightning_send.min_fee.to_sat() > u64::from(minimum_outgoing_fee_bound)
+            || ark_info
+                .fees
+                .lightning_send
+                .ppm_expiry_table
+                .iter()
+                .any(|entry| entry.ppm.0 > u64::from(validated.policy().maximum_outgoing_fee_ppm))
             || ark_info
                 .max_vtxo_amount
                 .is_some_and(|maximum| maximum.to_sat() < limits.maximum_sat())
@@ -255,6 +287,26 @@ impl FederatedBarkRuntime {
         self.limits
     }
 
+    /// Accepted Bitcoin network for all Bark invoices and VTXOs.
+    #[must_use]
+    pub fn network(&self) -> bitcoin::Network {
+        self.bark_application().network
+    }
+
+    /// Accepted conservative Bark fee and expiry policy.
+    #[must_use]
+    pub fn policy(&self) -> &FederationBarkPolicyConfig {
+        &self.bark_application().policy
+    }
+
+    fn bark_application(&self) -> &cdk_common::federation::FederationBarkFrostApplicationConfig {
+        self.federation
+            .frost_wallet
+            .as_ref()
+            .and_then(|wallet| wallet.bark_application.as_ref())
+            .expect("runtime construction requires an accepted Bark application")
+    }
+
     /// Local federation member represented by this runtime.
     #[must_use]
     pub const fn member_id(&self) -> MemberId {
@@ -273,6 +325,310 @@ impl FederatedBarkRuntime {
             .derive_locator(VtxoKeyLocator { index })
             .map(|derived| derived.public_key)
             .map_err(|_| Error::PublicKeyDerivationFailed)
+    }
+
+    /// Select exact spendable VTXOs and construct a complete outgoing plan
+    /// using only accepted public state. This performs no database mutation,
+    /// chain lookup, custody operation, clock read, or Ark request.
+    pub fn propose_lightning_send(
+        &self,
+        quote: &MeltQuote,
+        predecessor_operation_id: FederationOperationId,
+        projection: &FederationBarkProjectionSnapshot,
+        mut proposal: FederatedBarkSendProposal,
+    ) -> Result<FederationBarkActionPlan, Error> {
+        let (invoice, amount, fee) = self.validate_send_quote(quote)?;
+        if proposal.attempt == 0 || !self.federation.members.contains_key(&proposal.actor) {
+            return Err(Error::SendPlanInvalid);
+        }
+        proposal.signer_set.sort();
+        proposal.signer_set.dedup();
+        let application = self.bark_application();
+        if proposal.signer_set.len() < usize::from(application.threshold)
+            || proposal
+                .signer_set
+                .iter()
+                .any(|member| !self.federation.members.contains_key(member))
+        {
+            return Err(Error::SendPlanInvalid);
+        }
+
+        let target = amount.checked_add(fee).ok_or(Error::SendPlanInvalid)?;
+        let mut selected = Vec::new();
+        let mut selected_amount = cdk_common::Amount::ZERO;
+        let mut minimum_expiry = u32::MAX;
+        for vtxo in projection
+            .vtxos
+            .iter()
+            .filter(|vtxo| vtxo.state == FederationBarkVtxoState::Spendable)
+        {
+            selected.push(FederationBarkVtxoInput {
+                vtxo_id: vtxo.vtxo_id,
+                locator: vtxo.locator,
+                amount: vtxo.amount,
+            });
+            selected_amount = selected_amount
+                .checked_add(vtxo.amount)
+                .ok_or(Error::SendPlanInvalid)?;
+            minimum_expiry = minimum_expiry.min(vtxo.expiry_height);
+            if selected_amount >= target {
+                break;
+            }
+        }
+        if selected_amount < target || selected.is_empty() {
+            return Err(Error::InsufficientAcceptedBalance);
+        }
+        selected.sort();
+        let expires_at = minimum_expiry
+            .checked_sub(application.policy.emergency_exit_before_expiry_blocks)
+            .filter(|height| *height != 0)
+            .ok_or(Error::SendPlanInvalid)?;
+        let output_index = projection
+            .derivation_allocations
+            .iter()
+            .map(|allocation| allocation.locator.index)
+            .max()
+            .map_or(Ok(0), |index| {
+                index.checked_add(1).ok_or(Error::SendPlanInvalid)
+            })?;
+        let revocation_index = output_index
+            .checked_add(1)
+            .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
+            .ok_or(Error::SendPlanInvalid)?;
+        let output_locator = FederationBarkVtxoLocator::vtxo_custody(output_index);
+        let revocation_locator = FederationBarkVtxoLocator::vtxo_custody(revocation_index);
+        let action_id = cdk_common::federation::FederationBarkActionId::derive(
+            self.scope.federation_id(),
+            predecessor_operation_id,
+            FederationBarkSemanticPhase::SendPlanned,
+            0,
+        )
+        .map_err(|_| Error::SendPlanInvalid)?;
+        let external_id = FederationBarkExternalId::derive_lightning_send(
+            action_id,
+            predecessor_operation_id,
+            proposal.attempt,
+        )
+        .map_err(|_| Error::SendPlanInvalid)?;
+        let payment_hash =
+            FederationBarkDigest::from_bytes(*invoice.payment_hash().as_byte_array())
+                .map_err(|_| Error::SendPlanInvalid)?;
+        let change = selected_amount
+            .checked_sub(target)
+            .ok_or(Error::SendPlanInvalid)?;
+        let mut plan = FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some(quote.id.to_string()),
+            kind: FederationBarkActionKind::LightningSend,
+            actor: proposal.actor,
+            predecessor_operation_id,
+            payment_hash: Some(payment_hash),
+            inputs: selected,
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: output_locator,
+                amount: change,
+                artifact_hash: FederationBarkDigest::from_bytes([1; 32])
+                    .map_err(|_| Error::SendPlanInvalid)?,
+            }],
+            revocation_locator: Some(revocation_locator),
+            external_amount: amount,
+            fee_amount: fee,
+            fee_bound: fee,
+            artifacts: Vec::new(),
+            external_id,
+            signer_set: proposal.signer_set,
+            attempt: proposal.attempt,
+            expires_at: u64::from(expires_at),
+        };
+        plan.bind_lightning_send_artifacts(invoice)
+            .map_err(|_| Error::SendPlanInvalid)?;
+        FederationBarkOperation::ActionPlan(plan.clone())
+            .validate()
+            .map_err(|_| Error::SendPlanInvalid)?;
+        Ok(plan)
+    }
+
+    /// Reconstruct Bark's exact member-local checkpoint from one accepted
+    /// outgoing plan. Inputs may still be spendable during proposal validation
+    /// or already reserved by this action during replay.
+    pub fn validate_lightning_send_plan(
+        &self,
+        quote: &MeltQuote,
+        projection: &FederationBarkProjectionSnapshot,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<FederationLightningSendPlan, Error> {
+        let (invoice, amount, fee) = self.validate_send_quote(quote)?;
+        let operation = FederationBarkOperation::ActionPlan(plan.clone());
+        operation.validate().map_err(|_| Error::SendPlanInvalid)?;
+        if plan.kind != FederationBarkActionKind::LightningSend
+            || plan.quote.as_deref() != Some(quote.id.to_string().as_str())
+            || plan.external_amount != amount
+            || plan.fee_amount != fee
+            || plan.fee_bound != fee
+            || plan.payment_hash
+                != Some(
+                    FederationBarkDigest::from_bytes(*invoice.payment_hash().as_byte_array())
+                        .map_err(|_| Error::SendPlanInvalid)?,
+                )
+        {
+            return Err(Error::SendPlanInvalid);
+        }
+        let output = plan.outputs.first().ok_or(Error::SendPlanInvalid)?;
+        let revocation_locator = plan.revocation_locator.ok_or(Error::SendPlanInvalid)?;
+        let mut inputs = Vec::with_capacity(plan.inputs.len());
+        for input in &plan.inputs {
+            let accepted = projection
+                .vtxos
+                .iter()
+                .find(|vtxo| vtxo.vtxo_id == input.vtxo_id)
+                .ok_or(Error::SendPlanInvalid)?;
+            if accepted.amount != input.amount
+                || accepted.locator != input.locator
+                || !matches!(
+                    accepted.state,
+                    FederationBarkVtxoState::Spendable | FederationBarkVtxoState::Reserved
+                )
+                || (accepted.state == FederationBarkVtxoState::Reserved
+                    && accepted.reservation_action_id != Some(plan.action_id))
+            {
+                return Err(Error::SendPlanInvalid);
+            }
+            inputs.push(FederationSendInput {
+                vtxo_id: bark::ark::VtxoId::from_slice(&input.vtxo_id.to_bytes())
+                    .map_err(|_| Error::SendPlanInvalid)?,
+                amount: bitcoin::Amount::from_sat(u64::from(input.amount)),
+                locator: VtxoKeyLocator {
+                    index: input.locator.index,
+                },
+            });
+        }
+        let action_id = FederationActionId::from_bytes(plan.action_id.to_bytes())
+            .map_err(|_| Error::SendPlanInvalid)?;
+        let request_commitment = FederationRequestCommitment::from_bytes(
+            operation
+                .commitment()
+                .map_err(|_| Error::SendPlanInvalid)?
+                .to_bytes(),
+        )
+        .map_err(|_| Error::SendPlanInvalid)?;
+        let bark_invoice = Invoice::Bolt11(invoice.clone());
+        let candidate = FederationLightningSendCandidate {
+            action_id,
+            request_commitment,
+            invoice: bark_invoice.clone(),
+            original_payment_method: bark_invoice.into(),
+            inputs,
+            payment_amount: bitcoin::Amount::from_sat(u64::from(amount)),
+            fee: bitcoin::Amount::from_sat(u64::from(fee)),
+            htlc_locator: VtxoKeyLocator {
+                index: output.locator.index,
+            },
+            revocation_locator: VtxoKeyLocator {
+                index: revocation_locator.index,
+            },
+            htlc_expiry: u32::try_from(plan.expires_at).map_err(|_| Error::SendPlanInvalid)?,
+            custody_attempt: plan.attempt,
+            accepted_at_unix_seconds: i64::try_from(quote.created_time)
+                .map_err(|_| Error::SendPlanInvalid)?,
+        };
+        let bark_plan = self
+            .wallet
+            .plan_lightning_send(candidate)
+            .map_err(|_| Error::SendPlanInvalid)?;
+        self.wallet
+            .validate_lightning_send_plan(&bark_plan)
+            .map_err(|_| Error::SendPlanInvalid)?;
+        Ok(bark_plan)
+    }
+
+    /// Apply or replay an accepted outgoing plan into Bark without starting
+    /// its executor or making an Ark request.
+    pub async fn apply_lightning_send_plan(
+        &self,
+        quote: &MeltQuote,
+        projection: &FederationBarkProjectionSnapshot,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<(), Error> {
+        let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
+        for input in &plan.inputs {
+            let accepted = projection
+                .vtxos
+                .iter()
+                .find(|vtxo| vtxo.vtxo_id == input.vtxo_id)
+                .ok_or(Error::SendProjectionFailed)?;
+            let vtxo = bark::ark::vtxo::Vtxo::<bark::ark::vtxo::Full>::deserialize(
+                &accepted.artifact.bytes,
+            )
+            .map_err(|_| Error::SendProjectionFailed)?;
+            if vtxo.serialize() != accepted.artifact.bytes
+                || vtxo.id().to_bytes() != accepted.vtxo_id.to_bytes()
+                || vtxo.amount().to_sat() != u64::from(accepted.amount)
+                || vtxo.expiry_height() != accepted.expiry_height
+                || vtxo.server_pubkey().serialize() != self.bark_application().ark_server_public_key
+            {
+                return Err(Error::SendProjectionFailed);
+            }
+            self.wallet
+                .import_vtxo(&FederationVtxoImport {
+                    locator: VtxoKeyLocator {
+                        index: accepted.locator.index,
+                    },
+                    vtxo,
+                    // Import the accepted origin before applying its accepted
+                    // reservation. `apply_lightning_send` performs the exact
+                    // spendable -> action-lock transition atomically in Bark.
+                    state: BarkFederationVtxoState::Spendable,
+                })
+                .await
+                .map_err(|_| Error::SendProjectionFailed)?;
+        }
+        self.wallet
+            .apply_lightning_send(&bark_plan)
+            .await
+            .map_err(|_| Error::SendProjectionFailed)?;
+        Ok(())
+    }
+
+    fn validate_send_quote<'a>(
+        &self,
+        quote: &'a MeltQuote,
+    ) -> Result<
+        (
+            &'a cdk_common::Bolt11Invoice,
+            cdk_common::Amount,
+            cdk_common::Amount,
+        ),
+        Error,
+    > {
+        let MeltPaymentRequest::Bolt11 { bolt11 } = &quote.request else {
+            return Err(Error::SendPlanInvalid);
+        };
+        if quote.unit != CurrencyUnit::Sat || quote.state != MeltQuoteState::Pending {
+            return Err(Error::SendPlanInvalid);
+        }
+        bolt11
+            .check_signature()
+            .map_err(|_| Error::SendPlanInvalid)?;
+        if bolt11.network() != self.network() {
+            return Err(Error::SendPlanInvalid);
+        }
+        let amount = cdk_common::Amount::from(quote.amount().value());
+        let fee = cdk_common::Amount::from(quote.fee_reserve().value());
+        let expected_msat = u64::from(amount)
+            .checked_mul(1_000)
+            .ok_or(Error::SendPlanInvalid)?;
+        if amount == cdk_common::Amount::ZERO
+            || bolt11.amount_milli_satoshis() != Some(expected_msat)
+            || fee
+                != self
+                    .policy()
+                    .maximum_outgoing_fee(amount)
+                    .map_err(|_| Error::SendPlanInvalid)?
+        {
+            return Err(Error::SendPlanInvalid);
+        }
+        Ok((bolt11, amount, fee))
     }
 
     /// Perform the sole Ark invoice RPC for an already accepted receive intent.
@@ -750,6 +1106,7 @@ impl FederatedBarkRuntime {
                 Ok(FederationBarkVtxoInput {
                     vtxo_id: FederationBarkVtxoId::from_bytes(vtxo.id().to_bytes())
                         .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
+                    locator: intent.destination,
                     amount: cdk_common::Amount::from(vtxo.amount().to_sat()),
                 })
             })
@@ -779,6 +1136,7 @@ impl FederatedBarkRuntime {
                 amount: cdk_common::Amount::from(claim.amount.to_sat()),
                 artifact_hash: request_artifact.hash,
             }],
+            revocation_locator: None,
             external_amount: cdk_common::Amount::ZERO,
             fee_amount: cdk_common::Amount::ZERO,
             fee_bound: cdk_common::Amount::ZERO,
@@ -919,6 +1277,7 @@ fn receive_htlc_transition(
                     .map_err(|_| Error::ReceiveObservationFailed)?,
                 locator: intent.destination,
                 amount: cdk_common::Amount::from(vtxo.amount().to_sat()),
+                expiry_height: vtxo.expiry_height(),
                 previous_state: None,
                 new_state: FederationBarkVtxoState::Observed,
                 artifact_hash: bark_digest(&bytes)?,
@@ -980,6 +1339,7 @@ fn receive_preimage_disclosed_transition(
                     .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
                 locator: intent.destination,
                 amount: cdk_common::Amount::from(vtxo.amount().to_sat()),
+                expiry_height: vtxo.expiry_height(),
                 previous_state: Some(FederationBarkVtxoState::Reserved),
                 new_state: FederationBarkVtxoState::PendingSpend,
                 artifact_hash: bark_digest(&bytes)?,
@@ -1039,6 +1399,7 @@ fn receive_claim_result(
                 .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
             locator: intent.destination,
             amount: cdk_common::Amount::from(vtxo.amount().to_sat()),
+            expiry_height: vtxo.expiry_height(),
             previous_state: Some(FederationBarkVtxoState::PendingSpend),
             new_state: FederationBarkVtxoState::Spent,
             artifact_hash: bark_digest(&bytes)?,
@@ -1065,6 +1426,7 @@ fn receive_claim_result(
                 .map_err(|_| Error::ReceiveClaimPlanInvalid)?,
             locator: output.locator,
             amount,
+            expiry_height: vtxo.expiry_height(),
             previous_state: None,
             new_state: FederationBarkVtxoState::Spendable,
             artifact_hash: bark_digest(&bytes)?,

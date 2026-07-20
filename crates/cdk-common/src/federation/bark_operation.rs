@@ -52,6 +52,8 @@ const BARK_MAILBOX_SCOPE_DOMAIN: &[u8] = b"cdk/federation/bark-mailbox-scope/v1"
 const BARK_RECEIVE_REQUEST_DOMAIN: &[u8] = b"cdk/federation/bark-receive-request/v1";
 const BARK_RECEIVE_RESULT_DOMAIN: &[u8] = b"cdk/federation/bark-receive-result/v1";
 const BARK_RECEIVE_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-receive-external-id/v1";
+const BARK_SEND_REQUEST_DOMAIN: &str = "cdk/federation/bark-send-request/v1";
+const BARK_SEND_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-send-external-id/v1";
 
 /// Commit to the exact bounded transcript presented to a Bark custody method.
 pub fn federation_bark_custody_transcript_hash(bytes: &[u8]) -> Result<FederationBarkDigest> {
@@ -255,6 +257,25 @@ impl FederationBarkActionId {
     }
 }
 
+impl FederationBarkExternalId {
+    /// Derive the frozen idempotency key for one outgoing Lightning action.
+    pub fn derive_lightning_send(
+        action_id: FederationBarkActionId,
+        predecessor_operation_id: FederationOperationId,
+        attempt: u32,
+    ) -> Result<Self> {
+        if attempt == 0 {
+            return Err(invalid_bark("Bark send attempt must be non-zero"));
+        }
+        let mut transcript = Vec::new();
+        append_hash_bytes(&mut transcript, BARK_SEND_EXTERNAL_ID_DOMAIN);
+        append_hash_bytes(&mut transcript, &action_id.to_bytes());
+        append_hash_bytes(&mut transcript, &predecessor_operation_id.to_bytes());
+        append_hash_bytes(&mut transcript, &attempt.to_be_bytes());
+        Self::from_bytes(Sha256Hash::hash(&transcript).to_byte_array())
+    }
+}
+
 /// Only currency unit admitted by the v1 Bark backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -419,6 +440,8 @@ pub struct FederationBarkReceivePrepared {
 pub struct FederationBarkVtxoInput {
     /// Canonical VTXO identifier.
     pub vtxo_id: FederationBarkVtxoId,
+    /// Exact consensus-owned custody locator.
+    pub locator: FederationBarkVtxoLocator,
     /// Accepted value in satoshis.
     pub amount: Amount,
 }
@@ -469,6 +492,8 @@ pub struct FederationBarkVtxoTransition {
     pub locator: FederationBarkVtxoLocator,
     /// Exact VTXO value in satoshis.
     pub amount: Amount,
+    /// Absolute block height at which the VTXO expires.
+    pub expiry_height: u32,
     /// Required prior state, or `None` when this transition creates the row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_state: Option<FederationBarkVtxoState>,
@@ -549,6 +574,9 @@ pub struct FederationBarkActionPlan {
     pub inputs: Vec<FederationBarkVtxoInput>,
     /// Exact sorted output allocation set.
     pub outputs: Vec<FederationBarkVtxoOutput>,
+    /// Exact revocation key allocation for an outgoing Lightning send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_locator: Option<FederationBarkVtxoLocator>,
     /// Value leaving Bark custody as an external Lightning payment.
     pub external_amount: Amount,
     /// Exact planned fee.
@@ -565,6 +593,28 @@ pub struct FederationBarkActionPlan {
     pub attempt: u32,
     /// Consensus-visible action expiry or chain-height bound.
     pub expires_at: u64,
+}
+
+#[derive(Serialize)]
+struct FederationBarkLightningSendRequestBinding<'a> {
+    domain: &'static str,
+    version: u16,
+    action_id: FederationBarkActionId,
+    quote: &'a str,
+    actor: MemberId,
+    predecessor_operation_id: FederationOperationId,
+    payment_hash: FederationBarkDigest,
+    inputs: &'a [FederationBarkVtxoInput],
+    output_locator: FederationBarkVtxoLocator,
+    output_amount: Amount,
+    revocation_locator: FederationBarkVtxoLocator,
+    external_amount: Amount,
+    fee_amount: Amount,
+    fee_bound: Amount,
+    external_id: FederationBarkExternalId,
+    signer_set: &'a [MemberId],
+    attempt: u32,
+    expires_at: u64,
 }
 
 /// Semantic Bark state fixed by an action plan or accepted transition.
@@ -997,6 +1047,9 @@ impl FederationBarkOperation {
                         locator: output.locator,
                     }
                 }));
+                if let Some(locator) = operation.revocation_locator {
+                    keys.push(FederationBarkConflictKey::Locator { locator });
+                }
                 keys
             }
             Self::ActionTransition(operation) => {
@@ -1364,6 +1417,130 @@ fn receive_external_id(
 }
 
 impl FederationBarkActionPlan {
+    /// Decode the exact canonical invoice bound to an outgoing plan.
+    pub fn lightning_send_invoice(&self) -> Result<Bolt11Invoice> {
+        if self.kind != FederationBarkActionKind::LightningSend {
+            return Err(invalid_bark("Bark action is not a Lightning send"));
+        }
+        let invoice = self
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == FederationBarkArtifactKind::Invoice)
+            .ok_or_else(|| invalid_bark("Bark Lightning send invoice artifact is missing"))?;
+        let invoice_text = std::str::from_utf8(&invoice.bytes)
+            .map_err(|_| invalid_bark("Bark Lightning send invoice is not UTF-8"))?;
+        let parsed = invoice_text
+            .parse::<Bolt11Invoice>()
+            .map_err(|_| invalid_bark("Bark Lightning send invoice is invalid"))?;
+        if parsed.to_string() != invoice_text {
+            return Err(invalid_bark("Bark Lightning send invoice is not canonical"));
+        }
+        Ok(parsed)
+    }
+
+    /// Bind the exact canonical BOLT11 invoice and Ark request transcript to
+    /// an outgoing plan. The request transcript excludes only its own artifact
+    /// hash, avoiding a circular commitment.
+    pub fn bind_lightning_send_artifacts(&mut self, invoice: &Bolt11Invoice) -> Result<()> {
+        if self.kind != FederationBarkActionKind::LightningSend {
+            return Err(invalid_bark(
+                "only a Lightning send may bind send artifacts",
+            ));
+        }
+        let invoice_bytes = invoice.to_string().into_bytes();
+        if invoice_bytes.is_empty() || invoice_bytes.len() > FEDERATION_MAX_BARK_INVOICE_BYTES {
+            return Err(invalid_bark("Bark send invoice is empty or oversized"));
+        }
+        let request_bytes = self.lightning_send_request_bytes()?;
+        let request = bark_artifact(FederationBarkArtifactKind::ArkRequest, request_bytes)?;
+        let invoice = bark_artifact(FederationBarkArtifactKind::Invoice, invoice_bytes)?;
+        let output = self
+            .outputs
+            .first_mut()
+            .ok_or_else(|| invalid_bark("Bark Lightning send has no HTLC/change allocation"))?;
+        output.artifact_hash = request.hash;
+        self.artifacts = vec![request, invoice];
+        self.artifacts.sort();
+        Ok(())
+    }
+
+    fn lightning_send_request_bytes(&self) -> Result<Vec<u8>> {
+        let quote = self
+            .quote
+            .as_deref()
+            .ok_or_else(|| invalid_bark("Bark Lightning send has no quote"))?;
+        let payment_hash = self
+            .payment_hash
+            .ok_or_else(|| invalid_bark("Bark Lightning send has no payment hash"))?;
+        let output = self
+            .outputs
+            .first()
+            .filter(|_| self.outputs.len() == 1)
+            .ok_or_else(|| invalid_bark("Bark Lightning send must allocate one HTLC/change key"))?;
+        let revocation_locator = self
+            .revocation_locator
+            .ok_or_else(|| invalid_bark("Bark Lightning send has no revocation locator"))?;
+        canonical_json_bytes(&FederationBarkLightningSendRequestBinding {
+            domain: BARK_SEND_REQUEST_DOMAIN,
+            version: self.version,
+            action_id: self.action_id,
+            quote,
+            actor: self.actor,
+            predecessor_operation_id: self.predecessor_operation_id,
+            payment_hash,
+            inputs: &self.inputs,
+            output_locator: output.locator,
+            output_amount: output.amount,
+            revocation_locator,
+            external_amount: self.external_amount,
+            fee_amount: self.fee_amount,
+            fee_bound: self.fee_bound,
+            external_id: self.external_id,
+            signer_set: &self.signer_set,
+            attempt: self.attempt,
+            expires_at: self.expires_at,
+        })
+    }
+
+    fn validate_lightning_send_artifacts(&self) -> Result<()> {
+        if self.artifacts.len() != 2 {
+            return Err(invalid_bark(
+                "Bark Lightning send must bind one request and one invoice artifact",
+            ));
+        }
+        let request = self
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == FederationBarkArtifactKind::ArkRequest)
+            .ok_or_else(|| invalid_bark("Bark Lightning send request artifact is missing"))?;
+        let invoice = self.lightning_send_invoice()?;
+        if request.bytes != self.lightning_send_request_bytes()?
+            || self.outputs[0].artifact_hash != request.hash
+        {
+            return Err(invalid_bark(
+                "Bark Lightning send request artifact differs from its plan",
+            ));
+        }
+        invoice
+            .check_signature()
+            .map_err(|_| invalid_bark("Bark Lightning send invoice signature is invalid"))?;
+        let expected_msat = u64::from(self.external_amount)
+            .checked_mul(1_000)
+            .ok_or_else(|| invalid_bark("Bark Lightning send amount overflow"))?;
+        if invoice.payment_hash().to_byte_array()
+            != self
+                .payment_hash
+                .ok_or_else(|| invalid_bark("Bark Lightning send has no payment hash"))?
+                .to_bytes()
+            || invoice.amount_milli_satoshis() != Some(expected_msat)
+        {
+            return Err(invalid_bark(
+                "Bark Lightning send invoice differs from its payment bindings",
+            ));
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<()> {
         ensure_version(self.version)?;
         ensure_optional_quote(self.quote.as_deref())?;
@@ -1375,9 +1552,20 @@ impl FederationBarkActionPlan {
         ensure_strictly_sorted("Bark outputs", &self.outputs)?;
         ensure_strictly_sorted("Bark artifacts", &self.artifacts)?;
         ensure_members_sorted_unique(&self.signer_set)?;
+        for input in &self.inputs {
+            input.locator.validate()?;
+        }
+        if self
+            .inputs
+            .windows(2)
+            .any(|pair| pair[0].vtxo_id == pair[1].vtxo_id)
+        {
+            return Err(invalid_bark("duplicate Bark action input VTXO"));
+        }
         for output in &self.outputs {
             output.locator.validate()?;
-            if output.amount == Amount::ZERO {
+            if output.amount == Amount::ZERO && self.kind != FederationBarkActionKind::LightningSend
+            {
                 return Err(invalid_bark("Bark action output must be non-zero"));
             }
             if !self
@@ -1409,12 +1597,36 @@ impl FederationBarkActionPlan {
             ));
         }
         if matches!(self.kind, FederationBarkActionKind::LightningSend) {
-            if self.external_amount == Amount::ZERO {
-                return Err(invalid_bark("Lightning send amount must be non-zero"));
+            let revocation_locator = self
+                .revocation_locator
+                .ok_or_else(|| invalid_bark("Lightning send has no revocation locator"))?;
+            revocation_locator.validate()?;
+            if self.external_amount == Amount::ZERO
+                || self.outputs.len() != 1
+                || self.outputs[0].locator == revocation_locator
+                || self.inputs.iter().any(|input| {
+                    input.locator == self.outputs[0].locator || input.locator == revocation_locator
+                })
+            {
+                return Err(invalid_bark(
+                    "Lightning send amount or key allocations are invalid",
+                ));
             }
-        } else if self.external_amount != Amount::ZERO {
+            if self.external_id
+                != FederationBarkExternalId::derive_lightning_send(
+                    self.action_id,
+                    self.predecessor_operation_id,
+                    self.attempt,
+                )?
+            {
+                return Err(invalid_bark(
+                    "Lightning send external id differs from its accepted action",
+                ));
+            }
+            self.validate_lightning_send_artifacts()?;
+        } else if self.external_amount != Amount::ZERO || self.revocation_locator.is_some() {
             return Err(invalid_bark(
-                "only Lightning send may move value outside Bark outputs",
+                "only Lightning send may move value outside Bark outputs or reserve a revocation key",
             ));
         }
         if matches!(self.kind, FederationBarkActionKind::IncomingClaim)
@@ -1476,8 +1688,10 @@ impl FederationBarkActionTransition {
         validate_artifacts(&self.artifacts)?;
         for transition in &self.vtxo_transitions {
             transition.locator.validate()?;
-            if transition.amount == Amount::ZERO {
-                return Err(invalid_bark("Bark VTXO transition amount must be non-zero"));
+            if transition.amount == Amount::ZERO || transition.expiry_height == 0 {
+                return Err(invalid_bark(
+                    "Bark VTXO transition amount and expiry must be non-zero",
+                ));
             }
             let artifact_matches = self.artifacts.iter().any(|artifact| {
                 artifact.kind == FederationBarkArtifactKind::Vtxo
@@ -2090,6 +2304,20 @@ fn validate_artifacts(artifacts: &[FederationBarkArtifact]) -> Result<()> {
     Ok(())
 }
 
+fn bark_artifact(
+    kind: FederationBarkArtifactKind,
+    bytes: Vec<u8>,
+) -> Result<FederationBarkArtifact> {
+    if bytes.is_empty() || bytes.len() > FEDERATION_MAX_BARK_ARTIFACT_BYTES {
+        return Err(invalid_bark("Bark artifact is empty or oversized"));
+    }
+    Ok(FederationBarkArtifact {
+        kind,
+        hash: FederationBarkDigest::from_bytes(Sha256Hash::hash(&bytes).to_byte_array())?,
+        bytes,
+    })
+}
+
 fn domain_hash(domain: &[u8], value: &[u8]) -> Result<FederationBarkDigest> {
     let mut transcript = Vec::new();
     append_hash_bytes(&mut transcript, domain);
@@ -2234,16 +2462,6 @@ mod tests {
         })
     }
 
-    fn artifact(seed: u8) -> FederationBarkArtifact {
-        let bytes = vec![seed; 16];
-        FederationBarkArtifact {
-            kind: FederationBarkArtifactKind::Vtxo,
-            hash: FederationBarkDigest::from_bytes(Sha256Hash::hash(&bytes).to_byte_array())
-                .expect("artifact digest"),
-            bytes,
-        }
-    }
-
     fn receive_prepared() -> FederationBarkOperation {
         FederationBarkOperation::ReceivePrepared(FederationBarkReceivePrepared {
             version: FEDERATION_BARK_OPERATION_VERSION,
@@ -2303,16 +2521,19 @@ mod tests {
     }
 
     fn send_plan() -> FederationBarkOperation {
-        FederationBarkOperation::ActionPlan(FederationBarkActionPlan {
+        let action_id = action(20);
+        let predecessor_operation_id = operation_id(19);
+        let mut plan = FederationBarkActionPlan {
             version: FEDERATION_BARK_OPERATION_VERSION,
-            action_id: action(20),
+            action_id,
             quote: Some("melt-quote-1".to_string()),
             kind: FederationBarkActionKind::LightningSend,
             actor: member(1),
-            predecessor_operation_id: operation_id(19),
+            predecessor_operation_id,
             payment_hash: Some(digest(21)),
             inputs: vec![FederationBarkVtxoInput {
                 vtxo_id: vtxo(22),
+                locator: FederationBarkVtxoLocator::vtxo_custody(7),
                 amount: Amount::from(110),
             }],
             outputs: vec![FederationBarkVtxoOutput {
@@ -2320,15 +2541,33 @@ mod tests {
                 amount: Amount::from(5),
                 artifact_hash: digest(23),
             }],
+            revocation_locator: Some(FederationBarkVtxoLocator::vtxo_custody(9)),
             external_amount: Amount::from(100),
             fee_amount: Amount::from(5),
             fee_bound: Amount::from(8),
-            artifacts: vec![artifact(24)],
-            external_id: external(26),
+            artifacts: Vec::new(),
+            external_id: FederationBarkExternalId::derive_lightning_send(
+                action_id,
+                predecessor_operation_id,
+                1,
+            )
+            .expect("send external id"),
             signer_set: vec![member(1), member(2)],
             attempt: 1,
             expires_at: 850_000,
-        })
+        };
+        let invoice = signed_receive_invoice(
+            Currency::Regtest,
+            [21; 32],
+            Some(100_000),
+            "send",
+            1_800_000_000,
+            3_600,
+            18,
+        );
+        plan.bind_lightning_send_artifacts(&invoice)
+            .expect("bind send artifacts");
+        FederationBarkOperation::ActionPlan(plan)
     }
 
     fn envelope(operation: FederationBarkOperation) -> FederationOperationEnvelope {
@@ -2628,6 +2867,74 @@ mod tests {
     }
 
     #[test]
+    fn lightning_send_binds_inputs_keys_fee_expiry_and_invoice() {
+        let FederationBarkOperation::ActionPlan(base) = send_plan() else {
+            panic!("action plan")
+        };
+        let mut mutations = Vec::new();
+        let mut changed = base.clone();
+        changed.inputs[0].locator = FederationBarkVtxoLocator::vtxo_custody(40);
+        mutations.push(changed);
+        let mut changed = base.clone();
+        changed.outputs[0].locator = FederationBarkVtxoLocator::vtxo_custody(41);
+        mutations.push(changed);
+        let mut changed = base.clone();
+        changed.revocation_locator = Some(FederationBarkVtxoLocator::vtxo_custody(42));
+        mutations.push(changed);
+        let mut changed = base.clone();
+        changed.fee_bound = Amount::from(9);
+        mutations.push(changed);
+        let mut changed = base.clone();
+        changed.expires_at += 1;
+        mutations.push(changed);
+        let mut changed = base;
+        let invoice = changed
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.kind == FederationBarkArtifactKind::Invoice)
+            .expect("invoice artifact");
+        invoice.bytes.push(b' ');
+        invoice.hash =
+            FederationBarkDigest::from_bytes(Sha256Hash::hash(&invoice.bytes).to_byte_array())
+                .expect("changed invoice hash");
+        changed.artifacts.sort();
+        mutations.push(changed);
+
+        for plan in mutations {
+            assert!(FederationBarkOperation::ActionPlan(plan)
+                .validate()
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn outgoing_fee_bound_rounds_up_conservatively() {
+        let policy = crate::federation::FederationBarkPolicyConfig::new(
+            0,
+            0,
+            10,
+            5_000,
+            18,
+            18,
+            144,
+            18,
+            30,
+            crate::federation::FederationBarkReceiveAntiDosPolicy::NoProof,
+        )
+        .expect("policy");
+        assert_eq!(
+            policy.maximum_outgoing_fee(Amount::from(1)).expect("fee"),
+            Amount::from(11),
+        );
+        assert_eq!(
+            policy
+                .maximum_outgoing_fee(Amount::from(1_000))
+                .expect("fee"),
+            Amount::from(15),
+        );
+    }
+
+    #[test]
     fn collection_artifact_and_invoice_bounds_fail_closed() {
         let FederationBarkOperation::ActionPlan(mut plan) = send_plan() else {
             panic!("action plan")
@@ -2635,6 +2942,7 @@ mod tests {
         plan.inputs = (1..=65)
             .map(|seed| FederationBarkVtxoInput {
                 vtxo_id: vtxo(seed),
+                locator: FederationBarkVtxoLocator::vtxo_custody(u32::from(seed)),
                 amount: Amount::from(1),
             })
             .collect();

@@ -2,11 +2,13 @@
 
 Date: 2026-07-19
 
-Status: implementation in progress; Milestones 0-5, 7, and 9-11 complete,
+Status: implementation in progress; Milestones 0-5, 7, and 9-12 complete,
 Milestones 6 and 8 are locally complete but retain the dependency-publication
 and PostgreSQL-runtime verification gates recorded below. Production incoming
 quote preparation, observation, threshold claim, and settlement bridging now
-exist; outgoing payment execution remains gated on Milestones 12-14
+exist; outgoing quotes, consensus planning, atomic reservation, and local Bark
+checkpoint reconstruction now exist, while outgoing Ark execution remains
+gated on Milestones 13-14
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
@@ -37,7 +39,7 @@ machine-specific metadata in this document.
 | 9. Receive secrets | Complete (2026-07-19) | Authenticated 4 KiB private transport, AES-GCM persistence-before-acknowledgement and crash recovery, threshold/actor signature checks, verified-checkpoint retention, encrypted backup/restore, and feature-isolation checks passed | `feat: protect federated Bark receive secrets` |
 | 10. Incoming preparation | Complete (2026-07-19) | Consensus-first secret protection and actor failover, exact signed-invoice validation, stable NUT-19 retry identity, restart-safe Ark reservation, ordinary `MintQuote` reuse, focused CDK/Bark tests, and production feature wiring passed | `feat: complete federated Bark quote preparation` |
 | 11. Incoming claim | Complete (2026-07-19) | Independent payment-hash polling, threshold-matched HTLC evidence, accepted exact claim plans, FROST/virtual-MuSig custody, durable preimage/result checkpoints, independently validated claimed VTXOs, two-layer result/payment quorums, and focused restart/adversarial tests passed | `feat: complete federated Bark incoming claims` |
-| 12. Outgoing planning | Pending | — | — |
+| 12. Outgoing planning | Complete (2026-07-19) | Conservative accepted-projection quotes, exact deterministic plans, adversarial binding checks, atomic competing-reservation rollback, local Bark `Start` checkpoint reconstruction, full common/CDK regressions, and production feature builds passed | `feat: complete federated Bark outgoing planning` |
 | 13. Outgoing execution | Pending | — | — |
 | 14. Failure recovery | Pending | — | — |
 | 15. Refresh and exit | Pending | — | — |
@@ -2538,6 +2540,85 @@ Exit criteria:
 - post-disclosure ambiguity follows retry/exit rather than unpaid.
 
 ### Milestone 12: outgoing planning and reservation
+
+Status: complete on 2026-07-19.
+
+Implementation record:
+
+- The Bark payment adapter now accepts only signed, exact-satoshi BOLT11
+  invoices on the configured network. It computes the accepted maximum fee as
+  `base + ceil(amount * ppm / 1_000_000)` and rejects unsupported units,
+  amountless invoices, MPP options, out-of-range amounts, overflow, or
+  insufficient accepted spendable balance before any Ark or chain call.
+- Quote balance checks read only the accepted public Bark projection. They do
+  not reserve VTXOs, allocate locators, inspect member-local Bark state, or
+  perform payment side effects.
+- The deterministic current melt lease actor builds one canonical send plan
+  from the applied melt operation, exact pending quote, accepted policy, and
+  accepted projection. Selection consumes spendable VTXOs in canonical VTXO-ID
+  order until the exact amount plus fee is covered; the next two unallocated
+  locator indexes become the HTLC/change and revocation locators.
+- The plan binds the exact invoice, payment hash, predecessor operation,
+  action/external IDs, actor, first-attempt signer set, input VTXO IDs, input
+  custody locators and values, change value and locator, revocation locator,
+  fee and fee bound, and absolute HTLC expiry. The request artifact is a
+  canonical commitment to those fields and the invoice is a separate exact
+  canonical artifact.
+- Stateful admission independently reconstructs the actor, threshold signer
+  set, candidate selection, change, both locator allocations, fee, invoice,
+  and expiry from accepted CDK state. A proposer cannot change any of them by
+  presenting a different locally convenient Bark plan.
+- Action insertion, every input reservation, the HTLC/change allocation, the
+  revocation allocation, transition insertion, and materialized-state rows are
+  applied in one existing mint database transaction. The VTXO compare-and-swap
+  update remains the concurrency authority; no new reservation subsystem was
+  introduced.
+- After consensus acceptance, every member imports the exact accepted VTXO
+  artifacts as their spendable origins and applies Bark's canonical send plan.
+  Bark atomically creates the movement, locks the inputs to the action, reveals
+  the accepted derivation locators locally, and persists the action at
+  `LightningSendProgress::Start`. Replay and startup reconciliation rebuild the
+  same checkpoint idempotently.
+- Milestone 12 deliberately never starts Bark's action executor. Ark HTLC
+  co-signing, payment initiation, status observation, and semantic result
+  transitions remain Milestone 13 work.
+
+Verification evidence:
+
+```text
+cargo test -p cdk-common --features federation,mint
+  passed: 442 unit tests, 8 integration tests, and the compile-fail doc test;
+  one benchmark-style unit test and three documentation examples were ignored
+
+cargo test -p cdk --features federation --lib
+  passed: 784 tests
+  note: the first sandboxed run reached 781 passes and only the three tests
+  requiring loopback listeners were denied by the sandbox; the permitted local
+  rerun passed all 784
+
+cargo test -p cdk-bark --features federation-bark
+  passed: 8 tests and doc tests
+
+cargo test -p cdk-sqlite --features federation \
+  federation_bark_projection_persistence -- --nocapture
+  passed: the projection lifecycle and competing outgoing reservation rollback
+
+cargo test -p cdk-axum --features federation-bark --no-run
+cargo check -p cdk-axum --features federation-bark
+cargo check -p cdk-mintd --features federation-bark
+  passed; the reviewed Bark dependency retains its two pre-existing warnings
+
+cargo clippy -p cdk-common --all-targets \
+  --features federation,mint --no-deps -- -D warnings
+cargo clippy -p cdk-bark --all-targets \
+  --features federation-bark --no-deps -- -D warnings
+  passed; the separate Bark dependency retains its two pre-existing warnings
+
+cargo clippy -p cdk-axum --all-targets \
+  --features federation-bark --no-deps -- -D warnings
+  remains blocked by the existing crate-wide Rust 1.95 lint backlog; no
+  diagnostic points to the new outgoing planner module
+```
 
 Deliverables:
 

@@ -673,6 +673,7 @@ where
         _ => FederationBarkVtxoState::Spendable,
     };
     if previous.state != expected_state
+        || previous.locator != input.locator
         || previous.amount != input.amount
         || previous.reservation_action_id.is_some()
     {
@@ -744,6 +745,7 @@ where
             if mutation.previous_state != Some(previous.state)
                 || previous.locator != mutation.locator
                 || previous.amount != mutation.amount
+                || previous.expiry_height != mutation.expiry_height
                 || previous.artifact != artifact
             {
                 return Err(invalid_projection(
@@ -801,6 +803,7 @@ where
                 vtxo_id: mutation.vtxo_id,
                 locator: mutation.locator,
                 amount: mutation.amount,
+                expiry_height: mutation.expiry_height,
                 state: mutation.new_state,
                 artifact,
                 reservation_action_id: None,
@@ -990,6 +993,23 @@ where
                 action_id: plan.action_id,
                 amount: output.amount,
                 artifact_hash: Some(output.artifact_hash),
+                vtxo_id: None,
+                vtxo_ids: Vec::new(),
+                materialized_amount: cdk_common::Amount::ZERO,
+                operation_id: entry.operation_id,
+                operation_index: entry.index,
+            },
+        )
+        .await?;
+    }
+    if let Some(locator) = plan.revocation_locator {
+        insert_allocation(
+            connection,
+            &FederationBarkDerivationAllocationRecord {
+                locator,
+                action_id: plan.action_id,
+                amount: cdk_common::Amount::ZERO,
+                artifact_hash: None,
                 vtxo_id: None,
                 vtxo_ids: Vec::new(),
                 materialized_amount: cdk_common::Amount::ZERO,

@@ -1965,12 +1965,16 @@ fn bark_mailbox_id() -> [u8; 33] {
 }
 
 fn bark_receive_invoice(payment_hash: sha256::Hash) -> Bolt11Invoice {
+    bark_invoice(payment_hash, 100_000)
+}
+
+fn bark_invoice(payment_hash: sha256::Hash, amount_msat: u64) -> Bolt11Invoice {
     let signing_key = SecpSecretKey::from_slice(&[42; 32]).expect("invoice signing key");
     InvoiceBuilder::new(Currency::Regtest)
         .description(String::new())
         .payment_hash(payment_hash)
         .payment_secret(PaymentSecret([43; 32]))
-        .amount_milli_satoshis(100_000)
+        .amount_milli_satoshis(amount_msat)
         .timestamp(UNIX_EPOCH + Duration::from_secs(1_800_000_000))
         .min_final_cltv_expiry_delta(18)
         .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &signing_key))
@@ -2139,8 +2143,9 @@ where
                 vtxo_id: input_vtxo,
                 locator: input_locator,
                 amount: Amount::from(100),
+                expiry_height: 900_000,
                 previous_state: None,
-                new_state: FederationBarkVtxoState::Spendable,
+                new_state: FederationBarkVtxoState::Observed,
                 artifact_hash: input_artifact.hash,
             }],
         }),
@@ -2161,6 +2166,7 @@ where
             payment_hash: Some(payment_hash),
             inputs: vec![FederationBarkVtxoInput {
                 vtxo_id: input_vtxo,
+                locator: input_locator,
                 amount: Amount::from(100),
             }],
             outputs: vec![FederationBarkVtxoOutput {
@@ -2168,10 +2174,19 @@ where
                 amount: Amount::from(100),
                 artifact_hash: output_artifact.hash,
             }],
+            revocation_locator: None,
             external_amount: Amount::ZERO,
             fee_amount: Amount::ZERO,
             fee_bound: Amount::ZERO,
-            artifacts: vec![plan_artifact],
+            artifacts: {
+                let mut artifacts = vec![
+                    plan_artifact,
+                    input_artifact.clone(),
+                    output_artifact.clone(),
+                ];
+                artifacts.sort();
+                artifacts
+            },
             external_id: bark_external(15),
             signer_set: vec![
                 MemberId::new(1).expect("member"),
@@ -2208,8 +2223,6 @@ where
     );
     apply_bark_entry(&db, &retry).await;
 
-    let mut artifacts = vec![input_artifact.clone(), output_artifact.clone()];
-    artifacts.sort();
     let settled = append_bark_operation(
         &mut journal,
         FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
@@ -2229,25 +2242,16 @@ where
             request_hash: bark_digest(19),
             result_hash: bark_digest(20),
             external_id: bark_external(21),
-            artifacts,
-            vtxo_transitions: vec![
-                FederationBarkVtxoTransition {
-                    vtxo_id: input_vtxo,
-                    locator: input_locator,
-                    amount: Amount::from(100),
-                    previous_state: Some(FederationBarkVtxoState::Reserved),
-                    new_state: FederationBarkVtxoState::Spent,
-                    artifact_hash: input_artifact.hash,
-                },
-                FederationBarkVtxoTransition {
-                    vtxo_id: output_vtxo,
-                    locator: output_locator,
-                    amount: Amount::from(100),
-                    previous_state: None,
-                    new_state: FederationBarkVtxoState::Spendable,
-                    artifact_hash: output_artifact.hash,
-                },
-            ],
+            artifacts: vec![input_artifact.clone()],
+            vtxo_transitions: vec![FederationBarkVtxoTransition {
+                vtxo_id: input_vtxo,
+                locator: input_locator,
+                amount: Amount::from(100),
+                expiry_height: 900_000,
+                previous_state: Some(FederationBarkVtxoState::Reserved),
+                new_state: FederationBarkVtxoState::PendingSpend,
+                artifact_hash: input_artifact.hash,
+            }],
         }),
     );
     apply_bark_entry(&db, &settled).await;
@@ -2271,7 +2275,7 @@ where
         .await
         .expect("load Bark projection");
     assert_eq!(snapshot.actions.len(), 1);
-    assert_eq!(snapshot.vtxos.len(), 2);
+    assert_eq!(snapshot.vtxos.len(), 1);
     assert_eq!(snapshot.derivation_allocations.len(), 2);
     assert_eq!(snapshot.reservations.len(), 1);
     assert_eq!(snapshot.transitions.len(), 5);
@@ -2280,8 +2284,10 @@ where
         snapshot.actions[0].latest_operation_id,
         settled.operation_id
     );
-    assert_eq!(snapshot.vtxos[0].state, FederationBarkVtxoState::Spent);
-    assert_eq!(snapshot.vtxos[1].state, FederationBarkVtxoState::Spendable);
+    assert_eq!(
+        snapshot.vtxos[0].state,
+        FederationBarkVtxoState::PendingSpend
+    );
     assert_eq!(
         snapshot.canonical_bytes().expect("canonical snapshot"),
         serde_json::to_vec(&snapshot).expect("snapshot JSON")
@@ -2291,7 +2297,7 @@ where
             .materialized_rows()
             .expect("materialized rows")
             .len(),
-        11
+        10
     );
 
     let conflicting = append_bark_operation(
@@ -2313,8 +2319,31 @@ where
             request_hash: bark_digest(22),
             result_hash: bark_digest(23),
             external_id: bark_external(24),
-            artifacts: vec![output_artifact],
-            vtxo_transitions: Vec::new(),
+            artifacts: {
+                let mut artifacts = vec![input_artifact.clone(), output_artifact.clone()];
+                artifacts.sort();
+                artifacts
+            },
+            vtxo_transitions: vec![
+                FederationBarkVtxoTransition {
+                    vtxo_id: input_vtxo,
+                    locator: input_locator,
+                    amount: Amount::from(100),
+                    expiry_height: 900_000,
+                    previous_state: Some(FederationBarkVtxoState::PendingSpend),
+                    new_state: FederationBarkVtxoState::Spent,
+                    artifact_hash: input_artifact.hash,
+                },
+                FederationBarkVtxoTransition {
+                    vtxo_id: output_vtxo,
+                    locator: output_locator,
+                    amount: Amount::from(100),
+                    expiry_height: 900_000,
+                    previous_state: None,
+                    new_state: FederationBarkVtxoState::Spendable,
+                    artifact_hash: output_artifact.hash,
+                },
+            ],
         }),
     );
     let FederationOperation::Bark(conflicting_operation) = &conflicting.envelope.operation else {
@@ -2352,8 +2381,31 @@ where
             request_hash: bark_digest(25),
             result_hash: bark_digest(26),
             external_id: bark_external(27),
-            artifacts: Vec::new(),
-            vtxo_transitions: Vec::new(),
+            artifacts: {
+                let mut artifacts = vec![input_artifact.clone(), output_artifact.clone()];
+                artifacts.sort();
+                artifacts
+            },
+            vtxo_transitions: vec![
+                FederationBarkVtxoTransition {
+                    vtxo_id: input_vtxo,
+                    locator: input_locator,
+                    amount: Amount::from(100),
+                    expiry_height: 900_000,
+                    previous_state: Some(FederationBarkVtxoState::PendingSpend),
+                    new_state: FederationBarkVtxoState::Spent,
+                    artifact_hash: input_artifact.hash,
+                },
+                FederationBarkVtxoTransition {
+                    vtxo_id: output_vtxo,
+                    locator: output_locator,
+                    amount: Amount::from(100),
+                    expiry_height: 900_000,
+                    previous_state: None,
+                    new_state: FederationBarkVtxoState::Spendable,
+                    artifact_hash: output_artifact.hash,
+                },
+            ],
         }),
     );
     apply_bark_entry(&db, &claimed).await;
@@ -2421,7 +2473,7 @@ where
                 .expect("canonical Bark projection bytes")
         )
         .to_string(),
-        "81cea4507814d6365ef32f3b2250e87269ef2256d72a978fc1a0b2bde0a738bb"
+        "11747b14cab6b6e9f41d88dff49e9f93610199acfdeca72db59d7365e6c3689d"
     );
 
     apply_bark_entry(&db, &intent).await;
@@ -2432,6 +2484,99 @@ where
             .expect("projection after replay"),
         terminal_snapshot
     );
+
+    let send_plan = |action_seed: u8,
+                     quote: &str,
+                     predecessor_seed: u8,
+                     payment_seed: u8,
+                     output_index: u32|
+     -> FederationBarkActionPlan {
+        let action_id = bark_action(action_seed);
+        let predecessor_operation_id = FederationOperationId::from_bytes([predecessor_seed; 32]);
+        let payment = sha256::Hash::hash(&[payment_seed]);
+        let invoice = bark_invoice(payment, 90_000);
+        let mut plan = FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some(quote.to_string()),
+            kind: FederationBarkActionKind::LightningSend,
+            actor: MemberId::new(1).expect("member"),
+            predecessor_operation_id,
+            payment_hash: Some(
+                FederationBarkDigest::from_bytes(payment.to_byte_array()).expect("payment hash"),
+            ),
+            inputs: vec![FederationBarkVtxoInput {
+                vtxo_id: output_vtxo,
+                locator: output_locator,
+                amount: Amount::from(100),
+            }],
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: FederationBarkVtxoLocator::vtxo_custody(output_index),
+                amount: Amount::from(5),
+                artifact_hash: bark_digest(90),
+            }],
+            revocation_locator: Some(FederationBarkVtxoLocator::vtxo_custody(output_index + 1)),
+            external_amount: Amount::from(90),
+            fee_amount: Amount::from(5),
+            fee_bound: Amount::from(5),
+            artifacts: Vec::new(),
+            external_id: FederationBarkExternalId::derive_lightning_send(
+                action_id,
+                predecessor_operation_id,
+                1,
+            )
+            .expect("send external id"),
+            signer_set: vec![
+                MemberId::new(1).expect("member"),
+                MemberId::new(2).expect("member"),
+            ],
+            attempt: 1,
+            expires_at: 899_982,
+        };
+        plan.bind_lightning_send_artifacts(&invoice)
+            .expect("bind send artifacts");
+        plan
+    };
+    let first_send = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionPlan(send_plan(40, "send-one", 41, 42, 20)),
+    );
+    apply_bark_entry(&db, &first_send).await;
+
+    let mut concurrent_journal = InMemoryFederationJournal::new();
+    let second_send = append_bark_operation(
+        &mut concurrent_journal,
+        FederationBarkOperation::ActionPlan(send_plan(43, "send-two", 44, 45, 22)),
+    );
+    let FederationOperation::Bark(second_operation) = &second_send.envelope.operation else {
+        panic!("expected second send")
+    };
+    let mut concurrent_tx = Database::begin_transaction(&db)
+        .await
+        .expect("begin competing send transaction");
+    assert!(concurrent_tx
+        .apply_federation_bark_operation(&second_send, second_operation)
+        .await
+        .is_err());
+    concurrent_tx
+        .rollback()
+        .await
+        .expect("roll back competing send");
+    let reserved = db
+        .get_federation_bark_projection_snapshot()
+        .await
+        .expect("reserved Bark projection");
+    let output = reserved
+        .vtxos
+        .iter()
+        .find(|vtxo| vtxo.vtxo_id == output_vtxo)
+        .expect("reserved VTXO");
+    assert_eq!(output.state, FederationBarkVtxoState::Reserved);
+    assert_eq!(output.reservation_action_id, Some(bark_action(40)));
+    assert!(reserved
+        .actions
+        .iter()
+        .all(|action| action.action_id != bark_action(43)));
 }
 
 /// Assert payment observations persist as durable per-member quorum evidence.

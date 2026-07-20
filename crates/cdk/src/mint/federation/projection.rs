@@ -8,11 +8,13 @@ use cdk_common::error::Error;
 use cdk_common::federation::{
     ark_server_commitment, FederatedKeyset, FederationBarkActionKind,
     FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
-    FederationBarkReceiveIntent, FederationBarkSemanticPhase, FederationBarkVtxoState,
-    FederationMaterializedStateKey, FederationMaterializedStateRow,
-    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
-    FederationPaymentObservationRecord,
+    FederationBarkReceiveIntent, FederationBarkSemanticPhase, FederationBarkVtxoInput,
+    FederationBarkVtxoLocator, FederationBarkVtxoState, FederationMaterializedStateKey,
+    FederationMaterializedStateRow, FederationMaterializedStateSnapshot, FederationOperation,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservationRecord,
+    FEDERATION_MAX_DERIVATION_INDEX,
 };
+use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::mint::Operation;
 use cdk_common::{Amount, PublicKey};
 use tracing::instrument;
@@ -201,6 +203,7 @@ impl Mint {
                         .ok_or_else(|| bark_state_error("claim plan input is unknown"))?;
                     if vtxo.state != FederationBarkVtxoState::Observed
                         || vtxo.amount != input.amount
+                        || vtxo.locator != input.locator
                         || vtxo.locator
                             != self
                                 .federation_bark_receive_intent(action.origin_operation_id)
@@ -212,6 +215,160 @@ impl Mint {
                             "claim plan input differs from accepted HTLC evidence",
                         ));
                     }
+                }
+            }
+            FederationBarkOperation::ActionPlan(plan)
+                if plan.kind == FederationBarkActionKind::LightningSend =>
+            {
+                if action.is_some() {
+                    return Err(bark_state_error("Lightning send action already exists"));
+                }
+                let predecessor = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(plan.predecessor_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("Lightning send predecessor is missing"))?;
+                let FederationOperation::Melt(melt) = &predecessor.envelope.operation else {
+                    return Err(bark_state_error(
+                        "Lightning send predecessor is not an accepted melt",
+                    ));
+                };
+                if predecessor.status() != FederationOperationStatus::Applied {
+                    return Err(bark_state_error(
+                        "Lightning send predecessor is not applied",
+                    ));
+                }
+                let quote_label = plan
+                    .quote
+                    .as_deref()
+                    .ok_or_else(|| bark_state_error("Lightning send quote is missing"))?;
+                if melt.request.quote() != quote_label {
+                    return Err(bark_state_error(
+                        "Lightning send quote differs from its melt",
+                    ));
+                }
+                let quote_id = QuoteId::from_str(quote_label)
+                    .map_err(|_| bark_state_error("Lightning send quote id is invalid"))?;
+                let quote = self
+                    .localstore()
+                    .get_melt_quote(&quote_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("Lightning send quote is missing"))?;
+                let MeltPaymentRequest::Bolt11 { bolt11 } = &quote.request else {
+                    return Err(bark_state_error("Lightning send quote is not BOLT11"));
+                };
+                if quote.state != cdk_common::MeltQuoteState::Pending
+                    || quote.unit != cdk_common::CurrencyUnit::Sat
+                    || bolt11.network() != application.network
+                    || plan.lightning_send_invoice()? != *bolt11
+                    || u64::from(plan.external_amount) != quote.amount().value()
+                    || u64::from(plan.fee_bound) != quote.fee_reserve().value()
+                    || plan.fee_amount != plan.fee_bound
+                    || application
+                        .policy
+                        .maximum_outgoing_fee(plan.external_amount)
+                        .map_err(Error::from)?
+                        != plan.fee_bound
+                {
+                    return Err(bark_state_error(
+                        "Lightning send differs from its accepted quote or fee policy",
+                    ));
+                }
+                let expected_action = cdk_common::federation::FederationBarkActionId::derive(
+                    config.federation_id(),
+                    plan.predecessor_operation_id,
+                    FederationBarkSemanticPhase::SendPlanned,
+                    0,
+                )?;
+                let author = predecessor
+                    .envelope
+                    .verify_authorization(config.public_config())?;
+                let expected_actor = self
+                    .federation_melt_payment_lease_actor(&config, author, predecessor.index)
+                    .await?;
+                let expected_signers = config
+                    .public_config()
+                    .members
+                    .keys()
+                    .copied()
+                    .take(usize::from(application.threshold))
+                    .collect::<Vec<_>>();
+                if plan.action_id != expected_action
+                    || plan.actor != expected_actor
+                    || plan.signer_set != expected_signers
+                    || plan.attempt != 1
+                {
+                    return Err(bark_state_error(
+                        "Lightning send actor, action, signer set, or attempt is not deterministic",
+                    ));
+                }
+
+                let target = plan
+                    .external_amount
+                    .checked_add(plan.fee_amount)
+                    .ok_or_else(|| bark_state_error("Lightning send target amount overflow"))?;
+                let mut expected_inputs = Vec::new();
+                let mut selected_amount = Amount::ZERO;
+                let mut minimum_expiry = u32::MAX;
+                for vtxo in snapshot
+                    .vtxos
+                    .iter()
+                    .filter(|vtxo| vtxo.state == FederationBarkVtxoState::Spendable)
+                {
+                    expected_inputs.push(FederationBarkVtxoInput {
+                        vtxo_id: vtxo.vtxo_id,
+                        locator: vtxo.locator,
+                        amount: vtxo.amount,
+                    });
+                    selected_amount =
+                        selected_amount.checked_add(vtxo.amount).ok_or_else(|| {
+                            bark_state_error("Lightning send selected amount overflow")
+                        })?;
+                    minimum_expiry = minimum_expiry.min(vtxo.expiry_height);
+                    if selected_amount >= target {
+                        break;
+                    }
+                }
+                expected_inputs.sort();
+                if selected_amount < target || expected_inputs != plan.inputs {
+                    return Err(bark_state_error(
+                        "Lightning send inputs are not the deterministic accepted selection",
+                    ));
+                }
+                let expected_expiry = minimum_expiry
+                    .checked_sub(application.policy.emergency_exit_before_expiry_blocks)
+                    .filter(|height| *height != 0)
+                    .ok_or_else(|| bark_state_error("Lightning send expiry is unsafe"))?;
+                let output_index = snapshot
+                    .derivation_allocations
+                    .iter()
+                    .map(|allocation| allocation.locator.index)
+                    .max()
+                    .map_or(Ok(0), |index| {
+                        index
+                            .checked_add(1)
+                            .ok_or_else(|| bark_state_error("Bark locator space is exhausted"))
+                    })?;
+                let revocation_index = output_index
+                    .checked_add(1)
+                    .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
+                    .ok_or_else(|| bark_state_error("Bark locator space is exhausted"))?;
+                let output = plan
+                    .outputs
+                    .first()
+                    .ok_or_else(|| bark_state_error("Lightning send output is missing"))?;
+                let expected_change = selected_amount
+                    .checked_sub(target)
+                    .ok_or_else(|| bark_state_error("Lightning send change underflow"))?;
+                if output.locator != FederationBarkVtxoLocator::vtxo_custody(output_index)
+                    || output.amount != expected_change
+                    || plan.revocation_locator
+                        != Some(FederationBarkVtxoLocator::vtxo_custody(revocation_index))
+                    || plan.expires_at != u64::from(expected_expiry)
+                {
+                    return Err(bark_state_error(
+                        "Lightning send change, locators, or expiry is not deterministic",
+                    ));
                 }
             }
             FederationBarkOperation::ActionTransition(transition)

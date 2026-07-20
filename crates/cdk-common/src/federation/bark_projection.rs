@@ -210,6 +210,8 @@ pub struct FederationBarkVtxoRecord {
     pub locator: FederationBarkVtxoLocator,
     /// Exact value.
     pub amount: Amount,
+    /// Absolute block height at which the VTXO expires.
+    pub expiry_height: u32,
     /// Current lifecycle state.
     pub state: FederationBarkVtxoState,
     /// Immutable canonical VTXO bytes and hash.

@@ -121,6 +121,15 @@ pub enum Error {
     /// Exact incoming claim planning failed closed.
     #[error("federated Bark receive claim plan is invalid")]
     ReceiveClaimPlanInvalid,
+    /// Accepted public VTXOs cannot cover the outgoing amount and fee.
+    #[error("federated Bark accepted balance is insufficient")]
+    InsufficientAcceptedBalance,
+    /// Exact outgoing planning or validation failed closed.
+    #[error("federated Bark send plan is invalid")]
+    SendPlanInvalid,
+    /// An accepted outgoing plan could not be materialized locally.
+    #[error("federated Bark send projection failed")]
+    SendProjectionFailed,
     /// An accepted incoming claim could not be executed or recovered.
     #[error("federated Bark receive claim requires recovery")]
     ReceiveClaimRecoveryRequired,
