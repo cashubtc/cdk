@@ -532,7 +532,7 @@ impl LightningClient for ClnClient {
         while count < 100 {
             let info = self.get_info().await?;
 
-            if info.warning_lightningd_sync.is_none() || info.warning_bitcoind_sync.is_none() {
+            if info.warning_lightningd_sync.is_none() && info.warning_bitcoind_sync.is_none() {
                 tracing::info!("CLN completed chain sync");
                 return Ok(());
             }
