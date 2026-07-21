@@ -180,18 +180,19 @@ mod tests {
 
     #[test]
     fn test_batch_msg_to_sign_matches_nut29_vector() {
+        let quote_id = "019e6d5a-2347-7000-8c81-a1e0dbf3299f".to_string();
         let request = BatchMintRequest {
-            quotes: vec!["locked-quote".to_string()],
+            quotes: vec![quote_id.clone()],
             quote_amounts: None,
             outputs: test_vector_outputs(),
             signatures: None,
         };
 
-        let msg = request.msg_to_sign(&"locked-quote".to_string());
+        let msg = request.msg_to_sign(&quote_id);
 
         assert_eq!(
             crate::util::hex::encode(&msg),
-            "43617368755f4d696e7451756f74655369675f76310000000c6c6f636b65642d71756f7465000000010100000021036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2000000010100000021021f8a566c205633d029094747d2e18f44e05993dda7a5f88f496078205f656e59"
+            "43617368755f4d696e7451756f74655369675f76310000002430313965366435612d323334372d373030302d386338312d613165306462663332393966000000010100000021036d6caac248af96f6afa7f904f550253a0f3ef3f5aa2fe6838a95b216691468e2000000010100000021021f8a566c205633d029094747d2e18f44e05993dda7a5f88f496078205f656e59"
         );
 
         use bitcoin::hashes::sha256::Hash as Sha256Hash;
@@ -199,13 +200,13 @@ mod tests {
 
         assert_eq!(
             Sha256Hash::hash(&msg).to_string(),
-            "03dc68d6617bba502d8648efd0965bf393841082cf04fd03e5de4bcb5777cdfc"
+            "dad25acc587637206d73398894d337f983a0ca644746e8673727eaa0b29fa9b4"
         );
     }
 
     #[test]
     fn test_batch_signature_matches_nut29_vector() {
-        let quote_id = "locked-quote".to_string();
+        let quote_id = "019e6d5a-2347-7000-8c81-a1e0dbf3299f".to_string();
         let pubkey = PublicKey::from_hex(
             "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
         )
@@ -215,14 +216,14 @@ mod tests {
             quote_amounts: None,
             outputs: test_vector_outputs(),
             signatures: Some(vec![Some(
-                "a913e48177027d87e0e38c6f2021763c46997ff4866a4b63ebca800b0776b28519eab37377cf9bc1869e489d7b25747b7a998eaa1c33c2cac7fa168449d8267a".to_string(),
+                "0c39431338a0202568b9a1d4215c99f179cbb8ee5472ac5ae7133fbb8f99cafbb9e425ad33c60224c96b8f9f984f004379a18e9558468d129b6b03f0da6de162".to_string(),
             )]),
         };
 
         request
             .verify_quote_signature(
                 &quote_id,
-                "a913e48177027d87e0e38c6f2021763c46997ff4866a4b63ebca800b0776b28519eab37377cf9bc1869e489d7b25747b7a998eaa1c33c2cac7fa168449d8267a",
+                "0c39431338a0202568b9a1d4215c99f179cbb8ee5472ac5ae7133fbb8f99cafbb9e425ad33c60224c96b8f9f984f004379a18e9558468d129b6b03f0da6de162",
                 &pubkey,
             )
             .expect("verification should succeed");
