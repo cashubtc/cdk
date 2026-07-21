@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, and 6C complete; Milestones 2 and 7 rejected; Milestone 8 in progress
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, and 8 complete; Milestones 2, 7, and 7A rejected
 
 First recorded: 2026-07-20
 
@@ -864,7 +864,7 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 6C | Reconcile a paid federated melt after the wallet loses its aggregate response | Complete | `fix: retain ambiguous wallet melts for recovery` |
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Rejected | `docs: record Bark payment consensus timing evaluation` |
 | 7A | Re-evaluate compounded active consensus cadence across serial payment boundaries | Rejected | `perf: complete federated Bark BOLT11 optimization` |
-| 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | In progress | - |
+| 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Complete | `perf: complete federated Bark BOLT11 optimization` |
 
 ## Milestone 0: causal baseline
 
@@ -2663,7 +2663,7 @@ and single favorable payments cannot complete this milestone.
 
 ### Checklist
 
-- [ ] Build release `cdk-mintd` and federation-enabled `cdk-cli` from the exact
+- [x] Build release `cdk-mintd` and federation-enabled `cdk-cli` from the exact
       candidate commit and record source revision and binary hashes.
 - [x] Run the deterministic harness through every progression, no-progress,
       wake, restart, and terminal path.
@@ -2680,8 +2680,8 @@ and single favorable payments cannot complete this milestone.
   - [x] old expired work plus new healthy payments.
 - [x] Run at least five incoming and five outgoing real Signet samples with the
       local five-member federation, local CLI, faucet, and store.
-- [ ] Deploy the exact candidate to Nocean only after local gates pass.
-- [ ] Perform only a narrowly scoped Nocean deployment smoke check; do not run
+- [x] Deploy the exact candidate to Nocean only after local gates pass.
+- [x] Perform only a narrowly scoped Nocean deployment smoke check; do not run
       the repeated workload or member-failure matrix on the remote server.
 - [x] Verify exact journal, application, finalized-item, Bark projection,
       materialized-state, quote, saga, VTXO, and balance convergence.
@@ -2840,6 +2840,40 @@ Final local validation on the candidate source passed:
 - affected-package formatting, workspace all-target check, and strict
   workspace all-target Clippy with `-D warnings`.
 
+The exact release source was CDK `2c9359634d1a` and Bark base
+`aa98f5685d70`. The Bark checkout contained the established federation source
+change used throughout these milestones; its modified `federation.rs` content
+hash was
+`6080bb5bf3dc60c99de6325d92ba4a7f67d954c6d905d88e8d2af04f77cbff67`.
+The deployment-equivalent Linux/amd64 release hashes were:
+
+- `cdk-mintd`:
+  `38ddeaa8132a19c7277f7b28f7cc7b73166694ecc99ecff6359cbf2019754a32`;
+- federation-enabled `cdk-cli`:
+  `92e92461f6a0e770e8a86258dcf6fb8613fc2ec18e4f73b362fc772a4f3c8b8c`.
+
+After every local gate passed, the default update deployment replaced only
+the binaries and control script on Nocean, preserving the existing databases
+and DKG material. The running remote binary hashes matched the two hashes
+above. All five member processes and the status process were alive; all five
+members reported ready and converged with zero operation lag, identical order
+and application digests, Bark ready, no digest/payment/invalid-operation
+alerts, and the current Aleph session live. All five public info routes
+returned HTTP 200. A bounded scan of the latest 500 log lines per member found
+zero `local_rate_limited`, `ResourceExhausted`, actor-mismatch,
+invalid-operation, audit-mismatch, or panic signatures. No payment or fault
+workload was run on the remote host.
+
+Decision: **Kept.** Designated publication remains enabled. Its controlled
+five-run comparison cut median application-bearing messages from 168 to 28
+and bytes from 180,600 to 30,128 while median finality improved from 2,137ms
+to 2,048ms. The compounded-cadence experiment independently held application
+messages fixed and showed that faster cadence buys latency only by adding
+9-17% helper traffic. The retained implementation therefore keeps both
+designated publication and the 500ms cadence. The 33-second incoming and
+outgoing p95/max remains an explicit miss against the initial 25-second target,
+not a hidden release success.
+
 ## End-to-end verification matrix
 
 - [x] Healthy 3-of-5 incoming and outgoing success.
@@ -2927,6 +2961,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | Milestone 8 sustained Signet gate | local release, fresh five-member loopback federation, SQLite, real Signet | five 10,000-sat incoming and five 1,000-sat outgoing successes | incoming Bark-to-issued 27/27/33/29/29s, median 29s and p95/max 33s, 15 operations each; outgoing durable 30/27/27/27/33s, median 27s and p95/max 33s, 10 operations and exact 25-sat fee each; no rate-limit or safety error | The retained design is materially faster and leaner than baseline, but both 25-second initial p95 targets remain explicit misses. Every payment completed exactly once and all members converged. |
 | 2026-07-21 | Milestone 7A active-cadence A/B, reverted | controlled five-member loopback sessions | three ten-serial-operation samples each at 500/400/350/250ms | median elapsed 25,245/22,264/20,568/14,973ms; application messages fixed at 40; median total messages 1,028/1,124/1,184/1,204 | Keep designated publication and 500ms cadence. Fewer publishers did not add delay; faster cadence clears the latency gate only with 9-17% more helper traffic and is rejected. |
 | 2026-07-21 | Milestone 8 restart release gate | local release, five members, injected stale session and removed local next-session backup | quorum-supported session recovery | member 5 restarted from persisted session 0 while peers were on session 1, recovered peer session data, persisted session 1, and all five returned ready | Stop a strictly older live session when a same-frontier quorum selects a newer session, then reuse existing replay. This fixes the observed restart deadlock without weakening divergence checks. |
+| 2026-07-21 | `2c9359634d1a`, exact Linux release hashes recorded above | Nocean update deployment, five existing members, narrow smoke only | binary replacement, restart, convergence, public health, and bounded log scan | remote hashes matched; five members ready and converged at zero lag with Bark ready and live session 1; five public info routes returned 200; zero known failure signatures in the latest 500 lines per member | Final deployment gate passed without resetting DKG/database state or using the remote host for benchmark and fault workloads. |
 
 ## Completion checklist
 
@@ -2945,9 +2980,9 @@ Append future evidence here rather than rewriting historical results.
       safety or side-effect boundary.
 - [x] Maintenance does not compete with active payments and safely terminal
       work stops.
-- [ ] Repeated local federation, CLI, faucet, and store measurements satisfy
+- [x] Repeated local federation, CLI, faucet, and store measurements satisfy
       the retained milestone gates; the Nocean deployment smoke check passes.
-- [ ] Restart, replay, catch-up, member loss, rate limit, threshold failure,
+- [x] Restart, replay, catch-up, member loss, rate limit, threshold failure,
       federated BDK, and standalone regressions pass.
-- [ ] Production observability explains every material delay without logging
+- [x] Production observability explains every material delay without logging
       secrets or high-cardinality identifiers.
