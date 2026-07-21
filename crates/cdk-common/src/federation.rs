@@ -1612,9 +1612,11 @@ mod tests {
 
     use bitcoin::base64::engine::general_purpose;
     use bitcoin::base64::Engine as _;
+    use cashu::dhke::verify_bls_blind_signature;
     use cashu::nuts::nut01::{
-        evaluate_secret_key_coefficients, trusted_dealer_keygen, BlsG1PublicKey, BlsSecretKey,
-        BlsSecretKeyShare,
+        aggregate_blind_signature_shares, aggregate_public_key_shares,
+        evaluate_secret_key_coefficients, trusted_dealer_keygen, verify_blind_signature_share,
+        BlsG1PublicKey, BlsSecretKey, BlsSecretKeyShare,
     };
 
     use crate::nuts::nut02::KeySetVersion;
@@ -2789,6 +2791,7 @@ mod tests {
             .expect("participant reveals");
 
         let mut expected_keyset = None;
+        let mut member_secret_shares = BTreeMap::new();
         for receiver in members.keys().copied() {
             let participant_secret_shares = participants
                 .iter()
@@ -2812,8 +2815,9 @@ mod tests {
             assert_eq!(material.secret_shares.len(), keyset_spec.amounts.len());
             match &expected_keyset {
                 Some(expected) => assert_eq!(&material.keyset, expected),
-                None => expected_keyset = Some(material.keyset),
+                None => expected_keyset = Some(material.keyset.clone()),
             }
+            member_secret_shares.insert(receiver, material.secret_shares);
         }
 
         let keyset = expected_keyset.expect("derived keyset");
@@ -2821,6 +2825,72 @@ mod tests {
         assert_eq!(keyset.input_fee_ppk, keyset_spec.input_fee_ppk);
         assert_eq!(keyset.final_expiry, keyset_spec.final_expiry);
         keyset.validate(params, &members).expect("keyset validates");
+
+        let amount = Amount::from(1);
+        let blinded_message = BlsG1PublicKey::hash_to_curve(b"dealer-free DKG threshold signing");
+        let signature_shares = members
+            .keys()
+            .map(|member_id| {
+                let secret_share = member_secret_shares
+                    .get(member_id)
+                    .and_then(|shares| shares.get(&amount))
+                    .expect("member secret share");
+                let signature_share = secret_share.blind_sign_share(&blinded_message);
+                let public_share = keyset
+                    .public_shares
+                    .get(member_id)
+                    .and_then(|shares| shares.get(&amount))
+                    .expect("member public share");
+                assert!(verify_blind_signature_share(
+                    &signature_share,
+                    &blinded_message,
+                    public_share
+                )
+                .expect("signature share verification"));
+                signature_share
+            })
+            .collect::<Vec<_>>();
+
+        let threshold = usize::from(params.signature_threshold);
+        let signature_subset = [
+            signature_shares[0],
+            signature_shares[2],
+            signature_shares[4],
+        ];
+        let aggregate_signature = aggregate_blind_signature_shares(threshold, &signature_subset)
+            .expect("aggregate threshold signature");
+        let public_subset = [
+            *keyset
+                .public_shares
+                .get(&member_id(1))
+                .and_then(|shares| shares.get(&amount))
+                .expect("first public share"),
+            *keyset
+                .public_shares
+                .get(&member_id(3))
+                .and_then(|shares| shares.get(&amount))
+                .expect("third public share"),
+            *keyset
+                .public_shares
+                .get(&member_id(5))
+                .and_then(|shares| shares.get(&amount))
+                .expect("fifth public share"),
+        ];
+        let aggregate_public_key = *keyset
+            .aggregate_keys
+            .get(&amount)
+            .expect("aggregate public key");
+        assert_eq!(
+            aggregate_public_key_shares(threshold, &public_subset)
+                .expect("aggregate threshold public key"),
+            aggregate_public_key
+        );
+        verify_bls_blind_signature(
+            aggregate_public_key.into(),
+            aggregate_signature.into(),
+            blinded_message.into(),
+        )
+        .expect("aggregate DKG signature verifies");
     }
 
     #[test]

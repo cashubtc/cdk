@@ -979,12 +979,16 @@ pub(super) async fn reconcile_federation_startup_with_quorum<T>(
             && state.federation.live_session_replay_ready().await
         {
             state.mark_federation_healthy().await;
+            return;
+        }
+        if target_session > local_status.aleph_bft_session {
+            super::stop_current_federation_aleph_bft_session_for_catch_up(state).await;
         } else {
             state
                 .mark_federation_awaiting_quorum(local_status.operation_count)
                 .await;
+            return;
         }
-        return;
     }
 
     if target_session > local_status.aleph_bft_session {

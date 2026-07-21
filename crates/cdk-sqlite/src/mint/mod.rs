@@ -416,6 +416,36 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_bark_projection_sustained_workload() {
+        const LIFECYCLES_PER_MODE: usize = 20;
+
+        for _ in 0..LIFECYCLES_PER_MODE {
+            cdk_common::database::mint::test::federation_bark_projection_persistence(
+                memory::empty()
+                    .await
+                    .expect("sequential Bark workload database"),
+            )
+            .await;
+        }
+
+        let mut parallel = tokio::task::JoinSet::new();
+        for _ in 0..LIFECYCLES_PER_MODE {
+            parallel.spawn(async {
+                cdk_common::database::mint::test::federation_bark_projection_persistence(
+                    memory::empty()
+                        .await
+                        .expect("parallel Bark workload database"),
+                )
+                .await;
+            });
+        }
+        while let Some(result) = parallel.join_next().await {
+            result.expect("parallel Bark workload task");
+        }
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_signature_share_persistence() {
         cdk_common::database::mint::test::federation_signature_share_persistence(
             provide_db("federation_signature_share_persistence".to_string()).await,

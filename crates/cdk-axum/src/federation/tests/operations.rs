@@ -930,6 +930,66 @@ async fn quorum_reconciliation_marks_new_live_session_healthy() {
 }
 
 #[tokio::test]
+async fn quorum_reconciliation_replaces_stale_live_session() {
+    let (public_config, local_private, peer_private) = transport_config();
+    let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+    let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+    let state = federation_route_state_for_private_with_db_and_aleph_bft(
+        public_config.clone(),
+        local_private.clone(),
+        db,
+        &mnemonic.to_seed_normalized(""),
+    )
+    .await;
+    let transport = RouterFederationTransportRegistry::default();
+    start_federation_aleph_bft_live_session_with_transport(
+        &state,
+        FederationPeerSyncConfig::default(),
+        CdkAlephBftNetworkPumpConfig::default(),
+        transport.clone(),
+    )
+    .await
+    .expect("start stale live session")
+    .expect("stale live session handle");
+    state.restore_federation_startup_readiness().await;
+
+    let client = FederationRestPeerClient::new(transport, &public_config, local_private)
+        .expect("quorum reconciliation client");
+    let mut peer_status = local_peer_status(&state).await.expect("local peer status");
+    peer_status.member_id = peer_private.member_id;
+    peer_status.aleph_bft_session = 1;
+    assert!(state
+        .mint
+        .localstore()
+        .get_federation_aleph_bft_backup_chunks(1)
+        .await
+        .expect("next-session backup lookup")
+        .is_empty());
+
+    sync_loop::reconcile_federation_startup_with_quorum(
+        &state,
+        &client,
+        tokio::time::Instant::now(),
+        &[peer_status],
+    )
+    .await;
+
+    assert_eq!(
+        state.federation_sync_status().await,
+        Some(crate::FederationSyncStatus::Healthy)
+    );
+    assert_eq!(
+        local_peer_status(&state)
+            .await
+            .expect("reconciled local status")
+            .aleph_bft_session,
+        1
+    );
+    assert!(state.federation.live_session_active().await);
+    halt_current_federation_aleph_bft_session(&state, "test complete").await;
+}
+
+#[tokio::test]
 async fn aleph_bft_restart_after_unfinalized_local_unit_requires_retry_without_state_mutation() {
     let (public_config, local_private, _) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
@@ -2758,4 +2818,3 @@ async fn router_startup_replays_accepted_journal_before_serving_local_status() {
         FederationOperationStatus::Applied
     );
 }
-

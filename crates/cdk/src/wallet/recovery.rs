@@ -1161,8 +1161,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_melt_requested_quote_unpaid() {
-        // When melt quote is Unpaid (payment was never initiated), should compensate
+    async fn test_recover_melt_requested_quote_unpaid_before_expiry() {
+        // An unexpired Unpaid response after POST is ambiguous: keep the saga
+        // and proofs pending so a later Paid response can still be recovered.
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -1201,7 +1202,7 @@ mod tests {
         );
         db.add_saga(saga).await.unwrap();
 
-        // Mock: quote is Unpaid (payment was never initiated or was rolled back)
+        // Mock: quote is Unpaid but has not expired.
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id.clone(),
@@ -1219,24 +1220,22 @@ mod tests {
         let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
         let report = wallet.recover_incomplete_sagas().await.unwrap();
 
-        // Should compensate (payment was never initiated, safe to release proofs)
-        assert_eq!(report.compensated, 1);
-        assert_eq!(report.skipped, 0);
+        // The request remains recoverable until the quote expires.
+        assert_eq!(report.compensated, 0);
+        assert_eq!(report.skipped, 1);
         assert_eq!(report.recovered, 0);
 
-        // Proofs should be released back to Unspent
-        let proofs = db
-            .get_proofs(None, None, Some(vec![State::Unspent]), None)
-            .await
-            .unwrap();
+        // Proofs remain reserved under the same operation.
+        let proofs = db.get_proofs_by_ys(vec![proof_y]).await.unwrap();
         assert_eq!(proofs.len(), 1);
+        assert_eq!(proofs[0].state, State::Reserved);
+        assert_eq!(proofs[0].used_by_operation, Some(saga_id));
 
-        // Melt quote reservation should be released
+        // The quote reservation and saga remain for a later status recovery.
         let retrieved_quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
-        assert!(retrieved_quote.used_by_operation.is_none());
+        assert_eq!(retrieved_quote.used_by_operation, Some(saga_id.to_string()));
 
-        // Saga should be deleted
-        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
     }
 
     #[tokio::test]

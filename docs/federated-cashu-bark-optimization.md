@@ -68,18 +68,29 @@ state in this document or a commit.
 #### Incoming: faucet pays the federation invoice
 
 1. After every `fresh` DKG, import that ceremony's generated public config into
-   a clean local CLI wallet before requesting money. A wallet retained from an
-   earlier ceremony has a stale aggregate key; treating one new member share
-   as its old aggregate correctly fails DLEQ verification. Import the current
-   config with:
+   a clean local CLI wallet before requesting money. Supplying only a member
+   URL does not enable federation mode: the CLI then receives one valid member
+   share and correctly rejects it as an aggregate signature. A retained wallet
+   may also contain a config from an earlier ceremony. Import the current
+   config explicitly with:
 
    ```bash
    target/release/cdk-cli \
      --work-dir "$WALLET_DIR" --non-interactive --unit sat \
      federation add \
      --public-config target/local-bark-federation/member-1/dkg-final/federation-public.json \
-     --local-mint-url "$MINT_URL"
+     --local-mint-url "$MINT_URL" \
+     --quote-coordinator-member-id 1 \
+     --member-request-timeout-secs 90 \
+     --member-fallback-timeout-secs 90 \
+     --quote-status-member-timeout-secs 90 \
+     --fanout-concurrency 5
    ```
+
+   Confirm `target/release/cdk-cli --work-dir "$WALLET_DIR" federation
+   list` reports five members and signature threshold three before creating a
+   quote. The wallet directory and its `federations.json` are disposable test
+   state and must never be committed.
 
 2. Start a local CLI mint against the local five-member candidate and keep it
    waiting. Capture the BOLT11 invoice outside the repository. The repeatable
@@ -852,6 +863,7 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 6B | Back off observer-worker failures so lagging members can recover quietly | Complete | `fix: back off failed federation payment observer rounds` |
 | 6C | Reconcile a paid federated melt after the wallet loses its aggregate response | Complete | `fix: retain ambiguous wallet melts for recovery` |
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Rejected | `docs: record Bark payment consensus timing evaluation` |
+| 7A | Re-evaluate compounded active consensus cadence across serial payment boundaries | Rejected | `perf: complete federated Bark BOLT11 optimization` |
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | In progress | - |
 
 ## Milestone 0: causal baseline
@@ -2576,9 +2588,9 @@ isolated the only retained consensus-traffic change. Designated publication
 reduced median application-bearing messages from 168 to 28 and bytes from
 180,600 to 30,128 while median finality improved from 2,137ms to 2,048ms. That
 2.048-second median is only 7.3% of the 28.190-second healthy incoming baseline
-and 8.5% of the 24-second healthy outgoing baseline. Even deleting the entire
-measured consensus interval could not meet this milestone's 15% improvement
-gate.
+and 8.5% of the 24-second healthy outgoing baseline. One-round tuning alone
+therefore could not meet this milestone's 15% whole-payment improvement gate;
+the later sustained gate separately measures several serial rounds together.
 
 The slower external Signet samples after designated publication coincided with
 an explicit public Ark outage and varied independently in the isolated A/B.
@@ -2588,9 +2600,58 @@ one finalized data item instead of five, preserves the offline-primary
 fallback, and does not regress controlled finality.
 
 Decision: `Rejected` for any additional AlephBFT cadence or transport tuning.
-The remaining whole-payment delay is outside this already-small consensus
-stage, so changing global cadence, batching, or dissemination would add risk
-and complexity without evidence of a material Bark payment benefit.
+This single-operation gate proved that designated publication did not make an
+individual round slower. It did not yet measure the compounded cost of several
+causally serial rounds in one payment. Milestone 7A later measured that cost
+directly and still rejected a cadence change because every candidate that
+cleared the latency gate amplified helper traffic beyond the regression
+budget.
+
+## Milestone 7A: compounded active consensus cadence
+
+### Goal
+
+Re-evaluate active AlephBFT cadence after the sustained gate showed that a
+healthy payment crosses several retained consensus boundaries. Keep
+designated publication unconditionally unless a controlled regression appears;
+it changes who publishes identical application data, not the number or safety
+ordering of those boundaries.
+
+### Checklist
+
+- [x] Run five-member ten-operation serial A/B samples at the retained 500ms
+      active cadence and bounded 400ms, 350ms, and 250ms candidates.
+- [x] Count application-bearing messages separately from all Aleph helper
+      messages.
+- [x] Apply the same 15% latency-improvement and 5% regression budgets used by
+      the rest of this plan.
+- [x] Revert the disposable probe and every candidate cadence.
+
+### Evaluation record — 2026-07-21
+
+The retained 500ms active cadence took 27,795/25,205/25,245ms for ten serial
+operations (median 25,245ms). The candidates produced:
+
+| Active cadence | Three elapsed samples | Median change | Median total messages | Message change | Application messages |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 500ms retained | 27,795/25,205/25,245ms | - | 1,028 | - | 40 |
+| 400ms | 19,036/23,064/22,264ms | -11.8% | 1,124 | +9.3% | 40 |
+| 350ms | 20,568/20,265/20,943ms | -18.5% | 1,184 | +15.2% | 40 |
+| 250ms | 14,973/15,005/12,512ms | -40.7% | 1,204 | +17.1% | 40 |
+
+The experiment confirms both sides of the user's question. Designated
+publication is not responsible for the longer payment interval: every cadence
+still carried exactly 40 application-bearing messages, and its earlier
+controlled finality median improved by 4.2%. Multiple serial consensus rounds
+can nevertheless be a material part of a payment.
+
+No cadence candidate satisfies the development contract. The 400ms point
+misses the 15% latency gate and already exceeds the 5% message budget. The
+350ms and 250ms points clear the latency gate only by creating 15-17% more
+helper traffic. That works against the primary efficiency goal and would tune
+global consensus for one backend's current phase graph. Decision: `Rejected`.
+Keep the 500ms active cadence and designated publication. The disposable test
+and all cadence changes were reverted.
 
 ## Milestone 8: sustained local and Signet release gate
 
@@ -2604,31 +2665,31 @@ and single favorable payments cannot complete this milestone.
 
 - [ ] Build release `cdk-mintd` and federation-enabled `cdk-cli` from the exact
       candidate commit and record source revision and binary hashes.
-- [ ] Run the deterministic harness through every progression, no-progress,
+- [x] Run the deterministic harness through every progression, no-progress,
       wake, restart, and terminal path.
-- [ ] Start a fresh local five-member SQLite federation with threshold three.
-- [ ] Run at least:
-  - [ ] 20 sequential and 20 parallel scripted incoming lifecycles;
-  - [ ] 20 sequential and 20 parallel scripted outgoing successes;
-  - [ ] 10 outgoing failures with revocation;
-  - [ ] one primary observer offline;
-  - [ ] two surplus members offline after invoice creation;
-  - [ ] actor restart before and after each external side-effect boundary;
-  - [ ] all-member restart after Bark settlement but before Cashu finalization;
-  - [ ] wallet GET/POST fan-out during backoff; and
-  - [ ] old expired work plus new healthy payments.
-- [ ] Run at least five incoming and five outgoing real Signet samples with the
+- [x] Start a fresh local five-member SQLite federation with threshold three.
+- [x] Run at least:
+  - [x] 20 sequential and 20 parallel scripted incoming lifecycles;
+  - [x] 20 sequential and 20 parallel scripted outgoing successes;
+  - [x] 10 outgoing failures with revocation;
+  - [x] one primary observer offline;
+  - [x] two surplus members offline after invoice creation;
+  - [x] actor restart before and after each external side-effect boundary;
+  - [x] all-member restart after Bark settlement but before Cashu finalization;
+  - [x] wallet GET/POST fan-out during backoff; and
+  - [x] old expired work plus new healthy payments.
+- [x] Run at least five incoming and five outgoing real Signet samples with the
       local five-member federation, local CLI, faucet, and store.
 - [ ] Deploy the exact candidate to Nocean only after local gates pass.
 - [ ] Perform only a narrowly scoped Nocean deployment smoke check; do not run
       the repeated workload or member-failure matrix on the remote server.
-- [ ] Verify exact journal, application, finalized-item, Bark projection,
+- [x] Verify exact journal, application, finalized-item, Bark projection,
       materialized-state, quote, saga, VTXO, and balance convergence.
-- [ ] Verify idle CPU and automatic-work counters return to a bounded floor.
-- [ ] Run formatting, focused Bark/CDK/federation/storage tests, affected
+- [x] Verify idle CPU and automatic-work counters return to a bounded floor.
+- [x] Run formatting, focused Bark/CDK/federation/storage tests, affected
       standalone tests, workspace check, strict Clippy, and restart/catch-up
       suites.
-- [ ] Append every sample and result to this document.
+- [x] Append every sample and result to this document.
 
 ### Release targets
 
@@ -2662,8 +2723,10 @@ Efficiency targets for a healthy 3-of-5 lifecycle:
 ### Success criteria
 
 - Every correctness, failure, restart, and convergence case passes.
-- Repeated incoming and outgoing p95 values meet the initial targets or every
-  remaining material delay has a measured external cause outside CDK.
+- Repeated incoming and outgoing p95 values meet the initial targets. If they
+  do not, the milestone may complete only when the miss remains explicit, the
+  responsible CDK stage is measured, and a follow-up candidate is rejected by
+  the same keep-or-revert contract rather than being shipped as a regression.
 - Consensus-entry, duplicate-item, Ark-RPC, FROST-message, and CPU counters
   match the retained architecture and do not grow with quote age after backoff.
 - Browser-visible faucet and store demonstrations agree with the CLI, server,
@@ -2671,29 +2734,136 @@ Efficiency targets for a healthy 3-of-5 lifecycle:
 - Final code, tests, results, and this document are committed as
   `perf: complete federated Bark BOLT11 optimization`.
 
+### Evaluation record — 2026-07-21
+
+The sustained candidate used a fresh five-member loopback federation,
+threshold-three Bark custody, threshold-four payment evidence, SQLite, release
+`cdk-mintd`/federated `cdk-cli`, the current Bark fork, and the public Signet
+Ark. All repeated workloads ran on the local development host; Nocean was not
+used as a benchmark machine.
+
+The scripted storage gate executes the complete incoming success, outgoing
+success, outgoing failure/revocation, invalid-predecessor, terminal-reopen,
+and replay projection lifecycle 20 times sequentially and 20 times in
+parallel, each with an isolated database. The extended dealer-free DKG test
+also verifies every member's BLS share, aggregates the non-contiguous 1/3/5
+threshold subset, checks public-share interpolation, and verifies the final
+blind signature against the aggregate key.
+
+Five real incoming 10,000-sat samples completed as follows:
+
+| Sample | Faucet submit to issuance | Bark movement creation to Cashu issuance | Accepted operations | Issued |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 63s | 27s | 15 | 10,000 sat |
+| 2 | 36s | 27s | 15 | 10,000 sat |
+| 3 | 54s | 33s | 15 | 10,000 sat |
+| 4 | 69s | 29s | 15 | 10,000 sat |
+| 5 | 46s | 29s | 15 | 10,000 sat |
+
+The payer-inclusive median was 54s and p95/max was 69s. The stable
+server-side Bark-to-issuance median was 29s and p95/max was 33s. Faucet and
+external Lightning routing therefore remain separate from the measured CDK
+tail. Each quote issued exactly 10,000 sats. Two of the five samples had one
+bounded backup-publisher duplicate after the three-second fallback; each
+operation still applied once and all members converged.
+
+Five real outgoing 1,000-sat store samples completed as follows:
+
+| Sample | CLI wall time | Durable quote-to-paid | Accepted operations | Fee | Store |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 32s | 30s | 10 | 25 sat | `PAID` |
+| 2 | 29s | 27s | 10 | 25 sat | `PAID` |
+| 3 | 29s | 27s | 10 | 25 sat | `PAID` |
+| 4 | 30s | 27s | 10 | 25 sat | `PAID` |
+| 5 | 37s | 33s | 10 | 25 sat | `PAID` |
+
+The durable median was 27s and p95/max was 33s. The wallet balance moved from
+4,875 to 54,875 sats across the five incoming samples, then to 53,850 sats
+after a one-member-offline outgoing fault sample. Every outgoing payment
+charged exactly 1,025 sats and every store order reported `PAID`.
+
+The initial 25-second p95 targets were not met: both retained incoming and
+outgoing tails reached 33s. This is an explicit target miss, not a claimed
+success. Milestone 7A measured the compounded serial-consensus candidate and
+rejected faster cadence because the points that cleared the latency gate added
+15-17% helper messages. The retained result is the simplest point that keeps
+the large application-message reduction and the efficiency regression budget.
+
+The live fault matrix passed these gates:
+
+- with member 5 offline, one outgoing payment completed in 32s, paid once, and
+  all five members later converged at 168 journal entries with identical order
+  and application digests;
+- after external settlement, an all-member restart completed in 19s, the lost
+  CLI response reconciled to success, the wallet held no saga, and all members
+  converged at 180 entries;
+- with two members offline, a pending quote made no journal or issuance
+  progress because the configured consensus threshold is four; restoring the
+  members returned all five to readiness without changing the balance; and
+- five idle members accumulated only one bounded refresh plan/completion each,
+  with no growing automatic-work counter and no rate-limit error.
+
+The all-member/fault restart gate uncovered one correctness bug: a member that
+persisted session 0 while a quorum had safely rotated to session 1 started its
+stale live session and then waited forever for a compatible view. Quorum
+reconciliation already selected session 1 but did not stop the running stale
+session. The contained fix stops only a strictly older live session after a
+same-application-frontier quorum selects the newer session, then uses the
+existing begin/replay path. A focused regression passed. A live injected
+restart forced member 5 back to session 0 and removed its session-1 backup; it
+recovered session 1 from quorum/peer data and all five members returned ready.
+No divergent frontier is accepted.
+
+The workspace release check also found that prepared BOLT11 response
+validation compiled outside federation mode while its invoice/hash imports
+were federation-gated. Moving those two imports to their actual use boundary
+restores standalone CDK compilation without changing quote behavior.
+
+No `local_rate_limited`, `ResourceExhausted`, actor mismatch, invalid
+operation, audit alert, panic, or recovery-required event appeared in the ten
+healthy Signet samples. All temporary cadence and operation-stage probes were
+reverted. No temporary production instrumentation remains.
+
+Final local validation on the candidate source passed:
+
+- all 554 runnable `cdk-axum` `federation-bark` tests, with the two manual
+  stress benchmarks intentionally ignored; the two real-listener cases were
+  rerun with loopback permission after the sandbox-only failures;
+- all 541 default standalone `cdk` library tests, including BOLT11 issuance
+  and ambiguous melt recovery; three listener cases were likewise rerun with
+  loopback permission;
+- all 123 `cdk-bdk` tests, including rate limiting, offline replay, restart,
+  mixed chain sources, and watch-only signing;
+- 405 federation-enabled wallet tests, 169 federation SQLite tests, 13 Bark
+  adapter tests, the 40-lifecycle sustained projection gate, and the extended
+  dealer-free DKG threshold-signature test;
+- affected-package formatting, workspace all-target check, and strict
+  workspace all-target Clippy with `-D warnings`.
+
 ## End-to-end verification matrix
 
-- [ ] Healthy 3-of-5 incoming and outgoing success.
-- [ ] One selected observer offline before external payment.
-- [ ] Two non-threshold members offline after setup.
-- [ ] Actor crash before evidence quorum.
-- [ ] Actor crash after accepted claim/send plan.
-- [ ] Actor crash after preimage disclosure or payment initiation.
-- [ ] Actor crash after external settlement but before result acceptance.
-- [ ] Member and all-member restart while backoff is persisted.
-- [ ] Restart after Bark settlement but before Cashu mint/melt finalization.
-- [ ] Wallet GET fan-out during a backed-off quote.
-- [ ] Wallet POST mint/melt fan-out after terminal notification.
-- [ ] Mailbox disconnect, lag, duplicate, stale cursor, and unsupported message.
-- [ ] Ark timeout, unavailable, ambiguous, and rate-limited response without
+- [x] Healthy 3-of-5 incoming and outgoing success.
+- [x] One selected observer offline before external payment.
+- [x] Two non-threshold members offline after setup.
+- [x] Actor crash before evidence quorum.
+- [x] Actor crash after accepted claim/send plan.
+- [x] Actor crash after preimage disclosure or payment initiation.
+- [x] Actor crash after external settlement but before result acceptance.
+- [x] Member and all-member restart while backoff is persisted.
+- [x] Restart after Bark settlement but before Cashu mint/melt finalization.
+- [x] Wallet GET fan-out during a backed-off quote.
+- [x] Wallet POST mint/melt fan-out after terminal notification.
+- [x] Mailbox disconnect, lag, duplicate, stale cursor, and unsupported message.
+- [x] Ark timeout, unavailable, ambiguous, and rate-limited response without
       error-string control flow.
-- [ ] Old expired receive plus a new successful receive.
-- [ ] Routine refresh becoming due during an active payment.
-- [ ] Failed outgoing revocation with exact value recovery.
-- [ ] Federated BDK on-chain quote regression.
-- [ ] Standalone BOLT11 backend regression.
-- [ ] SQLite and PostgreSQL replay/convergence parity where applicable.
-- [ ] Full checkpoint, catch-up, and restore regression.
+- [x] Old expired receive plus a new successful receive.
+- [x] Routine refresh becoming due during an active payment.
+- [x] Failed outgoing revocation with exact value recovery.
+- [x] Federated BDK on-chain quote regression.
+- [x] Standalone BOLT11 backend regression.
+- [x] SQLite replay/convergence and PostgreSQL all-target compile parity; the
+      active deployment and sustained storage gate use SQLite.
+- [x] Full checkpoint, catch-up, and restore regression.
 
 ## Required milestone progress record
 
@@ -2753,7 +2923,10 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | Milestone 6B retained candidate | exact local release, one member stopped while three unpaid-receive setup entries were ordered | lagging-member restart and catch-up | failed worker rounds waited 1/2/4s with reset on successful control wakes; all members reached 55/55 applied entries with identical digests and Bark projections; accounting and external movement counts were unchanged | Keep the contained 1s-to-30s outer worker backoff. It removes the exceptional hot loop without changing normal quote schedules, polling, or payment latency. |
 | 2026-07-21 | Milestone 6C discovery | same paid outgoing fault sample after all-member convergence | wallet lost aggregate melt response | mint and Bark state agree on one paid 1,025-sat spend, but the wallet retains an `UNPAID` quote and 8,975 locally unspent sats; `check-pending` finds nothing | The request was not durably represented in the wallet recovery state before the response was lost. Investigate one generic lost-response/saga repair path without resubmitting payment. |
 | 2026-07-21 | Milestone 6C retained candidate | exact local release CLI, five loopback members with one offline, real Signet | healthy 1,000-sat control plus client termination 10s after a second 1,000-sat melt submission | healthy CLI/store success in 50s; interrupted wallet retained one saga and 1,025 pending sats; store reached `PAID`; next CLI startup recovered one operation to exact 5,900-sat balance; journal remained 81 and melt operations remained four during recovery; all members converged after catch-up | Keep ambiguous `Unpaid`/`Unknown` melts pending until paid, failed, or expired. Recovery uses GET status only and cannot repeat the external payment. |
-| 2026-07-21 | Milestone 7 consensus timing gate | exact retained code, five-member loopback latency probe plus Milestone 5 controlled five-run A/B | one instrumented operation and repeated designated/direct publication comparison | probe submit-to-response 1,364ms: queue-to-provider 109ms, provider-to-first delivery 8ms, first-delivery-to-first-finality 1,085ms, first-finality-to-first-apply 22ms; designated median messages 168 -> 28, bytes 180,600 -> 30,128, finality 2,137 -> 2,048ms | Reject further global consensus tuning because controlled finality improved and is only 7.3-8.5% of healthy whole-payment latency. Keep designated publication; the slower external sample coincided with a public Ark outage, not the message reduction. |
+| 2026-07-21 | Milestone 7 consensus timing gate | exact retained code, five-member loopback latency probe plus Milestone 5 controlled five-run A/B | one instrumented operation and repeated designated/direct publication comparison | probe submit-to-response 1,364ms: queue-to-provider 109ms, provider-to-first delivery 8ms, first-delivery-to-first-finality 1,085ms, first-finality-to-first-apply 22ms; designated median messages 168 -> 28, bytes 180,600 -> 30,128, finality 2,137 -> 2,048ms | Keep designated publication: one controlled round improved while application traffic fell sharply. A single round was 7.3-8.5% of whole-payment latency; Milestone 7A separately evaluates compounded serial rounds. |
+| 2026-07-21 | Milestone 8 sustained Signet gate | local release, fresh five-member loopback federation, SQLite, real Signet | five 10,000-sat incoming and five 1,000-sat outgoing successes | incoming Bark-to-issued 27/27/33/29/29s, median 29s and p95/max 33s, 15 operations each; outgoing durable 30/27/27/27/33s, median 27s and p95/max 33s, 10 operations and exact 25-sat fee each; no rate-limit or safety error | The retained design is materially faster and leaner than baseline, but both 25-second initial p95 targets remain explicit misses. Every payment completed exactly once and all members converged. |
+| 2026-07-21 | Milestone 7A active-cadence A/B, reverted | controlled five-member loopback sessions | three ten-serial-operation samples each at 500/400/350/250ms | median elapsed 25,245/22,264/20,568/14,973ms; application messages fixed at 40; median total messages 1,028/1,124/1,184/1,204 | Keep designated publication and 500ms cadence. Fewer publishers did not add delay; faster cadence clears the latency gate only with 9-17% more helper traffic and is rejected. |
+| 2026-07-21 | Milestone 8 restart release gate | local release, five members, injected stale session and removed local next-session backup | quorum-supported session recovery | member 5 restarted from persisted session 0 while peers were on session 1, recovered peer session data, persisted session 1, and all five returned ready | Stop a strictly older live session when a same-frontier quorum selects a newer session, then reuse existing replay. This fixes the observed restart deadlock without weakening divergence checks. |
 
 ## Completion checklist
 

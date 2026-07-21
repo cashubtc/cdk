@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-#[cfg(feature = "federation")]
 use bitcoin::hashes::Hash;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
@@ -16,8 +15,9 @@ use cdk_common::{
     MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
     MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
 };
+use lightning_invoice::Bolt11Invoice;
 #[cfg(feature = "federation")]
-use lightning_invoice::{Bolt11Invoice, Bolt11InvoiceDescriptionRef};
+use lightning_invoice::Bolt11InvoiceDescriptionRef;
 use tracing::instrument;
 
 use crate::mint::verification::{validate_custom_payment_method, MAX_REQUEST_FIELD_LEN};
