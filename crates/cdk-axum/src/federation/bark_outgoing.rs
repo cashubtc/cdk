@@ -4,20 +4,72 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use cdk::federation::{
-    FederationBarkActionKind, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkSemanticPhase, FederationOperation, FederationOperationId, MemberId,
+    FederationBarkActionKind, FederationBarkDigest, FederationBarkMemberObservation,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkSemanticPhase,
+    FederationOperation, FederationOperationId, FederationPaymentObservationContext, MemberId,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::MeltQuoteState;
 
 use crate::MintState;
 
+use super::bark_observer::{
+    is_selected_bark_observer, required_bark_result_observers, unselected_bark_observer_wait,
+};
 use super::payment_schedule::FederationPaymentAdvancement;
+
+fn matching_observers(
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    expected: &FederationBarkMemberObservation,
+) -> BTreeSet<MemberId> {
+    projection
+        .observations
+        .iter()
+        .filter_map(|record| match &record.operation {
+            FederationBarkOperation::MemberObservation(existing)
+                if existing.action_id == expected.action_id
+                    && existing.status == expected.status
+                    && existing.payment_hash == expected.payment_hash
+                    && existing.source_scope == expected.source_scope
+                    && existing.amount == expected.amount
+                    && existing.fee == expected.fee
+                    && existing.result_hash == expected.result_hash =>
+            {
+                Some(existing.observer)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn matching_observer_count(
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    action_id: cdk::federation::FederationBarkActionId,
+    status: FederationBarkObservationStatus,
+    result_hash: Option<FederationBarkDigest>,
+) -> usize {
+    projection
+        .observations
+        .iter()
+        .filter_map(|record| match &record.operation {
+            FederationBarkOperation::MemberObservation(observation)
+                if observation.action_id == action_id
+                    && observation.status == status
+                    && result_hash.is_none_or(|expected| observation.result_hash == expected) =>
+            {
+                Some(matching_observers(projection, observation).len())
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
 
 /// Advance one accepted pending melt by at most one consensus-visible phase.
 pub(super) async fn advance_federated_bark_melt_quote(
     state: &MintState,
     quote_id: &QuoteId,
+    observer_fallback_round: u32,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
     let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
     let runtime = state
@@ -210,67 +262,22 @@ pub(super) async fn advance_federated_bark_melt_quote(
             }
             FederationBarkSemanticPhase::PaymentInitiated => {
                 let initiated = initiated_entry.as_ref().ok_or(cdk::Error::Internal)?;
-                let already_reported_failure = projection.observations.iter().any(|record| {
-                    matches!(
-                        &record.operation,
-                        FederationBarkOperation::MemberObservation(observation)
-                            if observation.action_id == action.action_id
-                                && observation.observer == federation.member_id()
-                                && observation.status
-                                    == FederationBarkObservationStatus::Failed
-                    )
-                });
-                if !already_reported_failure {
-                    let next_epoch = next_observation_epoch(
-                        &projection,
-                        action.action_id,
-                        federation.member_id(),
-                    )?;
-                    if let Some(observation) = runtime
-                        .observe_lightning_send_failure(
-                            &quote,
-                            &projection,
-                            &plan_entry,
-                            initiated,
-                            next_epoch,
-                        )
-                        .await
-                        .map_err(|_| cdk::Error::Internal)?
-                    {
-                        return submit_bark_operation(
-                            state,
-                            federation.operation_envelope(FederationOperation::Bark(
-                                FederationBarkOperation::MemberObservation(observation),
-                            )),
-                        )
-                        .await;
+                let threshold = usize::from(
+                    federation
+                        .public_config()
+                        .threshold_params
+                        .signature_threshold,
+                );
+                let failed_observer_count = matching_observer_count(
+                    &projection,
+                    action.action_id,
+                    FederationBarkObservationStatus::Failed,
+                    None,
+                );
+                if failed_observer_count >= threshold {
+                    if plan.actor != federation.member_id() {
+                        return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                     }
-                }
-                if plan.actor != federation.member_id() {
-                    return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
-                }
-                let failed_observers = projection
-                    .observations
-                    .iter()
-                    .filter_map(|record| match &record.operation {
-                        FederationBarkOperation::MemberObservation(observation)
-                            if observation.action_id == action.action_id
-                                && observation.status
-                                    == FederationBarkObservationStatus::Failed =>
-                        {
-                            Some(observation.observer)
-                        }
-                        _ => None,
-                    })
-                    .collect::<BTreeSet<_>>();
-                if failed_observers.len()
-                    >= usize::from(
-                        federation
-                            .public_config()
-                            .threshold_params
-                            .signature_threshold,
-                    )
-                {
                     let transition = runtime
                         .finalize_lightning_send_failure(&plan_entry, initiated)
                         .map_err(|_| cdk::Error::Internal)?;
@@ -281,6 +288,52 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         )),
                     )
                     .await;
+                }
+                let already_reported_failure = projection.observations.iter().any(|record| {
+                    matches!(
+                        &record.operation,
+                        FederationBarkOperation::MemberObservation(observation)
+                            if observation.action_id == action.action_id
+                                && observation.observer == federation.member_id()
+                                && observation.status
+                                    == FederationBarkObservationStatus::Failed
+                    )
+                });
+                if already_reported_failure {
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
+                }
+                if !is_selected_bark_observer(
+                    federation.public_config().members.keys().copied(),
+                    plan.actor,
+                    federation.member_id(),
+                    threshold,
+                    observer_fallback_round,
+                ) {
+                    return Ok(unselected_bark_observer_wait(failed_observer_count > 0));
+                }
+                let next_epoch =
+                    next_observation_epoch(&projection, action.action_id, federation.member_id())?;
+                if let Some(observation) = runtime
+                    .observe_lightning_send_failure(
+                        &quote,
+                        &projection,
+                        &plan_entry,
+                        initiated,
+                        next_epoch,
+                    )
+                    .await
+                    .map_err(|_| cdk::Error::Internal)?
+                {
+                    return submit_bark_operation(
+                        state,
+                        federation.operation_envelope(FederationOperation::Bark(
+                            FederationBarkOperation::MemberObservation(observation),
+                        )),
+                    )
+                    .await;
+                }
+                if plan.actor != federation.member_id() {
+                    return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
                 }
                 let Some(transition) = runtime
                     .observe_lightning_send_success(&quote, &projection, &plan_entry, initiated)
@@ -305,6 +358,11 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     FederationBarkSemanticPhase::PaymentSucceeded,
                 )
                 .await?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionTransition(succeeded)) =
+                    &success_entry.envelope.operation
+                else {
+                    return Err(cdk::Error::Internal);
+                };
                 let already_observed = projection.observations.iter().any(|record| {
                     matches!(
                         &record.operation,
@@ -317,6 +375,31 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 });
                 if already_observed {
                     return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
+                }
+                let public_config = federation.public_config();
+                let required = required_bark_result_observers(
+                    public_config.threshold_params.signature_threshold,
+                    public_config
+                        .payment_verification_policy(FederationPaymentObservationContext::MeltQuote)
+                        .required_matching_observations(),
+                );
+                let matching_observers = matching_observer_count(
+                    &projection,
+                    action.action_id,
+                    FederationBarkObservationStatus::Succeeded,
+                    Some(succeeded.result_hash),
+                );
+                if matching_observers >= required {
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
+                }
+                if !is_selected_bark_observer(
+                    public_config.members.keys().copied(),
+                    plan.actor,
+                    federation.member_id(),
+                    required,
+                    observer_fallback_round,
+                ) {
+                    return Ok(unselected_bark_observer_wait(matching_observers > 0));
                 }
                 let next_epoch =
                     next_observation_epoch(&projection, action.action_id, federation.member_id())?;
@@ -416,6 +499,34 @@ pub(super) async fn advance_federated_bark_melt_quote(
                                 && observation.result_hash == completed.result_hash
                     )
                 });
+                if already_observed {
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
+                }
+                let public_config = federation.public_config();
+                let required = required_bark_result_observers(
+                    public_config.threshold_params.signature_threshold,
+                    public_config
+                        .payment_verification_policy(FederationPaymentObservationContext::MeltQuote)
+                        .required_matching_observations(),
+                );
+                let matching_observers = matching_observer_count(
+                    &projection,
+                    action.action_id,
+                    FederationBarkObservationStatus::Failed,
+                    Some(completed.result_hash),
+                );
+                if matching_observers >= required {
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
+                }
+                if !is_selected_bark_observer(
+                    public_config.members.keys().copied(),
+                    plan.actor,
+                    federation.member_id(),
+                    required,
+                    observer_fallback_round,
+                ) {
+                    return Ok(unselected_bark_observer_wait(matching_observers > 0));
+                }
                 let next_epoch =
                     next_observation_epoch(&projection, action.action_id, federation.member_id())?;
                 let observation = match runtime
@@ -444,9 +555,6 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 runtime
                     .clear_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
                     .await;
-                if already_observed {
-                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
-                }
                 submit_bark_operation(
                     state,
                     federation.operation_envelope(FederationOperation::Bark(
@@ -586,4 +694,97 @@ async fn submit_bark_operation(
         .await?
         .ensure_accepted()?;
     Ok(FederationPaymentAdvancement::Progressed)
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk::federation::{
+        FederationBarkActionId, FederationBarkDigest, FederationBarkMemberObservation,
+        FederationBarkObservationRecord, FederationBarkObservationStatus, FederationBarkOperation,
+        FederationBarkProjectionSnapshot, FederationOperationId, MemberId,
+        FEDERATION_BARK_OPERATION_VERSION,
+    };
+    use cdk::Amount;
+
+    use super::matching_observer_count;
+
+    fn member(id: u16) -> MemberId {
+        MemberId::new(id).expect("member ID")
+    }
+
+    fn observation(
+        action_id: FederationBarkActionId,
+        observer: MemberId,
+        operation_index: u64,
+        result_seed: u8,
+    ) -> FederationBarkObservationRecord {
+        FederationBarkObservationRecord {
+            operation_id: FederationOperationId::from_bytes([operation_index as u8; 32]),
+            operation_index,
+            operation: FederationBarkOperation::MemberObservation(
+                FederationBarkMemberObservation {
+                    version: FEDERATION_BARK_OPERATION_VERSION,
+                    action_id,
+                    quote: Some("quote".to_string()),
+                    observer,
+                    observation_epoch: 1,
+                    source_scope: FederationBarkDigest::from_bytes([3; 32]).expect("source scope"),
+                    payment_hash: Some(
+                        FederationBarkDigest::from_bytes([4; 32]).expect("payment hash"),
+                    ),
+                    status: FederationBarkObservationStatus::Failed,
+                    amount: Amount::from(1_000),
+                    fee: Amount::from(25),
+                    result_hash: FederationBarkDigest::from_bytes([result_seed; 32])
+                        .expect("result hash"),
+                },
+            ),
+        }
+    }
+
+    #[test]
+    fn outgoing_failure_quorum_requires_exact_matching_evidence() {
+        let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
+        let expected_result = FederationBarkDigest::from_bytes([9; 32]).expect("result hash");
+        let mut projection = FederationBarkProjectionSnapshot {
+            observations: vec![
+                observation(action_id, member(1), 1, 9),
+                observation(action_id, member(2), 2, 9),
+                observation(action_id, member(3), 3, 8),
+            ],
+            ..FederationBarkProjectionSnapshot::default()
+        };
+
+        assert_eq!(
+            matching_observer_count(
+                &projection,
+                action_id,
+                FederationBarkObservationStatus::Failed,
+                None,
+            ),
+            2,
+        );
+        assert_eq!(
+            matching_observer_count(
+                &projection,
+                action_id,
+                FederationBarkObservationStatus::Failed,
+                Some(expected_result),
+            ),
+            2,
+        );
+
+        projection
+            .observations
+            .push(observation(action_id, member(3), 4, 9));
+        assert_eq!(
+            matching_observer_count(
+                &projection,
+                action_id,
+                FederationBarkObservationStatus::Failed,
+                Some(expected_result),
+            ),
+            3,
+        );
+    }
 }

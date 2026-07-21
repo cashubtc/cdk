@@ -327,16 +327,20 @@ impl FederationPaymentObserver {
 
             let mut made_progress = false;
             let mut advancement = FederationPaymentAdvancement::Progressed;
+            let mut observer_fallback_round = permit.observer_fallback_round();
             let mut last_processed_operation_index =
                 db.get_federation_journal_tip().await?.map(|tip| tip.index);
             for completed_steps in 0..FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE {
                 let before_operation_index = last_processed_operation_index;
-                advancement = self.advance_one_quote(state, quote).await?;
+                advancement = self
+                    .advance_one_quote(state, quote, observer_fallback_round)
+                    .await?;
                 last_processed_operation_index =
                     db.get_federation_journal_tip().await?.map(|tip| tip.index);
                 if advancement == FederationPaymentAdvancement::Progressed {
                     made_progress = true;
                     submitted = submitted.saturating_add(1);
+                    observer_fallback_round = 0;
                 }
                 if !continue_payment_pump(
                     completed_steps,
@@ -393,6 +397,7 @@ impl FederationPaymentObserver {
         &'a self,
         state: &'a MintState,
         quote: &'a FederationPaymentQuote,
+        observer_fallback_round: u32,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<Output = Result<FederationPaymentAdvancement, cdk::Error>>
@@ -402,10 +407,10 @@ impl FederationPaymentObserver {
     > {
         match quote.kind {
             FederationPaymentQuoteKind::Mint => {
-                Box::pin(self.advance_one_mint_quote(state, &quote.id))
+                Box::pin(self.advance_one_mint_quote(state, &quote.id, observer_fallback_round))
             }
             FederationPaymentQuoteKind::Melt => {
-                Box::pin(self.advance_one_melt_quote(state, &quote.id))
+                Box::pin(self.advance_one_melt_quote(state, &quote.id, observer_fallback_round))
             }
         }
     }
@@ -414,6 +419,7 @@ impl FederationPaymentObserver {
         &self,
         state: &MintState,
         quote_id: &QuoteId,
+        observer_fallback_round: u32,
     ) -> Result<FederationPaymentAdvancement, cdk::Error> {
         let Some(quote) = state.mint.localstore().get_mint_quote(quote_id).await? else {
             return Ok(FederationPaymentAdvancement::Complete);
@@ -424,7 +430,13 @@ impl FederationPaymentObserver {
 
         #[cfg(feature = "federation-bark")]
         let bark_advancement = if state.federation.bark_runtime().is_some() {
-            match super::bark_incoming::advance_federated_bark_mint_quote(state, quote_id).await {
+            match super::bark_incoming::advance_federated_bark_mint_quote(
+                state,
+                quote_id,
+                observer_fallback_round,
+            )
+            .await
+            {
                 Ok(FederationPaymentAdvancement::Progressed) => {
                     return Ok(FederationPaymentAdvancement::Progressed);
                 }
@@ -517,6 +529,7 @@ impl FederationPaymentObserver {
         &self,
         state: &MintState,
         quote_id: &QuoteId,
+        observer_fallback_round: u32,
     ) -> Result<FederationPaymentAdvancement, cdk::Error> {
         let Some(quote) = state.mint.localstore().get_melt_quote(quote_id).await? else {
             return Ok(FederationPaymentAdvancement::Complete);
@@ -527,7 +540,13 @@ impl FederationPaymentObserver {
 
         #[cfg(feature = "federation-bark")]
         let bark_advancement = if state.federation.bark_runtime().is_some() {
-            match super::bark_outgoing::advance_federated_bark_melt_quote(state, quote_id).await {
+            match super::bark_outgoing::advance_federated_bark_melt_quote(
+                state,
+                quote_id,
+                observer_fallback_round,
+            )
+            .await
+            {
                 Ok(FederationPaymentAdvancement::Progressed) => {
                     return Ok(FederationPaymentAdvancement::Progressed);
                 }

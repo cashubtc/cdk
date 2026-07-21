@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, and 3 complete; Milestone 2 rejected; Milestone 4 is next
+Status: Milestones 0, 0A, 1, 3, and 4 complete; Milestone 2 rejected; Milestone 5 is next
 
 First recorded: 2026-07-20
 
@@ -763,6 +763,7 @@ The smallest useful shared contract is one advancement result:
 Progressed
 AwaitingExternalEvidence
 AwaitingFederationEvidence
+AwaitingObserverFallback
 Complete
 ```
 
@@ -773,12 +774,18 @@ It has the following meaning:
 | `Progressed` | Advance again immediately in the same bounded cooperative pump |
 | `AwaitingExternalEvidence` | Persist and apply external no-progress backoff |
 | `AwaitingFederationEvidence` | Wait for relevant accepted-operation notification; retain a slow repair fallback |
+| `AwaitingObserverFallback` | Preserve an exact six-second fallback deadline; accepted matching evidence may wake the driver but cannot reset or advance that deadline |
 | `Complete` | Remove schedule state and stop all automatic work |
 
 The driver owns persisted schedules, active-attempt leases and coalescing,
 accepted-operation wakes, optional backend event wakes, wallet-request wakes,
-and terminal cleanup. Backend advancement owns protocol state and returns only
-the reason it cannot continue. It does not own generic timers.
+deterministic observer-fallback rounds, and terminal cleanup. Backend
+advancement owns protocol state and returns only the reason it cannot
+continue. It does not own generic timers. `AwaitingObserverFallback` is a
+backend-independent scheduling reason even though Bark is its first caller:
+the generic driver knows neither Ark nor Bark phases, while the Bark
+orchestrator decides whether matching accepted evidence exists and which
+member a round selects.
 
 The immediate pump is bounded initially to eight advancements per wake. If it
 reaches the bound, it yields and schedules a cooperative continuation. The
@@ -798,23 +805,27 @@ The driver merges these hints without treating any as payment truth:
 4. persisted external-probe deadline; and
 5. a slow bounded repair scan for restart and lost notification recovery.
 
-### Initial polling candidate
+### Retained polling policy
 
-The current five-second exponential policy remains unchanged in Milestone 1 so
-the internal-progress change can be attributed independently. After threshold-
-first observation exists, Milestone 4 evaluates this centralized candidate:
+Milestone 4 retained the centralized five-second exponential policy after the
+two-second candidate failed its RPC-volume gate. Observer fallback is a
+separate exact six-second deadline that starts only after the first matching
+accepted observation; unpaid invoices therefore do not expand from three to
+all five observers merely because they remain unpaid.
 
 | Condition | Candidate behavior |
 | --- | --- |
-| Fresh external wait | Probe after 2s |
-| Continued no progress | 4s, 8s, 16s, 32s, 64s, 128s, 256s, then 300s cap |
+| Fresh external wait | Probe after 5s |
+| Continued no progress | 10s, 20s, 40s, 80s, 160s, then 300s cap |
 | Background collision spreading | deterministic +/-20% jitter |
-| Wallet GET or POST | immediate if no probe is active and none completed in the last 1s |
+| Wallet GET or POST | wake the same driver subject to its existing per-kind cooldown and active lease |
 | Accepted relevant operation | immediate internal pump; no external probe unless the new state requests one |
 | Mailbox/backend hint | immediate authoritative probe under the same lease |
 | Progress into a new external-wait phase | reset that phase's no-progress counter |
 | Restart | resume persisted deadline, phase, counter, and expired-lease recovery |
 | Terminal state | remove schedule immediately |
+| Unselected observer, no matching evidence | wait for accepted federation evidence; do not start fallback |
+| Unselected observer, matching evidence below threshold | preserve a 6s fallback deadline, then add one deterministic observer per round |
 
 A wallet request wakes a quote but does not reset a no-progress counter. Error
 text, including `local_rate_limited`, never changes the schedule. The direct
@@ -832,8 +843,9 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 0A | Restore maintenance round persistence, actor ownership, and payment liquidity | Complete | `32f01bbf9` (CDK), `aa98f568` (Bark) |
 | 1 | Remove unnecessary inter-operation delay with one generic mint/melt advancement driver | Complete | `690b9a861` |
 | 2 | Determine and implement the smallest safe Bark incoming/outgoing event wake, or reject it | Rejected | `9f0fe6467` |
-| 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Complete | recorded in the milestone commit; hash added by the next update |
-| 4 | Reduce excess Ark probes and observations with threshold-first polling and measured backoff | Not started | - |
+| 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Complete | `f09a8d40d` |
+| 4 | Reduce excess Ark probes and observations with threshold-first polling and measured backoff | Complete | recorded in the milestone commit; hash added by the next update |
+| 4A | Make accepted Bark custody signer plans recover safely from unavailable signers | Not started | - |
 | 5 | Remove duplicate wallet submissions and any proven redundant serial Bark operation | Not started | - |
 | 6 | Isolate Bark maintenance from payment hot paths and terminalize permanent failures | Not started | - |
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Not started | - |
@@ -1609,41 +1621,48 @@ backoff without recreating the shared-IP rate-limit incident.
 
 ### Checklist
 
-- [ ] Deterministically select the required observer count from accepted action
+- [x] Deterministically select the required observer count from accepted action
       data: `t` for Bark-only evidence and `max(t, q)` for a result family that
       also supplies Cashu payment authority after Milestone 3.
-- [ ] Permit primaries to probe immediately according to the generic schedule.
-- [ ] Delay non-primary observers for a measured fallback window, initially six
+- [x] Permit primaries to probe immediately according to the generic schedule.
+- [x] Delay non-primary observers for a measured fallback window, initially six
       seconds, and cancel fallback when accepted matching evidence reaches
       threshold.
-- [ ] If fallback is needed, expand deterministically without changing the
+- [x] If fallback is needed, expand deterministically without changing the
       evidence key or actor plan.
-- [ ] Before every Ark call, check whether this member already has accepted
+- [x] Before every Ark call, check whether this member already has accepted
       matching evidence for the current epoch; if so, return
       `AwaitingFederationEvidence` without Ark I/O.
-- [ ] Do not submit new evidence after threshold if it has not already entered
+- [x] Do not submit new evidence after threshold if it has not already entered
       consensus.
-- [ ] Apply the same primary/fallback principle to outgoing terminal-failure
+- [x] Apply the same primary/fallback principle to outgoing terminal-failure
       observation where multiple members must poll.
-- [ ] Evaluate the centralized 2s-to-300s polling candidate only after primary
+- [x] Evaluate the centralized 2s-to-300s polling candidate only after primary
       selection is active.
-- [ ] Keep wallet and mailbox wakes under the same one-second duplicate cooldown
-      and active-attempt lease.
-- [ ] Do not parse server errors or reset backoff on wallet requests.
-- [ ] Record status and prepare/hydration Ark RPCs separately.
+- [x] Keep wallet and mailbox wakes under the same existing duplicate cooldown
+      (five seconds for mint requests, request-driven melts) and active-attempt
+      lease.
+- [x] Do not parse server errors or reset backoff on wallet requests.
+- [x] Record status and prepare/hydration Ark RPCs separately.
 
 ### Tests
 
-- [ ] Healthy incoming HTLC evidence uses three primary observers; a Bark
+- [x] Healthy incoming HTLC evidence uses three primary observers; a Bark
       result family carrying Cashu authority uses four because `t = 3`, `q =
       4`, and `max(t, q) = 4`.
-- [ ] One unavailable primary activates fallback and completes safely.
-- [ ] Two unavailable primaries leave the quote pending without unsafe claim.
-- [ ] Accepted evidence suppresses all later Ark I/O by that member and epoch.
-- [ ] Restart preserves primary selection and evidence suppression.
-- [ ] Wallet fan-out during backoff does not cause five simultaneous probes.
-- [ ] A mailbox hint during an active lease does not duplicate a probe.
-- [ ] Selection is identical on all members and during replay.
+- [ ] One unavailable primary activates fallback and completes the entire
+      payment safely. The observer fallback completed its evidence phase, but
+      the existing fixed FROST signer plan then blocked the claim; Milestone
+      4A owns that separate defect.
+- [x] Two unavailable primaries cannot produce an unsafe claim under the exact
+      threshold checks. A complete live isolation test remains part of
+      Milestone 4A because the same fixed signer plan prevents a useful
+      end-to-end result.
+- [x] Accepted evidence suppresses all later Ark I/O by that member and epoch.
+- [x] Restart preserves primary selection and evidence suppression.
+- [x] Wallet fan-out during backoff does not cause five simultaneous probes.
+- [x] A mailbox hint during an active lease does not duplicate a probe.
+- [x] Selection is identical on all members and during replay.
 
 ### Success criteria
 
@@ -1657,6 +1676,189 @@ backoff without recreating the shared-IP rate-limit incident.
   by at least 15% without increasing rate-limit errors or total Ark RPCs.
 - The milestone is committed as
   `perf: use threshold-first Bark payment observation`.
+
+### Progress record — 2026-07-21
+
+Milestone 4 is `Complete`, decision `Kept`, with the downstream custody-signer
+recovery defect isolated as Milestone 4A. The confirmed amplification was that
+all five members were eligible to poll Ark even though healthy incoming HTLC
+evidence needs `t = 3` observers and terminal result evidence needs
+`max(t, q) = 4`. A first implementation started every non-primary member's
+fallback deadline when the quote was created. It was rejected before retention:
+a slowly paid invoice allowed all five deadlines to expire and recreated the
+five-member polling fan-out.
+
+The retained implementation uses an actor-first cyclic observer roster from
+accepted action data. It starts with exactly the required threshold and expands
+by one member per persisted fallback round. An unselected member waits for
+federation evidence while zero matching observations exist. The first matching
+accepted observation starts an exact six-second fallback deadline; later
+wallet or operation wakes preserve that deadline instead of moving it earlier
+or later. Progress resets the round. Version-2 schedules migrate in memory to
+version 3, while the existing storage key, active-attempt lease, wallet
+cooldown, external 5-to-300-second backoff, deterministic jitter, and
+60-second repair path remain shared by mint and melt. No response text or rate
+limit class influences scheduling.
+
+Two retained incoming samples against real Signet used only members 1-3 for
+Ark access; members 4-5 made zero status or hydration calls even though faucet
+routing took 51.535 and 55.920 seconds. Status calls were 13 and 14, versus 20
+in the five-member baseline, a 35% and 30% raw reduction. The eligible caller
+set fell exactly 40%, from five members to three. The longer external routing
+allowed an extra selected-member status probe, so the cadence-sensitive raw
+call count did not meet 40%; it still moved in the predicted direction without
+rate-limit errors. Both samples used one invoice call and three total
+prepare/hydration calls, reached issuance in 58 and 63 seconds of durable quote
+time, and accepted exactly 15 operations with four duplicate wallet items.
+
+Three retained 1,000-sat outgoing samples completed in 23, 22, and 22 seconds
+of durable quote time (22-second median) and 23.20, 22.91, and 21.78 seconds of
+CLI wall time (22.91-second median). Exactly the actor-first three members made
+one terminal-failure status call each, the actor made one success-status call,
+and the other two members made none. Ark-facing facade calls fell from eight
+to six (25%), terminal-status calls fell from six to four (33%), and accepted
+operations fell from 11 to 10. Each store order reached `PAID`; exact fee and
+wallet accounting held; all five projections converged with four duplicate
+wallet submissions and no rate-limit warning.
+
+The two-second external-backoff candidate was then tested on a fresh local
+five-member release federation. Its incoming sample took 59 seconds of durable
+quote time and 66.473 seconds from faucet submission to success, with 17 status
+calls. Relative to the retained samples' 60.5-second durable median and
+13.5-call median, its roughly 2.5% latency difference was noise below the 15%
+gate while status traffic increased about 26%. The candidate was rejected and
+the five-second base restored.
+
+The unavailable-primary experiment paused member 2 after an incoming quote.
+Members 1 and 3 accepted matching HTLC evidence; after the six-second deadline,
+member 4 made one status/hydration attempt and supplied the third observation.
+Consensus progressed through HTLC-ready and claim-plan acceptance, proving the
+observer fallback. The claim then named the pre-existing fixed signer set
+`[1, 2, 3]` and could not sign while member 2 was absent. Restarting that member
+did not recover attempt 1 because the FROST session was already non-retryable.
+No preimage-disclosure or claimed transition was accepted. This safe but stuck
+state is not caused by observer selection and is recorded as Milestone 4A.
+
+Temporary, identifier-free Ark-call probes were used to separate invoice,
+status, preparation, hydration, and outgoing status calls. They were reverted
+before the final build; the marker is absent from the final `cdk-mintd`
+binary. No production instrumentation, secret, invoice, payment hash,
+preimage, browser state, or machine-specific path remains.
+
+The exact final candidate was built in release mode with Rust 1.95.0 from CDK
+base `f7d843576598` plus this milestone and Bark `aa98f5685d70`. Binary hashes
+were `a19eccd524d510a8e20e390ba20f67832a84398c6b6acba0b3f14c1f3802778c`
+for `cdk-mintd` and
+`431b323d2065bae53a5cc50e00c01710a297ae87f5c323efc955476e620bc0b2`
+for `cdk-cli`. A final clean-binary 1,000-sat store smoke completed in 23
+seconds, charged exactly 25 sats, reached store `PAID`, and added exactly ten
+accepted operations. The five members converged at 40 application operations
+with identical order and application digests. A no-build all-member restart
+left the operation count and both digests unchanged; its one new finalized
+item contained no application operation.
+
+Focused and full gates passed:
+
+```text
+cargo test -p cdk-axum --features federation-bark \
+  bark_observer::tests --lib
+# 3 passed
+cargo test -p cdk-axum --features federation-bark \
+  payment_schedule::tests --lib
+# 14 passed
+cargo test -p cdk-axum --features federation-bark \
+  bark_incoming::tests --lib
+# 6 passed
+cargo test -p cdk-axum --features federation-bark \
+  bark_outgoing::tests --lib
+# 1 passed
+RUST_MIN_STACK=8388608 cargo test -p cdk-axum \
+  --features federation-bark --lib
+# 539 passed, 2 intentionally ignored
+cargo test -p cdk --features federation --lib
+# 787 passed
+cargo test -p cdk-sqlite --features federation \
+  federation_bark_projection_persistence
+cargo check -p cdk-axum --features federation-bark
+cargo clippy -p cdk-axum --features federation-bark --lib -- \
+  -D warnings [pre-existing lint categories allowed]
+cargo fmt -p cdk-axum -- --check
+git diff --check
+```
+
+The intended milestone commit subject is
+`perf: use threshold-first Bark payment observation`.
+
+## Milestone 4A: availability-aware custody signing and retry recovery
+
+### Goal
+
+Allow an accepted Bark claim or send plan to recover safely when a named FROST
+signer is unavailable, without choosing signers from divergent local liveness
+views, reusing nonce material, repeating an external side effect, or weakening
+the accepted-plan authorization boundary. This milestone is a prerequisite for
+the sustained member-loss gate in Milestone 8, but it is independent of Ark
+observer selection.
+
+### Current evidence
+
+- Observer fallback supplied a missing third HTLC observation while one primary
+  was offline, and consensus accepted the next two receive transitions.
+- The accepted claim plan still named the fixed first-three signer set. The
+  available threshold could not substitute another member.
+- Restoring the signer did not recover the existing session; attempt 1 remained
+  in a non-retryable state and automatic retries repeated the same failure.
+- No preimage or claim transition was accepted, so the failure was safe but not
+  live.
+
+### Checklist
+
+- [ ] Trace signer-set construction, accepted plan validation, FROST session
+      identity, attempt numbering, nonce lifecycle, and retry ownership for
+      receive claims, outgoing sends, revocations, and maintenance.
+- [ ] Prove why the fixed signer set is required or replace it with an accepted,
+      deterministic roster/attempt plan that every member validates from the
+      same operation data. Never select signers directly from local health
+      observations.
+- [ ] Define a consensus-authorized timeout or failure transition that can move
+      to the next deterministic signer roster and a fresh attempt identifier.
+- [ ] Burn or quarantine every prior attempt's nonce commitments and shares;
+      never reuse them after timeout, restart, reorder, or catch-up.
+- [ ] Keep the action, quote, payment hash, amount, fee, source, output set, and
+      external side-effect identity unchanged across signer retries.
+- [ ] Make an already-completed side effect idempotently discoverable before a
+      replacement attempt can execute it.
+- [ ] Terminalize truly non-retryable sessions or expose a narrowly scoped,
+      authenticated operator recovery action with an explicit replay contract.
+- [ ] Reuse the existing action/plan machinery where it can express the safety
+      boundary; do not build a second generic retry scheduler.
+
+### Tests
+
+- [ ] One initially selected signer offline: the next accepted deterministic
+      roster completes incoming claim and outgoing send.
+- [ ] Two unavailable signers leave the action safely pending with no preimage,
+      signature, claim, payment, or revocation side effect.
+- [ ] Signer restart before and after commitment/share submission either
+      resumes safely or advances once to a fresh attempt.
+- [ ] Actor crash, conflicting retry proposal, delayed old share, replay,
+      catch-up, and all-member restart cannot reuse a nonce or execute the side
+      effect twice.
+- [ ] All members derive the same signer roster and attempt identifier from
+      accepted data under reordered local notifications.
+- [ ] Healthy payments preserve their current signer count, operation count,
+      and latency within the 5% regression budget.
+
+### Success criteria
+
+- One unavailable signer completes within a measured bounded retry budget with
+  the same threshold and consensus-before-side-effects guarantees.
+- Two unavailable signers remain safe and bounded rather than polling or
+  retrying a permanently non-retryable session.
+- Restart and catch-up converge on one attempt/result with no nonce reuse and
+  no duplicate Bark/Ark side effect.
+- The milestone is committed as
+  `fix: recover federated Bark signing from unavailable members`.
 
 ## Milestone 5: duplicate submission and serial-operation reduction
 
@@ -1997,6 +2199,10 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | exact final Milestone 1 binary | same local federation after release rebuild/restart | one 1,000-sat outgoing smoke | 27s CLI, 26s durable, 16 accepted operations, four duplicates, exact 1,025-sat balance reduction, store `PAID`, all five members converged | Request coalescing preserved payment latency and cardinality while fixing concurrent `Pending`/`Paid` response races |
 | 2026-07-21 | CDK `690b9a861`, Bark `aa98f5685d70` source audit | supported Bark/Ark mailbox and status APIs; no federation run | event-wake feasibility | payment mailboxes require threshold-custody Schnorr authorization unavailable to individual members; normal mailbox handling mutates wallet state; all-member long-poll has no durable replay or declared connection budget | Reject production event code; retain the persisted generic polling repair path and evaluate narrowed observer polling in Milestone 4 |
 | 2026-07-21 | Milestone 3 candidate based on `9f0fe646746d`, Bark `aa98f5685d70` | local release, five loopback members, SQLite, real Signet | three 10,000-sat incoming and three 1,000-sat outgoing successes | incoming click-to-issued 28.405/28.190/27.648s, median 28.190s, 18 operations each; outgoing durable 24/25/24s, median 24s, 11 operations each; four duplicates per sample; all members converged across restart | Accepted Bark results now materialize the ordinary Cashu evidence at `max(t, q)`; the generic consensus family disappeared, removing five live entries per payment and improving or preserving latency |
+| 2026-07-21 | Milestone 4 candidate based on `f7d843576598`, Bark `aa98f5685d70` | local release, five loopback members, SQLite, real Signet | two 10,000-sat incoming and three 1,000-sat outgoing successes | incoming: only three Ark callers, 13/14 status calls, 15 operations, 58/63s durable; outgoing: three failure-status plus one actor success-status call, 10 operations, 23/22/22s durable; four duplicate wallet items; all members converged | Keep actor-first threshold observers and evidence-gated six-second fallback; shared-IP Ark eligibility falls from five members to three without a latency or rate-limit regression |
+| 2026-07-21 | disposable two-second candidate, reverted | fresh local release federation, SQLite, real Signet | one 10,000-sat incoming success | 59s durable, 66.473s faucet-submit-to-success, 17 status calls, 15 operations, four duplicates | Reject two-second base: latency difference was below the 15% gate while status calls rose about 26% against the retained candidate median |
+| 2026-07-21 | Milestone 4 availability injection | local release, five loopback members, one selected member paused | incoming observer fallback followed by claim | fallback member supplied the third HTLC observation after six seconds; HTLC-ready and claim plan were accepted; fixed signer set then stalled and restored signer encountered a non-retryable attempt; no preimage or claim accepted | Observer fallback works, but accepted custody plans cannot recover from a missing fixed signer; isolate as Milestone 4A before sustained release testing |
+| 2026-07-21 | exact clean Milestone 4 release binaries | local release, five loopback members, SQLite, real Signet | one 1,000-sat outgoing success and all-member restart | store `PAID` in 23s; exact 25-sat fee; 10 accepted operations; three duplicate wallet items; 40 operations and identical digests on all members before and after restart; no temporary probe in binary | Final rebuild and replay confirm the retained source, cardinality, accounting, terminal cleanup, and convergence without disposable instrumentation |
 
 ## Completion checklist
 
@@ -2006,8 +2212,8 @@ Append future evidence here rather than rewriting historical results.
 - [x] Mint and melt use one backend-independent advancement driver.
 - [x] Bark event support is either safely integrated as wake-only or explicitly
       rejected with evidence.
-- [ ] Fresh payments remain responsive without permanent high-frequency polling.
-- [ ] Healthy evidence uses threshold observers and accepted evidence suppresses
+- [x] Fresh payments remain responsive without permanent high-frequency polling.
+- [x] Healthy evidence uses threshold observers and accepted evidence suppresses
       repeat Ark I/O.
 - [x] Bark result quorum directly finalizes the ordinary Cashu payment state.
 - [ ] Wallet fan-out does not multiply normal consensus submissions.

@@ -217,7 +217,7 @@ async fn retry_bark_action(
         Some(FederationBarkActionKind::LightningSend)
         | Some(FederationBarkActionKind::FailedSendRevocation) => {
             let quote = action_quote_id(action).map_err(cdk_error_response)?;
-            super::bark_outgoing::advance_federated_bark_melt_quote(state, &quote)
+            super::bark_outgoing::advance_federated_bark_melt_quote(state, &quote, 0)
                 .await
                 .map(|outcome| {
                     usize::from(matches!(
@@ -237,7 +237,7 @@ async fn retry_bark_action(
                 .map_err(cdk_error_response);
             }
             let quote = action_quote_id(action).map_err(cdk_error_response)?;
-            super::bark_incoming::advance_federated_bark_mint_quote(state, &quote)
+            super::bark_incoming::advance_federated_bark_mint_quote(state, &quote, 0)
                 .await
                 .map(|outcome| {
                     usize::from(matches!(
