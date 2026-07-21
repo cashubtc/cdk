@@ -33,21 +33,28 @@ fee_percent = 0.02       # Optional, defaults to 2%
 reserve_fee_min = 2      # Optional, defaults to 2 sats
 ```
 
-### Import and Start
+### Environment Variables
 
-Add the section above to a complete `mint.toml`, then explicitly import it into
-the mint database before the first start:
+All configuration can be set via environment variables:
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `CDK_MINTD_LN_BACKEND` | Set to `lnd` | Yes |
+| `CDK_MINTD_LND_ADDRESS` | LND gRPC address (e.g., `https://localhost:10009`) | Yes |
+| `CDK_MINTD_LND_CERT_FILE` | Path to LND TLS certificate | Yes |
+| `CDK_MINTD_LND_MACAROON_FILE` | Path to LND macaroon file | Yes |
+| `CDK_MINTD_LND_FEE_PERCENT` | Fee percentage (default: `0.02`) | No |
+| `CDK_MINTD_LND_RESERVE_FEE_MIN` | Minimum fee in sats (default: `2`) | No |
+
+### Example
 
 ```bash
-cdk-mintd config validate --file mint.toml
-cdk-mintd config init --file mint.toml
+export CDK_MINTD_LN_BACKEND=lnd
+export CDK_MINTD_LND_ADDRESS=https://127.0.0.1:10009
+export CDK_MINTD_LND_CERT_FILE=/home/user/.lnd/tls.cert
+export CDK_MINTD_LND_MACAROON_FILE=/home/user/.lnd/data/chain/bitcoin/mainnet/admin.macaroon
 cdk-mintd
 ```
-
-Environment variables no longer override LND settings at daemon startup. To
-change them later, edit the complete file, run
-`cdk-mintd config apply --file mint.toml`, and restart. Direct apply works beside a running daemon. See the
-[`cdk-mintd` configuration guide](../cdk-mintd/README.md#configuration).
 
 ## Minimum Supported Rust Version (MSRV)
 

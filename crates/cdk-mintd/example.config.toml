@@ -36,8 +36,8 @@ enabled = false
 # tls_dir = "/path/to/tls"
 # allow_insecure = false
 
-# Enable this to use `cdk-mintd config apply/show/export/discard-pending`
-# against the running daemon.
+# Optional existing management RPC for immediate mint metadata and keyset
+# operations. Configuration commands access the database directly.
 [mint_management_rpc]
 enabled = false
 # address = "127.0.0.1"
@@ -76,10 +76,7 @@ tti = 60
 # contact_email = "hello@cashu.me"
 # Nostr pubkey of mint (Hex)
 # contact_nostr_public_key = ""
-# Arbitrary contact methods can be imported as a complete list:
-# contacts = [{ method = "support", info = "https://support.example" }]
 # tos_url = "https://example.com/terms-of-service"
-# urls = ["https://mint.example"]
 
 
 [database]

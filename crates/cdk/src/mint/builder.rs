@@ -23,7 +23,7 @@ use crate::nuts::{
     AuthRequired, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
     MintVersion, MppMethodSettings, PaymentMethod, ProtectedEndpoint,
 };
-use crate::types::{PaymentProcessorKey, QuoteTTL};
+use crate::types::PaymentProcessorKey;
 
 /// Configuration for a mint unit (keyset)
 #[derive(Debug, Clone)]
@@ -153,22 +153,10 @@ impl MintBuilder {
     }
 
     /// Initialize builder's MintInfo from the database if present.
-    /// If no record is present, keeps the current MintInfo.
+    /// If not present or parsing fails, keeps the current MintInfo.
     pub async fn init_from_db_if_present(&mut self) -> Result<(), cdk_database::Error> {
-        if let Some(info) = self.mint_info_from_db().await? {
-            self.mint_info = info;
-        }
-
-        Ok(())
-    }
-
-    /// Reads the raw persisted mint information, if it exists.
-    ///
-    /// Unlike [`Self::init_from_db_if_present`], this does not mutate the
-    /// builder. A malformed persisted record is returned as an error instead of
-    /// being treated as an absent configuration.
-    pub async fn mint_info_from_db(&self) -> Result<Option<MintInfo>, cdk_database::Error> {
-        let bytes = self
+        // Attempt to read existing mint_info from the KV store
+        let bytes_opt = self
             .localstore
             .kv_read(
                 super::CDK_MINT_PRIMARY_NAMESPACE,
@@ -177,25 +165,16 @@ impl MintBuilder {
             )
             .await?;
 
-        bytes
-            .map(|bytes| serde_json::from_slice(&bytes).map_err(cdk_database::Error::from))
-            .transpose()
-    }
+        if let Some(bytes) = bytes_opt {
+            if let Ok(info) = serde_json::from_slice::<MintInfo>(&bytes) {
+                self.mint_info = info;
+            } else {
+                // If parsing fails, leave the current builder state untouched
+                tracing::warn!("Failed to parse existing mint_info from DB; using builder state");
+            }
+        }
 
-    /// Reads the raw persisted quote TTL, if it exists.
-    pub async fn quote_ttl_from_db(&self) -> Result<Option<QuoteTTL>, cdk_database::Error> {
-        let bytes = self
-            .localstore
-            .kv_read(
-                super::CDK_MINT_PRIMARY_NAMESPACE,
-                super::CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
-                super::CDK_MINT_QUOTE_TTL_KV_KEY,
-            )
-            .await?;
-
-        bytes
-            .map(|bytes| serde_json::from_slice(&bytes).map_err(cdk_database::Error::from))
-            .transpose()
+        Ok(())
     }
 
     /// Set blind auth settings

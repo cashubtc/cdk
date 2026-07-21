@@ -30,36 +30,35 @@ cdk-lnbits = "*"
 ln_backend = "lnbits"
 
 [lnbits]
-admin_api_key = "env:CDK_MINTD_LNBITS_ADMIN_API_KEY"
-invoice_api_key = "env:CDK_MINTD_LNBITS_INVOICE_API_KEY"
+admin_api_key = "your-admin-api-key"
+invoice_api_key = "your-invoice-api-key"
 lnbits_api = "https://your-lnbits-instance.com/api/v1"
 fee_percent = 0.02       # Optional, defaults to 2%
 reserve_fee_min = 2      # Optional, defaults to 2 sats
 ```
 
-### Import and Start
+### Environment Variables
 
-Add the section above to a complete `mint.toml`. Set the referenced secrets,
-then explicitly import the document into the mint database before the first
-start:
+All configuration can be set via environment variables:
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `CDK_MINTD_LN_BACKEND` | Set to `lnbits` | Yes |
+| `CDK_MINTD_LNBITS_ADMIN_API_KEY` | LNBits admin API key | Yes |
+| `CDK_MINTD_LNBITS_INVOICE_API_KEY` | LNBits invoice API key | Yes |
+| `CDK_MINTD_LNBITS_LNBITS_API` | LNBits API URL | Yes |
+| `CDK_MINTD_LNBITS_FEE_PERCENT` | Fee percentage (default: `0.02`) | No |
+| `CDK_MINTD_LNBITS_RESERVE_FEE_MIN` | Minimum fee in sats (default: `2`) | No |
+
+### Example
 
 ```bash
+export CDK_MINTD_LN_BACKEND=lnbits
 export CDK_MINTD_LNBITS_ADMIN_API_KEY=your-admin-api-key
 export CDK_MINTD_LNBITS_INVOICE_API_KEY=your-invoice-api-key
-cdk-mintd config validate --file mint.toml
-cdk-mintd config init --file mint.toml
+export CDK_MINTD_LNBITS_LNBITS_API=https://your-lnbits-instance.com/api/v1
 cdk-mintd
 ```
-
-The two environment variables above are secret inputs referenced by the
-persisted document; they are not operational configuration overrides. They
-must be available whenever mintd validates, applies, or starts from that
-configuration.
-
-Environment variables no longer override the LNbits backend, API URL, or fee
-settings at daemon startup. To change them later, edit the complete file, run
-`cdk-mintd config apply --file mint.toml`, and restart. Direct apply works beside a running daemon. See the
-[`cdk-mintd` configuration guide](../cdk-mintd/README.md#configuration).
 
 ### Getting API Keys
 

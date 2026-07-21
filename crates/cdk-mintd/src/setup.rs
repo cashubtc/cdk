@@ -67,7 +67,7 @@ impl LnBackendSetup for config::Cln {
         // Validate required connection field
         if self.rpc_path.as_os_str().is_empty() {
             return Err(anyhow::anyhow!(
-                "CLN rpc_path must be set in [cln].rpc_path"
+                "CLN rpc_path must be set via config or CDK_MINTD_CLN_RPC_PATH env var"
             ));
         }
 
@@ -110,13 +110,15 @@ impl LnBackendSetup for config::LNbits {
 
         // Validate required connection fields
         if self.admin_api_key.is_empty() {
-            bail!("LNbits admin_api_key must be set in [lnbits].admin_api_key");
+            bail!("LNbits admin_api_key must be set via config or CDK_MINTD_LNBITS_ADMIN_API_KEY env var");
         }
         if self.invoice_api_key.is_empty() {
-            bail!("LNbits invoice_api_key must be set in [lnbits].invoice_api_key");
+            bail!("LNbits invoice_api_key must be set via config or CDK_MINTD_LNBITS_INVOICE_API_KEY env var");
         }
         if self.lnbits_api.is_empty() {
-            bail!("LNbits lnbits_api must be set in [lnbits].lnbits_api");
+            bail!(
+                "LNbits lnbits_api must be set via config or CDK_MINTD_LNBITS_LNBITS_API env var"
+            );
         }
 
         let admin_api_key = &self.admin_api_key;
@@ -156,13 +158,15 @@ impl LnBackendSetup for config::Lnd {
         use anyhow::bail;
         // Validate required connection fields
         if self.address.is_empty() {
-            bail!("LND address must be set in [lnd].address");
+            bail!("LND address must be set via config or CDK_MINTD_LND_ADDRESS env var");
         }
         if self.cert_file.as_os_str().is_empty() {
-            bail!("LND cert_file must be set in [lnd].cert_file");
+            bail!("LND cert_file must be set via config or CDK_MINTD_LND_CERT_FILE env var");
         }
         if self.macaroon_file.as_os_str().is_empty() {
-            bail!("LND macaroon_file must be set in [lnd].macaroon_file");
+            bail!(
+                "LND macaroon_file must be set via config or CDK_MINTD_LND_MACAROON_FILE env var"
+            );
         }
 
         let address = &self.address;
@@ -487,9 +491,10 @@ impl LnBackendSetup for config::LdkNode {
         };
 
         // Parse network from config
-        let network_str = self.bitcoin_network.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("LDK Node bitcoin_network must be set in [ldk_node].bitcoin_network")
-        })?;
+        let network_str = self
+            .bitcoin_network
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("LDK Node bitcoin_network must be set via config or CDK_MINTD_LDK_NODE_BITCOIN_NETWORK env var"))?;
 
         let network = match network_str.to_lowercase().as_str() {
             "mainnet" | "bitcoin" => Network::Bitcoin,
@@ -780,10 +785,9 @@ impl OnchainBackendSetup for crate::config::Bdk {
             percent_fee_reserve: self.fee_percent,
         };
 
-        let network_str = self
-            .network
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("BDK network must be set in [bdk].network"))?;
+        let network_str = self.network.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("BDK network must be set via config or CDK_MINTD_BDK_NETWORK env var")
+        })?;
 
         let network = match network_str.to_lowercase().as_str() {
             "mainnet" | "bitcoin" => Network::Bitcoin,

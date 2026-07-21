@@ -6,82 +6,65 @@
 
 mod common;
 mod database;
-#[cfg(test)]
 mod info;
-#[cfg(test)]
 mod limits;
-#[cfg(test)]
 mod ln;
-#[cfg(test)]
 mod mint_info;
-#[cfg(test)]
 mod onchain;
-#[cfg(test)]
 mod signatory;
 
-#[cfg(test)]
 mod auth;
-#[cfg(all(test, feature = "bdk"))]
+#[cfg(feature = "bdk")]
 mod bdk;
-#[cfg(all(test, feature = "cln"))]
+#[cfg(feature = "cln")]
 mod cln;
-#[cfg(all(test, feature = "fakewallet"))]
+#[cfg(feature = "fakewallet")]
 mod fake_wallet;
-#[cfg(all(test, feature = "grpc-processor"))]
+#[cfg(feature = "grpc-processor")]
 mod grpc_processor;
-#[cfg(all(test, feature = "ldk-node"))]
+#[cfg(feature = "ldk-node")]
 mod ldk_node;
-#[cfg(all(test, feature = "lnbits"))]
+#[cfg(feature = "lnbits")]
 mod lnbits;
-#[cfg(all(test, feature = "lnd"))]
+#[cfg(feature = "lnd")]
 mod lnd;
-#[cfg(all(test, feature = "management-rpc"))]
+#[cfg(feature = "management-rpc")]
 mod management_rpc;
-#[cfg(all(test, feature = "prometheus"))]
+#[cfg(feature = "prometheus")]
 mod prometheus;
 
-#[cfg(test)]
 use std::env;
-#[cfg(test)]
 use std::str::FromStr;
 
-#[cfg(test)]
 use anyhow::{anyhow, bail, Result};
-#[cfg(test)]
 pub use auth::*;
-#[cfg(all(test, feature = "bdk"))]
+#[cfg(feature = "bdk")]
 pub use bdk::*;
-#[cfg(all(test, feature = "cln"))]
+#[cfg(feature = "cln")]
 pub use cln::*;
 pub use common::*;
 pub use database::*;
-#[cfg(all(test, feature = "fakewallet"))]
+#[cfg(feature = "fakewallet")]
 pub use fake_wallet::*;
-#[cfg(all(test, feature = "grpc-processor"))]
+#[cfg(feature = "grpc-processor")]
 pub use grpc_processor::*;
-#[cfg(all(test, feature = "ldk-node"))]
+#[cfg(feature = "ldk-node")]
 pub use ldk_node::*;
-#[cfg(test)]
 pub use limits::*;
-#[cfg(test)]
 pub use ln::*;
-#[cfg(all(test, feature = "lnbits"))]
+#[cfg(feature = "lnbits")]
 pub use lnbits::*;
-#[cfg(all(test, feature = "lnd"))]
+#[cfg(feature = "lnd")]
 pub use lnd::*;
-#[cfg(all(test, feature = "management-rpc"))]
+#[cfg(feature = "management-rpc")]
 pub use management_rpc::*;
-#[cfg(test)]
 pub use mint_info::*;
-#[cfg(test)]
 pub use onchain::*;
-#[cfg(all(test, feature = "prometheus"))]
+#[cfg(feature = "prometheus")]
 pub use prometheus::*;
 
-#[cfg(test)]
 use crate::config::{DatabaseEngine, Ln, LnBackend, OnchainBackend, Settings};
 
-#[cfg(test)]
 impl Settings {
     pub fn from_env(&mut self) -> Result<Self> {
         if let Ok(database) = env::var(DATABASE_ENV_VAR) {
