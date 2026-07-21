@@ -49,7 +49,7 @@ impl FederationNodeRuntime {
         }
         match &envelope.operation {
             cdk::federation::FederationOperation::Bark(operation) => {
-                mint.validate_federation_bark_operation_submission(operation)
+                mint.validate_federation_bark_operation_submission(operation, None)
                     .await?;
             }
             cdk::federation::FederationOperation::TransactionBroadcastIntent(intent) => {

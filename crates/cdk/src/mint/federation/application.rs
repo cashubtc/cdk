@@ -209,17 +209,36 @@ impl Mint {
         author: MemberId,
         operation_index: u64,
     ) -> Result<MemberId, Error> {
+        let decision_operation_index = self
+            .localstore
+            .get_federation_journal_tip()
+            .await?
+            .map_or(0, |tip| tip.index.saturating_add(1));
+        Self::federation_external_action_lease_actor_at_index(
+            config,
+            author,
+            operation_index,
+            decision_operation_index,
+        )
+    }
+
+    /// Recompute an external-action lease at the exact consensus index where
+    /// the decision was ordered. Catch-up must use the accepted plan's index
+    /// rather than a later journal tip, otherwise future operations can change
+    /// the actor expected for immutable history.
+    pub(super) fn federation_external_action_lease_actor_at_index(
+        config: &FederationRuntimeConfig,
+        author: MemberId,
+        operation_index: u64,
+        decision_operation_index: u64,
+    ) -> Result<MemberId, Error> {
         let members: Vec<MemberId> = config.public_config().members.keys().copied().collect();
         let author_position = members
             .iter()
             .position(|member| *member == author)
             .ok_or(Error::Internal)?;
-        let journal_frontier = self
-            .localstore
-            .get_federation_journal_tip()
-            .await?
-            .map_or(0, |tip| tip.index.saturating_add(1));
-        let lease_epoch = journal_frontier.saturating_sub(operation_index.saturating_add(1))
+        let lease_epoch = decision_operation_index
+            .saturating_sub(operation_index.saturating_add(1))
             / FEDERATION_EXTERNAL_ACTION_ACTOR_LEASE_ITEMS;
         let epoch_steps = usize::try_from(lease_epoch % members.len() as u64).unwrap_or_default();
         let actor_position = (author_position + epoch_steps) % members.len();
@@ -1127,7 +1146,7 @@ impl Mint {
         operation: &FederationBarkOperation,
     ) -> Result<(), Error> {
         operation.validate()?;
-        self.validate_federation_bark_operation_submission(operation)
+        self.validate_federation_bark_operation_submission(operation, Some(entry.index))
             .await?;
         if let FederationBarkOperation::ReceiveIntent(intent) = operation {
             let runtime_config = self.federation_config().ok_or(Error::Internal)?;

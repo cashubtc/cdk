@@ -67,6 +67,7 @@ impl Mint {
     pub async fn validate_federation_bark_operation_submission(
         &self,
         operation: &FederationBarkOperation,
+        accepted_operation_index: Option<u64>,
     ) -> Result<(), Error> {
         operation.validate()?;
         let config = self
@@ -576,9 +577,22 @@ impl Mint {
                 let author = predecessor
                     .envelope
                     .verify_authorization(config.public_config())?;
-                let expected_actor = self
-                    .federation_external_action_lease_actor(&config, author, predecessor.index)
-                    .await?;
+                let expected_actor = match accepted_operation_index {
+                    Some(operation_index) => Self::federation_external_action_lease_actor_at_index(
+                        &config,
+                        author,
+                        predecessor.index,
+                        operation_index,
+                    )?,
+                    None => {
+                        self.federation_external_action_lease_actor(
+                            &config,
+                            author,
+                            predecessor.index,
+                        )
+                        .await?
+                    }
+                };
                 let expected_signers = config
                     .public_config()
                     .members

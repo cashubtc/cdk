@@ -117,6 +117,26 @@ fn runtime_config() -> FederationRuntimeConfig {
     runtime_configs().remove(0)
 }
 
+#[test]
+fn external_action_lease_replay_uses_the_accepted_decision_index() {
+    let config = runtime_config();
+    let author = MemberId::new(1).expect("author");
+    let accepted_actor =
+        Mint::federation_external_action_lease_actor_at_index(&config, author, 40, 41)
+            .expect("accepted lease actor");
+    let later_actor =
+        Mint::federation_external_action_lease_actor_at_index(&config, author, 40, 49)
+            .expect("later lease actor");
+
+    assert_eq!(accepted_actor, author);
+    assert_eq!(later_actor, MemberId::new(2).expect("rotated actor"));
+    assert_eq!(
+        Mint::federation_external_action_lease_actor_at_index(&config, author, 40, 41)
+            .expect("replayed accepted actor"),
+        accepted_actor
+    );
+}
+
 fn runtime_config_with_inactive_rotation_keyset() -> FederationRuntimeConfig {
     let members = (1..=2)
         .map(|id| {

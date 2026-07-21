@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, and 6 complete; Milestone 2 rejected; Milestone 6A is next
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, and 6A complete; Milestone 2 rejected; Milestone 6B in progress
 
 First recorded: 2026-07-20
 
@@ -848,7 +848,9 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 4A | Make accepted Bark custody signer plans recover safely from unavailable signers | Complete | `fix: recover federated Bark signing from unavailable members` |
 | 5 | Remove duplicate wallet submissions and audit serial Bark operations | Complete | `4148162c7` |
 | 6 | Isolate Bark maintenance from payment hot paths and retire safely expired receives | Complete | `fix: isolate federated Bark maintenance from payments` |
-| 6A | Back off observer-worker failures so lagging members can catch up | Not started | - |
+| 6A | Make accepted external-action actor leases replay-stable | Complete | `fix: make federated Bark actor leases replay-stable` |
+| 6B | Back off observer-worker failures so lagging members can recover quietly | In progress | - |
+| 6C | Reconcile a paid federated melt after the wallet loses its aggregate response | Not started | - |
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Not started | - |
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Not started | - |
 
@@ -1917,12 +1919,16 @@ healthy control.
 
 The wallet command did not receive a final four-member aggregate response even
 though the fault payment and quote were durably paid. Restoring member 3 exposed
-a separate pre-existing scheduler failure: while the member was marked
-lagging, a due payment schedule retried its readiness error roughly every
-millisecond and delayed application catch-up. This is not signer-attempt state
-or duplicate Bark execution; it is isolated as Milestone 6A rather than folded
-into this recovery protocol. The earlier incoming recovery already proved
-offline-member journal/application catch-up and identical all-member digests.
+two separate pre-existing restart defects. Replay recomputed the accepted
+plan's actor lease from the later journal tip and rejected immutable history;
+before that failure terminated the process, a due payment schedule also retried
+the member's readiness error roughly every millisecond. Neither defect is
+signer-attempt state or duplicate Bark execution. They are isolated as
+Milestones 6A and 6B rather than folded into this recovery protocol. The
+wallet's separate failure to reconcile the paid melt after losing the aggregate
+response is recorded as Milestone 6C. The earlier incoming recovery already
+proved offline-member journal/application catch-up and identical all-member
+digests.
 
 Decision: `Kept`. One deterministic roster pass is the smallest protocol that
 restores one-fault custody liveness while preserving consensus authorization.
@@ -2273,7 +2279,74 @@ and all-target checking plus doc tests passed. The exact clean release binary
 also restarted the five-member state with identical member digests before
 routine post-payment refresh resumed.
 
-## Milestone 6A: observer-worker failure backoff and catch-up priority
+## Milestone 6A: replay-stable external-action actor leases
+
+### Goal
+
+Validate an accepted Bark action plan against the actor lease at the exact
+consensus index where the plan was ordered. Later journal growth must not
+change the actor expected for immutable history during catch-up or restart.
+
+### Current evidence
+
+Member 3 rejoined after missing the offline outgoing payment and downloaded
+the complete 52-entry journal, but application stopped at operation 41. The
+first unapplied entry was the accepted `LightningSend` plan. When it was first
+ordered, the author still held the lease and actor 5 was valid. Replay used the
+later journal tip, advanced the lease epoch, expected a different actor, marked
+the accepted plan failed, and terminated Bark startup with
+`actor, action, signer set, or attempt is not deterministic`.
+
+### Checklist
+
+- [x] Separate the actor lease's decision index from the current local journal
+      tip.
+- [x] Live admission derives the actor from the next possible operation index.
+- [x] Accepted application and catch-up use the accepted plan entry's exact
+      operation index.
+- [x] Preserve the existing eight-item deterministic takeover cadence for new
+      work.
+- [x] Add a regression proving later journal growth rotates new authority but
+      cannot alter the actor accepted at an earlier index.
+- [x] Restart the offline member and verify all application and Bark state
+      converges without another external payment.
+- [x] Rebuild/restart all members and verify the historical plan remains valid.
+
+### Success criteria
+
+- The previously failed accepted plan applies on member 3 without changing its
+  actor, action ID, signer set, attempt, or result.
+- All five members converge on identical journal, application, materialized,
+  Bark projection, quote, VTXO, and balance state.
+- New actor takeover still rotates from consensus-ordered distance exactly as
+  before.
+- The milestone is committed as
+  `fix: make federated Bark actor leases replay-stable`.
+
+### Candidate findings and progress
+
+The retained change makes the decision index explicit. Live admission still
+uses the next possible journal index, preserving the eight-item takeover
+cadence for new plans. Application and catch-up instead validate an immutable
+accepted plan at that entry's own index. A focused regression proves that a
+decision at index 41 retains its original actor after enough later entries
+exist to rotate a new decision at index 49.
+
+The exact release binary restarted all five persisted members. Member 3
+reapplied the formerly failed plan and the remaining suffix without changing
+the accepted actor, signer roster, action, or result. All members became ready
+with 52 of 52 journal entries applied, zero failed entries, identical order and
+application digests, five identical Bark action projections, and identical
+federation Bark VTXO accounting of 7,950 sats spendable and 41,025 sats spent.
+The journal remained at 52 entries and the Bark movement set did not grow, so
+replay did not initiate another external payment. Focused unit testing and the
+federation-enabled `cdk-axum` all-target check passed.
+
+Decision: `Kept`. Historical authorization now depends only on immutable
+consensus data; the live takeover policy and external action machinery are
+otherwise unchanged.
+
+## Milestone 6B: observer-worker failure backoff and recovery priority
 
 ### Goal
 
@@ -2290,7 +2363,7 @@ payment deadline was already due. `scheduled_quotes` rejected the authoritative
 read before claiming the quote, `next_schedule_delay` continued returning zero,
 and the outer worker retried the same readiness error roughly every millisecond.
 The log grew to tens of megabytes and peer checkpoint publication timed out,
-delaying the catch-up work needed to clear the readiness error.
+amplifying the separate replay failure diagnosed in Milestone 6A.
 
 ### Checklist
 
@@ -2320,6 +2393,46 @@ delaying the catch-up work needed to clear the readiness error.
   materialized-state, Bark projection, and balance state.
 - The milestone is committed as
   `fix: back off failed federation payment observer rounds`.
+
+## Milestone 6C: lost-response wallet melt reconciliation
+
+### Goal
+
+Ensure a wallet that submitted a federated melt can discover the canonical paid
+result after losing the aggregate HTTP response, without paying again or
+requiring knowledge of Bark.
+
+### Current evidence
+
+The offline-member outgoing sample paid once and all five mint databases now
+agree on the paid quote and exact 1,025-sat reduction. The test wallet lost the
+aggregate response and still reports 8,975 sats rather than 7,950. Its second
+melt quote remains locally `UNPAID`, all 8,975 sats remain locally `UNSPENT`,
+and `cdk-cli check-pending` reports no orphaned pending proofs. The wallet
+therefore has no durable local marker that lets its ordinary recovery path ask
+for the already-paid quote.
+
+### Checklist
+
+- [ ] Reproduce the lost-response boundary without killing unrelated wallet
+      work and identify where the quote/proof recovery marker must become
+      durable.
+- [ ] Reuse the generic wallet saga and quote-status machinery; do not add a
+      Bark- or federation-specific balance repair path.
+- [ ] Reconcile the canonical paid result idempotently after restart without
+      resubmitting the Lightning payment.
+- [ ] Add focused crash/lost-response regression coverage for standalone and
+      federated clients where their request semantics differ.
+- [ ] Verify the original test wallet reaches the exact 7,950-sat balance or
+      document why its pre-fix state lacks sufficient durable identity.
+
+### Success criteria
+
+- A fresh lost-response reproduction repairs to the canonical paid quote and
+  spent proofs on restart/check-pending.
+- Recovery cannot make another melt request or duplicate the external payment.
+- Ordinary standalone wallet behavior remains unchanged or gains the same
+  generic safety property.
 
 ## Milestone 7: measured consensus timing evaluation
 
@@ -2519,7 +2632,10 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | Milestone 5 designated wallet publication | local release plus controlled live five-member AlephBFT A/B | one incoming mint, three outgoing melts, five repeated direct-publication controls, and offline-primary fault injection | finalized identical wallet items 5 -> 1; application-bearing messages 164 -> 44 and bytes 176,300 -> 47,344 in the first recorded run; five-run median messages 168 -> 28, bytes 180,600 -> 30,128, and finality 2,137 -> 2,048ms; offline primary fell back after 3s with one item; real-flow duplicate counter stayed at 11 | Keep the generic `Mint`/`Melt`/`Swap` publisher coordinator. The slower external Signet interval preceded an explicit Ark outage and is not a controlled candidate regression; repeated isolated A/B had no median regression. No serial Bark boundary passed the safety-removal gate. |
 | 2026-07-21 | Milestone 6 maintenance isolation candidate | local release, fresh five-member loopback federation, SQLite, real Signet | five-minute idle window plus one 10,000-sat incoming success and clean restart | idle scans 300 -> 30 across five members in five minutes; a maintenance deadline during `ReceivePrepared` produced zero maintenance operations and zero custody actions; payment accepted 15 operations, zero duplicate items, completed Bark receive in 18.1s after detection, issued exactly 10,000 sats, and converged on all members; post-terminal refresh resumed | Keep one shared maintenance lease, payment-priority yield, safely expired receive retirement, and no-progress backoff. External payer processing dominated the 320s quote interval. Invalid reservations and non-retryable signer attempts remain exclusively in Milestone 4A rather than driving error-string policy. |
 | 2026-07-21 | Milestone 4A signer recovery | exact local release, five loopback members, one member offline, real Signet | recover one already-paid 10,000-sat incoming claim, one refresh, one healthy 1,000-sat outgoing control, and one 1,000-sat outgoing fault | incoming accepted attempts 2/3/4, selected `[1,4,5]`, issued exactly 10,000 sats, and reconverged after catch-up; refresh attempt 2 completed one replacement; healthy outgoing attempt 1 took 33s; offline outgoing attempts 1/2/3 failed safely, attempt 4 selected `[1,4,5]`, paid once in 31s, and charged exactly 1,025 sats | Keep the bounded consensus-authorized signer rotation. It restores one-fault custody liveness without local health selection, error-string policy, duplicate payment, or latency regression. |
-| 2026-07-21 | Milestone 6A discovery | exact local release, member restored after outgoing fault | restart and apply 11 accepted operations | journal catch-up reached the current 52-entry head, but a due schedule plus the member's `lagging` readiness error retried roughly every millisecond; logs grew to tens of megabytes and checkpoint publication timed out while application state remained 11 operations behind | Outer observer failure occurs before the persisted quote claim can advance its deadline. Add one generic in-memory worker failure backoff; retain the persisted schedule as the only per-quote authority. |
+| 2026-07-21 | Milestone 6A discovery | exact local release, member restored after outgoing fault | replay 11 accepted operations | journal catch-up reached the current 52-entry head, but application stopped on the accepted outgoing plan at index 41; replay used the later tip to rotate its historical actor lease and rejected actor 5 even though four members had already accepted and executed that exact plan | Bind replay validation to the accepted plan's own operation index while retaining tip-based lease rotation for new admission. Future journal growth must not rewrite historical authority. |
+| 2026-07-21 | Milestone 6A retained candidate | exact local release, persisted five-member fault state | all-member restart and historical action replay | all members ready with 52/52 entries applied, zero failed entries, identical order/application digests and Bark projections, 7,950 sats spendable and 41,025 sats spent; no new journal entry, movement, or external payment | Keep exact-index replay validation. New admission still uses the live next index, while immutable history can no longer change authority as the journal grows. |
+| 2026-07-21 | Milestone 6B discovery | same restored member before replay terminated | due payment schedule while authoritative reads reject `lagging` | the pre-claim readiness error retried roughly every millisecond; logs grew to tens of megabytes and checkpoint publications timed out | Outer observer failure occurs before the persisted quote claim can advance its deadline. Add one generic in-memory worker failure backoff; retain the persisted schedule as the only per-quote authority. |
+| 2026-07-21 | Milestone 6C discovery | same paid outgoing fault sample after all-member convergence | wallet lost aggregate melt response | mint and Bark state agree on one paid 1,025-sat spend, but the wallet retains an `UNPAID` quote and 8,975 locally unspent sats; `check-pending` finds nothing | The request was not durably represented in the wallet recovery state before the response was lost. Investigate one generic lost-response/saga repair path without resubmitting payment. |
 
 ## Completion checklist
 
