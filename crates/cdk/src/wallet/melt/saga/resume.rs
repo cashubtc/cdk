@@ -152,7 +152,7 @@ impl Wallet {
                     self.complete_melt_from_restore(saga_id, data, &quote_status)
                         .await
                 }
-                MeltQuoteState::Unpaid | MeltQuoteState::Failed => {
+                MeltQuoteState::Failed => {
                     // Safety: refuse to compensate while the mint still
                     // reports a payment proof (Lightning preimage or
                     // Onchain outpoint). Treat it as pending so the next
@@ -181,6 +181,41 @@ impl Wallet {
                     Ok(Some(FinalizedMelt::new(
                         data.quote_id.clone(),
                         quote_status.state(),
+                        None,
+                        data.amount,
+                        Amount::ZERO,
+                        None,
+                    )))
+                }
+                MeltQuoteState::Unpaid => {
+                    if quote_status.payment_proof().is_some() {
+                        tracing::warn!(
+                            "Melt saga {} - payment reported Unpaid but mint holds \
+                             a payment proof; keeping pending to avoid loss",
+                            saga_id
+                        );
+                        return Ok(None);
+                    }
+
+                    let quote_expired = self
+                        .localstore
+                        .get_melt_quote(&data.quote_id)
+                        .await?
+                        .is_some_and(|quote| quote.expiry <= unix_time());
+                    if !quote_expired {
+                        tracing::info!(
+                            "Melt saga {} - payment remains Unpaid before quote expiry; \
+                             keeping the ambiguous request pending",
+                            saga_id
+                        );
+                        return Ok(None);
+                    }
+
+                    tracing::info!("Melt saga {} - unpaid quote expired, compensating", saga_id);
+                    self.compensate_melt(saga_id).await?;
+                    Ok(Some(FinalizedMelt::new(
+                        data.quote_id.clone(),
+                        MeltQuoteState::Unpaid,
                         None,
                         data.amount,
                         Amount::ZERO,
@@ -2063,8 +2098,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_melt_melt_requested_quote_unpaid() {
-        // Mock: quote Unpaid → compensate
+    async fn test_recover_melt_melt_requested_unpaid_waits_until_quote_expires() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -2106,7 +2140,7 @@ mod tests {
         // Mock: quote is Unpaid
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
-            quote: quote_id,
+            quote: quote_id.clone(),
             state: MeltQuoteState::Unpaid,
             expiry: 9999999999,
             fee_reserve: Amount::from(10),
@@ -2118,18 +2152,40 @@ mod tests {
             method: PaymentMethod::BOLT11,
         }));
 
-        let wallet = create_test_wallet_with_mock(db.clone(), mock_client).await;
+        let wallet = create_test_wallet_with_mock(db.clone(), mock_client.clone()).await;
         let result = wallet
             .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
             .await
             .unwrap();
 
-        // Verify compensation
-        assert!(result.is_some());
-        let finalized = result.unwrap();
+        assert!(result.is_none());
+        let reserved = db.get_reserved_proofs(&saga_id).await.unwrap();
+        assert_eq!(reserved.len(), 1);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_some());
+
+        let mut expired_quote = db.get_melt_quote(&quote_id).await.unwrap().unwrap();
+        expired_quote.expiry = 0;
+        db.add_melt_quote(expired_quote).await.unwrap();
+        mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
+            quote: quote_id,
+            state: MeltQuoteState::Unpaid,
+            expiry: 0,
+            fee_reserve: Amount::from(10),
+            amount: Amount::from(100),
+            request: Some("lnbc100...".to_string()),
+            payment_preimage: None,
+            change: None,
+            unit: Some(CurrencyUnit::Sat),
+            method: PaymentMethod::BOLT11,
+        }));
+
+        let result = wallet
+            .resume_melt_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .unwrap()
+            .expect("expired unpaid melt should compensate");
         assert!(
-            finalized.state() == MeltQuoteState::Unpaid
-                || finalized.state() == MeltQuoteState::Failed
+            result.state() == MeltQuoteState::Unpaid || result.state() == MeltQuoteState::Failed
         );
 
         // Proofs should be released

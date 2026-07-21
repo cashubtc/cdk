@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, and 6B complete; Milestone 2 rejected; Milestone 6C in progress
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, and 6C complete; Milestone 2 rejected; Milestone 7 in progress
 
 First recorded: 2026-07-20
 
@@ -850,8 +850,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 6 | Isolate Bark maintenance from payment hot paths and retire safely expired receives | Complete | `fix: isolate federated Bark maintenance from payments` |
 | 6A | Make accepted external-action actor leases replay-stable | Complete | `fix: make federated Bark actor leases replay-stable` |
 | 6B | Back off observer-worker failures so lagging members can recover quietly | Complete | `fix: back off failed federation payment observer rounds` |
-| 6C | Reconcile a paid federated melt after the wallet loses its aggregate response | In progress | - |
-| 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Not started | - |
+| 6C | Reconcile a paid federated melt after the wallet loses its aggregate response | Complete | `fix: retain ambiguous wallet melts for recovery` |
+| 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | In progress | - |
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Not started | - |
 
 ## Milestone 0: causal baseline
@@ -2439,16 +2439,16 @@ for the already-paid quote.
 
 ### Checklist
 
-- [ ] Reproduce the lost-response boundary without killing unrelated wallet
+- [x] Reproduce the lost-response boundary without killing unrelated wallet
       work and identify where the quote/proof recovery marker must become
       durable.
-- [ ] Reuse the generic wallet saga and quote-status machinery; do not add a
+- [x] Reuse the generic wallet saga and quote-status machinery; do not add a
       Bark- or federation-specific balance repair path.
-- [ ] Reconcile the canonical paid result idempotently after restart without
+- [x] Reconcile the canonical paid result idempotently after restart without
       resubmitting the Lightning payment.
-- [ ] Add focused crash/lost-response regression coverage for standalone and
+- [x] Add focused crash/lost-response regression coverage for standalone and
       federated clients where their request semantics differ.
-- [ ] Verify the original test wallet reaches the exact 7,950-sat balance or
+- [x] Verify the original test wallet reaches the exact 7,950-sat balance or
       document why its pre-fix state lacks sufficient durable identity.
 
 ### Success criteria
@@ -2458,6 +2458,53 @@ for the already-paid quote.
 - Recovery cannot make another melt request or duplicate the external payment.
 - Ordinary standalone wallet behavior remains unchanged or gains the same
   generic safety property.
+
+### Candidate findings and progress
+
+The loss happened after the saga and inputs had correctly become
+`MeltRequested`/`Pending`. When the aggregate POST failed, the immediate status
+check still returned `Unpaid`; the wallet treated that stale observation as a
+terminal failure, reverted the inputs, released the quote, and deleted the only
+durable recovery identity. The federation later paid the already accepted
+request. This was a generic wallet ambiguity bug, not a Bark or federation
+connector failure.
+
+The retained change preserves the existing saga after an ambiguous POST when
+the quote is `Unpaid` or `Unknown`. Status polling and startup recovery can then
+observe `Paid` and finalize the exact stored inputs and change outputs. An
+explicit `Failed` status remains terminal. An `Unpaid` saga is compensated only
+after its stored quote expires, preventing a stale pre-consensus status from
+releasing proofs while also bounding genuinely abandoned work. Recovery never
+calls POST melt.
+
+Focused generic wallet tests prove that an ambiguous response followed by
+`Unpaid` retains the saga, inputs, and operation link; a later `Paid` status
+finalizes them with exactly one POST call; and an unexpired `Unpaid` status
+remains pending while an expired one compensates. All 67 wallet melt tests and
+the federation-enabled all-target check passed.
+
+The exact release CLI then paid a healthy 1,000-sat store control with one
+member offline in 50 seconds. For the fault sample, the CLI was terminated ten
+seconds after submitting a second 1,000-sat store melt. Before recovery the
+wallet durably held one `melt_requested` saga and exactly 1,025 sats of inputs
+in `Pending`; the store reached `PAID`. The next ordinary CLI startup recovered
+one operation, finalized the wallet to exactly 5,900 sats, and removed the saga.
+The federation journal stayed at 81 entries and four melt operations before and
+after wallet recovery, proving that it issued no second melt request. After the
+offline member rejoined, all five members had 81 of 81 entries applied, zero
+failed entries, identical order/application digests, and identical 5,900-sat
+spendable Bark projections.
+
+The original pre-fix fault had already deleted its saga and operation link, so
+normal recovery could not safely reconstruct its transaction or change outputs.
+For continued disposable testing only, its two locally stale proofs were
+matched against the canonical mint proof-state table and marked spent, restoring
+the exact 7,950-sat balance before the new samples. No production repair path is
+added for identity that old code discarded.
+
+Decision: `Kept`. The fix removes an unsafe terminal interpretation and reuses
+the existing saga/status path; it adds no resubmission loop, backend branch, or
+normal-path delay.
 
 ## Milestone 7: measured consensus timing evaluation
 
@@ -2662,6 +2709,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | Milestone 6B discovery | same restored member before replay terminated | due payment schedule while authoritative reads reject `lagging` | the pre-claim readiness error retried roughly every millisecond; logs grew to tens of megabytes and checkpoint publications timed out | Outer observer failure occurs before the persisted quote claim can advance its deadline. Add one generic in-memory worker failure backoff; retain the persisted schedule as the only per-quote authority. |
 | 2026-07-21 | Milestone 6B retained candidate | exact local release, one member stopped while three unpaid-receive setup entries were ordered | lagging-member restart and catch-up | failed worker rounds waited 1/2/4s with reset on successful control wakes; all members reached 55/55 applied entries with identical digests and Bark projections; accounting and external movement counts were unchanged | Keep the contained 1s-to-30s outer worker backoff. It removes the exceptional hot loop without changing normal quote schedules, polling, or payment latency. |
 | 2026-07-21 | Milestone 6C discovery | same paid outgoing fault sample after all-member convergence | wallet lost aggregate melt response | mint and Bark state agree on one paid 1,025-sat spend, but the wallet retains an `UNPAID` quote and 8,975 locally unspent sats; `check-pending` finds nothing | The request was not durably represented in the wallet recovery state before the response was lost. Investigate one generic lost-response/saga repair path without resubmitting payment. |
+| 2026-07-21 | Milestone 6C retained candidate | exact local release CLI, five loopback members with one offline, real Signet | healthy 1,000-sat control plus client termination 10s after a second 1,000-sat melt submission | healthy CLI/store success in 50s; interrupted wallet retained one saga and 1,025 pending sats; store reached `PAID`; next CLI startup recovered one operation to exact 5,900-sat balance; journal remained 81 and melt operations remained four during recovery; all members converged after catch-up | Keep ambiguous `Unpaid`/`Unknown` melts pending until paid, failed, or expired. Recovery uses GET status only and cannot repeat the external payment. |
 
 ## Completion checklist
 

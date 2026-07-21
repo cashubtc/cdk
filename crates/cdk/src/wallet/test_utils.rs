@@ -611,6 +611,8 @@ pub struct MockMintConnector {
         Mutex<std::collections::VecDeque<Result<MeltQuoteCreateResponse<String>, Error>>>,
     /// Captured post_melt_quote requests.
     pub post_melt_quote_requests: Mutex<Vec<MeltQuoteRequest>>,
+    /// Number of melt submission calls.
+    pub post_melt_calls: Mutex<usize>,
     /// Last post_melt method/request captured by the mock
     pub last_post_melt_request: Mutex<Option<(PaymentMethod, MeltRequest<String>)>>,
     /// Response for LNURL pay request calls
@@ -685,6 +687,7 @@ impl MockMintConnector {
             post_melt_responses: Mutex::new(std::collections::VecDeque::new()),
             post_melt_quote_responses: Mutex::new(std::collections::VecDeque::new()),
             post_melt_quote_requests: Mutex::new(Vec::new()),
+            post_melt_calls: Mutex::new(0),
             last_post_melt_request: Mutex::new(None),
             lnurl_pay_request_response: Mutex::new(None),
             lnurl_invoice_response: Mutex::new(None),
@@ -1044,6 +1047,10 @@ impl MockMintConnector {
         self.last_post_melt_request.lock().unwrap().clone()
     }
 
+    pub fn post_melt_call_count(&self) -> usize {
+        *self.post_melt_calls.lock().unwrap()
+    }
+
     pub fn set_lnurl_pay_request_response(
         &self,
         response: Result<crate::lightning_address::LnurlPayResponse, Error>,
@@ -1356,6 +1363,7 @@ impl MintConnector for MockMintConnector {
         method: &PaymentMethod,
         request: MeltRequest<String>,
     ) -> Result<MeltQuoteResponse<String>, Error> {
+        *self.post_melt_calls.lock().unwrap() += 1;
         *self.last_post_melt_request.lock().unwrap() = Some((method.clone(), request));
         let delay = *self.post_melt_delay.lock().unwrap();
         if let Some(delay) = delay {
