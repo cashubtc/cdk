@@ -1,7 +1,7 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestone 0 in progress; production baselines recorded; no optimization
-milestone implemented
+Status: Milestone 0 complete; critical maintenance liveness fix is next; no
+optimization milestone implemented
 
 First recorded: 2026-07-20
 
@@ -40,6 +40,7 @@ Use the repository runner for the repeatable five-member topology:
 scripts/run_local_bark_federation.sh fresh
 BUILD=0 scripts/run_local_bark_federation.sh status
 BUILD=0 scripts/run_local_bark_federation.sh runtime-metrics
+scripts/analyze_local_bark_federation.sh
 ```
 
 It builds release `cdk-mintd` and `cdk-cli`, renders the same Bark federation
@@ -48,6 +49,14 @@ on loopback, and confines generated configs, secrets, databases, and logs to
 the ignored `target/local-bark-federation` directory. Use `BUILD=0` after the
 first build. `fresh` performs a new DKG ceremony and replaces only that
 disposable target directory's generated federation state.
+
+The analysis helper reads only the disposable local databases and emits
+operation classes, duplicate counts, quote timing, redacted Bark movements,
+and convergence digests. It never prints invoices, payment hashes, preimages,
+seeds, private configs, or wallet proofs. Run it before restarting a candidate:
+Bark replay currently refreshes old movement completion timestamps, so those
+rows are authoritative for state but not immutable timing evidence after a
+restart.
 
 ### Repeatable 2nd.dev Signet payment workflow
 
@@ -272,7 +281,157 @@ evidence:
 
 Because that lifecycle contained a defect, restarts, and an expired invoice,
 its total duration is not a successful-payment performance baseline. Milestone
-0 must capture fresh successful outgoing payments before outgoing optimization.
+0 therefore captured the fresh successful outgoing samples below before any
+outgoing optimization.
+
+### Local release baseline: three incoming and three outgoing successes
+
+Milestone 0 established a clean five-member release baseline on local loopback
+at source `43f19254c595`, with the Bark fork at `e68252989858`, SQLite,
+threshold `t = 3`, generic payment threshold `q = 4`, and the public Signet Ark
+server. The release binary hashes were
+`acf9920803eb69c290f09f5805b0a5b3d923c0ca513ded8b4f14b115c513b344`
+for `cdk-mintd` and
+`431b323d2065bae53a5cc50e00c01710a297ae87f5c323efc955476e620bc0b2`
+for `cdk-cli`.
+
+The first production-like local sample found the maintenance defect recorded
+below. To measure the payment path rather than a known broken refresh, the
+three-pair baseline used the same fresh federation with automatic refresh
+disabled only in its ignored generated local configs. This is a
+maintenance-isolated baseline, not evidence that disabling refresh is an
+acceptable deployment fix.
+
+Incoming samples used 10,000-sat invoices and the authenticated Signet faucet:
+
+| Sample | Faucet click to success | Faucet success to CLI issuance | Durable quote to issued | Accepted operations | Duplicate finalized items |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 96.753s | 40.176s | 157s | 22 | 3 |
+| 2 | 41.717s | 31.738s | 102s | 22 | 4 |
+| 3 | 103.056s | 45.142s | 165s | 22 | 3 |
+| Median | 96.753s | 40.176s | 157s | 22 | 3 |
+
+The faucet stage is external Lightning routing and dominates the variance. The
+post-success stage is the wallet-observed bound from faucet success through
+federation detection, claim, result quorum, quote payment, POST mint, and
+balance persistence. The durable quote duration additionally includes payer
+interaction before the faucet click. With only three samples, p95 is not
+reported; the observed maxima are shown directly.
+
+Each incoming accepted exactly one intent, one preparation, one mint quote,
+five HTLC observations, the three ordered ready/claim transitions plus one
+claim plan, five result observations, four generic payment observations, and
+one mint: 22 operations. Bark rows show member evidence hydration beginning at
+different scheduler deadlines and the accepted terminal result converging
+across all members. The remaining approximately 32-45 seconds after faucet
+success is therefore a named external-probe/federation-finality/Cashu-issuance
+tail, not payer routing.
+
+Outgoing samples paid fresh 1,000-sat store invoices with a 25-sat fee:
+
+| Sample | CLI process wall time | Durable quote to paid | Accepted operations | Duplicate finalized items | Store result |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 24.819s | 37s | 16 | 4 | `PAID` |
+| 2 | 30.961s | 34s | 16 | 4 | `PAID` |
+| 3 | 23.693s | 37s | 15 | 4 | `PAID` |
+| Median | 24.819s | 37s | 16 | 4 | `PAID` |
+
+The durable quote can finish materializing on all members after the first
+wallet response, which explains its coarse whole-second duration differing
+from the client process clock. Samples one and two accepted five generic melt
+observations; sample three reached `q = 4` before the fifth entered consensus
+and therefore used 15 operations. All three accepted one quote, one melt
+reservation, one send plan, HTLC-cosigned/payment-initiated/payment-succeeded
+transitions, five Bark result observations, and four or five generic payment
+observations.
+
+Across the six successful lifecycles the five mint processes consumed 40.89
+aggregate CPU-seconds, or 6.815 seconds per lifecycle across all members. RSS
+rose from approximately 52 MiB per member before the series to 84-88 MiB after
+the series. The existing broad signature-verification counter increased, but
+it mixes consensus, checkpoint, and signing verification and is not claimed as
+a Bark-only measure.
+
+The threshold-three FROST coordinator sends exactly three commitment requests,
+three signature-share requests, and three aggregate-result notifications for
+each custody action: nine authenticated messages. A healthy incoming claim and
+a healthy outgoing HTLC construction each use one such action, so the six
+successful samples used 54 FROST messages. The aggregate-result cache grew once
+per action on every member, confirming the session count. A failed send plus
+revocation uses two actions and therefore 18 messages.
+
+### Disposable Ark-call attribution sample
+
+A fourth incoming/outgoing pair used temporary, identifier-free call-site
+probes in `cdk-bark`; the probes were reverted and the clean release binary was
+rebuilt before Milestone 0 completed. It is excluded from the latency medians.
+
+The 10,000-sat incoming lifecycle made 25 Ark-facing Bark-facade calls:
+
+- one invoice-start call;
+- four receive-status polls from each of five members, 20 total;
+- one actor HTLC preparation and two follower hydrations, exactly the three
+  evidence producers that entered consensus;
+- one actor claim call.
+
+It accepted 20 operations because evidence reached threshold after three HTLC
+observations; it still accepted all five terminal result observations and four
+generic payment observations. The 1,000-sat outgoing success made eight
+Ark-facing calls: one HTLC construction, one payment initiation, one terminal
+failure check from each member, and one actor success check. It accepted 16
+operations. No rate-limit response occurred.
+
+These are facade-call counts, not an assertion that every facade call maps to
+one transport request inside Bark. They identify the owning CDK call path and
+the exact work visible at the integration boundary. Milestone 4 must measure
+the underlying status and hydration transport calls before changing their
+policy.
+
+### Local terminal failure and safe revocation baseline
+
+A fresh, correctly signed Signet invoice for a deliberately unreachable node
+exercised terminal failure without transferring funds. The client returned
+`Payment failed` in 49 seconds. The lifecycle accepted 22 operations and four
+duplicate finalized items:
+
+- one melt quote and one melt reservation;
+- send and revocation action plans;
+- send planned, HTLCs cosigned, payment initiated, payment failed, revocation
+  planned, and revocation completed transitions;
+- five terminal-failure and five recovered-result member observations; and
+- four generic failed-melt observations.
+
+All five members converged on the same 135-operation journal and application
+digests immediately after the sample. The failed quote remained unpaid, the
+wallet balance remained 26,925 sats, and the canonical Bark projection held
+exactly 26,925 sats in four spendable VTXOs with no reserved or pending-spend
+value. The failed movement recorded intended value `-1000`, effective value
+zero, and fee zero. Aggregate member CPU for this 49-second failure/revocation
+path was 22.03 seconds. The disposable invoice generator, raw invoice, client
+output, and temporary probes were removed.
+
+### Critical maintenance blocker found before isolation
+
+With deployment-equivalent automatic refresh enabled, the first received
+10,000-sat VTXO had approximately 44 blocks remaining while the configured
+refresh margin was 144. Refresh therefore began immediately, reserved the only
+spendable VTXO, and made a subsequent melt quote fail with zero spendable Bark
+value. The payment itself had succeeded; maintenance had captured its output.
+
+The refresh added six accepted operations: one plan plus five member
+observations. Non-actor members attempted to publish the actor's plan and
+logged author mismatches. The actor then retried execution every five seconds.
+A disposable diagnostic replay confirmed Bark failed to decode its own stored
+round participation with `wrong msgpack marker Array16`; 101 identical
+never-started rows accumulated while the retry loop ran.
+
+The confirmed serialization cause is in the Bark fork's positional MessagePack
+encoding: optional `SerdeRoundParticipation` fields are omitted with
+`skip_serializing_if`, shifting later optional custody and federation fields
+into the wrong positional slots on decode. CDK also needs to ensure only the
+deterministic plan actor publishes a newly proposed maintenance plan. This is a
+production liveness and liquidity blocker, not a payment-performance tuning
+candidate, and is isolated as Milestone 0A.
 
 ### Current consensus-entry cardinality
 
@@ -649,7 +808,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 
 | Milestone | Goal | Status | Commit |
 | --- | --- | --- | --- |
-| 0 | Establish reproducible incoming and outgoing baselines with causal timelines | In progress | - |
+| 0 | Establish reproducible incoming and outgoing baselines with causal timelines | Complete | recorded in the milestone commit; hash added by the next update |
+| 0A | Restore maintenance round persistence, actor ownership, and payment liquidity | In progress | - |
 | 1 | Remove unnecessary inter-operation delay with one generic mint/melt advancement driver | Not started | - |
 | 2 | Determine and implement the smallest safe Bark incoming/outgoing event wake, or reject it | Not started | - |
 | 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Not started | - |
@@ -679,34 +839,35 @@ milestone.
 - One 50,000-sat receive reached `PAID`; the external claim RPC took about 170
   milliseconds, but no client mint operation was submitted.
 - The consensus review provides exact minimum formulas and 5-member ranges.
-- No clean successful outgoing stage timeline exists yet.
-- Existing logs omit the exact payer-settlement-to-first-positive-probe
-  boundary and do not provide one redacted joined lifecycle.
+- Three local incoming and three local outgoing successes now provide clean
+  release baselines, and one controlled failure proves exact-value revocation.
+- A disposable probe run attributes exact Ark-facing facade calls and confirms
+  the current five-member polling amplification.
 
 ### Checklist
 
-- [ ] Reconstruct a redacted joined timeline from existing logs and durable
+- [x] Reconstruct a redacted joined timeline from existing logs and durable
       state for every material stage observable today.
-- [ ] Measure accepted operation kinds, duplicate finalized items, Ark RPCs,
+- [x] Measure accepted operation kinds, duplicate finalized items, Ark RPCs,
       observer attempts, FROST traffic, maintenance overlap, CPU, and RSS using
       existing evidence or one-off measurements; do not add permanent counters
       solely for this baseline.
-- [ ] For any material evidence gap, add the smallest isolated disposable probe
+- [x] For any material evidence gap, add the smallest isolated disposable probe
       or local analysis tool, capture the result, and revert or delete it before
       completing the milestone.
-- [ ] Extend a deterministic test harness to script incoming and outgoing Bark
+- [x] Extend a deterministic test harness to script incoming and outgoing Bark
       outcomes and fake time.
-- [ ] Run at least three release incoming and three release outgoing
+- [x] Run at least three release incoming and three release outgoing
       lifecycles on a five-member local deployment using the local CLI.
-- [ ] Run at least three incoming and outgoing Signet lifecycles against the
+- [x] Run at least three incoming and outgoing Signet lifecycles against the
       same local five-member candidate, using the faucet and store.
-- [ ] Include one outgoing terminal failure and safe revocation, but report it
+- [x] Include one outgoing terminal failure and safe revocation, but report it
       separately from successful latency.
-- [ ] Record cold CLI, warm wallet, server-only, payer-controlled, and external
+- [x] Record cold CLI, warm wallet, server-only, payer-controlled, and external
       routing time separately.
-- [ ] Confirm exact five-member convergence, quote accounting, balances, VTXO
+- [x] Confirm exact five-member convergence, quote accounting, balances, VTXO
       state, and absence of safety alerts after every sample.
-- [ ] Confirm that no temporary instrumentation or one-off analysis artifact
+- [x] Confirm that no temporary instrumentation or one-off analysis artifact
       remains in production code.
 
 ### Success criteria
@@ -724,14 +885,15 @@ milestone.
 
 ### Progress record — 2026-07-21
 
-Milestone 0 is `In progress`. The two production incoming traces and consensus
-cardinality review are recorded above. Source review confirmed the current
-five-second scan, asymmetric mint/melt scheduling, inactive CDK payment event
-stream, and available Bark mailbox primitives. The outgoing successful
-baseline, joined measurements, reproducible harness, and repeated local/Signet
-samples remain open. Permanent observability work is not required: disposable
-probes are allowed only where existing evidence is insufficient and must be
-removed before completion. No production optimization has been made.
+Milestone 0 is `Complete`, decision `Kept` as a baseline-only milestone. The
+two production incoming traces, consensus cardinality review, three local
+incoming successes, three local outgoing successes, one safe outgoing failure,
+one disposable attribution pair, stage medians, operation/duplicate counts,
+FROST message cardinality, Ark-facing call counts, CPU, RSS, accounting, and
+five-member convergence are recorded above. Source review confirmed the
+current five-second scan, asymmetric mint/melt scheduling, inactive CDK
+payment event stream, and available Bark mailbox primitives. No production
+scheduling or protocol behavior changed.
 
 The execution location was corrected during this milestone: a planned remote
 sample was stopped before any federation mint quote or payment was submitted,
@@ -751,6 +913,92 @@ setup members are now stopped before any finalized runtime starts, and the
 selected tmux session name is passed explicitly to every pane. The corrected
 `fresh` run reached five-member readiness without a manual restart. Generated
 private material and runtime state remained under the ignored target tree.
+
+Focused checks passed:
+
+```text
+cargo test -p cdk-axum --features federation-bark \
+  receive_actor_advances_from_cache_only_after_matching_quorum
+cargo test -p cdk-axum --features federation-bark mint_quote_schedule
+cargo test -p cdk-sqlite --features federation \
+  federation_bark_projection_persistence
+```
+
+The first command passed the cached-evidence/no-extra-Ark-I/O decision test;
+the second passed five fake-time persistence, lease, cooldown, jitter, and
+backoff tests; the third passed the full scripted incoming, outgoing success,
+failure, revocation, replay, and idempotent projection lifecycle on SQLite.
+
+Temporary call probes and the temporary unreachable-invoice generator were
+reverted. The clean release binary was rebuilt after the probe run. The only
+retained tooling is `scripts/analyze_local_bark_federation.sh`, a bounded
+read-only helper that emits no payment or custody secrets. The intended
+milestone commit subject is
+`test: establish federated Bark payment performance baseline`.
+
+## Milestone 0A: restore maintenance persistence and liquidity
+
+### Goal
+
+Make routine Bark refresh replayable and actor-correct before optimizing the
+payment path. A due refresh must not permanently reserve all spendable value,
+retry a deterministic serialization failure every five seconds, or prevent a
+new outgoing payment.
+
+### Confirmed cause and scope
+
+- Bark serializes `SerdeRoundParticipation` positionally with
+  `rmp_serde::to_vec` while optional fields are conditionally omitted. A record
+  with no unblinded mailbox ID but with custody/federation fields cannot be
+  decoded into the same field layout and fails with `wrong msgpack marker
+  Array16`.
+- Every failed retry inserts another identical never-started round row; 101
+  rows accumulated in the disposable reproduction.
+- The accepted refresh plan reserves the spendable VTXO before execution, so
+  the retry loop removes the federation's outgoing liquidity.
+- CDK lets non-actors publish an actor-authored newly proposed maintenance
+  plan, producing deterministic author mismatches and surplus submissions.
+- The serialization fix belongs in the configured `../bark-cdk` fork; actor
+  publication belongs in CDK. No automatic-refresh disable is an acceptable
+  production fix.
+
+### Checklist
+
+- [ ] Add a Bark regression fixture for every optional-field combination in
+      round participation, including the failing custody-without-mailbox case.
+- [ ] Choose the smallest stable encoding fix and document compatibility with
+      existing valid rows.
+- [ ] Recover or safely discard only malformed never-started federation rows;
+      do not reinterpret an ambiguous started round.
+- [ ] Prove a restarted wallet resumes or cleanly re-proposes the same accepted
+      refresh without duplicating value or custody side effects.
+- [ ] Restrict new maintenance-plan publication to the deterministic accepted
+      actor; non-actors may still submit their own observations.
+- [ ] Ensure a permanent maintenance failure becomes operator-visible and
+      stops hot-loop retries without silently releasing an unsafe reservation.
+- [ ] Re-enable automatic refresh in a fresh local five-member release
+      federation.
+- [ ] Receive funds whose VTXO is inside the refresh margin, complete refresh,
+      then pay a store invoice from the refreshed value.
+- [ ] Restart before and after round persistence and verify identical Bark
+      projection, VTXO value, action phase, journal, and application digests.
+- [ ] Measure refresh operations, attempts, FROST messages, Ark calls, CPU, and
+      payment latency; confirm no five-second unbounded growth remains.
+- [ ] Revert all temporary instrumentation before completion.
+
+### Success criteria
+
+- The positional decode failure is reproducibly impossible for newly written
+  rows and the compatibility decision is covered by fixtures.
+- A due refresh reaches a terminal accepted state and preserves exact value
+  across all five members and restart.
+- Only the accepted actor publishes and executes the refresh plan; no author
+  mismatch or duplicate actor side effect appears.
+- The refreshed federation can immediately create and complete an outgoing
+  payment.
+- No retry, row, operation, or CPU counter grows after terminal completion.
+- The milestone is committed as
+  `fix: restore federated Bark refresh persistence`.
 
 ## Milestone 1: generic progress pump and inter-operation wakes
 
@@ -1307,6 +1555,11 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | active public config and signed status | Nocean, read-only field evidence | threshold correction | Bark/FROST threshold is 3; mint and melt payment-observation threshold is 4; active minimums are therefore 16/11/16, not 15/10/15 | Milestone 3 must use `max(t, q) = 4`; the three-operation reduction remains unchanged |
 | 2026-07-21 | workflow verification | local browser and shell against 2nd.dev Signet | payment-helper smoke, no payment submitted | faucet login succeeded through GitHub OAuth; unauthenticated faucet API returned 401; public store create/status returned a redacted Signet invoice and `PENDING`; disposable orders were left unpaid | Repeated samples can avoid store UI navigation while faucet authentication remains correctly confined to the browser |
 | 2026-07-21 | local federation runner | local release, five loopback members, Bark Signet | DKG and runtime readiness, no payment submitted | clean release build passed; corrected `fresh` completed DKG and reached five-member quorum without intervention; restart reached readiness in about 12s | The same rendered control topology can now be reset and measured locally without using Nocean as a benchmark host |
+| 2026-07-21 | `43f19254c595`, Bark `e68252989858` | local release, five loopback members, SQLite, refresh isolated, real Signet | three 10,000-sat incoming successes | faucet routing 96.753/41.717/103.056s; post-faucet CLI issuance 40.176/31.738/45.142s; 22 accepted operations each; duplicate items 3/4/3 | External routing is noisy; the median 40.176s post-payment tail and repeated 22-operation path are the server optimization baseline |
+| 2026-07-21 | same baseline | local release, same federation and wallet, real Signet | three 1,000-sat outgoing successes | CLI wall 24.819/30.961/23.693s; durable quote-to-paid 37/34/37s; accepted operations 16/16/15; four duplicate items each; all store orders `PAID` | Current successful outgoing median is 24.819s wallet-visible; one late fifth generic observation is avoidable work |
+| 2026-07-21 | same baseline | local release, same federation | unreachable 1,000-sat outgoing failure | 49s; 22 accepted operations; four duplicates; two nine-message FROST actions; exact 1,025-sat reservation restored; all members converged; balance unchanged | Failure and revocation are live, exact-value, and safe; they are a separate latency class from successful sends |
+| 2026-07-21 | disposable probes, reverted | local release, same federation, real Signet | one incoming and one outgoing attribution pair | incoming: 25 Ark-facing calls, 20 accepted operations; outgoing: eight Ark-facing calls, 16 accepted operations; no rate limit | Five members made 20 incoming status polls before three hydrated evidence; successful outgoing made five member terminal polls plus one actor success poll |
+| 2026-07-21 | disposable maintenance diagnosis, reverted | local release, automatic refresh enabled | receive followed by outgoing attempt | refresh reserved the only 10,000-sat VTXO; outgoing quote failed; 101 malformed never-started round rows accumulated; MessagePack decode failed every five seconds | Bark optional-field positional serialization and non-actor plan publication are critical liveness blockers isolated as Milestone 0A |
 
 ## Completion checklist
 
