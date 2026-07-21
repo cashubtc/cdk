@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, and 1 complete; Milestone 2 is next
+Status: Milestones 0, 0A, and 1 complete; Milestone 2 rejected; Milestone 3 is next
 
 First recorded: 2026-07-20
 
@@ -825,8 +825,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | --- | --- | --- | --- |
 | 0 | Establish reproducible incoming and outgoing baselines with causal timelines | Complete | `7403e90c0` |
 | 0A | Restore maintenance round persistence, actor ownership, and payment liquidity | Complete | `32f01bbf9` (CDK), `aa98f568` (Bark) |
-| 1 | Remove unnecessary inter-operation delay with one generic mint/melt advancement driver | Complete | recorded in the milestone commit; hash added by the next update |
-| 2 | Determine and implement the smallest safe Bark incoming/outgoing event wake, or reject it | Not started | - |
+| 1 | Remove unnecessary inter-operation delay with one generic mint/melt advancement driver | Complete | `690b9a861` |
+| 2 | Determine and implement the smallest safe Bark incoming/outgoing event wake, or reject it | Rejected | recorded in the milestone commit; hash added by the next update |
 | 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Not started | - |
 | 4 | Reduce excess Ark probes and observations with threshold-first polling and measured backoff | Not started | - |
 | 5 | Remove duplicate wallet submissions and any proven redundant serial Bark operation | Not started | - |
@@ -1302,38 +1302,32 @@ and federation boundaries, retain polling and record the rejection.
 
 ### Checklist
 
-- [ ] Trace the incoming and outgoing mailbox message origin, authentication,
+- [x] Trace the incoming and outgoing mailbox message origin, authentication,
       delivery, cursor, reconnect, redelivery, and expiry behavior in the
       supported Ark server.
-- [ ] Determine whether all members can subscribe without exceeding server
-      connection or rate limits.
-- [ ] Determine whether raw decode-only subscription can advance a durable
-      cursor without invoking ordinary local claim/settlement side effects.
-- [ ] Evaluate, in order, the smallest candidates:
-  - [ ] expose a payment-hash wake from the existing mailbox stream;
-  - [ ] expose a federation-safe Bark notification after mailbox decode;
-  - [ ] use the server's bounded wait/long-poll status mode; or
-  - [ ] retain ordinary polling.
-- [ ] Treat every stream item only as a hint to run the normal authoritative
-      member probe.
-- [ ] Reuse the generic driver and attempt lease; do not create a Bark retry
-      loop in the adapter.
-- [ ] Use bounded reconnect backoff and cancellation.
-- [ ] On lag, cursor loss, disconnect, restart, or unsupported message, fall
-      back to the persisted polling repair path.
-- [ ] Measure persistent connections, reconnects, event-to-probe latency, Ark
-      RPC reduction, and server rate-limit errors.
+- [x] Determine whether all members can subscribe without exceeding server
+      connection or rate limits: the required threshold-custody authorization
+      is unavailable, and an all-member connection budget is not specified.
+- [x] Determine whether raw decode-only subscription can advance a durable
+      cursor without invoking ordinary local claim/settlement side effects: it
+      avoids those effects but cannot authenticate the payment mailbox.
+- [x] Evaluate, in order, the smallest candidates:
+  - [x] reject a payment-hash wake from the existing mailbox stream;
+  - [x] reject a federation-safe notification after mailbox decode;
+  - [x] reject all-member bounded wait/long-poll status mode; and
+  - [x] retain ordinary persisted polling.
+- [x] Preserve the rule that any future stream item may only hint the normal
+      authoritative member probe; no stream authority was added.
+- [x] Retain the generic driver, attempt lease, and persisted polling repair
+      path without adding a Bark retry or reconnect loop.
+- [x] Reject the candidates before adding persistent connections, so reconnect
+      and event-to-probe measurements are not applicable.
 
 ### Tests
 
-- [ ] Incoming mailbox hint wakes only the matching quote.
-- [ ] Outgoing success and failure hints wake only the matching melt.
-- [ ] A forged, stale, duplicate, reordered, or unknown hint cannot authorize
-      payment or mutate deterministic state.
-- [ ] Stream disconnect and cursor replay do not lose or duplicate settlement.
-- [ ] Lagged notification forces a bounded repair probe.
-- [ ] Restart before and after a delivered hint converges identically.
-- [ ] Disabling the stream changes latency only, not eventual correctness.
+- [x] No implementation candidate survived the authorization and bounded-load
+      preconditions, so the stream-specific runtime matrix is not applicable;
+      the source and existing upstream coverage are recorded below.
 
 ### Success criteria
 
@@ -1347,6 +1341,72 @@ and federation boundaries, retain polling and record the rejection.
   `perf: wake federated Bark payments from mailbox hints`.
 - A rejected result is committed as
   `docs: record federated Bark event wake investigation`.
+
+### Evaluation record — 2026-07-21
+
+Decision: **Rejected.** Keep the Milestone 1 persisted polling repair path and
+add no production event or long-poll code in this milestone.
+
+The supported Bark/Ark source does provide the signal content. Ark stores an
+`IncomingLightningPaymentMessage` when an invoice becomes claimable and a
+`LightningSendFinishedMessage` containing the preimage after a successful
+send. `SubscribeMailbox` first drains stored messages newer than the supplied
+checkpoint, then follows a server watch. Checkpoints are strictly ascending.
+The client reconnect policy uses bounded 1-to-30-second equal-jitter backoff
+and stops after five reconnects that make no progress.
+
+The signal cannot be consumed safely by independent federation members at the
+current trust boundary:
+
+- `SubscribeMailbox` requires a fresh `MailboxAuthorization`, a BIP340 Schnorr
+  signature over the exact mailbox identifier and expiry.
+- Federation receive and outgoing HTLC intents use a mailbox identifier derived
+  from the FROST custody public key. A member's operational Bark seed derives a
+  different mailbox key, so no member can authorize that subscription alone.
+- Authorizing the custody mailbox would require a new threshold signing round
+  for every authorization/expiry or a new delegated read capability. Either is
+  a protocol and key-management change, not a contained latency optimization.
+- Replacing the plan mailbox with an operational member mailbox would require
+  accepted binding, cursor ownership, catch-up, and failover rules. It would
+  also make notification availability depend on one member.
+
+The ordinary Bark mailbox handler is not a safe shortcut. Incoming messages
+call `try_claim_lightning_receive`; outgoing success messages can settle local
+state from the preimage; failure messages drive the outgoing action; and the
+wallet checkpoint can advance despite an individual payment-processing error.
+The raw `subscribe_mailbox_messages` API avoids those mutations, but it does
+not solve custody-mailbox authorization.
+
+Ark's status RPCs also support `wait=true`: incoming status waits on a broadcast
+with a 30-second database fallback, while outgoing status waits on a broadcast
+and the configured invoice poll. They have no durable client cursor or replay.
+Using them from all five members would hold five requests per active quote and
+could add five Ark facade calls when a wait releases. The disposable Milestone
+0 probe already showed that the ordinary successful outgoing path needed one
+terminal check per member plus one actor success check. Long-polling all members
+therefore adds work in the common path and has no declared public-server
+connection budget. An actor-only outgoing or threshold-first incoming wait can
+be reconsidered in Milestone 4 after observer selection is implemented and
+measured; doing it first would confound that result.
+
+No test federation was needed because every production candidate failed the
+authorization or bounded-load precondition before runtime evaluation. The
+stream-specific correctness matrix is consequently not applicable. Existing
+upstream source tests cover correct, missing, mismatched, and expired mailbox
+authorization, mailbox history delivery, `wait=true`, and the 30-second status
+fallback. A direct `cargo test -p ark-lib mailbox` attempt could not reach the
+tests because the native `libbitcoinkernel` test dependency lacked Boost, and
+the local environment has no `nix` executable for the repository shell. This
+environment failure does not weaken the source-level authorization rejection.
+
+Source versions were CDK `690b9a861` and Bark `aa98f5685d70`, with the same
+five-member, 3-of-5 Bark/FROST and four-observer Cashu model used by the local
+release baseline. No binary, database, invoice, payment, or host was involved;
+there are therefore no new latency samples, message counts, binary hashes, or
+host metrics to report. No production code or temporary instrumentation was
+added. Milestone 4 remains the evidence-gated place to measure narrowed polling.
+The intended milestone commit subject is
+`docs: record federated Bark event wake investigation`.
 
 ## Milestone 3: minimize consensus messages using accepted Bark result quorum
 
@@ -1783,6 +1843,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | disposable maintenance diagnosis, reverted | local release, automatic refresh enabled | receive followed by outgoing attempt | refresh reserved the only 10,000-sat VTXO; outgoing quote failed; 101 malformed never-started round rows accumulated; MessagePack decode failed every five seconds | Bark optional-field positional serialization and non-actor plan publication are critical liveness blockers isolated as Milestone 0A |
 | 2026-07-21 | Milestone 1 candidate based on `32f01bbf9b43`, Bark `aa98f5685d70` | local release, five loopback members, SQLite, real Signet | three incoming and three outgoing successes | incoming post-submit/detection 24.0/33.4/42.4s, median 33.4s; outgoing durable 26/31/26s, median 26s; incoming 23 operations each; outgoing 16 each; no rate limit | Generic operation wakes and the immediate bounded pump reduced targeted medians 16.9% incoming and 29.7% outgoing without changing external automatic-backoff constants |
 | 2026-07-21 | exact final Milestone 1 binary | same local federation after release rebuild/restart | one 1,000-sat outgoing smoke | 27s CLI, 26s durable, 16 accepted operations, four duplicates, exact 1,025-sat balance reduction, store `PAID`, all five members converged | Request coalescing preserved payment latency and cardinality while fixing concurrent `Pending`/`Paid` response races |
+| 2026-07-21 | CDK `690b9a861`, Bark `aa98f5685d70` source audit | supported Bark/Ark mailbox and status APIs; no federation run | event-wake feasibility | payment mailboxes require threshold-custody Schnorr authorization unavailable to individual members; normal mailbox handling mutates wallet state; all-member long-poll has no durable replay or declared connection budget | Reject production event code; retain the persisted generic polling repair path and evaluate narrowed observer polling in Milestone 4 |
 
 ## Completion checklist
 
@@ -1790,7 +1851,7 @@ Append future evidence here rather than rewriting historical results.
       scheduled as separate concerns.
 - [x] No successful internal transition waits for external no-progress backoff.
 - [x] Mint and melt use one backend-independent advancement driver.
-- [ ] Bark event support is either safely integrated as wake-only or explicitly
+- [x] Bark event support is either safely integrated as wake-only or explicitly
       rejected with evidence.
 - [ ] Fresh payments remain responsive without permanent high-frequency polling.
 - [ ] Healthy evidence uses threshold observers and accepted evidence suppresses
