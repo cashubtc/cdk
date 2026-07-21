@@ -1619,6 +1619,7 @@ dependencies = [
  "cdk-http-client",
  "cdk-sqlite",
  "clap",
+ "home",
  "prost 0.14.4",
  "rustls",
  "serde",
@@ -1630,6 +1631,7 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

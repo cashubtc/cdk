@@ -55,10 +55,7 @@ cdk-mintd
 ```
 
 For later edits, run `cdk-mintd config apply --file mint.toml`, then restart.
-Direct apply works beside a running daemon; use `--rpc <endpoint>` to select RPC
-explicitly.
-
-### Resources
+Direct apply works beside a running daemon. ### Resources
 - **Explorer/Faucet**: <https://mutinynet.com>
 - **Esplora API**: `https://mutinynet.com/api`
 - **RGS Endpoint**: `https://rgs.mutinynet.com/snapshot/0`
@@ -103,9 +100,9 @@ webserver_port = 8091
 
 🔒 **CRITICAL SECURITY CONSIDERATIONS**:
 
-1. **Web Interface Security**: The LDK management interface has **NO AUTHENTICATION** and allows sending funds/managing channels. 
+1. **Web Interface Security**: The LDK management interface has **NO AUTHENTICATION** and allows sending funds/managing channels.
    - **NEVER** bind to `0.0.0.0` or expose publicly
-   - Only use `127.0.0.1` (localhost) 
+   - Only use `127.0.0.1` (localhost)
    - Use VPN, SSH tunneling, or reverse proxy with authentication for remote access
    - CSRF protection and non-permissive browser CORS reduce browser-based attack paths, but they do not authenticate users or replace access control
 
@@ -130,7 +127,7 @@ cdk-mintd config apply --file mint.toml
 ```
 
 Direct database apply is the default and does not require management RPC. It can
-run beside a steady daemon; use `--rpc <endpoint>` to select RPC explicitly.
+run beside a steady daemon;
 
 ## Regtest (Development)
 
@@ -183,10 +180,7 @@ console_level = "debug"
 ```
 
 Apply the complete document and restart for the change to take effect. Direct
-apply works beside a running daemon; use `--rpc <endpoint>` to select RPC
-explicitly.
-
-### Performance Tips
+apply works beside a running daemon. ### Performance Tips
 - Use RGS for faster gossip sync
 - PostgreSQL for production
 - Monitor initial sync resources

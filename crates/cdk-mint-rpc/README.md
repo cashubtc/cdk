@@ -16,9 +16,7 @@ This crate includes:
 - Generated and ergonomic clients for interacting with the gRPC server
 - Protocol definitions for mint management
 - A transport-independent configuration-management interface
-
-The operator CLI is part of the single `cdk-mintd` binary. This crate does not
-ship a separate command-line binary.
+- The `cdk-mint-cli` binary for operators
 
 ## Installation
 
@@ -31,94 +29,54 @@ cdk-mint-rpc = "*"
 
 ## Usage
 
-### Operator commands
+### Operator CLI (`cdk-mint-cli`)
 
 ```bash
 # Show available commands
-cdk-mintd --help
+cdk-mint-cli --help
 
 # Get mint info
-cdk-mintd get-info
+cdk-mint-cli get-info
 
 # Update an immediately applied field
-cdk-mintd update-motd "Scheduled maintenance"
+cdk-mint-cli update-motd "Scheduled maintenance"
 
 # Rotate a keyset
-cdk-mintd rotate-next-keyset --unit sat --use-keyset-v2 true
+cdk-mint-cli rotate-next-keyset --unit sat --use-keyset-v2 true
 ```
 
-When `--rpc-address` is omitted, management commands use
-`http://127.0.0.1:8086` without a TLS directory and
-`https://127.0.0.1:8086` when `--rpc-tls-dir` is set or `<work-dir>/tls`
-exists. An explicit address must likewise use `http://` without client TLS
-credentials and `https://` with them. Select another server or client
-certificate directory with the global options:
+When client TLS credentials are not provided, the address must use `http://`.
+With TLS credentials (explicit `--tls-dir` or `<work-dir>/tls`), the address must
+use `https://`. Defaults:
 
 ```bash
-cdk-mintd get-info \
-  --rpc-address https://mint.example:8086 \
-  --rpc-tls-dir /var/lib/cdk-mintd/tls
+cdk-mint-cli get-info \
+  --addr https://mint.example:8086 \
+  --tls-dir /var/lib/cdk-mintd/tls
 ```
 
-### Configuration RPC
+### Configuration
 
-After one explicit direct initialization, the database is authoritative:
+Authoritative mint configuration is managed by the `cdk-mintd` binary against the
+database **directly**. It is not an RPC client:
 
 ```bash
 cdk-mintd config validate --file mint.toml
 cdk-mintd config init --file mint.toml
 cdk-mintd
-```
-
-Normal mintd startup never reads TOML or applies operational environment
-overrides. Configuration commands access the authoritative database directly
-by default. A later full-document replacement must be requested explicitly
-using direct database access:
-
-```bash
-# Validate against persisted configuration constraints without changing state
-cdk-mintd config apply --file changed.toml --validate-only
-
-# Stage directly; this also works beside a running daemon
 cdk-mintd config apply --file changed.toml
-
-# Inspect/export active state and inspect pending state
 cdk-mintd config show
 cdk-mintd config export --file backup.toml
-
-# Cancel the staged replacement before restart
 cdk-mintd config discard-pending
-
-# Explicitly stage through a management endpoint instead
-cdk-mintd config apply --file changed.toml --rpc https://mint.example:8086 \
-  --rpc-tls-dir /var/lib/cdk-mintd/tls
 ```
 
-`config apply`, `show`, `export`, and `discard-pending` use RPC only when an
-endpoint is supplied with `--rpc`. They never probe RPC and never fall back to
-direct database access. Direct access uses a short-lived configuration lock and
-can run beside a steady daemon. Direct commands, startup activation, full-file
-RPC operations, and immediate RPC configuration updates all acquire the same
-database-scoped lock. `--rpc <endpoint>` explicitly selects RPC transport; it is
-not required merely because RPC is enabled.
+See the [`cdk-mintd` configuration guide](../cdk-mintd/README.md#configuration)
+for bootstrap settings, secret references, and activate/rollback behavior.
 
-Full-document applies are staged until a successful restart. There are no
-configuration revisions or expected-revision parameters in this iteration.
-Field-specific RPCs, such as mint-info and quote-TTL updates, remain immediate
-when no complete document is pending. Activate or discard the pending document
-before issuing one of those updates.
-
-Database/work-directory/SQLCipher inputs and RPC connection options are
-bootstrap exceptions because they are required before stored configuration can
-be read or the management server can be contacted. The global `--rpc-address`
-option remains for field-specific management commands; configuration commands
-use their transport-selecting `--rpc <endpoint>` option.
-
-Configuration RPC payloads persist secret references only. Secret fields must
-use `env:VARIABLE` or `file:/absolute/path`; the resolved contents are never
-stored or returned by configuration RPCs. See the
-[`cdk-mintd` configuration guide](../cdk-mintd/README.md#configuration) for the
-complete lifecycle.
+The management RPC server still exposes full-document configuration methods
+(`GetConfiguration`, `ApplyConfiguration`, `DiscardPendingConfiguration`) for
+programmatic clients. Immediate field RPCs used by `cdk-mint-cli` remain
+available when no complete document is pending.
 
 ## License
 

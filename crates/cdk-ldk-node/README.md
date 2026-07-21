@@ -70,7 +70,7 @@ webserver_port = 8091  # 0 = auto-assign port
 
 For an existing mint, change these fields in the complete configuration, run
 `cdk-mintd config apply --file mint.toml`, and restart. Direct apply works
-beside a running daemon; use `--rpc <endpoint>` to select RPC explicitly.
+beside a running daemon;
 
 ## Basic Configuration
 
@@ -96,7 +96,7 @@ LDK settings are part of the database-backed mint configuration; environment
 variables do not override them when the daemon starts. Use `env:VARIABLE` only
 for secret fields such as `ldk_node_mnemonic`, and use `config apply` plus a
 restart for later configuration changes. Direct apply works beside a running
-daemon; use `--rpc <endpoint>` to select RPC explicitly. See the
+daemon;  See the
 [`cdk-mintd` configuration guide](../cdk-mintd/README.md#configuration).
 
 **For detailed network configurations, Docker setup, production deployment, and troubleshooting, see [NETWORK_GUIDE.md](./NETWORK_GUIDE.md).**

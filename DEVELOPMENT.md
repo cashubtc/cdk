@@ -23,7 +23,7 @@ cd cdk
 
 ### 2. Install Nix
 
-<!-- 
+<!--
 MIT License
 
 Copyright (c) 2021 elsirion
@@ -127,10 +127,7 @@ cargo run --bin cdk-mintd -- config init --file crates/cdk-mintd/example.config.
 cargo run --bin cdk-mintd
 ```
 
-On later edits, use `config apply --file ...`, then restart. Direct apply works
-while the daemon is running because direct and RPC mutations share the same
-database-scoped configuration lock. Use `--rpc <endpoint>` only to select the
-RPC transport explicitly.
+On later edits, use `config apply --file ...`, then restart. Direct apply works while the daemon is running because config mutations share the same database-scoped configuration lock.
 See the
 [`cdk-mintd` configuration guide](crates/cdk-mintd/README.md#configuration) for
 the full workflow.
@@ -375,7 +372,6 @@ To keep the codebase consistently formatted with nightly rustfmt over time:
 
 This approach ensures the codebase gradually adopts nightly formatting improvements without blocking contributors who use stable Rust.
 
-
 ### Running Clippy
 ```bash
 just clippy
@@ -385,7 +381,6 @@ just clippy
 ```sh
 just final-check
 ```
-
 
 ## Best Practices
 
