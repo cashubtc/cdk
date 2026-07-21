@@ -137,31 +137,20 @@ cdk-mintd config export --file /path/to/exported-config.toml
 
 # Discard a staged replacement before restarting
 cdk-mintd config discard-pending
-
-# Explicitly use a management endpoint instead of direct database access
-cdk-mintd config apply --file /path/to/config.toml \
-  --rpc https://127.0.0.1:8086 \
-  --rpc-tls-dir /var/lib/cdk-mintd/tls
 ```
 
 `config apply`, `show`, `export`, and `discard-pending` access the authoritative
-database directly by default; they never probe RPC or fall back between
-transports. Direct commands take a short-lived database-scoped configuration
-lock and can run beside a steady daemon whether or not management RPC is
-enabled. Full-file and immediate RPC configuration mutations acquire the same
-lock. The daemon continues using its in-memory active configuration until
-restart. During startup, activation, or another mutation, a competing command
-fails with `configuration activation or another configuration command is in
-progress; retry`.
+database directly. They take a short-lived database-scoped configuration lock
+and can run beside a steady daemon whether or not management RPC is enabled.
+The daemon continues using its in-memory active configuration until restart.
+During startup, activation, or another mutation, a competing command fails with
+`configuration activation or another configuration command is in progress;
+retry`.
 
-Use `--rpc` and, for mutual TLS, `--rpc-tls-dir` when you explicitly want the
-RPC transport:
-
-```bash
-cdk-mintd config show \
-  --rpc https://127.0.0.1:8086 \
-  --rpc-tls-dir /var/lib/cdk-mintd/tls
-```
+`cdk-mintd` is not an RPC client. Immediate field-level mint management
+(`get-info`, `update-motd`, `rotate-next-keyset`, and related commands) is
+provided by the separate `cdk-mint-cli` binary. See
+[`cdk-mint-rpc`](../cdk-mint-rpc/README.md).
 
 Every full-file apply is restart-bound in this iteration. The running mint
 continues with its active configuration while the submitted document is stored
@@ -169,15 +158,15 @@ as pending. On restart, mintd resolves secrets, validates the pending document,
 and constructs its services from it. It promotes the document to active only
 after listener and payment-processor preparation succeeds; saga recovery and
 invoice watchers start only after promotion. Existing field-specific management
-commands, such as `update-motd` and `update-quote-ttl`, remain immediate when no
-document is pending. While a complete document is pending, those commands are
-rejected so a later promotion cannot silently overwrite a newer field update.
+RPCs (via `cdk-mint-cli`) remain immediate when no document is pending. While a
+complete document is pending, those commands are rejected so a later promotion
+cannot silently overwrite a newer field update.
 
 There is deliberately no configuration revision, `expected-revision`, or
 `--force` workflow in this iteration. Configuration mutations are serialized by
-one database-scoped configuration lock across RPC requests, direct requests,
-and startup activation. Startup internally verifies that the pending document
-has not been replaced before promoting it.
+one database-scoped configuration lock across management RPC requests, direct
+config commands, and startup activation. Startup internally verifies that the
+pending document has not been replaced before promoting it.
 
 SQLite and SQLCipher use separate OS-released lock files for the daemon instance
 and short-lived configuration mutation. PostgreSQL uses corresponding
@@ -193,8 +182,8 @@ remain the configuration source of truth.
 ### Bootstrap Settings
 
 A small set of values cannot come solely from the database because mintd needs
-them before it can open that database or contact its management API. These are
-bootstrap settings, not competing operational configuration:
+them before it can open that database. These are bootstrap settings, not
+competing operational configuration:
 
 - Working directory: `--work-dir` or `CDK_MINTD_WORK_DIR`.
 - Primary database engine and PostgreSQL connection settings:
@@ -203,16 +192,13 @@ bootstrap settings, not competing operational configuration:
 - SQLCipher password when an invocation opens the local encrypted database.
   When their bootstrap database is SQLite, daemon startup, `config init`, and
   direct `config apply/show/export/discard-pending` therefore require
-  `--password <password>`; RPC config commands, `config validate`, and
-  PostgreSQL-backed invocations do not.
-- Management client connection: `--rpc-address` for field-specific management
-  commands, or the config command's explicit `--rpc`; both use
-  `--rpc-tls-dir` for client certificates.
+  `--password <password>`; `config validate` and PostgreSQL-backed invocations
+  do not.
 
 `config validate` only parses and validates the supplied document and therefore
 does not open or lock the database. `config apply --validate-only` also checks
-constraints against persisted state, so it follows the selected direct or RPC
-transport and the same concurrency rules as a real apply.
+constraints against persisted state, so it follows the same concurrency rules as
+a real apply.
 
 `config init` opens the database selected by the same bootstrap settings as
 normal startup and rejects an import document whose primary database settings
@@ -272,9 +258,6 @@ cdk-mintd config apply --file /path/to/changed-config.toml
 # Review active and pending state, then restart mintd.
 cdk-mintd config show
 ```
-
-Add `--rpc <endpoint>` only to select RPC explicitly. Choosing one transport
-never causes an automatic fallback to the other.
 
 Exported documents include only operator-managed NUT-04 and NUT-05 method
 policy. Other advertised NUT capabilities are derived by mintd. An apply is
@@ -339,8 +322,8 @@ By default, the mint will use V2 (Version01) for *new* keysets but will preserve
 You can manually trigger a rotation to a specific version using the CLI:
 
 ```bash
-cdk-mintd rotate-next-keyset --use-keyset-v2 true  # Rotate to V2
-cdk-mintd rotate-next-keyset --use-keyset-v2 false # Rotate to V1
+cdk-mint-cli rotate-next-keyset --use-keyset-v2 true  # Rotate to V2
+cdk-mint-cli rotate-next-keyset --use-keyset-v2 false # Rotate to V1
 ```
 
 ## Production Examples
@@ -358,7 +341,6 @@ rgs_url = "https://rgs.mutinynet.com/snapshot/0"
 gossip_source_type = "rgs"
 storage_dir_path = "/var/lib/cdk-mintd/ldk-node"
 ```
-
 
 ### With CLN Lightning Backend
 ```toml
@@ -538,20 +520,14 @@ cdk-mintd config init --file /path/to/config.toml
 cdk-mintd config validate --file /path/to/config.toml
 cdk-mintd config apply --file /path/to/config.toml
 
-# Or explicitly stage through a management endpoint
-cdk-mintd config apply --file /path/to/config.toml \
-  --rpc https://127.0.0.1:8086 \
-  --rpc-tls-dir /path/to/tls
-
 # Select the bootstrap working directory
 cdk-mintd --work-dir /path/to/work/dir
 
-# Run a management command against a custom RPC endpoint
-cdk-mintd get-info --rpc-address https://127.0.0.1:8086 \
-  --rpc-tls-dir /path/to/tls
-
 # Show help
 cdk-mintd --help
+
+# Immediate mint management uses the separate RPC client binary
+cdk-mint-cli get-info --addr https://127.0.0.1:8086 --tls-dir /path/to/tls
 ```
 
 ## Bootstrap Environment Variables

@@ -3393,8 +3393,6 @@ ln_backend = "fakewallet"
             config: Some(config_path),
             seed_file: Some(seed_file),
             enable_logging: false,
-            rpc_address: Some("https://127.0.0.1:8086".to_string()),
-            rpc_tls_dir: None,
             command: None,
         };
 
