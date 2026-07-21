@@ -9,9 +9,10 @@ service KeysetService {
 }
 
 message RotateNextKeysetRequest {
-    // Currency unit the new keyset signs, e.g. "sat". Matched case-
-    // insensitively. A unit the mint cannot derive a keyset for fails with
-    // gRPC status INVALID_ARGUMENT.
+    // Currency unit the new keyset signs, e.g. "sat". Known units are
+    // matched case-insensitively; custom units are used as provided
+    // (whitespace-trimmed). A unit the mint cannot derive a keyset for
+    // fails with gRPC status INVALID_ARGUMENT.
     string unit = 1;
     // Token denominations the keyset can sign, e.g. [1, 2, 4, 8, 16]. If
     // empty, the amounts of the currently active keyset for this unit are
