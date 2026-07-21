@@ -229,6 +229,8 @@ impl FederationNodeRuntime {
             return Ok(responses);
         }
         for response in &responses {
+            self.payment_observer
+                .notify_accepted_operation(response.outcome.entry());
             self.notify_operation(response.clone());
         }
         Ok(responses)

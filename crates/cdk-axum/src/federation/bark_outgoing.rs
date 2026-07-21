@@ -12,11 +12,13 @@ use cdk::nuts::MeltQuoteState;
 
 use crate::MintState;
 
+use super::payment_schedule::FederationPaymentAdvancement;
+
 /// Advance one accepted pending melt by at most one consensus-visible phase.
 pub(super) async fn advance_federated_bark_melt_quote(
     state: &MintState,
     quote_id: &QuoteId,
-) -> Result<usize, cdk::Error> {
+) -> Result<FederationPaymentAdvancement, cdk::Error> {
     let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
     let runtime = state
         .federation
@@ -29,7 +31,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
         .await?
         .ok_or(cdk::Error::UnknownQuote)?;
     if quote.state != MeltQuoteState::Pending {
-        return Ok(0);
+        return Ok(FederationPaymentAdvancement::Complete);
     }
     let projection = crate::federation_bark_ready_projection(&state.mint, runtime)
         .await
@@ -171,7 +173,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
         return match action.phase {
             FederationBarkSemanticPhase::SendPlanned => {
                 if plan.actor != federation.member_id() {
-                    return Ok(0);
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                 }
                 let transition = runtime
                     .execute_lightning_send_htlcs(&quote, &projection, &plan_entry)
@@ -187,7 +189,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
             }
             FederationBarkSemanticPhase::SendHtlcsCosigned => {
                 if plan.actor != federation.member_id() {
-                    return Ok(0);
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                 }
                 let transition = runtime
                     .initiate_lightning_send(
@@ -245,7 +247,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     }
                 }
                 if plan.actor != federation.member_id() {
-                    return Ok(0);
+                    return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
                 }
                 let failed_observers = projection
                     .observations
@@ -285,7 +287,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     .await
                     .map_err(|_| cdk::Error::Internal)?
                 else {
-                    return Ok(0);
+                    return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
                 };
                 submit_bark_operation(
                     state,
@@ -314,7 +316,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     )
                 });
                 if already_observed {
-                    return Ok(0);
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                 }
                 let next_epoch =
                     next_observation_epoch(&projection, action.action_id, federation.member_id())?;
@@ -338,7 +340,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
             }
             FederationBarkSemanticPhase::PaymentFailed => {
                 if plan.actor != federation.member_id() {
-                    return Ok(0);
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                 }
                 let revocation = runtime
                     .propose_failed_send_revocation(
@@ -357,7 +359,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
             }
             FederationBarkSemanticPhase::RevocationPlanned => {
                 if plan.actor != federation.member_id() {
-                    return Ok(0);
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                 }
                 let revocation_plan_entry =
                     revocation_plan_entry.as_ref().ok_or(cdk::Error::Internal)?;
@@ -379,7 +381,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
                             action_id = %action.action_id,
                             "accepted Bark revocation remains recovery-required"
                         );
-                        return Ok(0);
+                        return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
                     }
                 };
                 submit_bark_operation(
@@ -436,14 +438,14 @@ pub(super) async fn advance_federated_bark_melt_quote(
                             action_id = %action.action_id,
                             "accepted Bark revocation result could not be validated locally"
                         );
-                        return Ok(0);
+                        return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
                     }
                 };
                 runtime
                     .clear_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
                     .await;
                 if already_observed {
-                    return Ok(0);
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                 }
                 submit_bark_operation(
                     state,
@@ -473,7 +475,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
         .federation_melt_payment_actor(predecessor_operation_id)
         .await?;
     if actor != federation.member_id() {
-        return Ok(0);
+        return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
     }
     let application = federation
         .public_config()
@@ -530,7 +532,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
             "accepted Bark send plan could not be materialized locally"
         );
     }
-    Ok(1)
+    Ok(FederationPaymentAdvancement::Progressed)
 }
 
 async fn send_transition_entry(
@@ -578,10 +580,10 @@ fn next_observation_epoch(
 async fn submit_bark_operation(
     state: &MintState,
     envelope: cdk::federation::FederationOperationEnvelope,
-) -> Result<usize, cdk::Error> {
+) -> Result<FederationPaymentAdvancement, cdk::Error> {
     state
         .submit_federation_envelope(envelope)
         .await?
         .ensure_accepted()?;
-    Ok(1)
+    Ok(FederationPaymentAdvancement::Progressed)
 }

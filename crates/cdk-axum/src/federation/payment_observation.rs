@@ -7,19 +7,27 @@ use cdk::federation::{
     FederationAddressAllocationScope, FederationAddressKeychain, FederationAllocatedAddressRef,
     FederationChainObservation, FederationChainSourceDescriptor, FederationChainSourceScope,
     FederationDepositConfirmation, FederationDepositObservation, FederationDepositReorgObservation,
-    FederationPaymentObservation, FederationPaymentObservationRecord,
-    FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
-    FederationWalletUtxoState,
+    FederationOperation, FederationOperationStatus, FederationPaymentObservation,
+    FederationPaymentObservationRecord, FederationPaymentObservationReport,
+    FederationPaymentObservationReportSummary, FederationWalletUtxoState,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
 use futures::FutureExt as _;
 
-use super::mint_quote_schedule::{MintQuoteObservationSchedule, MintQuoteObservationTrigger};
+use super::payment_schedule::{
+    FederationPaymentAdvancement, FederationPaymentObservationSchedule,
+    FederationPaymentObservationTrigger, FederationPaymentQuote, FederationPaymentQuoteKind,
+};
 use crate::MintState;
 
 const FEDERATION_STALE_PAYMENT_OBSERVATION_SECS: u64 = 15 * 60;
-const FEDERATION_PAYMENT_OBSERVER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const FEDERATION_ONCHAIN_OBSERVER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const FEDERATION_PAYMENT_REPAIR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+const FEDERATION_PAYMENT_IDLE_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(24 * 60 * 60);
+const FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE: usize = 8;
+const FEDERATION_PAYMENT_WAKE_CAPACITY: usize = 256;
 /// Per-quote backend probe deadline.
 ///
 /// One hung or slow backend call must never occupy the sequential observer
@@ -41,26 +49,19 @@ fn confirmation_matches_known_anchor(
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct FederationPaymentObserver {
-    mint_quote_schedule: MintQuoteObservationSchedule,
+    schedule: FederationPaymentObservationSchedule,
+    accepted_operation_wakes: tokio::sync::broadcast::Sender<(FederationPaymentQuote, u64)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MintQuoteProgress {
-    state: MintQuoteState,
-    amount_paid: u64,
-    amount_issued: u64,
-    updated_at: u64,
-}
-
-impl From<&cdk::mint::MintQuote> for MintQuoteProgress {
-    fn from(quote: &cdk::mint::MintQuote) -> Self {
+impl Default for FederationPaymentObserver {
+    fn default() -> Self {
+        let (accepted_operation_wakes, _) =
+            tokio::sync::broadcast::channel(FEDERATION_PAYMENT_WAKE_CAPACITY);
         Self {
-            state: quote.state(),
-            amount_paid: quote.amount_paid().value(),
-            amount_issued: quote.amount_issued().value(),
-            updated_at: quote.updated_at(),
+            schedule: FederationPaymentObservationSchedule::default(),
+            accepted_operation_wakes,
         }
     }
 }
@@ -266,100 +267,183 @@ impl FederationPaymentObserver {
         state: &MintState,
         quote_ids: &[QuoteId],
     ) -> Result<usize, cdk::Error> {
-        Box::pin(self.observe_mint_quotes_with_trigger(
+        let quotes = quote_ids
+            .iter()
+            .cloned()
+            .map(FederationPaymentQuote::mint)
+            .collect::<Vec<_>>();
+        Box::pin(self.drive_quotes(
             state,
-            quote_ids,
-            MintQuoteObservationTrigger::Requested,
+            &quotes,
+            FederationPaymentObservationTrigger::Requested,
         ))
         .await
     }
 
-    async fn observe_mint_quotes_with_trigger(
+    async fn drive_quotes(
         &self,
         state: &MintState,
-        quote_ids: &[QuoteId],
-        trigger: MintQuoteObservationTrigger,
+        quotes: &[FederationPaymentQuote],
+        trigger: FederationPaymentObservationTrigger,
     ) -> Result<usize, cdk::Error> {
         let Some(federation_config) = state.mint.federation_config() else {
             return Ok(0);
         };
         let member_id = federation_config.member_id();
         let db = state.mint.localstore();
-        let quote_ids = self
-            .mint_quote_schedule
-            .candidates(&db, quote_ids, trigger, current_unix_time_ms())
+        let mut schedule_changes = self.schedule.subscribe_changes();
+        let mut active_quotes = Vec::with_capacity(quotes.len());
+        for quote in quotes {
+            let active = match quote.kind {
+                FederationPaymentQuoteKind::Mint => {
+                    db.get_mint_quote(&quote.id).await?.is_some_and(|quote| {
+                        !matches!(quote.state(), MintQuoteState::Paid | MintQuoteState::Issued)
+                    })
+                }
+                FederationPaymentQuoteKind::Melt => db
+                    .get_melt_quote(&quote.id)
+                    .await?
+                    .is_some_and(|quote| quote.state == MeltQuoteState::Pending),
+            };
+            if active {
+                active_quotes.push(quote.clone());
+            } else {
+                self.schedule.remove(&db, quote).await?;
+            }
+        }
+        let quotes = self
+            .schedule
+            .candidates(&db, &active_quotes, trigger, current_unix_time_ms())
             .await?;
         let mut submitted = 0usize;
-        for quote_id in &quote_ids {
-            let quote = db
-                .get_mint_quote(quote_id)
-                .await?
-                .ok_or(cdk::Error::UnknownQuote)?;
-            if quote.state() == MintQuoteState::Issued {
-                self.mint_quote_schedule.remove(&db, quote_id).await?;
-                continue;
-            }
-
-            let before = MintQuoteProgress::from(&quote);
+        for quote in &quotes {
             let Some(permit) = self
-                .mint_quote_schedule
-                .claim(&db, quote_id, trigger, current_unix_time_ms())
+                .schedule
+                .claim(&db, quote, trigger, current_unix_time_ms())
                 .await?
             else {
                 continue;
             };
 
-            let observed = Box::pin(self.observe_one_mint_quote(state, quote_id)).await;
-            let after = db.get_mint_quote(quote_id).await;
-            let made_progress = observed.as_ref().is_ok_and(|count| *count > 0)
-                || after.as_ref().is_ok_and(|quote| {
-                    quote
-                        .as_ref()
-                        .is_some_and(|quote| MintQuoteProgress::from(quote) != before)
-                });
-            let schedule_result = self
-                .mint_quote_schedule
+            let mut made_progress = false;
+            let mut advancement = FederationPaymentAdvancement::Progressed;
+            let mut last_processed_operation_index =
+                db.get_federation_journal_tip().await?.map(|tip| tip.index);
+            for completed_steps in 0..FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE {
+                let before_operation_index = last_processed_operation_index;
+                advancement = self.advance_one_quote(state, quote).await?;
+                last_processed_operation_index =
+                    db.get_federation_journal_tip().await?.map(|tip| tip.index);
+                if advancement == FederationPaymentAdvancement::Progressed {
+                    made_progress = true;
+                    submitted = submitted.saturating_add(1);
+                }
+                if !continue_payment_pump(
+                    completed_steps,
+                    advancement,
+                    before_operation_index,
+                    last_processed_operation_index,
+                ) {
+                    break;
+                }
+            }
+            self.schedule
                 .finish(
                     &db,
                     permit,
                     member_id,
+                    advancement,
                     made_progress,
+                    last_processed_operation_index,
                     current_unix_time_ms(),
                 )
-                .await;
-
-            match schedule_result {
-                Ok(()) => {}
-                Err(error) if observed.is_err() || after.is_err() => tracing::warn!(
-                    quote = %quote_id,
-                    error = %error,
-                    "Could not persist mint quote observation backoff after observation failure"
-                ),
-                Err(error) => return Err(error),
-            }
-            after?;
-            submitted = submitted.saturating_add(observed?);
+                .await?;
+        }
+        if trigger == FederationPaymentObservationTrigger::Requested {
+            self.wait_for_active_attempts(&db, &active_quotes, &mut schedule_changes)
+                .await?;
         }
         Ok(submitted)
     }
 
-    async fn observe_one_mint_quote(
+    async fn wait_for_active_attempts(
+        &self,
+        db: &cdk_common::database::DynMintDatabase,
+        quotes: &[FederationPaymentQuote],
+        schedule_changes: &mut tokio::sync::watch::Receiver<u64>,
+    ) -> Result<(), cdk::Error> {
+        loop {
+            let now_ms = current_unix_time_ms();
+            let Some(lease_until_ms) = self
+                .schedule
+                .active_lease_until_ms(db, quotes, now_ms)
+                .await?
+            else {
+                return Ok(());
+            };
+            let remaining = std::time::Duration::from_millis(lease_until_ms.saturating_sub(now_ms));
+            match tokio::time::timeout(remaining, schedule_changes.changed()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) | Err(_) => return Ok(()),
+            }
+        }
+    }
+
+    fn advance_one_quote<'a>(
+        &'a self,
+        state: &'a MintState,
+        quote: &'a FederationPaymentQuote,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<FederationPaymentAdvancement, cdk::Error>>
+                + Send
+                + 'a,
+        >,
+    > {
+        match quote.kind {
+            FederationPaymentQuoteKind::Mint => {
+                Box::pin(self.advance_one_mint_quote(state, &quote.id))
+            }
+            FederationPaymentQuoteKind::Melt => {
+                Box::pin(self.advance_one_melt_quote(state, &quote.id))
+            }
+        }
+    }
+
+    async fn advance_one_mint_quote(
         &self,
         state: &MintState,
         quote_id: &QuoteId,
-    ) -> Result<usize, cdk::Error> {
-        let mut submitted = 0usize;
-        #[cfg(feature = "federation-bark")]
-        if state.federation.bark_runtime().is_some() {
-            match super::bark_incoming::advance_federated_bark_mint_quote(state, quote_id).await {
-                Ok(advanced) => submitted = submitted.saturating_add(advanced),
-                Err(error) => tracing::debug!(
-                    quote = %quote_id,
-                    error = %error,
-                    "federated Bark receive advancement left quote pending"
-                ),
-            }
+    ) -> Result<FederationPaymentAdvancement, cdk::Error> {
+        let Some(quote) = state.mint.localstore().get_mint_quote(quote_id).await? else {
+            return Ok(FederationPaymentAdvancement::Complete);
+        };
+        if matches!(quote.state(), MintQuoteState::Paid | MintQuoteState::Issued) {
+            return Ok(FederationPaymentAdvancement::Complete);
         }
+
+        #[cfg(feature = "federation-bark")]
+        let bark_advancement = if state.federation.bark_runtime().is_some() {
+            match super::bark_incoming::advance_federated_bark_mint_quote(state, quote_id).await {
+                Ok(FederationPaymentAdvancement::Progressed) => {
+                    return Ok(FederationPaymentAdvancement::Progressed);
+                }
+                Ok(advancement) => Some(advancement),
+                Err(error) => {
+                    tracing::debug!(
+                        quote = %quote_id,
+                        error = %error,
+                        "federated Bark receive advancement left quote pending"
+                    );
+                    Some(FederationPaymentAdvancement::AwaitingExternalEvidence)
+                }
+            }
+        } else {
+            None
+        };
+        #[cfg(not(feature = "federation-bark"))]
+        let bark_advancement = None;
+
         let Some(observation) = ({
             let probe = std::panic::AssertUnwindSafe(async {
                 state
@@ -376,30 +460,36 @@ impl FederationPaymentObserver {
                         error = %err,
                         "mint quote payment probe failed; quote left pending"
                     );
-                    return Ok(submitted);
+                    return Ok(bark_advancement
+                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
                 }
                 Ok(Err(_panic)) => {
                     tracing::warn!(
                         quote = %quote_id,
                         "mint quote payment probe panicked; quote left pending"
                     );
-                    return Ok(submitted);
+                    return Ok(bark_advancement
+                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
                 }
                 Err(_) => {
                     tracing::debug!(
                         quote = %quote_id,
                         "mint quote payment probe timed out; quote left pending"
                     );
-                    return Ok(submitted);
+                    return Ok(bark_advancement
+                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
                 }
             }
         }) else {
-            return Ok(submitted);
+            return Ok(
+                bark_advancement.unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence)
+            );
         };
         if submit_observation(state, FederationPaymentObservation::MintQuote(observation)).await? {
-            submitted = submitted.saturating_add(1);
+            Ok(FederationPaymentAdvancement::Progressed)
+        } else {
+            Ok(FederationPaymentAdvancement::AwaitingFederationEvidence)
         }
-        Ok(submitted)
     }
 
     pub(crate) async fn observe_melt_quote(
@@ -407,24 +497,48 @@ impl FederationPaymentObserver {
         state: &MintState,
         quote_id: &QuoteId,
     ) -> Result<bool, cdk::Error> {
+        let submitted = Box::pin(self.drive_quotes(
+            state,
+            &[FederationPaymentQuote::melt(quote_id.clone())],
+            FederationPaymentObservationTrigger::Requested,
+        ))
+        .await?;
+        Ok(submitted > 0)
+    }
+
+    async fn advance_one_melt_quote(
+        &self,
+        state: &MintState,
+        quote_id: &QuoteId,
+    ) -> Result<FederationPaymentAdvancement, cdk::Error> {
+        let Some(quote) = state.mint.localstore().get_melt_quote(quote_id).await? else {
+            return Ok(FederationPaymentAdvancement::Complete);
+        };
+        if quote.state != MeltQuoteState::Pending {
+            return Ok(FederationPaymentAdvancement::Complete);
+        }
+
         #[cfg(feature = "federation-bark")]
-        let planned = if state.federation.bark_runtime().is_some() {
+        let bark_advancement = if state.federation.bark_runtime().is_some() {
             match super::bark_outgoing::advance_federated_bark_melt_quote(state, quote_id).await {
-                Ok(advanced) => advanced > 0,
+                Ok(FederationPaymentAdvancement::Progressed) => {
+                    return Ok(FederationPaymentAdvancement::Progressed);
+                }
+                Ok(advancement) => Some(advancement),
                 Err(error) => {
                     tracing::debug!(
                         quote = %quote_id,
                         error = %error,
                         "federated Bark send planning left quote pending"
                     );
-                    false
+                    Some(FederationPaymentAdvancement::AwaitingExternalEvidence)
                 }
             }
         } else {
-            false
+            None
         };
         #[cfg(not(feature = "federation-bark"))]
-        let planned = false;
+        let bark_advancement = None;
         let Some(observation) = ({
             let probe = std::panic::AssertUnwindSafe(async {
                 state
@@ -441,30 +555,36 @@ impl FederationPaymentObserver {
                         error = %err,
                         "melt quote payment probe failed; quote left pending"
                     );
-                    return Ok(planned);
+                    return Ok(bark_advancement
+                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
                 }
                 Ok(Err(_panic)) => {
                     tracing::warn!(
                         quote = %quote_id,
                         "melt quote payment probe panicked; quote left pending"
                     );
-                    return Ok(planned);
+                    return Ok(bark_advancement
+                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
                 }
                 Err(_) => {
                     tracing::debug!(
                         quote = %quote_id,
                         "melt quote payment probe timed out; quote left pending"
                     );
-                    return Ok(planned);
+                    return Ok(bark_advancement
+                        .unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence));
                 }
             }
         }) else {
-            return Ok(planned);
+            return Ok(
+                bark_advancement.unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence)
+            );
         };
-        Ok(
-            submit_observation(state, FederationPaymentObservation::MeltQuote(observation)).await?
-                || planned,
-        )
+        if submit_observation(state, FederationPaymentObservation::MeltQuote(observation)).await? {
+            Ok(FederationPaymentAdvancement::Progressed)
+        } else {
+            Ok(FederationPaymentAdvancement::AwaitingFederationEvidence)
+        }
     }
 
     pub(crate) async fn observe_event(
@@ -485,22 +605,25 @@ impl FederationPaymentObserver {
                 else {
                     return Ok(0);
                 };
-                self.observe_mint_quotes_with_trigger(
+                self.drive_quotes(
                     state,
-                    std::slice::from_ref(&quote.id),
-                    MintQuoteObservationTrigger::Notified,
+                    &[FederationPaymentQuote::mint(quote.id)],
+                    FederationPaymentObservationTrigger::BackendNotified,
                 )
                 .await
             }
             Event::PaymentSuccessful { quote_id, .. } | Event::PaymentFailed { quote_id, .. } => {
-                Ok(usize::from(
-                    self.observe_melt_quote(state, &quote_id).await?,
-                ))
+                self.drive_quotes(
+                    state,
+                    &[FederationPaymentQuote::melt(quote_id)],
+                    FederationPaymentObservationTrigger::BackendNotified,
+                )
+                .await
             }
         }
     }
 
-    pub(crate) async fn run_round(&self, state: &MintState) -> Result<usize, cdk::Error> {
+    async fn scheduled_quotes(&self, state: &MintState) -> Result<usize, cdk::Error> {
         if state.mint.federation_config().is_none() {
             return Ok(0);
         }
@@ -508,48 +631,64 @@ impl FederationPaymentObserver {
             .ensure_federation_ready_for_authoritative_read()
             .await?;
 
-        let mut submitted = self.observe_onchain_wallets(state).await?;
-        let has_frost_wallet = state
-            .mint
-            .federation_config()
-            .is_some_and(|runtime| runtime.public_config().frost_wallet.is_some());
-        let mint_quote_ids = state
+        let mut quotes = state
             .mint
             .localstore()
             .get_mint_quotes()
             .await?
             .into_iter()
-            .filter(|quote| {
-                quote.state() != MintQuoteState::Issued
-                    || (has_frost_wallet && quote.payment_method.is_onchain())
-            })
-            .map(|quote| quote.id)
+            .filter(|quote| !matches!(quote.state(), MintQuoteState::Paid | MintQuoteState::Issued))
+            .map(|quote| FederationPaymentQuote::mint(quote.id))
             .collect::<Vec<_>>();
-        submitted = submitted.saturating_add(
-            self.observe_mint_quotes_with_trigger(
-                state,
-                &mint_quote_ids,
-                MintQuoteObservationTrigger::Scheduled,
-            )
-            .await?,
+        quotes.extend(
+            state
+                .mint
+                .localstore()
+                .get_melt_quotes()
+                .await?
+                .into_iter()
+                .filter(|quote| quote.state == MeltQuoteState::Pending)
+                .map(|quote| FederationPaymentQuote::melt(quote.id)),
         );
 
-        let melt_quote_ids = state
-            .mint
-            .localstore()
-            .get_melt_quotes()
-            .await?
-            .into_iter()
-            .filter(|quote| quote.state == MeltQuoteState::Pending)
-            .map(|quote| quote.id)
-            .collect::<Vec<_>>();
-        for quote_id in melt_quote_ids {
-            if self.observe_melt_quote(state, &quote_id).await? {
-                submitted = submitted.saturating_add(1);
-            }
-        }
+        self.drive_quotes(
+            state,
+            &quotes,
+            FederationPaymentObservationTrigger::Scheduled,
+        )
+        .await
+    }
+
+    pub(crate) async fn run_round(&self, state: &MintState) -> Result<usize, cdk::Error> {
+        let mut submitted = self.observe_onchain_wallets(state).await?;
+        submitted = submitted.saturating_add(self.scheduled_quotes(state).await?);
 
         Ok(submitted)
+    }
+
+    pub(crate) fn notify_accepted_operation(
+        &self,
+        entry: &cdk::federation::FederationJournalEntry,
+    ) {
+        for quote in payment_wakes_for_entry(entry) {
+            let _ = self.accepted_operation_wakes.send((quote, entry.index));
+        }
+    }
+
+    async fn next_schedule_delay(
+        &self,
+        state: &MintState,
+    ) -> Result<std::time::Duration, cdk::Error> {
+        let Some(deadline_ms) = self
+            .schedule
+            .next_attempt_at_ms(&state.mint.localstore())
+            .await?
+        else {
+            return Ok(FEDERATION_PAYMENT_IDLE_DEADLINE);
+        };
+        Ok(std::time::Duration::from_millis(
+            deadline_ms.saturating_sub(current_unix_time_ms()),
+        ))
     }
 
     pub(crate) fn spawn(self, state: MintState) {
@@ -558,18 +697,60 @@ impl FederationPaymentObserver {
         }
 
         let mut payment_events = state.mint.subscribe_federation_payment_events();
+        let mut accepted_operation_wakes = self.accepted_operation_wakes.subscribe();
+        let mut schedule_changes = self.schedule.subscribe_changes();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(FEDERATION_PAYMENT_OBSERVER_INTERVAL);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            interval.tick().await;
+            let mut repair_interval = tokio::time::interval(FEDERATION_PAYMENT_REPAIR_INTERVAL);
+            repair_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut onchain_interval = tokio::time::interval(FEDERATION_ONCHAIN_OBSERVER_INTERVAL);
+            onchain_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
             loop {
+                let schedule_delay = match self.next_schedule_delay(&state).await {
+                    Ok(delay) => delay,
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "Could not load federation payment schedule; using repair deadline"
+                        );
+                        FEDERATION_PAYMENT_REPAIR_INTERVAL
+                    }
+                };
                 // One panicking round, event, or backend future must not kill
                 // the only observation worker; it is logged and the loop
                 // continues so remaining quotes keep being repaired.
                 let (result, closed) = match std::panic::AssertUnwindSafe(async {
                     tokio::select! {
-                        _ = interval.tick() => (self.run_round(&state).await, false),
+                        _ = tokio::time::sleep(schedule_delay) => {
+                            (self.scheduled_quotes(&state).await, false)
+                        }
+                        _ = repair_interval.tick() => (self.run_round(&state).await, false),
+                        _ = onchain_interval.tick() => {
+                            (self.observe_onchain_wallets(&state).await, false)
+                        }
+                        changed = schedule_changes.changed() => {
+                            (changed.map(|_| 0).map_err(|_| cdk::Error::Internal), false)
+                        }
+                        wake = accepted_operation_wakes.recv() => match wake {
+                            Ok((quote, operation_index)) => (
+                                self.drive_quotes(
+                                    &state,
+                                    &[quote],
+                                    FederationPaymentObservationTrigger::OperationAccepted(
+                                        operation_index,
+                                    ),
+                                ).await,
+                                false,
+                            ),
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                tracing::warn!(
+                                    skipped,
+                                    "Federation payment journal wake lagged; running repair scan"
+                                );
+                                (self.run_round(&state).await, false)
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => (Ok(0), true),
+                        },
                         event = payment_events.recv() => match event {
                             Ok(event) => (self.observe_event(&state, event).await, false),
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -609,6 +790,84 @@ impl FederationPaymentObserver {
                 }
             }
         });
+    }
+}
+
+fn continue_payment_pump(
+    completed_steps: usize,
+    advancement: FederationPaymentAdvancement,
+    before_operation_index: Option<u64>,
+    after_operation_index: Option<u64>,
+) -> bool {
+    completed_steps.saturating_add(1) < FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE
+        && (advancement == FederationPaymentAdvancement::Progressed
+            || before_operation_index != after_operation_index)
+}
+
+fn payment_wakes_for_entry(
+    entry: &cdk::federation::FederationJournalEntry,
+) -> Vec<FederationPaymentQuote> {
+    if entry.status() != FederationOperationStatus::Applied {
+        return Vec::new();
+    }
+
+    let parse = |quote: &str| quote.parse::<QuoteId>().ok();
+    match &entry.envelope.operation {
+        FederationOperation::AddressAllocation(operation) => parse(&operation.quote)
+            .map(FederationPaymentQuote::mint)
+            .into_iter()
+            .collect(),
+        FederationOperation::ChainObservation(FederationChainObservation::Deposit(observation)) => {
+            parse(&observation.allocation.quote)
+                .map(FederationPaymentQuote::mint)
+                .into_iter()
+                .collect()
+        }
+        FederationOperation::MintQuote(operation) => parse(&operation.quote)
+            .map(FederationPaymentQuote::mint)
+            .into_iter()
+            .collect(),
+        FederationOperation::MintQuotePayment(observation) => parse(&observation.quote)
+            .map(FederationPaymentQuote::mint)
+            .into_iter()
+            .collect(),
+        FederationOperation::Mint(operation) => operation
+            .request
+            .quote_ids()
+            .into_iter()
+            .filter_map(parse)
+            .map(FederationPaymentQuote::mint)
+            .collect(),
+        FederationOperation::MeltQuote(operation) => parse(&operation.quote)
+            .map(FederationPaymentQuote::melt)
+            .into_iter()
+            .collect(),
+        FederationOperation::MeltQuotePayment(observation) => parse(&observation.quote)
+            .map(FederationPaymentQuote::melt)
+            .into_iter()
+            .collect(),
+        FederationOperation::Melt(operation) => parse(operation.request.quote())
+            .map(FederationPaymentQuote::melt)
+            .into_iter()
+            .collect(),
+        FederationOperation::Bark(operation) => operation
+            .quote()
+            .and_then(parse)
+            .into_iter()
+            .flat_map(|quote| {
+                [
+                    FederationPaymentQuote::mint(quote.clone()),
+                    FederationPaymentQuote::melt(quote),
+                ]
+            })
+            .collect(),
+        FederationOperation::ChainObservation(FederationChainObservation::Reorg(_))
+        | FederationOperation::Swap(_)
+        | FederationOperation::KeysetRotation(_)
+        | FederationOperation::TransactionProposal(_)
+        | FederationOperation::TransactionSigned(_)
+        | FederationOperation::TransactionBroadcastIntent(_)
+        | FederationOperation::TransactionBroadcastObservation(_) => Vec::new(),
     }
 }
 
@@ -764,6 +1023,12 @@ fn current_unix_time_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use cdk::federation::{
+        FederationApplicationState, FederationId, FederationMintQuotePaymentObservation,
+        FederationOperationEnvelope, InMemoryFederationJournal, MemberId,
+    };
+    use cdk::nuts::PaymentMethod;
+    use cdk::Amount;
     use cdk_common::bitcoin::hashes::Hash;
     use cdk_common::bitcoin::BlockHash;
 
@@ -790,5 +1055,73 @@ mod tests {
             Some(original_block),
             Some(different_block)
         ));
+    }
+
+    #[test]
+    fn progress_pump_runs_immediately_but_yields_after_eight_steps() {
+        for completed_steps in 0..FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE - 1 {
+            assert!(continue_payment_pump(
+                completed_steps,
+                FederationPaymentAdvancement::Progressed,
+                Some(10),
+                Some(11),
+            ));
+        }
+        assert!(!continue_payment_pump(
+            FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE - 1,
+            FederationPaymentAdvancement::Progressed,
+            Some(10),
+            Some(11),
+        ));
+    }
+
+    #[test]
+    fn journal_progress_rechecks_a_waiting_quote_without_a_timer() {
+        assert!(continue_payment_pump(
+            0,
+            FederationPaymentAdvancement::AwaitingFederationEvidence,
+            Some(10),
+            Some(11),
+        ));
+        assert!(!continue_payment_pump(
+            0,
+            FederationPaymentAdvancement::AwaitingFederationEvidence,
+            Some(11),
+            Some(11),
+        ));
+    }
+
+    #[test]
+    fn accepted_payment_wake_is_scoped_to_the_exact_quote() {
+        let quote = QuoteId::new();
+        let other = QuoteId::new();
+        let operation =
+            FederationOperation::MintQuotePayment(FederationMintQuotePaymentObservation {
+                quote: quote.to_string(),
+                observer: MemberId::new(1).expect("member"),
+                method: PaymentMethod::BOLT11,
+                state: MintQuoteState::Paid,
+                amount_paid: Amount::from(1),
+                amount_issued: Amount::ZERO,
+                payment_id: None,
+                payment_proof: None,
+            });
+        let mut journal = InMemoryFederationJournal::new();
+        let mut entry = journal
+            .append(FederationOperationEnvelope::new(
+                FederationId::from_bytes([7; 32]),
+                operation,
+            ))
+            .expect("append")
+            .entry()
+            .clone();
+
+        assert!(payment_wakes_for_entry(&entry).is_empty());
+        entry.application = FederationApplicationState::Applied {};
+        assert_eq!(
+            payment_wakes_for_entry(&entry),
+            vec![FederationPaymentQuote::mint(quote)]
+        );
+        assert!(!payment_wakes_for_entry(&entry).contains(&FederationPaymentQuote::mint(other)));
     }
 }

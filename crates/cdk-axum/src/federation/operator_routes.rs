@@ -219,6 +219,12 @@ async fn retry_bark_action(
             let quote = action_quote_id(action).map_err(cdk_error_response)?;
             super::bark_outgoing::advance_federated_bark_melt_quote(state, &quote)
                 .await
+                .map(|outcome| {
+                    usize::from(matches!(
+                        outcome,
+                        super::payment_schedule::FederationPaymentAdvancement::Progressed
+                    ))
+                })
                 .map_err(cdk_error_response)
         }
         Some(FederationBarkActionKind::IncomingClaim) | None => {
@@ -233,6 +239,12 @@ async fn retry_bark_action(
             let quote = action_quote_id(action).map_err(cdk_error_response)?;
             super::bark_incoming::advance_federated_bark_mint_quote(state, &quote)
                 .await
+                .map(|outcome| {
+                    usize::from(matches!(
+                        outcome,
+                        super::payment_schedule::FederationPaymentAdvancement::Progressed
+                    ))
+                })
                 .map_err(cdk_error_response)
         }
         Some(FederationBarkActionKind::Refresh) | Some(FederationBarkActionKind::EmergencyExit) => {

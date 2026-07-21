@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0 and 0A complete; Milestone 1 is next
+Status: Milestones 0, 0A, and 1 complete; Milestone 2 is next
 
 First recorded: 2026-07-20
 
@@ -770,10 +770,10 @@ It has the following meaning:
 | `AwaitingFederationEvidence` | Wait for relevant accepted-operation notification; retain a slow repair fallback |
 | `Complete` | Remove schedule state and stop all automatic work |
 
-The driver owns persisted schedules, active-attempt leases, duplicate wake
-cooldowns, accepted-operation wakes, optional backend event wakes, wallet
-request wakes, and terminal cleanup. Backend advancement owns protocol state
-and returns only the reason it cannot continue. It does not own generic timers.
+The driver owns persisted schedules, active-attempt leases and coalescing,
+accepted-operation wakes, optional backend event wakes, wallet-request wakes,
+and terminal cleanup. Backend advancement owns protocol state and returns only
+the reason it cannot continue. It does not own generic timers.
 
 The immediate pump is bounded initially to eight advancements per wake. If it
 reaches the bound, it yields and schedules a cooperative continuation. The
@@ -824,8 +824,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | Milestone | Goal | Status | Commit |
 | --- | --- | --- | --- |
 | 0 | Establish reproducible incoming and outgoing baselines with causal timelines | Complete | `7403e90c0` |
-| 0A | Restore maintenance round persistence, actor ownership, and payment liquidity | Complete | recorded in the milestone commit; hash added by the next update |
-| 1 | Remove unnecessary inter-operation delay with one generic mint/melt advancement driver | Not started | - |
+| 0A | Restore maintenance round persistence, actor ownership, and payment liquidity | Complete | `32f01bbf9` (CDK), `aa98f568` (Bark) |
+| 1 | Remove unnecessary inter-operation delay with one generic mint/melt advancement driver | Complete | recorded in the milestone commit; hash added by the next update |
 | 2 | Determine and implement the smallest safe Bark incoming/outgoing event wake, or reject it | Not started | - |
 | 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Not started | - |
 | 4 | Reduce excess Ark probes and observations with threshold-first polling and measured backoff | Not started | - |
@@ -934,7 +934,7 @@ Focused checks passed:
 ```text
 cargo test -p cdk-axum --features federation-bark \
   receive_actor_advances_from_cache_only_after_matching_quorum
-cargo test -p cdk-axum --features federation-bark mint_quote_schedule
+cargo test -p cdk-axum --features federation-bark payment_schedule
 cargo test -p cdk-sqlite --features federation \
   federation_bark_projection_persistence
 ```
@@ -1126,37 +1126,37 @@ backoff; accepted federation progress does not.
 
 ### Checklist
 
-- [ ] Introduce the four backend-independent advancement results without
+- [x] Introduce the four backend-independent advancement results without
       exposing Bark semantic phases to the generic observer.
-- [ ] Use one persisted schedule implementation for federated mint and melt
+- [x] Use one persisted schedule implementation for federated mint and melt
       quotes.
-- [ ] Restrict exponential backoff to `AwaitingExternalEvidence`.
-- [ ] On `Progressed`, continue in a bounded eight-step cooperative pump.
-- [ ] On `AwaitingFederationEvidence`, register a wake for accepted operations
+- [x] Restrict exponential backoff to `AwaitingExternalEvidence`.
+- [x] On `Progressed`, continue in a bounded eight-step cooperative pump.
+- [x] On `AwaitingFederationEvidence`, register a wake for accepted operations
       that reference the quote/action.
-- [ ] Keep one slow repair scan for lost notifications, startup races, and
+- [x] Keep one slow repair scan for lost notifications, startup races, and
       restart; do not use it as the normal progress clock.
-- [ ] Keep the current external 5s-to-300s backoff constants during this
+- [x] Keep the current external 5s-to-300s backoff constants during this
       milestone to isolate the internal-delay change.
-- [ ] Let wallet GET/POST wake the same driver; do not reset persisted backoff.
-- [ ] Remove schedules for issued mint quotes and terminal melt/action states.
-- [ ] Verify federated BDK follows the generic contract and has no Bark branch.
-- [ ] Verify standalone payment observation is unchanged.
+- [x] Let wallet GET/POST wake the same driver; do not reset persisted backoff.
+- [x] Remove schedules for issued mint quotes and terminal melt/action states.
+- [x] Verify federated BDK follows the generic contract and has no Bark branch.
+- [x] Verify standalone payment observation is unchanged.
 
 ### Tests
 
-- [ ] Multiple scripted internal transitions complete without advancing fake
+- [x] Multiple scripted internal transitions complete without advancing fake
       time by five seconds between each one.
-- [ ] No-progress external evidence follows the persisted sequence.
-- [ ] Restart preserves deadline, counter, phase, and lease recovery.
-- [ ] A wallet wake does not reset no-progress state.
-- [ ] A relevant journal apply wakes the exact quote immediately.
-- [ ] An unrelated operation does not wake every quote.
-- [ ] A missed wake is recovered by the slow repair scan.
-- [ ] The pump yields at eight steps and resumes cooperatively.
-- [ ] Concurrent wallet, timer, journal, and backend wakes produce at most one
+- [x] No-progress external evidence follows the persisted sequence.
+- [x] Restart preserves deadline, counter, phase, and lease recovery.
+- [x] A wallet wake does not reset no-progress state.
+- [x] A relevant journal apply wakes the exact quote immediately.
+- [x] An unrelated operation does not wake every quote.
+- [x] A missed wake is recovered by the slow repair scan.
+- [x] The pump yields at eight steps and resumes cooperatively.
+- [x] Concurrent wallet, timer, journal, and backend wakes produce at most one
       active attempt per quote/member.
-- [ ] Pending melts no longer run every five seconds independently of their
+- [x] Pending melts no longer run every five seconds independently of their
       per-quote state.
 
 ### Success criteria
@@ -1170,6 +1170,116 @@ backoff; accepted federation progress does not.
 - Restart, convergence, federated BDK, and standalone regressions pass.
 - The milestone is committed as
   `perf: drive federated payment progress without polling delays`.
+
+### Progress record — 2026-07-21
+
+Milestone 1 is `Complete`, decision `Kept`. The confirmed cause was not one
+payment-method-specific timer but the observer contract: successful Bark
+transitions, federation waits, and genuine external no-progress all collapsed
+to one integer result and one delayed loop. Mint quotes had a persisted
+schedule; melts were rescanned independently every five seconds. Accepted
+journal progress therefore commonly waited for another timer even though the
+next input was already local.
+
+The retained implementation replaces that split with one v2 mint/melt
+schedule and four backend-independent advancement results. `Progressed` runs
+again immediately, bounded to eight cooperative steps. An exact applied
+operation wake advances only the quote named by a mint, melt, payment, chain,
+or Bark operation. `AwaitingFederationEvidence` waits for that wake and keeps
+only a 60-second repair deadline. `AwaitingExternalEvidence` alone increments
+the persisted 5, 10, 20, 40, 80, 160, then 300-second backoff with deterministic
+20% member jitter. `Complete` removes the exact schedule. The v1 mint schedule
+is migrated on first read; deadlines, counters, wait reason, operation cursor,
+generation, and leases survive restart.
+
+Wallet requests use the same driver without resetting the external counter.
+The existing five-second mint-request cooldown remains in place to avoid
+turning wallet fan-out into Ark amplification. Melts preserve their prior
+request-driven GET/POST behavior. In both cases a 15-second persisted lease
+admits at most one active attempt per quote/member; concurrent callers wait for
+that attempt to finish instead of racing it or returning inconsistent
+`Pending`/`Paid` snapshots. Backend events and accepted operations use the
+same lease. No error text or Bark phase appears in the scheduler.
+
+The measured candidate was built in release mode from CDK base `32f01bbf9b43`
+plus this milestone and Bark `aa98f5685d70`, using Rust 1.95.0 on a local ARM64
+host. The topology was five loopback members, threshold three, SQLite per
+member, the public Signet Ark service, and the local CLI. The Ark server version
+is not exposed by the configured client interface. The final release hashes
+were `14ae930bcbc9d05b868e8224615b4778f0abe663dfef7ce060d6a4df8a4742a6`
+for `cdk-mintd` and
+`431b323d2065bae53a5cc50e00c01710a297ae87f5c323efc955476e620bc0b2`
+for `cdk-cli`.
+
+Three incoming samples were executed in order with 10,000-sat faucet
+payments. The first quote was deliberately excluded from raw quote-duration
+statistics because faucet reauthentication delayed payment by about nine
+minutes; its first detected Bark movement to issuance was 24.0 seconds. The
+next two browser-submit-to-issuance bounds were 33.4 and 42.4 seconds. The
+24.0/33.4/42.4 post-submit-or-detection median was 33.4 seconds, 16.9% below
+the 40.176-second baseline post-payment median. Durable quote durations for
+the two clean payer samples were 67 and 66 seconds. Each completed incoming
+used 23 accepted operations: one more than the 22-operation baseline because
+all five generic observations arrived in these samples. That 4.5% increase is
+inside the milestone regression budget; Milestone 3 owns removing the generic
+observation round entirely.
+
+Three 1,000-sat outgoing samples completed in 27, 31, and 28 seconds of CLI
+wall time. Their durable quote-to-paid times were 26, 31, and 26 seconds, a
+26-second median and a 29.7% reduction from the 37-second baseline. Each used
+16 accepted operations, equal to the baseline median. After the final
+concurrency correction, the exact rebuilt candidate paid one additional
+1,000-sat store invoice in 27 seconds; its durable quote reached `PAID` in 26
+seconds, used 16 accepted operations and four duplicate finalized items, and
+the wallet balance changed exactly from 26,925 to 25,900 sats including the
+25-sat fee. The store also reported `PAID`.
+
+The direct scheduler counter is zero delayed deadlines between scripted
+`Progressed` steps: all eight allowed steps run without fake-time advancement,
+then yield. External automatic-probe constants and call sites are unchanged.
+The exact candidate produced no `local_rate_limited`, resource-exhaustion, or
+panic log. Accepted Bark observation cardinality remained five HTLC/result
+observations where required, and outgoing consensus cardinality did not grow.
+Underlying Ark transport RPC counts remain a Milestone 4 measurement because
+the Bark facade does not expose a one-call/one-transport mapping; no claim is
+made beyond the unchanged CDK call sites and the observed absence of rate
+limiting.
+
+The restart probe left one unpaid quote active. Before restart every member
+persisted one external-wait schedule with no-progress counter three. After a
+release restart the same quote remained scheduled on every member with
+counters four or five according to its persisted jittered deadline and zero
+active leases; it did not reset. After the exact payment smoke, all five
+members converged at 136 accepted operations with identical order and
+application digests. The local CLI balance was exact. A bounded post-replay
+sample reported 6.79-7.08 CPU-seconds and 110,032-119,840 KiB RSS per member,
+with no growing automatic-work or recovery counter.
+
+Focused and full gates passed:
+
+```text
+cargo fmt -p cdk-axum -- --check
+cargo check -p cdk-axum --features federation
+cargo check -p cdk-axum --features federation-bark
+cargo test -p cdk-axum --features federation-bark federation::payment
+cargo test -p cdk-axum --features federation-bark payment_observer
+cargo test -p cdk-axum --features federation-bark pending_federated_melt
+cargo test -p cdk-axum --features federation-bark \
+  duplicate_process_melt_aleph_bft_pending_requests_join_one_queue_item
+RUST_MIN_STACK=8388608 cargo test -p cdk-axum \
+  --features federation-bark --lib
+cargo test -p cdk-bark --features federation-bark
+```
+
+The full `cdk-axum` run passed 529 tests with two intentional ignores. Its
+existing deeply nested concurrent-route stress requires an 8 MiB test-thread
+stack; the ordinary 2 MiB Tokio test stack overflows before an assertion. No
+production stack setting or test annotation was added. Federated BDK compiles
+through the generic path without a Bark branch, and the scheduler is entered
+only when federation configuration exists, leaving standalone observation
+unchanged. Temporary diagnostic probes were not retained. The intended
+milestone commit subject is
+`perf: drive federated payment progress without polling delays`.
 
 ## Milestone 2: Bark mailbox/event wake feasibility and implementation
 
@@ -1671,13 +1781,15 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | same baseline | local release, same federation | unreachable 1,000-sat outgoing failure | 49s; 22 accepted operations; four duplicates; two nine-message FROST actions; exact 1,025-sat reservation restored; all members converged; balance unchanged | Failure and revocation are live, exact-value, and safe; they are a separate latency class from successful sends |
 | 2026-07-21 | disposable probes, reverted | local release, same federation, real Signet | one incoming and one outgoing attribution pair | incoming: 25 Ark-facing calls, 20 accepted operations; outgoing: eight Ark-facing calls, 16 accepted operations; no rate limit | Five members made 20 incoming status polls before three hydrated evidence; successful outgoing made five member terminal polls plus one actor success poll |
 | 2026-07-21 | disposable maintenance diagnosis, reverted | local release, automatic refresh enabled | receive followed by outgoing attempt | refresh reserved the only 10,000-sat VTXO; outgoing quote failed; 101 malformed never-started round rows accumulated; MessagePack decode failed every five seconds | Bark optional-field positional serialization and non-actor plan publication are critical liveness blockers isolated as Milestone 0A |
+| 2026-07-21 | Milestone 1 candidate based on `32f01bbf9b43`, Bark `aa98f5685d70` | local release, five loopback members, SQLite, real Signet | three incoming and three outgoing successes | incoming post-submit/detection 24.0/33.4/42.4s, median 33.4s; outgoing durable 26/31/26s, median 26s; incoming 23 operations each; outgoing 16 each; no rate limit | Generic operation wakes and the immediate bounded pump reduced targeted medians 16.9% incoming and 29.7% outgoing without changing external automatic-backoff constants |
+| 2026-07-21 | exact final Milestone 1 binary | same local federation after release rebuild/restart | one 1,000-sat outgoing smoke | 27s CLI, 26s durable, 16 accepted operations, four duplicates, exact 1,025-sat balance reduction, store `PAID`, all five members converged | Request coalescing preserved payment latency and cardinality while fixing concurrent `Pending`/`Paid` response races |
 
 ## Completion checklist
 
-- [ ] External probing, internal progress, and wallet issuance are measured and
+- [x] External probing, internal progress, and wallet issuance are measured and
       scheduled as separate concerns.
-- [ ] No successful internal transition waits for external no-progress backoff.
-- [ ] Mint and melt use one backend-independent advancement driver.
+- [x] No successful internal transition waits for external no-progress backoff.
+- [x] Mint and melt use one backend-independent advancement driver.
 - [ ] Bark event support is either safely integrated as wake-only or explicitly
       rejected with evidence.
 - [ ] Fresh payments remain responsive without permanent high-frequency polling.

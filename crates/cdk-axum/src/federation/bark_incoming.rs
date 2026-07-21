@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 use crate::MintState;
 
 use super::bark_secret::FederationBarkReceiveSecretCoordinator;
+use super::payment_schedule::FederationPaymentAdvancement;
 use super::peer_client::FederationRestPeerClient;
 
 const FEDERATION_BARK_RECEIVE_INTENT_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
@@ -92,10 +93,10 @@ fn receive_observation_step<'a>(
 
 /// Poll and advance one already-created federated Bark quote. Mailbox events
 /// call the same function; they never supply settlement truth themselves.
-pub(crate) async fn advance_federated_bark_mint_quote(
+pub(super) async fn advance_federated_bark_mint_quote(
     state: &MintState,
     quote_id: &QuoteId,
-) -> Result<usize, cdk::Error> {
+) -> Result<FederationPaymentAdvancement, cdk::Error> {
     let _guard = state.federation.bark_incoming_lock().lock().await;
     let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
     let runtime = state
@@ -112,7 +113,7 @@ pub(crate) async fn advance_federated_bark_mint_quote(
         .find(|action| action.quote.as_deref() == Some(quote.as_str()))
         .cloned()
     else {
-        return Ok(0);
+        return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
     };
     let intent = state
         .mint
@@ -157,7 +158,9 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                 is_receive_actor,
                 threshold,
             ) {
-                FederatedBarkReceiveObservationStep::WaitForQuorum => return Ok(0),
+                FederatedBarkReceiveObservationStep::WaitForQuorum => {
+                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
+                }
                 FederatedBarkReceiveObservationStep::AdvanceFromCache(observation) => {
                     let transition = runtime
                         .receive_htlc_transition_from_accepted_observation(
@@ -175,7 +178,7 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                         .submit_federation_envelope(envelope)
                         .await?
                         .ensure_accepted()?;
-                    return Ok(1);
+                    return Ok(FederationPaymentAdvancement::Progressed);
                 }
                 FederatedBarkReceiveObservationStep::PollArk => {}
             }
@@ -206,7 +209,7 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                 .await
                 .map_err(|_| bark_unavailable())?
             else {
-                return Ok(0);
+                return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
             };
             let already_observed = projection.observations.iter().any(|record| {
                 matches!(
@@ -243,11 +246,15 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                     .ensure_accepted()?;
                 submitted = submitted.saturating_add(1);
             }
-            Ok(submitted)
+            Ok(if submitted > 0 {
+                FederationPaymentAdvancement::Progressed
+            } else {
+                FederationPaymentAdvancement::AwaitingFederationEvidence
+            })
         }
         FederationBarkSemanticPhase::ReceiveHtlcsReady => {
             if action.actor != federation.member_id() {
-                return Ok(0);
+                return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
             }
             let application = federation
                 .public_config()
@@ -294,7 +301,7 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                 .submit_federation_envelope(envelope)
                 .await?
                 .ensure_accepted()?;
-            Ok(1)
+            Ok(FederationPaymentAdvancement::Progressed)
         }
         FederationBarkSemanticPhase::ClaimPlanned
         | FederationBarkSemanticPhase::ReceivePreimageDisclosed => {
@@ -317,7 +324,7 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                 return Err(cdk::Error::Internal);
             };
             if plan.actor != federation.member_id() {
-                return Ok(0);
+                return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
             }
             let outcome = runtime
                 .execute_receive_claim(&intent, prepared, plan_entry)
@@ -335,9 +342,9 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                             .submit_federation_envelope(envelope)
                             .await?
                             .ensure_accepted()?;
-                        Ok(1)
+                        Ok(FederationPaymentAdvancement::Progressed)
                     } else {
-                        Ok(0)
+                        Ok(FederationPaymentAdvancement::AwaitingExternalEvidence)
                     }
                 }
                 cdk_bark::FederatedBarkReceiveClaimOutcome::Claimed {
@@ -377,13 +384,7 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                         .acknowledge_receive_claim(&intent, prepared)
                         .await
                         .map_err(|_| bark_unavailable())?;
-                    Ok(
-                        if action.phase == FederationBarkSemanticPhase::ClaimPlanned {
-                            2
-                        } else {
-                            1
-                        },
-                    )
+                    Ok(FederationPaymentAdvancement::Progressed)
                 }
             }
         }
@@ -453,9 +454,13 @@ pub(crate) async fn advance_federated_bark_mint_quote(
                     .await
                     .map_err(|_| bark_unavailable())?;
             }
-            Ok(submitted)
+            Ok(if submitted > 0 {
+                FederationPaymentAdvancement::Progressed
+            } else {
+                FederationPaymentAdvancement::AwaitingFederationEvidence
+            })
         }
-        _ => Ok(0),
+        _ => Ok(FederationPaymentAdvancement::Complete),
     }
 }
 
