@@ -5,11 +5,10 @@ use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 #[cfg(feature = "management-rpc")]
-use cdk_mint_rpc::mint_rpc_cli::subcommands;
+use cdk_mint_rpc::mint_rpc_cli::{self, ManagementCommand};
 #[cfg(feature = "management-rpc")]
 use cdk_mint_rpc::{
     ApplyConfigurationRequest, DiscardPendingConfigurationRequest, GetConfigurationRequest,
-    GetInfoRequest,
 };
 use cdk_mintd::cli::{CLIArgs, Commands, ConfigCommands};
 use cdk_mintd::config_service::ConfigurationService;
@@ -50,7 +49,7 @@ fn main() -> Result<()> {
                     .await
             }
             #[cfg(feature = "management-rpc")]
-            Some(command) => {
+            Some(Commands::Management(command)) => {
                 let rpc_address =
                     rpc_address.unwrap_or_else(|| default_rpc_address(rpc_tls_dir.as_deref()));
                 run_management_command(command, &rpc_address, rpc_tls_dir.as_deref()).await
@@ -291,95 +290,12 @@ fn write_export(path: &Path, document: String) -> Result<()> {
 
 #[cfg(feature = "management-rpc")]
 async fn run_management_command(
-    command: Commands,
+    command: ManagementCommand,
     rpc_address: &str,
     rpc_tls_dir: Option<&Path>,
 ) -> Result<()> {
     let mut client = cdk_mint_rpc::connect_client(rpc_address, rpc_tls_dir).await?;
-
-    match command {
-        Commands::Config(_) => bail!("configuration command was dispatched incorrectly"),
-        Commands::GetInfo => {
-            let info = client.get_info(GetInfoRequest {}).await?.into_inner();
-            println!(
-                "name:             {}",
-                info.name.as_deref().unwrap_or("None")
-            );
-            println!(
-                "version:          {}",
-                info.version.as_deref().unwrap_or("None")
-            );
-            println!(
-                "description:      {}",
-                info.description.as_deref().unwrap_or("None")
-            );
-            println!(
-                "long description: {}",
-                info.long_description.as_deref().unwrap_or("None")
-            );
-            println!("motd: {}", info.motd.as_deref().unwrap_or("None"));
-            println!("icon_url: {}", info.icon_url.as_deref().unwrap_or("None"));
-            println!("tos_url: {}", info.tos_url.as_deref().unwrap_or("None"));
-            for url in info.urls {
-                println!("mint_url: {url}");
-            }
-            for contact in info.contact {
-                println!("method: {}, info: {}", contact.method, contact.info);
-            }
-            println!("total issued:     {} sat", info.total_issued);
-            println!("total redeemed:   {} sat", info.total_redeemed);
-        }
-        Commands::UpdateMotd(arguments) => {
-            subcommands::update_motd(&mut client, &arguments).await?;
-        }
-        Commands::UpdateShortDescription(arguments) => {
-            subcommands::update_short_description(&mut client, &arguments).await?;
-        }
-        Commands::UpdateLongDescription(arguments) => {
-            subcommands::update_long_description(&mut client, &arguments).await?;
-        }
-        Commands::UpdateName(arguments) => {
-            subcommands::update_name(&mut client, &arguments).await?;
-        }
-        Commands::UpdateIconUrl(arguments) => {
-            subcommands::update_icon_url(&mut client, &arguments).await?;
-        }
-        Commands::UpdateTosUrl(arguments) => {
-            subcommands::update_tos_url(&mut client, &arguments).await?;
-        }
-        Commands::AddUrl(arguments) => {
-            subcommands::add_url(&mut client, &arguments).await?;
-        }
-        Commands::RemoveUrl(arguments) => {
-            subcommands::remove_url(&mut client, &arguments).await?;
-        }
-        Commands::AddContact(arguments) => {
-            subcommands::add_contact(&mut client, &arguments).await?;
-        }
-        Commands::RemoveContact(arguments) => {
-            subcommands::remove_contact(&mut client, &arguments).await?;
-        }
-        Commands::UpdateNut04(arguments) => {
-            subcommands::update_nut04(&mut client, &arguments).await?;
-        }
-        Commands::UpdateNut05(arguments) => {
-            subcommands::update_nut05(&mut client, &arguments).await?;
-        }
-        Commands::UpdateQuoteTtl(arguments) => {
-            subcommands::update_quote_ttl(&mut client, &arguments).await?;
-        }
-        Commands::GetQuoteTtl => {
-            subcommands::get_quote_ttl(&mut client).await?;
-        }
-        Commands::UpdateNut04QuoteState(arguments) => {
-            subcommands::update_nut04_quote_state(&mut client, &arguments).await?;
-        }
-        Commands::RotateNextKeyset(arguments) => {
-            subcommands::rotate_next_keyset(&mut client, &arguments).await?;
-        }
-    }
-
-    Ok(())
+    mint_rpc_cli::dispatch(&mut client, &command).await
 }
 
 #[cfg(test)]

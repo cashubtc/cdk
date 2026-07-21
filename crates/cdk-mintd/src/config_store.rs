@@ -116,6 +116,32 @@ struct SigningIdentityEnvelope {
     fingerprint: String,
 }
 
+fn encode_record<T>(value: &T) -> Result<Vec<u8>, ConfigStoreError>
+where
+    T: Serialize,
+{
+    serde_json::to_vec(value).map_err(|source| ConfigStoreError::Encode { source })
+}
+
+fn decode_record<T>(key: &'static str, bytes: &[u8]) -> Result<T, ConfigStoreError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let value: T = serde_json::from_slice(bytes)
+        .map_err(|source| ConfigStoreError::CorruptRecord { key, source })?;
+    Ok(value)
+}
+
+fn require_format_version(found: u32) -> Result<(), ConfigStoreError> {
+    if found != CONFIG_FORMAT_VERSION {
+        return Err(ConfigStoreError::UnsupportedFormatVersion {
+            found,
+            supported: CONFIG_FORMAT_VERSION,
+        });
+    }
+    Ok(())
+}
+
 impl ConfigEnvelope {
     fn new(toml: String) -> Self {
         Self {
@@ -125,20 +151,12 @@ impl ConfigEnvelope {
     }
 
     fn encode(&self) -> Result<Vec<u8>, ConfigStoreError> {
-        serde_json::to_vec(self).map_err(|source| ConfigStoreError::Encode { source })
+        encode_record(self)
     }
 
     fn decode(key: &'static str, bytes: &[u8]) -> Result<Self, ConfigStoreError> {
-        let envelope: Self = serde_json::from_slice(bytes)
-            .map_err(|source| ConfigStoreError::CorruptRecord { key, source })?;
-
-        if envelope.format_version != CONFIG_FORMAT_VERSION {
-            return Err(ConfigStoreError::UnsupportedFormatVersion {
-                found: envelope.format_version,
-                supported: CONFIG_FORMAT_VERSION,
-            });
-        }
-
+        let envelope: Self = decode_record(key, bytes)?;
+        require_format_version(envelope.format_version)?;
         Ok(envelope)
     }
 }
@@ -156,23 +174,12 @@ impl CanonicalBackup {
     }
 
     fn encode(&self) -> Result<Vec<u8>, ConfigStoreError> {
-        serde_json::to_vec(self).map_err(|source| ConfigStoreError::Encode { source })
+        encode_record(self)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ConfigStoreError> {
-        let backup: Self =
-            serde_json::from_slice(bytes).map_err(|source| ConfigStoreError::CorruptRecord {
-                key: ACTIVATION_BACKUP_KEY,
-                source,
-            })?;
-
-        if backup.format_version != CONFIG_FORMAT_VERSION {
-            return Err(ConfigStoreError::UnsupportedFormatVersion {
-                found: backup.format_version,
-                supported: CONFIG_FORMAT_VERSION,
-            });
-        }
-
+        let backup: Self = decode_record(ACTIVATION_BACKUP_KEY, bytes)?;
+        require_format_version(backup.format_version)?;
         Ok(backup)
     }
 }
@@ -186,23 +193,12 @@ impl SigningIdentityEnvelope {
     }
 
     fn encode(&self) -> Result<Vec<u8>, ConfigStoreError> {
-        serde_json::to_vec(self).map_err(|source| ConfigStoreError::Encode { source })
+        encode_record(self)
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ConfigStoreError> {
-        let envelope: Self =
-            serde_json::from_slice(bytes).map_err(|source| ConfigStoreError::CorruptRecord {
-                key: SIGNING_IDENTITY_KEY,
-                source,
-            })?;
-
-        if envelope.format_version != CONFIG_FORMAT_VERSION {
-            return Err(ConfigStoreError::UnsupportedFormatVersion {
-                found: envelope.format_version,
-                supported: CONFIG_FORMAT_VERSION,
-            });
-        }
-
+        let envelope: Self = decode_record(SIGNING_IDENTITY_KEY, bytes)?;
+        require_format_version(envelope.format_version)?;
         Ok(envelope)
     }
 }
@@ -240,56 +236,18 @@ impl ConfigRepository {
         self.read_document(PENDING_KEY).await
     }
 
-    /// Initializes the active configuration.
+    /// Initializes the active configuration without staging a first activation.
     ///
-    /// This operation refuses to overwrite an existing active configuration.
+    /// This is used by unit tests that need an already-active document without
+    /// going through the pending-activation path.
     #[cfg(all(test, feature = "sqlite"))]
     pub(crate) async fn initialize(
         &self,
         toml: String,
         signing_identity: String,
     ) -> Result<(), ConfigStoreError> {
-        let bytes = ConfigEnvelope::new(toml).encode()?;
-        let signing_identity_bytes =
-            SigningIdentityEnvelope::new(signing_identity.clone()).encode()?;
-        let mut transaction = self.store.begin_transaction().await?;
-
-        if transaction
-            .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY)
-            .await?
-            .is_some()
-        {
-            transaction.rollback().await?;
-            return Err(ConfigStoreError::AlreadyInitialized);
-        }
-
-        match transaction
-            .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, SIGNING_IDENTITY_KEY)
-            .await?
-        {
-            Some(bytes)
-                if SigningIdentityEnvelope::decode(&bytes)?.fingerprint != signing_identity =>
-            {
-                transaction.rollback().await?;
-                return Err(ConfigStoreError::SigningIdentityMismatch);
-            }
-            _ => {}
-        }
-
-        transaction
-            .kv_write(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY, &bytes)
-            .await?;
-        transaction
-            .kv_write(
-                PRIMARY_NAMESPACE,
-                SECONDARY_NAMESPACE,
-                SIGNING_IDENTITY_KEY,
-                &signing_identity_bytes,
-            )
-            .await?;
-        transaction.commit().await?;
-
-        Ok(())
+        self.initialize_with_options(toml, signing_identity, false)
+            .await
     }
 
     /// Initializes the active document and stages the same document for its
@@ -305,6 +263,16 @@ impl ConfigRepository {
         toml: String,
         signing_identity: String,
     ) -> Result<(), ConfigStoreError> {
+        self.initialize_with_options(toml, signing_identity, true)
+            .await
+    }
+
+    async fn initialize_with_options(
+        &self,
+        toml: String,
+        signing_identity: String,
+        stage_for_activation: bool,
+    ) -> Result<(), ConfigStoreError> {
         let bytes = ConfigEnvelope::new(toml).encode()?;
         let signing_identity_bytes =
             SigningIdentityEnvelope::new(signing_identity.clone()).encode()?;
@@ -314,10 +282,14 @@ impl ConfigRepository {
             .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY)
             .await?
             .is_some();
-        let pending_exists = transaction
-            .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, PENDING_KEY)
-            .await?
-            .is_some();
+        let pending_exists = if stage_for_activation {
+            transaction
+                .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, PENDING_KEY)
+                .await?
+                .is_some()
+        } else {
+            false
+        };
         if active_exists || pending_exists {
             transaction.rollback().await?;
             return Err(ConfigStoreError::AlreadyInitialized);
@@ -339,17 +311,19 @@ impl ConfigRepository {
         transaction
             .kv_write(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY, &bytes)
             .await?;
-        transaction
-            .kv_write(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, PENDING_KEY, &bytes)
-            .await?;
-        transaction
-            .kv_write(
-                PRIMARY_NAMESPACE,
-                SECONDARY_NAMESPACE,
-                INITIAL_ACTIVATION_KEY,
-                INITIAL_ACTIVATION_VALUE,
-            )
-            .await?;
+        if stage_for_activation {
+            transaction
+                .kv_write(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, PENDING_KEY, &bytes)
+                .await?;
+            transaction
+                .kv_write(
+                    PRIMARY_NAMESPACE,
+                    SECONDARY_NAMESPACE,
+                    INITIAL_ACTIVATION_KEY,
+                    INITIAL_ACTIVATION_VALUE,
+                )
+                .await?;
+        }
         transaction
             .kv_write(
                 PRIMARY_NAMESPACE,

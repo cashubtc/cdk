@@ -1,12 +1,7 @@
 use std::path::PathBuf;
 
 #[cfg(feature = "management-rpc")]
-use cdk_mint_rpc::mint_rpc_cli::subcommands::{
-    AddContactCommand, AddUrlCommand, RemoveContactCommand, RemoveUrlCommand,
-    RotateNextKeysetCommand, UpdateIconUrlCommand, UpdateLongDescriptionCommand, UpdateMotdCommand,
-    UpdateNameCommand, UpdateNut04Command, UpdateNut04QuoteCommand, UpdateNut05Command,
-    UpdateQuoteTtlCommand, UpdateShortDescriptionCommand, UpdateTosUrlCommand,
-};
+use cdk_mint_rpc::mint_rpc_cli::ManagementCommand;
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -71,57 +66,10 @@ pub struct CLIArgs {
 pub enum Commands {
     /// Manage the persisted mint daemon configuration.
     Config(ConfigArgs),
-    /// Get public mint information and issuance totals.
+    /// Immediate mint-management operations served over the management RPC.
     #[cfg(feature = "management-rpc")]
-    GetInfo,
-    /// Update the mint's message of the day.
-    #[cfg(feature = "management-rpc")]
-    UpdateMotd(UpdateMotdCommand),
-    /// Update the mint's short description.
-    #[cfg(feature = "management-rpc")]
-    UpdateShortDescription(UpdateShortDescriptionCommand),
-    /// Update the mint's long description.
-    #[cfg(feature = "management-rpc")]
-    UpdateLongDescription(UpdateLongDescriptionCommand),
-    /// Update the mint's name.
-    #[cfg(feature = "management-rpc")]
-    UpdateName(UpdateNameCommand),
-    /// Update the mint's icon URL.
-    #[cfg(feature = "management-rpc")]
-    UpdateIconUrl(UpdateIconUrlCommand),
-    /// Update the mint's terms-of-service URL.
-    #[cfg(feature = "management-rpc")]
-    UpdateTosUrl(UpdateTosUrlCommand),
-    /// Add a public mint URL.
-    #[cfg(feature = "management-rpc")]
-    AddUrl(AddUrlCommand),
-    /// Remove a public mint URL.
-    #[cfg(feature = "management-rpc")]
-    RemoveUrl(RemoveUrlCommand),
-    /// Add mint contact information.
-    #[cfg(feature = "management-rpc")]
-    AddContact(AddContactCommand),
-    /// Remove mint contact information.
-    #[cfg(feature = "management-rpc")]
-    RemoveContact(RemoveContactCommand),
-    /// Update NUT-04 mint method settings.
-    #[cfg(feature = "management-rpc")]
-    UpdateNut04(UpdateNut04Command),
-    /// Update NUT-05 melt method settings.
-    #[cfg(feature = "management-rpc")]
-    UpdateNut05(UpdateNut05Command),
-    /// Update quote time-to-live settings.
-    #[cfg(feature = "management-rpc")]
-    UpdateQuoteTtl(UpdateQuoteTtlCommand),
-    /// Get quote time-to-live settings.
-    #[cfg(feature = "management-rpc")]
-    GetQuoteTtl,
-    /// Update the state of a NUT-04 quote.
-    #[cfg(feature = "management-rpc")]
-    UpdateNut04QuoteState(UpdateNut04QuoteCommand),
-    /// Rotate to the next mint keyset.
-    #[cfg(feature = "management-rpc")]
-    RotateNextKeyset(RotateNextKeysetCommand),
+    #[command(flatten)]
+    Management(ManagementCommand),
 }
 
 /// Arguments for configuration management commands.

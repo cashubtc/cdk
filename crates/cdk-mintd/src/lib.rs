@@ -2393,6 +2393,37 @@ async fn acquire_daemon_instance_access(
         })
 }
 
+/// Races `future` against the loss of `configuration_loss` or `daemon_loss`.
+///
+/// If either lock-loss signal fires before the future completes, or has
+/// already been lost when the future returns (as reported by `lost`), the
+/// process fail-stops with `operation` as the cause. This avoids graceful
+/// shutdown after an exclusive database lock is lost: another daemon can
+/// already be running, so draining would be unsafe.
+async fn race_with_lock_loss<F, T>(
+    configuration_loss: database_lock::DatabaseLockLoss,
+    daemon_loss: Option<database_lock::DatabaseLockLoss>,
+    operation: &'static str,
+    lost: impl Fn() -> bool,
+    future: F,
+) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    let result = tokio::select! {
+        biased;
+        () = wait_for_database_access_loss(configuration_loss, daemon_loss) => {
+            database_lock::fail_stop_after_lock_loss(operation)
+        }
+        result = future => result,
+    };
+    if lost() {
+        database_lock::fail_stop_after_lock_loss(operation);
+    }
+    result
+}
+
+/// Waits until either lock-loss signal fires. `None` daemon loss is ignored.
 async fn wait_for_database_access_loss(
     configuration_loss: database_lock::DatabaseLockLoss,
     daemon_loss: Option<database_lock::DatabaseLockLoss>,
@@ -2451,49 +2482,43 @@ impl DirectConfigurationService {
         validate_only: bool,
     ) -> Result<config_service::ApplyOutcome> {
         let (configuration_loss, daemon_loss) = self.loss_signals();
-        let result = tokio::select! {
-            biased;
-            () = wait_for_database_access_loss(configuration_loss, daemon_loss) => {
-                database_lock::fail_stop_after_lock_loss("direct configuration apply")
-            },
-            result = self.service.apply(document, validate_only) => Ok(result?),
-        };
-        if self.access_is_lost() {
-            database_lock::fail_stop_after_lock_loss("direct configuration apply");
-        }
-        result
+        race_with_lock_loss(
+            configuration_loss,
+            daemon_loss,
+            "direct configuration apply",
+            || self.access_is_lost(),
+            self.service.apply(document, validate_only),
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Returns the active and pending persisted documents.
     pub async fn snapshot(&self) -> Result<config_service::ConfigurationSnapshot> {
         let (configuration_loss, daemon_loss) = self.loss_signals();
-        let result = tokio::select! {
-            biased;
-            () = wait_for_database_access_loss(configuration_loss, daemon_loss) => {
-                database_lock::fail_stop_after_lock_loss("direct configuration read")
-            },
-            result = self.service.snapshot() => Ok(result?),
-        };
-        if self.access_is_lost() {
-            database_lock::fail_stop_after_lock_loss("direct configuration read");
-        }
-        result
+        race_with_lock_loss(
+            configuration_loss,
+            daemon_loss,
+            "direct configuration read",
+            || self.access_is_lost(),
+            self.service.snapshot(),
+        )
+        .await
+        .map_err(Into::into)
     }
 
     /// Removes the document staged for activation.
     pub async fn discard_pending(&self) -> Result<()> {
         let (configuration_loss, daemon_loss) = self.loss_signals();
-        let result = tokio::select! {
-            biased;
-            () = wait_for_database_access_loss(configuration_loss, daemon_loss) => {
-                database_lock::fail_stop_after_lock_loss("discarding pending configuration")
-            },
-            result = self.service.discard_pending() => Ok(result?),
-        };
-        if self.access_is_lost() {
-            database_lock::fail_stop_after_lock_loss("discarding pending configuration");
-        }
-        result
+        race_with_lock_loss(
+            configuration_loss,
+            daemon_loss,
+            "discarding pending configuration",
+            || self.access_is_lost(),
+            self.service.discard_pending(),
+        )
+        .await
+        .map_err(Into::into)
     }
 }
 
@@ -2527,15 +2552,15 @@ pub async fn initialize_configuration(
     })?;
     let configuration_loss = configuration_access.loss_signal();
     let daemon_loss = daemon_access.loss_signal();
-    let result = tokio::select! {
-        biased;
-        () = configuration_loss.wait() => {
-            database_lock::fail_stop_after_lock_loss("configuration initialization")
+    let result = race_with_lock_loss(
+        configuration_loss,
+        Some(daemon_loss),
+        "configuration initialization",
+        || {
+            configuration_access.loss_signal().is_lost()
+                || daemon_access.loss_signal().is_lost()
         },
-        () = daemon_loss.wait() => {
-            database_lock::fail_stop_after_lock_loss("configuration initialization")
-        },
-        result = async {
+        async {
             let signing_identity =
                 config_service::discover_signing_identity(&resolved.settings).await?;
             config_service::validate_authored_mint_pubkey(
@@ -2574,11 +2599,9 @@ pub async fn initialize_configuration(
                 .initialize_for_activation(resolved.document, signing_identity.fingerprint)
                 .await?;
             Ok(())
-        } => result,
-    };
-    if configuration_access.loss_signal().is_lost() || daemon_access.loss_signal().is_lost() {
-        database_lock::fail_stop_after_lock_loss("configuration initialization");
-    }
+        },
+    )
+    .await;
     result
 }
 
@@ -2615,22 +2638,25 @@ pub async fn open_direct_configuration_service(
     let daemon_loss = daemon_access
         .as_ref()
         .map(database_lock::DatabaseAccessGuard::loss_signal);
-    let service = tokio::select! {
-        biased;
-        () = wait_for_database_access_loss(configuration_loss, daemon_loss) => {
-            database_lock::fail_stop_after_lock_loss("opening direct configuration access")
+    let service = race_with_lock_loss(
+        configuration_loss,
+        daemon_loss,
+        "opening direct configuration access",
+        || {
+            configuration_access.loss_signal().is_lost()
+                || daemon_access
+                    .as_ref()
+                    .is_some_and(|access| access.loss_signal().is_lost())
         },
-        result = async {
+        async {
             let (localstore, _, kv) =
                 setup_database(&bootstrap_settings, work_dir, db_password, open_mode).await?;
             let mint_builder = MintBuilder::new(localstore);
             let mint_info = mint_builder.mint_info_from_db().await?;
             let quote_ttl = mint_builder.quote_ttl_from_db().await?;
             let repository = config_store::ConfigRepository::new(kv);
-            let service = config_service::ConfigurationService::new(
-                repository,
-                bootstrap_settings.database,
-            );
+            let service =
+                config_service::ConfigurationService::new(repository, bootstrap_settings.database);
             let (mint_info, quote_ttl) = service
                 .canonical_backup()
                 .await?
@@ -2639,15 +2665,9 @@ pub async fn open_direct_configuration_service(
                 .attach_canonical_snapshot(mint_info, quote_ttl)
                 .await;
             Result::<_>::Ok(service)
-        } => result?,
-    };
-    if configuration_access.loss_signal().is_lost()
-        || daemon_access
-            .as_ref()
-            .is_some_and(|access| access.loss_signal().is_lost())
-    {
-        database_lock::fail_stop_after_lock_loss("opening direct configuration access");
-    }
+        },
+    )
+    .await?;
     Ok(DirectConfigurationService {
         service,
         configuration_access,
@@ -2719,15 +2739,12 @@ pub async fn run_managed_mintd(
         candidate,
         pending_document,
         signing_identity,
-    ) = tokio::select! {
-        biased;
-        () = startup_lock_loss.wait() => {
-            database_lock::fail_stop_after_lock_loss("daemon configuration startup")
-        },
-        () = startup_configuration_loss.wait() => {
-            database_lock::fail_stop_after_lock_loss("daemon configuration startup")
-        },
-        result = async {
+    ) = race_with_lock_loss(
+        startup_configuration_loss,
+        Some(startup_lock_loss),
+        "daemon configuration startup",
+        || database_access.loss_signal().is_lost() || configuration_access.loss_signal().is_lost(),
+        async {
             let (localstore, keystore, kv) =
                 initial_setup(work_dir, &bootstrap_settings, db_password.clone()).await?;
             let configuration_service = Arc::new(config_service::ConfigurationService::new(
@@ -2745,8 +2762,9 @@ pub async fn run_managed_mintd(
                 pending_document,
                 signing_identity,
             ))
-        } => result?,
-    };
+        },
+    )
+    .await?;
 
     if !database_bootstrap_matches(&candidate.settings.database, &bootstrap_settings.database) {
         bail!(
@@ -2815,13 +2833,14 @@ pub async fn run_managed_mintd(
             if runtime_lock_loss.is_lost() {
                 database_lock::fail_stop_after_lock_loss("daemon runtime");
             }
-            tokio::select! {
-                biased;
-                () = runtime_lock_loss.wait() => {
-                    database_lock::fail_stop_after_lock_loss("daemon runtime")
-                },
-                result = daemon.as_mut() => result,
-            }
+            race_with_lock_loss(
+                runtime_lock_loss,
+                None,
+                "daemon runtime",
+                || database_access.loss_signal().is_lost(),
+                daemon.as_mut(),
+            )
+            .await
         }
     };
 
