@@ -42,7 +42,7 @@ pub type RateLimitedHttpClient =
 pub type RateLimitedAuthHttpClient =
     http_client::AuthHttpClient<transport::rate_limit::RateLimitedTransport<transport::Async>>;
 
-pub use transport::rate_limit::RateLimitConfig;
+pub use transport::rate_limit::{RateLimitConfig, TokenBucket};
 
 /// Interface that connects a wallet to a mint. Typically represents an [HttpClient].
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]

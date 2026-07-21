@@ -1,4 +1,4 @@
-//! Token bucket rate limiter for transport-level request throttling
+//! GCRA rate limiter for transport-level request throttling
 
 use std::num::NonZero;
 use std::sync::Arc;
@@ -6,7 +6,16 @@ use std::sync::Arc;
 use cdk_common::AuthToken;
 use cdk_http_client::{HttpError, RawResponse};
 use tokio::sync::Mutex;
-use tokio::time::{Duration, Instant};
+use web_time::{Duration, Instant};
+
+/// Sleep for `dur`, using the platform timer. On wasm32 `tokio::time` has no
+/// timer driver, so route through `gloo-timers` (browser `setTimeout`).
+async fn sleep(dur: Duration) {
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(dur).await;
+    #[cfg(target_arch = "wasm32")]
+    gloo_timers::future::TimeoutFuture::new(dur.as_millis().min(u32::MAX as u128) as u32).await;
+}
 
 /// Configuration for the rate limiter
 #[derive(Debug, Clone)]
@@ -27,72 +36,82 @@ impl Default for RateLimitConfig {
     }
 }
 
-/// Token bucket rate limiter
+/// Rate limiter using GCRA (generic cell rate algorithm)
 ///
-/// Allows up to `capacity` requests in a burst, then refills at
-/// `refill_per_minute` tokens per minute. When no tokens are available,
-/// `acquire` sleeps until one is ready.
+/// Allows up to `capacity` requests in a burst, then paces at one request per
+/// `emission_interval` (derived from `refill_per_minute`). Each `acquire`
+/// reserves its slot under the lock and sleeps once, so concurrent callers are
+/// served in lock-acquisition order without a retry loop.
 #[derive(Debug, Clone)]
 pub struct TokenBucket {
     state: Arc<Mutex<BucketState>>,
-    capacity: f64,
-    tokens_per_ms: f64,
+    /// Time to earn one token (one request's worth of budget).
+    emission_interval: Duration,
+    /// Burst window: how far ahead of `now` the theoretical arrival time may
+    /// run before requests start waiting. `(capacity - 1) * emission_interval`.
+    tolerance: Duration,
 }
 
 #[derive(Debug)]
 struct BucketState {
-    tokens: f64,
-    last_refill: Instant,
+    /// Theoretical arrival time: the instant at which the most recently
+    /// reserved request is scheduled. Requests before `arrival_time - tolerance` wait.
+    arrival_time: Instant,
 }
 
 impl TokenBucket {
     /// Create a new token bucket from config.
     pub fn new(config: RateLimitConfig) -> Self {
-        let capacity = f64::from(config.capacity.get());
+        let emission_interval =
+            Duration::from_secs_f64(60.0 / f64::from(config.refill_per_minute.get()));
         Self {
             state: Arc::new(Mutex::new(BucketState {
-                tokens: capacity,
-                last_refill: Instant::now(),
+                arrival_time: Instant::now(),
             })),
-            capacity,
-            tokens_per_ms: f64::from(config.refill_per_minute.get()) / (60.0 * 1000.0),
+            emission_interval,
+            tolerance: emission_interval * (config.capacity.get() - 1),
         }
     }
 
-    /// Wait until a token is available, then consume it
-    pub async fn acquire(&self) {
-        loop {
-            let wait = {
-                let mut state = self.state.lock().await;
-                match self.refill(&mut state) {
-                    Some(wait) => wait,
-                    None => {
-                        state.tokens -= 1.0;
-                        return;
-                    }
-                }
-            };
-
-            tokio::time::sleep(wait).await;
-        }
-    }
-
-    /// Accrue tokens for the time elapsed since the last refill and report how
-    /// long until the next token is available. Returns `None` when a token can
-    /// be consumed right away.
-    fn refill(&self, state: &mut BucketState) -> Option<Duration> {
+    /// Reserve the next slot and return how long to wait before using it.
+    ///
+    /// Advances the theoretical arrival time, so calling this commits the
+    /// caller to the slot whether or not it later sleeps.
+    fn reserve(&self, state: &mut BucketState) -> Duration {
         let now = Instant::now();
-        let elapsed_ms = now.duration_since(state.last_refill).as_secs_f64() * 1000.0;
-        state.tokens = (state.tokens + elapsed_ms * self.tokens_per_ms).min(self.capacity);
-        state.last_refill = now;
+        let arrival_time = state.arrival_time.max(now);
+        let wait = arrival_time
+            .checked_sub(self.tolerance)
+            .map(|allowed| allowed.saturating_duration_since(now))
+            .unwrap_or(Duration::ZERO);
+        state.arrival_time = arrival_time + self.emission_interval;
+        wait
+    }
 
-        if state.tokens >= 1.0 {
-            None
-        } else {
-            Some(Duration::from_millis(
-                ((1.0 - state.tokens) / self.tokens_per_ms).ceil() as u64,
-            ))
+    /// Wait until a token is available, then consume it.
+    pub async fn acquire(&self) {
+        let wait = {
+            let mut state = self.state.lock().await;
+            self.reserve(&mut state)
+        };
+
+        sleep(wait).await;
+    }
+
+    /// Consume a token without waiting. Returns `true` if one was available (a
+    /// slot within the burst window), `false` otherwise. On `false` no slot is
+    /// reserved.
+    pub async fn try_acquire(&self) -> bool {
+        let mut state = self.state.lock().await;
+        let now = Instant::now();
+        let arrival_time = state.arrival_time.max(now);
+        let ready = arrival_time
+            .checked_sub(self.tolerance)
+            .is_none_or(|allowed| allowed <= now);
+        if ready {
+            state.arrival_time = arrival_time + self.emission_interval;
         }
+        ready
     }
 }
 
@@ -296,6 +315,26 @@ mod tests {
         for handle in handles {
             handle.await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_try_acquire_within_and_beyond_burst() {
+        let bucket = TokenBucket::new(RateLimitConfig {
+            capacity: NonZero::new(3).unwrap(),
+            refill_per_minute: NonZero::new(60).unwrap(), // 1/sec, slow refill
+        });
+
+        // Burst capacity of 3 is available immediately.
+        for _ in 0..3 {
+            assert!(bucket.try_acquire().await);
+        }
+
+        // Burst spent, refill too slow to have produced another token.
+        assert!(!bucket.try_acquire().await);
+
+        // A failed try_acquire must not have reserved a slot, so acquire still
+        // sees the same budget (it will simply pace instead of erroring).
+        assert!(!bucket.try_acquire().await);
     }
 
     #[tokio::test]

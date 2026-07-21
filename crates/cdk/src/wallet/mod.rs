@@ -87,6 +87,7 @@ pub use melt::{MeltConfirmOptions, MeltOutcome, PendingMelt, PreparedMelt};
 pub use mint_connector::transport::Transport as HttpTransport;
 pub use mint_connector::{
     AuthHttpClient, HttpClient, LnurlPayInvoiceResponse, LnurlPayResponse, MintConnector,
+    RateLimitConfig, TokenBucket,
 };
 pub use mint_metadata_cache::MintMetadata;
 #[cfg(feature = "nostr")]
