@@ -36,6 +36,30 @@ const FEDERATION_PAYMENT_WAKE_CAPACITY: usize = 256;
 /// never translated into a terminal failure.
 const FEDERATION_PAYMENT_OBSERVER_PROBE_DEADLINE: std::time::Duration =
     std::time::Duration::from_secs(10);
+const FEDERATION_PAYMENT_WORKER_FAILURE_BACKOFF_INITIAL: std::time::Duration =
+    std::time::Duration::from_secs(1);
+const FEDERATION_PAYMENT_WORKER_FAILURE_BACKOFF_MAX: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+#[derive(Debug, Default)]
+struct FederationPaymentWorkerFailureBackoff {
+    consecutive_failures: u32,
+}
+
+impl FederationPaymentWorkerFailureBackoff {
+    fn next_delay(&mut self) -> std::time::Duration {
+        let multiplier = 1_u32 << self.consecutive_failures.min(5);
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        std::cmp::min(
+            FEDERATION_PAYMENT_WORKER_FAILURE_BACKOFF_INITIAL.saturating_mul(multiplier),
+            FEDERATION_PAYMENT_WORKER_FAILURE_BACKOFF_MAX,
+        )
+    }
+
+    fn reset(&mut self) {
+        self.consecutive_failures = 0;
+    }
+}
 
 fn confirmation_matches_known_anchor(
     block: Option<(cdk_common::bitcoin::BlockHash, u32)>,
@@ -736,6 +760,7 @@ impl FederationPaymentObserver {
             repair_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut onchain_interval = tokio::time::interval(FEDERATION_ONCHAIN_OBSERVER_INTERVAL);
             onchain_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut failure_backoff = FederationPaymentWorkerFailureBackoff::default();
 
             loop {
                 let schedule_delay = match self.next_schedule_delay(&state).await {
@@ -804,7 +829,7 @@ impl FederationPaymentObserver {
                         tracing::error!(
                             "Federation payment observer round panicked; continuing observation"
                         );
-                        continue;
+                        (Err(cdk::Error::Internal), false)
                     }
                 };
                 if closed {
@@ -812,13 +837,24 @@ impl FederationPaymentObserver {
                 }
                 match result {
                     Ok(submitted) if submitted > 0 => {
+                        failure_backoff.reset();
                         tracing::debug!(
                             submitted,
                             "Federation payment observer submitted observations"
                         );
                     }
-                    Ok(_) => {}
-                    Err(err) => tracing::warn!("Federation payment observer failed: {}", err),
+                    Ok(_) => failure_backoff.reset(),
+                    Err(err) => {
+                        let retry_delay = failure_backoff.next_delay();
+                        tracing::warn!(
+                            error = %err,
+                            consecutive_failures = failure_backoff.consecutive_failures,
+                            retry_delay_ms = u64::try_from(retry_delay.as_millis())
+                                .unwrap_or(u64::MAX),
+                            "Federation payment observer failed; backing off worker"
+                        );
+                        tokio::time::sleep(retry_delay).await;
+                    }
                 }
             }
         });
@@ -1117,6 +1153,18 @@ mod tests {
             Some(11),
             Some(11),
         ));
+    }
+
+    #[test]
+    fn worker_failure_backoff_is_bounded_and_resets_after_success() {
+        let mut backoff = FederationPaymentWorkerFailureBackoff::default();
+        let delays = (0..7)
+            .map(|_| backoff.next_delay().as_secs())
+            .collect::<Vec<_>>();
+
+        assert_eq!(delays, vec![1, 2, 4, 8, 16, 30, 30]);
+        backoff.reset();
+        assert_eq!(backoff.next_delay(), std::time::Duration::from_secs(1));
     }
 
     #[test]

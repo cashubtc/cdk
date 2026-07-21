@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, and 6A complete; Milestone 2 rejected; Milestone 6B in progress
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, and 6B complete; Milestone 2 rejected; Milestone 6C in progress
 
 First recorded: 2026-07-20
 
@@ -849,8 +849,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 5 | Remove duplicate wallet submissions and audit serial Bark operations | Complete | `4148162c7` |
 | 6 | Isolate Bark maintenance from payment hot paths and retire safely expired receives | Complete | `fix: isolate federated Bark maintenance from payments` |
 | 6A | Make accepted external-action actor leases replay-stable | Complete | `fix: make federated Bark actor leases replay-stable` |
-| 6B | Back off observer-worker failures so lagging members can recover quietly | In progress | - |
-| 6C | Reconcile a paid federated melt after the wallet loses its aggregate response | Not started | - |
+| 6B | Back off observer-worker failures so lagging members can recover quietly | Complete | `fix: back off failed federation payment observer rounds` |
+| 6C | Reconcile a paid federated melt after the wallet loses its aggregate response | In progress | - |
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Not started | - |
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Not started | - |
 
@@ -2367,21 +2367,21 @@ amplifying the separate replay failure diagnosed in Milestone 6A.
 
 ### Checklist
 
-- [ ] Add one contained outer-worker failure delay; do not modify backend or
+- [x] Add one contained outer-worker failure delay; do not modify backend or
       payment-method code.
-- [ ] Use a short exponential sequence that remains responsive after recovery
+- [x] Use a short exponential sequence that remains responsive after recovery
       and caps at a quiet bounded interval.
-- [ ] Reset the worker failure sequence after any successful wake, including a
+- [x] Reset the worker failure sequence after any successful wake, including a
       successful no-op.
-- [ ] Keep the persisted per-quote schedule as the only quote-age/backoff
+- [x] Keep the persisted per-quote schedule as the only quote-age/backoff
       authority.
-- [ ] Do not inspect error strings or special-case lagging, Ark, Bark, BDK, or
+- [x] Do not inspect error strings or special-case lagging, Ark, Bark, BDK, or
       Lightning.
-- [ ] Prove repeated pre-claim errors do not spin, and recovery is noticed
+- [x] Prove repeated pre-claim errors do not spin, and recovery is noticed
       within the first delay after the failing condition clears.
-- [ ] Restart the lagging live member and verify application/digest convergence
+- [x] Restart the lagging live member and verify application/digest convergence
       without duplicate payment or observation.
-- [ ] Remove temporary instrumentation before completion.
+- [x] Remove temporary instrumentation before completion.
 
 ### Success criteria
 
@@ -2393,6 +2393,31 @@ amplifying the separate replay failure diagnosed in Milestone 6A.
   materialized-state, Bark projection, and balance state.
 - The milestone is committed as
   `fix: back off failed federation payment observer rounds`.
+
+### Candidate findings and progress
+
+The retained guard lives only around the existing observer worker. Consecutive
+failed rounds wait 1, 2, 4, 8, 16, then at most 30 seconds. Any successful wake,
+including a no-op, resets the counter. The delay is in memory and does not
+replace, reset, or add fields to the persisted per-quote schedule. Panics use
+the same bounded path. No error text, backend, payment method, or federation
+readiness variant affects the policy.
+
+A focused test proves the exact capped sequence and reset. The exact release
+candidate then stopped member 3, ordered one unpaid receive intent,
+`ReceivePrepared`, and mint quote through the remaining four members, and
+restarted member 3 three entries behind. Its pre-claim readiness failures
+waited at 1, 2, and 4 seconds rather than looping every millisecond. Successful
+control wakes reset the sequence as designed. Catch-up completed with all five
+members at 55 of 55 applied entries, zero failed entries, identical order and
+application digests, identical Bark projections, and unchanged 7,950-sat
+spendable / 41,025-sat spent accounting. No external Bark movement or payment
+was added. The federation-enabled all-target check and exact release build
+passed.
+
+Decision: `Kept`. This is a worker-health circuit breaker for an exceptional
+failure path, not a second payment scheduler, so normal payment latency and
+backend polling cadence are unchanged.
 
 ## Milestone 6C: lost-response wallet melt reconciliation
 
@@ -2635,6 +2660,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | Milestone 6A discovery | exact local release, member restored after outgoing fault | replay 11 accepted operations | journal catch-up reached the current 52-entry head, but application stopped on the accepted outgoing plan at index 41; replay used the later tip to rotate its historical actor lease and rejected actor 5 even though four members had already accepted and executed that exact plan | Bind replay validation to the accepted plan's own operation index while retaining tip-based lease rotation for new admission. Future journal growth must not rewrite historical authority. |
 | 2026-07-21 | Milestone 6A retained candidate | exact local release, persisted five-member fault state | all-member restart and historical action replay | all members ready with 52/52 entries applied, zero failed entries, identical order/application digests and Bark projections, 7,950 sats spendable and 41,025 sats spent; no new journal entry, movement, or external payment | Keep exact-index replay validation. New admission still uses the live next index, while immutable history can no longer change authority as the journal grows. |
 | 2026-07-21 | Milestone 6B discovery | same restored member before replay terminated | due payment schedule while authoritative reads reject `lagging` | the pre-claim readiness error retried roughly every millisecond; logs grew to tens of megabytes and checkpoint publications timed out | Outer observer failure occurs before the persisted quote claim can advance its deadline. Add one generic in-memory worker failure backoff; retain the persisted schedule as the only per-quote authority. |
+| 2026-07-21 | Milestone 6B retained candidate | exact local release, one member stopped while three unpaid-receive setup entries were ordered | lagging-member restart and catch-up | failed worker rounds waited 1/2/4s with reset on successful control wakes; all members reached 55/55 applied entries with identical digests and Bark projections; accounting and external movement counts were unchanged | Keep the contained 1s-to-30s outer worker backoff. It removes the exceptional hot loop without changing normal quote schedules, polling, or payment latency. |
 | 2026-07-21 | Milestone 6C discovery | same paid outgoing fault sample after all-member convergence | wallet lost aggregate melt response | mint and Bark state agree on one paid 1,025-sat spend, but the wallet retains an `UNPAID` quote and 8,975 locally unspent sats; `check-pending` finds nothing | The request was not durably represented in the wallet recovery state before the response was lost. Investigate one generic lost-response/saga repair path without resubmitting payment. |
 
 ## Completion checklist
