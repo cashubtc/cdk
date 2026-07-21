@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, and 1 complete; Milestone 2 rejected; Milestone 3 is next
+Status: Milestones 0, 0A, 1, and 3 complete; Milestone 2 rejected; Milestone 4 is next
 
 First recorded: 2026-07-20
 
@@ -95,6 +95,11 @@ state in this document or a commit.
 3. Run `scripts/second_signet_faucet.sh "$INVOICE"`. The helper validates the
    Signet invoice, copies it to the macOS clipboard, and opens the exact faucet
    page. It never reads or persists browser cookies.
+   The helper targets the ordinary macOS clipboard used for manual paste. The
+   controlled Chrome session has a separate automation clipboard; do not read
+   that clipboard and assume it contains the new invoice. When automating the
+   form, fill the exact invoice returned by the current CLI process and verify
+   the field before clicking.
 4. Reload the faucet before each payment. A stale page can still show the user
    menu after its OAuth session has expired; a click that never changes `Send
    sats` to `Processing...` is the tell. If the reloaded page shows `Sign in
@@ -826,8 +831,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 0 | Establish reproducible incoming and outgoing baselines with causal timelines | Complete | `7403e90c0` |
 | 0A | Restore maintenance round persistence, actor ownership, and payment liquidity | Complete | `32f01bbf9` (CDK), `aa98f568` (Bark) |
 | 1 | Remove unnecessary inter-operation delay with one generic mint/melt advancement driver | Complete | `690b9a861` |
-| 2 | Determine and implement the smallest safe Bark incoming/outgoing event wake, or reject it | Rejected | recorded in the milestone commit; hash added by the next update |
-| 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Not started | - |
+| 2 | Determine and implement the smallest safe Bark incoming/outgoing event wake, or reject it | Rejected | `9f0fe6467` |
+| 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Complete | recorded in the milestone commit; hash added by the next update |
 | 4 | Reduce excess Ark probes and observations with threshold-first polling and measured backoff | Not started | - |
 | 5 | Remove duplicate wallet submissions and any proven redundant serial Bark operation | Not started | - |
 | 6 | Isolate Bark maintenance from payment hot paths and terminalize permanent failures | Not started | - |
@@ -1436,50 +1441,163 @@ counted and are not hidden by this table.
 
 ### Checklist
 
-- [ ] Specify the exact deterministic mapping from a threshold-matched Bark
+- [x] Specify the exact deterministic mapping from a threshold-matched Bark
       result key to mint-quote paid, melt paid, or safely failed state.
-- [ ] Require `max(t, q)` matching result observers when the same result family
+- [x] Require `max(t, q)` matching result observers when the same result family
       supplies both Bark and Cashu payment authority; never assume `t == q`.
-- [ ] Bind quote, method, payment hash, action, amount, fee, source scope,
+- [x] Bind quote, method, payment hash, action, amount, fee, source scope,
       result hash, terminal status, and predecessor phase.
-- [ ] Apply the ordinary quote/saga transition when the threshold-completing
+- [x] Apply the ordinary quote/saga transition when the threshold-completing
       Bark observation is accepted, in the same transaction or one
       deterministic derived apply step.
-- [ ] Reuse existing Cashu quote accounting and saga functions instead of
+- [x] Reuse existing Cashu quote accounting and saga functions instead of
       duplicating Bark-specific payment business logic.
-- [ ] Remove Bark's second `MintQuotePayment` and `MeltQuotePayment`
+- [x] Remove Bark's second `MintQuotePayment` and `MeltQuotePayment`
       submission rounds.
-- [ ] Preserve generic payment-observation operations for backends that do not
+- [x] Preserve generic payment-observation operations for backends that do not
       already produce a threshold-authoritative result family.
-- [ ] Publish quote/saga notifications only after commit.
-- [ ] Make catch-up and replay derive the identical state without Bark or Ark
+- [x] Publish quote/saga notifications only after commit.
+- [x] Make catch-up and replay derive the identical state without Bark or Ark
       I/O.
 
 ### Tests
 
-- [ ] `r - 1` matching Bark results cannot pay or fail a quote.
-- [ ] The threshold-completing result applies the ordinary quote/saga change
+- [x] `r - 1` matching Bark results cannot pay or fail a quote.
+- [x] The threshold-completing result applies the ordinary quote/saga change
       exactly once.
-- [ ] Later matching observations are idempotent.
-- [ ] Conflicting amount, fee, hash, result, scope, action, or terminal status
+- [x] Later matching observations are idempotent.
+- [x] Conflicting amount, fee, hash, result, scope, action, or terminal status
       cannot combine.
-- [ ] Two incompatible threshold groups fail closed.
-- [ ] Observation reordering converges to the same result.
-- [ ] Restart before notification and catch-up after quorum preserve payment.
-- [ ] Incoming issuance cannot exceed accepted net Bark value.
-- [ ] Outgoing success, fee change, failed revocation, and proof rollback retain
+- [x] Two incompatible threshold groups fail closed.
+- [x] Observation reordering converges to the same result.
+- [x] Restart before notification and catch-up after quorum preserve payment.
+- [x] Incoming issuance cannot exceed accepted net Bark value.
+- [x] Outgoing success, fee change, failed revocation, and proof rollback retain
       existing Cashu behavior.
 
 ### Success criteria
 
-- The direct operation counter falls by exactly `min(t, q)` for all three flows,
-  which is three entries with Nocean's `t = 3` and `q = 4`.
+- The minimum-path operation formula falls by exactly `min(t, q)` for all three
+  flows, which is three entries with Nocean's `t = 3` and `q = 4`. A live run
+  may remove more entries when surplus generic observers would otherwise race
+  into consensus; the complete generic family must disappear.
 - No generic Bark-backed payment observation appears after result quorum.
 - Median result-quorum-to-quote-final latency improves by at least 15%, with no
   other primary stage regressing by more than 5%.
 - Non-Bark federation backends and standalone flows are unchanged.
 - The milestone is committed as
   `perf: derive Cashu payment from Bark result quorum`.
+
+### Evaluation record — 2026-07-21
+
+Decision: **Kept.** The confirmed redundant work was a second generic Cashu
+payment-observation family after Bark had already accepted the same exact
+terminal result from distinct members. The retained implementation derives
+ordinary payment-observation rows deterministically from the accepted Bark
+result records. It does not submit another consensus operation.
+
+Materialization starts only after the configured Bark/FROST threshold `t` is
+present. The existing Cashu payment policy then evaluates those rows at its
+own threshold `q`, so the effective authority is `max(t, q)` without assuming
+that the thresholds are equal. The derived key binds quote, BOLT11 method,
+action, predecessor terminal phase, payment hash, Ark source scope, amount,
+fee, result hash, and success/failure state. Duplicate reports from one member
+remain one vote; the earliest exact accepted result per member supplies that
+member's deterministic row.
+
+Incoming result application, derived rows, ordinary mint-quote accounting,
+journal status, and post-commit payment notification share one transaction.
+Outgoing result evidence commits with the Bark projection first, then reuses
+the existing melt observation and saga finalization helper; a crash between
+those steps replays the same idempotent rows and leaves the journal operation
+nonterminal until saga finalization succeeds. Generic non-Bark payment
+operations are unchanged. The Axum observer skips only the redundant generic
+probe for a Bark-backed BOLT11 quote after Bark advancement.
+
+The candidate was built in release mode from CDK base `9f0fe646746d` plus this
+milestone and Bark `aa98f5685d70`. The release binary hashes were
+`e5529b0363b106d89524347a9fe0c3694c7401cb86ac3825f57af1a0f100ad3f`
+for `cdk-mintd` and
+`431b323d2065bae53a5cc50e00c01710a297ae87f5c323efc955476e620bc0b2`
+for `cdk-cli`. Measurements used five local loopback members, SQLite,
+`t = 3`, `q = 4`, a fresh DKG, the public Signet Ark service, the authenticated
+faucet, the public store API, and a disposable local CLI wallet. No Nocean
+benchmark or mutation was performed.
+
+Three incoming 10,000-sat samples completed in execution order:
+
+| Sample | Faucet click to issued | Durable quote to issued | Accepted operations | Duplicate finalized items |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 28.405s | 147s | 18 | 4 |
+| 2 | 28.190s | 64s | 18 | 4 |
+| 3 | 27.648s | 67s | 18 | 4 |
+| Median | 28.190s | 67s | 18 | 4 |
+
+The first durable duration includes deliberate operator delay while rejecting
+a stale automation-clipboard value; it remains recorded but is not external
+payment latency. The click-to-issued median improved 15.6% from Milestone 1's
+33.4-second post-submit/detection median. Each receive accepted exactly one
+intent, one preparation, one quote, one claim plan, three transitions, ten Bark
+member observations, and one mint. It accepted no generic payment operation:
+18 entries versus 23 in every Milestone 1 sample, a five-entry or 21.7%
+reduction under the observed all-member race.
+
+Three outgoing 1,000-sat store samples completed in execution order:
+
+| Sample | Durable quote to paid | Accepted operations | Duplicate finalized items | Bark debit | Store |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 1 | 24s | 11 | 4 | 1,025 sat | `PAID` |
+| 2 | 25s | 11 | 4 | 1,025 sat | `PAID` |
+| 3 | 24s | 11 | 4 | 1,025 sat | `PAID` |
+| Median | 24s | 11 | 4 | 1,025 sat | `PAID` |
+
+The outgoing median improved 7.7% from Milestone 1's 26 seconds and did not
+regress. Each melt accepted one quote, one reservation, one plan, three Bark
+transitions, five Bark results, and no generic payment operation: 11 entries
+versus the prior median 16, a five-entry or 31.3% reduction in the observed
+all-member race. The minimum formulas still reduce by the predicted three
+entries; live savings are larger because all five generic observations had
+previously entered consensus. FROST custody traffic remains one unchanged
+nine-message action per successful receive or send. Ark call sites and polling
+constants are unchanged, and no rate-limit error appeared.
+
+All five members converged after every sample. Before restart each had 87
+identical applied operations and identical order/application digests. A full
+release restart left those 87 application operations and digests unchanged;
+five later finalized items had no operation ID and were empty AlephBFT units,
+not replayed payment work. All three mint quotes remained issued, all three
+melt quotes remained paid, and replay performed no external Bark or Ark
+payment side effect. The existing analysis warning was reconfirmed: Bark
+refreshes movement completion timestamps during later replay, so the immutable
+quote and accepted-operation records, not post-restart movement timestamps,
+are the retained evidence.
+
+Focused and full gates passed:
+
+```text
+cargo check -p cdk --features federation
+cargo check -p cdk-axum --features federation-bark
+cargo test -p cdk --features federation \
+  bark_result_records_materialize_only_after_distinct_inner_quorum --lib
+cargo test -p cdk --features federation --lib
+# 787 passed
+RUST_MIN_STACK=8388608 cargo test -p cdk-axum \
+  --features federation-bark --lib
+# 531 passed, 2 intentionally ignored
+cargo test -p cdk-sqlite --features federation \
+  federation_bark_projection_persistence
+```
+
+The focused test covers duplicate observers, `t - 1`, `q - 1`, `max(t, q)`,
+observation ordering, incoming and outgoing row materialization, and conflicts
+in action, quote, terminal state, payment hash, source scope, amount, fee, and
+result hash. Existing projection and saga tests cover success proof binding,
+failure/revocation binding, exact fee/change, rollback, competing quorums,
+restart, and catch-up. Clippy passes for the candidate after allowing the ten
+already present workspace lint findings; none is introduced by this milestone.
+
+No temporary instrumentation was added or retained. The intended milestone
+commit subject is `perf: derive Cashu payment from Bark result quorum`.
 
 ## Milestone 4: threshold-first Ark probing and measured backoff
 
@@ -1844,6 +1962,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | Milestone 1 candidate based on `32f01bbf9b43`, Bark `aa98f5685d70` | local release, five loopback members, SQLite, real Signet | three incoming and three outgoing successes | incoming post-submit/detection 24.0/33.4/42.4s, median 33.4s; outgoing durable 26/31/26s, median 26s; incoming 23 operations each; outgoing 16 each; no rate limit | Generic operation wakes and the immediate bounded pump reduced targeted medians 16.9% incoming and 29.7% outgoing without changing external automatic-backoff constants |
 | 2026-07-21 | exact final Milestone 1 binary | same local federation after release rebuild/restart | one 1,000-sat outgoing smoke | 27s CLI, 26s durable, 16 accepted operations, four duplicates, exact 1,025-sat balance reduction, store `PAID`, all five members converged | Request coalescing preserved payment latency and cardinality while fixing concurrent `Pending`/`Paid` response races |
 | 2026-07-21 | CDK `690b9a861`, Bark `aa98f5685d70` source audit | supported Bark/Ark mailbox and status APIs; no federation run | event-wake feasibility | payment mailboxes require threshold-custody Schnorr authorization unavailable to individual members; normal mailbox handling mutates wallet state; all-member long-poll has no durable replay or declared connection budget | Reject production event code; retain the persisted generic polling repair path and evaluate narrowed observer polling in Milestone 4 |
+| 2026-07-21 | Milestone 3 candidate based on `9f0fe646746d`, Bark `aa98f5685d70` | local release, five loopback members, SQLite, real Signet | three 10,000-sat incoming and three 1,000-sat outgoing successes | incoming click-to-issued 28.405/28.190/27.648s, median 28.190s, 18 operations each; outgoing durable 24/25/24s, median 24s, 11 operations each; four duplicates per sample; all members converged across restart | Accepted Bark results now materialize the ordinary Cashu evidence at `max(t, q)`; the generic consensus family disappeared, removing five live entries per payment and improving or preserving latency |
 
 ## Completion checklist
 
@@ -1856,7 +1975,7 @@ Append future evidence here rather than rewriting historical results.
 - [ ] Fresh payments remain responsive without permanent high-frequency polling.
 - [ ] Healthy evidence uses threshold observers and accepted evidence suppresses
       repeat Ark I/O.
-- [ ] Bark result quorum directly finalizes the ordinary Cashu payment state.
+- [x] Bark result quorum directly finalizes the ordinary Cashu payment state.
 - [ ] Wallet fan-out does not multiply normal consensus submissions.
 - [ ] Every remaining serial Bark operation protects a documented distinct
       safety or side-effect boundary.

@@ -8,8 +8,8 @@ use cdk::federation::{
     FederationChainObservation, FederationChainSourceDescriptor, FederationChainSourceScope,
     FederationDepositConfirmation, FederationDepositObservation, FederationDepositReorgObservation,
     FederationOperation, FederationOperationStatus, FederationPaymentObservation,
-    FederationPaymentObservationRecord, FederationPaymentObservationReport,
-    FederationPaymentObservationReportSummary, FederationWalletUtxoState,
+    FederationPaymentObservationReport, FederationPaymentObservationReportSummary,
+    FederationWalletUtxoState,
 };
 use cdk::mint::QuoteId;
 use cdk::nuts::{MeltQuoteState, MintQuoteState};
@@ -444,6 +444,13 @@ impl FederationPaymentObserver {
         #[cfg(not(feature = "federation-bark"))]
         let bark_advancement = None;
 
+        #[cfg(feature = "federation-bark")]
+        if quote.payment_method.is_bolt11() && state.federation.bark_runtime().is_some() {
+            return Ok(
+                bark_advancement.unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence)
+            );
+        }
+
         let Some(observation) = ({
             let probe = std::panic::AssertUnwindSafe(async {
                 state
@@ -539,6 +546,12 @@ impl FederationPaymentObserver {
         };
         #[cfg(not(feature = "federation-bark"))]
         let bark_advancement = None;
+        #[cfg(feature = "federation-bark")]
+        if quote.payment_method.is_bolt11() && state.federation.bark_runtime().is_some() {
+            return Ok(
+                bark_advancement.unwrap_or(FederationPaymentAdvancement::AwaitingExternalEvidence)
+            );
+        }
         let Some(observation) = ({
             let probe = std::panic::AssertUnwindSafe(async {
                 state
@@ -946,16 +959,12 @@ pub(super) async fn payment_observation_report_summaries(
         return Ok(Vec::new());
     };
     let db = state.mint.localstore();
-    let entries = db.get_federation_journal_entries().await?;
     let mut report_keys = BTreeSet::new();
-
-    for entry in &entries {
-        if let Some(record) = FederationPaymentObservationRecord::from_journal_entry(entry) {
-            report_keys.insert((
-                record.observation.context(),
-                record.observation.quote().to_string(),
-            ));
-        }
+    for record in db.get_all_federation_payment_observations().await? {
+        report_keys.insert((
+            record.observation.context(),
+            record.observation.quote().to_string(),
+        ));
     }
 
     let mut reports = Vec::with_capacity(report_keys.len());

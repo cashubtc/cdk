@@ -22,8 +22,9 @@ use cdk_common::federation::{
     FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
     FederationOperation, FederationOperationEnvelope, FederationOperationId,
     FederationOperationStatus, FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationPolicy, FederationSwapOperation, InMemoryFederationJournal,
-    MemberId, ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
+    FederationPaymentObservationPolicy, FederationPaymentObservationReport,
+    FederationSwapOperation, InMemoryFederationJournal, MemberId, ThresholdParams,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint::{MeltSagaState, SagaStateEnum};
 use cdk_common::mint_url::MintUrl;
@@ -66,7 +67,9 @@ mod transaction_signing;
 use crate::mint::{Mint, MintBuilder, MintInput, MintMeltLimits};
 
 use super::{
-    federation_bark_matching_result_observers, FederationBarkResultObservationKey,
+    federation_bark_matching_result_observers,
+    federation_bark_result_payment_records_from_projection,
+    FederationBarkPaymentObservationTemplate, FederationBarkResultObservationKey,
     FederationRuntimeConfig,
 };
 

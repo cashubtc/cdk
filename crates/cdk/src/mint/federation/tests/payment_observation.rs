@@ -91,6 +91,227 @@ fn one_false_bark_result_observer_cannot_form_the_inner_quorum() {
     );
 }
 
+#[test]
+fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
+    use cdk_common::federation::{
+        FederationBarkActionId, FederationBarkDigest, FederationBarkMemberObservation,
+        FederationBarkObservationRecord, FederationBarkObservationStatus, FederationBarkOperation,
+        FederationBarkProjectionSnapshot, FederationOperationId, FEDERATION_BARK_OPERATION_VERSION,
+    };
+
+    let action_id = FederationBarkActionId::from_bytes([11; 32]).expect("action ID");
+    let payment_hash = FederationBarkDigest::from_bytes([12; 32]).expect("payment hash");
+    let source_scope = FederationBarkDigest::from_bytes([13; 32]).expect("source scope");
+    let result_hash = FederationBarkDigest::from_bytes([14; 32]).expect("result hash");
+    let quote = QuoteId::new();
+    let observation = |observer: u16, operation_index: u64| {
+        FederationBarkObservationRecord {
+            operation_id: FederationOperationId::from_bytes([operation_index as u8; 32]),
+            operation_index,
+            operation: FederationBarkOperation::MemberObservation(
+                FederationBarkMemberObservation {
+                    version: FEDERATION_BARK_OPERATION_VERSION,
+                    action_id,
+                    quote: Some(quote.to_string()),
+                    observer: MemberId::new(observer).expect("observer"),
+                    observation_epoch: operation_index,
+                    source_scope,
+                    payment_hash: Some(payment_hash),
+                    status: FederationBarkObservationStatus::Succeeded,
+                    amount: Amount::from(50),
+                    fee: Amount::from(2),
+                    result_hash,
+                },
+            ),
+        }
+    };
+    let template = FederationBarkPaymentObservationTemplate::Mint(
+        FederationMintQuotePaymentObservation {
+            quote: quote.to_string(),
+            observer: MemberId::new(1).expect("observer"),
+            method: PaymentMethod::BOLT11,
+            state: MintQuoteState::Paid,
+            amount_paid: Amount::from(48),
+            amount_issued: Amount::ZERO,
+            payment_id: Some(PaymentIdentifier::QuoteId(quote.clone())),
+            payment_proof: None,
+        },
+    );
+    let mut projection = FederationBarkProjectionSnapshot {
+        observations: vec![observation(1, 8), observation(1, 9), observation(2, 7)],
+        ..FederationBarkProjectionSnapshot::default()
+    };
+    let expected = match &projection.observations[0].operation {
+        FederationBarkOperation::MemberObservation(observation) => observation.clone(),
+        _ => panic!("member observation"),
+    };
+
+    assert!(federation_bark_result_payment_records_from_projection(
+        &projection,
+        &expected,
+        3,
+        &template,
+    )
+    .is_empty());
+
+    let assert_conflict_does_not_complete =
+        |conflicting: FederationBarkObservationRecord, field: &str| {
+            let mut conflicting_projection = projection.clone();
+            conflicting_projection.observations.push(conflicting);
+            assert!(
+                federation_bark_result_payment_records_from_projection(
+                    &conflicting_projection,
+                    &expected,
+                    3,
+                    &template,
+                )
+                .is_empty(),
+                "a conflicting {field} must not complete the Bark result quorum",
+            );
+        };
+    let conflicting_observation =
+        |mutate: fn(&mut FederationBarkMemberObservation)| -> FederationBarkObservationRecord {
+            let mut record = observation(4, 6);
+            let FederationBarkOperation::MemberObservation(candidate) = &mut record.operation
+            else {
+                panic!("member observation")
+            };
+            mutate(candidate);
+            record
+        };
+    assert_conflict_does_not_complete(
+        conflicting_observation(|candidate| {
+            candidate.action_id =
+                FederationBarkActionId::from_bytes([15; 32]).expect("conflicting action ID");
+        }),
+        "action ID",
+    );
+    assert_conflict_does_not_complete(
+        conflicting_observation(|candidate| candidate.quote = None),
+        "quote",
+    );
+    assert_conflict_does_not_complete(
+        conflicting_observation(|candidate| {
+            candidate.status = FederationBarkObservationStatus::Failed;
+        }),
+        "terminal status",
+    );
+    assert_conflict_does_not_complete(
+        conflicting_observation(|candidate| {
+            candidate.payment_hash = Some(
+                FederationBarkDigest::from_bytes([16; 32]).expect("conflicting payment hash"),
+            );
+        }),
+        "payment hash",
+    );
+    assert_conflict_does_not_complete(
+        conflicting_observation(|candidate| {
+            candidate.source_scope =
+                FederationBarkDigest::from_bytes([17; 32]).expect("conflicting source scope");
+        }),
+        "source scope",
+    );
+    assert_conflict_does_not_complete(
+        conflicting_observation(|candidate| candidate.amount = Amount::from(51)),
+        "amount",
+    );
+    assert_conflict_does_not_complete(
+        conflicting_observation(|candidate| candidate.fee = Amount::from(3)),
+        "fee",
+    );
+    assert_conflict_does_not_complete(
+        conflicting_observation(|candidate| {
+            candidate.result_hash =
+                FederationBarkDigest::from_bytes([18; 32]).expect("conflicting result hash");
+        }),
+        "result hash",
+    );
+
+    projection.observations.push(observation(3, 10));
+    let records = federation_bark_result_payment_records_from_projection(
+        &projection,
+        &expected,
+        3,
+        &template,
+    );
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.operation_index)
+            .collect::<Vec<_>>(),
+        vec![7, 8, 10],
+        "the earliest exact result from each distinct member is materialized in consensus order",
+    );
+    assert!(records.iter().all(|record| {
+        matches!(
+            &record.observation,
+            FederationPaymentObservation::MintQuote(observation)
+                if observation.amount_paid == Amount::from(48)
+                    && observation.amount_issued == Amount::ZERO
+        )
+    }));
+    let report = FederationPaymentObservationReport::from_records(
+        FederationPaymentObservationContext::MintQuote,
+        &quote.to_string(),
+        4,
+        &records,
+    );
+    assert!(
+        !report.groups[0].quorum_reached,
+        "three Bark-authorized records cannot bypass a four-member Cashu policy",
+    );
+
+    projection.observations.push(observation(5, 11));
+    let records = federation_bark_result_payment_records_from_projection(
+        &projection,
+        &expected,
+        3,
+        &template,
+    );
+    let report = FederationPaymentObservationReport::from_records(
+        FederationPaymentObservationContext::MintQuote,
+        &quote.to_string(),
+        4,
+        &records,
+    );
+    assert!(report.groups[0].quorum_reached);
+    let melt_template = FederationBarkPaymentObservationTemplate::Melt(
+        FederationMeltQuotePaymentObservation {
+            quote: quote.to_string(),
+            observer: MemberId::new(1).expect("observer"),
+            method: PaymentMethod::BOLT11,
+            state: MeltQuoteState::Paid,
+            amount: Amount::from(50),
+            fee_reserve: Amount::from(2),
+            payment_id: Some(PaymentIdentifier::PaymentHash(payment_hash.to_bytes())),
+            payment_proof: Some("proof".to_string()),
+        },
+    );
+    let melt_records = federation_bark_result_payment_records_from_projection(
+        &projection,
+        &expected,
+        3,
+        &melt_template,
+    );
+    assert!(melt_records.iter().all(|record| {
+        matches!(
+            &record.observation,
+            FederationPaymentObservation::MeltQuote(observation)
+                if observation.state == MeltQuoteState::Paid
+                    && observation.payment_id
+                        == Some(PaymentIdentifier::PaymentHash(payment_hash.to_bytes()))
+                    && observation.payment_proof.as_deref() == Some("proof")
+        )
+    }));
+    assert!(federation_bark_result_payment_records_from_projection(
+        &projection,
+        &expected,
+        5,
+        &template,
+    )
+    .is_empty());
+}
+
 /// Payment backend double whose incoming status returns one fixed,
 /// deliberately ordered payment list, to reproduce backend return-order
 /// dependence in settlement identity selection.
