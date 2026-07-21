@@ -1,5 +1,6 @@
 //! Token bucket rate limiter for transport-level request throttling
 
+use std::num::NonZero;
 use std::sync::Arc;
 
 use cdk_common::AuthToken;
@@ -11,17 +12,17 @@ use tokio::time::{Duration, Instant};
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
     /// Maximum number of tokens (burst capacity)
-    pub capacity: u32,
+    pub capacity: NonZero<u32>,
     /// Number of tokens added per minute
-    pub refill_per_minute: u32,
+    pub refill_per_minute: NonZero<u32>,
 }
 
 impl Default for RateLimitConfig {
     fn default() -> Self {
         // Stays under nutshell's default 60/min global cap.
         Self {
-            capacity: 20,
-            refill_per_minute: 20,
+            capacity: NonZero::new(20).expect("valid non zero default"),
+            refill_per_minute: NonZero::new(20).expect("valid non zero default"),
         }
     }
 }
@@ -45,19 +46,10 @@ struct BucketState {
 
 impl TokenBucket {
     /// Create a new token bucket from config.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `capacity` or `refill_per_minute` is zero.
     pub fn new(config: RateLimitConfig) -> Self {
-        assert!(config.capacity > 0, "RateLimitConfig::capacity must be > 0",);
-        assert!(
-            config.refill_per_minute > 0,
-            "RateLimitConfig::refill_per_minute must be > 0",
-        );
         Self {
             state: Arc::new(Mutex::new(BucketState {
-                tokens: f64::from(config.capacity),
+                tokens: f64::from(config.capacity.get()),
                 last_refill: Instant::now(),
             })),
             config,
@@ -77,7 +69,8 @@ impl TokenBucket {
                 }
 
                 let tokens_needed = 1.0 - state.tokens;
-                let refill_per_ms = f64::from(self.config.refill_per_minute) / (60.0 * 1000.0);
+                let refill_per_ms =
+                    f64::from(self.config.refill_per_minute.get()) / (60.0 * 1000.0);
                 Duration::from_millis((tokens_needed / refill_per_ms).ceil() as u64)
             };
 
@@ -88,11 +81,11 @@ impl TokenBucket {
     fn refill(&self, state: &mut BucketState) {
         let now = Instant::now();
         let elapsed_ms = now.duration_since(state.last_refill).as_millis() as f64;
-        let refill_per_ms = f64::from(self.config.refill_per_minute) / (60.0 * 1000.0);
+        let refill_per_ms = f64::from(self.config.refill_per_minute.get()) / (60.0 * 1000.0);
         let new_tokens = elapsed_ms * refill_per_ms;
 
         if new_tokens > 0.0 {
-            state.tokens = (state.tokens + new_tokens).min(f64::from(self.config.capacity));
+            state.tokens = (state.tokens + new_tokens).min(f64::from(self.config.capacity.get()));
             state.last_refill = now;
         }
     }
@@ -220,33 +213,15 @@ mod tests {
     #[tokio::test]
     async fn test_default_config() {
         let config = RateLimitConfig::default();
-        assert_eq!(config.capacity, 20);
-        assert_eq!(config.refill_per_minute, 20);
-    }
-
-    #[test]
-    #[should_panic(expected = "capacity must be > 0")]
-    fn test_zero_capacity_panics() {
-        let _ = TokenBucket::new(RateLimitConfig {
-            capacity: 0,
-            refill_per_minute: 20,
-        });
-    }
-
-    #[test]
-    #[should_panic(expected = "refill_per_minute must be > 0")]
-    fn test_zero_refill_panics() {
-        let _ = TokenBucket::new(RateLimitConfig {
-            capacity: 20,
-            refill_per_minute: 0,
-        });
+        assert_eq!(config.capacity.get(), 20);
+        assert_eq!(config.refill_per_minute.get(), 20);
     }
 
     #[tokio::test]
     async fn test_acquire_within_capacity() {
         let bucket = TokenBucket::new(RateLimitConfig {
-            capacity: 5,
-            refill_per_minute: 60,
+            capacity: NonZero::new(5).unwrap(),
+            refill_per_minute: NonZero::new(60).unwrap(),
         });
 
         // Should acquire up to capacity without waiting
@@ -258,8 +233,8 @@ mod tests {
     #[tokio::test]
     async fn test_acquire_blocks_when_empty() {
         let bucket = TokenBucket::new(RateLimitConfig {
-            capacity: 1,
-            refill_per_minute: 6000, // 100/sec so the wait is short
+            capacity: NonZero::new(1).unwrap(),
+            refill_per_minute: NonZero::new(6000).unwrap(), // 100/sec so the wait is short
         });
 
         // Drain the bucket
@@ -280,8 +255,8 @@ mod tests {
     #[tokio::test]
     async fn test_refill_does_not_exceed_capacity() {
         let bucket = TokenBucket::new(RateLimitConfig {
-            capacity: 3,
-            refill_per_minute: 60_000, // fast refill for test
+            capacity: NonZero::new(3).unwrap(),
+            refill_per_minute: NonZero::new(60_000).unwrap(), // fast refill for test
         });
 
         // Drain one token
@@ -299,8 +274,8 @@ mod tests {
     #[tokio::test]
     async fn test_concurrent_acquire() {
         let bucket = TokenBucket::new(RateLimitConfig {
-            capacity: 10,
-            refill_per_minute: 600, // 10/sec
+            capacity: NonZero::new(10).unwrap(),
+            refill_per_minute: NonZero::new(600).unwrap(), // 10/sec
         });
 
         // Spawn 10 tasks all acquiring at once
@@ -321,8 +296,8 @@ mod tests {
     #[tokio::test]
     async fn test_bucket_new_starts_full() {
         let bucket = TokenBucket::new(RateLimitConfig {
-            capacity: 25,
-            refill_per_minute: 25,
+            capacity: NonZero::new(25).unwrap(),
+            refill_per_minute: NonZero::new(25).unwrap(),
         });
 
         // Should be able to drain all 25 without waiting
@@ -343,6 +318,7 @@ mod tests {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod integration_tests {
+    use std::num::NonZero;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -394,8 +370,8 @@ mod integration_tests {
         let (url, _counter) = spawn_counting_server(4).await;
 
         let bucket = TokenBucket::new(RateLimitConfig {
-            capacity: 2,
-            refill_per_minute: 120,
+            capacity: NonZero::new(2).unwrap(),
+            refill_per_minute: NonZero::new(120).unwrap(),
         });
         let transport = RateLimitedTransport::with_bucket(Async::default(), bucket);
 
@@ -439,8 +415,8 @@ mod integration_tests {
         let (url, _counter) = spawn_counting_server(3).await;
 
         let bucket = TokenBucket::new(RateLimitConfig {
-            capacity: 2,
-            refill_per_minute: 120,
+            capacity: NonZero::new(2).unwrap(),
+            refill_per_minute: NonZero::new(120).unwrap(),
         });
         let transport_a = RateLimitedTransport::with_bucket(Async::default(), bucket.clone());
         let transport_b = RateLimitedTransport::with_bucket(Async::default(), bucket);
