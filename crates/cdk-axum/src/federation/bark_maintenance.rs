@@ -13,6 +13,7 @@ use cdk::federation::{
 use crate::MintState;
 
 const BARK_MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+const BARK_MAINTENANCE_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(300);
 
 pub(crate) fn spawn_federated_bark_maintenance(state: MintState) {
     if state.federation.bark_runtime().is_none() {
@@ -22,22 +23,38 @@ pub(crate) fn spawn_federated_bark_maintenance(state: MintState) {
         let mut interval = tokio::time::interval(BARK_MAINTENANCE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval.tick().await;
+        let mut consecutive_failures = 0_u32;
         loop {
             interval.tick().await;
             match advance_federated_bark_maintenance(state.clone()).await {
                 Ok(advanced) if advanced > 0 => {
+                    consecutive_failures = 0;
                     tracing::debug!(advanced, "advanced federated Bark maintenance");
                 }
-                Ok(_) => {}
+                Ok(_) => consecutive_failures = 0,
                 Err(error) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    let retry_delay = bark_maintenance_retry_delay(consecutive_failures);
                     tracing::warn!(
                         error = %cdk::federation::redact_federation_operator_message(&error.to_string()),
+                        consecutive_failures,
+                        retry_delay_secs = retry_delay.as_secs(),
                         "federated Bark maintenance round failed"
                     );
+                    tokio::time::sleep(retry_delay).await;
                 }
             }
         }
     });
+}
+
+fn bark_maintenance_retry_delay(consecutive_failures: u32) -> std::time::Duration {
+    let exponent = consecutive_failures.saturating_sub(1).min(6);
+    let seconds = BARK_MAINTENANCE_INTERVAL
+        .as_secs()
+        .saturating_mul(1_u64 << exponent)
+        .min(BARK_MAINTENANCE_RETRY_MAX.as_secs());
+    std::time::Duration::from_secs(seconds)
 }
 
 /// Advance at most one consensus-visible Bark maintenance step.
@@ -100,6 +117,16 @@ async fn advance_federated_bark_maintenance_inner(
         if !controls.automatic_refresh {
             return Ok(0);
         }
+        let actor = federation
+            .public_config()
+            .members
+            .keys()
+            .next()
+            .copied()
+            .ok_or(cdk::Error::Internal)?;
+        if !should_publish_maintenance_plan(actor, federation.member_id()) {
+            return Ok(0);
+        }
         let Some(plan) = runtime
             .propose_refresh(&projection)
             .await
@@ -107,6 +134,9 @@ async fn advance_federated_bark_maintenance_inner(
         else {
             return Ok(0);
         };
+        if plan.actor != actor {
+            return Err(cdk::Error::Internal);
+        }
         return submit_bark_operation(
             state.clone(),
             federation.operation_envelope(FederationOperation::Bark(
@@ -331,6 +361,10 @@ async fn advance_federated_bark_maintenance_inner(
         }
         _ => Ok(0),
     }
+}
+
+fn should_publish_maintenance_plan(actor: MemberId, local_member: MemberId) -> bool {
+    actor == local_member
 }
 
 async fn propose_exit(
@@ -625,4 +659,33 @@ async fn submit_bark_operation(
         .await?
         .ensure_accepted()?;
     Ok(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk::federation::MemberId;
+
+    use super::{bark_maintenance_retry_delay, should_publish_maintenance_plan};
+
+    #[test]
+    fn maintenance_failures_back_off_to_five_minutes() {
+        let seconds = (1..=8)
+            .map(|failure| bark_maintenance_retry_delay(failure).as_secs())
+            .collect::<Vec<_>>();
+
+        assert_eq!(seconds, [5, 10, 20, 40, 80, 160, 300, 300]);
+    }
+
+    #[test]
+    fn only_the_deterministic_actor_publishes_a_maintenance_plan() {
+        let actor = MemberId::new(1).expect("actor");
+
+        assert!(should_publish_maintenance_plan(actor, actor));
+        for member in 2..=5 {
+            assert!(!should_publish_maintenance_plan(
+                actor,
+                MemberId::new(member).expect("member"),
+            ));
+        }
+    }
 }

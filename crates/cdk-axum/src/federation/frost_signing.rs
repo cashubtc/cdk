@@ -11,7 +11,8 @@ use axum::extract::{Json, State};
 use axum::response::{IntoResponse, Response};
 #[cfg(feature = "federation-bark")]
 use cdk::federation::{
-    FederationBarkCustodyProtocol, FederationBarkFrostAuthorization, FederationBarkProtocolStatus,
+    FederationBarkActionKind, FederationBarkCustodyProtocol, FederationBarkFrostAuthorization,
+    FederationBarkProtocolStatus,
 };
 use cdk::federation::{
     FederationBarkFrostRegistrationAdapter, FederationCdkOnchainFrostAuthorization,
@@ -51,6 +52,35 @@ const BARK_CUSTODY_PROJECTION_POLL_INTERVAL: std::time::Duration =
 #[cfg(feature = "federation-bark")]
 fn usize_to_u64_saturating(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+#[cfg(feature = "federation-bark")]
+const fn bark_action_authorizes_output_locator(kind: FederationBarkActionKind) -> bool {
+    // A refresh is the only accepted action whose newly allocated output key
+    // participates in custody before the result transition exists.
+    matches!(kind, FederationBarkActionKind::Refresh)
+}
+
+#[cfg(all(test, feature = "federation-bark"))]
+mod bark_custody_authorization_tests {
+    use cdk::federation::FederationBarkActionKind;
+
+    use super::bark_action_authorizes_output_locator;
+
+    #[test]
+    fn only_refresh_authorizes_an_output_locator() {
+        assert!(bark_action_authorizes_output_locator(
+            FederationBarkActionKind::Refresh
+        ));
+        for kind in [
+            FederationBarkActionKind::LightningSend,
+            FederationBarkActionKind::IncomingClaim,
+            FederationBarkActionKind::FailedSendRevocation,
+            FederationBarkActionKind::EmergencyExit,
+        ] {
+            assert!(!bark_action_authorizes_output_locator(kind));
+        }
+    }
 }
 
 type AggregateResultCache = BTreeMap<[u8; 32], ([u8; 32], [u8; 64])>;
@@ -853,13 +883,18 @@ impl FederationFrostSigningRuntime {
                 )
                 .into());
             }
-            if !plan
+            let locator_is_input = plan
                 .inputs
                 .iter()
-                .any(|input| input.locator == typed.reference.locator)
-            {
+                .any(|input| input.locator == typed.reference.locator);
+            let locator_is_authorized_output = bark_action_authorizes_output_locator(plan.kind)
+                && plan
+                    .outputs
+                    .iter()
+                    .any(|output| output.locator == typed.reference.locator);
+            if !locator_is_input && !locator_is_authorized_output {
                 return Err(frost_invalid(
-                    "Bark custody locator is not an input of the accepted action",
+                    "Bark custody locator is not authorized by the accepted action",
                 )
                 .into());
             }

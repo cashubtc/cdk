@@ -134,7 +134,7 @@ EOF
   "maximum_outgoing_fee_ppm": 5000,
   "minimum_incoming_cltv_delta": 18,
   "minimum_outgoing_cltv_delta": 18,
-  "refresh_before_expiry_blocks": 144,
+  "refresh_before_expiry_blocks": 72,
   "emergency_exit_before_expiry_blocks": 18,
   "receive_secret_retention_days": 30,
   "receive_anti_dos": "no_proof"

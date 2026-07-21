@@ -115,7 +115,7 @@ impl FederatedBarkCustodyClient for DisabledBarkCustodyClient {
 #[derive(Debug, Clone)]
 struct AcceptedCustodyAction {
     entry: FederationJournalEntry,
-    input_locators: Vec<FederationBarkVtxoLocator>,
+    authorized_locators: Vec<FederationBarkVtxoLocator>,
     operation: bark::custody::VtxoSigningOperation,
     phase: FederationBarkSemanticPhase,
     authorization_context: Vec<u8>,
@@ -296,7 +296,12 @@ impl CdkFrostVtxoCustody {
                 && !authorization_context.is_empty(),
             "accepted Bark refresh scope is invalid"
         );
-        let input_locators = plan.inputs.iter().map(|input| input.locator).collect();
+        let input_locators = plan
+            .inputs
+            .iter()
+            .map(|input| input.locator)
+            .chain(plan.outputs.iter().map(|output| output.locator))
+            .collect();
         self.activate_action(
             entry,
             input_locators,
@@ -339,16 +344,16 @@ impl CdkFrostVtxoCustody {
     fn activate_action(
         &self,
         entry: FederationJournalEntry,
-        mut input_locators: Vec<FederationBarkVtxoLocator>,
+        mut authorized_locators: Vec<FederationBarkVtxoLocator>,
         operation: bark::custody::VtxoSigningOperation,
         phase: FederationBarkSemanticPhase,
         authorization_context: Vec<u8>,
     ) -> anyhow::Result<()> {
-        input_locators.sort();
-        input_locators.dedup();
+        authorized_locators.sort();
+        authorized_locators.dedup();
         anyhow::ensure!(
-            !input_locators.is_empty()
-                && input_locators
+            !authorized_locators.is_empty()
+                && authorized_locators
                     .iter()
                     .all(|locator| locator.role == 1 && locator.version == 1)
                 && !authorization_context.is_empty(),
@@ -361,7 +366,7 @@ impl CdkFrostVtxoCustody {
         anyhow::ensure!(accepted.is_none(), "another Bark custody action is active");
         *accepted = Some(AcceptedCustodyAction {
             entry,
-            input_locators,
+            authorized_locators,
             operation,
             phase,
             authorization_context,
@@ -426,12 +431,13 @@ impl CdkFrostVtxoCustody {
         else {
             anyhow::bail!("active Bark custody operation is not an action plan");
         };
+        let operation_matches = signing_operation_is_authorized(accepted.operation, operation);
+        let locator_matches = accepted
+            .authorized_locators
+            .iter()
+            .any(|accepted| locator.index == accepted.index);
         anyhow::ensure!(
-            operation == accepted.operation
-                && accepted
-                    .input_locators
-                    .iter()
-                    .any(|accepted| locator.index == accepted.index),
+            operation_matches && locator_matches,
             "Bark custody operation or locator differs from the accepted action"
         );
         anyhow::ensure!(
@@ -540,6 +546,22 @@ impl CdkFrostVtxoCustody {
             authorization,
         })
     }
+}
+
+fn signing_operation_is_authorized(
+    accepted: bark::custody::VtxoSigningOperation,
+    requested: bark::custody::VtxoSigningOperation,
+) -> bool {
+    // One Ark round signs its attempt and output leaves under `Round`, then
+    // signs the accepted inputs' forfeits before those outputs are unlocked.
+    accepted == requested
+        || matches!(
+            (accepted, requested),
+            (
+                bark::custody::VtxoSigningOperation::Round,
+                bark::custody::VtxoSigningOperation::Forfeit
+            )
+        )
 }
 
 impl fmt::Debug for CdkFrostVtxoCustody {
@@ -787,5 +809,32 @@ const fn operation_tag(operation: bark::custody::VtxoSigningOperation) -> u8 {
         Operation::Attestation => 8,
         Operation::UnilateralExit => 9,
         Operation::MailboxBlinding => 10,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bark::custody::VtxoSigningOperation;
+
+    use super::signing_operation_is_authorized;
+
+    #[test]
+    fn refresh_round_authorizes_its_forfeit_phase() {
+        assert!(signing_operation_is_authorized(
+            VtxoSigningOperation::Round,
+            VtxoSigningOperation::Round,
+        ));
+        assert!(signing_operation_is_authorized(
+            VtxoSigningOperation::Round,
+            VtxoSigningOperation::Forfeit,
+        ));
+        assert!(!signing_operation_is_authorized(
+            VtxoSigningOperation::Round,
+            VtxoSigningOperation::LightningSend,
+        ));
+        assert!(!signing_operation_is_authorized(
+            VtxoSigningOperation::LightningSend,
+            VtxoSigningOperation::Forfeit,
+        ));
     }
 }

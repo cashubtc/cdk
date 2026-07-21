@@ -1,7 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestone 0 complete; critical maintenance liveness fix is next; no
-optimization milestone implemented
+Status: Milestones 0 and 0A complete; Milestone 1 is next
 
 First recorded: 2026-07-20
 
@@ -68,9 +67,23 @@ state in this document or a commit.
 
 #### Incoming: faucet pays the federation invoice
 
-1. Start a local CLI mint against the local five-member candidate and keep it
-   waiting. Capture the BOLT11 invoice outside the repository. After importing
-   the local federation into the wallet once, the repeatable command is:
+1. After every `fresh` DKG, import that ceremony's generated public config into
+   a clean local CLI wallet before requesting money. A wallet retained from an
+   earlier ceremony has a stale aggregate key; treating one new member share
+   as its old aggregate correctly fails DLEQ verification. Import the current
+   config with:
+
+   ```bash
+   target/release/cdk-cli \
+     --work-dir "$WALLET_DIR" --non-interactive --unit sat \
+     federation add \
+     --public-config target/local-bark-federation/member-1/dkg-final/federation-public.json \
+     --local-mint-url "$MINT_URL"
+   ```
+
+2. Start a local CLI mint against the local five-member candidate and keep it
+   waiting. Capture the BOLT11 invoice outside the repository. The repeatable
+   command is:
 
    ```bash
    target/release/cdk-cli \
@@ -79,17 +92,19 @@ state in this document or a commit.
    ```
 
    Run the faucet helper from a second terminal while this command waits.
-2. Run `scripts/second_signet_faucet.sh "$INVOICE"`. The helper validates the
+3. Run `scripts/second_signet_faucet.sh "$INVOICE"`. The helper validates the
    Signet invoice, copies it to the macOS clipboard, and opens the exact faucet
    page. It never reads or persists browser cookies.
-3. If the faucet shows `Sign in with GitHub`, the OAuth session has expired.
-   Sign in, wait for the faucet to return, and rerun the helper so the intended
-   invoice—not a value retained by the page—is on the clipboard.
-4. Select `Lightning`, paste the invoice, and click `Send sats`. The underlying
+4. Reload the faucet before each payment. A stale page can still show the user
+   menu after its OAuth session has expired; a click that never changes `Send
+   sats` to `Processing...` is the tell. If the reloaded page shows `Sign in
+   with GitHub`, sign in, wait for the faucet to return, and rerun the helper so
+   the intended invoice—not a value retained by the page—is on the clipboard.
+5. Select `Lightning`, paste the invoice, and click `Send sats`. The underlying
    endpoint is `POST /api/v1/faucet/lightning` with an `invoice` JSON field, but
    it returns HTTP 401 without the authenticated browser session; do not work
    around that boundary by copying cookies into a script.
-5. Record the click and success times, then let the local CLI drive quote GET
+6. Record the click and success times, then let the local CLI drive quote GET
    and POST mint fan-out. Verify issuance and five-member convergence locally.
 
 #### Outgoing: federation pays a store invoice
@@ -808,8 +823,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 
 | Milestone | Goal | Status | Commit |
 | --- | --- | --- | --- |
-| 0 | Establish reproducible incoming and outgoing baselines with causal timelines | Complete | recorded in the milestone commit; hash added by the next update |
-| 0A | Restore maintenance round persistence, actor ownership, and payment liquidity | In progress | - |
+| 0 | Establish reproducible incoming and outgoing baselines with causal timelines | Complete | `7403e90c0` |
+| 0A | Restore maintenance round persistence, actor ownership, and payment liquidity | Complete | recorded in the milestone commit; hash added by the next update |
 | 1 | Remove unnecessary inter-operation delay with one generic mint/melt advancement driver | Not started | - |
 | 2 | Determine and implement the smallest safe Bark incoming/outgoing event wake, or reject it | Not started | - |
 | 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Not started | - |
@@ -958,33 +973,47 @@ new outgoing payment.
   the retry loop removes the federation's outgoing liquidity.
 - CDK lets non-actors publish an actor-authored newly proposed maintenance
   plan, producing deterministic author mismatches and surplus submissions.
+- Terminal refresh replay re-applies the earlier accepted plan after its input
+  is already spent. The Bark facade rejected that valid later state, so every
+  member restarted Bark-degraded even though the accepted journal and local
+  output agreed. The actor also retained its confirmed round row after the
+  terminal transition.
+- The generated 144-block refresh margin equalled the public Ark server's
+  144-block VTXO lifetime. A successful refresh output was therefore already
+  inside the next refresh window and immediately started another round. The
+  generated default is now 72 blocks. Custom policy remains an explicit
+  federation configuration decision; this fix does not make existing accepted
+  public configs fail startup.
 - The serialization fix belongs in the configured `../bark-cdk` fork; actor
   publication belongs in CDK. No automatic-refresh disable is an acceptable
   production fix.
 
 ### Checklist
 
-- [ ] Add a Bark regression fixture for every optional-field combination in
+- [x] Add a Bark regression fixture for every optional-field combination in
       round participation, including the failing custody-without-mailbox case.
-- [ ] Choose the smallest stable encoding fix and document compatibility with
+- [x] Choose the smallest stable encoding fix and document compatibility with
       existing valid rows.
-- [ ] Recover or safely discard only malformed never-started federation rows;
+- [x] Recover or safely discard only malformed never-started federation rows;
       do not reinterpret an ambiguous started round.
-- [ ] Prove a restarted wallet resumes or cleanly re-proposes the same accepted
+- [x] Prove a restarted wallet resumes or cleanly re-proposes the same accepted
       refresh without duplicating value or custody side effects.
-- [ ] Restrict new maintenance-plan publication to the deterministic accepted
+- [x] Restrict new maintenance-plan publication to the deterministic accepted
       actor; non-actors may still submit their own observations.
-- [ ] Ensure a permanent maintenance failure becomes operator-visible and
+- [x] Ensure a permanent maintenance failure becomes operator-visible and
       stops hot-loop retries without silently releasing an unsafe reservation.
-- [ ] Re-enable automatic refresh in a fresh local five-member release
+- [x] Keep the generated refresh margin strictly inside the public Ark
+      server's advertised VTXO lifetime without invalidating existing accepted
+      federation configs.
+- [x] Re-enable automatic refresh in a fresh local five-member release
       federation.
-- [ ] Receive funds whose VTXO is inside the refresh margin, complete refresh,
+- [x] Receive funds whose VTXO is inside the refresh margin, complete refresh,
       then pay a store invoice from the refreshed value.
-- [ ] Restart before and after round persistence and verify identical Bark
+- [x] Restart before and after round persistence and verify identical Bark
       projection, VTXO value, action phase, journal, and application digests.
-- [ ] Measure refresh operations, attempts, FROST messages, Ark calls, CPU, and
+- [x] Measure refresh operations, attempts, FROST messages, Ark calls, CPU, and
       payment latency; confirm no five-second unbounded growth remains.
-- [ ] Revert all temporary instrumentation before completion.
+- [x] Revert all temporary instrumentation before completion.
 
 ### Success criteria
 
@@ -997,8 +1026,90 @@ new outgoing payment.
 - The refreshed federation can immediately create and complete an outgoing
   payment.
 - No retry, row, operation, or CPU counter grows after terminal completion.
+- A refreshed output is not immediately eligible for another refresh solely
+  because the generated margin equals the server's complete VTXO lifetime.
 - The milestone is committed as
   `fix: restore federated Bark refresh persistence`.
+
+### Progress record — 2026-07-21
+
+Milestone 0A is `Complete`, decision `Kept` as a correctness and liveness fix.
+The corresponding Bark fork changes are committed as `aa98f568`.
+The Bark fork now writes named MessagePack fields, decodes the current schema
+first, and recognizes only the exact historical malformed layout. Fixtures
+cover all eight combinations of the three optional participation fields. The
+compatibility path deletes only a never-submitted interactive federation row
+with no mailbox, no new VTXOs, no sent forfeits, and both custody fields; an
+otherwise identical row with sent forfeits fails closed as ambiguous.
+
+An accepted refresh now resumes the one persisted round whose complete inputs,
+output policy and amount, custody session, and request commitment match the
+accepted plan. That lookup happens before fee/capability planning, so a member
+that already has the round response does not repeat those Ark reads. A spent
+input is allowed only while replaying its already accepted plan; creating a
+new round still requires an available input. The accepted terminal transition
+acknowledges and removes the actor's confirmed row. Regression tests cover
+spent-input replay, complete persisted-participation binding, exact legacy-row
+handling, and restart persistence.
+
+CDK now gates a new maintenance proposal on the deterministic actor before
+calling the Bark planner. Non-actors perform neither proposal Ark I/O nor
+publication, but still observe an accepted plan. A one-input/one-output refresh
+therefore contributes five accepted journal entries: one plan, three distinct
+trigger observations, and one completion transition. Its custody path uses
+one threshold Schnorr operation and one virtual MuSig2 forfeit operation. With
+three accepted signers, the source-derived request count is nine authenticated
+Schnorr messages (commitment, share, and aggregate-result notification per
+signer) plus six virtual-MuSig2 messages (commitment and partial per signer).
+No new consensus vote or custody retry layer was introduced.
+
+The fresh five-member Signet run received and issued exactly 10,000 sats. The
+sole actor's first refresh movement began at 01:30:56 UTC, survived a clean
+restart while unconfirmed with one movement and one round row, and reached the
+accepted `refresh_completed` phase after public Signet confirmation. All five
+members then held the same 10,000-sat spendable replacement. External block
+production dominated the refresh wall time and is reported separately from
+implementation latency.
+
+That run also demonstrated that the former generated 144-block margin equalled
+the public server's 144-block VTXO lifetime: a replacement confirmed with about
+141 blocks remaining and was immediately due again. Two later accepted rounds
+reproduced the churn without increasing row count beyond one. The renderer now
+uses 72 blocks. This remains safely above the 18-block emergency margin and
+18-block outgoing CLTV bound while leaving a 72-block post-refresh window. The
+change applies to newly generated configs and deliberately does not invalidate
+an already accepted public policy.
+
+After the old-policy disposable run was stopped at a terminal transition, the
+released value paid a fresh 1,000-sat Signet store invoice. Bark recorded a
+single successful send from 02:48:33 to 02:49:08 UTC with a 25-sat fee; the
+Cashu melt quote reached `PAID` in 50 seconds and the store returned `PAID`.
+The CLI and every member ended at exactly 8,975 spendable sats
+(`10,000 - 1,000 - 25`). The exact feature-complete release was then restarted:
+all five members reported the same 57-operation order and application digests,
+zero pending round rows, zero pending movements, and no recent reconciliation,
+maintenance, rate-limit, or panic error.
+
+The post-restart bounded runtime sample reported 6.57-6.67 CPU-seconds and
+109,360-119,904 KiB RSS per member while replaying the complete local history.
+The observed permanent-error retry sequence before repair was 5, 10, 20, 40,
+80, 160, then 300 seconds; after repair no failure counter grew. Temporary
+diagnostic logging was removed before the final release build.
+
+Focused and full checks passed:
+
+```text
+cd ../bark-cdk && nix develop --command just check
+cd ../bark-cdk && nix develop --command just unit federation::tests
+cargo test -p cdk-bark --features federation-bark
+cargo test -p cdk-axum --features federation-bark bark_maintenance::tests
+cargo test -p cdk-axum --features federation-bark \
+  only_refresh_authorizes_an_output_locator
+cargo fmt -p cdk-bark -p cdk-axum -- --check
+```
+
+The intended milestone commit subject is
+`fix: restore federated Bark refresh persistence`.
 
 ## Milestone 1: generic progress pump and inter-operation wakes
 
