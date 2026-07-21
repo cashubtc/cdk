@@ -222,6 +222,8 @@ pub(super) struct FederationWalletReconciler {
     pub(super) bark: Option<Arc<cdk_bark::FederatedBarkRuntime>>,
     #[cfg(feature = "federation-bark")]
     pub(super) bark_incoming: Arc<tokio::sync::Mutex<()>>,
+    #[cfg(feature = "federation-bark")]
+    pub(super) bark_maintenance: Arc<tokio::sync::Mutex<()>>,
     bdk_degraded_reason: std::sync::Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
@@ -301,6 +303,8 @@ impl FederationRuntimeComponents {
                 bark,
                 #[cfg(feature = "federation-bark")]
                 bark_incoming: Arc::new(tokio::sync::Mutex::new(())),
+                #[cfg(feature = "federation-bark")]
+                bark_maintenance: Arc::new(tokio::sync::Mutex::new(())),
                 bdk_degraded_reason: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             },
             ..Default::default()

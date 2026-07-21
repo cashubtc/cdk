@@ -20,28 +20,29 @@ pub(crate) fn spawn_federated_bark_maintenance(state: MintState) {
         return;
     }
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(BARK_MAINTENANCE_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        interval.tick().await;
-        let mut consecutive_failures = 0_u32;
+        let mut consecutive_no_progress = 0_u32;
+        let mut next_delay = BARK_MAINTENANCE_INTERVAL;
         loop {
-            interval.tick().await;
+            tokio::time::sleep(next_delay).await;
             match advance_federated_bark_maintenance(state.clone()).await {
                 Ok(advanced) if advanced > 0 => {
-                    consecutive_failures = 0;
+                    consecutive_no_progress = 0;
+                    next_delay = BARK_MAINTENANCE_INTERVAL;
                     tracing::debug!(advanced, "advanced federated Bark maintenance");
                 }
-                Ok(_) => consecutive_failures = 0,
+                Ok(_) => {
+                    consecutive_no_progress = consecutive_no_progress.saturating_add(1);
+                    next_delay = bark_maintenance_retry_delay(consecutive_no_progress);
+                }
                 Err(error) => {
-                    consecutive_failures = consecutive_failures.saturating_add(1);
-                    let retry_delay = bark_maintenance_retry_delay(consecutive_failures);
+                    consecutive_no_progress = consecutive_no_progress.saturating_add(1);
+                    next_delay = bark_maintenance_retry_delay(consecutive_no_progress);
                     tracing::warn!(
                         error = %cdk::federation::redact_federation_operator_message(&error.to_string()),
-                        consecutive_failures,
-                        retry_delay_secs = retry_delay.as_secs(),
+                        consecutive_no_progress,
+                        retry_delay_secs = next_delay.as_secs(),
                         "federated Bark maintenance round failed"
                     );
-                    tokio::time::sleep(retry_delay).await;
                 }
             }
         }
@@ -76,6 +77,8 @@ async fn advance_federated_bark_maintenance_inner(
     state: MintState,
     target_action_id: Option<FederationBarkActionId>,
 ) -> Result<usize, cdk::Error> {
+    let maintenance_lock = Arc::clone(state.federation.bark_maintenance_lock());
+    let _maintenance_guard = maintenance_lock.lock().await;
     let federation = state
         .mint
         .federation_config()
@@ -95,6 +98,14 @@ async fn advance_federated_bark_maintenance_inner(
     let projection = crate::federation_bark_ready_projection(&state.mint, &runtime)
         .await
         .map_err(|_| cdk::Error::Internal)?;
+    if target_action_id.is_none()
+        && projection
+            .actions
+            .iter()
+            .any(|action| payment_action_blocks_routine_maintenance(&projection, action))
+    {
+        return Ok(0);
+    }
     let active = projection
         .actions
         .iter()
@@ -361,6 +372,76 @@ async fn advance_federated_bark_maintenance_inner(
         }
         _ => Ok(0),
     }
+}
+
+fn payment_action_blocks_routine_maintenance(
+    projection: &FederationBarkProjectionSnapshot,
+    action: &cdk::federation::FederationBarkActionRecord,
+) -> bool {
+    if action.quote.is_none() {
+        return false;
+    }
+    let expires_at = match action.phase {
+        FederationBarkSemanticPhase::ReceiveIntent
+        | FederationBarkSemanticPhase::ReceivePrepared => match &action.operation {
+            FederationBarkOperation::ReceiveIntent(intent) => Some(intent.expires_at),
+            FederationBarkOperation::ReceivePrepared(prepared) => Some(prepared.expires_at),
+            _ => None,
+        },
+        _ => None,
+    };
+    let accepted_evidence = projection.observations.iter().any(|record| {
+        matches!(
+            &record.operation,
+            FederationBarkOperation::MemberObservation(observation)
+                if observation.action_id == action.action_id
+                    && observation.status == FederationBarkObservationStatus::Accepted
+        )
+    });
+    payment_state_blocks_routine_maintenance(
+        action.phase,
+        expires_at,
+        accepted_evidence,
+        current_unix_time_seconds(),
+    )
+}
+
+fn payment_state_blocks_routine_maintenance(
+    phase: FederationBarkSemanticPhase,
+    expires_at: Option<u64>,
+    accepted_evidence_present: bool,
+    now: u64,
+) -> bool {
+    if payment_phase_is_terminal(phase) {
+        return false;
+    }
+    match phase {
+        FederationBarkSemanticPhase::ReceiveIntent
+        | FederationBarkSemanticPhase::ReceivePrepared => expires_at.is_none_or(|expires_at| {
+            !super::bark_incoming::receive_is_automatically_terminal(
+                expires_at,
+                accepted_evidence_present,
+                now,
+            )
+        }),
+        _ => true,
+    }
+}
+
+fn payment_phase_is_terminal(phase: FederationBarkSemanticPhase) -> bool {
+    matches!(
+        phase,
+        FederationBarkSemanticPhase::ReceiveClaimed
+            | FederationBarkSemanticPhase::PaymentSucceeded
+            | FederationBarkSemanticPhase::RevocationCompleted
+    )
+}
+
+fn current_unix_time_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 fn should_publish_maintenance_plan(actor: MemberId, local_member: MemberId) -> bool {
@@ -663,9 +744,13 @@ async fn submit_bark_operation(
 
 #[cfg(test)]
 mod tests {
-    use cdk::federation::MemberId;
+    use cdk::federation::{FederationBarkSemanticPhase, MemberId};
 
-    use super::{bark_maintenance_retry_delay, should_publish_maintenance_plan};
+    use super::{
+        bark_maintenance_retry_delay, payment_phase_is_terminal,
+        payment_state_blocks_routine_maintenance, should_publish_maintenance_plan,
+        BARK_MAINTENANCE_INTERVAL,
+    };
 
     #[test]
     fn maintenance_failures_back_off_to_five_minutes() {
@@ -674,6 +759,75 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(seconds, [5, 10, 20, 40, 80, 160, 300, 300]);
+    }
+
+    #[test]
+    fn idle_maintenance_scans_drop_below_one_per_minute() {
+        let mut elapsed = BARK_MAINTENANCE_INTERVAL;
+        let mut scans = 0_u32;
+        let mut no_progress = 0_u32;
+        while elapsed <= std::time::Duration::from_secs(5 * 60) {
+            scans = scans.saturating_add(1);
+            no_progress = no_progress.saturating_add(1);
+            elapsed = elapsed.saturating_add(bark_maintenance_retry_delay(no_progress));
+        }
+
+        assert_eq!(scans, 6);
+        assert!(scans < 60);
+    }
+
+    #[test]
+    fn only_terminal_payment_phases_release_routine_maintenance() {
+        for phase in [
+            FederationBarkSemanticPhase::ReceiveClaimed,
+            FederationBarkSemanticPhase::PaymentSucceeded,
+            FederationBarkSemanticPhase::RevocationCompleted,
+        ] {
+            assert!(payment_phase_is_terminal(phase));
+        }
+        for phase in [
+            FederationBarkSemanticPhase::ReceivePrepared,
+            FederationBarkSemanticPhase::PaymentFailed,
+            FederationBarkSemanticPhase::RevocationPlanned,
+        ] {
+            assert!(!payment_phase_is_terminal(phase));
+        }
+    }
+
+    #[test]
+    fn active_or_evidenced_payment_blocks_routine_maintenance() {
+        let expires_at = 1_000;
+
+        assert!(payment_state_blocks_routine_maintenance(
+            FederationBarkSemanticPhase::ReceivePrepared,
+            Some(expires_at),
+            false,
+            expires_at,
+        ));
+        assert!(!payment_state_blocks_routine_maintenance(
+            FederationBarkSemanticPhase::ReceivePrepared,
+            Some(expires_at),
+            false,
+            expires_at + 901,
+        ));
+        assert!(payment_state_blocks_routine_maintenance(
+            FederationBarkSemanticPhase::ReceivePrepared,
+            Some(expires_at),
+            true,
+            expires_at + 901,
+        ));
+        assert!(payment_state_blocks_routine_maintenance(
+            FederationBarkSemanticPhase::PaymentFailed,
+            None,
+            false,
+            expires_at + 901,
+        ));
+        assert!(!payment_state_blocks_routine_maintenance(
+            FederationBarkSemanticPhase::PaymentSucceeded,
+            None,
+            false,
+            expires_at,
+        ));
     }
 
     #[test]

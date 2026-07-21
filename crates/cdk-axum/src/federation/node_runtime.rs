@@ -415,6 +415,11 @@ impl FederationNodeRuntime {
         &self.components.wallet.bark_incoming
     }
 
+    #[cfg(feature = "federation-bark")]
+    pub(crate) fn bark_maintenance_lock(&self) -> &Arc<tokio::sync::Mutex<()>> {
+        &self.components.wallet.bark_maintenance
+    }
+
     #[cfg(test)]
     pub(crate) fn set_frost_signing_for_test(
         &mut self,

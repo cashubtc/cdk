@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, and 5 complete; Milestone 2 rejected; Milestone 6 is next
+Status: Milestones 0, 0A, 1, 3, 4, 5, and 6 complete; Milestone 2 rejected; Milestone 4A is next
 
 First recorded: 2026-07-20
 
@@ -846,8 +846,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Complete | `f09a8d40d` |
 | 4 | Reduce excess Ark probes and observations with threshold-first polling and measured backoff | Complete | `c248a441f` |
 | 4A | Make accepted Bark custody signer plans recover safely from unavailable signers | Not started | - |
-| 5 | Remove duplicate wallet submissions and audit serial Bark operations | Complete | `perf: deduplicate federated wallet operation submission` |
-| 6 | Isolate Bark maintenance from payment hot paths and terminalize permanent failures | Not started | - |
+| 5 | Remove duplicate wallet submissions and audit serial Bark operations | Complete | `4148162c7` |
+| 6 | Isolate Bark maintenance from payment hot paths and retire safely expired receives | Complete | `fix: isolate federated Bark maintenance from payments` |
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Not started | - |
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Not started | - |
 
@@ -2051,9 +2051,11 @@ publisher module. No unrelated lint cleanup was folded into this milestone.
 
 ### Goal
 
-Prevent refresh, old receives, expired HTLCs, invalid reservations, and
-non-retryable signing sessions from competing with active payments or polling
-forever.
+Prevent refresh and safely expired incoming work from competing with active
+payments or polling forever. Accepted invalid reservations, exhausted signer
+attempts, and non-retryable FROST sessions require a consensus-authorized
+recovery protocol and belong exclusively to Milestone 4A; this milestone must
+not guess from backend error text or silently abandon accepted custody work.
 
 ### Current evidence
 
@@ -2064,33 +2066,42 @@ forever.
   longer make progress.
 - Five-second maintenance attempts can overlap payment-related FROST and Ark
   work.
+- The automatic loop and authenticated operator retry called the same
+  maintenance driver without sharing a per-member execution lease.
+- Actor checks, member-scoped observations, and terminal maintenance-phase
+  exclusion were already correct after Milestone 0A and should be reused, not
+  replaced.
 
 ### Checklist
 
-- [ ] Check accepted actor/member role before any actor-only Bark side effect.
-- [ ] Restrict non-actors to member-scoped observations.
-- [ ] Prevent concurrent execution of the same maintenance action.
-- [ ] Give active receive, send, claim, and revocation work priority over
+- [x] Check accepted actor/member role before any actor-only Bark side effect.
+- [x] Restrict non-actors to member-scoped observations.
+- [x] Prevent concurrent execution of the same maintenance action.
+- [x] Give active receive, send, claim, and revocation work priority over
       routine refresh.
-- [ ] Classify expired HTLC, invalid reserved input, exhausted attempt lineage,
-      and non-retryable FROST session into explicit terminal or operator-required
-      states.
-- [ ] Remove terminal actions from automatic selection and Ark polling.
-- [ ] Keep authenticated operator retry only where its replay contract is safe
+- [x] Retire an expired unpaid receive only after a 15-minute grace period and
+      only when no accepted HTLC evidence exists.
+- [x] Assign invalid reserved inputs, exhausted attempt lineage, and
+      non-retryable FROST recovery to Milestone 4A instead of parsing errors or
+      adding a second retry policy here.
+- [x] Remove terminal actions from automatic selection and Ark polling.
+- [x] Keep authenticated operator retry only where its replay contract is safe
       and documented.
-- [ ] Apply external no-progress backoff to routine maintenance instead of a
+- [x] Apply external no-progress backoff to routine maintenance instead of a
       permanent five-second loop.
-- [ ] Measure maintenance overlap, Ark RPCs, FROST requests, and payment-stage
+- [x] Measure maintenance overlap, Ark RPCs, FROST requests, and payment-stage
       latency before and after.
 
 ### Tests
 
-- [ ] Only the accepted actor executes refresh.
-- [ ] Every member can submit its own evidence without author mismatch.
-- [ ] An expired receive becomes terminal and performs no later Ark RPC.
-- [ ] A non-retryable FROST session is not retried automatically.
-- [ ] Active payment finalization proceeds while refresh is due.
-- [ ] Restart does not reactivate terminal automatic work.
+- [x] Only the accepted actor executes refresh.
+- [x] Every member can submit its own evidence without author mismatch.
+- [x] An expired receive becomes terminal before any Bark runtime or Ark call.
+- [x] Active payment finalization proceeds while routine refresh is due.
+- [x] Completion removes the persisted payment schedule, so restart does not
+      reactivate terminal automatic work.
+- [ ] Non-retryable FROST recovery tests are owned by Milestone 4A and remain a
+      prerequisite for the sustained member-loss gate.
 
 ### Success criteria
 
@@ -2101,6 +2112,75 @@ forever.
   payment critical path in the repeated healthy sample.
 - The milestone is committed as
   `fix: isolate federated Bark maintenance from payments`.
+
+### Progress record — 2026-07-21
+
+Milestone 6 is `Complete`, decision `Kept`. The implementation is contained in
+the existing Bark maintenance driver, incoming advancement path, and runtime
+component holder. It adds no payment-method branch, rate-limit parser, second
+scheduler, configuration knob, or new protocol state.
+
+Automatic maintenance and authenticated exact-action retry now share one
+per-member mutex, so they cannot execute the same accepted action concurrently
+inside a member. The existing accepted actor checks remain immediately before
+refresh, exit registration, exit publication, and exit confirmation side
+effects. Non-actors still apply accepted state locally and publish only their
+own member observation. Terminal maintenance phases remain absent from the
+automatic selector.
+
+Routine maintenance now reads the accepted projection and yields before Bark
+maintenance work whenever any nonterminal receive, send, claim, failure, or
+revocation action is active. An unpaid receive is exempt only after its
+accepted expiry plus a 15-minute grace period and only if no accepted HTLC
+evidence exists. The incoming driver makes the same decision before applying
+the receive plan or calling any Bark/Ark status path, returns `Complete`, and
+thereby removes the exact persisted quote schedule. Accepted evidence always
+fails closed and keeps the action live; it is never discarded merely because
+the invoice clock elapsed.
+
+The fixed five-second maintenance interval is replaced by a single bounded
+no-progress sequence of 5, 10, 20, 40, 80, 160, then 300 seconds. Any accepted
+maintenance progress resets it to five seconds. A deterministic test and a
+temporary identifier-free live probe both measured six attempts per member in
+the first five minutes, versus 60 under the old loop: 30 rather than 300 total
+five-member scans, a 90% reduction. At the cap, an idle member performs one
+scan per five minutes rather than 60. Errors and ordinary no-work use the same
+policy; no server error string changes the delay.
+
+The fresh local five-member release run then created a 10,000-sat invoice and
+paid it through the authenticated Signet faucet. External payer processing
+dominated the 320-second durable quote interval. Once Bark detected the
+payment, the actor's receive movement completed in 18.1 seconds. The lifecycle
+accepted 15 operations with zero duplicate finalized items, used the expected
+single threshold claim signing action, issued exactly 10,000 sats, and
+converged on the same 15-operation order and application digests on all five
+members.
+
+A maintenance deadline fired while that quote remained in
+`ReceivePrepared`. It returned without a maintenance plan, reservation, Ark
+call, or maintenance FROST action; the payment subsequently completed. After
+the payment was terminal, a clean-binary restart allowed due refresh work to
+publish one plan and five member observations. This demonstrates priority,
+not a global maintenance disable: routine work yields during the payment and
+resumes afterward. No actor/author mismatch, duplicate maintenance item,
+rate-limit response, or maintenance error appeared.
+
+Invalid reservations and exhausted or non-retryable FROST attempts are not
+safe to infer from redacted backend errors. Their recovery must change the
+accepted signer attempt while preserving nonce and side-effect safety, so the
+availability injection and automatic-retry failure remain recorded under
+Milestone 4A. Keeping that protocol work in one milestone avoids coupling the
+generic maintenance backoff to Bark error variants.
+
+Temporary attempt logging was removed before the final source validation and
+clean release rebuild. Regression coverage includes the exact idle delay
+sequence, active/evidenced payment priority, actor ownership, expiry grace and
+accepted-evidence exception, and persisted schedule removal on `Complete`.
+The focused tests passed, the full serial federation-enabled `cdk-axum`
+library suite passed 551 tests with two intentional stress/benchmark ignores,
+and all-target checking plus doc tests passed. The exact clean release binary
+also restarted the five-member state with identical member digests before
+routine post-payment refresh resumed.
 
 ## Milestone 7: measured consensus timing evaluation
 
@@ -2298,6 +2378,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | Milestone 4 availability injection | local release, five loopback members, one selected member paused | incoming observer fallback followed by claim | fallback member supplied the third HTLC observation after six seconds; HTLC-ready and claim plan were accepted; fixed signer set then stalled and restored signer encountered a non-retryable attempt; no preimage or claim accepted | Observer fallback works, but accepted custody plans cannot recover from a missing fixed signer; isolate as Milestone 4A before sustained release testing |
 | 2026-07-21 | exact clean Milestone 4 release binaries | local release, five loopback members, SQLite, real Signet | one 1,000-sat outgoing success and all-member restart | store `PAID` in 23s; exact 25-sat fee; 10 accepted operations; three duplicate wallet items; 40 operations and identical digests on all members before and after restart; no temporary probe in binary | Final rebuild and replay confirm the retained source, cardinality, accounting, terminal cleanup, and convergence without disposable instrumentation |
 | 2026-07-21 | Milestone 5 designated wallet publication | local release plus controlled live five-member AlephBFT A/B | one incoming mint, three outgoing melts, five repeated direct-publication controls, and offline-primary fault injection | finalized identical wallet items 5 -> 1; application-bearing messages 164 -> 44 and bytes 176,300 -> 47,344 in the first recorded run; five-run median messages 168 -> 28, bytes 180,600 -> 30,128, and finality 2,137 -> 2,048ms; offline primary fell back after 3s with one item; real-flow duplicate counter stayed at 11 | Keep the generic `Mint`/`Melt`/`Swap` publisher coordinator. The slower external Signet interval preceded an explicit Ark outage and is not a controlled candidate regression; repeated isolated A/B had no median regression. No serial Bark boundary passed the safety-removal gate. |
+| 2026-07-21 | Milestone 6 maintenance isolation candidate | local release, fresh five-member loopback federation, SQLite, real Signet | five-minute idle window plus one 10,000-sat incoming success and clean restart | idle scans 300 -> 30 across five members in five minutes; a maintenance deadline during `ReceivePrepared` produced zero maintenance operations and zero custody actions; payment accepted 15 operations, zero duplicate items, completed Bark receive in 18.1s after detection, issued exactly 10,000 sats, and converged on all members; post-terminal refresh resumed | Keep one shared maintenance lease, payment-priority yield, safely expired receive retirement, and no-progress backoff. External payer processing dominated the 320s quote interval. Invalid reservations and non-retryable signer attempts remain exclusively in Milestone 4A rather than driving error-string policy. |
 
 ## Completion checklist
 
@@ -2314,7 +2395,8 @@ Append future evidence here rather than rewriting historical results.
 - [x] Wallet fan-out does not multiply normal consensus submissions.
 - [x] Every remaining serial Bark operation protects a documented distinct
       safety or side-effect boundary.
-- [ ] Maintenance does not compete with active payments and terminal work stops.
+- [x] Maintenance does not compete with active payments and safely terminal
+      work stops.
 - [ ] Repeated local federation, CLI, faucet, and store measurements satisfy
       the retained milestone gates; the Nocean deployment smoke check passes.
 - [ ] Restart, replay, catch-up, member loss, rate limit, threshold failure,

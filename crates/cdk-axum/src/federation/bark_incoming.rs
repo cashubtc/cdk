@@ -30,6 +30,7 @@ use super::payment_schedule::FederationPaymentAdvancement;
 use super::peer_client::FederationRestPeerClient;
 
 const FEDERATION_BARK_RECEIVE_INTENT_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
+const FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS: u64 = 15 * 60;
 const FEDERATION_BARK_QUOTE_ID_DOMAIN: &[u8] = b"cdk-federation-bark-quote-id-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +172,23 @@ pub(super) async fn advance_federated_bark_mint_quote(
     let FederationBarkOperation::ReceivePrepared(prepared) = &prepared_record.operation else {
         return Err(cdk::Error::Internal);
     };
+    let accepted_evidence_present = projection.observations.iter().any(|record| {
+        matches!(
+            &record.operation,
+            FederationBarkOperation::MemberObservation(observation)
+                if observation.action_id == action.action_id
+                    && observation.status == FederationBarkObservationStatus::Accepted
+        )
+    });
+    if action.phase == FederationBarkSemanticPhase::ReceivePrepared
+        && receive_is_automatically_terminal(
+            prepared.expires_at,
+            accepted_evidence_present,
+            unix_time()?,
+        )
+    {
+        return Ok(FederationPaymentAdvancement::Complete);
+    }
     if action.phase != FederationBarkSemanticPhase::ReceiveClaimed {
         runtime
             .apply_receive_prepared(&intent, prepared)
@@ -222,14 +240,6 @@ pub(super) async fn advance_federated_bark_mint_quote(
                 }
                 FederatedBarkReceiveObservationStep::PollArk => {}
             }
-            let accepted_evidence_present = projection.observations.iter().any(|record| {
-                matches!(
-                    &record.operation,
-                    FederationBarkOperation::MemberObservation(observation)
-                        if observation.action_id == action.action_id
-                            && observation.status == FederationBarkObservationStatus::Accepted
-                )
-            });
             if !is_selected_bark_observer(
                 federation.public_config().members.keys().copied(),
                 receive_actor,
@@ -538,6 +548,15 @@ pub(super) async fn advance_federated_bark_mint_quote(
         }
         _ => Ok(FederationPaymentAdvancement::Complete),
     }
+}
+
+pub(super) fn receive_is_automatically_terminal(
+    expires_at: u64,
+    accepted_evidence_present: bool,
+    now: u64,
+) -> bool {
+    !accepted_evidence_present
+        && now >= expires_at.saturating_add(FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS)
 }
 
 /// Retry invoice preparation for one exact accepted receive intent.
@@ -1016,8 +1035,9 @@ mod tests {
     use cdk::{Amount, Error};
 
     use super::{
-        federated_bark_quote_id, receive_observation_step, FederatedBarkReceiveObservationStep,
-        FederationBarkActionId, FederationId,
+        federated_bark_quote_id, receive_is_automatically_terminal, receive_observation_step,
+        FederatedBarkReceiveObservationStep, FederationBarkActionId, FederationId,
+        FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS,
     };
 
     fn request(pubkey: Option<PublicKey>, amount: u64) -> MintQuoteRequest {
@@ -1122,6 +1142,28 @@ mod tests {
             receive_observation_step(&projection, action_id, member(1), false, 3),
             FederatedBarkReceiveObservationStep::PollArk,
         );
+    }
+
+    #[test]
+    fn expired_receive_stops_only_after_grace_without_accepted_evidence() {
+        let expires_at = 1_000;
+        let terminal_at = expires_at + FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS;
+
+        assert!(!receive_is_automatically_terminal(
+            expires_at,
+            false,
+            terminal_at - 1,
+        ));
+        assert!(receive_is_automatically_terminal(
+            expires_at,
+            false,
+            terminal_at,
+        ));
+        assert!(!receive_is_automatically_terminal(
+            expires_at,
+            true,
+            terminal_at,
+        ));
     }
 
     #[test]
