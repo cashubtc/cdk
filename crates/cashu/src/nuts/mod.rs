@@ -73,8 +73,8 @@ pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
 pub use nut17::NotificationPayload;
 pub use nut18::{
-    Nut10SecretRequest, PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload, Transport,
-    TransportBuilder, TransportType,
+    Nut10SecretRequest, PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload,
+    SupportedMethod, Transport, TransportBuilder, TransportType,
 };
 pub use nut23::{
     MeltOptions, MeltQuoteBolt11Request, MeltQuoteBolt11Response, MintQuoteBolt11Request,

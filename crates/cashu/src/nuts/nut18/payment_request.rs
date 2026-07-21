@@ -17,33 +17,101 @@ use crate::Amount;
 
 const PAYMENT_REQUEST_PREFIX: &str = "creqA";
 
-/// Payment Request
+/// Payment method accepted by the receiver for a payment request.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SupportedMethod {
+    /// Payment method name, such as `bolt11`, `bolt12`, or `onchain`.
+    #[serde(rename = "mn")]
+    pub method: String,
+    /// Additional fee in the request unit for payments from non-preferred mints.
+    #[serde(rename = "mf")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fee: Option<Amount>,
+}
+
+impl SupportedMethod {
+    /// Create a supported method without an additional method fee.
+    pub fn new<S>(method: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            method: method.into(),
+            fee: None,
+        }
+    }
+
+    /// Create a supported method with an additional method fee.
+    pub fn with_fee<S, A>(method: S, fee: A) -> Self
+    where
+        S: Into<String>,
+        A: Into<Amount>,
+    {
+        Self {
+            method: method.into(),
+            fee: Some(fee.into()),
+        }
+    }
+}
+
+/// NUT-18 payment request.
+///
+/// A receiver creates this request to tell a payer how much to send, which
+/// mints and payment methods are acceptable, and which transports can deliver
+/// the resulting [`PaymentRequestPayload`].
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentRequest {
-    /// `Payment id`
+    /// Payment id to include in the payment payload.
     #[serde(rename = "i")]
     pub payment_id: Option<String>,
-    /// Amount
+    /// Requested amount net of input fees.
+    ///
+    /// If this is set, [`Self::unit`] must also be set.
     #[serde(rename = "a")]
     pub amount: Option<Amount>,
-    /// Unit
+    /// Unit of the requested amount.
     #[serde(rename = "u")]
     pub unit: Option<CurrencyUnit>,
-    /// Single use
+    /// Whether this request is intended for a single payment.
     #[serde(rename = "s")]
     pub single_use: Option<bool>,
-    /// Mints
+    /// Mint URLs the receiver accepts or prefers.
+    ///
+    /// If non-empty and [`Self::mint_preferred`] is omitted or `false`, this
+    /// list is strict and the payer must only send proofs from these mints. If
+    /// [`Self::mint_preferred`] is `true`, this list is advisory and other
+    /// mints may be used.
     #[serde(rename = "m")]
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub mints: Vec<MintUrl>,
-    /// Description
+    /// Whether [`Self::mints`] is preferred instead of strict.
+    ///
+    /// `true` means the payer should prefer the listed mints but may send from
+    /// others. `false` or omitted means the mint list is strict. Ignored when
+    /// [`Self::mints`] is empty.
+    #[serde(rename = "mp")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mint_preferred: Option<bool>,
+    /// Payment methods the payer's mint must support.
+    ///
+    /// If non-empty, the payer must send ecash from a mint that supports at
+    /// least one listed method. Each method can carry a fee that only applies
+    /// to payments from non-preferred mints, or from any mint if no mint list is
+    /// set.
+    #[serde(rename = "sm")]
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub supported_methods: Vec<SupportedMethod>,
+    /// Human-readable description for the payer to display.
     #[serde(rename = "d")]
     pub description: Option<String>,
-    /// Transport
+    /// Transports for delivering the payment payload, sorted by preference.
+    ///
+    /// An empty list means the payment is expected to be delivered in-band by
+    /// the surrounding protocol.
     #[serde(rename = "t")]
     #[serde(skip_serializing_if = "Vec::is_empty", default = "Vec::default")]
     pub transports: Vec<Transport>,
-    /// Nut10
+    /// Optional NUT-10 locking condition requested for the payment proofs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nut10: Option<Nut10SecretRequest>,
 }
@@ -88,7 +156,18 @@ impl FromStr for PaymentRequest {
 
         let decode_config = general_purpose::GeneralPurposeConfig::new()
             .with_decode_padding_mode(bitcoin::base64::engine::DecodePaddingMode::Indifferent);
-        let decoded = GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s)?;
+        let decoded = match GeneralPurpose::new(&alphabet::URL_SAFE, decode_config).decode(s) {
+            Ok(decoded) => decoded,
+            Err(url_safe_err) => {
+                let decode_config = general_purpose::GeneralPurposeConfig::new()
+                    .with_decode_padding_mode(
+                        bitcoin::base64::engine::DecodePaddingMode::Indifferent,
+                    );
+                GeneralPurpose::new(&alphabet::STANDARD, decode_config)
+                    .decode(s)
+                    .map_err(|_| url_safe_err)?
+            }
+        };
 
         Ok(ciborium::from_reader(&decoded[..])?)
     }
@@ -102,6 +181,8 @@ pub struct PaymentRequestBuilder {
     unit: Option<CurrencyUnit>,
     single_use: Option<bool>,
     mints: Vec<MintUrl>,
+    mint_preferred: Option<bool>,
+    supported_methods: Vec<SupportedMethod>,
     description: Option<String>,
     transports: Vec<Transport>,
     nut10: Option<Nut10SecretRequest>,
@@ -117,7 +198,10 @@ impl PaymentRequestBuilder {
         self
     }
 
-    /// Set amount
+    /// Set requested amount.
+    ///
+    /// Call [`Self::unit`] as well to produce a spec-valid fixed-amount
+    /// request.
     pub fn amount<A>(mut self, amount: A) -> Self
     where
         A: Into<Amount>,
@@ -144,9 +228,34 @@ impl PaymentRequestBuilder {
         self
     }
 
-    /// Set mints
+    /// Set mint URLs the receiver accepts or prefers.
+    ///
+    /// Unless [`Self::mint_preferred`] is set to `true`, a non-empty list is
+    /// strict.
     pub fn mints(mut self, mints: Vec<MintUrl>) -> Self {
         self.mints = mints;
+        self
+    }
+
+    /// Set whether the mint list is preferred instead of strict.
+    ///
+    /// `true` means the payer should prefer listed mints but may use other
+    /// mints. `false` means the payer must only use listed mints. Omit this
+    /// field to get the same strict behavior as `false`.
+    pub fn mint_preferred(mut self, mint_preferred: bool) -> Self {
+        self.mint_preferred = Some(mint_preferred);
+        self
+    }
+
+    /// Set payment methods the payer's mint must support.
+    pub fn supported_methods(mut self, methods: Vec<SupportedMethod>) -> Self {
+        self.supported_methods = methods;
+        self
+    }
+
+    /// Add a payment method the payer's mint must support.
+    pub fn add_supported_method(mut self, method: SupportedMethod) -> Self {
+        self.supported_methods.push(method);
         self
     }
 
@@ -182,6 +291,8 @@ impl PaymentRequestBuilder {
             unit: self.unit,
             single_use: self.single_use,
             mints: self.mints,
+            mint_preferred: self.mint_preferred,
+            supported_methods: self.supported_methods,
             description: self.description,
             transports: self.transports,
             nut10: self.nut10,
@@ -249,6 +360,8 @@ mod tests {
             mints: vec!["https://nofees.testnut.cashu.space"
                 .parse()
                 .expect("valid mint url")],
+            mint_preferred: None,
+            supported_methods: vec![],
             description: None,
             transports: vec![transport.clone()],
             nut10: None,
@@ -403,6 +516,58 @@ mod tests {
     }
 
     #[test]
+    fn test_mint_preferred_serializes_as_mp() {
+        let payment_request = PaymentRequestBuilder::default()
+            .mints(vec![MintUrl::from_str("https://mint.example.com").unwrap()])
+            .mint_preferred(true)
+            .build();
+
+        let value = serde_json::to_value(&payment_request).unwrap();
+
+        assert_eq!(value.get("mp"), Some(&serde_json::Value::Bool(true)));
+        assert!(value.get("ms").is_none());
+
+        let decoded: PaymentRequest = serde_json::from_value(serde_json::json!({
+            "m": ["https://mint.example.com"],
+            "mp": false
+        }))
+        .unwrap();
+        assert_eq!(decoded.mint_preferred, Some(false));
+    }
+
+    #[test]
+    fn test_supported_methods_serialize_as_method_objects() {
+        let payment_request = PaymentRequestBuilder::default()
+            .add_supported_method(SupportedMethod::new("bolt11"))
+            .add_supported_method(SupportedMethod::with_fee("bolt12", 5))
+            .build();
+
+        let value = serde_json::to_value(&payment_request).unwrap();
+        assert_eq!(
+            value.get("sm"),
+            Some(&serde_json::json!([
+                { "mn": "bolt11" },
+                { "mn": "bolt12", "mf": 5 }
+            ]))
+        );
+
+        let decoded: PaymentRequest = serde_json::from_value(serde_json::json!({
+            "sm": [
+                { "mn": "bolt11" },
+                { "mn": "bolt12", "mf": 5 }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            decoded.supported_methods,
+            vec![
+                SupportedMethod::new("bolt11"),
+                SupportedMethod::with_fee("bolt12", 5),
+            ]
+        );
+    }
+
+    #[test]
     fn test_nut10_secret_request_htlc() {
         let bolt11 = "lnbc100n1p5z3a63pp56854ytysg7e5z9fl3w5mgvrlqjfcytnjv8ff5hm5qt6gl6alxesqdqqcqzzsxqyz5vqsp5p0x0dlhn27s63j4emxnk26p7f94u0lyarnfp5yqmac9gzy4ngdss9qxpqysgqne3v0hnzt2lp0hc69xpzckk0cdcar7glvjhq60lsrfe8gejdm8c564prrnsft6ctxxyrewp4jtezrq3gxxqnfjj0f9tw2qs9y0lslmqpfu7et9";
 
@@ -525,6 +690,72 @@ mod tests {
         assert_eq!(
             decoded_from_spec.mints,
             vec![MintUrl::from_str("https://8333.space:3338").unwrap()]
+        );
+    }
+
+    #[test]
+    fn test_complete_payment_request() {
+        // Complete payment request with all optional fields included
+        let expected_encoded = "creqAqGF0gaNhdGRwb3N0YWF4G2h0dHBzOi8vYXBpLmV4YW1wbGUuY29tL3BheWFn92FpaDQ4NDBmNTFlYWEZA+hhdWNzYXRhbYF4GGh0dHBzOi8vbWludC5leGFtcGxlLmNvbWFkcFByb2R1Y3QgcHVyY2hhc2Vhc/VlbnV0MTCjYWtkUDJQS2FkeEIwM2JhZjBjM2FjMjIwMzY2YzJjMzk3YmY5MzA1NzljNDE2MzQzNTU4NGY1NzNiMTA5MTA5ODdjNTQ0YzU5ZTYxZjFhdIGCZ3B1cnBvc2Vnb2ZmbGluZQ==";
+
+        let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
+
+        assert_eq!(decoded_from_spec.payment_id, Some("4840f51e".to_string()));
+        assert_eq!(decoded_from_spec.amount, Some(Amount::from(1000)));
+        assert_eq!(decoded_from_spec.unit, Some(CurrencyUnit::Sat));
+        assert_eq!(decoded_from_spec.single_use, Some(true));
+        assert_eq!(
+            decoded_from_spec.mints,
+            vec![MintUrl::from_str("https://mint.example.com").unwrap()]
+        );
+        assert_eq!(
+            decoded_from_spec.description,
+            Some("Product purchase".to_string())
+        );
+        assert_eq!(decoded_from_spec.transports.len(), 1);
+        assert_eq!(
+            decoded_from_spec.transports[0]._type,
+            TransportType::HttpPost
+        );
+        assert_eq!(
+            decoded_from_spec.transports[0].target,
+            "https://api.example.com/pay"
+        );
+
+        let nut10 = decoded_from_spec.nut10.expect("nut10");
+        assert_eq!(nut10.kind, Kind::P2PK);
+        assert_eq!(
+            nut10.data,
+            "03baf0c3ac220366c2c397bf930579c4163435584f573b10910987c544c59e61f1"
+        );
+        assert_eq!(
+            nut10.tags,
+            Some(vec![vec!["purpose".to_string(), "offline".to_string()]])
+        );
+    }
+
+    #[test]
+    fn test_http_transport_payment_request() {
+        // HTTP POST transport payment request
+        let expected_encoded = "creqApWF0gaNhdGRwb3N0YWF4H2h0dHBzOi8vYXBpLmV4YW1wbGUuY29tL3JlY2VpdmVhZ/dhaWhhMmMxMmY0NWFhGDJhdWNzYXRhbYF4GWh0dHBzOi8vY2FzaHUuZXhhbXBsZS5jb20=";
+
+        let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
+
+        assert_eq!(decoded_from_spec.payment_id, Some("a2c12f45".to_string()));
+        assert_eq!(decoded_from_spec.amount, Some(Amount::from(50)));
+        assert_eq!(decoded_from_spec.unit, Some(CurrencyUnit::Sat));
+        assert_eq!(
+            decoded_from_spec.mints,
+            vec![MintUrl::from_str("https://cashu.example.com").unwrap()]
+        );
+        assert_eq!(decoded_from_spec.transports.len(), 1);
+        assert_eq!(
+            decoded_from_spec.transports[0]._type,
+            TransportType::HttpPost
+        );
+        assert_eq!(
+            decoded_from_spec.transports[0].target,
+            "https://api.example.com/receive"
         );
     }
 
@@ -685,6 +916,33 @@ mod tests {
     }
 
     #[test]
+    fn test_preferred_mint_list_with_supported_methods() {
+        // Preferred mint list with supported methods and per-method fee
+        let expected_encoded = "creqApmFpdXByZWZlcnJlZF9mZWVfbWV0aG9kc2FhGGRhdWNzYXRhbYF4GGh0dHBzOi8vbWludC5leGFtcGxlLmNvbWJtcPVic22CoWJtbmZib2x0MTGiYm1uZmJvbHQxMmJtZgU=";
+
+        let decoded_from_spec = PaymentRequest::from_str(expected_encoded).unwrap();
+
+        assert_eq!(
+            decoded_from_spec.payment_id,
+            Some("preferred_fee_methods".to_string())
+        );
+        assert_eq!(decoded_from_spec.amount, Some(Amount::from(100)));
+        assert_eq!(decoded_from_spec.unit, Some(CurrencyUnit::Sat));
+        assert_eq!(
+            decoded_from_spec.mints,
+            vec![MintUrl::from_str("https://mint.example.com").unwrap()]
+        );
+        assert_eq!(decoded_from_spec.mint_preferred, Some(true));
+        assert_eq!(
+            decoded_from_spec.supported_methods,
+            vec![
+                SupportedMethod::new("bolt11"),
+                SupportedMethod::with_fee("bolt12", 5),
+            ]
+        );
+    }
+
+    #[test]
     fn test_from_str_handles_both_formats() {
         // Create a payment request
         let payment_request = PaymentRequest {
@@ -693,6 +951,8 @@ mod tests {
             unit: Some(CurrencyUnit::Sat),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
+            mint_preferred: None,
+            supported_methods: vec![],
             description: Some("Test both formats".to_string()),
             transports: vec![],
             nut10: None,
