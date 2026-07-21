@@ -117,8 +117,20 @@ impl FederationNodeRuntime {
         );
     }
 
-    #[cfg(test)]
-    pub(crate) async fn wait_for_operation(
+    pub(crate) async fn wait_for_operation_result(
+        &self,
+        operation_id: FederationOperationId,
+    ) -> Result<Option<FederationSubmitOperationResponse>, cdk::Error> {
+        self.wait_for_operation_result_with_limit(
+            operation_id,
+            self.peer_sync_config
+                .unwrap_or_default()
+                .response_waiter_limit,
+        )
+        .await
+    }
+
+    pub(crate) async fn wait_for_operation_result_with_limit(
         &self,
         operation_id: FederationOperationId,
         waiter_limit: usize,

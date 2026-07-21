@@ -812,7 +812,6 @@ impl FederationOperationNotifications {
         }
     }
 
-    #[cfg(test)]
     async fn wait_for(
         &self,
         operation_id: FederationOperationId,
@@ -1766,7 +1765,14 @@ impl MintState {
         );
     }
 
-    pub(crate) async fn submit_federation_envelope(
+    pub(crate) fn submit_federation_envelope(
+        &self,
+        envelope: FederationOperationEnvelope,
+    ) -> futures::future::BoxFuture<'_, Result<FederationSubmitOperationResponse, cdk::Error>> {
+        Box::pin(self.submit_federation_envelope_inner(envelope))
+    }
+
+    async fn submit_federation_envelope_inner(
         &self,
         envelope: FederationOperationEnvelope,
     ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
@@ -1774,6 +1780,57 @@ impl MintState {
             .await?;
         let operation_id = envelope.operation_id()?;
         self.ensure_federation_ready_for_public_submit().await?;
+
+        let coordinate_wallet_publication =
+            federation::wallet_operation_publisher::coordinates(envelope.operation.kind()) && {
+                #[cfg(test)]
+                {
+                    !(self.federation.local_finality_test || self.federation.manual_finality_test)
+                }
+                #[cfg(not(test))]
+                {
+                    true
+                }
+            };
+        if coordinate_wallet_publication {
+            return Box::pin(
+                self.submit_coordinated_wallet_federation_envelope(envelope, operation_id),
+            )
+            .await;
+        }
+
+        let response = self
+            .submit_federation_envelope_to_consensus(envelope)
+            .await?;
+        validate_federation_submit_response(&response, operation_id)?;
+        Ok(response)
+    }
+
+    async fn submit_coordinated_wallet_federation_envelope(
+        &self,
+        envelope: FederationOperationEnvelope,
+        operation_id: FederationOperationId,
+    ) -> Result<FederationSubmitOperationResponse, cdk::Error> {
+        let config = self.mint.federation_config().ok_or(cdk::Error::Internal)?;
+        let rank = federation::wallet_operation_publisher::publisher_rank(
+            config.public_config().members.keys().copied(),
+            operation_id,
+            config.member_id(),
+        )
+        .ok_or(cdk::Error::Internal)?;
+        if let Some(delay) = federation::wallet_operation_publisher::prior_publisher_wait(rank) {
+            if let Some(response) =
+                federation::wallet_operation_publisher::wait_for_prior_publisher(
+                    &self.federation,
+                    operation_id,
+                    delay,
+                )
+                .await?
+            {
+                validate_federation_submit_response(&response, operation_id)?;
+                return Ok(*response);
+            }
+        }
 
         let response = self
             .submit_federation_envelope_to_consensus(envelope)
@@ -1840,7 +1897,7 @@ impl MintState {
         waiter_limit: usize,
     ) -> Result<Option<FederationSubmitOperationResponse>, cdk::Error> {
         self.federation
-            .wait_for_operation(operation_id, waiter_limit)
+            .wait_for_operation_result_with_limit(operation_id, waiter_limit)
             .await
     }
 

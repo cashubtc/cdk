@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, and 4 complete; Milestone 2 rejected; Milestone 5 is next
+Status: Milestones 0, 0A, 1, 3, 4, and 5 complete; Milestone 2 rejected; Milestone 6 is next
 
 First recorded: 2026-07-20
 
@@ -844,9 +844,9 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 1 | Remove unnecessary inter-operation delay with one generic mint/melt advancement driver | Complete | `690b9a861` |
 | 2 | Determine and implement the smallest safe Bark incoming/outgoing event wake, or reject it | Rejected | `9f0fe6467` |
 | 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Complete | `f09a8d40d` |
-| 4 | Reduce excess Ark probes and observations with threshold-first polling and measured backoff | Complete | recorded in the milestone commit; hash added by the next update |
+| 4 | Reduce excess Ark probes and observations with threshold-first polling and measured backoff | Complete | `c248a441f` |
 | 4A | Make accepted Bark custody signer plans recover safely from unavailable signers | Not started | - |
-| 5 | Remove duplicate wallet submissions and any proven redundant serial Bark operation | Not started | - |
+| 5 | Remove duplicate wallet submissions and audit serial Bark operations | Complete | `perf: deduplicate federated wallet operation submission` |
 | 6 | Isolate Bark maintenance from payment hot paths and terminalize permanent failures | Not started | - |
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Not started | - |
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Not started | - |
@@ -1870,74 +1870,72 @@ Bark operation independently. Do not introduce opaque operation batches.
 
 ### Checklist
 
-- [ ] Treat every proposed consensus-boundary removal as an investigation
+- [x] Treat every proposed consensus-boundary removal as an investigation
       before attempting an implementation. First record the invariant the
       boundary protects, the accepted data available on every member, and the
       Byzantine-actor, crash, replay, catch-up, and recovery cases. Attempt a
       change only after that evidence shows the same security model can be
       preserved; otherwise retain the boundary and record why.
-- [ ] Count accepted entries, duplicate finalized items, units, protocol
+- [x] Count accepted entries, duplicate finalized items, units, protocol
       messages, and bytes separately.
-- [ ] For identical wallet-fanned mint or melt operations, let every member
+- [x] For identical wallet-fanned mint or melt operations, let every member
       register a waiter for the stable operation ID while one deterministic
       publisher submits first.
-- [ ] Add a short deterministic fallback publisher order for liveness.
-- [ ] Prove every waiter receives the same accepted result and cancellation
+- [x] Add a short deterministic fallback publisher order for liveness.
+- [x] Prove every waiter receives the same accepted result and cancellation
       cannot suppress fallback.
-- [ ] Recount incoming setup, outgoing setup, and mint/melt submission work.
-- [ ] Audit each serial Bark boundary against the invariant it protects:
-  - [ ] receive intent -> receive prepared;
-  - [ ] HTLC-ready -> claim plan;
-  - [ ] claim plan -> preimage disclosure -> claimed;
-  - [ ] send plan -> HTLCs cosigned -> payment initiated -> terminal result;
-  - [ ] failure -> revocation plan -> revocation completed.
-- [ ] For each boundary, document the crash or equivocation that requires it.
-- [ ] Evaluate only a boundary whose accepted data can deterministically carry
+- [x] Recount incoming setup, outgoing setup, and mint/melt submission work.
+- [x] Audit each serial Bark boundary against the invariant it protects:
+  - [x] receive intent -> receive prepared;
+  - [x] HTLC-ready -> claim plan;
+  - [x] claim plan -> preimage disclosure -> claimed;
+  - [x] send plan -> HTLCs cosigned -> payment initiated -> terminal result;
+  - [x] failure -> revocation plan -> revocation completed.
+- [x] For each boundary, document the crash or equivocation that requires it.
+- [x] Evaluate only a boundary whose accepted data can deterministically carry
       the next state without crossing an external side effect or signing
       authorization boundary.
-- [ ] Investigate materializing the mint quote from accepted receive
+- [x] Investigate materializing the mint quote from accepted receive
       preparation before attempting the change. Proceed only if invoice,
       lookup ID, amount, expiry, and requester binding remain deterministic,
       replay-safe, and equally protected against a Byzantine preparation
       actor.
-- [ ] Investigate whether `ReceiveHtlcsReady` can be derived from the exact
+- [x] Investigate whether `ReceiveHtlcsReady` can be derived from the exact
       accepted HTLC-observation quorum before attempting to remove its
       operation. The investigation must prove that every member can obtain and
       validate the complete VTXO artifacts from accepted data; an observation
       hash or trust in the actor is not sufficient, and enlarging observations
       must be included in the message/byte comparison.
-- [ ] Investigate each terminal bookkeeping transition separately before
+- [x] Investigate each terminal bookkeeping transition separately before
       attempting to derive it from an accepted Bark result quorum. Name the
       exact transition, prove deterministic reconstruction and ordering on
       replay and catch-up, and retain every transition that separates an
       external side effect, signing authorization, preimage disclosure, or
       recovery decision.
-- [ ] Investigate whether a universally verifiable success proof can safely
+- [x] Investigate whether a universally verifiable success proof can safely
       replace any terminal member observations before attempting that change.
       A valid Lightning preimage alone is not enough: the proof must bind the
       exact accepted action and demonstrate the corresponding federated Bark
       balance transition even with a Byzantine actor or colluding payee. If it
       cannot preserve the current independent-member evidence model, retain
       `max(t, q)` result observations.
-- [ ] Keep reductions as direct derived apply behavior; do not create a generic
+- [x] Keep reductions as direct derived apply behavior; do not create a generic
       Bark batch envelope.
-- [ ] Stop after the first retained serial-operation reduction, commit it, and
-      add another milestone for further independent reductions.
+- [x] Stop after the first retained serial-operation reduction, commit it, and
+      add another milestone for further independent reductions. No serial
+      Bark boundary met the removal gate, so no follow-up reduction milestone
+      was created.
 
 ### Tests
 
-- [ ] Five simultaneous identical wallet requests normally produce one
+- [x] Five simultaneous identical wallet requests normally produce one
       publisher submission and one accepted operation.
-- [ ] Publisher failure triggers fallback without changing the operation ID.
-- [ ] Waiter restart and reconnect recover the accepted result.
-- [ ] Every removed boundary has crash-before, crash-after, replay, reorder,
-      conflicting-plan, and exact-side-effect tests.
-- [ ] Any derived HTLC-ready state reconstructs and validates the same complete
-      VTXO evidence on every member without actor-local or unhashed input.
-- [ ] Any reduced terminal-result family retains exact action, quote, payment
-      hash, source, amount, fee, result, and Bark balance binding under an
-      adversarial actor and payee.
-- [ ] No preimage, signature share, Ark payment, claim, or revocation occurs
+- [x] Publisher failure triggers fallback without changing the operation ID.
+- [x] Waiter restart and reconnect recover the accepted result.
+- [x] No serial boundary was removed, so removal-specific crash, replay,
+      reorder, conflicting-plan, HTLC-reconstruction, and terminal-binding
+      tests are not applicable.
+- [x] No preimage, signature share, Ark payment, claim, or revocation occurs
       before its retained accepted boundary.
 
 ### Success criteria
@@ -1952,6 +1950,102 @@ Bark operation independently. Do not introduce opaque operation batches.
 - End-to-end latency does not regress by more than 5%.
 - The initial milestone is committed as
   `perf: deduplicate federated wallet operation submission`.
+
+### Findings and implementation
+
+The wallet already fans the same stable `Mint`, `Melt`, or `Swap` operation ID
+to all five members. Previously, every member immediately published its own
+signed envelope. The retained implementation applies only to these generic
+wallet-value operations: a deterministic operation-ID rotation chooses the
+first publisher, and later publishers wait in three-second rank slots for the
+same accepted result before falling back. Quote creation, payment evidence,
+Bark operations, and chain observations retain their existing independent
+authorship. This is backend-independent and therefore also applies to
+federated BDK and future funding backends without payment-method branching.
+
+Waiters use the existing bounded operation-result notification registry. Five
+concurrent waiters received byte-identical accepted responses; cancellation
+removed the registration; notification-state loss timed out and safely
+resubmitted the stable operation ID as a duplicate; and a live five-member
+AlephBFT run with the rank-zero member offline completed through rank-one
+fallback after three seconds with exactly one finalized item.
+
+The live same-process A/B comparison isolates the publication policy from Ark
+and Lightning variability:
+
+| Measure | Five direct publishers | Designated publisher | Change |
+| --- | ---: | ---: | ---: |
+| Finalized data items | 5 | 1 | -80.0% |
+| Application-bearing Aleph messages | 164 | 44 | -73.2% |
+| Application-bearing bytes | 176,300 | 47,344 | -73.1% |
+| Five-run median messages | 168 | 28 | -83.3% |
+| Five-run median bytes | 180,600 | 30,128 | -83.3% |
+| Five-run median finality | 2,137ms | 2,048ms | -4.2% |
+
+The exact real-release melt envelope was 1,897 bytes in both cases. Direct
+fan-out produced five finalized items, five data units, one accepted entry,
+four duplicates, and 11,309 stored finalized JSON bytes. Designated
+publication produced one item, one unit, one accepted entry, no duplicates,
+and 2,254 stored bytes. A real incoming mint and three real outgoing melts also
+left the federation-wide duplicate counter unchanged at 11.
+
+Those outgoing payments became durable in 29, 34, and 33 seconds, versus the
+Milestone 4 median of 22 seconds. This is not a controlled regression: the Ark
+server began returning an explicit outage response when the attempted
+same-federation baseline restart followed. The controlled A/B above instead
+shows that the candidate removes work without a median finality regression.
+Individual pairs varied in both directions, while the five-run candidate
+median was 4.2% faster. Keep the reduction; do not attribute the
+external-interval difference to designated publication.
+
+### Serial-boundary audit
+
+No adjacent Bark operation is safely redundant with the data currently
+accepted by consensus. Removing one would cross a side effect or discard data
+needed for deterministic replay, catch-up, or recovery:
+
+| Boundary | Distinct invariant and retained reason |
+| --- | --- |
+| `ReceiveIntent` -> `ReceivePrepared` | The intent fixes requester, destination, policy, and secret-dependent authority before invoice creation. Preparation then commits the exact Ark invoice result after that external side effect, so crash recovery cannot create or substitute a different receive. |
+| `ReceivePrepared` -> mint quote | Preparation contains invoice, payment hash, amounts, fee, expiry, and external ID, but not the requester's NUT-19 public key. The quote cannot be reconstructed with the same requester binding without adding backend-specific schema and apply coupling, so the generic `MintQuote` remains. |
+| HTLC observations -> `ReceiveHtlcsReady` | Observations bind status, amount, fee, and a result hash, not the complete canonical VTXO artifacts and transitions. Enlarging each threshold observation would duplicate the large artifacts and create new validation coupling; the actor transition remains. |
+| `ReceiveHtlcsReady` -> `ReceiveClaimPlan` | The plan fixes exact input reservations, output locator, signer roster, and signing attempt before FROST and preimage use. It is the authorization and crash-recovery boundary. |
+| `ReceiveClaimPlan` -> `PreimageDisclosed` -> `ReceiveClaimed` | Disclosure is the durable ambiguous-side-effect marker after threshold authorization; claimed commits canonical outputs, spent pending inputs, and spendable VTXO transitions after the external claim. Merging either edge loses exact crash recovery. |
+| `SendPlan` -> `SendHtlcsCosigned` | The plan reserves inputs and binds invoice, fee, change, revocation locator, signer roster, and attempt before FROST. Cosigned then persists the exact signed HTLC package and VTXO transitions so a crash resumes without re-signing or changing inputs. |
+| `SendHtlcsCosigned` -> `PaymentInitiated` -> terminal result | Initiated records exact Ark acceptance before terminal polling and resolves ambiguous initiation without double-paying. Success or failure separately commits the terminal result and exact VTXO effects. |
+| Failure -> `RevocationPlan` -> completed | The plan fixes recovery inputs, outputs, signer roster, and attempt before revocation FROST; completion commits the exact recovered balance transition. |
+
+A Lightning preimage verifies payment of the invoice but does not prove the
+corresponding federated Bark balance transition. It therefore cannot replace
+the retained independent `max(t, q)` terminal observations. Milestone 3 already
+derives ordinary Cashu payment state from that accepted Bark result quorum, so
+there is no additional generic payment vote to remove. The audit deliberately
+retains all serial Bark boundaries instead of increasing protocol coupling or
+weakening consensus-before-side-effects.
+
+All temporary A/B changes were reverted. The final source contains only the
+generic publication coordinator and durable regression tests; it contains no
+temporary production instrumentation.
+
+The operation-submission future is boxed at its existing single entry point.
+This keeps the larger coordinator state off concurrent handler stacks without
+spreading coordination logic or changing the response contract. The existing
+eight-request mint/swap/melt idempotency test caught the unboxed stack growth
+and passes with the contained form.
+
+Validation completed with the final source:
+
+- focused publisher, waiter, cancellation, restart, and offline-primary tests:
+  5 passed;
+- full serial `cdk-axum` `federation-bark` library suite with an 8 MiB Rust
+  test-thread stack: 547 passed and 2 intentional stress tests ignored;
+- `cdk-axum` doc tests and all-target build check: passed;
+- final locked release `cdk-mintd` and federated `cdk-cli` builds: passed.
+
+Strict Clippy remains blocked by existing warnings in unrelated CDK and Axum
+modules under the current toolchain. Both the dependency-inclusive and
+`--no-deps` runs reached only pre-existing findings; neither identified the new
+publisher module. No unrelated lint cleanup was folded into this milestone.
 
 ## Milestone 6: maintenance isolation and terminal cleanup
 
@@ -2203,6 +2297,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | disposable two-second candidate, reverted | fresh local release federation, SQLite, real Signet | one 10,000-sat incoming success | 59s durable, 66.473s faucet-submit-to-success, 17 status calls, 15 operations, four duplicates | Reject two-second base: latency difference was below the 15% gate while status calls rose about 26% against the retained candidate median |
 | 2026-07-21 | Milestone 4 availability injection | local release, five loopback members, one selected member paused | incoming observer fallback followed by claim | fallback member supplied the third HTLC observation after six seconds; HTLC-ready and claim plan were accepted; fixed signer set then stalled and restored signer encountered a non-retryable attempt; no preimage or claim accepted | Observer fallback works, but accepted custody plans cannot recover from a missing fixed signer; isolate as Milestone 4A before sustained release testing |
 | 2026-07-21 | exact clean Milestone 4 release binaries | local release, five loopback members, SQLite, real Signet | one 1,000-sat outgoing success and all-member restart | store `PAID` in 23s; exact 25-sat fee; 10 accepted operations; three duplicate wallet items; 40 operations and identical digests on all members before and after restart; no temporary probe in binary | Final rebuild and replay confirm the retained source, cardinality, accounting, terminal cleanup, and convergence without disposable instrumentation |
+| 2026-07-21 | Milestone 5 designated wallet publication | local release plus controlled live five-member AlephBFT A/B | one incoming mint, three outgoing melts, five repeated direct-publication controls, and offline-primary fault injection | finalized identical wallet items 5 -> 1; application-bearing messages 164 -> 44 and bytes 176,300 -> 47,344 in the first recorded run; five-run median messages 168 -> 28, bytes 180,600 -> 30,128, and finality 2,137 -> 2,048ms; offline primary fell back after 3s with one item; real-flow duplicate counter stayed at 11 | Keep the generic `Mint`/`Melt`/`Swap` publisher coordinator. The slower external Signet interval preceded an explicit Ark outage and is not a controlled candidate regression; repeated isolated A/B had no median regression. No serial Bark boundary passed the safety-removal gate. |
 
 ## Completion checklist
 
@@ -2216,8 +2311,8 @@ Append future evidence here rather than rewriting historical results.
 - [x] Healthy evidence uses threshold observers and accepted evidence suppresses
       repeat Ark I/O.
 - [x] Bark result quorum directly finalizes the ordinary Cashu payment state.
-- [ ] Wallet fan-out does not multiply normal consensus submissions.
-- [ ] Every remaining serial Bark operation protects a documented distinct
+- [x] Wallet fan-out does not multiply normal consensus submissions.
+- [x] Every remaining serial Bark operation protects a documented distinct
       safety or side-effect boundary.
 - [ ] Maintenance does not compete with active payments and terminal work stops.
 - [ ] Repeated local federation, CLI, faucet, and store measurements satisfy

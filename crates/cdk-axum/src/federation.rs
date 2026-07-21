@@ -67,6 +67,7 @@ mod status_routes;
 mod sync_config;
 mod sync_loop;
 mod wallet_liveness;
+pub(crate) mod wallet_operation_publisher;
 
 pub(crate) use self::aleph_bft_network::CdkAlephBftNetworkInboundQueue;
 use self::aleph_bft_routes::{post_aleph_bft_activity, post_aleph_bft_network_message};

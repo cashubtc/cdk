@@ -1,4 +1,291 @@
 #[tokio::test]
+async fn aleph_bft_wallet_publisher_reduces_five_member_fanout_to_one_data_unit() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let session = start_five_member_aleph_bft_live_session(
+        fast_aleph_bft_live_session_options(pump_config, 500),
+    )
+    .await
+    .expect("start wallet publisher live session");
+
+    let baseline_quote = prepare_live_paid_mint_quote(&session).await;
+    let (baseline_template, _) =
+        mint_operation_envelope(&session.states[0], &baseline_quote, b"baseline fanout");
+    let baseline_operation_id = baseline_template.operation_id().expect("baseline operation id");
+    let baseline_envelopes = session
+        .states
+        .iter()
+        .map(|state| {
+            state
+                .mint
+                .federation_config()
+                .expect("member federation config")
+                .operation_envelope(baseline_template.operation.clone())
+        })
+        .collect::<Vec<_>>();
+    assert!(baseline_envelopes.iter().all(|envelope| {
+        envelope.operation_id().expect("baseline member operation id")
+            == baseline_operation_id
+    }));
+    let baseline_started = std::time::Instant::now();
+    let baseline_responses = futures::future::join_all(
+        session
+            .states
+            .iter()
+            .zip(baseline_envelopes)
+            .map(|(state, envelope)| state.submit_federation_envelope_to_consensus(envelope)),
+    )
+    .await;
+    for response in baseline_responses {
+        assert_eq!(
+            response.expect("baseline fanout response").operation_id,
+            baseline_operation_id
+        );
+    }
+    for state in &session.states {
+        wait_for_applied_operation(state, baseline_operation_id).await;
+    }
+    let baseline_elapsed = baseline_started.elapsed();
+
+    let candidate_quote = prepare_live_paid_mint_quote(&session).await;
+    let (candidate_template, _) =
+        mint_operation_envelope(&session.states[0], &candidate_quote, b"candidate fanout");
+    let candidate_operation_id = candidate_template
+        .operation_id()
+        .expect("candidate operation id");
+    let candidate_envelopes = session
+        .states
+        .iter()
+        .map(|state| {
+            state
+                .mint
+                .federation_config()
+                .expect("member federation config")
+                .operation_envelope(candidate_template.operation.clone())
+        })
+        .collect::<Vec<_>>();
+    assert!(candidate_envelopes.iter().all(|envelope| {
+        envelope.operation_id().expect("candidate member operation id")
+            == candidate_operation_id
+    }));
+    let candidate_started = std::time::Instant::now();
+    let candidate_responses = futures::future::join_all(
+        session
+            .states
+            .iter()
+            .zip(candidate_envelopes)
+            .map(|(state, envelope)| state.submit_federation_envelope(envelope)),
+    )
+    .await;
+    let mut accepted_response = None;
+    for response in candidate_responses {
+        let response = response.expect("candidate fanout response");
+        assert_eq!(response.operation_id, candidate_operation_id);
+        let response_json = serde_json::to_vec(&response).expect("candidate response json");
+        match &accepted_response {
+            Some(expected) => assert_eq!(&response_json, expected),
+            None => accepted_response = Some(response_json),
+        }
+    }
+    for state in &session.states {
+        wait_for_applied_operation(state, candidate_operation_id).await;
+    }
+    let candidate_elapsed = candidate_started.elapsed();
+
+    let (baseline_items, candidate_items) = {
+        let consensus = session.states[0]
+            .federation
+            .consensus
+            .as_ref()
+            .expect("wallet publisher consensus")
+            .lock()
+            .await;
+        let finalized = consensus
+            .aleph_bft_finalized_items()
+            .expect("wallet publisher finalized items");
+        (
+            finalized
+                .iter()
+                .filter(|item| item.operation_id == Some(baseline_operation_id))
+                .count(),
+            finalized
+                .iter()
+                .filter(|item| item.operation_id == Some(candidate_operation_id))
+                .count(),
+        )
+    };
+    let requests = session.transport.aleph_bft_network_message_requests();
+    let baseline_requests = requests
+        .iter()
+        .filter(|request| {
+            aleph_bft_network_request_contains_operation(request, baseline_operation_id)
+        })
+        .collect::<Vec<_>>();
+    let candidate_requests = requests
+        .iter()
+        .filter(|request| {
+            aleph_bft_network_request_contains_operation(request, candidate_operation_id)
+        })
+        .collect::<Vec<_>>();
+    let baseline_bytes = baseline_requests
+        .iter()
+        .map(|request| {
+            request
+                .payload
+                .ensure_admissible_size()
+                .expect("baseline AlephBFT message size")
+        })
+        .sum::<usize>();
+    let candidate_bytes = candidate_requests
+        .iter()
+        .map(|request| {
+            request
+                .payload
+                .ensure_admissible_size()
+                .expect("candidate AlephBFT message size")
+        })
+        .sum::<usize>();
+
+    assert_eq!(baseline_items, 5);
+    assert_eq!(candidate_items, 1);
+    assert!(candidate_requests.len() < baseline_requests.len());
+    assert!(candidate_bytes < baseline_bytes);
+    eprintln!(
+        "wallet publisher traffic: baseline_items={baseline_items} candidate_items={candidate_items} baseline_messages={} candidate_messages={} baseline_bytes={baseline_bytes} candidate_bytes={candidate_bytes} baseline_elapsed_ms={} candidate_elapsed_ms={}",
+        baseline_requests.len(),
+        candidate_requests.len(),
+        baseline_elapsed.as_millis(),
+        candidate_elapsed.as_millis()
+    );
+}
+
+#[tokio::test]
+async fn aleph_bft_wallet_publisher_falls_back_when_primary_is_offline() {
+    let pump_config = CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: 256,
+        max_peer_deliveries_per_message: 256,
+    };
+    let mut session = start_five_member_aleph_bft_live_session(
+        fast_aleph_bft_live_session_options(pump_config, 500),
+    )
+    .await
+    .expect("start wallet publisher fallback session");
+    let quote_id = prepare_live_paid_mint_quote(&session).await;
+    let (template, _) =
+        mint_operation_envelope(&session.states[0], &quote_id, b"publisher fallback");
+    let operation_id = template.operation_id().expect("fallback operation id");
+    let primary_index = session
+        .states
+        .iter()
+        .position(|state| {
+            let config = state
+                .mint
+                .federation_config()
+                .expect("fallback member config");
+            wallet_operation_publisher::publisher_rank(
+                config.public_config().members.keys().copied(),
+                operation_id,
+                config.member_id(),
+            ) == Some(0)
+        })
+        .expect("deterministic primary publisher");
+    let envelopes = session
+        .states
+        .iter()
+        .map(|state| {
+            state
+                .mint
+                .federation_config()
+                .expect("fallback member federation config")
+                .operation_envelope(template.operation.clone())
+        })
+        .collect::<Vec<_>>();
+
+    *session.states[primary_index]
+        .federation
+        .aleph_bft_network_inbound
+        .write()
+        .await = None;
+    *session.states[primary_index]
+        .federation
+        .aleph_bft_live_session
+        .write()
+        .await = None;
+    session.transport.insert(
+        session.federation_api_urls[primary_index].clone(),
+        Router::new()
+            .fallback(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE })
+            .with_state(session.states[0].clone()),
+    );
+    drop(session._handles.remove(primary_index));
+
+    let started = std::time::Instant::now();
+    let responses = futures::future::join_all(
+        session
+            .states
+            .iter()
+            .zip(envelopes)
+            .enumerate()
+            .filter(|(index, _)| *index != primary_index)
+            .map(|(_, (state, envelope))| state.submit_federation_envelope(envelope)),
+    )
+    .await;
+    for response in responses {
+        assert_eq!(
+            response.expect("fallback fanout response").operation_id,
+            operation_id
+        );
+    }
+    for (index, state) in session.states.iter().enumerate() {
+        if index != primary_index {
+            wait_for_applied_operation(state, operation_id).await;
+        }
+    }
+    let finalized_item_count = {
+        let active_index = (0..session.states.len())
+            .find(|index| *index != primary_index)
+            .expect("active fallback member");
+        let consensus = session.states[active_index]
+            .federation
+            .consensus
+            .as_ref()
+            .expect("fallback consensus")
+            .lock()
+            .await;
+        consensus
+            .aleph_bft_finalized_items()
+            .expect("fallback finalized items")
+            .iter()
+            .filter(|item| item.operation_id == Some(operation_id))
+            .count()
+    };
+    assert_eq!(finalized_item_count, 1);
+    assert!(started.elapsed() >= std::time::Duration::from_secs(3));
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}
+
+async fn prepare_live_paid_mint_quote(session: &MultiMemberAlephBftLiveSession) -> QuoteId {
+    let quote_id = QuoteId::new();
+    let quote = mint_quote_envelope(&session.states[0], &quote_id);
+    let quote_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[0], quote).await;
+    for state in &session.states {
+        wait_for_applied_operation(state, quote_operation_id).await;
+    }
+    let paid = paid_observation_envelope(&session.states[0], &quote_id);
+    let paid_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.states[0], paid).await;
+    for state in &session.states {
+        wait_for_applied_operation(state, paid_operation_id).await;
+    }
+    quote_id
+}
+
+#[tokio::test]
 async fn aleph_bft_live_four_member_one_offline_value_window_catches_up_without_duplicate_payment()
 {
     run_aleph_bft_live_one_member_offline_value_window(4).await;
@@ -2183,4 +2470,3 @@ struct TwoMemberAlephBftLiveSession {
     _first_handle: Arc<AlephBftSessionSupervisor>,
     _second_handle: Arc<AlephBftSessionSupervisor>,
 }
-

@@ -727,6 +727,122 @@ async fn submit_federation_envelope_notifies_operation_acceptance() {
 }
 
 #[tokio::test]
+async fn wallet_publisher_waiters_receive_the_same_accepted_result() {
+    let (state, _, _) = federation_route_state().await;
+    let envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let operation_id = envelope.operation_id().expect("operation id");
+    let mut waiters = Vec::new();
+
+    for _ in 0..5 {
+        let waiter_state = state.clone();
+        waiters.push(tokio::spawn(async move {
+            wallet_operation_publisher::wait_for_prior_publisher(
+                &waiter_state.federation,
+                operation_id,
+                std::time::Duration::from_secs(1),
+            )
+            .await
+            .expect("publisher waiter")
+            .expect("accepted publisher result")
+        }));
+    }
+    state
+        .federation
+        .wait_for_pending_response_waiter_count(5)
+        .await;
+
+    let accepted = state
+        .submit_federation_envelope_to_consensus(envelope)
+        .await
+        .expect("publisher submission");
+    let accepted_json = serde_json::to_vec(&accepted).expect("accepted response json");
+    for waiter in waiters {
+        let response = waiter.await.expect("publisher waiter task");
+        assert_eq!(
+            serde_json::to_vec(&response).expect("waiter response json"),
+            accepted_json
+        );
+        assert_eq!(response.operation_id, operation_id);
+    }
+    assert_eq!(state.federation.pending_response_waiter_count(), 0);
+}
+
+#[tokio::test]
+async fn wallet_publisher_timeout_releases_waiter_before_fallback_submission() {
+    let (mut state, _, _) = federation_route_state().await;
+    let envelope = mint_quote_envelope(&state, &QuoteId::new());
+    let operation_id = envelope.operation_id().expect("operation id");
+
+    let prior_result = wallet_operation_publisher::wait_for_prior_publisher(
+        &state.federation,
+        operation_id,
+        std::time::Duration::from_millis(10),
+    )
+    .await
+    .expect("prior publisher wait");
+    assert!(prior_result.is_none());
+    assert_eq!(state.federation.pending_response_waiter_count(), 0);
+
+    let fallback = state
+        .submit_federation_envelope_to_consensus(envelope.clone())
+        .await
+        .expect("fallback publisher submission");
+    assert_eq!(fallback.operation_id, operation_id);
+    assert!(matches!(
+        fallback.outcome,
+        FederationJournalAppendOutcome::Appended(_)
+    ));
+
+    state.federation.notifications =
+        Some(Arc::new(crate::FederationOperationNotifications::default()));
+    let after_restart = wallet_operation_publisher::wait_for_prior_publisher(
+        &state.federation,
+        operation_id,
+        std::time::Duration::from_millis(10),
+    )
+    .await
+    .expect("publisher wait after notification restart");
+    assert!(after_restart.is_none());
+    let recovered = state
+        .submit_federation_envelope_to_consensus(envelope)
+        .await
+        .expect("fallback after notification restart");
+    assert_eq!(recovered.operation_id, operation_id);
+    assert!(matches!(
+        recovered.outcome,
+        FederationJournalAppendOutcome::Duplicate(_)
+    ));
+}
+
+#[tokio::test]
+async fn cancelling_wallet_publisher_wait_releases_its_registration() {
+    let (state, _, _) = federation_route_state().await;
+    let operation_id = mint_quote_envelope(&state, &QuoteId::new())
+        .operation_id()
+        .expect("operation id");
+    let waiter_state = state.clone();
+    let waiter = tokio::spawn(async move {
+        wallet_operation_publisher::wait_for_prior_publisher(
+            &waiter_state.federation,
+            operation_id,
+            std::time::Duration::from_secs(60),
+        )
+        .await
+    });
+    state
+        .federation
+        .wait_for_pending_response_waiter_count(1)
+        .await;
+
+    waiter.abort();
+    assert!(waiter.await.expect_err("cancelled publisher waiter").is_cancelled());
+    state
+        .federation
+        .wait_for_pending_response_waiter_count(0)
+        .await;
+}
+
+#[tokio::test]
 async fn submit_federation_envelope_returns_duplicate_when_acceptance_races_submission() {
     let (state, _, _) = federation_route_state().await;
     let quote_id = QuoteId::new();
