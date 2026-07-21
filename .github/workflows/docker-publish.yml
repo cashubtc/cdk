@@ -1,12 +1,15 @@
 name: Publish Docker Images
 
 on:
-  release:
-    types: [published]
+  # Release publishing is dispatched by static-build-publish.yml after static
+  # binary artifacts have been uploaded.
   workflow_dispatch:
     inputs:
       tag:
         description: 'Tag to build and publish'
+        required: true
+      static_artifact_run_id:
+        description: 'Workflow run ID containing the static binary artifacts'
         required: true
 
 env:
@@ -23,86 +26,98 @@ jobs:
             runner: self-hosted
             docker_platform: linux/amd64
             docker_arch: amd64
-            install_nix: false
           - name: aarch64
             runner: ubuntu-24.04-arm
             docker_platform: linux/arm64
             docker_arch: arm64
-            install_nix: true
         variant:
           - name: standard
-            nix_target: cdk-mintd-static
             tag_suffix: ""
           - name: ldk-node
-            nix_target: cdk-mintd-ldk-static
             tag_suffix: "-ldk-node"
     runs-on: ${{ matrix.arch.runner }}
     timeout-minutes: 120
     permissions:
+      actions: read
       contents: read
       packages: write
 
     steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
 
-      - name: Install Nix
-        if: ${{ matrix.arch.install_nix }}
-        uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: Set up Cachix
-        uses: cachix/cachix-action@v17
-        with:
-          name: cashudevkit
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
-          installCommand: ${{ matrix.arch.install_nix && '' || 'nix profile install nixpkgs#cachix' }}
-        continue-on-error: true
-
-      - name: Build static binary
+      - name: Determine tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          nix build .#${{ matrix.variant.nix_target }} -L
-          mkdir -p ./docker-build
-          cp -f ./result/bin/* ./docker-build/cdk-mintd
-          cp Dockerfile.static ./docker-build/Dockerfile
+          RAW_VERSION="${INPUT_TAG#refs/tags/}"
+          if [[ -z "$RAW_VERSION" ]]; then
+            echo "::error::A release tag is required"
+            exit 1
+          fi
+
+          echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download static binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-${{ matrix.arch.name }}
+          path: ./static-bin
+          run-id: ${{ inputs.static_artifact_run_id }}
+          github-token: ${{ github.token }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
         with:
           driver-opts: network=host
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Determine tag
-        id: tag
+      - name: Prepare Docker context
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          INPUT_TAG: ${{ github.event.inputs.tag }}
+          VARIANT: ${{ matrix.variant.name }}
         run: |
-          if [[ "$EVENT_NAME" == "release" ]]; then
-            RAW_VERSION="$RELEASE_TAG"
-          else
-            RAW_VERSION="$INPUT_TAG"
+          case "$VARIANT" in
+            standard)
+              binary=$(find ./static-bin -maxdepth 1 -type f -name 'cdk-mintd-*' ! -name 'cdk-mintd-ldk-*' | sort | head -n 1)
+              ;;
+            ldk-node)
+              binary=$(find ./static-bin -maxdepth 1 -type f -name 'cdk-mintd-ldk-*' | sort | head -n 1)
+              ;;
+            *)
+              echo "::error::Unknown Docker variant: $VARIANT"
+              exit 1
+              ;;
+          esac
+
+          if [[ -z "$binary" ]]; then
+            echo "::error::No static binary artifact found for $VARIANT"
+            find ./static-bin -maxdepth 1 -type f -print
+            exit 1
           fi
-          echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
+
+          mkdir -p ./docker-build
+          install -m 0755 "$binary" ./docker-build/cdk-mintd
+          cp Dockerfile.static ./docker-build/Dockerfile
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
           context: ./docker-build
           push: true
+          pull: true
           platforms: ${{ matrix.arch.docker_platform }}
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.version }}${{ matrix.variant.tag_suffix }}-${{ matrix.arch.docker_arch }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=mintd-${{ matrix.variant.name }}-${{ matrix.arch.docker_arch }}
+          cache-to: type=gha,mode=max,scope=mintd-${{ matrix.variant.name }}-${{ matrix.arch.docker_arch }}
 
   manifest:
     needs: build
@@ -129,20 +144,29 @@ jobs:
       - name: Determine tag
         id: tag
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          INPUT_TAG: ${{ github.event.inputs.tag }}
-          IS_STABLE: ${{ !github.event.release.prerelease && !contains(github.event.release.tag_name, 'rc') }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [[ "$EVENT_NAME" == "release" ]]; then
-            RAW_VERSION="$RELEASE_TAG"
-            echo "is_stable=$IS_STABLE" >> "$GITHUB_OUTPUT"
-          else
-            RAW_VERSION="$INPUT_TAG"
-            echo "is_stable=false" >> "$GITHUB_OUTPUT"
+          RAW_VERSION="${INPUT_TAG#refs/tags/}"
+          if [[ -z "$RAW_VERSION" ]]; then
+            echo "::error::A release tag is required"
+            exit 1
           fi
+
+          VERSION="${RAW_VERSION#v}"
+          IS_STABLE=false
+          if PRERELEASE=$(gh release view "$RAW_VERSION" --json isPrerelease --jq '.isPrerelease' 2>/dev/null); then
+            if [[ "$PRERELEASE" == "false" && "$VERSION" != *-* ]]; then
+              IS_STABLE=true
+            fi
+          else
+            echo "::warning::Release ${RAW_VERSION} was not found; only the exact Docker tag will be published"
+          fi
+
           echo "raw_version=${RAW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "version=${RAW_VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "is_stable=${IS_STABLE}" >> "$GITHUB_OUTPUT"
 
       - name: Extract semver components
         id: semver

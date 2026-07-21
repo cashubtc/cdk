@@ -23,13 +23,15 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+
       - name: Set up Cachix
         uses: cachix/cachix-action@v17
         with:
           name: cashudevkit
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
           useDaemon: false
-          installCommand: nix profile install nixpkgs#cachix
         continue-on-error: true
 
       - name: Build cdk-mintd-static
@@ -152,6 +154,7 @@ jobs:
     needs: [build-x86_64, build-aarch64, build-aarch64-darwin]
     timeout-minutes: 10
     permissions:
+      actions: write
       contents: write
 
     steps:
@@ -177,3 +180,16 @@ jobs:
         run: |
           TAG="${INPUT_TAG:-$RELEASE_TAG}"
           gh release upload "$TAG" ./static-bin/* --clobber
+
+      - name: Trigger Docker image publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          TAG="${INPUT_TAG:-$RELEASE_TAG}"
+          gh workflow run docker-publish.yml \
+            --ref "$TAG" \
+            --field tag="$TAG" \
+            --field static_artifact_run_id="$GITHUB_RUN_ID"
