@@ -1668,6 +1668,12 @@ Bark operation independently. Do not introduce opaque operation batches.
 
 ### Checklist
 
+- [ ] Treat every proposed consensus-boundary removal as an investigation
+      before attempting an implementation. First record the invariant the
+      boundary protects, the accepted data available on every member, and the
+      Byzantine-actor, crash, replay, catch-up, and recovery cases. Attempt a
+      change only after that evidence shows the same security model can be
+      preserved; otherwise retain the boundary and record why.
 - [ ] Count accepted entries, duplicate finalized items, units, protocol
       messages, and bytes separately.
 - [ ] For identical wallet-fanned mint or melt operations, let every member
@@ -1687,9 +1693,30 @@ Bark operation independently. Do not introduce opaque operation batches.
 - [ ] Evaluate only a boundary whose accepted data can deterministically carry
       the next state without crossing an external side effect or signing
       authorization boundary.
-- [ ] Evaluate materializing the mint quote from accepted receive preparation
-      only if invoice, lookup ID, amount, expiry, and requester binding remain
-      deterministic and replay-safe.
+- [ ] Investigate materializing the mint quote from accepted receive
+      preparation before attempting the change. Proceed only if invoice,
+      lookup ID, amount, expiry, and requester binding remain deterministic,
+      replay-safe, and equally protected against a Byzantine preparation
+      actor.
+- [ ] Investigate whether `ReceiveHtlcsReady` can be derived from the exact
+      accepted HTLC-observation quorum before attempting to remove its
+      operation. The investigation must prove that every member can obtain and
+      validate the complete VTXO artifacts from accepted data; an observation
+      hash or trust in the actor is not sufficient, and enlarging observations
+      must be included in the message/byte comparison.
+- [ ] Investigate each terminal bookkeeping transition separately before
+      attempting to derive it from an accepted Bark result quorum. Name the
+      exact transition, prove deterministic reconstruction and ordering on
+      replay and catch-up, and retain every transition that separates an
+      external side effect, signing authorization, preimage disclosure, or
+      recovery decision.
+- [ ] Investigate whether a universally verifiable success proof can safely
+      replace any terminal member observations before attempting that change.
+      A valid Lightning preimage alone is not enough: the proof must bind the
+      exact accepted action and demonstrate the corresponding federated Bark
+      balance transition even with a Byzantine actor or colluding payee. If it
+      cannot preserve the current independent-member evidence model, retain
+      `max(t, q)` result observations.
 - [ ] Keep reductions as direct derived apply behavior; do not create a generic
       Bark batch envelope.
 - [ ] Stop after the first retained serial-operation reduction, commit it, and
@@ -1703,6 +1730,11 @@ Bark operation independently. Do not introduce opaque operation batches.
 - [ ] Waiter restart and reconnect recover the accepted result.
 - [ ] Every removed boundary has crash-before, crash-after, replay, reorder,
       conflicting-plan, and exact-side-effect tests.
+- [ ] Any derived HTLC-ready state reconstructs and validates the same complete
+      VTXO evidence on every member without actor-local or unhashed input.
+- [ ] Any reduced terminal-result family retains exact action, quote, payment
+      hash, source, amount, fee, result, and Bark balance binding under an
+      adversarial actor and payee.
 - [ ] No preimage, signature share, Ark payment, claim, or revocation occurs
       before its retained accepted boundary.
 
@@ -1712,7 +1744,9 @@ Bark operation independently. Do not introduce opaque operation batches.
   accepted mint/melt operation, except a bounded measured fallback race.
 - Raw consensus traffic and duplicate-item counters fall as predicted.
 - Any serial operation removed has a written safety proof and exact count
-  reduction; otherwise it remains.
+      reduction; otherwise it remains.
+- No retained reduction weakens consensus-before-side-effects, threshold
+  authority, independent result validation, replay determinism, or recovery.
 - End-to-end latency does not regress by more than 5%.
 - The initial milestone is committed as
   `perf: deduplicate federated wallet operation submission`.
