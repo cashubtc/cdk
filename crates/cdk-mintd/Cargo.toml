@@ -28,8 +28,6 @@ sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 redis = ["cdk-axum/redis"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
-# Programmatic startup used only by the cdk-integration-tests launcher binaries.
-integration-tests = []
 
 [dependencies]
 anyhow.workspace = true
@@ -63,11 +61,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true
 futures.workspace = true
-fs2.workspace = true
 serde.workspace = true
-serde_ignored.workspace = true
 serde_json.workspace = true
-toml.workspace = true
 thiserror.workspace = true
 bip39.workspace = true
 tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }

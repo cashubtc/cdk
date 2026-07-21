@@ -2,9 +2,7 @@
 
 use std::env;
 
-#[cfg(test)]
-use crate::config::PostgresAuthConfig;
-use crate::config::PostgresConfig;
+use crate::config::{PostgresAuthConfig, PostgresConfig};
 
 pub const ENV_POSTGRES_URL: &str = "CDK_MINTD_POSTGRES_URL";
 pub const ENV_POSTGRES_TLS_MODE: &str = "CDK_MINTD_POSTGRES_TLS_MODE";
@@ -47,7 +45,6 @@ impl PostgresConfig {
     }
 }
 
-#[cfg(test)]
 impl PostgresAuthConfig {
     pub fn from_env(mut self) -> Self {
         if let Ok(url) = env::var(ENV_AUTH_POSTGRES_URL) {

@@ -23,7 +23,6 @@ This guide provides configuration examples for running CDK LDK Node on different
 url = "http://127.0.0.1:8085/"
 listen_host = "127.0.0.1"
 listen_port = 8085
-mnemonic = "env:CDK_MINTD_MNEMONIC"
 
 [database]
 engine = "sqlite"
@@ -37,25 +36,23 @@ chain_source_type = "esplora"
 esplora_url = "https://mutinynet.com/api"
 gossip_source_type = "rgs"
 rgs_url = "https://rgs.mutinynet.com/snapshot/0"
-ldk_node_mnemonic = "env:CDK_MINTD_LDK_NODE_MNEMONIC"
 storage_dir_path = "~/.cdk-ldk-node/mutinynet"
 webserver_port = 8091
 ```
 
-### Import and Start
-
-Save the complete document as `mint.toml`, make both referenced mnemonic
-variables available from your secret store, then initialize the authoritative
-configuration explicitly:
+### Environment Variables
 
 ```bash
-cdk-mintd config validate --file mint.toml
-cdk-mintd config init --file mint.toml
+export CDK_MINTD_LN_BACKEND="ldk-node"
+export CDK_MINTD_LDK_NODE_BITCOIN_NETWORK="signet"
+export CDK_MINTD_LDK_NODE_ESPLORA_URL="https://mutinynet.com/api"
+export CDK_MINTD_LDK_NODE_RGS_URL="https://rgs.mutinynet.com/snapshot/0"
+export CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE="rgs"
+
 cdk-mintd
 ```
 
-For later edits, run `cdk-mintd config apply --file mint.toml`, then restart.
-Direct apply works beside a running daemon. ### Resources
+### Resources
 - **Explorer/Faucet**: <https://mutinynet.com>
 - **Esplora API**: `https://mutinynet.com/api`
 - **RGS Endpoint**: `https://rgs.mutinynet.com/snapshot/0`
@@ -100,9 +97,9 @@ webserver_port = 8091
 
 🔒 **CRITICAL SECURITY CONSIDERATIONS**:
 
-1. **Web Interface Security**: The LDK management interface has **NO AUTHENTICATION** and allows sending funds/managing channels.
+1. **Web Interface Security**: The LDK management interface has **NO AUTHENTICATION** and allows sending funds/managing channels. 
    - **NEVER** bind to `0.0.0.0` or expose publicly
-   - Only use `127.0.0.1` (localhost)
+   - Only use `127.0.0.1` (localhost) 
    - Use VPN, SSH tunneling, or reverse proxy with authentication for remote access
    - CSRF protection and non-permissive browser CORS reduce browser-based attack paths, but they do not authenticate users or replace access control
 
@@ -118,16 +115,12 @@ electrum_url = "tcp://127.0.0.1:50001"
 gossip_source_type = "p2p"
 ```
 
-For an existing mint, update the complete configuration document and apply it
-explicitly:
+The equivalent environment variables are:
 
 ```bash
-cdk-mintd config apply --file mint.toml
-# Restart cdk-mintd to activate the staged configuration.
+export CDK_MINTD_LDK_NODE_CHAIN_SOURCE_TYPE="electrum"
+export CDK_MINTD_LDK_NODE_ELECTRUM_URL="tcp://127.0.0.1:50001"
 ```
-
-Direct database apply is the default and does not require management RPC. It can
-run beside a steady daemon;
 
 ## Regtest (Development)
 
@@ -141,7 +134,7 @@ chain_source_type = "bitcoinrpc"
 bitcoind_rpc_host = "127.0.0.1"
 bitcoind_rpc_port = 18443
 bitcoind_rpc_user = "testuser"
-bitcoind_rpc_password = "env:CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD"
+bitcoind_rpc_password = "testpass"
 gossip_source_type = "p2p"
 ```
 
@@ -151,16 +144,28 @@ For complete regtest environment: `just regtest` (see [REGTEST_GUIDE.md](../../R
 
 ⚠️ **SECURITY WARNING**: The examples below expose ports for testing. For production, **DO NOT expose port 8091** publicly as the web interface has no authentication and allows sending funds.
 
-Use a complete mounted TOML document containing the appropriate `[ldk_node]`
-section. Run `cdk-mintd config init --file ...` once against the persistent
-database volume, then start the same image without a config-file argument.
-Environment variables supplied to the running container are limited to database
-bootstrap values and variables referenced by `env:` secret fields; they do not
-override LDK settings.
+```bash
+# Mutinynet example (testing only - web interface exposed)
+docker run -d \
+  --name cdk-mintd \
+  -p 8085:8085 -p 8091:8091 \
+  -e CDK_MINTD_LN_BACKEND=ldk-node \
+  -e CDK_MINTD_LDK_NODE_BITCOIN_NETWORK=signet \
+  -e CDK_MINTD_LDK_NODE_ESPLORA_URL=https://mutinynet.com/api \
+  -e CDK_MINTD_LDK_NODE_RGS_URL=https://rgs.mutinynet.com/snapshot/0 \
+  -e CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE=rgs \
+  cashubtc/cdk-mintd:latest
 
-See the [`cdk-mintd` Docker workflow](../cdk-mintd/README.md#docker-usage) for
-the two-step initialization and startup commands. Set `info.listen_host =
-"0.0.0.0"` in the imported document when publishing the mint API port.
+# Production example (web interface not exposed)
+docker run -d \
+  --name cdk-mintd \
+  -p 8085:8085 \
+  --network host \
+  -e CDK_MINTD_LN_BACKEND=ldk-node \
+  -e CDK_MINTD_LDK_NODE_BITCOIN_NETWORK=mainnet \
+  -e CDK_MINTD_LDK_NODE_WEBSERVER_HOST=127.0.0.1 \
+  cashubtc/cdk-mintd:latest
+```
 
 ## Troubleshooting
 
@@ -171,16 +176,11 @@ the two-step initialization and startup commands. Set `info.listen_host =
 - **Permissions**: Ensure storage directory is writable
 
 ### Debug Logging
-
-Set logging in the imported configuration:
-
-```toml
-[info.logging]
-console_level = "debug"
+```bash
+export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
 ```
 
-Apply the complete document and restart for the change to take effect. Direct
-apply works beside a running daemon. ### Performance Tips
+### Performance Tips
 - Use RGS for faster gossip sync
 - PostgreSQL for production
 - Monitor initial sync resources

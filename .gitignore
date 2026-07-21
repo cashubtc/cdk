@@ -53,7 +53,9 @@ local.properties
 *.iml
 *.ipr
 *.iws
-bin/
+# Generated tool output dirs (do not ignore Rust package sources under src/bin/)
+/bin/
+**/build/bin/
 gen/
 out/
 bindings/kotlin/cdk-jvm/src/main/kotlin/uniffi/

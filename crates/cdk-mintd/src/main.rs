@@ -1,44 +1,108 @@
-//! CDK mint daemon and configuration command entry point.
+//! CDK MINTD
 
-use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use cdk_mintd::cli::{CLIArgs, Commands, ConfigCommands};
-use cdk_mintd::config_service::ConfigurationService;
-use cdk_mintd::{
-    get_work_directory, initialize_configuration, open_direct_configuration_service,
-    run_managed_mintd,
-};
+use cdk_mintd::get_work_directory;
 use clap::Parser;
 use tokio::runtime::Runtime;
 
 fn main() -> Result<()> {
-    let runtime = Arc::new(Runtime::new()?);
-    let runtime_for_mint = Arc::clone(&runtime);
+    let rt = Arc::new(Runtime::new()?);
 
-    runtime.block_on(async move {
+    let rt_clone = Arc::clone(&rt);
+
+    rt.block_on(async {
         let args = CLIArgs::parse();
-        reject_legacy_run_flags(&args)?;
-        let work_dir = get_work_directory(&args).await?;
+        if args.config.is_some() || args.seed_file.is_some() {
+            bail!(
+                "--config and --seed-file are no longer startup inputs; import a TOML document with `cdk-mintd config init --file <path>` or replace it with `cdk-mintd config apply --file <path>`"
+            );
+        }
+        let work_dir = if matches!(
+            &args.command,
+            Some(Commands::Config(config))
+                if matches!(&config.command, ConfigCommands::Validate(_))
+        ) {
+            None
+        } else {
+            Some(get_work_directory(&args).await?)
+        };
 
         #[cfg(feature = "sqlcipher")]
         let password = args.password.clone();
+
         #[cfg(not(feature = "sqlcipher"))]
         let password = None;
 
-        let enable_logging = args.enable_logging;
-
         match args.command {
-            Some(Commands::Config(config)) => {
-                run_config_command(config.command, &work_dir, password).await
-            }
+            Some(Commands::Config(config)) => match config.command {
+                ConfigCommands::Init(file) => {
+                    let work_dir = work_dir
+                        .as_deref()
+                        .expect("database commands have a work directory");
+                    let document = read_document(&file.file)?;
+                    cdk_mintd::initialize_configuration(work_dir, &document, password).await?;
+                    println!("Configuration initialized. Start cdk-mintd to apply it.");
+                    Ok(())
+                }
+                ConfigCommands::Validate(file) => {
+                    let document = read_document(&file.file)?;
+                    cdk_mintd::validate_configuration_document(&document).await?;
+                    println!("Configuration is valid.");
+                    Ok(())
+                }
+                ConfigCommands::Apply(apply) => {
+                    let work_dir = work_dir
+                        .as_deref()
+                        .expect("database commands have a work directory");
+                    let document = read_document(&apply.file)?;
+                    cdk_mintd::apply_configuration(
+                        work_dir,
+                        &document,
+                        apply.validate_only,
+                        password,
+                    )
+                    .await?;
+                    if apply.validate_only {
+                        println!("Configuration is valid and was not changed.");
+                    } else {
+                        println!("Configuration replaced. Restart cdk-mintd to apply it.");
+                    }
+                    Ok(())
+                }
+                ConfigCommands::Show => {
+                    let work_dir = work_dir
+                        .as_deref()
+                        .expect("database commands have a work directory");
+                    let document = cdk_mintd::stored_configuration_document(work_dir, password)
+                        .await?;
+                    print!("{document}");
+                    Ok(())
+                }
+                ConfigCommands::Export(file) => {
+                    let work_dir = work_dir
+                        .as_deref()
+                        .expect("database commands have a work directory");
+                    let document = cdk_mintd::stored_configuration_document(work_dir, password)
+                        .await?;
+                    std::fs::write(&file.file, document).with_context(|| {
+                        format!("could not export configuration to {}", file.file.display())
+                    })?;
+                    println!("Configuration exported to {}.", file.file.display());
+                    Ok(())
+                }
+            },
             None => {
-                run_managed_mintd(
-                    &work_dir,
+                let work_dir = work_dir
+                    .as_deref()
+                    .expect("daemon startup has a work directory");
+                cdk_mintd::run_mintd_from_database(
+                    work_dir,
                     password,
-                    enable_logging,
-                    Some(runtime_for_mint),
+                    args.enable_logging,
+                    Some(rt_clone),
                     vec![],
                 )
                 .await
@@ -47,123 +111,7 @@ fn main() -> Result<()> {
     })
 }
 
-fn reject_legacy_run_flags(args: &CLIArgs) -> Result<()> {
-    if args.config.is_some() || args.seed_file.is_some() {
-        bail!(
-            "--config and --seed-file are not supported by any command; use `cdk-mintd config init --file <path>` once or `cdk-mintd config apply --file <path>` explicitly, and use file:/absolute/path for secret references"
-        );
-    }
-
-    Ok(())
-}
-
-async fn run_config_command(
-    command: ConfigCommands,
-    work_dir: &Path,
-    password: Option<String>,
-) -> Result<()> {
-    match command {
-        ConfigCommands::Init(arguments) => {
-            let document = read_configuration(&arguments.file)?;
-            initialize_configuration(work_dir, &document, password).await?;
-            println!(
-                "Configuration initialized and staged. Start mintd to activate it authoritatively."
-            );
-            Ok(())
-        }
-        ConfigCommands::Validate(arguments) => {
-            let document = read_configuration(&arguments.file)?;
-            ConfigurationService::validate_document(&document)?;
-            println!("Configuration is valid.");
-            Ok(())
-        }
-        ConfigCommands::Apply(arguments) => {
-            let document = read_configuration(&arguments.file)?;
-            let service = open_direct_configuration_service(work_dir, password).await?;
-            let outcome = service.apply(&document, arguments.validate_only).await?;
-            if arguments.validate_only {
-                println!("Configuration is valid; no changes were persisted.");
-            } else if outcome.restart_required {
-                println!("Configuration staged. Start mintd to activate it.");
-            }
-            Ok(())
-        }
-        ConfigCommands::Show => {
-            let service = open_direct_configuration_service(work_dir, password).await?;
-            let snapshot = service.snapshot().await?;
-            print_configuration(snapshot.active, snapshot.pending);
-            Ok(())
-        }
-        ConfigCommands::Export(arguments) => {
-            let service = open_direct_configuration_service(work_dir, password).await?;
-            let snapshot = service.snapshot().await?;
-            write_export(&arguments.file, snapshot.active)?;
-            Ok(())
-        }
-        ConfigCommands::DiscardPending => {
-            let service = open_direct_configuration_service(work_dir, password).await?;
-            service.discard_pending().await?;
-            println!("Pending configuration discarded.");
-            Ok(())
-        }
-    }
-}
-
-fn read_configuration(path: &Path) -> Result<String> {
+fn read_document(path: &std::path::Path) -> Result<String> {
     std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read configuration file {}", path.display()))
-}
-
-fn print_configuration(active: String, pending: Option<String>) {
-    print!("{active}");
-    if let Some(pending) = pending {
-        println!("\n# Pending configuration (restart required)");
-        print!("{pending}");
-    }
-}
-
-fn write_export(path: &Path, document: String) -> Result<()> {
-    std::fs::write(path, document)
-        .with_context(|| format!("Failed to export configuration to {}", path.display()))?;
-    println!("Configuration exported to {}.", path.display());
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn legacy_flags_are_rejected_before_config_subcommands() {
-        let args = CLIArgs::try_parse_from([
-            "cdk-mintd",
-            "--config",
-            "/tmp/legacy.toml",
-            "config",
-            "validate",
-            "--file",
-            "/tmp/config.toml",
-        ])
-        .expect("arguments should parse");
-
-        let error = reject_legacy_run_flags(&args).expect_err("legacy flags must be rejected");
-        assert!(error.to_string().contains("--config"));
-    }
-
-    #[test]
-    fn legacy_flags_are_rejected_after_config_subcommands() {
-        let args = CLIArgs::try_parse_from([
-            "cdk-mintd",
-            "config",
-            "validate",
-            "--file",
-            "/tmp/config.toml",
-            "--seed-file",
-            "/tmp/seed",
-        ])
-        .expect("arguments should parse");
-
-        let error = reject_legacy_run_flags(&args).expect_err("legacy flags must be rejected");
-        assert!(error.to_string().contains("--seed-file"));
-    }
+        .with_context(|| format!("could not read configuration document {}", path.display()))
 }

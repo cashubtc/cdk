@@ -1,17 +1,9 @@
 #![doc = include_str!("../README.md")]
 
-mod client;
-mod configuration;
-
 pub mod proto;
 
 pub mod mint_rpc_cli;
 
-pub use client::{connect_client, ClientError};
-pub use configuration::{
-    ApplyConfigurationOutcome, ConfigurationError, ConfigurationManager,
-    ConfigurationMutationGuard, ConfigurationSnapshot,
-};
 pub use proto::*;
 
 /// Type alias for the CdkMintClient that works with any tower service

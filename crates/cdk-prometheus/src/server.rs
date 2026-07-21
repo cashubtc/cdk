@@ -54,16 +54,6 @@ pub struct PrometheusServer {
     system_metrics: Option<SystemMetrics>,
 }
 
-/// Prometheus server whose TCP listener has already been bound.
-///
-/// Preparing the listener separately lets callers verify that every configured
-/// service can bind before committing a larger startup or configuration change.
-#[derive(Debug)]
-pub struct PreparedPrometheusServer {
-    server: PrometheusServer,
-    listener: TcpListener,
-}
-
 fn request_matches_path(request: &str, metrics_path: &str) -> bool {
     let Some(request_line) = request.lines().next() else {
         return false;
@@ -227,26 +217,7 @@ impl PrometheusServer {
         })
     }
 
-    /// Binds the Prometheus HTTP listener without beginning to serve requests.
-    ///
-    /// # Errors
-    /// Returns an error if the configured address cannot be bound.
-    pub async fn prepare(self) -> crate::Result<PreparedPrometheusServer> {
-        let binding = self.config.bind_address;
-        let listener = TcpListener::bind(binding).await.map_err(|source| {
-            crate::error::PrometheusError::ServerBind {
-                address: binding.to_string(),
-                source,
-            }
-        })?;
-
-        Ok(PreparedPrometheusServer {
-            server: self,
-            listener,
-        })
-    }
-
-    /// Start the Prometheus HTTP server.
+    /// Start the Prometheus HTTP server
     ///
     /// # Errors
     /// Returns an error if the server cannot bind to the configured address
@@ -254,15 +225,7 @@ impl PrometheusServer {
         self,
         shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     ) -> crate::Result<()> {
-        self.prepare().await?.start(shutdown_signal).await
-    }
-
-    async fn serve(
-        self,
-        listener: TcpListener,
-        shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
-    ) -> crate::Result<()> {
-        let binding = listener.local_addr().unwrap_or(self.config.bind_address);
+        let binding = self.config.bind_address;
         let registry_clone = Arc::<Registry>::clone(&self.registry);
         let path = self.config.metrics_path.clone();
 
@@ -272,6 +235,13 @@ impl PrometheusServer {
 
         #[cfg(not(feature = "system-metrics"))]
         let metrics_handler = Self::create_metrics_handler(registry_clone);
+
+        let listener = TcpListener::bind(binding).await.map_err(|source| {
+            crate::error::PrometheusError::ServerBind {
+                address: binding.to_string(),
+                source,
+            }
+        })?;
 
         tracing::info!("Started Prometheus server on {} at path {}", binding, path);
 
@@ -309,20 +279,6 @@ impl PrometheusServer {
         tracing::info!("Prometheus server stopped");
 
         Ok(())
-    }
-}
-
-impl PreparedPrometheusServer {
-    /// Starts serving metrics from the listener bound by
-    /// [`PrometheusServer::prepare`].
-    ///
-    /// # Errors
-    /// Returns an error if the prepared server cannot run to completion.
-    pub async fn start(
-        self,
-        shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
-    ) -> crate::Result<()> {
-        self.server.serve(self.listener, shutdown_signal).await
     }
 }
 

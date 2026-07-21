@@ -81,34 +81,20 @@ startup.
 
 ### Setup Steps
 
-1. **Create working directory**:
-   ```bash
-   mkdir -p ~/.cdk-mintd
-   ```
+```bash
+mkdir -p ~/.cdk-mintd
+cp example.config.toml ~/.cdk-mintd/config.toml
+# Edit the document and provide any env: secrets it references.
+cdk-mintd config validate --file ~/.cdk-mintd/config.toml
+cdk-mintd config init --file ~/.cdk-mintd/config.toml
+cdk-mintd
+```
 
-2. **Create and validate an initialization document**:
-   ```bash
-   cp example.config.toml ~/.cdk-mintd/config.toml
-   # Edit the file, then validate it without changing the database.
-   cdk-mintd config validate --file ~/.cdk-mintd/config.toml
-   ```
-
-3. **Initialize the database explicitly**:
-   ```bash
-   cdk-mintd config init --file ~/.cdk-mintd/config.toml
-   ```
-
-   Initialization accesses the database directly and refuses to replace an
-   already initialized configuration. It stages the first import for
-   authoritative activation: the first successful `cdk-mintd` start atomically
-   promotes it
-   together with canonical mint metadata and quote TTL. This prevents metadata
-   left by an older deployment from overriding the imported document.
-
-4. **Start the mint from database-backed configuration**:
-   ```bash
-   cdk-mintd
-   ```
+`config init` refuses to replace an existing record. On the first start, mintd
+applies the imported mint metadata and quote TTL and marks that document
+applied. Later starts preserve canonical database values changed through the
+management RPC while loading the remaining daemon settings from the stored
+document.
 
 Changing or deleting the original TOML file after initialization has no effect
 on the running mint or its next startup.
@@ -122,62 +108,27 @@ cdk-mintd config validate --file /path/to/config.toml
 # Initialize the bootstrap-selected configuration database directly
 cdk-mintd config init --file /path/to/config.toml
 
-# Validate against the stored configuration constraints without persisting;
-# direct database access is the default
+# Validate against the stored database and signer without writing
 cdk-mintd config apply --file /path/to/config.toml --validate-only
 
-# Stage a complete replacement directly
+# Atomically replace the document used by the next start
 cdk-mintd config apply --file /path/to/config.toml
 
-# Inspect active configuration and any staged replacement
+# Print or export the stored document
 cdk-mintd config show
-
-# Export the active configuration
 cdk-mintd config export --file /path/to/exported-config.toml
-
-# Discard a staged replacement before restarting
-cdk-mintd config discard-pending
 ```
 
-`config apply`, `show`, `export`, and `discard-pending` access the authoritative
-database directly. They take a short-lived database-scoped configuration lock
-and can run beside a steady daemon whether or not management RPC is enabled.
-The daemon continues using its in-memory active configuration until restart.
-During startup, activation, or another mutation, a competing command fails with
-`configuration activation or another configuration command is in progress;
-retry`.
+`config apply`, `show`, and `export` access the authoritative database directly.
+Apply replaces one versioned record transactionally and sets it to unapplied. A
+running daemon keeps its current in-memory snapshot; the replacement is used on
+the next restart. If another apply wins while startup is consuming a document,
+the newer document remains unapplied for the following restart.
 
 `cdk-mintd` is not an RPC client. Immediate field-level mint management
 (`get-info`, `update-motd`, `rotate-next-keyset`, and related commands) is
 provided by the separate `cdk-mint-cli` binary. See
 [`cdk-mint-rpc`](../cdk-mint-rpc/README.md).
-
-Every full-file apply is restart-bound in this iteration. The running mint
-continues with its active configuration while the submitted document is stored
-as pending. On restart, mintd resolves secrets, validates the pending document,
-and constructs its services from it. It promotes the document to active only
-after listener and payment-processor preparation succeeds; saga recovery and
-invoice watchers start only after promotion. Existing field-specific management
-RPCs (via `cdk-mint-cli`) remain immediate when no document is pending. While a
-complete document is pending, those commands are rejected so a later promotion
-cannot silently overwrite a newer field update.
-
-There is deliberately no configuration revision, `expected-revision`, or
-`--force` workflow in this iteration. Configuration mutations are serialized by
-one database-scoped configuration lock across management RPC requests, direct
-config commands, and startup activation. Startup internally verifies that the
-pending document has not been replaced before promoting it.
-
-SQLite and SQLCipher use separate OS-released lock files for the daemon instance
-and short-lived configuration mutation. PostgreSQL uses corresponding
-database-and-schema-scoped advisory session locks, so separate hosts coordinate
-the same mint. PostgreSQL deployments must use a direct connection or a
-session-affine pool for mintd; transaction-pooled proxies cannot preserve these
-locks. If a held PostgreSQL lock session is lost unexpectedly, mintd exits
-immediately without unwinding. This is intentional fail-stop behavior;
-PostgreSQL closes or rolls back the process's in-flight sessions. These locks
-coordinate access only; the active and pending records in the mint database
-remain the configuration source of truth.
 
 ### Bootstrap Settings
 
@@ -190,15 +141,12 @@ competing operational configuration:
   `CDK_MINTD_DATABASE`, `CDK_MINTD_POSTGRES_URL` (or the legacy
   `CDK_MINTD_DATABASE_URL`), and related PostgreSQL bootstrap variables.
 - SQLCipher password when an invocation opens the local encrypted database.
-  When their bootstrap database is SQLite, daemon startup, `config init`, and
-  direct `config apply/show/export/discard-pending` therefore require
-  `--password <password>`; `config validate` and PostgreSQL-backed invocations
-  do not.
+  Encrypted SQLite startup and database commands therefore require
+  `--password <password>`; `config validate` does not open the database.
 
-`config validate` only parses and validates the supplied document and therefore
-does not open or lock the database. `config apply --validate-only` also checks
-constraints against persisted state, so it follows the same concurrency rules as
-a real apply.
+`config validate` parses the supplied document, resolves its secret references,
+and verifies its signer without opening the primary database. `config apply
+--validate-only` additionally checks the stored database and signer constraints.
 
 `config init` opens the database selected by the same bootstrap settings as
 normal startup and rejects an import document whose primary database settings
@@ -206,8 +154,7 @@ do not match it. All other TOML and environment values are operational settings
 and are loaded from the database during normal startup.
 
 Primary database settings are immutable through `config apply`: moving the
-authoritative database requires a separate data-migration procedure. This
-prevents a pending document from being stranded in the old database.
+authoritative database requires a separate data-migration procedure.
 
 ### Secret References
 
@@ -242,10 +189,6 @@ mutated. Moving a secret to another reference or changing remote-signatory
 connection details is allowed when the signer key is unchanged. Signer
 migration is intentionally not part of ordinary configuration apply.
 
-Configuration documents are strict: unknown sections and fields are rejected
-so typos or options unavailable in the current build cannot be silently
-discarded during normalization.
-
 ### Applying a Changed File
 
 There is no configuration-file search path or implicit precedence order. To
@@ -253,16 +196,10 @@ replace configuration, edit a file and run the explicit apply command:
 
 ```bash
 cdk-mintd config validate --file /path/to/changed-config.toml
-# This direct apply can run beside a steady daemon.
 cdk-mintd config apply --file /path/to/changed-config.toml
-# Review active and pending state, then restart mintd.
 cdk-mintd config show
+# Restart mintd to use the replacement.
 ```
-
-Exported documents include only operator-managed NUT-04 and NUT-05 method
-policy. Other advertised NUT capabilities are derived by mintd. An apply is
-rejected at startup if its NUT-04/NUT-05 policy references a payment processor
-that the same document does not configure.
 
 ### Fake Wallet Custom Payment Methods
 

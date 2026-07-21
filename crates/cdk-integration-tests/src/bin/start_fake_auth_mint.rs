@@ -107,7 +107,7 @@ async fn start_fake_auth_mint(
             println!("Fake auth mint shutdown signal received");
         };
 
-        match cdk_mintd::run_mintd_for_integration_tests_with_shutdown(
+        match cdk_mintd::run_mintd_with_shutdown(
             &temp_dir,
             &settings,
             shutdown_future,

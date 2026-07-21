@@ -58,11 +58,12 @@ use tracing_subscriber::EnvFilter;
 
 pub mod cli;
 pub mod config;
-pub mod config_service;
-pub mod config_store;
-mod database_lock;
+mod config_service;
+mod config_store;
 pub mod env_vars;
 pub mod setup;
+
+pub use config_service::ApplyOutcome;
 
 #[cfg(test)]
 pub(crate) mod test_utils {
@@ -91,6 +92,12 @@ const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION")
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
 
+#[derive(Debug, Clone)]
+struct ConfigurationActivation {
+    service: config_service::ConfigurationService,
+    expected_document: String,
+}
+
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
     let mut seen = HashSet::new();
     mint_info
@@ -101,61 +108,6 @@ fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<Str
         .map(|method| method.method.to_string())
         .filter(|method| seen.insert(method.clone()))
         .collect()
-}
-
-fn validate_managed_nut_policy(
-    managed: &config::ManagedNuts,
-    derived: &cdk::nuts::Nuts,
-) -> Result<()> {
-    let mut mint_methods = HashSet::new();
-    for method in &managed.nut04.methods {
-        let key = (method.unit.clone(), method.method.clone());
-        if !mint_methods.insert(key.clone()) {
-            bail!(
-                "Managed NUT-04 policy contains duplicate method {}/{}",
-                key.0,
-                key.1
-            );
-        }
-        if !derived
-            .nut04
-            .methods
-            .iter()
-            .any(|supported| supported.unit == key.0 && supported.method == key.1)
-        {
-            bail!(
-                "Managed NUT-04 policy references unsupported payment processor {}/{}",
-                key.0,
-                key.1
-            );
-        }
-    }
-
-    let mut melt_methods = HashSet::new();
-    for method in &managed.nut05.methods {
-        let key = (method.unit.clone(), method.method.clone());
-        if !melt_methods.insert(key.clone()) {
-            bail!(
-                "Managed NUT-05 policy contains duplicate method {}/{}",
-                key.0,
-                key.1
-            );
-        }
-        if !derived
-            .nut05
-            .methods
-            .iter()
-            .any(|supported| supported.unit == key.0 && supported.method == key.1)
-        {
-            bail!(
-                "Managed NUT-05 policy references unsupported payment processor {}/{}",
-                key.0,
-                key.1
-            );
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(feature = "cln")]
@@ -184,16 +136,9 @@ async fn initial_setup(
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
 )> {
     tracing::info!("Initializing database...");
-    let (localstore, keystore, kv) =
-        setup_database(settings, work_dir, db_password, DatabaseOpenMode::Migrate).await?;
+    let (localstore, keystore, kv) = setup_database(settings, work_dir, db_password).await?;
     tracing::info!("Database initialized successfully");
     Ok((localstore, keystore, kv))
-}
-
-#[derive(Debug, Clone, Copy)]
-enum DatabaseOpenMode {
-    Migrate,
-    Existing,
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
@@ -330,15 +275,13 @@ pub async fn get_work_directory(args: &CLIArgs) -> Result<PathBuf> {
 }
 
 /// Loads the application settings based on a configuration file and environment variables.
-#[cfg(test)]
-fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<config::Settings> {
+pub fn load_settings(work_dir: &Path, config_path: Option<PathBuf>) -> Result<config::Settings> {
     let settings = load_settings_from_sources(work_dir, config_path)?;
     validate_settings(&settings)?;
 
     Ok(settings)
 }
 
-#[cfg(test)]
 fn load_settings_from_sources(
     work_dir: &Path,
     config_path: Option<PathBuf>,
@@ -381,10 +324,7 @@ fn validate_database_config(settings: &config::Settings) -> Result<()> {
         })?;
 
         if pg_config.url.is_empty() {
-            bail!(
-                "PostgreSQL URL is required in [database.postgres].url; use an env: or file: \
-                 secret reference in managed configuration"
-            );
+            bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
         }
     }
 
@@ -431,11 +371,11 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
 
     if let Some(seed) = seed {
         if seed.is_empty() {
-            bail!("Seed in [info].seed must not be empty");
+            bail!("Seed in [info].seed/CDK_MINTD_SEED must not be empty");
         }
         if seed.len() < MIN_SEED_BYTES {
             bail!(
-                "Seed in [info].seed is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes",
+                "Seed in [info].seed/CDK_MINTD_SEED is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes",
                 seed.len()
             );
         }
@@ -443,20 +383,20 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
     }
 
     if let Some(mnemonic) = mnemonic {
-        Mnemonic::from_str(mnemonic)
-            .map_err(|err| anyhow!("Invalid mnemonic in [info].mnemonic: {err}"))?;
+        Mnemonic::from_str(mnemonic).map_err(|err| {
+            anyhow!("Invalid mnemonic in [info].mnemonic/CDK_MINTD_MNEMONIC: {err}")
+        })?;
         return Ok(());
     }
 
-    bail!(
-        "No signing source configured. Set [info].mnemonic or [info].seed using an env: or \
-         file: secret reference, or enable [signatory]"
-    );
+    bail!("No signing source configured. Set one of [info].mnemonic/CDK_MINTD_MNEMONIC, [info].seed/CDK_MINTD_SEED, or [signatory] with enabled = true");
 }
 
 fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
-    // Do not require `[[ln]]`: on-chain-only configurations are valid. An empty
-    // list simply skips the loop below.
+    // No emptiness check here: `from_env` already guarantees at least one
+    // payment backend (Lightning *or* on-chain), so requiring `[[ln]]` here
+    // would wrongly reject valid on-chain-only configs. An empty `ln` simply
+    // skips the loop below.
     for ln in &settings.ln {
         if ln.min_mint > ln.max_mint {
             bail!("Lightning min_mint cannot be greater than max_mint");
@@ -478,7 +418,7 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                     }
                 };
                 if cln.rpc_path.as_os_str().is_empty() {
-                    bail!("CLN rpc_path must be set in [cln].rpc_path");
+                    bail!("CLN rpc_path must be set via [cln].rpc_path or CDK_MINTD_CLN_RPC_PATH");
                 }
             }
             #[cfg(feature = "lnbits")]
@@ -492,19 +432,15 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                     }
                 };
                 if lnbits.admin_api_key.is_empty() {
-                    bail!(
-                        "LNbits admin_api_key must be set in [lnbits].admin_api_key using an env: \
-                         or file: secret reference"
-                    );
+                    bail!("LNbits admin_api_key must be set via [lnbits].admin_api_key or CDK_MINTD_LNBITS_ADMIN_API_KEY");
                 }
                 if lnbits.invoice_api_key.is_empty() {
-                    bail!(
-                        "LNbits invoice_api_key must be set in [lnbits].invoice_api_key using an \
-                         env: or file: secret reference"
-                    );
+                    bail!("LNbits invoice_api_key must be set via [lnbits].invoice_api_key or CDK_MINTD_LNBITS_INVOICE_API_KEY");
                 }
                 if lnbits.lnbits_api.is_empty() {
-                    bail!("LNbits lnbits_api must be set in [lnbits].lnbits_api");
+                    bail!(
+                        "LNbits lnbits_api must be set via [lnbits].lnbits_api or CDK_MINTD_LNBITS_API"
+                    );
                 }
             }
             #[cfg(feature = "lnd")]
@@ -518,13 +454,15 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                     }
                 };
                 if lnd.address.is_empty() {
-                    bail!("LND address must be set in [lnd].address");
+                    bail!("LND address must be set via [lnd].address or CDK_MINTD_LND_ADDRESS");
                 }
                 if lnd.cert_file.as_os_str().is_empty() {
-                    bail!("LND cert_file must be set in [lnd].cert_file");
+                    bail!(
+                        "LND cert_file must be set via [lnd].cert_file or CDK_MINTD_LND_CERT_FILE"
+                    );
                 }
                 if lnd.macaroon_file.as_os_str().is_empty() {
-                    bail!("LND macaroon_file must be set in [lnd].macaroon_file");
+                    bail!("LND macaroon_file must be set via [lnd].macaroon_file or CDK_MINTD_LND_MACAROON_FILE");
                 }
             }
             #[cfg(feature = "fakewallet")]
@@ -538,10 +476,7 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                     }
                 };
                 if fake_wallet.supported_units.is_empty() {
-                    bail!(
-                        "Fake wallet supported_units must contain at least one unit in \
-                         [fake_wallet].supported_units"
-                    );
+                    bail!("Fake wallet supported_units must contain at least one unit via [fake_wallet].supported_units or CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS");
                 }
                 if fake_wallet.min_delay_time > fake_wallet.max_delay_time {
                     bail!("Fake wallet min_delay_time cannot be greater than max_delay_time");
@@ -558,13 +493,10 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                     }
                 };
                 if grpc_processor.supported_units.is_empty() {
-                    bail!(
-                        "gRPC payment processor supported_units must contain at least one unit in \
-                         [grpc_processor].supported_units"
-                    );
+                    bail!("gRPC payment processor supported_units must contain at least one unit via [grpc_processor].supported_units or CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS");
                 }
                 if grpc_processor.address.is_empty() {
-                    bail!("gRPC payment processor address must be set in [grpc_processor].address");
+                    bail!("gRPC payment processor address must be set via [grpc_processor].address or CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS");
                 }
             }
             #[cfg(feature = "ldk-node")]
@@ -597,24 +529,21 @@ fn validate_auth_config(settings: &config::Settings) -> Result<()> {
     };
 
     if auth.openid_discovery.is_empty() {
-        bail!("Auth openid_discovery must be set in [auth].openid_discovery");
+        bail!("Auth openid_discovery must be set via [auth].openid_discovery or CDK_MINTD_AUTH_OPENID_DISCOVERY");
     }
     if auth.openid_client_id.is_empty() {
-        bail!("Auth openid_client_id must be set in [auth].openid_client_id");
+        bail!("Auth openid_client_id must be set via [auth].openid_client_id or CDK_MINTD_AUTH_OPENID_CLIENT_ID");
     }
 
     if settings.database.engine == DatabaseEngine::Postgres {
         let auth_db_config = settings.auth_database.as_ref().ok_or_else(|| {
-            anyhow!("Auth database configuration is required in [auth_database] when using PostgreSQL with authentication")
+            anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database] section or CDK_MINTD_AUTH_POSTGRES_URL")
         })?;
         let auth_pg_config = auth_db_config.postgres.as_ref().ok_or_else(|| {
-            anyhow!("PostgreSQL auth database configuration is required in [auth_database.postgres] when using PostgreSQL with authentication")
+            anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres] section or CDK_MINTD_AUTH_POSTGRES_URL")
         })?;
         if auth_pg_config.url.is_empty() {
-            bail!(
-                "Auth database PostgreSQL URL is required in [auth_database.postgres].url; use \
-                 an env: or file: secret reference"
-            );
+            bail!("Auth database PostgreSQL URL is required. Set [auth_database.postgres].url or CDK_MINTD_AUTH_POSTGRES_URL");
         }
     }
 
@@ -669,8 +598,7 @@ fn validate_prometheus_config(settings: &config::Settings) -> Result<()> {
 }
 
 /// Loads settings from command line arguments, environment variables, and optional seed file.
-#[cfg(test)]
-fn load_settings_from_args(work_dir: &Path, args: &CLIArgs) -> Result<config::Settings> {
+pub fn load_settings_from_args(work_dir: &Path, args: &CLIArgs) -> Result<config::Settings> {
     let mut settings = load_settings_from_sources(work_dir, args.config.clone())?;
 
     if let Some(seed_file) = args.seed_file.as_deref() {
@@ -683,8 +611,7 @@ fn load_settings_from_args(work_dir: &Path, args: &CLIArgs) -> Result<config::Se
 }
 
 /// Overrides the configured mint and active payment backend mnemonic with a seed file.
-#[cfg(test)]
-fn apply_seed_file(settings: &mut config::Settings, seed_file: &Path) -> Result<()> {
+pub fn apply_seed_file(settings: &mut config::Settings, seed_file: &Path) -> Result<()> {
     let mnemonic = std::fs::read_to_string(seed_file)
         .with_context(|| format!("Failed to read seed file {}", seed_file.display()))?;
     let mnemonic = mnemonic.trim();
@@ -728,7 +655,6 @@ async fn setup_database(
     settings: &config::Settings,
     _work_dir: &Path,
     _db_password: Option<String>,
-    open_mode: DatabaseOpenMode,
 ) -> Result<(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
@@ -738,7 +664,7 @@ async fn setup_database(
     match settings.database.engine {
         #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
-            let db = setup_sqlite_database(_work_dir, _db_password, open_mode).await?;
+            let db = setup_sqlite_database(_work_dir, _db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
@@ -752,7 +678,7 @@ async fn setup_database(
             })?;
 
             if pg_config.url.is_empty() {
-                bail!("PostgreSQL URL is required in [database.postgres].url");
+                bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
             }
 
             #[cfg(feature = "postgres")]
@@ -763,10 +689,7 @@ async fn setup_database(
                 pg_config.connection_timeout_seconds,
             );
             #[cfg(feature = "postgres")]
-            let pg_db = Arc::new(match open_mode {
-                DatabaseOpenMode::Migrate => MintPgDatabase::new(db_config).await?,
-                DatabaseOpenMode::Existing => MintPgDatabase::open_existing(db_config).await?,
-            });
+            let pg_db = Arc::new(MintPgDatabase::new(db_config).await?);
             tracing::info!("PostgreSQL database connection established");
             #[cfg(feature = "postgres")]
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
@@ -798,31 +721,19 @@ async fn setup_database(
 async fn setup_sqlite_database(
     work_dir: &Path,
     _password: Option<String>,
-    open_mode: DatabaseOpenMode,
 ) -> Result<Arc<MintSqliteDatabase>> {
     let sql_db_path = work_dir.join("cdk-mintd.sqlite");
     tracing::info!("SQLite database path: {}", sql_db_path.display());
 
     #[cfg(not(feature = "sqlcipher"))]
-    let db = match open_mode {
-        DatabaseOpenMode::Migrate => MintSqliteDatabase::new(&sql_db_path).await?,
-        DatabaseOpenMode::Existing => MintSqliteDatabase::open_existing(&sql_db_path).await?,
-    };
+    let db = MintSqliteDatabase::new(&sql_db_path).await?;
     #[cfg(feature = "sqlcipher")]
     let db = {
         // Get password from command line arguments for sqlcipher
-        let password = _password.ok_or_else(|| {
-            anyhow!(
-                "SQLCipher database password is required when opening the local SQLite database; pass --password <password>"
-            )
-        })?;
+        let password = _password
+            .ok_or_else(|| anyhow!("Password required when sqlcipher feature is enabled"))?;
         tracing::info!("Using SQLCipher encryption for SQLite database");
-        match open_mode {
-            DatabaseOpenMode::Migrate => MintSqliteDatabase::new((sql_db_path, password)).await?,
-            DatabaseOpenMode::Existing => {
-                MintSqliteDatabase::open_existing((sql_db_path, password)).await?
-            }
-        }
+        MintSqliteDatabase::new((sql_db_path, password)).await?
     };
 
     tracing::info!("SQLite database initialized successfully");
@@ -909,38 +820,23 @@ async fn configure_mint_builder(
         bail!("At least one payment backend (Lightning or On-chain) must be configured");
     }
 
-    let mint_builder = if let Some(managed_nuts) = settings.mint_info.nuts.as_ref() {
-        let mut mint_info = mint_builder.current_mint_info();
-        validate_managed_nut_policy(managed_nuts, &mint_info.nuts)?;
-        mint_info.nuts.nut04 = managed_nuts.nut04.clone();
-        mint_info.nuts.nut05 = managed_nuts.nut05.clone();
-        mint_builder.with_mint_info(mint_info)
-    } else {
-        mint_builder
-    };
-
     Ok(mint_builder)
 }
 
 /// Configures basic mint information (name, contact info, descriptions, etc.)
 fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) -> MintBuilder {
     // Add contact information
-    let contacts = if settings.mint_info.contacts.is_empty() {
-        let mut contacts = Vec::new();
-        if let Some(nostr_key) = &settings.mint_info.contact_nostr_public_key {
-            if !nostr_key.is_empty() {
-                contacts.push(ContactInfo::new("nostr".to_string(), nostr_key.to_string()));
-            }
+    let mut contacts = Vec::new();
+    if let Some(nostr_key) = &settings.mint_info.contact_nostr_public_key {
+        if !nostr_key.is_empty() {
+            contacts.push(ContactInfo::new("nostr".to_string(), nostr_key.to_string()));
         }
-        if let Some(email) = &settings.mint_info.contact_email {
-            if !email.is_empty() {
-                contacts.push(ContactInfo::new("email".to_string(), email.to_string()));
-            }
+    }
+    if let Some(email) = &settings.mint_info.contact_email {
+        if !email.is_empty() {
+            contacts.push(ContactInfo::new("email".to_string(), email.to_string()));
         }
-        contacts
-    } else {
-        settings.mint_info.contacts.clone()
-    };
+    }
 
     // Add version information
     let mint_version = MintVersion::new(
@@ -994,33 +890,10 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
         }
     }
 
-    if !settings.mint_info.urls.is_empty() {
-        builder = builder.with_urls(settings.mint_info.urls.clone());
-    }
-
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
 
     builder
 }
-
-fn overlay_database_mint_info(
-    mut configured: cdk::nuts::MintInfo,
-    persisted: cdk::nuts::MintInfo,
-) -> cdk::nuts::MintInfo {
-    configured.name = persisted.name;
-    configured.pubkey = persisted.pubkey;
-    configured.description = persisted.description;
-    configured.description_long = persisted.description_long;
-    configured.contact = persisted.contact;
-    configured.icon_url = persisted.icon_url;
-    configured.urls = persisted.urls;
-    configured.motd = persisted.motd;
-    configured.tos_url = persisted.tos_url;
-    configured.nuts.nut04 = persisted.nuts.nut04;
-    configured.nuts.nut05 = persisted.nuts.nut05;
-    configured
-}
-
 /// Configures Lightning Network backend based on the specified backend type
 async fn configure_lightning_backend(
     settings: &config::Settings,
@@ -1522,9 +1395,7 @@ async fn setup_authentication(
                     let sqlite_db = {
                         // Get password from command line arguments for sqlcipher
                         let password = _password.clone().ok_or_else(|| {
-                            anyhow!(
-                                "SQLCipher database password is required when opening the local SQLite database; pass --password <password>"
-                            )
+                            anyhow!("Password required when sqlcipher feature is enabled")
                         })?;
                         MintSqliteAuthDatabase::new((sql_db_path, password)).await?
                     };
@@ -1542,15 +1413,15 @@ async fn setup_authentication(
                 {
                     // Require dedicated auth database configuration - no fallback to main database
                     let auth_db_config = settings.auth_database.as_ref().ok_or_else(|| {
-                        anyhow!("Auth database configuration is required in [auth_database] when using PostgreSQL with authentication")
+                        anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database] section in config file or CDK_MINTD_AUTH_POSTGRES_URL environment variable")
                     })?;
 
                     let auth_pg_config = auth_db_config.postgres.as_ref().ok_or_else(|| {
-                        anyhow!("PostgreSQL auth database configuration is required in [auth_database.postgres] when using PostgreSQL with authentication")
+                        anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres] section in config file or CDK_MINTD_AUTH_POSTGRES_URL environment variable")
                     })?;
 
                     if auth_pg_config.url.is_empty() {
-                        bail!("Auth database PostgreSQL URL is required and cannot be empty in [auth_database.postgres].url");
+                        bail!("Auth database PostgreSQL URL is required and cannot be empty. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable");
                     }
 
                     let auth_db_config = PgConfig::new(
@@ -1671,7 +1542,6 @@ async fn build_mint(
     settings: &config::Settings,
     keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     mint_builder: MintBuilder,
-    expected_signing_identity: &config_service::SigningIdentity,
 ) -> Result<Mint> {
     if let Some(signatory) = settings.enabled_signatory() {
         let tls_dir = signatory.tls_dir.clone();
@@ -1697,26 +1567,13 @@ async fn build_mint(
             tls_dir.clone()
         );
 
-        let signatory =
-            cdk_signatory::SignatoryRpcClient::new(&signatory.address, signatory.port, tls_dir)
-                .await?;
-        let keysets = cdk_signatory::signatory::Signatory::keysets(&signatory).await?;
-        if keysets.pubkey != expected_signing_identity.pubkey {
-            bail!(
-                "Remote signatory identity changed after configuration validation; refusing to mutate mint keysets"
-            );
-        }
-
         Ok(mint_builder
-            .build_with_signatory(Arc::new(signatory))
+            .build_with_signatory(Arc::new(
+                cdk_signatory::SignatoryRpcClient::new(&signatory.address, signatory.port, tls_dir)
+                    .await?,
+            ))
             .await?)
     } else if let Some(seed) = settings.info.seed.clone().filter(|seed| !seed.is_empty()) {
-        let signing_identity = config_service::discover_signing_identity(settings).await?;
-        if &signing_identity != expected_signing_identity {
-            bail!(
-                "Local signing identity changed after configuration validation; refusing to mutate mint keysets"
-            );
-        }
         let seed_bytes: Vec<u8> = seed.into();
         Ok(mint_builder.build_with_seed(keystore, &seed_bytes).await?)
     } else if let Some(mnemonic) = settings
@@ -1726,12 +1583,6 @@ async fn build_mint(
         .map(|s| Mnemonic::from_str(&s))
         .transpose()?
     {
-        let signing_identity = config_service::discover_signing_identity(settings).await?;
-        if &signing_identity != expected_signing_identity {
-            bail!(
-                "Local signing identity changed after configuration validation; refusing to mutate mint keysets"
-            );
-        }
         Ok(mint_builder
             .build_with_seed(keystore, &mnemonic.to_seed_normalized(""))
             .await?)
@@ -1740,40 +1591,45 @@ async fn build_mint(
     }
 }
 
-async fn reconcile_persisted_mint_configuration(
+async fn reconcile_canonical_configuration(
     mint: &Mint,
     mut configured_mint_info: cdk::nuts::MintInfo,
-    settings: &config::Settings,
-    explicitly_override: bool,
-) -> Result<cdk::nuts::MintInfo> {
-    let desired_quote_ttl: QuoteTTL = settings.info.quote_ttl.unwrap_or_default();
-    let stored_mint_info = mint.mint_info().await.ok();
-
-    if explicitly_override || stored_mint_info.is_none() {
-        if configured_mint_info.pubkey.is_none() {
-            configured_mint_info.pubkey = stored_mint_info.and_then(|info| info.pubkey);
+    configured_quote_ttl: QuoteTTL,
+    preserve_database_values: bool,
+) -> Result<()> {
+    if !preserve_database_values {
+        tracing::info!(
+            "Applying mint info and quote TTL from the database-backed configuration document."
+        );
+        if let Ok(stored_mint_info) = mint.mint_info().await {
+            if configured_mint_info.pubkey.is_none() {
+                configured_mint_info.pubkey = stored_mint_info.pubkey;
+            }
         }
-        mint.set_mint_info(configured_mint_info.clone()).await?;
-        mint.set_quote_ttl(desired_quote_ttl).await?;
-        return Ok(configured_mint_info);
+        mint.set_mint_info(configured_mint_info).await?;
+        mint.set_quote_ttl(configured_quote_ttl).await?;
+        return Ok(());
+    }
+
+    if mint.mint_info().await.is_err() {
+        tracing::info!("Mint info not set on mint, setting.");
+        mint.set_mint_info(configured_mint_info).await?;
+        mint.set_quote_ttl(configured_quote_ttl).await?;
+        return Ok(());
     }
 
     if !mint.quote_ttl_is_persisted().await? {
-        mint.set_quote_ttl(desired_quote_ttl).await?;
+        mint.set_quote_ttl(configured_quote_ttl).await?;
     }
-
     let mint_version = MintVersion::new(
         "cdk-mintd".to_string(),
         CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
     );
-    let mut stored_mint_info = stored_mint_info.ok_or_else(|| {
-        anyhow!("Persisted mint information disappeared while reconciling configuration")
-    })?;
+    let mut stored_mint_info = mint.mint_info().await?;
     stored_mint_info.version = Some(mint_version);
-    mint.set_mint_info(stored_mint_info.clone()).await?;
-    tracing::info!("Using database-backed mint information and quote TTL");
-
-    Ok(stored_mint_info)
+    mint.set_mint_info(stored_mint_info).await?;
+    tracing::info!("Preserving RPC-managed mint info from the database.");
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1781,20 +1637,26 @@ async fn start_services_with_shutdown(
     mint: Arc<cdk::mint::Mint>,
     settings: &config::Settings,
     _work_dir: &Path,
-    configuration_service: Arc<config_service::ConfigurationService>,
-    pending_activation: Option<(&str, cdk::nuts::MintInfo, QuoteTTL)>,
-    activation_complete: &mut bool,
+    mint_builder_info: cdk::nuts::MintInfo,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     routers: Vec<Router>,
     auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
-    startup_ready: tokio::sync::oneshot::Sender<()>,
+    force_configuration: bool,
+    activation: Option<ConfigurationActivation>,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
     let cache: HttpCache = HttpCache::from_config(settings.info.http_cache.clone()).await?;
 
     #[cfg(feature = "management-rpc")]
+    let mut rpc_enabled = false;
+    #[cfg(not(feature = "management-rpc"))]
+    let rpc_enabled = false;
+
+    #[cfg(feature = "management-rpc")]
     let mut rpc_server: Option<cdk_mint_rpc::MintRPCServer> = None;
+    #[cfg(feature = "management-rpc")]
+    let mut rpc_to_start = None;
 
     #[cfg(feature = "management-rpc")]
     {
@@ -1802,18 +1664,7 @@ async fn start_services_with_shutdown(
             if rpc_settings.enabled {
                 let addr = rpc_settings.address.unwrap_or("127.0.0.1".to_string());
                 let port = rpc_settings.port.unwrap_or(8086);
-                let rpc_configuration_manager =
-                    Arc::new(config_service::RpcConfigurationManager::new(
-                        configuration_service.clone(),
-                        _work_dir.to_path_buf(),
-                        settings.database.clone(),
-                    ));
-                let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(
-                    &addr,
-                    port,
-                    mint.clone(),
-                    rpc_configuration_manager,
-                )?;
+                let mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
 
                 let tls_dir = rpc_settings.tls_dir.unwrap_or(_work_dir.join("tls"));
 
@@ -1835,11 +1686,39 @@ async fn start_services_with_shutdown(
                     );
                 };
 
-                mint_rpc.prepare(tls_dir).await?;
-
-                rpc_server = Some(mint_rpc);
+                rpc_to_start = Some((mint_rpc, tls_dir));
+                rpc_enabled = true;
             }
         }
+    }
+
+    // Determine the desired QuoteTTL from config/env or fall back to defaults
+    let desired_quote_ttl: QuoteTTL = settings.info.quote_ttl.unwrap_or_default();
+
+    reconcile_canonical_configuration(
+        mint.as_ref(),
+        mint_builder_info,
+        desired_quote_ttl,
+        rpc_enabled && !force_configuration,
+    )
+    .await?;
+
+    if let Some(activation) = activation {
+        if !activation
+            .service
+            .mark_applied(&activation.expected_document)
+            .await?
+        {
+            tracing::info!(
+                "A newer configuration was stored during startup and remains unapplied for the next restart."
+            );
+        }
+    }
+
+    #[cfg(feature = "management-rpc")]
+    if let Some((mut mint_rpc, tls_dir)) = rpc_to_start {
+        mint_rpc.start(tls_dir).await?;
+        rpc_server = Some(mint_rpc);
     }
 
     let mint_info = mint.mint_info().await?;
@@ -2055,10 +1934,9 @@ async fn start_services_with_shutdown(
     // Create a broadcast channel to share shutdown signal between services
     let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
 
-    // Bind Prometheus before activation so a bad metrics address cannot promote
-    // an otherwise unserviceable pending configuration.
+    // Start Prometheus server if enabled
     #[cfg(feature = "prometheus")]
-    let prepared_prometheus_server = {
+    let prometheus_handle = {
         if let Some(prometheus_settings) = &settings.prometheus {
             if prometheus_settings.enabled {
                 let addr = prometheus_settings
@@ -2074,7 +1952,17 @@ async fn start_services_with_shutdown(
                 let server = cdk_prometheus::PrometheusBuilder::new()
                     .bind_address(address)
                     .build_with_cdk_metrics()?;
-                Some(server.prepare().await?)
+
+                let mut shutdown_rx = shutdown_tx.subscribe();
+                let prometheus_shutdown = async move {
+                    let _ = shutdown_rx.recv().await;
+                };
+
+                Some(tokio::spawn(async move {
+                    if let Err(e) = server.start(prometheus_shutdown).await {
+                        tracing::error!("Failed to start prometheus server: {}", e);
+                    }
+                }))
             } else {
                 None
             }
@@ -2083,73 +1971,13 @@ async fn start_services_with_shutdown(
         }
     };
 
+    mint.start().await?;
+
     let socket_addr = SocketAddr::from_str(&format!("{listen_addr}:{listen_port}"))?;
 
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
 
     tracing::info!("listening on {}", listener.local_addr()?);
-
-    if let Err(start_error) = mint.prepare_start().await {
-        return match mint.stop().await {
-            Ok(()) => Err(start_error.into()),
-            Err(stop_error) => Err(anyhow!(
-                "Mint startup failed: {start_error}; cleaning up partially started payment processors also failed: {stop_error}"
-            )),
-        };
-    }
-
-    if let Some((expected_document, mint_info, quote_ttl)) = pending_activation {
-        if let Err(activation_error) = configuration_service
-            .promote_pending_with_canonical(expected_document, &mint_info, &quote_ttl)
-            .await
-        {
-            return match mint.stop().await {
-                Ok(()) => Err(activation_error.into()),
-                Err(stop_error) => Err(anyhow!(
-                    "Pending configuration activation failed: {activation_error}; stopping candidate mint services also failed: {stop_error}"
-                )),
-            };
-        }
-        *activation_complete = true;
-        tracing::info!("Activated the pending database-backed configuration");
-    }
-
-    if let Err(start_error) = mint.start_prepared().await {
-        return match mint.stop().await {
-            Ok(()) => Err(start_error.into()),
-            Err(stop_error) => Err(anyhow!(
-                "Activating prepared mint services failed: {start_error}; stopping payment processors also failed: {stop_error}"
-            )),
-        };
-    }
-
-    #[cfg(feature = "management-rpc")]
-    if let Some(rpc_server) = rpc_server.as_mut() {
-        if let Err(rpc_error) = rpc_server.start_prepared().await {
-            return match mint.stop().await {
-                Ok(()) => Err(rpc_error.into()),
-                Err(stop_error) => Err(anyhow!(
-                    "Starting the prepared management RPC server failed: {rpc_error}; stopping mint services also failed: {stop_error}"
-                )),
-            };
-        }
-    }
-
-    let _ = startup_ready.send(());
-
-    #[cfg(feature = "prometheus")]
-    let prometheus_handle = prepared_prometheus_server.map(|server| {
-        let mut shutdown_rx = shutdown_tx.subscribe();
-        let prometheus_shutdown = async move {
-            let _ = shutdown_rx.recv().await;
-        };
-
-        tokio::spawn(async move {
-            if let Err(e) = server.start(prometheus_shutdown).await {
-                tracing::error!("Prometheus server failed: {}", e);
-            }
-        })
-    });
 
     // Create a task to wait for the shutdown signal and broadcast it
     let shutdown_broadcast_task = {
@@ -2220,468 +2048,46 @@ fn work_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_mintd_with_database_and_shutdown(
+/// The main entry point for the application when used as a library
+pub async fn run_mintd(
     work_dir: &Path,
     settings: &config::Settings,
-    localstore: DynMintDatabase,
-    keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
-    kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
-    configuration_service: Arc<config_service::ConfigurationService>,
-    signing_identity: &config_service::SigningIdentity,
-    pending_document: Option<&str>,
-    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     db_password: Option<String>,
+    enable_logging: bool,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
-    startup_ready: tokio::sync::oneshot::Sender<()>,
 ) -> Result<()> {
-    let promote_pending = pending_document.is_some();
-    let explicitly_override_mint_state = promote_pending;
-    let mint_builder = MintBuilder::new(localstore);
-    let stored_mint_info = mint_builder.mint_info_from_db().await?;
-    let stored_quote_ttl = if promote_pending {
-        mint_builder.quote_ttl_from_db().await?
+    let _guard = if enable_logging {
+        setup_tracing(work_dir, &settings.info.logging)?
     } else {
         None
     };
-    if let Some(expected_document) = pending_document {
-        configuration_service
-            .prepare_pending_activation(
-                expected_document,
-                stored_mint_info.as_ref(),
-                stored_quote_ttl.as_ref(),
-            )
-            .await?;
-    }
-    let persisted_mint_info = if explicitly_override_mint_state {
-        None
-    } else {
-        stored_mint_info
-    };
 
-    let mut activation_complete = false;
-    let result = async {
-        let mut mint_builder =
-            configure_mint_builder(settings, mint_builder, runtime, work_dir, Some(kv)).await?;
-        if let Some(persisted_mint_info) = persisted_mint_info {
-            let configured_mint_info = mint_builder.current_mint_info();
-            mint_builder = mint_builder.with_mint_info(overlay_database_mint_info(
-                configured_mint_info,
-                persisted_mint_info,
-            ));
-        }
-        let (mint_builder, auth_localstore) =
-            setup_authentication(settings, work_dir, mint_builder, db_password).await?;
-
-        let configured_mint_info = mint_builder.current_mint_info();
-        let mint = Arc::new(build_mint(settings, keystore, mint_builder, signing_identity).await?);
-
-        tracing::debug!("Mint built from builder.");
-
-        let reconciled_mint_info = reconcile_persisted_mint_configuration(
-            mint.as_ref(),
-            configured_mint_info,
-            settings,
-            explicitly_override_mint_state,
-        )
-        .await?;
-        configuration_service.attach_mint(mint.clone()).await;
-
-        let pending_activation = pending_document.map(|expected_document| {
-            (
-                expected_document,
-                reconciled_mint_info,
-                settings.info.quote_ttl.unwrap_or_default(),
-            )
-        });
-        start_services_with_shutdown(
-            mint,
-            settings,
-            work_dir,
-            configuration_service.clone(),
-            pending_activation,
-            &mut activation_complete,
-            shutdown_signal,
-            routers,
-            auth_localstore,
-            startup_ready,
-        )
-        .await
-    }
+    let result = run_mintd_with_shutdown(
+        work_dir,
+        settings,
+        shutdown_signal(),
+        db_password,
+        runtime,
+        routers,
+    )
     .await;
 
-    match result {
-        Err(startup_error) if promote_pending && !activation_complete => {
-            if let Err(restore_error) = configuration_service.rollback_pending_activation().await {
-                return Err(anyhow!(
-                    "Startup failed before pending configuration activation: {startup_error}; restoring canonical mint configuration also failed: {restore_error}"
-                ));
-            }
-            tracing::warn!("Startup failed before configuration activation; restored canonical mint configuration and retained the pending document");
-            Err(startup_error)
-        }
-        result => result,
-    }
-}
-
-/// Loads only the database bootstrap settings needed before authoritative
-/// configuration can be read from that database.
-pub fn load_database_bootstrap_settings() -> Result<config::Settings> {
-    let mut settings = config::Settings::default();
-
-    if let Ok(database) = env::var(env_vars::DATABASE_ENV_VAR) {
-        settings.database.engine =
-            DatabaseEngine::from_str(&database).map_err(anyhow::Error::msg)?;
+    // Explicitly drop the guard to ensure proper cleanup
+    if let Some(guard) = _guard {
+        tracing::info!("Shutting down logging worker thread");
+        drop(guard);
+        // Give the worker thread a moment to flush any remaining logs
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 
-    if settings.database.engine == DatabaseEngine::Postgres {
-        settings.database.postgres =
-            Some(settings.database.postgres.unwrap_or_default().from_env());
-    }
+    tracing::info!("Mintd shutdown");
 
-    validate_database_config(&settings)?;
-    Ok(settings)
-}
-
-fn database_bootstrap_matches(configured: &config::Database, bootstrap: &config::Database) -> bool {
-    if configured.engine != bootstrap.engine {
-        return false;
-    }
-
-    if configured.engine != DatabaseEngine::Postgres {
-        return true;
-    }
-
-    match (&configured.postgres, &bootstrap.postgres) {
-        (Some(configured), Some(bootstrap)) => {
-            configured.url == bootstrap.url
-                && configured.tls_mode == bootstrap.tls_mode
-                && configured.max_connections == bootstrap.max_connections
-                && configured.connection_timeout_seconds == bootstrap.connection_timeout_seconds
-        }
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-async fn acquire_configuration_mutation_access(
-    work_dir: &Path,
-    database: &config::Database,
-) -> Result<database_lock::DatabaseAccessGuard> {
-    database_lock::DatabaseAccessGuard::try_acquire_configuration_mutation(work_dir, database)
-        .await
-        .map_err(|error| match error {
-            database_lock::DatabaseAccessError::Busy => {
-                anyhow!(database_lock::CONFIGURATION_BUSY_MESSAGE)
-            }
-            error => error.into(),
-        })
-}
-
-async fn acquire_daemon_instance_access(
-    work_dir: &Path,
-    database: &config::Database,
-) -> Result<database_lock::DatabaseAccessGuard> {
-    database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(work_dir, database)
-        .await
-        .map_err(|error| match error {
-            database_lock::DatabaseAccessError::Busy => {
-                anyhow!("mintd configuration database is already in use by another daemon")
-            }
-            error => error.into(),
-        })
-}
-
-/// Races `future` against the loss of `configuration_loss` or `daemon_loss`.
-///
-/// If either lock-loss signal fires before the future completes, or has
-/// already been lost when the future returns (as reported by `lost`), the
-/// process fail-stops with `operation` as the cause. This avoids graceful
-/// shutdown after an exclusive database lock is lost: another daemon can
-/// already be running, so draining would be unsafe.
-async fn race_with_lock_loss<F, T>(
-    configuration_loss: database_lock::DatabaseLockLoss,
-    daemon_loss: Option<database_lock::DatabaseLockLoss>,
-    operation: &'static str,
-    lost: impl Fn() -> bool,
-    future: F,
-) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    let result = tokio::select! {
-        biased;
-        () = wait_for_database_access_loss(configuration_loss, daemon_loss) => {
-            database_lock::fail_stop_after_lock_loss(operation)
-        }
-        result = future => result,
-    };
-    if lost() {
-        database_lock::fail_stop_after_lock_loss(operation);
-    }
     result
 }
 
-/// Waits until either lock-loss signal fires. `None` daemon loss is ignored.
-async fn wait_for_database_access_loss(
-    configuration_loss: database_lock::DatabaseLockLoss,
-    daemon_loss: Option<database_lock::DatabaseLockLoss>,
-) {
-    match daemon_loss {
-        Some(daemon_loss) => {
-            tokio::select! {
-                biased;
-                () = configuration_loss.wait() => {},
-                () = daemon_loss.wait() => {},
-            }
-        }
-        None => configuration_loss.wait().await,
-    }
-}
-
-/// Direct configuration service protected by serialized configuration access.
-///
-/// When mintd is stopped, this wrapper also prevents a daemon from starting.
-/// Against a running daemon it shares the database-scoped mutation boundary
-/// used by management RPC operations and startup activation.
-#[derive(Debug)]
-pub struct DirectConfigurationService {
-    service: config_service::ConfigurationService,
-    configuration_access: database_lock::DatabaseAccessGuard,
-    daemon_access: Option<database_lock::DatabaseAccessGuard>,
-}
-
-impl DirectConfigurationService {
-    fn access_is_lost(&self) -> bool {
-        self.configuration_access.loss_signal().is_lost()
-            || self
-                .daemon_access
-                .as_ref()
-                .is_some_and(|access| access.loss_signal().is_lost())
-    }
-
-    fn loss_signals(
-        &self,
-    ) -> (
-        database_lock::DatabaseLockLoss,
-        Option<database_lock::DatabaseLockLoss>,
-    ) {
-        (
-            self.configuration_access.loss_signal(),
-            self.daemon_access
-                .as_ref()
-                .map(database_lock::DatabaseAccessGuard::loss_signal),
-        )
-    }
-
-    /// Validates and optionally stages a complete configuration document.
-    pub async fn apply(
-        &self,
-        document: &str,
-        validate_only: bool,
-    ) -> Result<config_service::ApplyOutcome> {
-        let (configuration_loss, daemon_loss) = self.loss_signals();
-        race_with_lock_loss(
-            configuration_loss,
-            daemon_loss,
-            "direct configuration apply",
-            || self.access_is_lost(),
-            self.service.apply(document, validate_only),
-        )
-        .await
-        .map_err(Into::into)
-    }
-
-    /// Returns the active and pending persisted documents.
-    pub async fn snapshot(&self) -> Result<config_service::ConfigurationSnapshot> {
-        let (configuration_loss, daemon_loss) = self.loss_signals();
-        race_with_lock_loss(
-            configuration_loss,
-            daemon_loss,
-            "direct configuration read",
-            || self.access_is_lost(),
-            self.service.snapshot(),
-        )
-        .await
-        .map_err(Into::into)
-    }
-
-    /// Removes the document staged for activation.
-    pub async fn discard_pending(&self) -> Result<()> {
-        let (configuration_loss, daemon_loss) = self.loss_signals();
-        race_with_lock_loss(
-            configuration_loss,
-            daemon_loss,
-            "discarding pending configuration",
-            || self.access_is_lost(),
-            self.service.discard_pending(),
-        )
-        .await
-        .map_err(Into::into)
-    }
-}
-
-/// Initializes authoritative database configuration from an explicit TOML
-/// import. This is the direct form of the same configuration service used by
-/// the management RPC.
-pub async fn initialize_configuration(
-    work_dir: &Path,
-    document: &str,
-    db_password: Option<String>,
-) -> Result<()> {
-    let resolved = config_service::ConfigurationService::validate_document(document)?;
-    let bootstrap_settings = load_database_bootstrap_settings()?;
-    if !database_bootstrap_matches(&resolved.settings.database, &bootstrap_settings.database) {
-        bail!(
-            "Initialization document primary database settings do not match the bootstrap database settings; set CDK_MINTD_DATABASE/CDK_MINTD_POSTGRES_* for the database being initialized"
-        );
-    }
-    let configuration_access =
-        acquire_configuration_mutation_access(work_dir, &bootstrap_settings.database).await?;
-    let daemon_access = database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(
-        work_dir,
-        &bootstrap_settings.database,
-    )
-    .await
-    .map_err(|error| match error {
-        database_lock::DatabaseAccessError::Busy => {
-            anyhow!("mintd is running; config init requires the daemon to be stopped")
-        }
-        error => anyhow::Error::from(error),
-    })?;
-    let configuration_loss = configuration_access.loss_signal();
-    let daemon_loss = daemon_access.loss_signal();
-    let result = race_with_lock_loss(
-        configuration_loss,
-        Some(daemon_loss),
-        "configuration initialization",
-        || {
-            configuration_access.loss_signal().is_lost()
-                || daemon_access.loss_signal().is_lost()
-        },
-        async {
-            let signing_identity =
-                config_service::discover_signing_identity(&resolved.settings).await?;
-            config_service::validate_authored_mint_pubkey(
-                &resolved.settings,
-                &signing_identity,
-            )?;
-            let (localstore, keystore, kv) =
-                initial_setup(work_dir, &bootstrap_settings, db_password).await?;
-            let stored_mint_info = MintBuilder::new(Arc::clone(&localstore))
-                .mint_info_from_db()
-                .await?;
-            let stored_pubkey = stored_mint_info
-                .as_ref()
-                .and_then(|mint_info| mint_info.pubkey);
-            if stored_pubkey.is_some_and(|pubkey| pubkey != signing_identity.pubkey) {
-                bail!(
-                    "Imported signing identity does not match the existing mint database; refusing to replace keys used by existing proofs"
-                );
-            }
-            let repository = config_store::ConfigRepository::new(kv);
-            let persisted_signing_identity = repository.signing_identity().await?;
-            let has_unbound_legacy_state = stored_pubkey.is_none()
-                && persisted_signing_identity.is_none()
-                && (stored_mint_info.is_some()
-                    || !keystore.get_keyset_infos().await?.is_empty()
-                    || !localstore.get_mint_quotes().await?.is_empty()
-                    || !localstore.get_melt_quotes().await?.is_empty()
-                    || !localstore.get_total_issued().await?.is_empty()
-                    || !localstore.get_total_redeemed().await?.is_empty());
-            if has_unbound_legacy_state {
-                bail!(
-                    "Existing mint state has no persisted signing identity; refusing to bind it to an imported signer automatically"
-                );
-            }
-            repository
-                .initialize_for_activation(resolved.document, signing_identity.fingerprint)
-                .await?;
-            Ok(())
-        },
-    )
-    .await;
-    result
-}
-
-/// Opens the configuration service directly from primary-database bootstrap
-/// settings while serializing with startup activation and other configuration
-/// commands.
-///
-/// If mintd is already running, direct access opens the existing database
-/// without attempting migrations. All configuration writers share the same
-/// cross-process serialization boundary.
-pub async fn open_direct_configuration_service(
-    work_dir: &Path,
-    db_password: Option<String>,
-) -> Result<DirectConfigurationService> {
-    let bootstrap_settings = load_database_bootstrap_settings()?;
-    let configuration_access =
-        acquire_configuration_mutation_access(work_dir, &bootstrap_settings.database).await?;
-    let daemon_access = match database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(
-        work_dir,
-        &bootstrap_settings.database,
-    )
-    .await
-    {
-        Ok(access) => Some(access),
-        Err(database_lock::DatabaseAccessError::Busy) => None,
-        Err(error) => return Err(error.into()),
-    };
-    let open_mode = if daemon_access.is_some() {
-        DatabaseOpenMode::Migrate
-    } else {
-        DatabaseOpenMode::Existing
-    };
-    let configuration_loss = configuration_access.loss_signal();
-    let daemon_loss = daemon_access
-        .as_ref()
-        .map(database_lock::DatabaseAccessGuard::loss_signal);
-    let service = race_with_lock_loss(
-        configuration_loss,
-        daemon_loss,
-        "opening direct configuration access",
-        || {
-            configuration_access.loss_signal().is_lost()
-                || daemon_access
-                    .as_ref()
-                    .is_some_and(|access| access.loss_signal().is_lost())
-        },
-        async {
-            let (localstore, _, kv) =
-                setup_database(&bootstrap_settings, work_dir, db_password, open_mode).await?;
-            let mint_builder = MintBuilder::new(localstore);
-            let mint_info = mint_builder.mint_info_from_db().await?;
-            let quote_ttl = mint_builder.quote_ttl_from_db().await?;
-            let repository = config_store::ConfigRepository::new(kv);
-            let service =
-                config_service::ConfigurationService::new(repository, bootstrap_settings.database);
-            let (mint_info, quote_ttl) = service
-                .canonical_backup()
-                .await?
-                .unwrap_or((mint_info, quote_ttl));
-            service
-                .attach_canonical_snapshot(mint_info, quote_ttl)
-                .await;
-            Result::<_>::Ok(service)
-        },
-    )
-    .await?;
-    Ok(DirectConfigurationService {
-        service,
-        configuration_access,
-        daemon_access,
-    })
-}
-
-/// Starts mintd from programmatic settings for CDK integration-test launchers.
-///
-/// This feature-gated harness intentionally bypasses the operator-facing
-/// database-backed configuration workflow. Production binaries must use
-/// [`run_managed_mintd`] instead.
-#[cfg(feature = "integration-tests")]
-pub async fn run_mintd_for_integration_tests_with_shutdown(
+/// Run mintd with a custom shutdown signal
+pub async fn run_mintd_with_shutdown(
     work_dir: &Path,
     settings: &config::Settings,
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
@@ -2690,13 +2096,6 @@ pub async fn run_mintd_for_integration_tests_with_shutdown(
     routers: Vec<Router>,
 ) -> Result<()> {
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
-    let signing_identity = config_service::discover_signing_identity(settings).await?;
-    config_service::validate_authored_mint_pubkey(settings, &signing_identity)?;
-    let configuration_service = Arc::new(config_service::ConfigurationService::new(
-        config_store::ConfigRepository::new(kv.clone()),
-        settings.database.clone(),
-    ));
-    let (startup_ready, _startup_ready_receiver) = tokio::sync::oneshot::channel();
 
     run_mintd_with_database_and_shutdown(
         work_dir,
@@ -2704,147 +2103,201 @@ pub async fn run_mintd_for_integration_tests_with_shutdown(
         localstore,
         keystore,
         kv,
-        configuration_service,
-        &signing_identity,
-        None,
         shutdown_signal,
         db_password,
         runtime,
         routers,
-        startup_ready,
+        false,
+        None,
     )
     .await
 }
 
-/// Runs mintd exclusively from database-backed authoritative configuration.
-pub async fn run_managed_mintd(
+#[allow(clippy::too_many_arguments)]
+async fn run_mintd_with_database_and_shutdown(
+    work_dir: &Path,
+    settings: &config::Settings,
+    localstore: DynMintDatabase,
+    keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
+    force_configuration: bool,
+    activation: Option<ConfigurationActivation>,
+) -> Result<()> {
+    let mint_builder = MintBuilder::new(localstore);
+
+    // If RPC is enabled and DB contains mint_info already, initialize the builder from DB.
+    // This ensures subsequent builder modifications (like version injection) can respect stored values.
+    let maybe_mint_builder = {
+        #[cfg(feature = "management-rpc")]
+        {
+            if force_configuration {
+                mint_builder
+            } else if let Some(rpc_settings) = settings.mint_management_rpc.clone() {
+                if rpc_settings.enabled {
+                    // Best-effort: pull DB state into builder if present
+                    let mut tmp = mint_builder;
+                    if let Err(e) = tmp.init_from_db_if_present().await {
+                        tracing::warn!("Failed to init builder from DB: {}", e);
+                    }
+                    tmp
+                } else {
+                    mint_builder
+                }
+            } else {
+                mint_builder
+            }
+        }
+        #[cfg(not(feature = "management-rpc"))]
+        {
+            mint_builder
+        }
+    };
+
+    let mint_builder =
+        configure_mint_builder(settings, maybe_mint_builder, runtime, work_dir, Some(kv)).await?;
+    let (mint_builder, auth_localstore) =
+        setup_authentication(settings, work_dir, mint_builder, db_password).await?;
+
+    let config_mint_info = mint_builder.current_mint_info();
+
+    let mint = build_mint(settings, keystore, mint_builder).await?;
+
+    tracing::debug!("Mint built from builder.");
+
+    let mint = Arc::new(mint);
+
+    start_services_with_shutdown(
+        mint.clone(),
+        settings,
+        work_dir,
+        config_mint_info,
+        shutdown_signal,
+        routers,
+        auth_localstore,
+        force_configuration,
+        activation,
+    )
+    .await
+}
+
+fn load_database_bootstrap_settings() -> Result<config::Settings> {
+    let mut settings = config::Settings::default();
+    if let Ok(database) = env::var(env_vars::DATABASE_ENV_VAR) {
+        settings.database.engine =
+            DatabaseEngine::from_str(&database).map_err(anyhow::Error::msg)?;
+    }
+    if settings.database.engine == DatabaseEngine::Postgres {
+        settings.database.postgres = Some(config::PostgresConfig::default().from_env());
+    } else {
+        settings.database.postgres = None;
+    }
+    validate_database_config(&settings)?;
+    Ok(settings)
+}
+
+fn configuration_service(
+    kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    settings: &config::Settings,
+) -> config_service::ConfigurationService {
+    config_service::ConfigurationService::new(
+        config_store::ConfigRepository::new(kv),
+        settings.database.clone(),
+    )
+}
+
+/// Validates a database-backed configuration document without writing it.
+pub async fn validate_configuration_document(document: &str) -> Result<()> {
+    config_service::ConfigurationService::validate_import(document).await?;
+    Ok(())
+}
+
+/// Initializes the authoritative configuration record in the selected database.
+pub async fn initialize_configuration(
+    work_dir: &Path,
+    document: &str,
+    db_password: Option<String>,
+) -> Result<()> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
+    let mut mint_builder = MintBuilder::new(localstore);
+    mint_builder.init_from_db_if_present().await?;
+    let database_pubkey = mint_builder.current_mint_info().pubkey;
+    configuration_service(kv, &bootstrap)
+        .initialize(document, database_pubkey)
+        .await?;
+    Ok(())
+}
+
+/// Validates and atomically replaces the authoritative configuration record.
+pub async fn apply_configuration(
+    work_dir: &Path,
+    document: &str,
+    validate_only: bool,
+    db_password: Option<String>,
+) -> Result<ApplyOutcome> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (_localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
+    Ok(configuration_service(kv, &bootstrap)
+        .apply(document, validate_only)
+        .await?)
+}
+
+/// Reads the unresolved authoritative configuration document.
+pub async fn stored_configuration_document(
+    work_dir: &Path,
+    db_password: Option<String>,
+) -> Result<String> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (_localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
+    Ok(configuration_service(kv, &bootstrap).document().await?)
+}
+
+/// Runs mintd using only the configuration stored in its primary database.
+pub async fn run_mintd_from_database(
     work_dir: &Path,
     db_password: Option<String>,
     enable_logging: bool,
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
-    let bootstrap_settings = load_database_bootstrap_settings()?;
-    let configuration_access =
-        acquire_configuration_mutation_access(work_dir, &bootstrap_settings.database).await?;
-    let database_access =
-        acquire_daemon_instance_access(work_dir, &bootstrap_settings.database).await?;
-    let startup_lock_loss = database_access.loss_signal();
-    let startup_configuration_loss = configuration_access.loss_signal();
-    let (
-        localstore,
-        keystore,
-        kv,
-        configuration_service,
-        candidate,
-        pending_document,
-        signing_identity,
-    ) = race_with_lock_loss(
-        startup_configuration_loss,
-        Some(startup_lock_loss),
-        "daemon configuration startup",
-        || database_access.loss_signal().is_lost() || configuration_access.loss_signal().is_lost(),
-        async {
-            let (localstore, keystore, kv) =
-                initial_setup(work_dir, &bootstrap_settings, db_password.clone()).await?;
-            let configuration_service = Arc::new(config_service::ConfigurationService::new(
-                config_store::ConfigRepository::new(kv.clone()),
-                bootstrap_settings.database.clone(),
-            ));
-            let (candidate, pending_document, signing_identity) =
-                configuration_service.startup_candidate().await?;
-            Result::<_>::Ok((
-                localstore,
-                keystore,
-                kv,
-                configuration_service,
-                candidate,
-                pending_document,
-                signing_identity,
-            ))
-        },
-    )
-    .await?;
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (localstore, keystore, kv) =
+        initial_setup(work_dir, &bootstrap, db_password.clone()).await?;
+    let service = configuration_service(kv.clone(), &bootstrap);
+    let startup = service.startup().await?;
+    let force_configuration = !startup.applied;
+    let activation = (!startup.applied).then(|| ConfigurationActivation {
+        service,
+        expected_document: startup.resolved.document.clone(),
+    });
+    let settings = startup.resolved.settings;
 
-    if !database_bootstrap_matches(&candidate.settings.database, &bootstrap_settings.database) {
-        bail!(
-            "Persisted primary database settings do not match the bootstrap database settings; update the CDK_MINTD_DATABASE/CDK_MINTD_POSTGRES_* bootstrap environment before starting mintd"
-        );
-    }
-
-    let _guard = if enable_logging {
-        setup_tracing(work_dir, &candidate.settings.info.logging)?
+    let guard = if enable_logging {
+        setup_tracing(work_dir, &settings.info.logging)?
     } else {
         None
     };
 
-    if database_access.loss_signal().is_lost() || configuration_access.loss_signal().is_lost() {
-        database_lock::fail_stop_after_lock_loss("daemon service startup");
-    }
-    let (startup_ready_tx, mut startup_ready_rx) = tokio::sync::oneshot::channel();
-    let daemon = run_mintd_with_database_and_shutdown(
+    let result = run_mintd_with_database_and_shutdown(
         work_dir,
-        &candidate.settings,
+        &settings,
         localstore,
         keystore,
         kv,
-        configuration_service,
-        &signing_identity,
-        pending_document.as_deref(),
         shutdown_signal(),
         db_password,
         runtime,
         routers,
-        startup_ready_tx,
-    );
-    tokio::pin!(daemon);
+        force_configuration,
+        activation,
+    )
+    .await;
 
-    let startup_result = tokio::select! {
-        biased;
-        () = database_access.loss_signal().wait() => {
-            database_lock::fail_stop_after_lock_loss("daemon runtime")
-        },
-        () = configuration_access.loss_signal().wait() => {
-            database_lock::fail_stop_after_lock_loss("daemon runtime")
-        },
-        result = daemon.as_mut() => Some(result),
-        ready = &mut startup_ready_rx => {
-            match ready {
-                Ok(()) => None,
-                Err(_) => Some(tokio::select! {
-                    biased;
-                    () = database_access.loss_signal().wait() => {
-                        database_lock::fail_stop_after_lock_loss("daemon runtime")
-                    },
-                    () = configuration_access.loss_signal().wait() => {
-                        database_lock::fail_stop_after_lock_loss("daemon runtime")
-                    },
-                    result = daemon.as_mut() => result,
-                }),
-            }
-        },
-    };
-
-    let result = match startup_result {
-        Some(result) => result,
-        None => {
-            drop(configuration_access);
-            let runtime_lock_loss = database_access.loss_signal();
-            if runtime_lock_loss.is_lost() {
-                database_lock::fail_stop_after_lock_loss("daemon runtime");
-            }
-            race_with_lock_loss(
-                runtime_lock_loss,
-                None,
-                "daemon runtime",
-                || database_access.loss_signal().is_lost(),
-                daemon.as_mut(),
-            )
-            .await
-        }
-    };
-
-    if let Some(guard) = _guard {
+    if let Some(guard) = guard {
         tracing::info!("Shutting down logging worker thread");
         drop(guard);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -2869,358 +2322,69 @@ mod tests {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
     }
 
-    #[test]
-    fn database_bootstrap_match_checks_the_startup_database_identity() {
-        let sqlite = config::Database::default();
-        assert!(database_bootstrap_matches(&sqlite, &sqlite));
-
-        let postgres = config::PostgresConfig {
-            url: "postgresql://localhost/mint".to_string(),
-            ..Default::default()
-        };
-        let configured = config::Database {
-            engine: DatabaseEngine::Postgres,
-            postgres: Some(postgres.clone()),
-        };
-        let mut bootstrap = config::Database {
-            engine: DatabaseEngine::Postgres,
-            postgres: Some(postgres),
-        };
-        assert!(database_bootstrap_matches(&configured, &bootstrap));
-
-        bootstrap
-            .postgres
-            .as_mut()
-            .expect("PostgreSQL bootstrap config")
-            .url = "postgresql://localhost/other".to_string();
-        assert!(!database_bootstrap_matches(&configured, &bootstrap));
-        assert!(!database_bootstrap_matches(&configured, &sqlite));
-    }
-
-    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
-    fn direct_access_document(secret_file: &Path, name: &str, rpc_enabled: bool) -> String {
-        let rpc = if rpc_enabled {
-            r#"
-[mint_management_rpc]
-enabled = true
-allow_insecure = true
-"#
-        } else {
-            ""
-        };
-        format!(
-            r#"
-[info]
-mnemonic = "file:{}"
-
-[database]
-engine = "sqlite"
-
-[[ln]]
-ln_backend = "fakewallet"
-
-[mint_info]
-name = "{name}"
-{rpc}
-"#,
-            secret_file.display()
-        )
-    }
-
-    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
-    async fn initialize_active_direct_access_document(
-        work_dir: &Path,
-        password: Option<String>,
-        document: &str,
-    ) -> Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> {
-        let resolved = config_service::ConfigurationService::validate_document(document)
-            .expect("resolve test configuration");
-        let signing_identity = config_service::discover_signing_identity(&resolved.settings)
-            .await
-            .expect("discover test signing identity");
-        let (_, _, kv) = setup_database(
-            &config::Settings::default(),
-            work_dir,
-            password,
-            DatabaseOpenMode::Migrate,
-        )
-        .await
-        .expect("initialize test database");
-        config_store::ConfigRepository::new(kv.clone())
-            .initialize(resolved.document, signing_identity.fingerprint)
-            .await
-            .expect("initialize active configuration");
-        kv
-    }
-
-    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // Serializes process-global environment access in this test.
-    async fn configuration_initialization_requires_a_stopped_daemon() {
-        let _env_lock = crate::test_utils::env_lock();
-        clear_mintd_env();
-        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_init_running");
-        fs::create_dir_all(&work_dir).expect("create temporary work directory");
-        let secret_file = work_dir.join("signing-secret");
-        fs::write(&secret_file, TEST_MNEMONIC).expect("write signing secret");
-        let document = direct_access_document(&secret_file, "initial", false);
-        let database = config::Database::default();
-        let daemon_access =
-            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
-                .await
-                .expect("hold daemon instance lock");
-
-        let error = initialize_configuration(&work_dir, &document, None)
-            .await
-            .expect_err("initialization must not run beside a daemon");
-        assert_eq!(
-            error.to_string(),
-            "mintd is running; config init requires the daemon to be stopped"
-        );
-
-        drop(daemon_access);
-        fs::remove_dir_all(work_dir).expect("remove temporary work directory");
-    }
-
     #[cfg(feature = "sqlite")]
     #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // Serializes process-global environment access in this test.
-    async fn direct_configuration_service_holds_lock_until_drop() {
-        let _env_lock = crate::test_utils::env_lock();
-        clear_mintd_env();
-        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_direct_service_lock");
-        fs::create_dir_all(&work_dir).expect("create temporary work directory");
-        #[cfg(feature = "sqlcipher")]
-        let password = Some("test-password".to_owned());
-        #[cfg(not(feature = "sqlcipher"))]
-        let password = None;
+    async fn unapplied_configuration_refreshes_canonical_values_once() {
+        use cdk_sqlite::mint::memory;
 
-        let service = open_direct_configuration_service(&work_dir, password)
+        let database = Arc::new(memory::empty().await.expect("in-memory database"));
+        let mut builder = MintBuilder::new(database.clone());
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure unit");
+        let mint = builder
+            .build_with_seed(database.clone(), &[7; 32])
             .await
-            .expect("open direct configuration service");
-        let database = config::Database::default();
-        let configuration_error =
-            database_lock::DatabaseAccessGuard::try_acquire_configuration_mutation(
-                &work_dir, &database,
-            )
+            .expect("build mint");
+
+        let stored_info = MintBuilder::new(database.clone())
+            .with_name("stored".to_owned())
+            .current_mint_info();
+        mint.set_mint_info(stored_info)
             .await
-            .expect_err("direct service must retain configuration serialization");
-        assert!(matches!(
-            configuration_error,
-            database_lock::DatabaseAccessError::Busy
-        ));
-        let daemon_error =
-            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
-                .await
-                .expect_err("stopped-daemon direct service must prevent daemon startup");
-        assert!(matches!(
-            daemon_error,
-            database_lock::DatabaseAccessError::Busy
-        ));
-
-        drop(service);
-        let configuration = database_lock::DatabaseAccessGuard::try_acquire_configuration_mutation(
-            &work_dir, &database,
-        )
-        .await
-        .expect("dropping direct service must release configuration access");
-        let daemon =
-            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
-                .await
-                .expect("dropping direct service must release daemon exclusion");
-        drop(configuration);
-        drop(daemon);
-        fs::remove_dir_all(work_dir).expect("remove temporary work directory");
-    }
-
-    #[cfg(feature = "sqlite")]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // Serializes process-global environment access in this test.
-    async fn busy_direct_service_fails_before_sqlite_is_opened() {
-        let _env_lock = crate::test_utils::env_lock();
-        clear_mintd_env();
-        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_direct_service_busy");
-        fs::create_dir_all(&work_dir).expect("create temporary work directory");
-        let database = config::Database::default();
-        let configuration_access =
-            database_lock::DatabaseAccessGuard::try_acquire_configuration_mutation(
-                &work_dir, &database,
-            )
+            .expect("set stored mint info");
+        mint.set_quote_ttl(QuoteTTL::new(10, 20))
             .await
-            .expect("hold configuration mutation access");
+            .expect("set stored quote ttl");
 
-        let error = open_direct_configuration_service(&work_dir, None)
+        let imported_info = MintBuilder::new(database.clone())
+            .with_name("imported".to_owned())
+            .current_mint_info();
+        reconcile_canonical_configuration(&mint, imported_info, QuoteTTL::new(30, 40), false)
             .await
-            .expect_err("direct service must serialize configuration access");
-
-        assert_eq!(error.to_string(), database_lock::CONFIGURATION_BUSY_MESSAGE);
-        assert!(
-            !work_dir.join("cdk-mintd.sqlite").exists(),
-            "direct access must lock before opening or migrating SQLite"
-        );
-        drop(configuration_access);
-        fs::remove_dir_all(work_dir).expect("remove temporary work directory");
-    }
-
-    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // Serializes process-global environment access in this test.
-    async fn running_daemon_without_management_rpc_allows_direct_apply() {
-        let _env_lock = crate::test_utils::env_lock();
-        clear_mintd_env();
-        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_running_direct_apply");
-        fs::create_dir_all(&work_dir).expect("create temporary work directory");
-        let secret_file = work_dir.join("signing-secret");
-        fs::write(&secret_file, TEST_MNEMONIC).expect("write signing secret");
-        #[cfg(feature = "sqlcipher")]
-        let password = Some("test-password".to_owned());
-        #[cfg(not(feature = "sqlcipher"))]
-        let password = None;
-        let active = direct_access_document(&secret_file, "active", false);
-        let kv =
-            initialize_active_direct_access_document(&work_dir, password.clone(), &active).await;
-        let database = config::Database::default();
-        let daemon_access =
-            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
-                .await
-                .expect("simulate a steady running daemon");
-
-        let service = open_direct_configuration_service(&work_dir, password)
-            .await
-            .expect("running RPC-disabled daemon should allow direct configuration access");
-        let pending = direct_access_document(&secret_file, "pending", false);
-        let outcome = service
-            .apply(&pending, false)
-            .await
-            .expect("stage configuration beside the running daemon");
-        assert!(outcome.restart_required);
-        assert!(config_store::ConfigRepository::new(kv)
-            .pending()
-            .await
-            .expect("read pending configuration")
-            .as_deref()
-            .is_some_and(|document| document.contains("pending")));
-
-        drop(service);
-        drop(daemon_access);
-        fs::remove_dir_all(work_dir).expect("remove temporary work directory");
-    }
-
-    #[cfg(all(feature = "sqlite", feature = "fakewallet", feature = "management-rpc"))]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // Serializes process-global environment access in this test.
-    async fn running_daemon_with_management_rpc_allows_direct_apply() {
-        let _env_lock = crate::test_utils::env_lock();
-        clear_mintd_env();
-        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_running_rpc_direct");
-        fs::create_dir_all(&work_dir).expect("create temporary work directory");
-        let secret_file = work_dir.join("signing-secret");
-        fs::write(&secret_file, TEST_MNEMONIC).expect("write signing secret");
-        let active = direct_access_document(&secret_file, "active", true);
-        #[cfg(feature = "sqlcipher")]
-        let password = Some("test-password".to_owned());
-        #[cfg(not(feature = "sqlcipher"))]
-        let password = None;
-        let kv =
-            initialize_active_direct_access_document(&work_dir, password.clone(), &active).await;
-        let database = config::Database::default();
-        let daemon_access =
-            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
-                .await
-                .expect("simulate a steady running daemon");
-
-        let service = open_direct_configuration_service(&work_dir, password)
-            .await
-            .expect("RPC-enabled daemon should share direct configuration serialization");
-        let pending = direct_access_document(&secret_file, "pending", true);
-        service
-            .apply(&pending, false)
-            .await
-            .expect("stage configuration beside the RPC-enabled daemon");
-        assert!(config_store::ConfigRepository::new(kv)
-            .pending()
-            .await
-            .expect("read pending configuration")
-            .as_deref()
-            .is_some_and(|document| document.contains("pending")));
-
-        drop(service);
-        drop(daemon_access);
-        fs::remove_dir_all(work_dir).expect("remove temporary work directory");
-    }
-
-    #[cfg(all(feature = "sqlite", feature = "fakewallet", feature = "management-rpc"))]
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)] // Serializes process-global environment access in this test.
-    async fn rpc_and_direct_mutations_contend_on_the_same_database_lock() {
-        let _env_lock = crate::test_utils::env_lock();
-        clear_mintd_env();
-        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_rpc_direct_lock");
-        fs::create_dir_all(&work_dir).expect("create temporary work directory");
-        let secret_file = work_dir.join("signing-secret");
-        fs::write(&secret_file, TEST_MNEMONIC).expect("write signing secret");
-        let active = direct_access_document(&secret_file, "active", true);
-        #[cfg(feature = "sqlcipher")]
-        let password = Some("test-password".to_owned());
-        #[cfg(not(feature = "sqlcipher"))]
-        let password = None;
-        let kv =
-            initialize_active_direct_access_document(&work_dir, password.clone(), &active).await;
-        let database = config::Database::default();
-        let daemon_access =
-            database_lock::DatabaseAccessGuard::try_acquire_daemon_instance(&work_dir, &database)
-                .await
-                .expect("simulate a steady running daemon");
-        let service = Arc::new(config_service::ConfigurationService::new(
-            config_store::ConfigRepository::new(kv),
-            database.clone(),
-        ));
-        let manager =
-            config_service::RpcConfigurationManager::new(service, work_dir.clone(), database);
-        let rpc_mutation =
-            cdk_mint_rpc::ConfigurationManager::acquire_configuration_mutation(&manager)
-                .await
-                .expect("RPC mutation should acquire database configuration lock");
-
-        let error = open_direct_configuration_service(&work_dir, password.clone())
-            .await
-            .expect_err("direct mutation must contend with RPC mutation");
-        assert_eq!(error.to_string(), database_lock::CONFIGURATION_BUSY_MESSAGE);
-
-        drop(rpc_mutation);
-        let direct_mutation = open_direct_configuration_service(&work_dir, password)
-            .await
-            .expect("direct mutation should proceed after RPC releases the lock");
-        let rpc_error = match cdk_mint_rpc::ConfigurationManager::acquire_configuration_mutation(
-            &manager,
-        )
-        .await
-        {
-            Ok(_) => panic!("RPC mutation must contend with direct mutation"),
-            Err(error) => error,
-        };
+            .expect("apply imported canonical values");
         assert_eq!(
-            rpc_error.to_string(),
-            format!(
-                "Configuration mutation busy: {}",
-                database_lock::CONFIGURATION_BUSY_MESSAGE
-            )
+            mint.mint_info().await.expect("mint info").name.as_deref(),
+            Some("imported")
+        );
+        assert_eq!(
+            mint.quote_ttl().await.expect("quote ttl"),
+            QuoteTTL::new(30, 40)
         );
 
-        drop(direct_mutation);
-        drop(daemon_access);
-        fs::remove_dir_all(work_dir).expect("remove temporary work directory");
-    }
-
-    #[cfg(all(feature = "sqlcipher", feature = "sqlite"))]
-    #[tokio::test]
-    async fn opening_sqlcipher_database_without_password_has_actionable_error() {
-        let temp_dir = crate::test_utils::unique_temp_path("missing_sqlcipher_password");
-        let error = setup_sqlite_database(&temp_dir, None, DatabaseOpenMode::Migrate)
+        let mut rpc_info = mint.mint_info().await.expect("mint info");
+        rpc_info.name = Some("rpc-managed".to_owned());
+        mint.set_mint_info(rpc_info)
             .await
-            .expect_err("opening the encrypted database must require a password");
+            .expect("set RPC-managed mint info");
+        mint.set_quote_ttl(QuoteTTL::new(50, 60))
+            .await
+            .expect("set RPC-managed quote ttl");
 
-        assert!(error.to_string().contains("pass --password <password>"));
+        let later_document_info = MintBuilder::new(database)
+            .with_name("document".to_owned())
+            .current_mint_info();
+        reconcile_canonical_configuration(&mint, later_document_info, QuoteTTL::new(70, 80), true)
+            .await
+            .expect("preserve RPC-managed canonical values");
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").name.as_deref(),
+            Some("rpc-managed")
+        );
+        assert_eq!(
+            mint.quote_ttl().await.expect("quote ttl"),
+            QuoteTTL::new(50, 60)
+        );
     }
 
     #[test]
@@ -3954,37 +3118,6 @@ ln_backend = "fakewallet"
         assert_eq!(methods, vec!["bolt11", "bolt12", "paypal"]);
     }
 
-    #[test]
-    fn managed_nut_policy_rejects_unsupported_processors() {
-        let supported = MintMethodSettings {
-            method: PaymentMethod::Known(KnownMethod::Bolt11),
-            unit: CurrencyUnit::Sat,
-            method_name: None,
-            min_amount: None,
-            max_amount: None,
-            options: None,
-        };
-        let mut derived = cdk::nuts::Nuts::default();
-        derived.nut04.methods = vec![supported.clone()];
-        let mut managed = config::ManagedNuts::default();
-        managed.nut04.methods = vec![supported];
-
-        validate_managed_nut_policy(&managed, &derived)
-            .expect("supported processor policy should validate");
-
-        managed.nut04.methods.push(MintMethodSettings {
-            method: PaymentMethod::Custom("unsupported".to_string()),
-            unit: CurrencyUnit::Sat,
-            method_name: None,
-            min_amount: None,
-            max_amount: None,
-            options: None,
-        });
-        let error = validate_managed_nut_policy(&managed, &derived)
-            .expect_err("unsupported processor policy must fail");
-        assert!(error.to_string().contains("unsupported payment processor"));
-    }
-
     fn clear_mintd_env() {
         for var in [
             "CDK_MINTD_DATABASE",
@@ -4184,7 +3317,7 @@ engine = "sqlite"
 [ln]
 ln_backend = "fakewallet"
 "#,
-            "Seed in [info].seed is too short",
+            "Seed in [info].seed/CDK_MINTD_SEED is too short",
         );
     }
 
@@ -4586,7 +3719,7 @@ engine = "sqlite"
 ln_backend = "fakewallet"
 "#
             ),
-            "Seed in [info].seed must not be empty",
+            "Seed in [info].seed/CDK_MINTD_SEED must not be empty",
         );
     }
 

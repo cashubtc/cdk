@@ -104,26 +104,32 @@ allow_insecure = false
 `tls_dir` must contain `ca.pem`, `client.pem`, and `client.key` for the `cdk-mintd` gRPC client.
 The same directory created by `generate_certs.sh` can be used for both services.
 
-### Import and Start
+### Environment Variables
 
-Add the section above to a complete `mint.toml`, then explicitly import it into
-the mint database before the first start:
+All `cdk-mintd` signatory configuration can also be set via environment variables:
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `CDK_MINTD_SIGNATORY_ENABLED` | Enable the remote signatory client | Yes |
+| `CDK_MINTD_SIGNATORY_ADDRESS` | Remote signatory address | No |
+| `CDK_MINTD_SIGNATORY_PORT` | Remote signatory port | No |
+| `CDK_MINTD_SIGNATORY_TLS_DIR` | Directory with client TLS files | Recommended |
+| `CDK_MINTD_SIGNATORY_ALLOW_INSECURE` | Allow connecting without TLS | No |
+
+Example:
 
 ```bash
-cdk-mintd config validate --file mint.toml
-cdk-mintd config init --file mint.toml
+export CDK_MINTD_SIGNATORY_ENABLED=true
+export CDK_MINTD_SIGNATORY_ADDRESS=127.0.0.1
+export CDK_MINTD_SIGNATORY_PORT=15060
+export CDK_MINTD_SIGNATORY_TLS_DIR="$HOME/.cdk-signatory"
 cdk-mintd
 ```
 
-Environment variables no longer override signatory settings at daemon startup.
-To change them later, edit the complete file, run
-`cdk-mintd config apply --file mint.toml`, and restart. Direct apply works beside a running daemon. See the
-[`cdk-mintd` configuration guide](../cdk-mintd/README.md#configuration).
-
 ## Security Notes
 
-- Back up the seed file or the stable secret referenced by `info.mnemonic`;
-  losing the seed loses access to the mint signing keys.
+- Back up the seed file or set a stable `CDK_MINTD_MNEMONIC`; losing the seed loses access to the
+  mint signing keys.
 - Keep `server.key`, `client.key`, and the seed file private.
 - Use TLS for remote deployments. `allow_insecure = true` should only be used for local testing.
 

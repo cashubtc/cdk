@@ -32,7 +32,7 @@ cdk-common = { workspace = true, features = ["mint", "wallet", "http"] }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
 cdk-nwc = { workspace = true }
 nostr-sdk = { workspace = true }
-cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "lnbits", "management-rpc", "sqlite", "postgres", "ldk-node", "bdk", "prometheus", "integration-tests"] }
+cdk-mintd = { workspace = true, features = ["cln", "lnd", "fakewallet", "grpc-processor", "lnbits", "management-rpc", "sqlite", "postgres", "ldk-node", "bdk", "prometheus"] }
 futures = { workspace = true, default-features = false, features = [
     "executor",
 ] }

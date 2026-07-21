@@ -18,7 +18,7 @@ pub use metrics::{CdkMetrics, MintMetricGuard, METRICS};
 pub use process::SystemMetrics;
 // Re-export prometheus crate for custom metrics
 pub use prometheus;
-pub use server::{PreparedPrometheusServer, PrometheusBuilder, PrometheusConfig, PrometheusServer};
+pub use server::{PrometheusBuilder, PrometheusConfig, PrometheusServer};
 
 /// Macro for recording metrics with optional fallback to [`METRICS`]
 ///
