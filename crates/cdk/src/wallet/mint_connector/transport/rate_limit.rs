@@ -35,7 +35,8 @@ impl Default for RateLimitConfig {
 #[derive(Debug, Clone)]
 pub struct TokenBucket {
     state: Arc<Mutex<BucketState>>,
-    config: RateLimitConfig,
+    capacity: f64,
+    tokens_per_ms: f64,
 }
 
 #[derive(Debug)]
@@ -47,46 +48,50 @@ struct BucketState {
 impl TokenBucket {
     /// Create a new token bucket from config.
     pub fn new(config: RateLimitConfig) -> Self {
+        let capacity = f64::from(config.capacity.get());
         Self {
             state: Arc::new(Mutex::new(BucketState {
-                tokens: f64::from(config.capacity.get()),
+                tokens: capacity,
                 last_refill: Instant::now(),
             })),
-            config,
+            capacity,
+            tokens_per_ms: f64::from(config.refill_per_minute.get()) / (60.0 * 1000.0),
         }
     }
 
     /// Wait until a token is available, then consume it
     pub async fn acquire(&self) {
         loop {
-            let wait_duration = {
+            let wait = {
                 let mut state = self.state.lock().await;
-                self.refill(&mut state);
-
-                if state.tokens >= 1.0 {
-                    state.tokens -= 1.0;
-                    return;
+                match self.refill(&mut state) {
+                    Some(wait) => wait,
+                    None => {
+                        state.tokens -= 1.0;
+                        return;
+                    }
                 }
-
-                let tokens_needed = 1.0 - state.tokens;
-                let refill_per_ms =
-                    f64::from(self.config.refill_per_minute.get()) / (60.0 * 1000.0);
-                Duration::from_millis((tokens_needed / refill_per_ms).ceil() as u64)
             };
 
-            tokio::time::sleep(wait_duration).await;
+            tokio::time::sleep(wait).await;
         }
     }
 
-    fn refill(&self, state: &mut BucketState) {
+    /// Accrue tokens for the time elapsed since the last refill and report how
+    /// long until the next token is available. Returns `None` when a token can
+    /// be consumed right away.
+    fn refill(&self, state: &mut BucketState) -> Option<Duration> {
         let now = Instant::now();
-        let elapsed_ms = now.duration_since(state.last_refill).as_millis() as f64;
-        let refill_per_ms = f64::from(self.config.refill_per_minute.get()) / (60.0 * 1000.0);
-        let new_tokens = elapsed_ms * refill_per_ms;
+        let elapsed_ms = now.duration_since(state.last_refill).as_secs_f64() * 1000.0;
+        state.tokens = (state.tokens + elapsed_ms * self.tokens_per_ms).min(self.capacity);
+        state.last_refill = now;
 
-        if new_tokens > 0.0 {
-            state.tokens = (state.tokens + new_tokens).min(f64::from(self.config.capacity.get()));
-            state.last_refill = now;
+        if state.tokens >= 1.0 {
+            None
+        } else {
+            Some(Duration::from_millis(
+                ((1.0 - state.tokens) / self.tokens_per_ms).ceil() as u64,
+            ))
         }
     }
 }
