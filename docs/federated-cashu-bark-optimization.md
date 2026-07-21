@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, and 8 complete; Milestones 2, 7, and 7A rejected
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, and 8 complete; Milestones 2, 7, and 7A rejected; Milestones 9-17, including 15A, not started
 
 First recorded: 2026-07-20
 
@@ -28,10 +28,11 @@ Run every test federation, repeated performance sample, fault injection, and
 adverse-ordering workload on the local computer, not on the Nocean server. Use
 a local five-member release federation because it is faster, easier to reset,
 and produces cleaner comparisons. A local federation may still use the real
-Signet Ark server, faucet, and store when the milestone needs end-to-end Bark
-evidence. Nocean is limited to read-only field evidence and a narrowly scoped
-final deployment smoke check after all local gates pass; it is not the test or
-benchmark host.
+Signet Ark server and the reusable Wavelength Signet CLI wallet when a
+milestone needs end-to-end Bark evidence. Use the browser-based 2nd.dev faucet
+and store only if the CLI-wallet path fails. Nocean is limited to read-only
+field evidence and a narrowly scoped final deployment smoke check after all
+local gates pass; it is not the test or benchmark host.
 
 Use the repository runner for the repeatable five-member topology:
 
@@ -57,15 +58,81 @@ Bark replay currently refreshes old movement completion timestamps, so those
 rows are authoritative for state but not immutable timing evidence after a
 restart.
 
-### Repeatable 2nd.dev Signet payment workflow
+### Repeatable Signet payment workflow
 
-Use these workflows for every real-payment sample. They were verified against
-`signet.2nd.dev` on 2026-07-21. Keep the five mint processes and the local CLI
-on the local computer; only the test Lightning payment crosses to 2nd.dev.
-Never record the raw invoice, preimage, payment hash, browser cookie, or wallet
-state in this document or a commit.
+Keep the five mint processes, federated `cdk-cli`, and test driver on the local
+computer. Never record a raw invoice, preimage, payment hash, wallet database,
+browser cookie, wallet credential, seed, or machine-specific path in this
+document or a commit.
 
-#### Incoming: faucet pays the federation invoice
+#### Option 1: reusable Wavelength CLI wallet (preferred)
+
+For every real Signet payment sample, first load and follow the installed Codex
+skill named **`signet-cli-wallet`**. It owns the reusable Wavelength `waved` and
+`wavecli` configuration, daemon lifecycle, fixed Signet/datadir wrapper,
+funding, send/receive commands, status inspection, and secret-handling rules.
+Do not reconstruct its daemon flags, call bare `wavecli`, create a disposable
+wallet, or copy its private configuration into this repository.
+
+Before a sample:
+
+1. Use the skill's `wave` wrapper to run `wave getinfo`. Require `network` to
+   be `signet`, `wallet_state` to be `WALLET_STATE_READY`, and
+   `server_connected` to be true.
+2. Run `wave balance`. An incoming-to-federation test requires enough
+   `confirmed_sat` to pay the federation invoice and its fee. Receiving an
+   outgoing federation payment does not require a prior wallet balance.
+3. Keep the invoice and returned payment identifiers only in disposable shell
+   state. Record redacted timestamps and amounts, not payment secrets.
+
+##### Incoming: Wavelength pays the federation invoice
+
+1. Import the current local federation configuration into a clean `cdk-cli`
+   wallet using the ceremony-specific federation import command documented in
+   Option 2 below; that import step is common to both options. Then start the
+   local CLI mint command and capture its Signet BOLT11 invoice outside the
+   repository.
+2. Pay that invoice through the skill wrapper:
+
+   ```bash
+   wave send "$INVOICE" --offchain --force
+   ```
+
+3. Inspect the Wavelength activity and balance as directed by the skill, let
+   `cdk-cli` complete quote GET and POST mint fan-out, and verify exact issuance
+   plus five-member convergence locally.
+4. Record invoice creation, payer submission, payer completion, federation
+   detection, Bark claim, Cashu issuance, and CLI completion separately.
+
+##### Outgoing: federation pays a Wavelength invoice
+
+1. Create a fresh amount-bearing Signet invoice through the skill wrapper:
+
+   ```bash
+   wave recv --offchain --amt "$AMOUNT_SAT" --memo "federated CDK melt test"
+   ```
+
+2. Pass only the returned invoice to the local federated `cdk-cli melt`
+   command. Keep its payment hash out of the repository.
+3. Use `wave activity inspect <payment_hash>` to confirm `COMPLETE`, then check
+   `wave balance` and, if needed, `wave ark vtxos list` according to the skill.
+4. Verify exact federation fee, returned Cashu change, Bark VTXO accounting,
+   quote/saga state, and five-member convergence.
+
+Use Option 2 only when the skill-guided daemon cannot become ready or connect,
+the reusable wallet lacks spendable funds and cannot be funded for the sample,
+invoice creation fails, or a bounded payment attempt reports a genuine routing
+failure. A merely pending payment is not by itself a reason to start a second
+payment: inspect it first and preserve exactly-once testing. Record the redacted
+fallback reason with the sample.
+
+#### Option 2: 2nd.dev faucet and store (fallback)
+
+These workflows were verified against `signet.2nd.dev` on 2026-07-21. Use them
+only after Option 1 fails its bounded readiness, funding, invoice-creation, or
+routing gate.
+
+##### Incoming: browser faucet pays the federation invoice
 
 1. After every `fresh` DKG, import that ceremony's generated public config into
    a clean local CLI wallet before requesting money. Supplying only a member
@@ -123,7 +190,7 @@ state in this document or a commit.
 6. Record the click and success times, then let the local CLI drive quote GET
    and POST mint fan-out. Verify issuance and five-member convergence locally.
 
-#### Outgoing: federation pays a store invoice
+##### Outgoing: federation pays a store invoice
 
 1. Create a fresh invoice without navigating the store UI:
    `scripts/second_signet_store_invoice.sh --json 1000`. Valid product amounts
@@ -729,22 +796,30 @@ counter cannot be exercised meaningfully at a higher one.
    persistent-wallet latency separately from cold CLI startup.
 3. **Local federation and real Signet.** Run the exact release binaries and
    source commit as five local members against the public Ark server. Use the
-   local CLI, Signet faucet, and Signet store. Require final convergence across
-   all five local members. Nocean is used only for the final deployment smoke
-   check after these measurements pass.
+   local federated `cdk-cli` and the `signet-cli-wallet` skill first. Fall back
+   to the 2nd.dev browser faucet/store only when the reusable wallet fails its
+   bounded readiness, funding, invoice-creation, or routing gate, and record
+   the redacted reason. Require final convergence across all five local
+   members. Nocean is used only for the final deployment smoke check after
+   these measurements pass.
 
 ### Reproducible Signet demonstrations
 
-The Signet faucet accepts a BOLT11 invoice generated by the federation. The
-Signet store exposes fresh outgoing invoices for 1,000, 5,000, and 10,000-sat
-test purchases. These are test-only external interactions, not a synthetic
+The preferred reusable Wavelength wallet, operated through the installed
+`signet-cli-wallet` skill, can both pay a BOLT11 invoice generated by the
+federation and create an amount-bearing BOLT11 invoice for an outgoing melt.
+The 2nd.dev browser faucet and store remain the second option if that wallet
+path fails. These are test-only external interactions, not a synthetic
 replacement for local harnesses.
 
 Incoming demonstration:
 
 1. import the candidate federation into a clean local CLI wallet;
 2. request a fixed 10,000-sat BOLT11 mint quote with `cdk-cli`;
-3. submit the returned invoice through `https://signet.2nd.dev/`;
+3. pay the returned invoice with `wave send "$INVOICE" --offchain --force`;
+   if the skill-guided wallet path fails, submit it through the authenticated
+   browser faucet at `https://signet.2nd.dev/` and record why fallback was
+   required;
 4. keep the same CLI process or separately label cold-process overhead;
 5. wait for threshold-consistent `PAID`, perform POST mint, and confirm the
    exact wallet balance increase; and
@@ -753,16 +828,19 @@ Incoming demonstration:
 Outgoing demonstration:
 
 1. fund the CLI wallet through the incoming demonstration;
-2. obtain a fresh 1,000 or 5,000-sat invoice from
-   `https://signet.2nd.dev/store`;
+2. create a fresh 1,000 or 5,000-sat invoice with `wave recv --offchain --amt
+   "$AMOUNT_SAT"`; if the skill-guided wallet path fails, obtain one from
+   `https://signet.2nd.dev/store` and record why fallback was required;
 3. melt through the federated wallet with `cdk-cli`;
-4. confirm terminal settlement in both the store and federation;
+4. confirm terminal settlement in both the Wavelength wallet and federation,
+   or in both the fallback store and federation when Option 2 was required;
 5. verify actual fee, returned change, and exact wallet balance; and
 6. join the wallet, Bark, Ark, FROST, and consensus timelines.
 
-Browser timing is evidence for the human-visible boundary only. Server metrics
-remain authoritative for internal attribution. Do not commit invoices, wallet
-databases, browser state, or payment secrets.
+Wavelength activity timestamps or, on fallback, browser timing are evidence
+for the external payer/payee boundary only. Server metrics remain authoritative
+for internal attribution. Do not commit invoices, wallet databases, browser
+state, or payment secrets.
 
 ## Target architecture
 
@@ -865,6 +943,16 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Rejected | `docs: record Bark payment consensus timing evaluation` |
 | 7A | Re-evaluate compounded active consensus cadence across serial payment boundaries | Rejected | `perf: complete federated Bark BOLT11 optimization` |
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Complete | `perf: complete federated Bark BOLT11 optimization` |
+| 9 | Parallelize independent private signing and receive-secret RPCs within existing phase barriers | Not started | — |
+| 10 | Replace per-observer consensus entries with signed quorum certificates | Not started | — |
+| 11 | Combine certified HTLC readiness and claim authorization if one accepted operation preserves both boundaries | Not started | — |
+| 12 | Batch simultaneous private custody-signing items per signer and phase | Not started | — |
+| 13 | Remove duplicate outgoing status probes and use one bounded actor-first terminal wait | Not started | — |
+| 14 | Reduce wallet melt fan-out with threshold-first requests and fast hedging | Not started | — |
+| 15 | Certify outgoing success, failure, and recovered-result quorums | Not started | — |
+| 15A | Combine certified outgoing failure with revocation authorization if the pre-signing boundary remains explicit | Not started | — |
+| 16 | Consolidate Bark/Ark outgoing setup and initiation RPCs | Not started | — |
+| 17 | Remove the separate `PaymentInitiated` operation only if ambiguous initiation remains exactly recoverable | Not started | — |
 
 ## Milestone 0: causal baseline
 
@@ -2874,6 +2962,707 @@ designated publication and the 500ms cadence. The 33-second incoming and
 outgoing p95/max remains an explicit miss against the initial 25-second target,
 not a hidden release success.
 
+## Milestone 9: parallel private RPC phases
+
+### Goal
+
+Reduce Bark custody wall time by running independent calls to different
+federation members concurrently inside the existing private-protocol phases.
+Do not change any consensus operation, threshold, signer roster, required
+acknowledgement, protocol phase barrier, or external side effect. This is a
+contained transport scheduling change, not a new signing protocol.
+
+### Current evidence
+
+- Ordinary FROST coordination currently awaits the selected signers one at a
+  time while collecting nonce commitments, then signature shares, then
+  aggregate-result acknowledgements. With three signers, the three phases can
+  contain up to nine serially awaited private HTTP calls even though calls to
+  peers within one phase are independent.
+- Bark virtual-transaction signing already uses bounded unordered concurrency,
+  providing an in-tree model for concurrent peer fan-out without removing
+  protocol phases.
+- Receive-secret replication currently awaits each remote member in sequence.
+  The copies are independent, but the existing required recipient and
+  acknowledgement policy must remain unchanged.
+
+### Checklist
+
+- [ ] Add temporary per-phase timing and private-RPC counters, measure at least
+      three incoming and three outgoing local-federation baselines, and remove
+      the instrumentation before the milestone ends.
+- [ ] Record the exact existing completion and failure rule for commitments,
+      shares, result acknowledgements, and receive-secret copies before
+      changing their scheduling.
+- [ ] Run calls to different members concurrently within each FROST phase while
+      retaining strict barriers between commitment collection, signing-package
+      delivery/share collection, aggregation, and result notification.
+- [ ] Replicate receive secrets concurrently to the same required recipients
+      and wait for the same required acknowledgements as the baseline.
+- [ ] Bound concurrency by the accepted signer/member set; add no unbounded
+      queue, retry loop, rate-limit parser, or new scheduling subsystem.
+- [ ] Preserve stable session, action, signer, attempt, and request identities,
+      deterministic error handling, idempotency, timeout behavior, and nonce
+      abort/quarantine behavior under cancellation and partial failure.
+- [ ] Reuse one small contained fan-out helper if both call sites have the same
+      semantics; otherwise keep the two direct implementations rather than
+      inventing a generic RPC framework.
+- [ ] Recount private requests, accepted operations, protocol messages, bytes,
+      and phase/wallet latency. The request and consensus counts must not rise.
+
+### Tests
+
+- [ ] Inject different delays into all three selected signers and show each
+      phase completes near the slowest required response rather than the sum of
+      the response times.
+- [ ] One unavailable or failing signer preserves the existing bounded retry,
+      roster-advance, and nonce-lifecycle behavior.
+- [ ] Actor cancellation, participant restart, delayed old response, duplicate
+      response, replay, catch-up, and all-member restart cannot cross a phase
+      early, reuse a nonce, or execute a side effect twice.
+- [ ] Concurrent receive-secret replication survives one delayed or failed
+      recipient according to the unchanged acknowledgement rule and never
+      exposes a claim before the required copies are durable.
+- [ ] Healthy incoming, outgoing, failed-send revocation, refresh, and
+      standalone/federated-BDK regressions preserve results and accounting.
+
+### Success criteria
+
+- The relevant private-protocol stage p95 improves by at least 15%, or the
+  candidate is reverted unless direct timing proves an otherwise material
+  whole-payment improvement under this plan's evidence contract.
+- Private request counts are unchanged, accepted-operation counts are
+  unchanged, and no safety, recovery, rate-limit, CPU, or latency regression
+  appears.
+- The milestone records `Kept` or `Rejected` and, if kept, is committed as
+  `perf: parallelize federated Bark private RPC phases`.
+
+## Milestone 10: signed observation quorum certificates
+
+### Goal
+
+Preserve independent-member verification while replacing one consensus entry
+per Bark observer with one consensus-accepted quorum certificate per evidence
+family. Honest members still obtain and validate evidence independently; they
+send signed attestations over the private authenticated API, and every member
+verifies the assembled certificate deterministically during consensus apply.
+The collector is an untrusted transport role and gains no new authority.
+
+For the active five-member configuration, HTLC readiness still requires three
+independent matching observations and final claimed-result evidence still
+requires `max(t, q) = 4`. The target healthy incoming path replaces three HTLC
+observation entries plus `ReceiveHtlcsReady` with one certified-ready entry,
+and replaces four final-result observation entries with one result-certificate
+entry. The expected accepted-operation count is therefore 15 to about 9,
+subject to an exact recount before implementation.
+
+### Checklist
+
+- [ ] Specify the exact attestation and certificate schemas before coding.
+      Domain-separate and bind every signature to the federation/configuration
+      epoch, member identity, action and quote identity, payment hash, amount,
+      fee, evidence phase, canonical evidence digest, result, and signing
+      attempt or other replay-relevant fields.
+- [ ] Reuse the smallest existing authenticated member-signature primitive
+      that provides durable public verification; do not design a second
+      threshold-signature scheme merely to compress the certificate.
+- [ ] Require unique eligible signers and the unchanged threshold: three for
+      HTLC evidence and four for final result evidence in the active
+      configuration.
+- [ ] Persist a member's first valid attestation for each exact action and
+      evidence phase before returning it. Reject conflicting second
+      attestations across retry, restart, reorder, and catch-up while returning
+      an identical prior attestation idempotently.
+- [ ] Make each honest HTLC attester independently obtain and validate the
+      complete canonical HTLC/VTXO artifacts. Publish those artifacts once in
+      the certified-ready operation and sign their canonical digest; a hash
+      supplied only by the collector is not independent evidence.
+- [ ] Make each honest result attester independently verify the claimed Bark
+      result and corresponding federated balance transition before signing.
+- [ ] Use a deterministic primary collector with a bounded fallback order.
+      Collector failure, equivocation, or restart must not lose durable
+      attestations or prevent another member from assembling the same
+      certificate.
+- [ ] Accept no certificate with duplicate, ineligible, stale, conflicting, or
+      invalid signatures, non-canonical artifacts, a wrong threshold, or a
+      field mismatch. Verification must be deterministic during live apply,
+      replay, checkpoint restore, and catch-up.
+- [ ] Preserve consensus-before-side-effects: neither custody signing nor
+      preimage use starts before certified HTLC readiness is accepted, and
+      Cashu finalization does not derive from an unaccepted result certificate.
+- [ ] Keep the change Bark-specific at the evidence adapter. Do not change the
+      generic mint/melt driver or weaken federated BDK and future backend
+      observation rules that lack the same attestable evidence.
+- [ ] Measure both private and consensus messages and bytes. Include
+      attestation requests/responses, certificate signatures, canonical
+      artifacts, Aleph traffic, accepted operations, and whole-payment latency
+      rather than claiming only an operation-count win.
+
+### Tests
+
+- [ ] Healthy 3-of-5 incoming accepts one certified-ready operation and one
+      final result certificate at the exact required thresholds and issues
+      once.
+- [ ] Conflicting evidence from a Byzantine collector or member cannot obtain
+      two honest signatures for one phase or combine signatures over different
+      payloads.
+- [ ] Duplicate signer, invalid signature, wrong federation epoch, stale
+      attempt, altered amount/fee/hash/artifact, and below-threshold
+      certificates are rejected identically by every member.
+- [ ] Primary collector crash before and after gathering a quorum triggers one
+      bounded fallback publication without changing the certificate identity
+      or repeating Ark/Bark work.
+- [ ] One member offline remains live; loss of the required evidence threshold
+      remains safely pending with no custody or Cashu side effect.
+- [ ] Delayed attestations, restart, replay, catch-up, checkpoint restore, and
+      reordered local notifications converge on one certificate and cannot
+      reopen terminal state.
+- [ ] Incoming exact issuance, outgoing success/failure, maintenance, signer
+      rotation, standalone BOLT11, and federated-BDK regression suites pass.
+
+### Success criteria
+
+- The healthy incoming path falls from 15 to approximately 9 accepted
+  operations after an exact before/after recount, while retaining three
+  independent HTLC verifiers and four independent result verifiers.
+- Total application-bearing consensus messages and bytes fall materially;
+  added private certificate traffic remains bounded and total network work
+  does not regress.
+- Incoming p95 improves by at least 15% with no loss of equivocation,
+  threshold, replay, recovery, or consensus-before-side-effects guarantees;
+  otherwise revert the candidate.
+- The milestone records `Kept` or `Rejected` and, if kept, is committed as
+  `perf: certify federated Bark observation quorums`.
+
+## Milestone 11: certified HTLC readiness with claim authorization
+
+### Goal
+
+After Milestone 10 is retained, investigate whether certified HTLC readiness
+and the receive claim plan can safely become one accepted operation. The
+candidate operation would contain the complete canonical HTLC/VTXO artifacts,
+the three-member evidence certificate, exact input reservations, output
+locator, signer roster, and signing attempt. FROST and preimage use begin only
+after that combined authorization is accepted.
+
+This milestone is deliberately separate from certificate introduction. Its
+target is one additional healthy incoming reduction, approximately 9 to 8
+accepted operations, without hiding two different authorization decisions in
+an opaque batch.
+
+### Checklist
+
+- [ ] Start only after Milestone 10 has a retained, measured certificate
+      design. If Milestone 10 is rejected, reject this dependency rather than
+      implementing a second evidence mechanism.
+- [ ] Document the invariant currently protected by the
+      `ReceiveHtlcsReady` -> claim-plan boundary and every field or local state
+      needed to construct and validate the claim plan.
+- [ ] Prove the complete claim plan can be prepared from already authenticated
+      data before acceptance without reserving/spending inputs, disclosing a
+      preimage, creating nonce material, or trusting a collector's local view.
+- [ ] Define one canonical combined operation whose stable identity binds the
+      certificate, artifacts, reservations, output locator, signer roster,
+      attempt, actor authority, and quote/action identity.
+- [ ] Preserve conflict detection, reservation exclusivity, deterministic
+      signer rotation, idempotent retry, and terminal result derivation.
+- [ ] Keep preimage disclosure, external claim execution, and claimed result as
+      their existing later boundaries unless independently justified in a new
+      milestone.
+- [ ] Reject the candidate if it needs a preliminary consensus reservation, a
+      second private voting protocol, duplicated large artifacts, or special
+      recovery machinery that restores the boundary under another name.
+- [ ] Compare operation count, consensus/private messages and bytes, accepted
+      payload size, recovery complexity, and latency against the retained
+      Milestone 10 design.
+
+### Tests
+
+- [ ] Healthy incoming accepts exactly one combined authorization, then starts
+      FROST, claims once, and issues the exact amount.
+- [ ] Conflicting certificate, reservation, output locator, signer roster,
+      attempt, actor, or artifact proposals cannot reserve inputs or start
+      signing before acceptance.
+- [ ] Collector/actor crash before proposal, after proposal, and immediately
+      after acceptance recovers through the existing deterministic publisher
+      and signer-attempt paths without duplicate work.
+- [ ] Concurrent receive actions cannot reserve the same VTXO or make a
+      locally prepared losing plan affect durable state.
+- [ ] Signer loss, delayed old messages, replay, catch-up, checkpoint restore,
+      and all-member restart converge on the same authorization and result.
+- [ ] Existing outgoing, failed-send, refresh, standalone BOLT11, and
+      federated-BDK regressions remain unchanged.
+
+### Success criteria
+
+- The healthy incoming path loses exactly one accepted operation and its
+  corresponding consensus traffic with no new preliminary or compensating
+  operation.
+- The combined payload is deterministic and no larger than the two retained
+  payloads plus bounded certificate overhead; private traffic and recovery
+  work do not regress.
+- Incoming p95 improves measurably and all existing security/recovery
+  guarantees remain explicit. If the simplification is not real or the
+  improvement does not satisfy the plan's evidence gate, revert it.
+- The milestone records `Kept` or `Rejected` and, if kept, is committed as
+  `perf: combine certified Bark readiness and claim authorization`.
+
+## Milestone 12: bounded private custody request batching
+
+### Goal
+
+When one accepted Bark action contains multiple simultaneous HTLC/VTXO
+signing items, carry those items in one bounded request to each signer for each
+existing protocol phase. This reduces private HTTP round trips, not signer
+shares, verification, nonce separation, phase barriers, or threshold
+authority. Never delay a single item while waiting to fill a batch.
+
+### Checklist
+
+- [ ] Measure the distribution of signing-item counts and per-request overhead
+      for incoming, outgoing, revocation, and maintenance actions. Reject the
+      milestone without a production change if real actions normally contain
+      one item or transport overhead is immaterial.
+- [ ] Define a bounded per-signer, per-action, per-attempt, per-phase envelope.
+      Do not combine unrelated actions, attempts, signers, or protocol phases.
+- [ ] Bind and validate each item independently with its existing session,
+      input, message, nonce, signer, action, attempt, and request identities.
+      Batching must not aggregate cryptographic authority or reuse nonce
+      material.
+- [ ] Return an independently authenticated result or structured failure for
+      every item. One malformed or duplicate item must not make accepted
+      results for other items ambiguous.
+- [ ] Apply strict item-count and encoded-size limits before allocation and
+      processing; preserve per-member backpressure and the bounded concurrency
+      established by Milestone 9.
+- [ ] Make duplicate batch and partial retry idempotent per item. Retry only
+      unresolved items without regenerating or reusing accepted commitments or
+      shares.
+- [ ] Use one immediate batch only for work already available at a phase
+      boundary. Add no batching timer, coalescing daemon, rate-limit parser, or
+      second scheduler.
+- [ ] Keep the transport envelope private and versioned. Consensus operations,
+      Bark action identities, thresholds, and external side effects remain
+      unchanged.
+- [ ] Measure HTTP request count, payload bytes, CPU, signing-stage latency,
+      whole-payment latency, and failure/retry traffic against Milestone 9.
+
+### Tests
+
+- [ ] Multi-item incoming and outgoing actions use at most one request per
+      selected signer in each phase while producing the same independently
+      verifiable item results as unbatched execution.
+- [ ] Mixed valid, invalid, duplicate, stale, and already-completed items
+      return deterministic per-item results without contaminating siblings.
+- [ ] Oversized item-count and byte-size envelopes fail before work begins and
+      cannot exhaust memory or bypass concurrency bounds.
+- [ ] Participant/actor restart, response loss, partial retry, delayed old
+      batch, replay, catch-up, and signer-roster advance cannot reuse nonces or
+      repeat an external side effect.
+- [ ] A single-item action is sent immediately and has no material latency or
+      byte regression relative to the unbatched path.
+- [ ] Incoming, outgoing, failed-send revocation, refresh, standalone BOLT11,
+      and federated-BDK regressions preserve exact accounting and convergence.
+
+### Success criteria
+
+- For actions with multiple signing items, private HTTP requests fall from one
+  per item per signer per phase to one bounded request per signer per phase,
+  while the number of cryptographic shares and validations remains unchanged.
+- Multi-item signing-stage p95 improves by at least 15%; single-item p95 does
+  not regress by more than 5%; CPU, bytes, retries, and memory remain bounded.
+- The implementation is confined to the custody transport/coordinator and its
+  tests, with no batching scheduler or payment-backend branching elsewhere.
+- The milestone records `Kept` or `Rejected` and, if kept, is committed as
+  `perf: batch federated Bark custody requests`.
+
+## Outgoing BOLT11 melt optimization track
+
+This track applies the same development contract to Bark-backed outgoing
+Lightning payments. Run every benchmark and fault injection on the local
+five-member federation; use Nocean only for the final bounded deployment smoke.
+Do not parse Ark rate-limit errors or add a payment-specific scheduler.
+
+The retained five-member configuration uses custody threshold `t = 3` and
+payment-verification quorum `q = 4`. The current healthy one-input payment with
+change provides the starting counters:
+
+| Layer | Current healthy path |
+| --- | ---: |
+| Accepted operations | 10 |
+| Application-bearing consensus messages | 40 measured |
+| Total consensus traffic | variable; 1,028-message median in the controlled ten-serial-operation test |
+| Wallet HTTP requests before reconciliation | 11 plus the subscription |
+| Private custody POSTs | about 27 |
+| Underlying Ark RPC attempts | 8 when the first status round is terminal |
+| Local durable p50 / p95-max | 27s / 33s in Milestone 8 |
+
+The ten accepted operations are `MeltQuote`, `Melt`, `SendPlanned`,
+`SendHtlcsCosigned`, `PaymentInitiated`, `PaymentSucceeded`, and four matching
+successful result observations. An immediate safe failure and revocation uses
+15 accepted operations. A common one-input failure uses about 42-48 private
+custody POSTs, depending on change. Recount all figures from temporary,
+identifier-free instrumentation before retaining a candidate; these values are
+the evidence-based baseline, not constants to encode in production.
+
+Every melt optimization must preserve:
+
+- accepted exact authorization before threshold signing or an external
+  payment/revocation side effect;
+- three-member custody authority and nonce/session isolation;
+- a preimage bound to the invoice before success, four independent local Bark
+  result applications, and exact Cashu/Bark accounting;
+- three independent terminal-failure observations before failure recovery;
+- accepted revocation authorization before revocation FROST and four matching
+  recovered-result applications before releasing Cashu proofs; and
+- idempotent response-loss recovery, deterministic actor/signer fallback,
+  replay, catch-up, restart, and exactly-once external payment.
+
+Milestone 9 already owns concurrent private FROST phases and Milestone 12 owns
+bounded custody-item batching. They are part of this outgoing track and must be
+measured on successful melt and safe revocation; do not duplicate their
+transport machinery below. The recommended order is Milestone 13, Milestone 9,
+Milestone 14, Milestone 12, Milestone 15, Milestone 15A, Milestone 16, and only
+then the higher-risk Milestone 17.
+
+## Milestone 13: actor-first typed outgoing terminal status
+
+### Goal
+
+Replace the actor's current failure-status call followed by a second
+success-status call with one typed `Pending | Succeeded(preimage) | Failed`
+result. Let one actor wait first on the healthy path, activate a deterministic
+fallback if it is unavailable, and require the existing three independent
+checks before accepting failure. Use Ark's waiting status request only as a
+bounded wake-up; accepted federation state remains authoritative.
+
+The first contained target removes the duplicate actor request, taking a
+first-round healthy path from eight to seven underlying Ark RPC attempts. The
+actor-first terminal candidate targets five: three HTLC setup requests, one
+initiation, and one terminal status request. Each of the four result observers
+still independently applies and validates the accepted success.
+
+### Checklist
+
+- [ ] Measure facade calls and underlying Ark RPC attempts separately for at
+      least three successful, three multi-round pending, and three terminal
+      failure samples; revert the temporary counters before completion.
+- [ ] Introduce one typed status result and remove the split failure/success
+      query that makes the actor check the same payment twice.
+- [ ] On success, accept only a preimage matching the planned invoice; retain
+      all four independent result applications and observations.
+- [ ] On a first failure indication, activate enough deterministic observers
+      to obtain three independent matching failures. Never accept actor-only
+      failure evidence.
+- [ ] Activate one deterministic fallback terminal observer after a bounded
+      actor deadline without granting that observer initiation authority.
+- [ ] Evaluate at most one bounded `CheckLightningPayment(wait=true)` request
+      per quote under an explicit global connection budget. It must not block
+      the sequential payment observer or replace persisted polling/recovery.
+- [ ] If the waiting request adds head-of-line blocking, connection pressure,
+      or special recovery machinery, reject only that subcandidate and retain
+      the typed actor-first polling improvement.
+- [ ] Keep the shared persisted backoff as the fallback. Do not inspect error
+      text, reset no-progress state on wallet traffic, or add another timer.
+
+### Tests
+
+- [ ] Immediate success makes one terminal status request, pays once, and
+      still obtains four matching result applications.
+- [ ] Repeated `Pending` does not multiply requests across members; timeout,
+      reconnect, and restart resume the durable schedule.
+- [ ] Actor crash before, during, and after the terminal response activates one
+      fallback and cannot initiate or record the payment twice.
+- [ ] One false or Byzantine failure cannot start revocation; three matching
+      independent failures retain the current safe path.
+- [ ] Concurrent quotes respect the connection budget and make progress
+      without worker starvation or Ark rate limiting.
+
+### Success criteria
+
+- A first-round healthy payment uses at most five underlying Ark RPC attempts,
+  or the retained smaller candidate uses seven and documents why actor-first
+  waiting failed its safety or resource gate.
+- The Ark-status stage p95 improves by at least 15%, whole-payment p95 does not
+  regress by more than 5%, and accepted-operation counts do not increase.
+- The milestone records `Kept` or `Rejected` and, if kept, is committed as
+  `perf: streamline federated Bark outgoing status`.
+
+## Milestone 14: threshold-first wallet melt fan-out
+
+### Goal
+
+Start quote-visibility, melt-submission, and recovery-status requests with the
+minimum three members required for matching federation responses. Hedge to
+members four and five after a short measured delay or an early failure. This
+changes transport scheduling only: the wallet still verifies matching views
+and threshold signature shares, and consensus still distributes the accepted
+operation to every member.
+
+The normal warm-path target is seven public requests instead of eleven: one
+quote POST, three quote-visibility GETs, and three melt POSTs, plus the existing
+subscription. A later signed quote-inclusion receipt may be proposed only as a
+new milestone; do not hide a second certificate protocol here.
+
+### Checklist
+
+- [ ] Measure request starts, completed responses, bytes, first-three latency,
+      hedge activations, and wallet-visible p50/p95 with temporary
+      instrumentation, then remove it.
+- [ ] Select the initial three members deterministically and rotate fairly
+      without using unreplicated local health as protocol authority.
+- [ ] Choose a subsecond hedge delay from local tail measurements. Start extra
+      members immediately on timeout, transport failure, invalid response, or
+      evidence that a matching threshold cannot be reached.
+- [ ] Apply the same contained collector behavior to quote visibility, melt
+      submission, and GET reconciliation where their matching rules agree.
+- [ ] Preserve definitive rejection handling, response validation, BLS share
+      aggregation, retries, request identity, and lost-response recovery.
+- [ ] Add no permanent preferred coordinator, background scheduler, or
+      backend-specific branch to the generic federation connector.
+
+### Tests
+
+- [ ] Healthy three-member responses complete with seven public requests and
+      exact change-signature aggregation.
+- [ ] A slow, offline, invalid, or equivocating initial member triggers a
+      hedge and reaches a valid threshold without accepting mismatched views.
+- [ ] Two unavailable members remain live; loss of three members fails safely.
+- [ ] Response loss after external payment still uses GET-only saga recovery
+      and never resubmits the Lightning payment.
+- [ ] Mint, swap, standalone, and federated-BDK connector regressions preserve
+      their current fan-out and security semantics unless separately measured.
+
+### Success criteria
+
+- Healthy outgoing wallet traffic falls from eleven to seven requests before
+  reconciliation, with no increase in accepted operations or duplicate
+  external work.
+- Wallet-visible p95 improves or stays within the 5% regression budget; fault
+  p95 remains bounded by the measured hedge rather than the full member
+  timeout.
+- The milestone records `Kept` or `Rejected` and, if kept, is committed as
+  `perf: hedge federated wallet melt requests`.
+
+## Milestone 15: outgoing terminal quorum certificates
+
+### Goal
+
+After Milestone 10 establishes the signed-attestation primitive, apply it to
+outgoing success, terminal failure, and recovered-result evidence. Honest
+members retain the same independent Ark or Bark validation and local result
+application. They return durable signed attestations over the private API; one
+untrusted collector publishes a deterministically verifiable certificate.
+
+For success, replace four consensus `MemberObservation(Succeeded)` entries
+with one result-certificate entry, reducing ten accepted operations to seven.
+For failure, replace three failed observations plus `PaymentFailed` with one
+certified-failure operation, and replace four recovered-result observations
+with one recovery certificate, reducing fifteen operations to nine.
+
+### Checklist
+
+- [ ] Reuse Milestone 10's domain-separated schema, durable first-attestation
+      rule, authenticated private route, collector fallback, and deterministic
+      certificate verification; do not create an outgoing-only signature
+      system.
+- [ ] Bind success attestations to the invoice/payment hash, valid preimage,
+      exact accepted send result, VTXO transition, action/attempt, epoch, and
+      result digest. Require four unique eligible attestations.
+- [ ] Bind failure attestations to the exact initiated payment and Ark terminal
+      result. Require three unique eligible members that checked failure
+      independently.
+- [ ] Bind recovery attestations to the accepted revocation result and exact
+      restored balance transition. Require four unique eligible applications.
+- [ ] Preserve idempotent first-attestation persistence and reject conflicts,
+      mixed attempts, duplicate signers, altered results, stale epochs, and
+      below-threshold certificates identically on every member.
+- [ ] Count private attestation requests/responses, certificate bytes,
+      application-bearing and helper consensus traffic, accepted operations,
+      and whole-payment latency for success and failure.
+
+### Tests
+
+- [ ] Healthy success accepts one four-member result certificate, finalizes
+      Cashu once, and uses exactly seven accepted operations.
+- [ ] One invalid preimage, unapplied Bark transition, or conflicting honest
+      result cannot obtain a valid certificate.
+- [ ] Failure requires three independent checks; one actor report or mixed
+      failure evidence cannot authorize recovery.
+- [ ] Recovery releases proofs only after one four-member certificate over the
+      accepted revocation result.
+- [ ] Collector crash/equivocation, member restart, delayed attestation,
+      replay, catch-up, and checkpoint restore converge on one certificate.
+
+### Success criteria
+
+- Healthy success falls from ten to seven accepted operations and safe failure
+  from fifteen to nine while retaining the exact 4/3/4 verifier thresholds.
+- Application-bearing consensus messages fall from 40 toward 28 on success;
+  added private traffic is bounded and total messages/bytes improve.
+- The terminal consensus stage p95 improves by at least 15%, whole-payment p95
+  stays within the 5% regression budget, and accounting is exact.
+- The milestone records `Kept` or `Rejected` and, if kept, is committed as
+  `perf: certify federated Bark outgoing results`.
+
+## Milestone 15A: certified failure and revocation authorization
+
+### Goal
+
+After Milestone 15 is retained, determine whether one accepted operation can
+contain both the three-member terminal-failure certificate and the complete
+revocation plan. The operation must still fix exact recovery inputs, outputs,
+signer roster, attempt, actor, and authorization before any revocation FROST.
+The target is to reduce the certified failure path from nine to eight accepted
+operations without weakening or concealing the pre-signing boundary.
+
+### Checklist
+
+- [ ] Prove the complete revocation plan is a deterministic function of the
+      accepted send state and certified failure before durable reservation,
+      nonce creation, or signing begins.
+- [ ] Define one stable operation identity binding the certificate, plan,
+      action/attempt, inputs, outputs, signer roster, actor, and expiry data.
+- [ ] Retain conflict detection, reservation exclusivity, signer rotation,
+      idempotency, and four-member recovered-result certification.
+- [ ] Reject the candidate if it needs preliminary consensus, another private
+      vote, speculative durable state, or recovery logic that recreates the
+      removed boundary.
+- [ ] Measure failure latency, operation/message count, payload bytes, and
+      recovery complexity against Milestone 15.
+
+### Tests
+
+- [ ] Certified terminal failure accepts one combined authorization before
+      revocation signing and recovers the exact amount once.
+- [ ] Conflicting certificate, input, output, signer, actor, or attempt cannot
+      reserve funds or start FROST.
+- [ ] Actor/collector crash before proposal, after proposal, and immediately
+      after acceptance recovers without duplicate signing or side effects.
+- [ ] Signer loss, rotation, restart, replay, catch-up, and delayed old plans
+      preserve the existing safe revocation behavior.
+
+### Success criteria
+
+- Safe failure loses exactly one accepted operation and its consensus traffic,
+  with no compensating operation or protocol subsystem.
+- The failure-finalization stage improves materially and successful payments
+  remain unchanged; otherwise revert the candidate.
+- The milestone records `Kept` or `Rejected` and, if kept, is committed as
+  `perf: combine certified Bark failure and revocation`.
+
+## Milestone 16: consolidate Bark/Ark outgoing RPCs
+
+### Goal
+
+Reduce the four Ark setup/initiation requests without changing their checks.
+Extend the HTLC-cosign request to carry and atomically register complete input
+VTXO chains, and extend idempotent initiation to carry and atomically register
+the signed HTLC/change VTXOs. Combined with Milestone 13, the target healthy
+path is about three Ark RPCs: cosign/setup, initiate/register outputs, and one
+terminal wait.
+
+This milestone spans the Bark library and Ark server and starts only after the
+contained CDK-side wins are evaluated. Compatibility handling must remain
+small and explicit; do not maintain two long-lived payment state machines.
+
+### Checklist
+
+- [ ] Measure actual transport calls, payload bytes, server validation time,
+      response-loss retries, and registration cache hits before changing the
+      API.
+- [ ] Specify an atomic, idempotent request contract keyed by the same payment
+      and package identities as today.
+- [ ] Preserve full VTXO ancestry, ownership, spendability, package, amount,
+      fee, HTLC, expiry, nonce, authorization, and duplicate-payment checks.
+- [ ] Make repeated identical requests return the same semantic result; reject
+      conflicting reuse before mutation.
+- [ ] Define one bounded version/capability transition and remove obsolete
+      fallback code once the coordinated deployment is complete.
+- [ ] Recount Ark requests, bytes, server work, accepted operations, and p95 on
+      healthy, pending, failure, revocation, and response-loss paths.
+
+### Tests
+
+- [ ] A healthy payment completes with one setup/cosign RPC, one initiation
+      RPC, and one terminal request after Milestone 13.
+- [ ] Missing, malformed, conflicting, already-spent, or incomplete input
+      chains fail with no partial registration or initiation.
+- [ ] Response loss and identical retry cannot double-pay or create conflicting
+      registered VTXOs; conflicting retry is rejected.
+- [ ] Server crash at each atomic boundary, Bark/CDK restart, replay, and
+      catch-up converge on the same payment and wallet state.
+- [ ] Standalone Bark clients and supported mixed-version deployment behavior
+      pass or are rejected before rollout with an explicit upgrade boundary.
+
+### Success criteria
+
+- Healthy Ark transport falls from four setup/initiation RPC attempts to two
+  and, with Milestone 13, from eight total first-round attempts toward three.
+- Ark-stage p95 improves by at least 15%; bytes, CPU, retry work, and rate-limit
+  behavior do not regress.
+- The milestone records `Kept` or `Rejected` and, if kept, uses scoped commits
+  in CDK and Bark/Ark that record the measured protocol change.
+
+## Milestone 17: `PaymentInitiated` boundary audit
+
+### Goal
+
+Only after the lower-risk outgoing milestones, investigate whether accepted
+`SendHtlcsCosigned` can serve as the durable authorization from which any
+actor safely retries Ark initiation by payment hash. Remove the separate
+`PaymentInitiated` operation only if ambiguous response loss, actor failover,
+"never initiated", terminal result, and replay remain distinguishable and
+exactly recoverable without adding replacement state or messages.
+
+The default decision is to keep the boundary. If the proof and fault tests
+pass, success after Milestone 15 falls from seven to six accepted operations;
+the certified failure path falls from nine to eight, or from eight to seven
+after Milestone 15A.
+
+### Checklist
+
+- [ ] Document the exact invariant and recovery decisions currently carried by
+      `PaymentInitiated`, including the Ark acknowledgement and every ambiguous
+      transport outcome.
+- [ ] Prove Ark initiation is durable and idempotent under the exact payment
+      hash and accepted cosigned package, across actor change and server
+      restart. `NotFound` must not be mistaken for terminal failure.
+- [ ] Define deterministic retry/fallback authority from accepted state without
+      a local-only lease, new journal marker, private vote, or duplicate side
+      effect.
+- [ ] Keep `SendPlanned` before FROST, `SendHtlcsCosigned` before initiation,
+      and terminal success/failure evidence after the external result.
+- [ ] Reject the candidate if any new recovery flag, compensating operation,
+      timeout-dependent safety decision, or second initiation protocol restores
+      the removed boundary under another name.
+- [ ] Measure the exact operation/message reduction and causal-stage latency
+      against the retained Milestone 15/15A path.
+
+### Tests
+
+- [ ] Crash and lose the response before Ark receives initiation, after Ark
+      durably accepts it, and after Lightning completes; every case recovers to
+      exactly one payment or a safely retryable pending state.
+- [ ] Actor loss and deterministic fallback retry the identical payment hash
+      and package without changing authority or paying twice.
+- [ ] `NotFound`, `Pending`, `Succeeded`, `Failed`, malformed response, timeout,
+      and conflicting package produce deterministic safe outcomes.
+- [ ] Restart, replay, catch-up, checkpoint restore, and signer rotation do not
+      depend on the removed operation or local historical timing.
+- [ ] Healthy success, safe failure/revocation, lost wallet response,
+      standalone Bark, and federated-BDK regressions preserve exact accounting.
+
+### Success criteria
+
+- Exactly one accepted operation and its consensus traffic disappear with no
+  replacement durable or private protocol state.
+- The affected causal stage improves by at least 15%, whole-payment p95 stays
+  within the 5% regression budget, and all ambiguous-outcome tests pass.
+- Otherwise retain `PaymentInitiated`, record the proof gap, and commit the
+  rejected evaluation without production behavior changes.
+- If kept, commit as `perf: remove redundant Bark initiation boundary`.
+
 ## End-to-end verification matrix
 
 - [x] Healthy 3-of-5 incoming and outgoing success.
@@ -2986,3 +3775,24 @@ Append future evidence here rather than rewriting historical results.
       federated BDK, and standalone regressions pass.
 - [x] Production observability explains every material delay without logging
       secrets or high-cardinality identifiers.
+- [ ] Independent private FROST phases and receive-secret copies run with
+      bounded parallel fan-out and unchanged completion rules.
+- [ ] Bark observation quorums use deterministically verified signed
+      certificates instead of one consensus entry per observer.
+- [ ] Certified HTLC readiness and claim authorization share one accepted
+      boundary only if the separate safety invariants remain explicit.
+- [ ] Multi-item custody signing uses bounded per-signer phase requests when
+      measurement shows that batching removes material transport overhead.
+- [ ] Outgoing success uses one typed actor-first terminal check with bounded
+      fallback, while terminal failure still requires three independent checks.
+- [ ] Healthy wallet melt transport starts at threshold and hedges promptly
+      without weakening matching-view or signature-share validation.
+- [ ] Outgoing success, failure, and recovered-result evidence use the retained
+      independent verifier thresholds with fewer consensus entries.
+- [ ] Certified terminal failure authorizes revocation in the same accepted
+      operation only if FROST still starts strictly after exact authorization.
+- [ ] Bark/Ark setup and initiation avoid redundant registration RPCs while
+      preserving atomic validation and idempotent response-loss recovery.
+- [ ] `PaymentInitiated` is removed only if the fault audit proves that no
+      safety, liveness, replay, or recovery invariant depends on it; otherwise
+      its rejection is recorded and the boundary remains.
