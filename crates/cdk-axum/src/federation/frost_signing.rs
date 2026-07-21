@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 #[cfg(feature = "federation-bark")]
 use cdk::federation::{
     FederationBarkActionKind, FederationBarkCustodyProtocol, FederationBarkFrostAuthorization,
-    FederationBarkProtocolStatus,
+    FederationBarkProtocolStatus, FederationBarkSemanticPhase,
 };
 use cdk::federation::{
     FederationBarkFrostRegistrationAdapter, FederationCdkOnchainFrostAuthorization,
@@ -861,12 +861,52 @@ impl FederationFrostSigningRuntime {
             typed
                 .reference
                 .validate_accepted_operation(public_config, &entry)?;
+            let (plan_entry, authorization_attempt) = match &entry.envelope.operation {
+                cdk::federation::FederationOperation::Bark(
+                    cdk::federation::FederationBarkOperation::ActionPlan(plan),
+                ) => (entry.clone(), plan.attempt),
+                cdk::federation::FederationOperation::Bark(
+                    cdk::federation::FederationBarkOperation::ActionTransition(transition),
+                ) if transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced => (
+                    mint.localstore()
+                        .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
+                        .await?
+                        .ok_or_else(|| frost_invalid("accepted Bark action plan is unavailable"))?,
+                    transition.attempt,
+                ),
+                _ => return Err(frost_invalid("Bark custody reference has no action plan").into()),
+            };
             let cdk::federation::FederationOperation::Bark(
                 cdk::federation::FederationBarkOperation::ActionPlan(plan),
-            ) = &entry.envelope.operation
+            ) = &plan_entry.envelope.operation
             else {
-                return Err(frost_invalid("Bark custody reference is not an action plan").into());
+                return Err(frost_invalid("Bark custody plan reference is invalid").into());
             };
+            let plan_commitment =
+                cdk::federation::FederationBarkOperation::ActionPlan(plan.clone()).commitment()?;
+            if let cdk::federation::FederationOperation::Bark(
+                cdk::federation::FederationBarkOperation::ActionTransition(transition),
+            ) = &entry.envelope.operation
+            {
+                let signer_set = cdk::federation::federation_bark_signer_set_for_attempt(
+                    public_config,
+                    transition.attempt,
+                )?;
+                let expected =
+                    cdk::federation::FederationBarkActionTransition::signing_attempt_advanced(
+                        plan_entry.operation_id,
+                        transition.predecessor_operation_id,
+                        plan,
+                        transition.attempt,
+                        signer_set,
+                    )?;
+                if transition != &expected {
+                    return Err(frost_invalid(
+                        "Bark custody retry differs from the deterministic accepted attempt",
+                    )
+                    .into());
+                }
+            }
             if !matches!(
                 plan.kind,
                 cdk::federation::FederationBarkActionKind::IncomingClaim
@@ -876,7 +916,7 @@ impl FederationFrostSigningRuntime {
                     | cdk::federation::FederationBarkActionKind::EmergencyExit
             ) || !typed
                 .request_transcript
-                .starts_with(&typed.reference.plan_or_result_hash.to_bytes())
+                .starts_with(&plan_commitment.to_bytes())
             {
                 return Err(frost_invalid(
                     "Bark custody transcript is not bound to the accepted action plan",
@@ -903,7 +943,7 @@ impl FederationFrostSigningRuntime {
                     let payment_hash = plan.payment_hash.ok_or_else(|| {
                         frost_invalid("accepted Bark send payment hash is missing")
                     })?;
-                    let mut authorization = typed.reference.plan_or_result_hash.to_bytes().to_vec();
+                    let mut authorization = plan_commitment.to_bytes().to_vec();
                     authorization.extend_from_slice(b"bark/lightning-send-authorization/v1");
                     authorization.extend_from_slice(&payment_hash.to_bytes());
                     authorization.extend_from_slice(&u64::from(plan.external_amount).to_be_bytes());
@@ -917,7 +957,7 @@ impl FederationFrostSigningRuntime {
                     let payment_hash = plan.payment_hash.ok_or_else(|| {
                         frost_invalid("accepted Bark revocation payment hash is missing")
                     })?;
-                    let mut authorization = typed.reference.plan_or_result_hash.to_bytes().to_vec();
+                    let mut authorization = plan_commitment.to_bytes().to_vec();
                     authorization.extend_from_slice(b"bark/lightning-revocation-authorization/v1");
                     authorization.extend_from_slice(&payment_hash.to_bytes());
                     for input in &plan.inputs {
@@ -938,7 +978,7 @@ impl FederationFrostSigningRuntime {
                 )
                 .into());
             }
-            wait_for_bark_custody_projection(mint, plan).await?;
+            wait_for_bark_custody_projection(mint, plan, authorization_attempt).await?;
             let wallet = public_config
                 .frost_wallet
                 .as_ref()
@@ -1000,6 +1040,7 @@ impl FederationFrostSigningRuntime {
 async fn wait_for_bark_custody_projection(
     mint: &Mint,
     plan: &cdk::federation::FederationBarkActionPlan,
+    authorization_attempt: u32,
 ) -> Result<(), cdk::Error> {
     let deadline = tokio::time::Instant::now() + BARK_CUSTODY_PROJECTION_WAIT_TIMEOUT;
     loop {
@@ -1007,7 +1048,19 @@ async fn wait_for_bark_custody_projection(
             .localstore()
             .get_federation_bark_projection_snapshot()
             .await?;
-        if bark_custody_inputs_are_reserved(plan, &projection) {
+        let authorization_is_current = projection.actions.iter().any(|action| {
+            if action.action_id != plan.action_id {
+                return false;
+            }
+            bark_custody_attempt_is_current(
+                plan.kind,
+                action.phase,
+                action.signing_retry_phase,
+                action.attempt,
+                authorization_attempt,
+            )
+        });
+        if authorization_is_current && bark_custody_inputs_are_reserved(plan, &projection) {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
@@ -1016,6 +1069,44 @@ async fn wait_for_bark_custody_projection(
             );
         }
         tokio::time::sleep(BARK_CUSTODY_PROJECTION_POLL_INTERVAL).await;
+    }
+}
+
+#[cfg(feature = "federation-bark")]
+pub(super) const fn bark_custody_attempt_is_current(
+    kind: FederationBarkActionKind,
+    phase: FederationBarkSemanticPhase,
+    signing_retry_phase: Option<FederationBarkSemanticPhase>,
+    current_attempt: u32,
+    authorization_attempt: u32,
+) -> bool {
+    if current_attempt != authorization_attempt {
+        return false;
+    }
+    let effective_phase = match signing_retry_phase {
+        Some(phase) => phase,
+        None => phase,
+    };
+    match kind {
+        FederationBarkActionKind::IncomingClaim => matches!(
+            effective_phase,
+            FederationBarkSemanticPhase::ClaimPlanned
+                | FederationBarkSemanticPhase::ReceivePreimageDisclosed
+        ),
+        FederationBarkActionKind::LightningSend => {
+            matches!(effective_phase, FederationBarkSemanticPhase::SendPlanned)
+        }
+        FederationBarkActionKind::FailedSendRevocation => matches!(
+            effective_phase,
+            FederationBarkSemanticPhase::RevocationPlanned
+        ),
+        FederationBarkActionKind::Refresh => {
+            matches!(effective_phase, FederationBarkSemanticPhase::RefreshPlanned)
+        }
+        FederationBarkActionKind::EmergencyExit => matches!(
+            effective_phase,
+            FederationBarkSemanticPhase::ExitPlanned | FederationBarkSemanticPhase::ExitRegistered
+        ),
     }
 }
 

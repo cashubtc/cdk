@@ -37,6 +37,8 @@ mod backup_routes;
 #[cfg(feature = "federation-bark")]
 pub(crate) mod bark_custody;
 #[cfg(feature = "federation-bark")]
+mod bark_custody_attempt;
+#[cfg(feature = "federation-bark")]
 pub(crate) mod bark_incoming;
 #[cfg(feature = "federation-bark")]
 pub(crate) mod bark_maintenance;

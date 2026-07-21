@@ -2,6 +2,7 @@
 
 use core::fmt;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -16,10 +17,9 @@ use bitcoin::secp256k1::schnorr;
 use cdk_common::federation::{
     federation_bark_custody_transcript_hash, FederationBarkActionKind,
     FederationBarkAuthorizationReference, FederationBarkCustodyProtocol,
-    FederationBarkFrostAuthorization, FederationBarkOperation, FederationBarkOperationKind,
-    FederationBarkSemanticPhase, FederationBarkVtxoLocator, FederationConfig,
-    FederationJournalEntry, FederationOperation, FederationOperationStatus,
-    FEDERATION_BARK_AUTHORIZATION_VERSION,
+    FederationBarkFrostAuthorization, FederationBarkOperation, FederationBarkSemanticPhase,
+    FederationBarkVtxoLocator, FederationConfig, FederationJournalEntry, FederationOperation,
+    FederationOperationStatus, FEDERATION_BARK_AUTHORIZATION_VERSION,
 };
 use cdk_frost::{
     AggregateSignature, AuthorizationRequest, CustodyProtocol, NonceBurnReason,
@@ -114,10 +114,10 @@ impl FederatedBarkCustodyClient for DisabledBarkCustodyClient {
 
 #[derive(Debug, Clone)]
 struct AcceptedCustodyAction {
-    entry: FederationJournalEntry,
+    plan_entry: FederationJournalEntry,
+    authorization_entry: FederationJournalEntry,
     authorized_locators: Vec<FederationBarkVtxoLocator>,
     operation: bark::custody::VtxoSigningOperation,
-    phase: FederationBarkSemanticPhase,
     authorization_context: Vec<u8>,
 }
 
@@ -151,6 +151,7 @@ pub struct CdkFrostVtxoCustody {
     accepted: Arc<Mutex<Option<AcceptedCustodyAction>>>,
     object_ordinals: Arc<Mutex<BarkCustodyObjectOrdinals>>,
     musig_sessions: Arc<Mutex<BTreeMap<[u8; 32], MusigSession>>>,
+    signer_unavailable: Arc<AtomicBool>,
 }
 
 impl CdkFrostVtxoCustody {
@@ -164,6 +165,7 @@ impl CdkFrostVtxoCustody {
             accepted: Arc::new(Mutex::new(None)),
             object_ordinals: Arc::new(Mutex::new(BTreeMap::new())),
             musig_sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            signer_unavailable: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -181,21 +183,23 @@ impl CdkFrostVtxoCustody {
             accepted: Arc::new(Mutex::new(None)),
             object_ordinals: Arc::new(Mutex::new(BTreeMap::new())),
             musig_sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            signer_unavailable: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub(crate) fn activate_claim(
         &self,
-        entry: FederationJournalEntry,
+        plan_entry: FederationJournalEntry,
+        authorization_entry: FederationJournalEntry,
         input_locator: FederationBarkVtxoLocator,
         authorization_context: Vec<u8>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            entry.status() == FederationOperationStatus::Applied,
+            plan_entry.status() == FederationOperationStatus::Applied,
             "Bark custody requires an applied operation"
         );
         let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &entry.envelope.operation
+            &plan_entry.envelope.operation
         else {
             anyhow::bail!("Bark custody requires an accepted action plan");
         };
@@ -208,25 +212,26 @@ impl CdkFrostVtxoCustody {
             "accepted Bark claim scope is invalid"
         );
         self.activate_action(
-            entry,
+            plan_entry,
+            authorization_entry,
             vec![input_locator],
             bark::custody::VtxoSigningOperation::LightningReceive,
-            FederationBarkSemanticPhase::ClaimPlanned,
             authorization_context,
         )
     }
 
     pub(crate) fn activate_send(
         &self,
-        entry: FederationJournalEntry,
+        plan_entry: FederationJournalEntry,
+        authorization_entry: FederationJournalEntry,
         authorization_context: Vec<u8>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            entry.status() == FederationOperationStatus::Applied,
+            plan_entry.status() == FederationOperationStatus::Applied,
             "Bark custody requires an applied operation"
         );
         let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &entry.envelope.operation
+            &plan_entry.envelope.operation
         else {
             anyhow::bail!("Bark custody requires an accepted action plan");
         };
@@ -238,25 +243,26 @@ impl CdkFrostVtxoCustody {
         );
         let input_locators = plan.inputs.iter().map(|input| input.locator).collect();
         self.activate_action(
-            entry,
+            plan_entry,
+            authorization_entry,
             input_locators,
             bark::custody::VtxoSigningOperation::LightningSend,
-            FederationBarkSemanticPhase::SendPlanned,
             authorization_context,
         )
     }
 
     pub(crate) fn activate_revocation(
         &self,
-        entry: FederationJournalEntry,
+        plan_entry: FederationJournalEntry,
+        authorization_entry: FederationJournalEntry,
         authorization_context: Vec<u8>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            entry.status() == FederationOperationStatus::Applied,
+            plan_entry.status() == FederationOperationStatus::Applied,
             "Bark custody requires an applied operation"
         );
         let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &entry.envelope.operation
+            &plan_entry.envelope.operation
         else {
             anyhow::bail!("Bark custody requires an accepted action plan");
         };
@@ -268,25 +274,26 @@ impl CdkFrostVtxoCustody {
         );
         let input_locators = plan.inputs.iter().map(|input| input.locator).collect();
         self.activate_action(
-            entry,
+            plan_entry,
+            authorization_entry,
             input_locators,
             bark::custody::VtxoSigningOperation::LightningSend,
-            FederationBarkSemanticPhase::RevocationPlanned,
             authorization_context,
         )
     }
 
     pub(crate) fn activate_refresh(
         &self,
-        entry: FederationJournalEntry,
+        plan_entry: FederationJournalEntry,
+        authorization_entry: FederationJournalEntry,
         authorization_context: Vec<u8>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            entry.status() == FederationOperationStatus::Applied,
+            plan_entry.status() == FederationOperationStatus::Applied,
             "Bark custody requires an applied operation"
         );
         let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &entry.envelope.operation
+            &plan_entry.envelope.operation
         else {
             anyhow::bail!("Bark custody requires an accepted action plan");
         };
@@ -303,25 +310,26 @@ impl CdkFrostVtxoCustody {
             .chain(plan.outputs.iter().map(|output| output.locator))
             .collect();
         self.activate_action(
-            entry,
+            plan_entry,
+            authorization_entry,
             input_locators,
             bark::custody::VtxoSigningOperation::Round,
-            FederationBarkSemanticPhase::RefreshPlanned,
             authorization_context,
         )
     }
 
     pub(crate) fn activate_exit(
         &self,
-        entry: FederationJournalEntry,
+        plan_entry: FederationJournalEntry,
+        authorization_entry: FederationJournalEntry,
         authorization_context: Vec<u8>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            entry.status() == FederationOperationStatus::Applied,
+            plan_entry.status() == FederationOperationStatus::Applied,
             "Bark custody requires an applied operation"
         );
         let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &entry.envelope.operation
+            &plan_entry.envelope.operation
         else {
             anyhow::bail!("Bark custody requires an accepted action plan");
         };
@@ -333,20 +341,20 @@ impl CdkFrostVtxoCustody {
         );
         let input_locators = plan.inputs.iter().map(|input| input.locator).collect();
         self.activate_action(
-            entry,
+            plan_entry,
+            authorization_entry,
             input_locators,
             bark::custody::VtxoSigningOperation::UnilateralExit,
-            FederationBarkSemanticPhase::ExitPlanned,
             authorization_context,
         )
     }
 
     fn activate_action(
         &self,
-        entry: FederationJournalEntry,
+        plan_entry: FederationJournalEntry,
+        authorization_entry: FederationJournalEntry,
         mut authorized_locators: Vec<FederationBarkVtxoLocator>,
         operation: bark::custody::VtxoSigningOperation,
-        phase: FederationBarkSemanticPhase,
         authorization_context: Vec<u8>,
     ) -> anyhow::Result<()> {
         authorized_locators.sort();
@@ -359,16 +367,18 @@ impl CdkFrostVtxoCustody {
                 && !authorization_context.is_empty(),
             "accepted Bark custody scope is invalid"
         );
+        validate_authorization_entry(&plan_entry, &authorization_entry)?;
+        self.signer_unavailable.store(false, Ordering::Release);
         let mut accepted = self
             .accepted
             .lock()
             .map_err(|_| anyhow::anyhow!("Bark custody scope lock is poisoned"))?;
         anyhow::ensure!(accepted.is_none(), "another Bark custody action is active");
         *accepted = Some(AcceptedCustodyAction {
-            entry,
+            plan_entry,
+            authorization_entry,
             authorized_locators,
             operation,
-            phase,
             authorization_context,
         });
         self.object_ordinals
@@ -411,6 +421,14 @@ impl CdkFrostVtxoCustody {
         }
     }
 
+    pub(crate) fn take_signer_unavailable(&self) -> bool {
+        self.signer_unavailable.swap(false, Ordering::AcqRel)
+    }
+
+    fn mark_signer_unavailable(&self) {
+        self.signer_unavailable.store(true, Ordering::Release);
+    }
+
     fn authorize_request(
         &self,
         protocol: FederationBarkCustodyProtocol,
@@ -427,7 +445,7 @@ impl CdkFrostVtxoCustody {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Bark custody has no active accepted action"))?;
         let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-            &accepted.entry.envelope.operation
+            &accepted.plan_entry.envelope.operation
         else {
             anyhow::bail!("active Bark custody operation is not an action plan");
         };
@@ -474,7 +492,11 @@ impl CdkFrostVtxoCustody {
             .and_then(|wallet| wallet.bark_application.as_ref())
             .ok_or_else(|| anyhow::anyhow!("accepted Bark application is missing"))?;
         let transcript_hash = federation_bark_custody_transcript_hash(&request_transcript)?;
-        let operation = FederationBarkOperation::ActionPlan(plan.clone());
+        let FederationOperation::Bark(operation) = &accepted.authorization_entry.envelope.operation
+        else {
+            anyhow::bail!("active Bark custody authorization is not a Bark operation");
+        };
+        let (signer_set, attempt) = authorization_signers(operation)?;
         let reference = FederationBarkAuthorizationReference {
             version: FEDERATION_BARK_AUTHORIZATION_VERSION,
             federation_id: federation.federation_id,
@@ -482,18 +504,18 @@ impl CdkFrostVtxoCustody {
             root_key_epoch: application.root_key_epoch,
             application_key_epoch: application.application_key_epoch,
             application_derivation_version: application.derivation_version,
-            accepted_operation_id: accepted.entry.operation_id,
-            accepted_operation_index: accepted.entry.index,
+            accepted_operation_id: accepted.authorization_entry.operation_id,
+            accepted_operation_index: accepted.authorization_entry.index,
             action_id: plan.action_id,
-            phase: accepted.phase,
+            phase: operation.phase(),
             object_ordinal,
-            operation_kind: FederationBarkOperationKind::ActionPlan,
+            operation_kind: operation.kind(),
             plan_or_result_hash: operation.commitment()?,
             locator: FederationBarkVtxoLocator::vtxo_custody(locator.index),
             protocol,
             transcript_hash,
-            signer_set: plan.signer_set.clone(),
-            attempt: plan.attempt,
+            signer_set: signer_set.to_vec(),
+            attempt,
             network: application.network,
             ark_server_public_key: application.ark_server_public_key,
         };
@@ -513,8 +535,7 @@ impl CdkFrostVtxoCustody {
             FederationBarkCustodyProtocol::Musig2 => CustodyProtocol::VirtualMusig2,
             FederationBarkCustodyProtocol::ThresholdDh => CustodyProtocol::ThresholdDh,
         };
-        let signer_set = plan
-            .signer_set
+        let signer_set = signer_set
             .iter()
             .map(|member| cdk_frost::MemberId::new(member.get()))
             .collect::<Result<Vec<_>, _>>()?;
@@ -527,12 +548,8 @@ impl CdkFrostVtxoCustody {
             reference_commitment,
             message,
         )?;
-        let context = SigningSessionContext::new_for_protocol(
-            scope,
-            plan.attempt,
-            signer_set,
-            frost_protocol,
-        )?;
+        let context =
+            SigningSessionContext::new_for_protocol(scope, attempt, signer_set, frost_protocol)?;
         let authorization = AuthorizationRequest::new(
             registration.id(),
             registration.key_epoch(),
@@ -545,6 +562,75 @@ impl CdkFrostVtxoCustody {
             derivation: derived.signing_derivation().clone(),
             authorization,
         })
+    }
+}
+
+fn validate_authorization_entry(
+    plan_entry: &FederationJournalEntry,
+    authorization_entry: &FederationJournalEntry,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        authorization_entry.status() == FederationOperationStatus::Applied,
+        "Bark custody authorization requires an applied operation"
+    );
+    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+        &plan_entry.envelope.operation
+    else {
+        anyhow::bail!("Bark custody plan entry is not an action plan");
+    };
+    let FederationOperation::Bark(operation) = &authorization_entry.envelope.operation else {
+        anyhow::bail!("Bark custody authorization entry is not a Bark operation");
+    };
+    match operation {
+        FederationBarkOperation::ActionPlan(authorized_plan) => anyhow::ensure!(
+            authorization_entry.operation_id == plan_entry.operation_id
+                && authorization_entry.index == plan_entry.index
+                && authorized_plan == plan,
+            "Bark custody action-plan authorization differs from its plan"
+        ),
+        FederationBarkOperation::ActionTransition(transition) => {
+            let plan_commitment = FederationBarkOperation::ActionPlan(plan.clone()).commitment()?;
+            anyhow::ensure!(
+                transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced
+                    && transition.action_id == plan.action_id
+                    && transition.quote == plan.quote
+                    && transition.actor == plan.actor
+                    && transition.plan_operation_id == plan_entry.operation_id
+                    && transition.payment_hash == plan.payment_hash
+                    && transition.attempt > plan.attempt
+                    && !transition.signer_set.is_empty()
+                    && transition.request_hash == plan_commitment
+                    && transition.external_id == plan.external_id
+                    && transition.artifacts.is_empty()
+                    && transition.vtxo_transitions.is_empty(),
+                "Bark custody retry authorization differs from its action plan"
+            );
+        }
+        FederationBarkOperation::ReceiveIntent(_)
+        | FederationBarkOperation::ReceivePrepared(_)
+        | FederationBarkOperation::MemberObservation(_) => {
+            anyhow::bail!("Bark custody authorization has no signer attempt")
+        }
+    }
+    Ok(())
+}
+
+fn authorization_signers(
+    operation: &FederationBarkOperation,
+) -> anyhow::Result<(&[cdk_common::federation::MemberId], u32)> {
+    match operation {
+        FederationBarkOperation::ActionPlan(plan) => Ok((&plan.signer_set, plan.attempt)),
+        FederationBarkOperation::ActionTransition(transition)
+            if transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced =>
+        {
+            Ok((&transition.signer_set, transition.attempt))
+        }
+        FederationBarkOperation::ReceiveIntent(_)
+        | FederationBarkOperation::ReceivePrepared(_)
+        | FederationBarkOperation::ActionTransition(_)
+        | FederationBarkOperation::MemberObservation(_) => {
+            anyhow::bail!("Bark custody operation has no signer attempt")
+        }
     }
 }
 
@@ -611,7 +697,11 @@ impl VtxoCustody for CdkFrostVtxoCustody {
                 &authorized.derivation,
                 &authorized.authorization,
             )
-            .await?;
+            .await
+            .map_err(|_| {
+                self.mark_signer_unavailable();
+                Error::CustodySignerUnavailable
+            })?;
         Ok(schnorr::Signature::from_slice(&signature.to_bytes())?)
     }
 
@@ -634,7 +724,11 @@ impl VtxoCustody for CdkFrostVtxoCustody {
                 &authorized.derivation,
                 &authorized.authorization,
             )
-            .await?;
+            .await
+            .map_err(|_| {
+                self.mark_signer_unavailable();
+                Error::CustodySignerUnavailable
+            })?;
         let public_nonce =
             bark::ark::musig::PublicNonce::from_byte_array(&commitments.aggregate_public_nonce()?)?;
         let session = MusigSession {

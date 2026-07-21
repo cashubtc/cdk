@@ -11,15 +11,15 @@ use bitcoin::Network;
 use cashu::MintUrl;
 use cdk_common::federation::FederationApplicationDigest;
 use cdk_common::federation::{
-    ark_server_commitment, payment_hash_for_preimage, preimage_commitment, FederationBarkActionId,
-    FederationBarkFrostApplicationConfig, FederationBarkPolicyConfig,
-    FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveAntiDosPolicy,
-    FederationBarkReceiveIntent, FederationBarkReceiveProof, FederationBarkReceiveSecretBinding,
-    FederationBarkUnit, FederationBarkVtxoLocator, FederationCheckpointKind,
-    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfig,
-    FederationDkgCeremonyId, FederationFinalizedItemDigest, FederationFrostApplicationConfig,
-    FederationFrostDkgContext, FederationFrostRootPublicConfig, FederationFrostRootRecord,
-    FederationFrostWalletConfig, FederationId, FederationJournalDigest,
+    ark_server_commitment, federation_bark_signer_set_for_attempt, payment_hash_for_preimage,
+    preimage_commitment, FederationBarkActionId, FederationBarkFrostApplicationConfig,
+    FederationBarkPolicyConfig, FederationBarkPrepareReceiveSecretRequest,
+    FederationBarkReceiveAntiDosPolicy, FederationBarkReceiveIntent, FederationBarkReceiveProof,
+    FederationBarkReceiveSecretBinding, FederationBarkUnit, FederationBarkVtxoLocator,
+    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
+    FederationConfig, FederationDkgCeremonyId, FederationFinalizedItemDigest,
+    FederationFrostApplicationConfig, FederationFrostDkgContext, FederationFrostRootPublicConfig,
+    FederationFrostRootRecord, FederationFrostWalletConfig, FederationId, FederationJournalDigest,
     FederationMaterializedStateDigest, FederationOnchainConfirmationPolicy, FederationOperationId,
     MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
     VerifiedFederationCheckpointQuorum, FEDERATION_CHECKPOINT_VERSION,
@@ -183,6 +183,24 @@ fn federated_config() -> FederationConfig {
     );
     config.validate().expect("federated config");
     config
+}
+
+#[test]
+fn bark_signer_attempts_rotate_deterministically_without_repeating() {
+    let config = federated_config();
+    assert_eq!(
+        federation_bark_signer_set_for_attempt(&config, 1).expect("first attempt"),
+        vec![member(1), member(2)]
+    );
+    assert_eq!(
+        federation_bark_signer_set_for_attempt(&config, 2).expect("second attempt"),
+        vec![member(2), member(3)]
+    );
+    assert_eq!(
+        federation_bark_signer_set_for_attempt(&config, 3).expect("third attempt"),
+        vec![member(1), member(3)]
+    );
+    assert!(federation_bark_signer_set_for_attempt(&config, 4).is_err());
 }
 
 fn local_config(config: &FederationConfig) -> FederatedBarkLocalConfig {

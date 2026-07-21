@@ -100,10 +100,12 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     | FederationBarkSemanticPhase::PaymentFailed
                     | FederationBarkSemanticPhase::RevocationPlanned
                     | FederationBarkSemanticPhase::RevocationCompleted
+                    | FederationBarkSemanticPhase::SigningAttemptAdvanced
             )
     });
 
     if let Some(action) = existing_action {
+        let effective_phase = action.signing_retry_phase.unwrap_or(action.phase);
         let plan_entry = send_transition_entry(
             state,
             &projection,
@@ -122,7 +124,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
             .map_err(|_| cdk::Error::Internal)?;
 
         let htlc_entry = if matches!(
-            action.phase,
+            effective_phase,
             FederationBarkSemanticPhase::SendHtlcsCosigned
                 | FederationBarkSemanticPhase::PaymentInitiated
                 | FederationBarkSemanticPhase::PaymentSucceeded
@@ -150,7 +152,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
         }
 
         let initiated_entry = if matches!(
-            action.phase,
+            effective_phase,
             FederationBarkSemanticPhase::PaymentInitiated
                 | FederationBarkSemanticPhase::PaymentSucceeded
                 | FederationBarkSemanticPhase::PaymentFailed
@@ -177,7 +179,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
         }
 
         let failed_entry = if matches!(
-            action.phase,
+            effective_phase,
             FederationBarkSemanticPhase::PaymentFailed
                 | FederationBarkSemanticPhase::RevocationPlanned
                 | FederationBarkSemanticPhase::RevocationCompleted
@@ -205,7 +207,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
         }
 
         let revocation_plan_entry = if matches!(
-            action.phase,
+            effective_phase,
             FederationBarkSemanticPhase::RevocationPlanned
                 | FederationBarkSemanticPhase::RevocationCompleted
         ) {
@@ -222,15 +224,43 @@ pub(super) async fn advance_federated_bark_melt_quote(
             None
         };
 
-        return match action.phase {
+        return match effective_phase {
             FederationBarkSemanticPhase::SendPlanned => {
                 if plan.actor != federation.member_id() {
                     return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                 }
-                let transition = runtime
-                    .execute_lightning_send_htlcs(&quote, &projection, &plan_entry)
+                let authorization_entry =
+                    super::bark_custody_attempt::accepted_bark_custody_authorization(
+                        &state.mint,
+                        &projection,
+                        action,
+                        &plan_entry,
+                    )
+                    .await?;
+                let transition = match runtime
+                    .execute_lightning_send_htlcs(
+                        &quote,
+                        &projection,
+                        &plan_entry,
+                        &authorization_entry,
+                    )
                     .await
-                    .map_err(|_| cdk::Error::Internal)?;
+                {
+                    Ok(transition) => transition,
+                    Err(cdk_bark::Error::CustodySignerUnavailable) => {
+                        let retry = runtime
+                            .advance_signing_attempt(action, &plan_entry)
+                            .map_err(|_| cdk::Error::Internal)?;
+                        return submit_bark_operation(
+                            state,
+                            federation.operation_envelope(FederationOperation::Bark(
+                                FederationBarkOperation::ActionTransition(retry),
+                            )),
+                        )
+                        .await;
+                    }
+                    Err(_) => return Err(cdk::Error::Internal),
+                };
                 submit_bark_operation(
                     state,
                     federation.operation_envelope(FederationOperation::Bark(
@@ -446,16 +476,37 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 }
                 let revocation_plan_entry =
                     revocation_plan_entry.as_ref().ok_or(cdk::Error::Internal)?;
+                let authorization_entry =
+                    super::bark_custody_attempt::accepted_bark_custody_authorization(
+                        &state.mint,
+                        &projection,
+                        action,
+                        revocation_plan_entry,
+                    )
+                    .await?;
                 let transition = match runtime
                     .execute_failed_send_revocation(
                         &quote,
                         &projection,
                         &plan_entry,
                         revocation_plan_entry,
+                        &authorization_entry,
                     )
                     .await
                 {
                     Ok(transition) => transition,
+                    Err(cdk_bark::Error::CustodySignerUnavailable) => {
+                        let retry = runtime
+                            .advance_signing_attempt(action, revocation_plan_entry)
+                            .map_err(|_| cdk::Error::Internal)?;
+                        return submit_bark_operation(
+                            state,
+                            federation.operation_envelope(FederationOperation::Bark(
+                                FederationBarkOperation::ActionTransition(retry),
+                            )),
+                        )
+                        .await;
+                    }
                     Err(_) => {
                         runtime
                             .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)

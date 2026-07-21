@@ -131,6 +131,27 @@ fn receive_observation_step<'a>(
     }
 }
 
+async fn receive_transition_entry(
+    state: &MintState,
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    action_id: FederationBarkActionId,
+    phase: FederationBarkSemanticPhase,
+) -> Result<cdk::federation::FederationJournalEntry, cdk::Error> {
+    let operation_id = projection
+        .transitions
+        .iter()
+        .filter(|record| record.action_id == action_id && record.phase == phase)
+        .max_by_key(|record| record.operation_index)
+        .map(|record| record.operation_id)
+        .ok_or(cdk::Error::Internal)?;
+    state
+        .mint
+        .localstore()
+        .get_federation_journal_entry_by_operation_id(operation_id)
+        .await?
+        .ok_or(cdk::Error::Internal)
+}
+
 /// Poll and advance one already-created federated Bark quote. Mailbox events
 /// call the same function; they never supply settlement truth themselves.
 pub(super) async fn advance_federated_bark_mint_quote(
@@ -371,7 +392,16 @@ pub(super) async fn advance_federated_bark_mint_quote(
             Ok(FederationPaymentAdvancement::Progressed)
         }
         FederationBarkSemanticPhase::ClaimPlanned
-        | FederationBarkSemanticPhase::ReceivePreimageDisclosed => {
+        | FederationBarkSemanticPhase::ReceivePreimageDisclosed
+        | FederationBarkSemanticPhase::SigningAttemptAdvanced
+            if action.signing_retry_phase.is_none_or(|phase| {
+                matches!(
+                    phase,
+                    FederationBarkSemanticPhase::ClaimPlanned
+                        | FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                )
+            }) =>
+        {
             let plan_operation_id = match &action.operation {
                 FederationBarkOperation::ActionPlan(_) => action.latest_operation_id,
                 FederationBarkOperation::ActionTransition(transition) => {
@@ -393,15 +423,40 @@ pub(super) async fn advance_federated_bark_mint_quote(
             if plan.actor != federation.member_id() {
                 return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
             }
-            let outcome = runtime
-                .execute_receive_claim(&intent, prepared, plan_entry)
+            let authorization_entry =
+                super::bark_custody_attempt::accepted_bark_custody_authorization(
+                    &state.mint,
+                    &projection,
+                    &action,
+                    &plan_entry,
+                )
+                .await?;
+            let outcome = match runtime
+                .execute_receive_claim(&intent, prepared, plan_entry.clone(), authorization_entry)
                 .await
-                .map_err(|_| bark_unavailable())?;
+            {
+                Ok(outcome) => outcome,
+                Err(cdk_bark::Error::CustodySignerUnavailable) => {
+                    let retry = runtime
+                        .advance_signing_attempt(&action, &plan_entry)
+                        .map_err(|_| bark_unavailable())?;
+                    let envelope = federation.operation_envelope(FederationOperation::Bark(
+                        FederationBarkOperation::ActionTransition(retry),
+                    ));
+                    state
+                        .submit_federation_envelope(envelope)
+                        .await?
+                        .ensure_accepted()?;
+                    return Ok(FederationPaymentAdvancement::Progressed);
+                }
+                Err(_) => return Err(bark_unavailable()),
+            };
+            let effective_phase = action.signing_retry_phase.unwrap_or(action.phase);
             match outcome {
                 cdk_bark::FederatedBarkReceiveClaimOutcome::RecoveryRequired {
                     preimage_disclosed,
                 } => {
-                    if action.phase == FederationBarkSemanticPhase::ClaimPlanned {
+                    if effective_phase == FederationBarkSemanticPhase::ClaimPlanned {
                         let envelope = federation.operation_envelope(FederationOperation::Bark(
                             FederationBarkOperation::ActionTransition(preimage_disclosed),
                         ));
@@ -418,7 +473,7 @@ pub(super) async fn advance_federated_bark_mint_quote(
                     preimage_disclosed,
                     result,
                 } => {
-                    let accepted_preimage = if action.phase
+                    let accepted_preimage = if effective_phase
                         == FederationBarkSemanticPhase::ClaimPlanned
                     {
                         let envelope = federation.operation_envelope(FederationOperation::Bark(
@@ -428,14 +483,13 @@ pub(super) async fn advance_federated_bark_mint_quote(
                         response.ensure_accepted()?;
                         response.outcome.entry().clone()
                     } else {
-                        state
-                            .mint
-                            .localstore()
-                            .get_federation_journal_entry_by_operation_id(
-                                action.latest_operation_id,
-                            )
-                            .await?
-                            .ok_or(cdk::Error::Internal)?
+                        receive_transition_entry(
+                            state,
+                            &projection,
+                            action.action_id,
+                            FederationBarkSemanticPhase::ReceivePreimageDisclosed,
+                        )
+                        .await?
                     };
                     let claimed = runtime
                         .finalize_receive_claim(&accepted_preimage, *result)

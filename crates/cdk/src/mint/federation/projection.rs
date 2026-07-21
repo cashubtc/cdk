@@ -6,15 +6,16 @@ use std::str::FromStr;
 use bitcoin::hashes::{sha256, Hash};
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    ark_server_commitment, federation_bark_exit_allocation_quote, FederatedKeyset,
-    FederationAddressAllocationScope, FederationAddressKeychain, FederationBarkActionKind,
-    FederationBarkActionPlan, FederationBarkActionRecord, FederationBarkActionTransition,
-    FederationBarkArtifact, FederationBarkArtifactKind, FederationBarkDigest,
-    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
-    FederationBarkReceiveIntent, FederationBarkSemanticPhase, FederationBarkVtxoInput,
-    FederationBarkVtxoLocator, FederationBarkVtxoState, FederationMaterializedStateKey,
-    FederationMaterializedStateRow, FederationMaterializedStateSnapshot, FederationOperation,
-    FederationOperationId, FederationOperationStatus, FederationPaymentObservationRecord,
+    ark_server_commitment, federation_bark_exit_allocation_quote,
+    federation_bark_signer_set_for_attempt, FederatedKeyset, FederationAddressAllocationScope,
+    FederationAddressKeychain, FederationBarkActionKind, FederationBarkActionPlan,
+    FederationBarkActionRecord, FederationBarkActionTransition, FederationBarkArtifact,
+    FederationBarkArtifactKind, FederationBarkDigest, FederationBarkObservationStatus,
+    FederationBarkOperation, FederationBarkProjectionSnapshot, FederationBarkReceiveIntent,
+    FederationBarkSemanticPhase, FederationBarkVtxoInput, FederationBarkVtxoLocator,
+    FederationBarkVtxoState, FederationMaterializedStateKey, FederationMaterializedStateRow,
+    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
+    FederationOperationStatus, FederationPaymentObservationRecord,
     FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU, FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk_common::mint::MeltPaymentRequest;
@@ -83,6 +84,69 @@ impl Mint {
             .actions
             .iter()
             .find(|action| action.action_id == operation.action_id());
+
+        if let FederationBarkOperation::ActionPlan(plan) = operation {
+            let expected =
+                federation_bark_signer_set_for_attempt(config.public_config(), plan.attempt)?;
+            if plan.signer_set != expected {
+                return Err(bark_state_error(
+                    "action plan signer set is not the deterministic custody roster",
+                ));
+            }
+        }
+
+        if let FederationBarkOperation::ActionTransition(transition) = operation {
+            if transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced {
+                let action = action
+                    .ok_or_else(|| bark_state_error("signing retry has no accepted action"))?;
+                let retry_phase = action.signing_retry_phase.unwrap_or(action.phase);
+                if !matches!(
+                    retry_phase,
+                    FederationBarkSemanticPhase::ClaimPlanned
+                        | FederationBarkSemanticPhase::ReceivePreimageDisclosed
+                        | FederationBarkSemanticPhase::SendPlanned
+                        | FederationBarkSemanticPhase::RevocationPlanned
+                        | FederationBarkSemanticPhase::RefreshPlanned
+                        | FederationBarkSemanticPhase::ExitPlanned
+                        | FederationBarkSemanticPhase::ExitRegistered
+                ) {
+                    return Err(bark_state_error(
+                        "signing retry does not follow a custody phase",
+                    ));
+                }
+                let plan_operation_id = action
+                    .plan_operation_id
+                    .ok_or_else(|| bark_state_error("signing retry has no accepted plan"))?;
+                let plan_entry = self
+                    .localstore()
+                    .get_federation_journal_entry_by_operation_id(plan_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("signing retry plan is missing"))?;
+                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+                    &plan_entry.envelope.operation
+                else {
+                    return Err(bark_state_error("signing retry references a non-plan"));
+                };
+                let attempt = action
+                    .attempt
+                    .checked_add(1)
+                    .ok_or_else(|| bark_state_error("signing retry attempt overflow"))?;
+                let signer_set =
+                    federation_bark_signer_set_for_attempt(config.public_config(), attempt)?;
+                let expected = FederationBarkActionTransition::signing_attempt_advanced(
+                    plan_operation_id,
+                    action.latest_operation_id,
+                    plan,
+                    attempt,
+                    signer_set,
+                )?;
+                if transition != &expected {
+                    return Err(bark_state_error(
+                        "signing retry differs from the deterministic next attempt",
+                    ));
+                }
+            }
+        }
 
         match operation {
             FederationBarkOperation::MemberObservation(observation) => {
@@ -684,8 +748,8 @@ impl Mint {
                     || plan.quote != send.quote
                     || plan.actor != send.actor
                     || plan.payment_hash != send.payment_hash
-                    || plan.signer_set != send.signer_set
-                    || plan.attempt != send.attempt
+                    || plan.signer_set != failed.signer_set
+                    || plan.attempt != failed.attempt
                     || plan.expires_at != send.expires_at
                     || plan.inputs != expected_inputs
                     || expected_inputs.is_empty()
@@ -722,7 +786,7 @@ impl Mint {
                     ));
                 };
                 validate_send_transition_header(action, plan_entry.operation_id, plan, transition)?;
-                if action.phase != FederationBarkSemanticPhase::SendPlanned
+                if action_effective_phase(action) != FederationBarkSemanticPhase::SendPlanned
                     || transition.predecessor_operation_id != action.latest_operation_id
                     || transition.request_hash
                         != FederationBarkOperation::ActionPlan(plan.clone()).commitment()?
@@ -1019,17 +1083,18 @@ impl Mint {
                 else {
                     return Err(bark_state_error("revocation result references a non-plan"));
                 };
+                let expected_signers = action_custody_signers(action, plan)?;
                 if plan.kind != FederationBarkActionKind::FailedSendRevocation
-                    || action.phase != FederationBarkSemanticPhase::RevocationPlanned
-                    || action.latest_operation_id != plan_entry.operation_id
+                    || action_effective_phase(action)
+                        != FederationBarkSemanticPhase::RevocationPlanned
                     || transition.action_id != plan.action_id
                     || transition.quote != plan.quote
                     || transition.plan_operation_id != plan_entry.operation_id
-                    || transition.predecessor_operation_id != plan_entry.operation_id
+                    || transition.predecessor_operation_id != action.latest_operation_id
                     || transition.payment_hash != plan.payment_hash
                     || transition.actor != plan.actor
-                    || transition.attempt != plan.attempt
-                    || transition.signer_set != plan.signer_set
+                    || transition.attempt != action.attempt
+                    || transition.signer_set != expected_signers
                     || transition.external_id != plan.external_id
                     || transition.request_hash
                         != FederationBarkOperation::ActionPlan(plan.clone()).commitment()?
@@ -1062,7 +1127,7 @@ impl Mint {
                     transition,
                     FederationBarkActionKind::Refresh,
                 )?;
-                if action.phase != FederationBarkSemanticPhase::RefreshPlanned
+                if action_effective_phase(action) != FederationBarkSemanticPhase::RefreshPlanned
                     || transition.predecessor_operation_id != action.latest_operation_id
                 {
                     return Err(bark_state_error(
@@ -1134,7 +1199,7 @@ impl Mint {
                     transition,
                     FederationBarkActionKind::EmergencyExit,
                 )?;
-                if action.phase != FederationBarkSemanticPhase::ExitRegistered
+                if action_effective_phase(action) != FederationBarkSemanticPhase::ExitRegistered
                     || transition.predecessor_operation_id != action.latest_operation_id
                 {
                     return Err(bark_state_error(
@@ -1230,8 +1295,18 @@ impl Mint {
                     .iter()
                     .map(|input| input.vtxo_id)
                     .collect::<BTreeSet<_>>();
-                if action.phase != FederationBarkSemanticPhase::ClaimPlanned
+                let expected_signers = action_custody_signers(action, plan)?;
+                if action_effective_phase(action) != FederationBarkSemanticPhase::ClaimPlanned
                     || transition.predecessor_operation_id != action.latest_operation_id
+                    || transition.action_id != plan.action_id
+                    || transition.quote != plan.quote
+                    || transition.plan_operation_id != plan_entry.operation_id
+                    || transition.payment_hash != plan.payment_hash
+                    || transition.actor != plan.actor
+                    || transition.attempt != action.attempt
+                    || transition.signer_set != expected_signers
+                    || transition.request_hash
+                        != FederationBarkOperation::ActionPlan(plan.clone()).commitment()?
                     || transitioned != planned
                 {
                     return Err(bark_state_error(
@@ -1895,14 +1970,15 @@ fn validate_maintenance_transition_header(
     transition: &FederationBarkActionTransition,
     expected_kind: FederationBarkActionKind,
 ) -> Result<(), Error> {
+    let expected_signers = action_custody_signers(action, plan)?;
     if plan.kind != expected_kind
         || transition.action_id != plan.action_id
         || transition.quote.is_some()
         || transition.plan_operation_id != plan_operation_id
         || transition.payment_hash.is_some()
         || transition.actor != plan.actor
-        || transition.attempt != plan.attempt
-        || transition.signer_set != plan.signer_set
+        || transition.attempt != action.attempt
+        || transition.signer_set != expected_signers
         || transition.external_id != plan.external_id
         || transition.request_hash
             != FederationBarkOperation::ActionPlan(plan.clone()).commitment()?
@@ -2204,14 +2280,15 @@ fn validate_send_transition_header(
     plan: &FederationBarkActionPlan,
     transition: &FederationBarkActionTransition,
 ) -> Result<(), Error> {
+    let expected_signers = action_custody_signers(action, plan)?;
     if plan.kind != FederationBarkActionKind::LightningSend
         || transition.action_id != plan.action_id
         || transition.quote != plan.quote
         || transition.plan_operation_id != plan_operation_id
         || transition.payment_hash != plan.payment_hash
         || transition.actor != plan.actor
-        || transition.attempt != plan.attempt
-        || transition.signer_set != plan.signer_set
+        || transition.attempt != action.attempt
+        || transition.signer_set != expected_signers
         || transition.external_id != plan.external_id
         || action.action_id != plan.action_id
         || action.quote != plan.quote
@@ -2222,6 +2299,27 @@ fn validate_send_transition_header(
         ));
     }
     Ok(())
+}
+
+fn action_effective_phase(action: &FederationBarkActionRecord) -> FederationBarkSemanticPhase {
+    action.signing_retry_phase.unwrap_or(action.phase)
+}
+
+fn action_custody_signers<'a>(
+    action: &'a FederationBarkActionRecord,
+    plan: &'a FederationBarkActionPlan,
+) -> Result<&'a [cdk_common::federation::MemberId], Error> {
+    match &action.operation {
+        FederationBarkOperation::ActionTransition(transition)
+            if transition.attempt == action.attempt && !transition.signer_set.is_empty() =>
+        {
+            Ok(&transition.signer_set)
+        }
+        _ if action.attempt == plan.attempt => Ok(&plan.signer_set),
+        _ => Err(bark_state_error(
+            "action custody attempt has no accepted signer binding",
+        )),
+    }
 }
 
 pub(super) fn validate_payment_success_proof(

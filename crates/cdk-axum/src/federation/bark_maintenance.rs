@@ -117,6 +117,7 @@ async fn advance_federated_bark_maintenance_inner(
                         | FederationBarkSemanticPhase::ExitPlanned
                         | FederationBarkSemanticPhase::ExitRegistered
                         | FederationBarkSemanticPhase::ExitPublished
+                        | FederationBarkSemanticPhase::SigningAttemptAdvanced
                 )
         })
         .cloned();
@@ -157,7 +158,8 @@ async fn advance_federated_bark_maintenance_inner(
         .await;
     };
 
-    match action.phase {
+    let effective_phase = action.signing_retry_phase.unwrap_or(action.phase);
+    match effective_phase {
         FederationBarkSemanticPhase::RefreshPlanned => {
             let plan_entry = maintenance_entry(
                 state.clone(),
@@ -176,7 +178,8 @@ async fn advance_federated_bark_maintenance_inner(
                 .await
                 .map_err(|_| cdk::Error::Internal)?;
 
-            if controls.automatic_emergency_exit
+            if action.phase == FederationBarkSemanticPhase::RefreshPlanned
+                && controls.automatic_emergency_exit
                 && runtime
                     .emergency_exit_due(&projection, &plan_entry)
                     .await
@@ -212,13 +215,20 @@ async fn advance_federated_bark_maintenance_inner(
             {
                 return Ok(0);
             }
+            let authorization_entry =
+                super::bark_custody_attempt::accepted_bark_custody_authorization(
+                    &state.mint,
+                    &projection,
+                    &action,
+                    &plan_entry,
+                )
+                .await?;
             match runtime
-                .execute_refresh(&projection, &plan_entry)
+                .execute_refresh(&projection, &plan_entry, &authorization_entry)
                 .await
-                .map_err(|_| cdk::Error::Internal)?
             {
-                cdk_bark::FederatedBarkRefreshOutcome::Pending => Ok(0),
-                cdk_bark::FederatedBarkRefreshOutcome::Completed(transition) => {
+                Ok(cdk_bark::FederatedBarkRefreshOutcome::Pending) => Ok(0),
+                Ok(cdk_bark::FederatedBarkRefreshOutcome::Completed(transition)) => {
                     submit_bark_operation(
                         state.clone(),
                         federation.operation_envelope(FederationOperation::Bark(
@@ -227,6 +237,19 @@ async fn advance_federated_bark_maintenance_inner(
                     )
                     .await
                 }
+                Err(cdk_bark::Error::CustodySignerUnavailable) => {
+                    let retry = runtime
+                        .advance_signing_attempt(&action, &plan_entry)
+                        .map_err(|_| cdk::Error::Internal)?;
+                    submit_bark_operation(
+                        state.clone(),
+                        federation.operation_envelope(FederationOperation::Bark(
+                            FederationBarkOperation::ActionTransition(retry),
+                        )),
+                    )
+                    .await
+                }
+                Err(_) => Err(cdk::Error::Internal),
             }
         }
         FederationBarkSemanticPhase::ExitPlanned => {
@@ -294,13 +317,25 @@ async fn advance_federated_bark_maintenance_inner(
             if plan.actor != federation.member_id() {
                 return Ok(0);
             }
+            let authorization_entry =
+                super::bark_custody_attempt::accepted_bark_custody_authorization(
+                    &state.mint,
+                    &projection,
+                    &action,
+                    &plan_entry,
+                )
+                .await?;
             match runtime
-                .publish_emergency_exit(&projection, &plan_entry, &registered_entry)
+                .publish_emergency_exit(
+                    &projection,
+                    &plan_entry,
+                    &registered_entry,
+                    &authorization_entry,
+                )
                 .await
-                .map_err(|_| cdk::Error::Internal)?
             {
-                cdk_bark::FederatedBarkExitOutcome::Pending => Ok(0),
-                cdk_bark::FederatedBarkExitOutcome::Published(transition) => {
+                Ok(cdk_bark::FederatedBarkExitOutcome::Pending) => Ok(0),
+                Ok(cdk_bark::FederatedBarkExitOutcome::Published(transition)) => {
                     submit_bark_operation(
                         state.clone(),
                         federation.operation_envelope(FederationOperation::Bark(
@@ -309,6 +344,19 @@ async fn advance_federated_bark_maintenance_inner(
                     )
                     .await
                 }
+                Err(cdk_bark::Error::CustodySignerUnavailable) => {
+                    let retry = runtime
+                        .advance_signing_attempt(&action, &plan_entry)
+                        .map_err(|_| cdk::Error::Internal)?;
+                    submit_bark_operation(
+                        state.clone(),
+                        federation.operation_envelope(FederationOperation::Bark(
+                            FederationBarkOperation::ActionTransition(retry),
+                        )),
+                    )
+                    .await
+                }
+                Err(_) => Err(cdk::Error::Internal),
             }
         }
         FederationBarkSemanticPhase::ExitPublished => {

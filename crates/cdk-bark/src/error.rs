@@ -100,6 +100,14 @@ pub enum Error {
     /// Public locator derivation failed.
     #[error("federated Bark public-key derivation failed")]
     PublicKeyDerivationFailed,
+    /// A consensus-selected custody signer attempt failed before Bark could
+    /// persist the next action checkpoint. Any preceding Ark cosign exchange
+    /// retains the accepted action identity and is safe to re-drive.
+    #[error("federated Bark custody signer attempt is unavailable")]
+    CustodySignerUnavailable,
+    /// An accepted custody signer attempt does not match its original action.
+    #[error("federated Bark custody authorization is invalid")]
+    InvalidCustodyAuthorization,
     /// Bark wallet construction failed. The source is deliberately discarded.
     #[error("Bark wallet could not be opened")]
     WalletOpenFailed,

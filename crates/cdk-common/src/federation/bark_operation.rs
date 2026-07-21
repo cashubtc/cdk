@@ -66,6 +66,7 @@ const BARK_SEND_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-send-external-
 const BARK_REVOCATION_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-revocation-external-id/v1";
 const BARK_REFRESH_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-refresh-external-id/v1";
 const BARK_EXIT_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-exit-external-id/v1";
+const BARK_SIGNING_ATTEMPT_RESULT_DOMAIN: &[u8] = b"cdk/federation/bark-signing-attempt-result/v1";
 const BARK_REFRESH_REQUEST_DOMAIN: &str = "cdk/federation/bark-refresh-request/v1";
 const BARK_EXIT_REQUEST_DOMAIN: &str = "cdk/federation/bark-exit-request/v1";
 const BARK_EXIT_ALLOCATION_QUOTE_PREFIX: &str = "bark-exit-";
@@ -713,6 +714,48 @@ pub struct FederationBarkActionPlan {
     pub expires_at: u64,
 }
 
+/// Select the deterministic threshold-sized Bark signer window for one
+/// consensus-authorized custody attempt.
+///
+/// Attempt one starts at the first canonical member. Each later attempt moves
+/// the same fixed-size window forward by one member, wrapping at the end. The
+/// schedule depends only on accepted public configuration and never on a
+/// member's local health view. One pass over the roster is deliberately
+/// bounded; a later retry requires an explicit recovery protocol rather than
+/// silently cycling back to an old signer set.
+pub fn federation_bark_signer_set_for_attempt(
+    config: &super::FederationConfig,
+    attempt: u32,
+) -> Result<Vec<MemberId>> {
+    let application = config
+        .frost_wallet
+        .as_ref()
+        .and_then(|wallet| wallet.bark_application.as_ref())
+        .ok_or_else(|| invalid_bark("accepted Bark application is missing"))?;
+    let members = config.members.keys().copied().collect::<Vec<_>>();
+    let threshold = usize::from(application.threshold);
+    let attempt_index = usize::try_from(
+        attempt
+            .checked_sub(1)
+            .ok_or_else(|| invalid_bark("Bark signing attempt must be non-zero"))?,
+    )
+    .map_err(|_| invalid_bark("Bark signing attempt does not fit this platform"))?;
+    if members.is_empty()
+        || threshold == 0
+        || threshold > members.len()
+        || attempt_index >= members.len()
+    {
+        return Err(invalid_bark(
+            "Bark signing attempt is outside the deterministic roster pass",
+        ));
+    }
+    let mut signer_set = (0..threshold)
+        .map(|offset| members[(attempt_index + offset) % members.len()])
+        .collect::<Vec<_>>();
+    signer_set.sort_unstable();
+    Ok(signer_set)
+}
+
 #[derive(Serialize)]
 struct FederationBarkLightningSendRequestBinding<'a> {
     domain: &'static str,
@@ -977,6 +1020,18 @@ pub struct FederationBarkActionTransition {
     /// operation shape emitted before the SQL projection was installed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vtxo_transitions: Vec<FederationBarkVtxoTransition>,
+}
+
+#[derive(Serialize)]
+struct FederationBarkSigningAttemptResultBinding<'a> {
+    domain: &'static str,
+    action_id: FederationBarkActionId,
+    plan_operation_id: FederationOperationId,
+    predecessor_operation_id: FederationOperationId,
+    attempt: u32,
+    signer_set: &'a [MemberId],
+    request_hash: FederationBarkDigest,
+    external_id: FederationBarkExternalId,
 }
 
 /// Conservative status reported by one federation member.
@@ -2249,6 +2304,55 @@ impl FederationBarkExitRequest {
 }
 
 impl FederationBarkActionTransition {
+    /// Construct the sole canonical transition that authorizes the next
+    /// deterministic custody signer attempt for an unchanged action plan.
+    pub fn signing_attempt_advanced(
+        plan_operation_id: FederationOperationId,
+        predecessor_operation_id: FederationOperationId,
+        plan: &FederationBarkActionPlan,
+        attempt: u32,
+        signer_set: Vec<MemberId>,
+    ) -> Result<Self> {
+        if attempt <= plan.attempt {
+            return Err(invalid_bark("Bark signing attempt did not advance"));
+        }
+        ensure_count("Bark signer set", signer_set.len(), false)?;
+        ensure_members_sorted_unique(&signer_set)?;
+        let plan_operation = FederationBarkOperation::ActionPlan(plan.clone());
+        let request_hash = plan_operation.commitment()?;
+        let result_binding = FederationBarkSigningAttemptResultBinding {
+            domain: "cdk/federation/bark-signing-attempt-result/v1",
+            action_id: plan.action_id,
+            plan_operation_id,
+            predecessor_operation_id,
+            attempt,
+            signer_set: &signer_set,
+            request_hash,
+            external_id: plan.external_id,
+        };
+        let result_hash = domain_hash(
+            BARK_SIGNING_ATTEMPT_RESULT_DOMAIN,
+            &canonical_json_bytes(&result_binding)?,
+        )?;
+        Ok(Self {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: plan.action_id,
+            quote: plan.quote.clone(),
+            phase: FederationBarkSemanticPhase::SigningAttemptAdvanced,
+            actor: plan.actor,
+            plan_operation_id,
+            predecessor_operation_id,
+            payment_hash: plan.payment_hash,
+            attempt,
+            signer_set,
+            request_hash,
+            result_hash,
+            external_id: plan.external_id,
+            artifacts: Vec::new(),
+            vtxo_transitions: Vec::new(),
+        })
+    }
+
     fn validate(&self) -> Result<()> {
         ensure_version(self.version)?;
         ensure_optional_quote(self.quote.as_deref())?;
@@ -2275,6 +2379,13 @@ impl FederationBarkActionTransition {
         ensure_strictly_sorted("Bark artifacts", &self.artifacts)?;
         ensure_strictly_sorted("Bark VTXO transitions", &self.vtxo_transitions)?;
         validate_artifacts(&self.artifacts)?;
+        if self.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced
+            && (!self.artifacts.is_empty() || !self.vtxo_transitions.is_empty())
+        {
+            return Err(invalid_bark(
+                "Bark signing-attempt transition cannot carry result artifacts",
+            ));
+        }
         for transition in &self.vtxo_transitions {
             transition.locator.validate()?;
             if transition.amount == Amount::ZERO || transition.expiry_height == 0 {
@@ -3229,6 +3340,58 @@ mod tests {
 
     fn member(value: u16) -> MemberId {
         MemberId::new(value).expect("member")
+    }
+
+    #[test]
+    fn signing_retry_transition_is_canonical_and_preserves_action_identity() {
+        let plan = FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: action(41),
+            quote: Some("retry-quote".to_string()),
+            kind: FederationBarkActionKind::IncomingClaim,
+            actor: member(1),
+            predecessor_operation_id: FederationOperationId::from_bytes([42; 32]),
+            payment_hash: Some(digest(43)),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            revocation_locator: None,
+            external_amount: Amount::ZERO,
+            fee_amount: Amount::ZERO,
+            fee_bound: Amount::ZERO,
+            artifacts: Vec::new(),
+            external_id: external(44),
+            signer_set: vec![member(1), member(2)],
+            attempt: 1,
+            expires_at: 1,
+        };
+        let plan_operation_id = FederationOperationId::from_bytes([45; 32]);
+        let predecessor = FederationOperationId::from_bytes([46; 32]);
+        let first = FederationBarkActionTransition::signing_attempt_advanced(
+            plan_operation_id,
+            predecessor,
+            &plan,
+            2,
+            vec![member(2), member(3)],
+        )
+        .expect("retry transition");
+        let replay = FederationBarkActionTransition::signing_attempt_advanced(
+            plan_operation_id,
+            predecessor,
+            &plan,
+            2,
+            vec![member(2), member(3)],
+        )
+        .expect("exact retry replay");
+
+        assert_eq!(first, replay);
+        assert_eq!(first.external_id, plan.external_id);
+        assert_eq!(
+            first.request_hash,
+            FederationBarkOperation::ActionPlan(plan)
+                .commitment()
+                .expect("plan commitment")
+        );
+        assert!(first.artifacts.is_empty() && first.vtxo_transitions.is_empty());
     }
 
     fn operation_id(seed: u8) -> FederationOperationId {

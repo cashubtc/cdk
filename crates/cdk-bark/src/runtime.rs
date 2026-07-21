@@ -30,21 +30,21 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::{FeeRate, ScriptBuf, Transaction};
 use cdk_common::federation::{
     ark_server_commitment, federation_bark_exit_allocation_quote,
-    federation_bark_receive_request_hash, validate_federation_bark_lightning_send_expiry,
-    FederationAllocatedAddressRef, FederationBarkActionId, FederationBarkActionKind,
-    FederationBarkActionPlan, FederationBarkActionStatus, FederationBarkActionTransition,
-    FederationBarkArtifact, FederationBarkArtifactKind, FederationBarkDigest,
-    FederationBarkExternalId, FederationBarkMemberObservation, FederationBarkObservationStatus,
-    FederationBarkOperation, FederationBarkOperatorStatus, FederationBarkPolicyConfig,
-    FederationBarkProjectionSnapshot, FederationBarkProtocolStatus, FederationBarkReceiveIntent,
-    FederationBarkReceivePrepared, FederationBarkReceiveSecretBinding,
-    FederationBarkReceiveSecretCoverage, FederationBarkSemanticPhase, FederationBarkVtxoId,
-    FederationBarkVtxoInput, FederationBarkVtxoLocator, FederationBarkVtxoOutput,
-    FederationBarkVtxoState, FederationBarkVtxoStatusCount, FederationBarkVtxoTransition,
-    FederationConfig, FederationJournalEntry, FederationOperation, FederationOperationId,
-    FederationOperationStatus, MemberId, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
-    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_BARK_OPERATOR_STATUS_VERSION,
-    FEDERATION_MAX_DERIVATION_INDEX,
+    federation_bark_receive_request_hash, federation_bark_signer_set_for_attempt,
+    validate_federation_bark_lightning_send_expiry, FederationAllocatedAddressRef,
+    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionPlan,
+    FederationBarkActionStatus, FederationBarkActionTransition, FederationBarkArtifact,
+    FederationBarkArtifactKind, FederationBarkDigest, FederationBarkExternalId,
+    FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
+    FederationBarkOperatorStatus, FederationBarkPolicyConfig, FederationBarkProjectionSnapshot,
+    FederationBarkProtocolStatus, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
+    FederationBarkReceiveSecretBinding, FederationBarkReceiveSecretCoverage,
+    FederationBarkSemanticPhase, FederationBarkVtxoId, FederationBarkVtxoInput,
+    FederationBarkVtxoLocator, FederationBarkVtxoOutput, FederationBarkVtxoState,
+    FederationBarkVtxoStatusCount, FederationBarkVtxoTransition, FederationConfig,
+    FederationJournalEntry, FederationOperation, FederationOperationId, FederationOperationStatus,
+    MemberId, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU, FEDERATION_BARK_OPERATION_VERSION,
+    FEDERATION_BARK_OPERATOR_STATUS_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::{CurrencyUnit, MeltQuoteState};
@@ -197,6 +197,19 @@ pub struct FederatedBarkReceiveClaimResult {
     output_transitions: Vec<FederationBarkVtxoTransition>,
     artifacts: Vec<FederationBarkArtifact>,
     result_hash: FederationBarkDigest,
+}
+
+#[derive(Debug, Clone)]
+struct AcceptedCustodyAttempt {
+    entry: FederationJournalEntry,
+    attempt: u32,
+    signer_set: Vec<MemberId>,
+}
+
+struct ExitTransitionAuthorization<'a> {
+    phase: FederationBarkSemanticPhase,
+    attempt: u32,
+    signer_set: &'a [MemberId],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -380,6 +393,38 @@ impl FederatedBarkRuntime {
     #[must_use]
     pub const fn member_id(&self) -> MemberId {
         self.member_id
+    }
+
+    /// Construct the sole deterministic consensus transition that can replace
+    /// an unavailable custody signer set without changing the accepted Bark
+    /// action or its external execution identity.
+    pub fn advance_signing_attempt(
+        &self,
+        action: &cdk_common::federation::FederationBarkActionRecord,
+        accepted_plan: &FederationJournalEntry,
+    ) -> Result<FederationBarkActionTransition, Error> {
+        let plan = accepted_action_plan(accepted_plan)?;
+        if action.action_id != plan.action_id
+            || action.actor != plan.actor
+            || plan.actor != self.member_id
+            || action.plan_operation_id != Some(accepted_plan.operation_id)
+        {
+            return Err(Error::InvalidCustodyAuthorization);
+        }
+        let attempt = action
+            .attempt
+            .checked_add(1)
+            .ok_or(Error::InvalidCustodyAuthorization)?;
+        let signer_set = federation_bark_signer_set_for_attempt(&self.federation, attempt)
+            .map_err(|_| Error::InvalidCustodyAuthorization)?;
+        FederationBarkActionTransition::signing_attempt_advanced(
+            accepted_plan.operation_id,
+            action.latest_operation_id,
+            plan,
+            attempt,
+            signer_set,
+        )
+        .map_err(|_| Error::InvalidCustodyAuthorization)
     }
 
     /// Encrypted member-local receive-secret store.
@@ -689,6 +734,7 @@ impl FederatedBarkRuntime {
         quote: &MeltQuote,
         projection: &FederationBarkProjectionSnapshot,
         accepted_plan: &FederationJournalEntry,
+        accepted_authorization: &FederationJournalEntry,
     ) -> Result<FederationBarkActionTransition, Error> {
         let plan = accepted_send_plan(accepted_plan)?;
         if plan.actor != self.member_id {
@@ -699,12 +745,19 @@ impl FederatedBarkRuntime {
         let plan_commitment = plan_operation
             .commitment()
             .map_err(|_| Error::SendExecutionFailed)?;
+        let custody_attempt = accepted_custody_attempt(accepted_plan, accepted_authorization)?;
         self.custody
-            .activate_send(accepted_plan.clone(), plan_commitment.to_bytes().to_vec())
+            .activate_send(
+                accepted_plan.clone(),
+                custody_attempt.entry.clone(),
+                plan_commitment.to_bytes().to_vec(),
+            )
             .map_err(|_| Error::SendExecutionFailed)?;
         let result = self.wallet.execute_lightning_send_htlcs(&bark_plan).await;
+        let signer_unavailable = self.custody.take_signer_unavailable();
         self.custody.deactivate_send();
-        let evidence = result.map_err(|_| Error::SendExecutionFailed)?;
+        let evidence =
+            result.map_err(|error| classify_send_execution_error(error, signer_unavailable))?;
         send_htlc_transition(
             self.member_id,
             accepted_plan,
@@ -712,6 +765,7 @@ impl FederatedBarkRuntime {
             projection,
             &evidence,
             plan_commitment,
+            &custody_attempt,
         )
     }
 
@@ -729,7 +783,7 @@ impl FederatedBarkRuntime {
             accepted_htlcs,
             FederationBarkSemanticPhase::SendHtlcsCosigned,
         )?;
-        validate_send_transition_binding(accepted_plan, plan, transition)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, plan, transition)?;
         let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
         let evidence = send_htlc_evidence_from_transition(plan, transition)?;
         self.wallet
@@ -756,7 +810,7 @@ impl FederatedBarkRuntime {
             accepted_htlcs,
             FederationBarkSemanticPhase::SendHtlcsCosigned,
         )?;
-        validate_send_transition_binding(accepted_plan, plan, htlcs)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, plan, htlcs)?;
         let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
         self.wallet
             .initiate_lightning_send(&bark_plan)
@@ -779,7 +833,7 @@ impl FederatedBarkRuntime {
             accepted_initiated,
             FederationBarkSemanticPhase::PaymentInitiated,
         )?;
-        validate_send_transition_binding(accepted_plan, plan, transition)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, plan, transition)?;
         validate_payment_initiated_result(plan, transition)?;
         let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
         self.wallet
@@ -807,7 +861,7 @@ impl FederatedBarkRuntime {
             accepted_initiated,
             FederationBarkSemanticPhase::PaymentInitiated,
         )?;
-        validate_send_transition_binding(accepted_plan, plan, initiated)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, plan, initiated)?;
         validate_payment_initiated_result(plan, initiated)?;
         let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
         match self
@@ -851,7 +905,7 @@ impl FederatedBarkRuntime {
             accepted_success,
             FederationBarkSemanticPhase::PaymentSucceeded,
         )?;
-        validate_send_transition_binding(accepted_plan, plan, success)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, plan, success)?;
         let preimage = send_success_preimage(plan, success)?;
         let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
         self.wallet
@@ -892,7 +946,7 @@ impl FederatedBarkRuntime {
             accepted_initiated,
             FederationBarkSemanticPhase::PaymentInitiated,
         )?;
-        validate_send_transition_binding(accepted_plan, plan, initiated)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, plan, initiated)?;
         validate_payment_initiated_result(plan, initiated)?;
         let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
         if self
@@ -936,7 +990,7 @@ impl FederatedBarkRuntime {
             accepted_initiated,
             FederationBarkSemanticPhase::PaymentInitiated,
         )?;
-        validate_send_transition_binding(accepted_plan, plan, initiated)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, plan, initiated)?;
         validate_payment_initiated_result(plan, initiated)?;
         let (artifact, result_hash) = payment_failed_result(plan, initiated.result_hash)?;
         Ok(FederationBarkActionTransition {
@@ -948,8 +1002,8 @@ impl FederatedBarkRuntime {
             plan_operation_id: accepted_plan.operation_id,
             predecessor_operation_id: accepted_initiated.operation_id,
             payment_hash: plan.payment_hash,
-            attempt: plan.attempt,
-            signer_set: plan.signer_set.clone(),
+            attempt: initiated.attempt,
+            signer_set: initiated.signer_set.clone(),
             request_hash: initiated.result_hash,
             result_hash,
             external_id: plan.external_id,
@@ -970,7 +1024,7 @@ impl FederatedBarkRuntime {
         let plan = accepted_send_plan(accepted_plan)?;
         let failed =
             accepted_send_transition(accepted_failed, FederationBarkSemanticPhase::PaymentFailed)?;
-        validate_send_transition_binding(accepted_plan, plan, failed)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, plan, failed)?;
         validate_payment_failed_result(plan, failed)?;
         let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
         self.wallet
@@ -993,7 +1047,7 @@ impl FederatedBarkRuntime {
         }
         let failed =
             accepted_send_transition(accepted_failed, FederationBarkSemanticPhase::PaymentFailed)?;
-        validate_send_transition_binding(send_plan_entry, send, failed)?;
+        validate_send_transition_binding(&self.federation, send_plan_entry, send, failed)?;
         validate_payment_failed_result(send, failed)?;
         let mut records = projection
             .vtxos
@@ -1068,11 +1122,11 @@ impl FederatedBarkRuntime {
             external_id: FederationBarkExternalId::derive_failed_send_revocation(
                 send.action_id,
                 accepted_failed.operation_id,
-                send.attempt,
+                failed.attempt,
             )
             .map_err(|_| Error::SendExecutionFailed)?,
-            signer_set: send.signer_set.clone(),
-            attempt: send.attempt,
+            signer_set: failed.signer_set.clone(),
+            attempt: failed.attempt,
             expires_at: send.expires_at,
         };
         FederationBarkOperation::ActionPlan(plan.clone())
@@ -1089,6 +1143,7 @@ impl FederatedBarkRuntime {
         projection: &FederationBarkProjectionSnapshot,
         send_plan_entry: &FederationJournalEntry,
         revocation_plan_entry: &FederationJournalEntry,
+        accepted_authorization: &FederationJournalEntry,
     ) -> Result<FederationBarkActionTransition, Error> {
         let send = accepted_send_plan(send_plan_entry)?;
         let revocation = accepted_revocation_plan(revocation_plan_entry)?;
@@ -1101,9 +1156,12 @@ impl FederatedBarkRuntime {
         let commitment = operation
             .commitment()
             .map_err(|_| Error::SendExecutionFailed)?;
+        let custody_attempt =
+            accepted_custody_attempt(revocation_plan_entry, accepted_authorization)?;
         self.custody
             .activate_revocation(
                 revocation_plan_entry.clone(),
+                custody_attempt.entry.clone(),
                 commitment.to_bytes().to_vec(),
             )
             .map_err(|_| Error::SendExecutionFailed)?;
@@ -1111,8 +1169,10 @@ impl FederatedBarkRuntime {
             .wallet
             .execute_lightning_send_revocation(&bark_send, &bark_revocation)
             .await;
+        let signer_unavailable = self.custody.take_signer_unavailable();
         self.custody.deactivate_revocation();
-        let evidence = result.map_err(|_| Error::SendExecutionFailed)?;
+        let evidence =
+            result.map_err(|error| classify_send_execution_error(error, signer_unavailable))?;
         revocation_completed_transition(
             self.member_id,
             revocation_plan_entry,
@@ -1120,6 +1180,7 @@ impl FederatedBarkRuntime {
             projection,
             &evidence,
             commitment,
+            &custody_attempt,
         )
     }
 
@@ -1484,7 +1545,19 @@ impl FederatedBarkRuntime {
         projection: &FederationBarkProjectionSnapshot,
         plan: &FederationBarkActionPlan,
     ) -> Result<(), Error> {
-        let bark_plan = self.bark_refresh_plan(projection, plan)?;
+        self.apply_refresh_plan_for_attempt(projection, plan, plan.attempt)
+            .await
+            .map(|_| ())
+    }
+
+    async fn apply_refresh_plan_for_attempt(
+        &self,
+        projection: &FederationBarkProjectionSnapshot,
+        plan: &FederationBarkActionPlan,
+        custody_attempt: u32,
+    ) -> Result<FederationRefreshPlan, Error> {
+        let mut bark_plan = self.bark_refresh_plan(projection, plan)?;
+        bark_plan.custody_attempt = custody_attempt;
         for input in &bark_plan.inputs {
             self.wallet
                 .import_vtxo(&FederationVtxoImport {
@@ -1499,7 +1572,7 @@ impl FederatedBarkRuntime {
             .apply_refresh_plan(&bark_plan)
             .await
             .map_err(|_| Error::MaintenanceProjectionFailed)?;
-        Ok(())
+        Ok(bark_plan)
     }
 
     /// Execute only the exact accepted refresh round.
@@ -1507,23 +1580,33 @@ impl FederatedBarkRuntime {
         &self,
         projection: &FederationBarkProjectionSnapshot,
         accepted_plan: &FederationJournalEntry,
+        accepted_authorization: &FederationJournalEntry,
     ) -> Result<FederatedBarkRefreshOutcome, Error> {
         let plan = accepted_maintenance_plan(accepted_plan, FederationBarkActionKind::Refresh)?;
         if plan.actor != self.member_id {
             return Err(Error::MaintenanceExecutionFailed);
         }
-        self.apply_refresh_plan(projection, plan).await?;
-        let bark_plan = self.bark_refresh_plan(projection, plan)?;
+        let custody_attempt = accepted_custody_attempt(accepted_plan, accepted_authorization)?;
+        let bark_plan = self
+            .apply_refresh_plan_for_attempt(projection, plan, custody_attempt.attempt)
+            .await?;
         let operation = FederationBarkOperation::ActionPlan(plan.clone());
         let commitment = operation
             .commitment()
             .map_err(|_| Error::MaintenanceExecutionFailed)?;
         self.custody
-            .activate_refresh(accepted_plan.clone(), commitment.to_bytes().to_vec())
+            .activate_refresh(
+                accepted_plan.clone(),
+                custody_attempt.entry.clone(),
+                commitment.to_bytes().to_vec(),
+            )
             .map_err(|_| Error::MaintenanceExecutionFailed)?;
         let execution = self.wallet.execute_refresh(&bark_plan).await;
+        let signer_unavailable = self.custody.take_signer_unavailable();
         self.custody.deactivate_refresh();
-        match execution.map_err(|_| Error::MaintenanceExecutionFailed)? {
+        match execution
+            .map_err(|error| classify_maintenance_execution_error(error, signer_unavailable))?
+        {
             FederationRefreshExecution::Pending { .. } => Ok(FederatedBarkRefreshOutcome::Pending),
             FederationRefreshExecution::Completed(evidence) => {
                 let transition = refresh_completed_transition(
@@ -1533,6 +1616,7 @@ impl FederatedBarkRuntime {
                     projection,
                     &evidence,
                     commitment,
+                    &custody_attempt,
                 )?;
                 Ok(FederatedBarkRefreshOutcome::Completed(Box::new(transition)))
             }
@@ -1551,7 +1635,7 @@ impl FederatedBarkRuntime {
             completed_entry,
             FederationBarkSemanticPhase::RefreshCompleted,
         )?;
-        validate_maintenance_transition_binding(plan_entry, plan, transition)?;
+        validate_maintenance_transition_binding(&self.federation, plan_entry, plan, transition)?;
         let bark_plan = self.bark_refresh_plan(projection, plan)?;
         let evidence = refresh_evidence_from_transition(plan, transition)?;
         self.wallet
@@ -1831,7 +1915,11 @@ impl FederatedBarkRuntime {
             plan,
             projection,
             &evidence,
-            FederationBarkSemanticPhase::ExitRegistered,
+            ExitTransitionAuthorization {
+                phase: FederationBarkSemanticPhase::ExitRegistered,
+                attempt: plan.attempt,
+                signer_set: &plan.signer_set,
+            },
         )
     }
 
@@ -1848,7 +1936,7 @@ impl FederatedBarkRuntime {
             registered_entry,
             FederationBarkSemanticPhase::ExitRegistered,
         )?;
-        validate_maintenance_transition_binding(plan_entry, plan, registered)?;
+        validate_maintenance_transition_binding(&self.federation, plan_entry, plan, registered)?;
         self.apply_emergency_exit_plan(projection, plan).await?;
         let bark_plan = self.bark_exit_plan(projection, plan)?;
         self.wallet
@@ -1865,6 +1953,7 @@ impl FederatedBarkRuntime {
         projection: &FederationBarkProjectionSnapshot,
         accepted_plan: &FederationJournalEntry,
         registered_entry: &FederationJournalEntry,
+        accepted_authorization: &FederationJournalEntry,
     ) -> Result<FederatedBarkExitOutcome, Error> {
         let plan =
             accepted_maintenance_plan(accepted_plan, FederationBarkActionKind::EmergencyExit)?;
@@ -1875,13 +1964,15 @@ impl FederatedBarkRuntime {
             registered_entry,
             FederationBarkSemanticPhase::ExitRegistered,
         )?;
-        validate_maintenance_transition_binding(accepted_plan, plan, registered)?;
+        validate_maintenance_transition_binding(&self.federation, accepted_plan, plan, registered)?;
         self.apply_emergency_exit_registered(projection, accepted_plan, registered_entry)
             .await?;
         let bark_plan = self.bark_exit_plan(projection, plan)?;
+        let custody_attempt = accepted_custody_attempt(accepted_plan, accepted_authorization)?;
         self.custody
             .activate_exit(
                 accepted_plan.clone(),
+                custody_attempt.entry.clone(),
                 registered.request_hash.to_bytes().to_vec(),
             )
             .map_err(|_| Error::MaintenanceExecutionFailed)?;
@@ -1900,8 +1991,10 @@ impl FederatedBarkRuntime {
             }
         }
         .await;
+        let signer_unavailable = self.custody.take_signer_unavailable();
         self.custody.deactivate_exit();
-        let evidence = result.map_err(|_| Error::MaintenanceExecutionFailed)?;
+        let evidence = result
+            .map_err(|error| classify_maintenance_execution_error(error, signer_unavailable))?;
         if !matches!(
             evidence.phase,
             FederationExitPhase::DrainPublished | FederationExitPhase::Confirmed
@@ -1911,11 +2004,19 @@ impl FederatedBarkRuntime {
         let transition = exit_transition(
             self.member_id,
             accepted_plan,
-            registered_entry.operation_id,
+            if custody_attempt.entry.operation_id == accepted_plan.operation_id {
+                registered_entry.operation_id
+            } else {
+                custody_attempt.entry.operation_id
+            },
             plan,
             projection,
             &evidence,
-            FederationBarkSemanticPhase::ExitPublished,
+            ExitTransitionAuthorization {
+                phase: FederationBarkSemanticPhase::ExitPublished,
+                attempt: custody_attempt.attempt,
+                signer_set: &custody_attempt.signer_set,
+            },
         )?;
         Ok(FederatedBarkExitOutcome::Published(Box::new(transition)))
     }
@@ -1935,7 +2036,7 @@ impl FederatedBarkRuntime {
         let plan = accepted_maintenance_plan(plan_entry, FederationBarkActionKind::EmergencyExit)?;
         let published =
             accepted_send_transition(published_entry, FederationBarkSemanticPhase::ExitPublished)?;
-        validate_maintenance_transition_binding(plan_entry, plan, published)?;
+        validate_maintenance_transition_binding(&self.federation, plan_entry, plan, published)?;
         let accepted_evidence = exit_evidence_from_transition(plan, published)?;
         let drain = accepted_evidence
             .drain_transaction
@@ -2004,7 +2105,11 @@ impl FederatedBarkRuntime {
             plan,
             projection,
             &evidence,
-            FederationBarkSemanticPhase::ExitConfirmed,
+            ExitTransitionAuthorization {
+                phase: FederationBarkSemanticPhase::ExitConfirmed,
+                attempt: published.attempt,
+                signer_set: &published.signer_set,
+            },
         )
         .map(Some)
     }
@@ -2622,12 +2727,15 @@ impl FederatedBarkRuntime {
         else {
             return Err(Error::ReceiveClaimPlanInvalid);
         };
+        let expected_signers =
+            federation_bark_signer_set_for_attempt(&self.federation, transition.attempt)
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
         if transition.action_id != plan.action_id
             || transition.quote.as_deref() != plan.quote.as_deref()
             || transition.plan_operation_id != accepted_plan.operation_id
             || transition.payment_hash != plan.payment_hash
-            || transition.attempt != plan.attempt
-            || transition.signer_set != plan.signer_set
+            || transition.attempt < plan.attempt
+            || transition.signer_set != expected_signers
         {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
@@ -2666,6 +2774,7 @@ impl FederatedBarkRuntime {
         intent: &FederationBarkReceiveIntent,
         prepared: &FederationBarkReceivePrepared,
         accepted_plan: FederationJournalEntry,
+        accepted_authorization: FederationJournalEntry,
     ) -> Result<FederatedBarkReceiveClaimOutcome, Error> {
         if accepted_plan.status() != FederationOperationStatus::Applied {
             return Err(Error::ReceiveClaimPlanInvalid);
@@ -2689,9 +2798,11 @@ impl FederatedBarkRuntime {
             FederationRequestCommitment::from_bytes(plan_commitment.to_bytes())
                 .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
         let authorization_context = plan_commitment.to_bytes().to_vec();
+        let custody_attempt = accepted_custody_attempt(&accepted_plan, &accepted_authorization)?;
         self.custody
             .activate_claim(
                 accepted_plan.clone(),
+                custody_attempt.entry.clone(),
                 intent.destination,
                 authorization_context.clone(),
             )
@@ -2705,6 +2816,7 @@ impl FederatedBarkRuntime {
             .wallet
             .execute_lightning_receive_claim(&receive, &claim, &execution)
             .await;
+        let signer_unavailable = self.custody.take_signer_unavailable();
         let disclosed = match &result {
             Ok(_) => true,
             Err(_) => matches!(
@@ -2714,7 +2826,10 @@ impl FederatedBarkRuntime {
         };
         self.custody.deactivate_claim();
         if !disclosed {
-            return Err(Error::ReceiveClaimPlanInvalid);
+            return match result {
+                Err(error) => Err(classify_receive_claim_error(&error, signer_unavailable)),
+                Ok(_) => Err(Error::ReceiveClaimPlanInvalid),
+            };
         }
         let preimage_disclosed = receive_preimage_disclosed_transition(
             self.member_id,
@@ -2723,6 +2838,7 @@ impl FederatedBarkRuntime {
             plan,
             &claim,
             plan_commitment,
+            &custody_attempt,
         )?;
         match result {
             Ok(outputs) => Ok(FederatedBarkReceiveClaimOutcome::Claimed {
@@ -2734,6 +2850,7 @@ impl FederatedBarkRuntime {
                     &claim,
                     outputs,
                     plan_commitment,
+                    &custody_attempt,
                 )?),
             }),
             Err(_) => Ok(FederatedBarkReceiveClaimOutcome::RecoveryRequired { preimage_disclosed }),
@@ -3255,6 +3372,27 @@ mod tests {
         assert!(!send_quote_state_is_replayable(MeltQuoteState::Unpaid));
         assert!(!send_quote_state_is_replayable(MeltQuoteState::Unknown));
     }
+
+    #[test]
+    fn custody_unavailability_survives_backend_error_wrapping() {
+        let opaque_error = anyhow::anyhow!("opaque Bark execution failure");
+
+        assert!(matches!(
+            classify_send_execution_error(opaque_error, true),
+            Error::CustodySignerUnavailable
+        ));
+        assert!(matches!(
+            classify_receive_claim_error(&anyhow::anyhow!("opaque Bark claim failure"), true),
+            Error::CustodySignerUnavailable
+        ));
+        assert!(matches!(
+            classify_maintenance_execution_error(
+                anyhow::anyhow!("opaque Bark maintenance failure"),
+                true,
+            ),
+            Error::CustodySignerUnavailable
+        ));
+    }
 }
 
 const fn bark_vtxo_state_is_terminal(state: FederationBarkVtxoState) -> bool {
@@ -3405,11 +3543,106 @@ fn accepted_maintenance_plan(
     Ok(plan)
 }
 
+fn accepted_action_plan(
+    entry: &FederationJournalEntry,
+) -> Result<&FederationBarkActionPlan, Error> {
+    if entry.status() != FederationOperationStatus::Applied {
+        return Err(Error::InvalidCustodyAuthorization);
+    }
+    let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
+        &entry.envelope.operation
+    else {
+        return Err(Error::InvalidCustodyAuthorization);
+    };
+    Ok(plan)
+}
+
+fn classify_send_execution_error(error: anyhow::Error, signer_unavailable: bool) -> Error {
+    if signer_unavailable
+        || matches!(
+            error.downcast_ref::<Error>(),
+            Some(Error::CustodySignerUnavailable)
+        )
+    {
+        Error::CustodySignerUnavailable
+    } else {
+        Error::SendExecutionFailed
+    }
+}
+
+fn classify_receive_claim_error(error: &anyhow::Error, signer_unavailable: bool) -> Error {
+    if signer_unavailable
+        || matches!(
+            error.downcast_ref::<Error>(),
+            Some(Error::CustodySignerUnavailable)
+        )
+    {
+        Error::CustodySignerUnavailable
+    } else {
+        Error::ReceiveClaimPlanInvalid
+    }
+}
+
+fn classify_maintenance_execution_error(error: anyhow::Error, signer_unavailable: bool) -> Error {
+    if signer_unavailable
+        || matches!(
+            error.downcast_ref::<Error>(),
+            Some(Error::CustodySignerUnavailable)
+        )
+    {
+        Error::CustodySignerUnavailable
+    } else {
+        Error::MaintenanceExecutionFailed
+    }
+}
+
+fn accepted_custody_attempt(
+    plan_entry: &FederationJournalEntry,
+    authorization_entry: &FederationJournalEntry,
+) -> Result<AcceptedCustodyAttempt, Error> {
+    let plan = accepted_action_plan(plan_entry)?;
+    if authorization_entry.status() != FederationOperationStatus::Applied {
+        return Err(Error::InvalidCustodyAuthorization);
+    }
+    let FederationOperation::Bark(operation) = &authorization_entry.envelope.operation else {
+        return Err(Error::InvalidCustodyAuthorization);
+    };
+    let (attempt, signer_set) = match operation {
+        FederationBarkOperation::ActionPlan(authorized_plan)
+            if authorization_entry.operation_id == plan_entry.operation_id
+                && authorization_entry.index == plan_entry.index
+                && authorized_plan == plan =>
+        {
+            (plan.attempt, plan.signer_set.clone())
+        }
+        FederationBarkOperation::ActionTransition(transition)
+            if transition.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced
+                && transition.action_id == plan.action_id
+                && transition.quote == plan.quote
+                && transition.actor == plan.actor
+                && transition.plan_operation_id == plan_entry.operation_id
+                && transition.payment_hash == plan.payment_hash
+                && transition.external_id == plan.external_id =>
+        {
+            (transition.attempt, transition.signer_set.clone())
+        }
+        _ => return Err(Error::InvalidCustodyAuthorization),
+    };
+    Ok(AcceptedCustodyAttempt {
+        entry: authorization_entry.clone(),
+        attempt,
+        signer_set,
+    })
+}
+
 fn validate_maintenance_transition_binding(
+    federation: &FederationConfig,
     plan_entry: &FederationJournalEntry,
     plan: &FederationBarkActionPlan,
     transition: &FederationBarkActionTransition,
 ) -> Result<(), Error> {
+    let expected_signers = federation_bark_signer_set_for_attempt(federation, transition.attempt)
+        .map_err(|_| Error::MaintenanceReconciliationFailed)?;
     let commitment = FederationBarkOperation::ActionPlan(plan.clone())
         .commitment()
         .map_err(|_| Error::MaintenanceReconciliationFailed)?;
@@ -3418,8 +3651,8 @@ fn validate_maintenance_transition_binding(
         || transition.plan_operation_id != plan_entry.operation_id
         || transition.payment_hash.is_some()
         || transition.actor != plan.actor
-        || transition.attempt != plan.attempt
-        || transition.signer_set != plan.signer_set
+        || transition.attempt < plan.attempt
+        || transition.signer_set != expected_signers
         || transition.external_id != plan.external_id
         || transition.request_hash != commitment
     {
@@ -3447,17 +3680,20 @@ fn accepted_send_transition(
 }
 
 fn validate_send_transition_binding(
+    federation: &FederationConfig,
     accepted_plan: &FederationJournalEntry,
     plan: &FederationBarkActionPlan,
     transition: &FederationBarkActionTransition,
 ) -> Result<(), Error> {
+    let expected_signers = federation_bark_signer_set_for_attempt(federation, transition.attempt)
+        .map_err(|_| Error::SendReconciliationFailed)?;
     if transition.action_id != plan.action_id
         || transition.quote != plan.quote
         || transition.plan_operation_id != accepted_plan.operation_id
         || transition.payment_hash != plan.payment_hash
         || transition.actor != plan.actor
-        || transition.attempt != plan.attempt
-        || transition.signer_set != plan.signer_set
+        || transition.attempt < plan.attempt
+        || transition.signer_set != expected_signers
         || transition.external_id != plan.external_id
     {
         return Err(Error::SendReconciliationFailed);
@@ -3472,6 +3708,7 @@ fn send_htlc_transition(
     projection: &FederationBarkProjectionSnapshot,
     evidence: &FederationLightningSendHtlcEvidence,
     plan_commitment: FederationBarkDigest,
+    custody_attempt: &AcceptedCustodyAttempt,
 ) -> Result<FederationBarkActionTransition, Error> {
     let mut artifacts = Vec::new();
     let mut vtxo_transitions = Vec::new();
@@ -3552,10 +3789,10 @@ fn send_htlc_transition(
         phase: FederationBarkSemanticPhase::SendHtlcsCosigned,
         actor,
         plan_operation_id: accepted_plan.operation_id,
-        predecessor_operation_id: accepted_plan.operation_id,
+        predecessor_operation_id: custody_attempt.entry.operation_id,
         payment_hash: plan.payment_hash,
-        attempt: plan.attempt,
-        signer_set: plan.signer_set.clone(),
+        attempt: custody_attempt.attempt,
+        signer_set: custody_attempt.signer_set.clone(),
         request_hash: plan_commitment,
         result_hash,
         external_id: plan.external_id,
@@ -3592,8 +3829,8 @@ fn payment_initiated_transition(
         plan_operation_id: accepted_plan.operation_id,
         predecessor_operation_id: accepted_htlcs.operation_id,
         payment_hash: plan.payment_hash,
-        attempt: plan.attempt,
-        signer_set: plan.signer_set.clone(),
+        attempt: htlcs.attempt,
+        signer_set: htlcs.signer_set.clone(),
         request_hash: htlcs.result_hash,
         result_hash: result_artifact.hash,
         external_id: plan.external_id,
@@ -3766,8 +4003,8 @@ fn payment_succeeded_transition(
         plan_operation_id: accepted_plan.operation_id,
         predecessor_operation_id: accepted_initiated.operation_id,
         payment_hash: plan.payment_hash,
-        attempt: plan.attempt,
-        signer_set: plan.signer_set.clone(),
+        attempt: initiated.attempt,
+        signer_set: initiated.signer_set.clone(),
         request_hash: initiated.result_hash,
         result_hash,
         external_id: plan.external_id,
@@ -3783,6 +4020,7 @@ fn revocation_completed_transition(
     projection: &FederationBarkProjectionSnapshot,
     evidence: &FederationLightningSendRevocationEvidence,
     plan_commitment: FederationBarkDigest,
+    custody_attempt: &AcceptedCustodyAttempt,
 ) -> Result<FederationBarkActionTransition, Error> {
     let expected_commitment = FederationBarkOperation::ActionPlan(plan.clone())
         .commitment()
@@ -3875,10 +4113,10 @@ fn revocation_completed_transition(
         phase: FederationBarkSemanticPhase::RevocationCompleted,
         actor,
         plan_operation_id: accepted_plan.operation_id,
-        predecessor_operation_id: accepted_plan.operation_id,
+        predecessor_operation_id: custody_attempt.entry.operation_id,
         payment_hash: plan.payment_hash,
-        attempt: plan.attempt,
-        signer_set: plan.signer_set.clone(),
+        attempt: custody_attempt.attempt,
+        signer_set: custody_attempt.signer_set.clone(),
         request_hash: plan_commitment,
         result_hash,
         external_id: plan.external_id,
@@ -4042,6 +4280,7 @@ fn refresh_completed_transition(
     projection: &FederationBarkProjectionSnapshot,
     evidence: &FederationRefreshEvidence,
     plan_commitment: FederationBarkDigest,
+    custody_attempt: &AcceptedCustodyAttempt,
 ) -> Result<FederationBarkActionTransition, Error> {
     let expected_inputs = plan
         .inputs
@@ -4129,10 +4368,10 @@ fn refresh_completed_transition(
         phase: FederationBarkSemanticPhase::RefreshCompleted,
         actor,
         plan_operation_id: accepted_plan.operation_id,
-        predecessor_operation_id: accepted_plan.operation_id,
+        predecessor_operation_id: custody_attempt.entry.operation_id,
         payment_hash: None,
-        attempt: plan.attempt,
-        signer_set: plan.signer_set.clone(),
+        attempt: custody_attempt.attempt,
+        signer_set: custody_attempt.signer_set.clone(),
         request_hash: plan_commitment,
         result_hash,
         external_id: plan.external_id,
@@ -4250,7 +4489,7 @@ fn exit_transition(
     plan: &FederationBarkActionPlan,
     projection: &FederationBarkProjectionSnapshot,
     evidence: &FederationExitEvidence,
-    phase: FederationBarkSemanticPhase,
+    authorization: ExitTransitionAuthorization<'_>,
 ) -> Result<FederationBarkActionTransition, Error> {
     let plan_commitment = FederationBarkOperation::ActionPlan(plan.clone())
         .commitment()
@@ -4265,7 +4504,7 @@ fn exit_transition(
         .iter()
         .map(|vtxo_id| vtxo_id.to_bytes())
         .collect::<Vec<_>>();
-    let valid_phase = match phase {
+    let valid_phase = match authorization.phase {
         FederationBarkSemanticPhase::ExitRegistered => {
             evidence.phase == FederationExitPhase::Registered
         }
@@ -4298,7 +4537,7 @@ fn exit_transition(
             .iter()
             .find(|record| record.vtxo_id == input.vtxo_id)
             .ok_or(Error::MaintenanceExecutionFailed)?;
-        let state_pair = match phase {
+        let state_pair = match authorization.phase {
             FederationBarkSemanticPhase::ExitRegistered => (
                 FederationBarkVtxoState::Reserved,
                 FederationBarkVtxoState::Exiting,
@@ -4351,13 +4590,13 @@ fn exit_transition(
         version: FEDERATION_BARK_OPERATION_VERSION,
         action_id: plan.action_id,
         quote: None,
-        phase,
+        phase: authorization.phase,
         actor,
         plan_operation_id: plan_entry.operation_id,
         predecessor_operation_id,
         payment_hash: None,
-        attempt: plan.attempt,
-        signer_set: plan.signer_set.clone(),
+        attempt: authorization.attempt,
+        signer_set: authorization.signer_set.to_vec(),
         request_hash: plan_commitment,
         result_hash,
         external_id: plan.external_id,
@@ -4846,6 +5085,7 @@ fn receive_preimage_disclosed_transition(
     plan: &FederationBarkActionPlan,
     claim: &FederationLightningReceiveClaimPlan,
     plan_commitment: FederationBarkDigest,
+    custody_attempt: &AcceptedCustodyAttempt,
 ) -> Result<FederationBarkActionTransition, Error> {
     let mut artifacts = claim
         .input_vtxos
@@ -4876,7 +5116,7 @@ fn receive_preimage_disclosed_transition(
     result.extend_from_slice(&plan.action_id.to_bytes());
     result.extend_from_slice(&accepted_plan.operation_id.to_bytes());
     result.extend_from_slice(&intent.payment_hash.to_bytes());
-    result.extend_from_slice(&plan.attempt.to_be_bytes());
+    result.extend_from_slice(&custody_attempt.attempt.to_be_bytes());
     Ok(FederationBarkActionTransition {
         version: FEDERATION_BARK_OPERATION_VERSION,
         action_id: plan.action_id,
@@ -4884,10 +5124,10 @@ fn receive_preimage_disclosed_transition(
         phase: FederationBarkSemanticPhase::ReceivePreimageDisclosed,
         actor,
         plan_operation_id: accepted_plan.operation_id,
-        predecessor_operation_id: accepted_plan.operation_id,
+        predecessor_operation_id: custody_attempt.entry.operation_id,
         payment_hash: Some(intent.payment_hash),
-        attempt: plan.attempt,
-        signer_set: plan.signer_set.clone(),
+        attempt: custody_attempt.attempt,
+        signer_set: custody_attempt.signer_set.clone(),
         request_hash: plan_commitment,
         result_hash: bark_digest(&result)?,
         external_id: receive_external_id(
@@ -4908,6 +5148,7 @@ fn receive_claim_result(
     claim: &FederationLightningReceiveClaimPlan,
     outputs: Vec<bark::ark::vtxo::Vtxo<bark::ark::vtxo::Full>>,
     plan_commitment: FederationBarkDigest,
+    custody_attempt: &AcceptedCustodyAttempt,
 ) -> Result<FederatedBarkReceiveClaimResult, Error> {
     let output = plan.outputs.first().ok_or(Error::ReceiveClaimPlanInvalid)?;
     let mut artifacts = Vec::new();
@@ -4971,8 +5212,8 @@ fn receive_claim_result(
         action_id: plan.action_id,
         quote: intent.quote.clone(),
         payment_hash: intent.payment_hash,
-        attempt: plan.attempt,
-        signer_set: plan.signer_set.clone(),
+        attempt: custody_attempt.attempt,
+        signer_set: custody_attempt.signer_set.clone(),
         input_transitions,
         output_transitions,
         artifacts,

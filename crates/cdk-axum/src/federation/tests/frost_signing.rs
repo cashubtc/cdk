@@ -778,3 +778,45 @@ async fn bark_custody_transport_rotates_attempts_and_retries_exact_results() {
         .await
         .expect_err("stale delayed attempt must remain rejected");
 }
+
+#[test]
+fn bark_custody_authorization_tracks_attempt_across_durable_checkpoints() {
+    use cdk::federation::{FederationBarkActionKind as Kind, FederationBarkSemanticPhase as Phase};
+
+    let is_current = super::super::frost_signing::bark_custody_attempt_is_current;
+    assert!(is_current(
+        Kind::IncomingClaim,
+        Phase::SigningAttemptAdvanced,
+        Some(Phase::ClaimPlanned),
+        4,
+        4,
+    ));
+    assert!(is_current(
+        Kind::IncomingClaim,
+        Phase::ReceivePreimageDisclosed,
+        None,
+        4,
+        4,
+    ));
+    assert!(is_current(
+        Kind::EmergencyExit,
+        Phase::ExitRegistered,
+        None,
+        2,
+        2,
+    ));
+    assert!(!is_current(
+        Kind::IncomingClaim,
+        Phase::ReceivePreimageDisclosed,
+        None,
+        4,
+        3,
+    ));
+    assert!(!is_current(
+        Kind::IncomingClaim,
+        Phase::ReceiveClaimed,
+        None,
+        4,
+        4,
+    ));
+}

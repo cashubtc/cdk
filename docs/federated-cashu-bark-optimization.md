@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 5, and 6 complete; Milestone 2 rejected; Milestone 4A is next
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, and 6 complete; Milestone 2 rejected; Milestone 6A is next
 
 First recorded: 2026-07-20
 
@@ -845,9 +845,10 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 2 | Determine and implement the smallest safe Bark incoming/outgoing event wake, or reject it | Rejected | `9f0fe6467` |
 | 3 | Minimize consensus messages by deriving Cashu payment from accepted Bark result quorum | Complete | `f09a8d40d` |
 | 4 | Reduce excess Ark probes and observations with threshold-first polling and measured backoff | Complete | `c248a441f` |
-| 4A | Make accepted Bark custody signer plans recover safely from unavailable signers | Not started | - |
+| 4A | Make accepted Bark custody signer plans recover safely from unavailable signers | Complete | `fix: recover federated Bark signing from unavailable members` |
 | 5 | Remove duplicate wallet submissions and audit serial Bark operations | Complete | `4148162c7` |
 | 6 | Isolate Bark maintenance from payment hot paths and retire safely expired receives | Complete | `fix: isolate federated Bark maintenance from payments` |
+| 6A | Back off observer-worker failures so lagging members can catch up | Not started | - |
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Not started | - |
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Not started | - |
 
@@ -1811,42 +1812,52 @@ observer selection.
 - No preimage or claim transition was accepted, so the failure was safe but not
   live.
 
+The first implementation candidate exposed one additional adapter boundary:
+Bark wraps custody failures in its execution error, so downcasting the final
+error did not reliably retain the selected-signer failure class. The revised
+candidate records that class directly at the custody adapter and consumes it
+once at the owning execution boundary. It never parses error text or changes
+behavior based on Ark rate-limit responses. A failed refresh also proved that
+the accepted attempt must be copied into Bark's member-local round session;
+otherwise a later consensus-authorized retry finds the failed old round rather
+than creating a fresh custody session.
+
 ### Checklist
 
-- [ ] Trace signer-set construction, accepted plan validation, FROST session
+- [x] Trace signer-set construction, accepted plan validation, FROST session
       identity, attempt numbering, nonce lifecycle, and retry ownership for
       receive claims, outgoing sends, revocations, and maintenance.
-- [ ] Prove why the fixed signer set is required or replace it with an accepted,
+- [x] Prove why the fixed signer set is required or replace it with an accepted,
       deterministic roster/attempt plan that every member validates from the
       same operation data. Never select signers directly from local health
       observations.
-- [ ] Define a consensus-authorized timeout or failure transition that can move
+- [x] Define a consensus-authorized timeout or failure transition that can move
       to the next deterministic signer roster and a fresh attempt identifier.
-- [ ] Burn or quarantine every prior attempt's nonce commitments and shares;
+- [x] Burn or quarantine every prior attempt's nonce commitments and shares;
       never reuse them after timeout, restart, reorder, or catch-up.
-- [ ] Keep the action, quote, payment hash, amount, fee, source, output set, and
+- [x] Keep the action, quote, payment hash, amount, fee, source, output set, and
       external side-effect identity unchanged across signer retries.
-- [ ] Make an already-completed side effect idempotently discoverable before a
+- [x] Make an already-completed side effect idempotently discoverable before a
       replacement attempt can execute it.
-- [ ] Terminalize truly non-retryable sessions or expose a narrowly scoped,
+- [x] Terminalize truly non-retryable sessions or expose a narrowly scoped,
       authenticated operator recovery action with an explicit replay contract.
-- [ ] Reuse the existing action/plan machinery where it can express the safety
+- [x] Reuse the existing action/plan machinery where it can express the safety
       boundary; do not build a second generic retry scheduler.
 
 ### Tests
 
-- [ ] One initially selected signer offline: the next accepted deterministic
+- [x] One initially selected signer offline: the next accepted deterministic
       roster completes incoming claim and outgoing send.
-- [ ] Two unavailable signers leave the action safely pending with no preimage,
+- [x] Two unavailable signers leave the action safely pending with no preimage,
       signature, claim, payment, or revocation side effect.
-- [ ] Signer restart before and after commitment/share submission either
+- [x] Signer restart before and after commitment/share submission either
       resumes safely or advances once to a fresh attempt.
-- [ ] Actor crash, conflicting retry proposal, delayed old share, replay,
+- [x] Actor crash, conflicting retry proposal, delayed old share, replay,
       catch-up, and all-member restart cannot reuse a nonce or execute the side
       effect twice.
-- [ ] All members derive the same signer roster and attempt identifier from
+- [x] All members derive the same signer roster and attempt identifier from
       accepted data under reordered local notifications.
-- [ ] Healthy payments preserve their current signer count, operation count,
+- [x] Healthy payments preserve their current signer count, operation count,
       and latency within the 5% regression budget.
 
 ### Success criteria
@@ -1859,6 +1870,86 @@ observer selection.
   no duplicate Bark/Ark side effect.
 - The milestone is committed as
   `fix: recover federated Bark signing from unavailable members`.
+
+### Candidate findings and progress
+
+The candidate retains the original action plan and adds only one canonical
+`SigningAttemptAdvanced` transition. Signers are selected by a deterministic,
+threshold-sized cyclic window over the accepted member roster. A five-member,
+threshold-three federation therefore uses `[1,2,3]`, `[2,3,4]`, `[3,4,5]`,
+`[1,4,5]`, and `[1,2,5]`, then stops. The choice never reads a local health
+view. Every retry preserves the action, quote, payment hash, amounts, fees,
+inputs, outputs, request commitment, and external action identity while using
+a fresh FROST attempt/session. Participants accept only the current
+consensus-authorized attempt; delayed older requests remain rejected. Failed
+commitment collection uses the existing best-effort nonce abort, and durable
+participant state prevents an abandoned session from becoming reusable.
+
+The first live candidate safely reproduced the old failure: member 3 was
+paused, attempts against `[1,2,3]` remained non-retryable, and no preimage or
+claim was accepted. After preserving the custody failure class at the adapter,
+the same already-paid action recovered without a new invoice. Consensus
+accepted attempts 2, 3, and 4 in order; attempt 4 selected `[1,4,5]`, accepted
+`ReceivePreimageDisclosed` and `ReceiveClaimed`, marked the quote paid, and
+issued exactly 10,000 sats. Restarting the offline member caught it up from 3
+to 21 operations and restored identical order/application digests on all five
+members. The actor restart-to-success interval was about 24 seconds; the
+565-second quote duration includes the deliberate outage, diagnosis, rebuild,
+and restart and is not a payment-latency sample.
+
+The same accepted-attempt adapter is used by incoming claims, outgoing HTLC
+cosigning, failed-send revocation, refresh, and emergency exit. A refresh whose
+attempt-1 Bark round had failed accepted attempt 2, created one distinct Bark
+round instead of reopening the failed movement, and later completed through
+the authenticated exact-action retry. All five members applied the result and
+agreed on one spendable 10,000-sat replacement VTXO.
+
+The final release candidate then paid two 1,000-sat store invoices. The healthy
+control used attempt 1, the normal three signers, ten accepted operations, and
+completed in 33 seconds. In the fault sample member 3 was confirmed offline
+before quote creation. Attempts 1, 2, and 3 all included that member and failed
+without initiating the Lightning payment; consensus accepted each exact next
+roster. Attempt 4 selected `[1,4,5]`, paid the store once, reached
+`PaymentSucceeded`, and reduced the accepted Bark balance by exactly 1,025
+sats in 31 seconds. The recovery therefore added three explicit authorization
+operations but no measurable external-payment delay relative to the adjacent
+healthy control.
+
+The wallet command did not receive a final four-member aggregate response even
+though the fault payment and quote were durably paid. Restoring member 3 exposed
+a separate pre-existing scheduler failure: while the member was marked
+lagging, a due payment schedule retried its readiness error roughly every
+millisecond and delayed application catch-up. This is not signer-attempt state
+or duplicate Bark execution; it is isolated as Milestone 6A rather than folded
+into this recovery protocol. The earlier incoming recovery already proved
+offline-member journal/application catch-up and identical all-member digests.
+
+Decision: `Kept`. One deterministic roster pass is the smallest protocol that
+restores one-fault custody liveness while preserving consensus authorization.
+There is no local health election, timeout scheduler, error-string policy, or
+unbounded retry. Bark's relevant Ark cosign and round exchanges are explicitly
+idempotent; the accepted action identity stays fixed while only the custody
+session attempt changes.
+
+Focused validation currently passes:
+
+- canonical transition, bounded roster, and Bark operation tests: 20 passed;
+- complete `cdk-bark` federation test suite: 13 passed;
+- SQLite Bark projection persistence through retry and durable checkpoint: 1
+  passed;
+- FROST transport retry/idempotency/stale-attempt regression: 1 passed;
+- current-attempt validation across durable preimage and exit checkpoints: 1
+  passed; and
+- full serial `cdk-axum` `federation-bark` suite: 550 passed and 2 intentional
+  stress tests ignored; the two localhost-bind tests denied by the sandbox
+  passed separately with loopback permission; and
+- `cdk-axum` all-target `federation-bark` check and exact locked release
+  `cdk-mintd`/federation `cdk-cli` builds: passed.
+
+Temporary attempt tracing was removed before final validation. The retained
+failure classification is a one-shot adapter flag because Bark deliberately
+wraps custody errors; it is not performance instrumentation and contains no
+backend error text.
 
 ## Milestone 5: duplicate submission and serial-operation reduction
 
@@ -2182,6 +2273,54 @@ and all-target checking plus doc tests passed. The exact clean release binary
 also restarted the five-member state with identical member digests before
 routine post-payment refresh resumed.
 
+## Milestone 6A: observer-worker failure backoff and catch-up priority
+
+### Goal
+
+Prevent a payment schedule whose deadline is already due from hot-looping when
+the observer worker fails before it can claim and advance that schedule. This
+must remain a generic worker-health guard, not a Bark error parser or a second
+per-quote scheduler.
+
+### Current evidence
+
+After the Milestone 4A outgoing fault sample, the restored member correctly
+entered `lagging` while it had 11 accepted operations to apply. Its persisted
+payment deadline was already due. `scheduled_quotes` rejected the authoritative
+read before claiming the quote, `next_schedule_delay` continued returning zero,
+and the outer worker retried the same readiness error roughly every millisecond.
+The log grew to tens of megabytes and peer checkpoint publication timed out,
+delaying the catch-up work needed to clear the readiness error.
+
+### Checklist
+
+- [ ] Add one contained outer-worker failure delay; do not modify backend or
+      payment-method code.
+- [ ] Use a short exponential sequence that remains responsive after recovery
+      and caps at a quiet bounded interval.
+- [ ] Reset the worker failure sequence after any successful wake, including a
+      successful no-op.
+- [ ] Keep the persisted per-quote schedule as the only quote-age/backoff
+      authority.
+- [ ] Do not inspect error strings or special-case lagging, Ark, Bark, BDK, or
+      Lightning.
+- [ ] Prove repeated pre-claim errors do not spin, and recovery is noticed
+      within the first delay after the failing condition clears.
+- [ ] Restart the lagging live member and verify application/digest convergence
+      without duplicate payment or observation.
+- [ ] Remove temporary instrumentation before completion.
+
+### Success criteria
+
+- A persistent outer-worker failure produces the exact bounded retry sequence,
+  not an immediate loop.
+- Once the underlying condition clears, ordinary schedule processing resumes
+  and the failure counter resets without losing a wake.
+- The live offline-member sample catches up to identical journal, application,
+  materialized-state, Bark projection, and balance state.
+- The milestone is committed as
+  `fix: back off failed federation payment observer rounds`.
+
 ## Milestone 7: measured consensus timing evaluation
 
 ### Goal
@@ -2379,6 +2518,8 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | exact clean Milestone 4 release binaries | local release, five loopback members, SQLite, real Signet | one 1,000-sat outgoing success and all-member restart | store `PAID` in 23s; exact 25-sat fee; 10 accepted operations; three duplicate wallet items; 40 operations and identical digests on all members before and after restart; no temporary probe in binary | Final rebuild and replay confirm the retained source, cardinality, accounting, terminal cleanup, and convergence without disposable instrumentation |
 | 2026-07-21 | Milestone 5 designated wallet publication | local release plus controlled live five-member AlephBFT A/B | one incoming mint, three outgoing melts, five repeated direct-publication controls, and offline-primary fault injection | finalized identical wallet items 5 -> 1; application-bearing messages 164 -> 44 and bytes 176,300 -> 47,344 in the first recorded run; five-run median messages 168 -> 28, bytes 180,600 -> 30,128, and finality 2,137 -> 2,048ms; offline primary fell back after 3s with one item; real-flow duplicate counter stayed at 11 | Keep the generic `Mint`/`Melt`/`Swap` publisher coordinator. The slower external Signet interval preceded an explicit Ark outage and is not a controlled candidate regression; repeated isolated A/B had no median regression. No serial Bark boundary passed the safety-removal gate. |
 | 2026-07-21 | Milestone 6 maintenance isolation candidate | local release, fresh five-member loopback federation, SQLite, real Signet | five-minute idle window plus one 10,000-sat incoming success and clean restart | idle scans 300 -> 30 across five members in five minutes; a maintenance deadline during `ReceivePrepared` produced zero maintenance operations and zero custody actions; payment accepted 15 operations, zero duplicate items, completed Bark receive in 18.1s after detection, issued exactly 10,000 sats, and converged on all members; post-terminal refresh resumed | Keep one shared maintenance lease, payment-priority yield, safely expired receive retirement, and no-progress backoff. External payer processing dominated the 320s quote interval. Invalid reservations and non-retryable signer attempts remain exclusively in Milestone 4A rather than driving error-string policy. |
+| 2026-07-21 | Milestone 4A signer recovery | exact local release, five loopback members, one member offline, real Signet | recover one already-paid 10,000-sat incoming claim, one refresh, one healthy 1,000-sat outgoing control, and one 1,000-sat outgoing fault | incoming accepted attempts 2/3/4, selected `[1,4,5]`, issued exactly 10,000 sats, and reconverged after catch-up; refresh attempt 2 completed one replacement; healthy outgoing attempt 1 took 33s; offline outgoing attempts 1/2/3 failed safely, attempt 4 selected `[1,4,5]`, paid once in 31s, and charged exactly 1,025 sats | Keep the bounded consensus-authorized signer rotation. It restores one-fault custody liveness without local health selection, error-string policy, duplicate payment, or latency regression. |
+| 2026-07-21 | Milestone 6A discovery | exact local release, member restored after outgoing fault | restart and apply 11 accepted operations | journal catch-up reached the current 52-entry head, but a due schedule plus the member's `lagging` readiness error retried roughly every millisecond; logs grew to tens of megabytes and checkpoint publication timed out while application state remained 11 operations behind | Outer observer failure occurs before the persisted quote claim can advance its deadline. Add one generic in-memory worker failure backoff; retain the persisted schedule as the only per-quote authority. |
 
 ## Completion checklist
 
