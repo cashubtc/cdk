@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, and 6C complete; Milestone 2 rejected; Milestone 7 in progress
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, and 6C complete; Milestones 2 and 7 rejected; Milestone 8 in progress
 
 First recorded: 2026-07-20
 
@@ -851,8 +851,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 6A | Make accepted external-action actor leases replay-stable | Complete | `fix: make federated Bark actor leases replay-stable` |
 | 6B | Back off observer-worker failures so lagging members can recover quietly | Complete | `fix: back off failed federation payment observer rounds` |
 | 6C | Reconcile a paid federated melt after the wallet loses its aggregate response | Complete | `fix: retain ambiguous wallet melts for recovery` |
-| 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | In progress | - |
-| 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Not started | - |
+| 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Rejected | `docs: record Bark payment consensus timing evaluation` |
+| 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | In progress | - |
 
 ## Milestone 0: causal baseline
 
@@ -2525,18 +2525,20 @@ change.
 
 ### Checklist
 
-- [ ] Measure per-operation queue, proposal, first-unit, finality, application,
-      and response latency for active payment operations.
-- [ ] Count payload-bearing and empty units, items per unit, private messages,
-      bytes, retries, and CPU.
-- [ ] Confirm whether upstream active/idle delay, batching, or dissemination is
-      responsible; do not infer from a five-second constant alone.
-- [ ] Evaluate one parameter or algorithmic cause at a time under loopback and
-      injected transport delay.
-- [ ] Include idle, saturation, one-member-slow, one-member-offline, restart,
-      rotation, and catch-up cases.
-- [ ] Reject any candidate that amplifies empty/helper units, CPU, retries, or
-      idle work.
+- [x] Measure queue, data-provider pickup, first peer delivery, finality,
+      application, notification, and response with the existing test-only
+      per-operation recorder.
+- [x] Reuse the controlled Milestone 5 five-member A/B for payload items,
+      application-bearing private messages, bytes, and repeated finality.
+- [x] Compare consensus latency with healthy whole-payment latency before
+      changing global consensus parameters.
+- [x] Stop at the precondition gate: the measured consensus stage is not a
+      material remaining share, so loopback/injected-delay parameter trials
+      would optimize a non-bottleneck.
+- [x] Retain the already-tested idle, offline-primary, restart, rotation,
+      catch-up, slow/failed signer, and lagging-member behavior from Milestones
+      5, 4A, and 6A-6C; no new candidate exists to amplify helper units, CPU,
+      retries, or idle work.
 
 ### Success criteria
 
@@ -2548,6 +2550,47 @@ change.
   `perf: tune measured federation payment consensus latency`.
 - A rejected result is committed as
   `docs: record Bark payment consensus timing evaluation`.
+
+### Findings and decision
+
+The precondition for consensus tuning is false. A clean five-member loopback
+probe on the retained code recorded one operation at these boundaries:
+
+| Boundary | Elapsed from submission | Increment |
+| --- | ---: | ---: |
+| Queue | 0ms | - |
+| Data provider yielded the one payload | 109ms | 109ms |
+| First peer delivery | 117ms | 8ms |
+| First finality | 1,202ms | 1,085ms |
+| First apply-loop receipt | 1,220ms | 18ms |
+| First durable apply and notification | 1,224ms | 4ms |
+| Submitter response | 1,364ms | 140ms after first apply |
+
+The recorder is shared across the five in-process members, so it also observed
+five finality/apply paths and 32 operation-bearing private deliveries before
+the submitter returned. It is test-only instrumentation already present in the
+tree; no temporary or production instrumentation was added.
+
+More importantly, the controlled five-run Milestone 5 comparison already
+isolated the only retained consensus-traffic change. Designated publication
+reduced median application-bearing messages from 168 to 28 and bytes from
+180,600 to 30,128 while median finality improved from 2,137ms to 2,048ms. That
+2.048-second median is only 7.3% of the 28.190-second healthy incoming baseline
+and 8.5% of the 24-second healthy outgoing baseline. Even deleting the entire
+measured consensus interval could not meet this milestone's 15% improvement
+gate.
+
+The slower external Signet samples after designated publication coincided with
+an explicit public Ark outage and varied independently in the isolated A/B.
+They are not evidence that fewer messages added delay. Keep designated
+publication: it removes roughly 83% of median application traffic, produces
+one finalized data item instead of five, preserves the offline-primary
+fallback, and does not regress controlled finality.
+
+Decision: `Rejected` for any additional AlephBFT cadence or transport tuning.
+The remaining whole-payment delay is outside this already-small consensus
+stage, so changing global cadence, batching, or dissemination would add risk
+and complexity without evidence of a material Bark payment benefit.
 
 ## Milestone 8: sustained local and Signet release gate
 
@@ -2710,6 +2753,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | Milestone 6B retained candidate | exact local release, one member stopped while three unpaid-receive setup entries were ordered | lagging-member restart and catch-up | failed worker rounds waited 1/2/4s with reset on successful control wakes; all members reached 55/55 applied entries with identical digests and Bark projections; accounting and external movement counts were unchanged | Keep the contained 1s-to-30s outer worker backoff. It removes the exceptional hot loop without changing normal quote schedules, polling, or payment latency. |
 | 2026-07-21 | Milestone 6C discovery | same paid outgoing fault sample after all-member convergence | wallet lost aggregate melt response | mint and Bark state agree on one paid 1,025-sat spend, but the wallet retains an `UNPAID` quote and 8,975 locally unspent sats; `check-pending` finds nothing | The request was not durably represented in the wallet recovery state before the response was lost. Investigate one generic lost-response/saga repair path without resubmitting payment. |
 | 2026-07-21 | Milestone 6C retained candidate | exact local release CLI, five loopback members with one offline, real Signet | healthy 1,000-sat control plus client termination 10s after a second 1,000-sat melt submission | healthy CLI/store success in 50s; interrupted wallet retained one saga and 1,025 pending sats; store reached `PAID`; next CLI startup recovered one operation to exact 5,900-sat balance; journal remained 81 and melt operations remained four during recovery; all members converged after catch-up | Keep ambiguous `Unpaid`/`Unknown` melts pending until paid, failed, or expired. Recovery uses GET status only and cannot repeat the external payment. |
+| 2026-07-21 | Milestone 7 consensus timing gate | exact retained code, five-member loopback latency probe plus Milestone 5 controlled five-run A/B | one instrumented operation and repeated designated/direct publication comparison | probe submit-to-response 1,364ms: queue-to-provider 109ms, provider-to-first delivery 8ms, first-delivery-to-first-finality 1,085ms, first-finality-to-first-apply 22ms; designated median messages 168 -> 28, bytes 180,600 -> 30,128, finality 2,137 -> 2,048ms | Reject further global consensus tuning because controlled finality improved and is only 7.3-8.5% of healthy whole-payment latency. Keep designated publication; the slower external sample coincided with a public Ark outage, not the message reduction. |
 
 ## Completion checklist
 
