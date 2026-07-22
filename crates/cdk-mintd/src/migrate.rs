@@ -52,13 +52,21 @@ pub async fn run_migration(
                 anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
             })?;
             if verify_only {
-                cdk_postgres::migrate::verify_nutshell_migration(&pg_config.url, nutshell_db)
-                    .await
-                    .map_err(|e| anyhow!(e))?;
+                cdk_postgres::migrate::verify_nutshell_migration(
+                    &pg_config.url,
+                    pg_config.tls_mode.as_deref(),
+                    nutshell_db,
+                )
+                .await
+                .map_err(|e| anyhow!(e))?;
             } else {
-                cdk_postgres::migrate::migrate_from_nutshell(&pg_config.url, nutshell_db)
-                    .await
-                    .map_err(|e| anyhow!(e))?;
+                cdk_postgres::migrate::migrate_from_nutshell(
+                    &pg_config.url,
+                    pg_config.tls_mode.as_deref(),
+                    nutshell_db,
+                )
+                .await
+                .map_err(|e| anyhow!(e))?;
             }
         }
         #[cfg(not(feature = "sqlite"))]
