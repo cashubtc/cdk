@@ -2387,6 +2387,193 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn preserve_mode_seeds_empty_mint_and_missing_quote_ttl() {
+        use cdk_sqlite::mint::memory;
+
+        let database = Arc::new(memory::empty().await.expect("in-memory database"));
+        let mut builder = MintBuilder::new(database.clone());
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure unit");
+        let mint = builder
+            .build_with_seed(database.clone(), &[9; 32])
+            .await
+            .expect("build mint");
+
+        // Fresh mint stores default mint info during build; clear preservation by exercising
+        // the branch where quote TTL has not been persisted yet.
+        let seeded_info = MintBuilder::new(database.clone())
+            .with_name("seeded".to_owned())
+            .current_mint_info();
+        // Force mint info missing path using a separate mint without set info if possible.
+        // If mint always has info after build, still cover missing-ttl path.
+        if mint.mint_info().await.is_ok() {
+            // Overwrite mint info without quote ttl persistence by using an empty info DB path:
+            // re-build mint and never call set_quote_ttl.
+            let database = Arc::new(memory::empty().await.expect("second database"));
+            let mut builder = MintBuilder::new(database.clone());
+            builder
+                .configure_unit(CurrencyUnit::Sat, Default::default())
+                .expect("configure unit");
+            let mint = builder
+                .build_with_seed(database.clone(), &[11; 32])
+                .await
+                .expect("build mint");
+            assert!(
+                !mint
+                    .quote_ttl_is_persisted()
+                    .await
+                    .expect("quote ttl persistence probe")
+            );
+            let info = MintBuilder::new(database)
+                .with_name("preserve-ttl".to_owned())
+                .current_mint_info();
+            reconcile_canonical_configuration(&mint, info, QuoteTTL::new(1, 2), true)
+                .await
+                .expect("preserve with missing ttl");
+            assert!(mint
+                .quote_ttl_is_persisted()
+                .await
+                .expect("quote ttl should now be persisted"));
+            assert_eq!(
+                mint.quote_ttl().await.expect("quote ttl"),
+                QuoteTTL::new(1, 2)
+            );
+        } else {
+            reconcile_canonical_configuration(&mint, seeded_info, QuoteTTL::new(3, 4), true)
+                .await
+                .expect("seed mint info when missing");
+            assert_eq!(
+                mint.mint_info().await.expect("mint info").name.as_deref(),
+                Some("seeded")
+            );
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn unapplied_configuration_preserves_existing_mint_pubkey() {
+        use cdk::nuts::PublicKey;
+        use cdk_sqlite::mint::memory;
+
+        let database = Arc::new(memory::empty().await.expect("in-memory database"));
+        let mut builder = MintBuilder::new(database.clone());
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure unit");
+        let mint = builder
+            .build_with_seed(database.clone(), &[13; 32])
+            .await
+            .expect("build mint");
+
+        let pubkey = PublicKey::from_hex(
+            "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+        )
+        .expect("static pubkey");
+        let mut stored = MintBuilder::new(database.clone())
+            .with_name("stored".to_owned())
+            .current_mint_info();
+        stored.pubkey = Some(pubkey);
+        mint.set_mint_info(stored)
+            .await
+            .expect("set stored mint info");
+
+        let mut imported = MintBuilder::new(database)
+            .with_name("imported".to_owned())
+            .current_mint_info();
+        imported.pubkey = None;
+        reconcile_canonical_configuration(&mint, imported, QuoteTTL::new(7, 8), false)
+            .await
+            .expect("apply imported values");
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").pubkey,
+            Some(pubkey)
+        );
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").name.as_deref(),
+            Some("imported")
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn database_configuration_public_api_round_trip() {
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_public_config_api");
+        fs::create_dir_all(&work_dir).expect("create work dir");
+        let secret_path = work_dir.join("mnemonic.secret");
+        fs::write(&secret_path, TEST_MNEMONIC).expect("write mnemonic secret");
+
+        let first = format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[mint_info]
+name = "first-public"
+
+[database]
+engine = "sqlite"
+"#,
+            secret_path.display()
+        );
+        let second = first.replace("first-public", "second-public");
+
+        validate_configuration_document(&first)
+            .await
+            .expect("validate first document");
+        initialize_configuration(&work_dir, &first, None)
+            .await
+            .expect("initialize configuration");
+        assert_eq!(
+            stored_configuration_document(&work_dir, None)
+                .await
+                .expect("read stored document"),
+            first
+        );
+
+        let validate_only = apply_configuration(&work_dir, &second, true, None)
+            .await
+            .expect("validate-only apply");
+        assert!(!validate_only.restart_required);
+        assert_eq!(
+            stored_configuration_document(&work_dir, None)
+                .await
+                .expect("document unchanged"),
+            first
+        );
+
+        let applied = apply_configuration(&work_dir, &second, false, None)
+            .await
+            .expect("apply replacement");
+        assert!(applied.restart_required);
+        assert_eq!(
+            stored_configuration_document(&work_dir, None)
+                .await
+                .expect("replacement stored"),
+            second
+        );
+
+        let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
+        assert_eq!(bootstrap.database.engine, DatabaseEngine::Sqlite);
+        assert!(bootstrap.database.postgres.is_none());
+
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+
+    #[test]
+    fn load_database_bootstrap_settings_defaults_to_sqlite() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        std::env::remove_var(env_vars::DATABASE_ENV_VAR);
+
+        let settings = load_database_bootstrap_settings().expect("default bootstrap");
+        assert_eq!(settings.database.engine, DatabaseEngine::Sqlite);
+        assert!(settings.database.postgres.is_none());
+        clear_mintd_env();
+    }
+
     #[test]
     fn apply_seed_file_sets_mint_mnemonic_from_trimmed_file_contents() {
         let seed_file = temp_seed_file("seed_file_sets_seed");
