@@ -323,6 +323,24 @@ impl Wallet {
         Ok(quote.into())
     }
 
+    /// Get active mint quotes stored in the wallet.
+    ///
+    /// Returns mint quotes for this wallet's mint and unit that are not expired
+    /// and not yet issued.
+    pub async fn get_active_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+        let quotes = self.inner.get_active_mint_quotes().await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
+    /// Get unissued mint quotes stored in the wallet.
+    ///
+    /// Returns mint quotes for this wallet's mint and unit that have not yet
+    /// issued proofs.
+    pub async fn get_unissued_mint_quotes(&self) -> Result<Vec<MintQuote>, FfiError> {
+        let quotes = self.inner.get_unissued_mint_quotes().await?;
+        Ok(quotes.into_iter().map(Into::into).collect())
+    }
+
     /// Mint tokens.
     ///
     /// This writes newly issued proofs and saga state to the local store while
