@@ -337,7 +337,9 @@ mod tests {
             .await
             .expect("initialize configuration");
         assert!(matches!(
-            repository.replace("second".to_owned(), "other-signer").await,
+            repository
+                .replace("second".to_owned(), "other-signer")
+                .await,
             Err(ConfigStoreError::SigningIdentityMismatch)
         ));
         assert_eq!(
