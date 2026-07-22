@@ -3424,18 +3424,6 @@ async fn reconcile_federation_bark_runtime(
                 else {
                     continue;
                 };
-                let replay_stage = match transition.phase {
-                    cdk::federation::FederationBarkSemanticPhase::ReceiveHtlcsReady => {
-                        "receive_htlcs_ready"
-                    }
-                    cdk::federation::FederationBarkSemanticPhase::ReceivePreimageDisclosed => {
-                        "receive_preimage_disclosed"
-                    }
-                    cdk::federation::FederationBarkSemanticPhase::ReceiveClaimed => {
-                        "receive_claimed"
-                    }
-                    _ => unreachable!("receive replay phase was matched above"),
-                };
                 let replay = match transition.phase {
                     cdk::federation::FederationBarkSemanticPhase::ReceiveHtlcsReady => {
                         runtime
@@ -3467,12 +3455,7 @@ async fn reconcile_federation_bark_runtime(
                     }
                     _ => unreachable!("receive replay phase was matched above"),
                 };
-                if let Err(error) = replay {
-                    tracing::warn!(
-                        stage = replay_stage,
-                        error = %error,
-                        "Federated Bark accepted receive transition replay failed"
-                    );
+                if replay.is_err() {
                     runtime
                         .mark_degraded(cdk_bark::FederatedBarkDegradedReason::RecoveryRequired)
                         .await;

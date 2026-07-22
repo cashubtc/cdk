@@ -51,7 +51,7 @@ use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::{CurrencyUnit, MeltQuoteState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 
 use crate::{
     CdkFrostVtxoCustody, Error, FederatedBarkCustodyClient, FederatedBarkLimits,
@@ -238,10 +238,6 @@ pub struct FederatedBarkRuntime {
     wallet: FederationWallet,
     custody: Arc<CdkFrostVtxoCustody>,
     receive_secrets: Arc<FederatedBarkReceiveSecretStore>,
-    // Bark receive replay and terminal acknowledgement are multi-step local
-    // projection mutations. Keep every such operation mutually exclusive so
-    // acknowledgement cannot remove a checkpoint inside a replay await gap.
-    receive_projection: Mutex<()>,
     health: RwLock<RuntimeHealth>,
 }
 
@@ -253,7 +249,6 @@ impl fmt::Debug for FederatedBarkRuntime {
             .field("limits", &self.limits)
             .field("wallet", &"<member-local Bark projection>")
             .field("receive_secrets", &"<encrypted member-local store>")
-            .field("receive_projection", &"<serialized receive projection>")
             .field("health", &"<bounded runtime status>")
             .finish()
     }
@@ -359,7 +354,6 @@ impl FederatedBarkRuntime {
             wallet,
             custody,
             receive_secrets,
-            receive_projection: Mutex::new(()),
             health: RwLock::new(RuntimeHealth {
                 local_frontier: 0,
                 degraded_reason: None,
@@ -2309,7 +2303,6 @@ impl FederatedBarkRuntime {
         intent: &FederationBarkReceiveIntent,
         prepared: &FederationBarkReceivePrepared,
     ) -> Result<(), Error> {
-        let _receive_projection_guard = self.receive_projection.lock().await;
         prepared
             .validate_against_intent(intent)
             .map_err(|_| Error::ReceiveProjectionFailed)?;
@@ -2369,21 +2362,12 @@ impl FederatedBarkRuntime {
         prepared: &FederationBarkReceivePrepared,
         accepted_ready: &FederationJournalEntry,
     ) -> Result<(), Error> {
-        let _receive_projection_guard = self.receive_projection.lock().await;
         if accepted_ready.status() != FederationOperationStatus::Applied {
-            tracing::warn!(
-                stage = "htlcs_ready_status",
-                "Federated Bark receive HTLC replay validation failed"
-            );
             return Err(Error::ReceiveClaimPlanInvalid);
         }
         let FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition)) =
             &accepted_ready.envelope.operation
         else {
-            tracing::warn!(
-                stage = "htlcs_ready_operation_kind",
-                "Federated Bark receive HTLC replay validation failed"
-            );
             return Err(Error::ReceiveClaimPlanInvalid);
         };
         if transition.phase != FederationBarkSemanticPhase::ReceiveHtlcsReady
@@ -2393,30 +2377,11 @@ impl FederatedBarkRuntime {
             || transition.predecessor_operation_id != prepared_operation_id
             || transition.payment_hash != Some(intent.payment_hash)
         {
-            tracing::warn!(
-                stage = "htlcs_ready_binding",
-                "Federated Bark receive HTLC replay validation failed"
-            );
             return Err(Error::ReceiveClaimPlanInvalid);
         }
-        let receive = self.receive_plan(intent, prepared).map_err(|error| {
-            tracing::warn!(
-                stage = "htlcs_ready_receive_plan",
-                error = %error,
-                "Federated Bark receive HTLC replay validation failed"
-            );
-            error
-        })?;
+        let receive = self.receive_plan(intent, prepared)?;
         let evidence =
-            receive_htlc_evidence_from_transition(&self.wallet, &receive, intent, transition)
-                .map_err(|error| {
-                    tracing::warn!(
-                        stage = "htlcs_ready_evidence",
-                        error = %error,
-                        "Federated Bark receive HTLC replay validation failed"
-                    );
-                    error
-                })?;
+            receive_htlc_evidence_from_transition(&self.wallet, &receive, intent, transition)?;
         self.wallet
             .apply_lightning_receive_htlc_replay(&receive, &evidence.vtxos)
             .await
@@ -2449,7 +2414,6 @@ impl FederatedBarkRuntime {
         )>,
         Error,
     > {
-        let _receive_projection_guard = self.receive_projection.lock().await;
         if observation_epoch == 0 {
             return Err(Error::ReceiveObservationFailed);
         }
@@ -2532,7 +2496,6 @@ impl FederatedBarkRuntime {
         prepared: &FederationBarkReceivePrepared,
         accepted: &FederationBarkMemberObservation,
     ) -> Result<FederationBarkActionTransition, Error> {
-        let _receive_projection_guard = self.receive_projection.lock().await;
         if accepted.action_id != intent.action_id
             || accepted.quote.as_deref() != Some(intent.quote.as_str())
             || accepted.observer != self.member_id
@@ -2576,7 +2539,6 @@ impl FederatedBarkRuntime {
         ready_operation_id: FederationOperationId,
         proposal: FederatedBarkReceiveClaimProposal,
     ) -> Result<FederationBarkActionPlan, Error> {
-        let _receive_projection_guard = self.receive_projection.lock().await;
         let receive = self.receive_plan(intent, prepared)?;
         let evidence = self
             .wallet
@@ -2684,17 +2646,6 @@ impl FederatedBarkRuntime {
     /// Reconstruct and compare every field of an incoming claim plan before it
     /// can authorize FROST or virtual MuSig2.
     pub async fn validate_receive_claim_plan(
-        &self,
-        intent: &FederationBarkReceiveIntent,
-        prepared: &FederationBarkReceivePrepared,
-        plan: &FederationBarkActionPlan,
-    ) -> Result<FederationLightningReceiveClaimPlan, Error> {
-        let _receive_projection_guard = self.receive_projection.lock().await;
-        self.validate_receive_claim_plan_inner(intent, prepared, plan)
-            .await
-    }
-
-    async fn validate_receive_claim_plan_inner(
         &self,
         intent: &FederationBarkReceiveIntent,
         prepared: &FederationBarkReceivePrepared,
@@ -2822,7 +2773,6 @@ impl FederatedBarkRuntime {
         prepared: &FederationBarkReceivePrepared,
         accepted_plan: &FederationJournalEntry,
     ) -> Result<(), Error> {
-        let _receive_projection_guard = self.receive_projection.lock().await;
         let plan = accepted_claim_plan(accepted_plan)?;
         let (receive, claim) = self.accepted_receive_claim_plan(intent, prepared, plan)?;
         if let Some(certified_ready) = certified_receive_htlc_transition(plan)? {
@@ -2835,14 +2785,7 @@ impl FederatedBarkRuntime {
             self.wallet
                 .apply_lightning_receive_htlc_replay(&receive, &evidence.vtxos)
                 .await
-                .map_err(|error| {
-                    tracing::warn!(
-                        stage = "claim_plan_certified_htlcs",
-                        error = %error,
-                        "Federated Bark receive-claim replay failed"
-                    );
-                    Error::ReceiveClaimRecoveryRequired
-                })?;
+                .map_err(|_| Error::ReceiveClaimRecoveryRequired)?;
         }
         self.wallet
             .apply_lightning_receive_claim_replay(
@@ -2852,14 +2795,7 @@ impl FederatedBarkRuntime {
                 &[],
             )
             .await
-            .map_err(|error| {
-                tracing::warn!(
-                    stage = "claim_plan_htlcs_ready",
-                    error = %error,
-                    "Federated Bark receive-claim replay failed"
-                );
-                Error::ReceiveClaimRecoveryRequired
-            })
+            .map_err(|_| Error::ReceiveClaimRecoveryRequired)
     }
 
     /// Replay an accepted preimage-disclosure or terminal claim transition
@@ -2871,41 +2807,18 @@ impl FederatedBarkRuntime {
         accepted_plan: &FederationJournalEntry,
         accepted_transition: &FederationJournalEntry,
     ) -> Result<(), Error> {
-        let _receive_projection_guard = self.receive_projection.lock().await;
-        let plan = accepted_claim_plan(accepted_plan).map_err(|error| {
-            tracing::warn!(
-                stage = "claim_transition_plan_entry",
-                error = %error,
-                "Federated Bark receive-claim transition validation failed"
-            );
-            error
-        })?;
+        let plan = accepted_claim_plan(accepted_plan)?;
         if accepted_transition.status() != FederationOperationStatus::Applied {
-            tracing::warn!(
-                stage = "claim_transition_status",
-                "Federated Bark receive-claim transition validation failed"
-            );
             return Err(Error::ReceiveClaimPlanInvalid);
         }
         let FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition)) =
             &accepted_transition.envelope.operation
         else {
-            tracing::warn!(
-                stage = "claim_transition_operation_kind",
-                "Federated Bark receive-claim transition validation failed"
-            );
             return Err(Error::ReceiveClaimPlanInvalid);
         };
         let expected_signers =
-            federation_bark_signer_set_for_attempt(&self.federation, transition.attempt).map_err(
-                |_| {
-                    tracing::warn!(
-                        stage = "claim_transition_signer_set",
-                        "Federated Bark receive-claim transition validation failed"
-                    );
-                    Error::ReceiveClaimPlanInvalid
-                },
-            )?;
+            federation_bark_signer_set_for_attempt(&self.federation, transition.attempt)
+                .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
         if transition.action_id != plan.action_id
             || transition.quote.as_deref() != plan.quote.as_deref()
             || transition.plan_operation_id != accepted_plan.operation_id
@@ -2913,73 +2826,30 @@ impl FederatedBarkRuntime {
             || transition.attempt < plan.attempt
             || transition.signer_set != expected_signers
         {
-            tracing::warn!(
-                stage = "claim_transition_binding",
-                "Federated Bark receive-claim transition validation failed"
-            );
             return Err(Error::ReceiveClaimPlanInvalid);
         }
-        let (phase, stage) = match transition.phase {
-            FederationBarkSemanticPhase::ReceivePreimageDisclosed => (
-                FederationLightningReceivePhase::PreimageRevealed,
-                "preimage_disclosed",
-            ),
-            FederationBarkSemanticPhase::ReceiveClaimed => {
-                (FederationLightningReceivePhase::Claimed, "claimed")
+        let phase = match transition.phase {
+            FederationBarkSemanticPhase::ReceivePreimageDisclosed => {
+                FederationLightningReceivePhase::PreimageRevealed
             }
-            _ => {
-                tracing::warn!(
-                    stage = "claim_transition_phase",
-                    "Federated Bark receive-claim transition validation failed"
-                );
-                return Err(Error::ReceiveClaimPlanInvalid);
-            }
+            FederationBarkSemanticPhase::ReceiveClaimed => FederationLightningReceivePhase::Claimed,
+            _ => return Err(Error::ReceiveClaimPlanInvalid),
         };
-        let (receive, claim) = self
-            .accepted_receive_claim_plan(intent, prepared, plan)
-            .map_err(|error| {
-                tracing::warn!(
-                    stage = "claim_transition_plan_reconstruction",
-                    error = %error,
-                    "Federated Bark receive-claim transition validation failed"
-                );
-                error
-            })?;
+        let (receive, claim) = self.accepted_receive_claim_plan(intent, prepared, plan)?;
         let outputs = if phase == FederationLightningReceivePhase::Claimed {
-            receive_claim_outputs(transition, &claim).map_err(|error| {
-                tracing::warn!(
-                    stage = "claim_transition_output_reconstruction",
-                    error = %error,
-                    "Federated Bark receive-claim transition validation failed"
-                );
-                error
-            })?
+            receive_claim_outputs(transition, &claim)?
         } else {
             Vec::new()
         };
         self.wallet
             .apply_lightning_receive_claim_replay(&receive, &claim, phase, &outputs)
             .await
-            .map_err(|error| {
-                tracing::warn!(
-                    stage,
-                    error = %error,
-                    "Federated Bark receive-claim transition replay failed"
-                );
-                Error::ReceiveClaimRecoveryRequired
-            })?;
+            .map_err(|_| Error::ReceiveClaimRecoveryRequired)?;
         if phase == FederationLightningReceivePhase::Claimed {
             self.wallet
                 .acknowledge_lightning_receive_claim(&receive)
                 .await
-                .map_err(|error| {
-                    tracing::warn!(
-                        stage = "claimed_acknowledgement",
-                        error = %error,
-                        "Federated Bark receive-claim transition replay failed"
-                    );
-                    Error::ReceiveClaimRecoveryRequired
-                })?;
+                .map_err(|_| Error::ReceiveClaimRecoveryRequired)?;
         }
         Ok(())
     }
@@ -2995,7 +2865,6 @@ impl FederatedBarkRuntime {
         accepted_plan: FederationJournalEntry,
         accepted_authorization: FederationJournalEntry,
     ) -> Result<FederatedBarkReceiveClaimOutcome, Error> {
-        let _receive_projection_guard = self.receive_projection.lock().await;
         if accepted_plan.status() != FederationOperationStatus::Applied {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
@@ -3005,7 +2874,7 @@ impl FederatedBarkRuntime {
             return Err(Error::ReceiveClaimPlanInvalid);
         };
         let claim = self
-            .validate_receive_claim_plan_inner(intent, prepared, plan)
+            .validate_receive_claim_plan(intent, prepared, plan)
             .await?;
         let receive = self.receive_plan(intent, prepared)?;
         let operation = FederationBarkOperation::ActionPlan(plan.clone());
@@ -3134,7 +3003,6 @@ impl FederatedBarkRuntime {
         intent: &FederationBarkReceiveIntent,
         prepared: &FederationBarkReceivePrepared,
     ) -> Result<(), Error> {
-        let _receive_projection_guard = self.receive_projection.lock().await;
         let receive = self.receive_plan(intent, prepared)?;
         self.wallet
             .acknowledge_lightning_receive_claim(&receive)
@@ -3587,34 +3455,6 @@ const fn send_quote_state_is_replayable(state: MeltQuoteState) -> bool {
 mod tests {
     use super::*;
 
-    const REPLAY_TEST_INVOICE: &str = "lntbs100u1p5j0x82sp5d0rwfh7tgrrlwsegy9rx3tzpt36cqwjqza5x4wvcjxjzscfaf6jspp5d8q7354dg3p8h0kywhqq5dq984r8f5en98hf9ln85ug0w8fx6hhsdqqcqzpc9qyysgqyk54v7tpzprxll7e0jyvtxcpgwttzk84wqsfjsqvcdtq47zt2wssxsmtjhz8dka62mdnf9jafhu3l4cpyfnsx449v4wstrwzzql2w5qqs8uh7p";
-
-    fn replay_test_receive_checkpoint(action_id: &str) -> bark::actions::WalletActionCheckpoint {
-        let invoice = REPLAY_TEST_INVOICE
-            .parse::<bark::ark::lightning::Bolt11Invoice>()
-            .expect("valid replay test invoice");
-        bark::actions::WalletActionCheckpoint::LightningReceive(
-            bark::actions::lightning::receive::LightningReceive {
-                action_id: Some(action_id.to_owned()),
-                federation_request_commitment: None,
-                federation_cashu_amount_sat: None,
-                federation_receive_fee_bound_sat: None,
-                federation_minimum_net_amount_sat: None,
-                federation_policy_version: None,
-                custody_session: None,
-                explicit_anti_dos: None,
-                mailbox_id: None,
-                payment_hash: PaymentHash::from(&invoice),
-                invoice,
-                payment_preimage: Preimage::from([42; 32]),
-                htlc_recv_cltv_delta: 18,
-                anti_dos_token: None,
-                key_index: 0,
-                progress: bark::actions::lightning::receive::Progress::AwaitingPayment,
-            },
-        )
-    }
-
     #[test]
     fn accepted_send_quotes_replay_after_terminal_resolution() {
         assert!(send_quote_state_is_replayable(MeltQuoteState::Pending));
@@ -3626,7 +3466,17 @@ mod tests {
 
     #[test]
     fn legacy_receive_hash_is_accepted_only_without_a_certificate() {
-        let stored = bark_digest(b"legacy").expect("legacy digest");
+        let evidence = bark::federation::FederationLightningReceiveHtlcEvidence {
+            action_id: FederationActionId::from_bytes([1; 32]).expect("action id"),
+            payment_hash: PaymentHash::from([2; 32]),
+            destination: VtxoKeyLocator { index: 3 },
+            gross_amount: bitcoin::Amount::from_sat(1_000),
+            net_amount: bitcoin::Amount::from_sat(1_000),
+            fee: bitcoin::Amount::ZERO,
+            minimum_expiry: 42,
+            vtxos: Vec::new(),
+        };
+        let stored = legacy_receive_htlc_evidence_hash(&evidence).expect("legacy digest");
         let current = bark_digest(b"current").expect("current digest");
         let unrelated = bark_digest(b"unrelated").expect("unrelated digest");
 
@@ -3663,109 +3513,6 @@ mod tests {
             ),
             Error::CustodySignerUnavailable
         ));
-    }
-
-    #[tokio::test]
-    async fn receive_projection_guard_prevents_terminal_checkpoint_replay_race() {
-        use bark::persist::adaptor::StorageAdaptorWrapper;
-        use bark::persist::BarkPersister;
-
-        let action_id = "federation.receive-replay-race".to_string();
-        let checkpoint = replay_test_receive_checkpoint(&action_id);
-
-        // Reproduce the production interleaving without the runtime guard:
-        // replay materializes the base checkpoint, terminal acknowledgement
-        // deletes it during the awaited reconstruction window, and replay's
-        // second read observes the exact production error.
-        let unguarded_db: Arc<dyn BarkPersister> = Arc::new(StorageAdaptorWrapper::new_memory());
-        let materialized = Arc::new(tokio::sync::Notify::new());
-        let removed = Arc::new(tokio::sync::Notify::new());
-        let replay = tokio::spawn({
-            let db = Arc::clone(&unguarded_db);
-            let action_id = action_id.clone();
-            let checkpoint = checkpoint.clone();
-            let materialized = Arc::clone(&materialized);
-            let removed = Arc::clone(&removed);
-            async move {
-                db.upsert_wallet_action_checkpoint(&action_id, &checkpoint)
-                    .await
-                    .expect("materialize receive checkpoint");
-                materialized.notify_one();
-                removed.notified().await;
-                db.get_wallet_action_checkpoint(&action_id)
-                    .await
-                    .expect("reload receive checkpoint")
-                    .ok_or_else(|| anyhow::anyhow!("accepted receive is not materialized"))
-            }
-        });
-        let cleanup = tokio::spawn({
-            let db = Arc::clone(&unguarded_db);
-            let action_id = action_id.clone();
-            let materialized = Arc::clone(&materialized);
-            let removed = Arc::clone(&removed);
-            async move {
-                materialized.notified().await;
-                db.remove_wallet_action_checkpoint(&action_id)
-                    .await
-                    .expect("acknowledge terminal receive");
-                removed.notify_one();
-            }
-        });
-        cleanup.await.expect("cleanup task");
-        let error = replay
-            .await
-            .expect("replay task")
-            .expect_err("unguarded replay must reproduce the missing checkpoint");
-        assert_eq!(error.to_string(), "accepted receive is not materialized");
-
-        // The runtime's receive-projection mutex makes the same operations
-        // mutually exclusive. Cleanup can run immediately after replay, but
-        // never between its materialization and second read.
-        let guarded_db: Arc<dyn BarkPersister> = Arc::new(StorageAdaptorWrapper::new_memory());
-        let receive_projection = Arc::new(Mutex::new(()));
-        let materialized = Arc::new(tokio::sync::Notify::new());
-        let guarded_replay = tokio::spawn({
-            let db = Arc::clone(&guarded_db);
-            let receive_projection = Arc::clone(&receive_projection);
-            let action_id = action_id.clone();
-            let checkpoint = checkpoint.clone();
-            let materialized = Arc::clone(&materialized);
-            async move {
-                let _guard = receive_projection.lock().await;
-                db.upsert_wallet_action_checkpoint(&action_id, &checkpoint)
-                    .await
-                    .expect("materialize guarded receive checkpoint");
-                materialized.notify_one();
-                tokio::task::yield_now().await;
-                db.get_wallet_action_checkpoint(&action_id)
-                    .await
-                    .expect("reload guarded receive checkpoint")
-                    .ok_or_else(|| anyhow::anyhow!("accepted receive is not materialized"))
-            }
-        });
-        let guarded_cleanup = tokio::spawn({
-            let db = Arc::clone(&guarded_db);
-            let receive_projection = Arc::clone(&receive_projection);
-            let action_id = action_id.clone();
-            let materialized = Arc::clone(&materialized);
-            async move {
-                materialized.notified().await;
-                let _guard = receive_projection.lock().await;
-                db.remove_wallet_action_checkpoint(&action_id)
-                    .await
-                    .expect("acknowledge guarded terminal receive");
-            }
-        });
-        guarded_replay
-            .await
-            .expect("guarded replay task")
-            .expect("guarded replay retains its checkpoint");
-        guarded_cleanup.await.expect("guarded cleanup task");
-        assert!(guarded_db
-            .get_wallet_action_checkpoint(&action_id)
-            .await
-            .expect("load acknowledged guarded checkpoint")
-            .is_none());
     }
 }
 
@@ -5365,20 +5112,13 @@ fn receive_htlc_evidence_from_transition(
     }
     let evidence = wallet
         .reconstruct_lightning_receive_htlc_evidence(plan, vtxos)
-        .map_err(|error| {
-            tracing::warn!(
-                stage = "evidence_wallet_reconstruction",
-                error = %error,
-                "Federated Bark receive HTLC evidence reconstruction failed"
-            );
-            Error::ReceiveClaimPlanInvalid
-        })?;
+        .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
     let mut request = b"cdk/bark/receive-htlc-request/v1".to_vec();
     request.extend_from_slice(&transition.plan_operation_id.to_bytes());
     request.extend_from_slice(&intent.action_id.to_bytes());
     request.extend_from_slice(&intent.destination.index.to_be_bytes());
     request.extend_from_slice(&evidence.minimum_expiry.to_be_bytes());
-    let expected_result_hash = federation_bark_receive_htlc_package_hash(
+    let current_result_hash = federation_bark_receive_htlc_package_hash(
         evidence.minimum_expiry,
         transition.request_hash,
         &transition.vtxo_transitions,
@@ -5388,29 +5128,11 @@ fn receive_htlc_evidence_from_transition(
     let legacy_result_hash = legacy_receive_htlc_evidence_hash(&evidence)?;
     if !receive_htlc_result_hash_matches(
         transition.result_hash,
-        expected_result_hash,
+        current_result_hash,
         legacy_result_hash,
         transition.evidence_certificate.is_none(),
-    ) {
-        tracing::warn!(
-            stage = "evidence_result_hash",
-            "Federated Bark receive HTLC evidence reconstruction failed"
-        );
-        return Err(Error::ReceiveClaimPlanInvalid);
-    }
-    if transition.result_hash == legacy_result_hash
-        && transition.result_hash != expected_result_hash
+    ) || transition.request_hash != bark_digest(&request)?
     {
-        tracing::info!(
-            stage = "evidence_result_hash_legacy",
-            "Federated Bark receive HTLC evidence matched its legacy commitment"
-        );
-    }
-    if transition.request_hash != bark_digest(&request)? {
-        tracing::warn!(
-            stage = "evidence_request_hash",
-            "Federated Bark receive HTLC evidence reconstruction failed"
-        );
         return Err(Error::ReceiveClaimPlanInvalid);
     }
     Ok(evidence)
