@@ -22,7 +22,10 @@ use super::{connect_client, MintPgDatabase, PgConfig};
 
 const MAX_SUPPORTED_NUTSHELL_VERSION: &str = "0.20.2";
 const SUPPORTED_NUTSHELL_SCHEMA_VERSION: i32 = 36;
-const CHUNK_SIZE: i64 = 2000;
+// Nutshell readers use OFFSET pagination, whose cost grows with every page.
+// Large pages keep that overhead bounded while remaining comfortably below the
+// memory available in the documented 6 GiB migration environment.
+const CHUNK_SIZE: i64 = 100_000;
 
 enum MigratedPromise {
     Signature(PublicKey, BlindSignature, Option<QuoteId>, Id, u64),
@@ -974,6 +977,9 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
     // 2. Setup target database connection
     let db_config = PgConfig::new(cdk_db_url, None, Some(20), Some(10));
     let db = MintPgDatabase::new(db_config).await?;
+    // VACUUM cannot run inside the migration transactions. Reuse one dedicated
+    // target connection so keyset_amounts can be compacted at chunk boundaries.
+    let maintenance = connect_for_verification(cdk_db_url).await?;
 
     // 3. Pre-flight checks on target database population
     let existing_keyset_infos = db.get_keyset_infos().await?;
@@ -1067,6 +1073,8 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
         }
 
         offset += CHUNK_SIZE;
+        tx.commit().await?;
+        tx = MintDatabase::begin_transaction(&db).await?;
     }
     tracing::info!("Migrated mint quotes successfully.");
 
@@ -1081,6 +1089,8 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
         }
 
         offset += CHUNK_SIZE;
+        tx.commit().await?;
+        tx = MintDatabase::begin_transaction(&db).await?;
     }
     tracing::info!("Migrated melt quotes successfully.");
 
@@ -1134,6 +1144,12 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
         }
 
         offset += CHUNK_SIZE;
+        tx.commit().await?;
+        maintenance
+            .batch_execute("VACUUM keyset_amounts")
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        tx = MintDatabase::begin_transaction(&db).await?;
     }
     tracing::info!("Migrated promises successfully.");
 
@@ -1163,6 +1179,12 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
             }
 
             offset += CHUNK_SIZE;
+            tx.commit().await?;
+            maintenance
+                .batch_execute("VACUUM keyset_amounts")
+                .await
+                .map_err(|e| Error::Database(Box::new(e)))?;
+            tx = MintDatabase::begin_transaction(&db).await?;
         }
     }
     tracing::info!("Migrated proofs successfully.");
