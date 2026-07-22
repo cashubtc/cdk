@@ -954,8 +954,11 @@ slower measured policy.
 
 ## Milestone status
 
-Allowed states are `Not started`, `In progress`, `Complete`, `Rejected`, and
-`Deferred`.
+Allowed states are `Not started`, `In progress`, `Interrupted — resume`,
+`Complete`, `Rejected`, and `Deferred`. `Interrupted — resume` means tested
+work is committed at an explicit handoff boundary, but the milestone has not
+passed its full evidence gate and must not be treated as retained production
+behavior yet.
 
 | Milestone | Goal | Status | Commit |
 | --- | --- | --- | --- |
@@ -981,7 +984,7 @@ Allowed states are `Not started`, `In progress`, `Complete`, `Rejected`, and
 | 11A | Keep routine Bark maintenance out of active payment paths | Complete | `d44bf71b3` |
 | 11B | Scope Bark predecessor conflicts by action lineage | Complete | `a59e9e6d3` |
 | 12 | Batch simultaneous private custody-signing items per signer and phase | Deferred | docs-only evaluation |
-| 13 | Remove duplicate outgoing status probes and use one bounded actor-first terminal wait | Not started | — |
+| 13 | Remove duplicate outgoing status probes and use one bounded actor-first terminal wait | Interrupted — resume | `perf: stage actor-first Bark outgoing status` |
 | 14 | Reduce wallet melt fan-out with threshold-first requests and fast hedging | Not started | — |
 | 15 | Certify outgoing success, failure, and recovered-result quorums | Not started | — |
 | 15A | Combine certified outgoing failure with revocation authorization if the pre-signing boundary remains explicit | Not started | — |
@@ -3990,14 +3993,14 @@ still independently applies and validates the accepted success.
 - [ ] Measure facade calls and underlying Ark RPC attempts separately for at
       least three successful, three multi-round pending, and three terminal
       failure samples; revert the temporary counters before completion.
-- [ ] Introduce one typed status result and remove the split failure/success
+- [x] Introduce one typed status result and remove the split failure/success
       query that makes the actor check the same payment twice.
-- [ ] On success, accept only a preimage matching the planned invoice; retain
+- [x] On success, accept only a preimage matching the planned invoice; retain
       all four independent result applications and observations.
 - [ ] On a first failure indication, activate enough deterministic observers
       to obtain three independent matching failures. Never accept actor-only
       failure evidence.
-- [ ] Activate one deterministic fallback terminal observer after a bounded
+- [x] Activate one deterministic fallback terminal observer after a bounded
       actor deadline without granting that observer initiation authority.
 - [ ] Evaluate at most one bounded `CheckLightningPayment(wait=true)` request
       per quote under an explicit global connection budget. It must not block
@@ -4005,8 +4008,93 @@ still independently applies and validates the accepted success.
 - [ ] If the waiting request adds head-of-line blocking, connection pressure,
       or special recovery machinery, reject only that subcandidate and retain
       the typed actor-first polling improvement.
-- [ ] Keep the shared persisted backoff as the fallback. Do not inspect error
+- [x] Keep the shared persisted backoff as the fallback. Do not inspect error
       text, reset no-progress state on wallet traffic, or add another timer.
+
+### Interrupted handoff — 2026-07-22
+
+Status: **Interrupted — resume.** The work below is committed as a tested
+candidate, not as a completed or retained milestone. Do not start Milestone 14
+from this state and do not deploy this candidate to Nocean before completing
+the remaining Milestone 13 gates.
+
+The current candidate is deliberately contained to the Bark runtime and the
+existing outgoing observer selection:
+
+- `FederatedBarkSendTerminalStatus` carries one actor poll result as
+  `Pending`, a preimage-verified success transition, or one member's failure
+  observation. The old actor failure poll followed by a second success poll is
+  gone.
+- With no accepted failure, only the accepted actor polls initially. The
+  existing persisted six-second observer-fallback deadline admits exactly one
+  deterministic failure-only observer and never expands farther on a healthy
+  path.
+- After the first accepted failure observation, selection returns to the
+  existing three-member independent-failure threshold and its deterministic
+  liveness expansion. The candidate does not make one actor or one fallback
+  authoritative for failure.
+- Success still verifies that the preimage hashes to the planned invoice and
+  still enters the unchanged four-member independent result-application path.
+  No accepted operation, timer, scheduler, error-text rule, or payment-specific
+  backoff was added.
+
+The completed local A/B used release binaries, fresh five-member loopback
+federations, SQLite, real Signet payments, automatic refresh disabled only in
+the disposable run, and three 1,000-sat successful melts per side. Every
+sample was multi-round pending before success:
+
+| Measure | Control | Candidate | Change |
+| --- | ---: | ---: | ---: |
+| Wallet-visible seconds | 44 / 45 / 38 | 43 / 39 / 30 | median 44 -> 39 (-11.4%); max 45 -> 43 (-4.4%) |
+| Terminal-status facade calls | 12 / 12 / 8 | 5 / 5 / 3 | 32 -> 13 (-59.4%) |
+| Total Ark-facing attempts, counting HTLC setup as three | 16 / 16 / 12 | 9 / 9 / 7 | 44 -> 25 (-43.2%) |
+| Status-stage seconds | 18.4 / 16.8 / 6.6 | 18.6 / 14.7 / 5.6 | median -12.5%; max +1.1% |
+
+The candidate therefore demonstrates a large request-pressure reduction and
+no whole-payment p95/max regression, but it has **not** passed the declared
+15% status-stage p95 improvement gate. No `Kept` or `Rejected` decision has
+been made. A separate candidate attempt was excluded: its first payment
+succeeded, while the second retried before payment initiation at HTLC setup
+for more than five minutes. The persisted backoff spaced those retries and the
+run was stopped; none of that interval exercised the terminal-status code.
+
+Correctness evidence completed before interruption:
+
+- all 17 `cdk-bark` tests passed;
+- all five focused Bark observer-selection tests passed, including actor-only
+  round zero, exactly one bounded fallback, and threshold re-expansion after a
+  first failure;
+- the candidate compiled through `cdk-bark`, `cdk-axum`, and the release mint;
+- a full parallel `cdk-axum` run did not complete because one unrelated deep
+  Aleph recovery test exhausted the default test-thread stack and one timing
+  probe failed under concurrent load. The timing probe passed alone, and the
+  recovery test passed alone with an 8 MiB test-thread stack.
+
+Temporary call counters have been removed from source, both disposable
+federations are stopped, and no invoice, payment hash, preimage, private
+configuration, wallet secret, or machine-specific path is recorded here.
+
+Resume in this order:
+
+1. Start from the interruption commit and review the four-file candidate; do
+   not reimplement the typed result or observer selector.
+2. Add contained regression coverage for one-call immediate success, repeated
+   pending across restart, actor loss before/during/after response, one false
+   failure, three matching failures, and concurrent quotes. Introduce a small
+   mockable status seam only if those tests cannot be expressed without it.
+3. Re-add identifier-free temporary counters and obtain at least three real or
+   faithful terminal-failure/revocation samples, including exact call counts,
+   restored value, and convergence. Remove the counters again.
+4. Evaluate `wait=true` only with an explicit global connection budget and no
+   sequential-worker head-of-line blocking. The current Bark facade uses
+   `wait=false`; the likely outcome is to reject this subcandidate and keep
+   persisted polling, but that decision is not complete.
+5. Re-run equivalent success/pending samples if needed, count accepted
+   operations, run restart and actor-fault gates, and decide `Kept` or
+   `Rejected` against both the request-efficiency evidence and the declared
+   latency budgets. Then update this section, remove all instrumentation, run
+   the final formatting/lint/test gates, and create the milestone-completion
+   commit.
 
 ### Tests
 
@@ -4404,6 +4492,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-22 | Milestone 11A payment-priority guard | fresh local release federation, SQLite, browser-faucet fallback, one incoming followed immediately by one outgoing | incoming issued exactly 1,500 sats in eight core operations with no intervening refresh; outgoing paid once in 23s with an exact 25-sat fee and ten operations; five members converged at 18 applied entries; routine planning resumed after 30s without another Ark call | Keep the bounded pre-plan/recheck guard. The resumed refresh was rejected by a pre-existing cross-lineage `Predecessor` conflict, isolated as Milestone 11B; no incompatible key-format draft or temporary diagnostics remain. |
 | 2026-07-22 | Milestone 11B action-scoped predecessor conflicts | fresh local release federation, SQLite, reusable CLI Signet payer, exact incoming and outgoing cycle, all-member restart | the negative-control run passed journal admission but failed the old global SQL uniqueness constraint; after the matching SQL fix, operation 25 admitted the refresh on all members, restart produced five observations at operations 26-30, all journals converged at 31 entries, and only one member started one Bark refresh movement | Keep the direct cut-through `(action_id, predecessor_operation_id)` invariant in both domain and SQL. The public Ark round remained pending beyond the bounded observation window, so claim admission, replay, and exactly-one start only—not terminal materialization or a latency win. |
 | 2026-07-22 | Milestone 12 preliminary custody-batching evaluation | 25 accepted action plans across retained local runs, prior failed-send sample, endpoint metrics, temporary test-only wire probe | 21/25 plans had one input, but ordinary one-input incoming claims still used two virtual-MuSig items; each extra signed envelope added about 402-405 bytes while item validation and cryptography remained; the current Bark API awaits one item at a time | Defer at the user's direction. Reopen after higher-impact outgoing work or representative multi-item demand, starting with an explicit Bark custody batch API rather than a CDK timer or collector. No instrumentation or production code remains. |
+| 2026-07-22 | Milestone 13 interrupted candidate | local release, fresh five-member loopback federations, SQLite, real Signet, three control and three candidate outgoing successes | terminal-status calls 32 -> 13 (-59.4%); total Ark-facing attempts 44 -> 25 (-43.2%); wallet-visible median 44s -> 39s and max 45s -> 43s; status-stage median improved 12.5% while max regressed 1.1% | Commit the contained typed actor-first candidate for later resumption, but make no keep/reject decision: terminal-failure, restart/fault, connection-budget, accepted-operation, and 15% status-p95 gates remain open; temporary counters were removed and local federations stopped. |
 
 ## Completion checklist
 

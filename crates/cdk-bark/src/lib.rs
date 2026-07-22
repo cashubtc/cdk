@@ -39,7 +39,7 @@ pub use self::runtime::{
     FederatedBarkDegradedReason, FederatedBarkExitOutcome, FederatedBarkReadiness,
     FederatedBarkReceiveClaimOutcome, FederatedBarkReceiveClaimProposal,
     FederatedBarkReceiveClaimResult, FederatedBarkRefreshOutcome, FederatedBarkRuntime,
-    FederatedBarkRuntimeStatus, FederatedBarkSendProposal,
+    FederatedBarkRuntimeStatus, FederatedBarkSendProposal, FederatedBarkSendTerminalStatus,
 };
 #[cfg(feature = "federation-bark")]
 pub use self::secret_store::{
