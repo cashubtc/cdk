@@ -878,11 +878,7 @@ engine = "sqlite"
         };
         assert!(same_primary_database(&left, &right));
         let mut different = right.clone();
-        different
-            .postgres
-            .as_mut()
-            .expect("postgres")
-            .url = "postgresql://b".to_owned();
+        different.postgres.as_mut().expect("postgres").url = "postgresql://b".to_owned();
         assert!(!same_primary_database(&left, &different));
         assert!(!same_primary_database(
             &left,

@@ -2421,12 +2421,10 @@ mod tests {
                 .build_with_seed(database.clone(), &[11; 32])
                 .await
                 .expect("build mint");
-            assert!(
-                !mint
-                    .quote_ttl_is_persisted()
-                    .await
-                    .expect("quote ttl persistence probe")
-            );
+            assert!(!mint
+                .quote_ttl_is_persisted()
+                .await
+                .expect("quote ttl persistence probe"));
             let info = MintBuilder::new(database)
                 .with_name("preserve-ttl".to_owned())
                 .current_mint_info();
