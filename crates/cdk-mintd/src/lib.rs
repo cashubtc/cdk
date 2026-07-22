@@ -2503,6 +2503,11 @@ mod tests {
         let secret_path = work_dir.join("mnemonic.secret");
         fs::write(&secret_path, TEST_MNEMONIC).expect("write mnemonic secret");
 
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_string());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password: Option<String> = None;
+
         let first = format!(
             r#"
 [info]
@@ -2521,33 +2526,33 @@ engine = "sqlite"
         validate_configuration_document(&first)
             .await
             .expect("validate first document");
-        initialize_configuration(&work_dir, &first, None)
+        initialize_configuration(&work_dir, &first, password.clone())
             .await
             .expect("initialize configuration");
         assert_eq!(
-            stored_configuration_document(&work_dir, None)
+            stored_configuration_document(&work_dir, password.clone())
                 .await
                 .expect("read stored document"),
             first
         );
 
-        let validate_only = apply_configuration(&work_dir, &second, true, None)
+        let validate_only = apply_configuration(&work_dir, &second, true, password.clone())
             .await
             .expect("validate-only apply");
         assert!(!validate_only.restart_required);
         assert_eq!(
-            stored_configuration_document(&work_dir, None)
+            stored_configuration_document(&work_dir, password.clone())
                 .await
                 .expect("document unchanged"),
             first
         );
 
-        let applied = apply_configuration(&work_dir, &second, false, None)
+        let applied = apply_configuration(&work_dir, &second, false, password.clone())
             .await
             .expect("apply replacement");
         assert!(applied.restart_required);
         assert_eq!(
-            stored_configuration_document(&work_dir, None)
+            stored_configuration_document(&work_dir, password)
                 .await
                 .expect("replacement stored"),
             second
