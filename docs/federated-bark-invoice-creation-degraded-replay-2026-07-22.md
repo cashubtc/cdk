@@ -3,7 +3,9 @@
 Date: 2026-07-22
 
 Status: root cause confirmed from code history and production replay evidence.
-The minimal backward-compatible verifier is implemented and locally tested.
+The minimal backward-compatible verifier is implemented, locally tested, and
+deployed with preserved state. All five members passed strict federation health
+and reported Bark ready at the same accepted frontier with zero lag.
 
 Scope: five-member Nocean federation using the federated Bark BOLT11 backend.
 
@@ -203,9 +205,10 @@ cargo clippy -p cdk-bark --features federation-bark --lib -- -D warnings
 ```
 
 Production preserved-state validation confirmed that the three historical
-receive commitments pass the legacy verifier. Strict federation readiness may
-still fail because of the separate outgoing send-plan replay issue; that does
-not invalidate the incoming commitment reproduction or fix.
+receive commitments pass the legacy verifier. The cleaned deployment then
+passed strict readiness on all five members at accepted frontier 122 with zero
+Bark lag. The existing outgoing payment remained at its previously accepted
+ambiguous phase; the deployment did not alter or special-case it.
 
 ## Acceptance criteria
 
