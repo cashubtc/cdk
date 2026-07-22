@@ -34,6 +34,13 @@ pub mod mint_quote;
 #[cfg(feature = "mint")]
 pub mod payment;
 pub mod pub_sub;
+/// Client-side request rate limiting (GCRA token bucket + HTTP transport
+/// decorator).
+///
+/// Needs `wallet` for the KV-store persistence backend and `http` for the
+/// `Transport` trait it decorates.
+#[cfg(all(feature = "wallet", feature = "http"))]
+pub mod rate_limit;
 #[cfg(feature = "mint")]
 pub mod state;
 pub mod subscription;
