@@ -12,8 +12,9 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
 use cdk_common::{
-    Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, MeltQuoteState,
-    MintQuoteState, PaymentMethod, Proof, PublicKey, SecretKey, State as ProofState,
+    Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, KeySet, Keys,
+    MeltQuoteState, MintQuoteState, PaymentMethod, Proof, PublicKey, SecretKey,
+    State as ProofState,
 };
 use chrono::NaiveDateTime;
 
@@ -142,7 +143,11 @@ pub async fn verify_nutshell_migration(
         ))));
     }
 
-    let source_accounting = pg_pairs(&source, "SELECT quote || ':' || COALESCE(amount_paid, 0)::text, COALESCE(amount_issued, 0)::bigint FROM mint_quotes ORDER BY quote").await?;
+    let source_accounting = pg_pairs(
+        &source,
+        "SELECT quote || ':' || COALESCE(amount_paid, CASE WHEN lower(state) IN ('paid', 'issued') THEN amount ELSE 0 END)::text, COALESCE(amount_issued, CASE WHEN lower(state) = 'issued' THEN amount ELSE 0 END)::bigint FROM mint_quotes ORDER BY quote",
+    )
+    .await?;
     let target_accounting = pg_pairs(
         &target,
         "SELECT id || ':' || amount_paid::text, amount_issued::bigint FROM mint_quote ORDER BY id",
@@ -332,6 +337,67 @@ async fn read_keysets_postgres(
         });
     }
     Ok(keysets)
+}
+
+async fn verify_keyset_id(
+    client: &tokio_postgres::Client,
+    keyset: &MintKeySetInfo,
+) -> Result<(), Error> {
+    let rows = client
+        .query(
+            "SELECT amount::text, pubkey FROM pubkeys WHERE id = $1 ORDER BY amount",
+            &[&keyset.id.to_string()],
+        )
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let configured_amounts: HashSet<u64> = keyset.amounts.iter().copied().collect();
+    let keys = rows
+        .into_iter()
+        .map(|row| {
+            let amount = row
+                .get::<_, String>(0)
+                .parse::<u64>()
+                .map_err(|e| Error::Database(Box::new(e)))?;
+            Ok((amount, row.get::<_, String>(1)))
+        })
+        .collect::<Result<Vec<_>, Error>>()?
+        .into_iter()
+        .filter(|(amount, _)| configured_amounts.contains(amount))
+        .map(|(amount, public_key)| {
+            let public_key = PublicKey::from_hex(&public_key).map_err(|e| {
+                Error::Database(Box::new(std::io::Error::other(format!(
+                    "Invalid public key for keyset {} amount {amount}: {e}",
+                    keyset.id
+                ))))
+            })?;
+            Ok((Amount::from(amount), public_key))
+        })
+        .collect::<Result<BTreeMap<_, _>, Error>>()?;
+
+    if keys.len() != configured_amounts.len() {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Keyset {} has {} configured denominations but {} corresponding public keys",
+            keyset.id,
+            configured_amounts.len(),
+            keys.len()
+        )))));
+    }
+
+    KeySet {
+        id: keyset.id,
+        unit: keyset.unit.clone(),
+        active: Some(keyset.active),
+        keys: Keys::new(keys),
+        input_fee_ppk: keyset.input_fee_ppk,
+        final_expiry: keyset.final_expiry,
+    }
+    .verify_id()
+    .map_err(|e| {
+        Error::Database(Box::new(std::io::Error::other(format!(
+            "Keyset {} public keys do not match its stored id: {e}",
+            keyset.id
+        ))))
+    })
 }
 
 async fn read_mint_quotes_chunk_postgres(
@@ -885,6 +951,7 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
 
     let max_v = parse_nutshell_version(MAX_SUPPORTED_NUTSHELL_VERSION).unwrap_or((0, 20, 1));
     for keyset in &nutshell_keysets {
+        verify_keyset_id(&client, keyset).await?;
         if let Some(ref version_str) = keyset.issuer_version {
             let ver_clean = version_str.to_string().replace("nutshell/", "");
             if let Some(keyset_v) = parse_nutshell_version(&ver_clean) {
@@ -1182,8 +1249,6 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
         "Migration complete: Nutshell mint has been fully and successfully migrated to CDK!"
     );
 
-    verify_nutshell_migration(cdk_db_url, nutshell_db_url).await?;
-
     Ok(())
 }
 
@@ -1209,7 +1274,7 @@ pub async fn migrate_from_nutshell(cdk_db_url: &str, nutshell_db_url: &str) -> R
     drop(target);
 
     match migrate_from_nutshell_into(cdk_db_url, nutshell_db_url).await {
-        Ok(()) => Ok(()),
+        Ok(()) => verify_nutshell_migration(cdk_db_url, nutshell_db_url).await,
         Err(error) => {
             let cleanup = connect_for_verification(cdk_db_url).await?;
             cleanup
