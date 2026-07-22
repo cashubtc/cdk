@@ -5345,22 +5345,38 @@ fn receive_htlc_evidence_from_transition(
     }
     let evidence = wallet
         .reconstruct_lightning_receive_htlc_evidence(plan, vtxos)
-        .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+        .map_err(|error| {
+            tracing::warn!(
+                stage = "evidence_wallet_reconstruction",
+                error = %error,
+                "Federated Bark receive HTLC evidence reconstruction failed"
+            );
+            Error::ReceiveClaimPlanInvalid
+        })?;
     let mut request = b"cdk/bark/receive-htlc-request/v1".to_vec();
     request.extend_from_slice(&transition.plan_operation_id.to_bytes());
     request.extend_from_slice(&intent.action_id.to_bytes());
     request.extend_from_slice(&intent.destination.index.to_be_bytes());
     request.extend_from_slice(&evidence.minimum_expiry.to_be_bytes());
-    if transition.result_hash
-        != federation_bark_receive_htlc_package_hash(
-            evidence.minimum_expiry,
-            transition.request_hash,
-            &transition.vtxo_transitions,
-            &transition.artifacts,
-        )
-        .map_err(|_| Error::ReceiveClaimPlanInvalid)?
-        || transition.request_hash != bark_digest(&request)?
-    {
+    let expected_result_hash = federation_bark_receive_htlc_package_hash(
+        evidence.minimum_expiry,
+        transition.request_hash,
+        &transition.vtxo_transitions,
+        &transition.artifacts,
+    )
+    .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+    if transition.result_hash != expected_result_hash {
+        tracing::warn!(
+            stage = "evidence_result_hash",
+            "Federated Bark receive HTLC evidence reconstruction failed"
+        );
+        return Err(Error::ReceiveClaimPlanInvalid);
+    }
+    if transition.request_hash != bark_digest(&request)? {
+        tracing::warn!(
+            stage = "evidence_request_hash",
+            "Federated Bark receive HTLC evidence reconstruction failed"
+        );
         return Err(Error::ReceiveClaimPlanInvalid);
     }
     Ok(evidence)
