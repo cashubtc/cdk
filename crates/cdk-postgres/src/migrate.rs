@@ -85,8 +85,11 @@ async fn validate_melt_quote_lookup_ids(client: &tokio_postgres::Client) -> Resu
     Ok(())
 }
 
-async fn connect_for_verification(url: &str) -> Result<tokio_postgres::Client, Error> {
-    connect_client(url)
+async fn connect_for_verification(
+    url: &str,
+    tls_mode: Option<&str>,
+) -> Result<tokio_postgres::Client, Error> {
+    connect_client(url, tls_mode)
         .await
         .map_err(|e| Error::Database(Box::new(e)))
 }
@@ -119,10 +122,11 @@ async fn pg_liabilities(
 /// Independently verify an already migrated Nutshell 0.20.2 Postgres database.
 pub async fn verify_nutshell_migration(
     cdk_db_url: &str,
+    cdk_tls_mode: Option<&str>,
     nutshell_db_url: &str,
 ) -> Result<(), Error> {
-    let source = connect_for_verification(nutshell_db_url).await?;
-    let target = connect_for_verification(cdk_db_url).await?;
+    let source = connect_for_verification(nutshell_db_url, None).await?;
+    let target = connect_for_verification(cdk_db_url, cdk_tls_mode).await?;
     validate_nutshell_schema(&source).await?;
 
     for (source_table, target_table) in [
@@ -925,11 +929,15 @@ async fn read_pending_melt_requests_postgres(
     Ok(requests)
 }
 
-async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> Result<(), Error> {
+async fn migrate_from_nutshell_into(
+    cdk_db_url: &str,
+    cdk_tls_mode: Option<&str>,
+    nutshell_db_url: &str,
+) -> Result<(), Error> {
     tracing::info!("Starting nutshell database migration...");
 
     // Connect to source database
-    let client = connect_client(nutshell_db_url)
+    let client = connect_client(nutshell_db_url, None)
         .await
         .map_err(|e| Error::Database(Box::new(e)))?;
 
@@ -975,11 +983,11 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
     }
 
     // 2. Setup target database connection
-    let db_config = PgConfig::new(cdk_db_url, None, Some(20), Some(10));
+    let db_config = PgConfig::new(cdk_db_url, cdk_tls_mode, Some(20), Some(10));
     let db = MintPgDatabase::new(db_config).await?;
     // VACUUM cannot run inside the migration transactions. Reuse one dedicated
     // target connection so keyset_amounts can be compacted at chunk boundaries.
-    let maintenance = connect_for_verification(cdk_db_url).await?;
+    let maintenance = connect_for_verification(cdk_db_url, cdk_tls_mode).await?;
 
     // 3. Pre-flight checks on target database population
     let existing_keyset_infos = db.get_keyset_infos().await?;
@@ -1275,10 +1283,14 @@ async fn migrate_from_nutshell_into(cdk_db_url: &str, nutshell_db_url: &str) -> 
 }
 
 /// Migrates a Nutshell database to an empty CDK Postgres database.
-pub async fn migrate_from_nutshell(cdk_db_url: &str, nutshell_db_url: &str) -> Result<(), Error> {
-    let db_config = PgConfig::new(cdk_db_url, None, Some(20), Some(10));
+pub async fn migrate_from_nutshell(
+    cdk_db_url: &str,
+    cdk_tls_mode: Option<&str>,
+    nutshell_db_url: &str,
+) -> Result<(), Error> {
+    let db_config = PgConfig::new(cdk_db_url, cdk_tls_mode, Some(20), Some(10));
     let _initialized_target = MintPgDatabase::new(db_config).await?;
-    let target = connect_for_verification(cdk_db_url).await?;
+    let target = connect_for_verification(cdk_db_url, cdk_tls_mode).await?;
     for table in [
         "keyset",
         "mint_quote",
@@ -1295,10 +1307,10 @@ pub async fn migrate_from_nutshell(cdk_db_url: &str, nutshell_db_url: &str) -> R
     }
     drop(target);
 
-    match migrate_from_nutshell_into(cdk_db_url, nutshell_db_url).await {
-        Ok(()) => verify_nutshell_migration(cdk_db_url, nutshell_db_url).await,
+    match migrate_from_nutshell_into(cdk_db_url, cdk_tls_mode, nutshell_db_url).await {
+        Ok(()) => verify_nutshell_migration(cdk_db_url, cdk_tls_mode, nutshell_db_url).await,
         Err(error) => {
-            let cleanup = connect_for_verification(cdk_db_url).await?;
+            let cleanup = connect_for_verification(cdk_db_url, cdk_tls_mode).await?;
             cleanup
                 .batch_execute(
                     "TRUNCATE TABLE keyset, mint_quote, melt_quote, blind_signature, proof, keyset_amounts CASCADE",

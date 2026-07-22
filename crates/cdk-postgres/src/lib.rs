@@ -153,9 +153,9 @@ fn ssl_mode_from_config(tls_mode: Option<&str>, url: &str) -> SslMode {
     }
 }
 
-pub(crate) async fn connect_client(url: &str) -> Result<Client, PgError> {
+pub(crate) async fn connect_client(url: &str, tls_mode: Option<&str>) -> Result<Client, PgError> {
     let (_, url) = PgConfig::strip_schema(url);
-    match ssl_mode_from_url(&url) {
+    match ssl_mode_from_config(tls_mode, &url) {
         SslMode::NativeTls(tls) => {
             let (client, connection) = connect(&url, tls).await?;
             tokio::spawn(async move {
@@ -498,5 +498,20 @@ mod test {
             !rendered.contains("hunter2secret"),
             "PgConfig Debug leaked the DB password: {rendered}"
         );
+    }
+
+    #[test]
+    fn explicit_tls_mode_takes_precedence_over_url() {
+        assert!(matches!(
+            ssl_mode_from_config(Some("require"), "host=localhost dbname=cdk"),
+            SslMode::NativeTls(_)
+        ));
+        assert!(matches!(
+            ssl_mode_from_config(
+                Some("disable"),
+                "postgres://localhost/cdk?sslmode=require"
+            ),
+            SslMode::NoTls(_)
+        ));
     }
 }
