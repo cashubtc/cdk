@@ -18,7 +18,7 @@ use crate::{column_as_nullable_string, column_as_number, column_as_string, unpac
 pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error> {
     unpack_into!(
         let (
-            keyset_id, amount, c, dleq_e, dleq_s
+            keyset_id, amount, c, dleq_e, dleq_s, metadata
         ) = row
     );
 
@@ -34,12 +34,17 @@ pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignat
     };
 
     let amount: u64 = column_as_number!(amount);
+    let metadata = column_as_nullable_string!(metadata)
+        .map(|value| serde_json::from_str(&value))
+        .transpose()
+        .map_err(|err| Error::Internal(err.to_string()))?;
 
     Ok(BlindSignature {
         amount: Amount::from(amount),
         keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
         dleq,
+        metadata,
     })
 }
 
@@ -99,9 +104,9 @@ where
                     query(
                         r#"
                         INSERT INTO blind_signature
-                        (blinded_message, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time, signed_time, order_index)
+                        (blinded_message, amount, keyset_id, c, quote_id, dleq_e, dleq_s, metadata, created_time, signed_time, order_index)
                         VALUES
-                        (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time, :signed_time, :order_index)
+                        (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :metadata, :created_time, :signed_time, :order_index)
                         "#,
                     )?
                     .bind("blinded_message", message.to_bytes().to_vec())
@@ -116,6 +121,15 @@ where
                     .bind(
                         "dleq_s",
                         signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
+                    )
+                    .bind(
+                        "metadata",
+                        signature
+                            .metadata
+                            .as_ref()
+                            .map(serde_json::to_string)
+                            .transpose()
+                            .map_err(|err| Error::Internal(err.to_string()))?,
                     )
                     .bind("created_time", current_time as i64)
                     .bind("signed_time", current_time as i64)
@@ -144,7 +158,7 @@ where
                             query(
                                 r#"
                                 UPDATE blind_signature
-                                SET c = :c, dleq_e = :dleq_e, dleq_s = :dleq_s, signed_time = :signed_time, amount = :amount
+                                SET c = :c, dleq_e = :dleq_e, dleq_s = :dleq_s, metadata = :metadata, signed_time = :signed_time, amount = :amount
                                 WHERE blinded_message = :blinded_message
                                 "#,
                             )?
@@ -156,6 +170,15 @@ where
                             .bind(
                                 "dleq_s",
                                 signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
+                            )
+                            .bind(
+                                "metadata",
+                                signature
+                                    .metadata
+                                    .as_ref()
+                                    .map(serde_json::to_string)
+                                    .transpose()
+                                    .map_err(|err| Error::Internal(err.to_string()))?,
                             )
                             .bind("blinded_message", message.to_bytes().to_vec())
                             .bind("signed_time", current_time as i64)
@@ -217,6 +240,7 @@ where
                 c,
                 dleq_e,
                 dleq_s,
+                metadata,
                 blinded_message
             FROM
                 blind_signature
@@ -274,6 +298,7 @@ where
                 c,
                 dleq_e,
                 dleq_s,
+                metadata,
                 blinded_message
             FROM
                 blind_signature
@@ -323,7 +348,8 @@ where
                 amount,
                 c,
                 dleq_e,
-                dleq_s
+                dleq_s,
+                metadata
             FROM
                 blind_signature
             WHERE
@@ -355,7 +381,8 @@ where
                 amount,
                 c,
                 dleq_e,
-                dleq_s
+                dleq_s,
+                metadata
             FROM
                 blind_signature
             WHERE

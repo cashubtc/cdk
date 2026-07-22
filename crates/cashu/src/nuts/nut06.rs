@@ -337,6 +337,10 @@ pub struct Nuts {
     #[serde(rename = "29")]
     #[serde(skip_serializing_if = "nut29::Settings::is_empty")]
     pub nut29: nut29::Settings,
+    /// NUT342 Settings
+    #[serde(default)]
+    #[serde(rename = "342")]
+    pub nut342: super::nut342::Settings,
 }
 
 impl Nuts {
@@ -458,6 +462,14 @@ impl Nuts {
     pub fn nut29(self, settings: nut29::Settings) -> Self {
         Self {
             nut29: settings,
+            ..self
+        }
+    }
+
+    /// Nut342 settings
+    pub fn nut342(self, supported: bool) -> Self {
+        Self {
+            nut342: super::nut342::Settings { supported },
             ..self
         }
     }

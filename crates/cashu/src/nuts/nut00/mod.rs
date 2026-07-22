@@ -241,6 +241,9 @@ pub struct BlindedMessage {
     /// <https://github.com/cashubtc/nuts/blob/main/11.md>
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub witness: Option<Witness>,
+    /// Optional NUT-keyed metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<super::nut342::Metadata>,
 }
 
 impl BlindedMessage {
@@ -252,6 +255,7 @@ impl BlindedMessage {
             keyset_id,
             blinded_secret,
             witness: None,
+            metadata: None,
         }
     }
 
@@ -284,6 +288,9 @@ pub struct BlindSignature {
     /// <https://github.com/cashubtc/nuts/blob/main/12.md>
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dleq: Option<BlindSignatureDleq>,
+    /// Metadata accepted with the corresponding blinded message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<super::nut342::Metadata>,
 }
 
 impl Ord for BlindSignature {
@@ -942,6 +949,9 @@ pub struct PreMint {
     pub r: SecretKey,
     /// Amount
     pub amount: Amount,
+    /// NUT-13 derivation index for deterministic secrets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derivation_index: Option<u32>,
 }
 
 #[cfg(feature = "wallet")]
@@ -1000,6 +1010,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -1027,6 +1038,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -1053,6 +1065,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount: Amount::ZERO,
+                derivation_index: None,
             })
         }
 
@@ -1138,6 +1151,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r: rs,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -1172,6 +1186,7 @@ impl PreMintSecrets {
                 blinded_message,
                 r,
                 amount,
+                derivation_index: None,
             });
         }
 
@@ -2077,6 +2092,7 @@ mod tests {
             )
             .unwrap(),
             dleq: None,
+            metadata: None,
         };
         let sig2 = BlindSignature {
             amount: Amount::from(20),
@@ -2086,6 +2102,7 @@ mod tests {
             )
             .unwrap(),
             dleq: None,
+            metadata: None,
         };
         let sig3 = BlindSignature {
             amount: Amount::from(10),
@@ -2095,6 +2112,7 @@ mod tests {
             )
             .unwrap(),
             dleq: None,
+            metadata: None,
         };
 
         // Test partial_cmp

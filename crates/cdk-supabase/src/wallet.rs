@@ -2728,6 +2728,8 @@ struct ProofTable {
     state: String,
     spending_condition: Option<String>,
     unit: String,
+    #[serde(default)]
+    derivation_index: Option<i64>,
     amount: i64,
     keyset_id: String,
     secret: String,
@@ -2767,6 +2769,7 @@ impl TryInto<ProofInfo> for ProofTable {
                 .transpose()?,
             unit: CurrencyUnit::from_str(&self.unit)
                 .map_err(|_| DatabaseError::Internal("Invalid unit".into()))?,
+            derivation_index: self.derivation_index.map(|index| index as u32),
             proof: cdk_common::Proof {
                 amount: cdk_common::Amount::from(self.amount as u64),
                 keyset_id: Id::from_str(&self.keyset_id)
@@ -2822,6 +2825,7 @@ impl TryFrom<ProofInfo> for ProofTable {
                 .map(|s| serde_json::to_string(&s))
                 .transpose()?,
             unit: p.unit.to_string(),
+            derivation_index: p.derivation_index.map(i64::from),
             amount: p.proof.amount.to_u64() as i64,
             keyset_id: p.proof.keyset_id.to_string(),
             secret: p.proof.secret.to_string(),

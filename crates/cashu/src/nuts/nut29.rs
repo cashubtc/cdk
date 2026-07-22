@@ -153,6 +153,7 @@ mod tests {
             keyset_id: Id::from_str("009a1f293253e41e").unwrap(),
             blinded_secret: secret_key.public_key(),
             witness: None,
+            metadata: None,
         }
     }
 
@@ -162,6 +163,7 @@ mod tests {
             keyset_id: Id::from_str("009a1f293253e41e").expect("valid keyset id"),
             blinded_secret: PublicKey::from_hex(blinded_secret).expect("valid blinded secret"),
             witness: None,
+            metadata: None,
         }
     }
 

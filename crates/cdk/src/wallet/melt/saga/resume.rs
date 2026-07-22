@@ -456,6 +456,7 @@ mod tests {
                 keyset_id: message.keyset_id,
                 c: message.blinded_secret,
                 dleq: None,
+                metadata: None,
             })
             .collect();
 

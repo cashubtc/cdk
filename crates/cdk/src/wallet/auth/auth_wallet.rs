@@ -645,6 +645,7 @@ mod tests {
                     },
                     c: output.blinded_secret,
                     dleq: None,
+                    metadata: None,
                 })
                 .collect();
 

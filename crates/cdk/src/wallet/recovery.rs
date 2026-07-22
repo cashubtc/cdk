@@ -293,7 +293,15 @@ impl RecoveryHelpers for Wallet {
         // Convert to ProofInfo
         let proof_infos: Vec<ProofInfo> = proofs
             .into_iter()
-            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone()))
+            .zip(&premint_secrets.secrets)
+            .map(|(p, premint)| {
+                let proof_info =
+                    ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone())?;
+                Ok::<_, Error>(match premint.derivation_index {
+                    Some(index) => proof_info.with_derivation_index(index),
+                    None => proof_info,
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Some(proof_infos))
@@ -552,7 +560,15 @@ impl Wallet {
         // Convert to ProofInfo
         let proof_infos: Vec<ProofInfo> = proofs
             .into_iter()
-            .map(|p| ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone()))
+            .zip(matched)
+            .map(|(p, (premint, _))| {
+                let proof_info =
+                    ProofInfo::new(p, self.mint_url.clone(), State::Unspent, self.unit.clone())?;
+                Ok::<_, Error>(match premint.derivation_index {
+                    Some(index) => proof_info.with_derivation_index(index),
+                    None => proof_info,
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(OutputRecoveryResult::Restored(proof_infos))

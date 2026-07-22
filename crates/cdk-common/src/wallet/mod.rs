@@ -68,6 +68,9 @@ pub struct ProofInfo {
     pub spending_condition: Option<SpendingConditions>,
     /// Unit
     pub unit: CurrencyUnit,
+    /// NUT-13 derivation index for deterministic proofs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derivation_index: Option<u32>,
     /// Operation ID that is using/spending this proof
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub used_by_operation: Option<Uuid>,
@@ -95,6 +98,7 @@ impl ProofInfo {
             state,
             spending_condition,
             unit,
+            derivation_index: None,
             used_by_operation: None,
             created_by_operation: None,
         })
@@ -120,9 +124,16 @@ impl ProofInfo {
             state,
             spending_condition,
             unit,
+            derivation_index: None,
             used_by_operation,
             created_by_operation,
         })
+    }
+
+    /// Set the NUT-13 derivation index for this proof.
+    pub fn with_derivation_index(mut self, derivation_index: u32) -> Self {
+        self.derivation_index = Some(derivation_index);
+        self
     }
 
     /// Check if [`Proof`] matches conditions

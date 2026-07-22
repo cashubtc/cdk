@@ -230,8 +230,9 @@ impl Wallet {
 
         let mut count = starting_counter;
 
+        let has_spending_conditions = spending_conditions.is_some();
         let mut p2bk_ephemeral_key = None;
-        let (mut desired_messages, change_messages) = match spending_conditions {
+        let (mut desired_messages, mut change_messages) = match spending_conditions {
             Some(conditions) => {
                 let change_premint_secrets = PreMintSecrets::from_seed(
                     active_keyset_id,
@@ -313,6 +314,20 @@ impl Wallet {
                 (premint_secrets, change_premint_secrets)
             }
         };
+
+        if has_spending_conditions {
+            self.add_nut342_metadata(active_keyset_id, starting_counter, &mut change_messages)
+                .await?;
+        } else {
+            self.add_nut342_metadata(active_keyset_id, starting_counter, &mut desired_messages)
+                .await?;
+            self.add_nut342_metadata(
+                active_keyset_id,
+                starting_counter.saturating_add(desired_messages.len() as u32),
+                &mut change_messages,
+            )
+            .await?;
+        }
 
         // Combine the BlindedMessages totaling the desired amount with change
         desired_messages.combine(change_messages);

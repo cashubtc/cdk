@@ -1119,7 +1119,34 @@ impl Mint {
         #[cfg(feature = "prometheus")]
         let metrics = MintMetricGuard::new("blind_sign");
 
-        let result = self.signatory.blind_sign(blinded_message).await;
+        let supports_nut342 = self.mint_info().await?.nuts.nut342.supported;
+        for output in &blinded_message {
+            if let Some(metadata) = &output.metadata {
+                for (nut, value) in metadata {
+                    if nut != "342"
+                        || !supports_nut342
+                        || cdk_common::nuts::nut342::validate_metadata(value).is_err()
+                    {
+                        return Err(Error::InvalidOutputMetadata);
+                    }
+                }
+            }
+        }
+
+        let metadata: Vec<_> = blinded_message
+            .iter()
+            .map(|output| output.metadata.clone())
+            .collect();
+        let result = self
+            .signatory
+            .blind_sign(blinded_message)
+            .await
+            .map(|mut signatures| {
+                for (signature, metadata) in signatures.iter_mut().zip(metadata) {
+                    signature.metadata = metadata;
+                }
+                signatures
+            });
 
         #[cfg(feature = "prometheus")]
         {

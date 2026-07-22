@@ -415,13 +415,18 @@ impl<'a> ReceiveSaga<'a, Prepared> {
 
         let recv_proof_infos = recv_proofs
             .into_iter()
-            .map(|proof| {
-                ProofInfo::new(
+            .zip(&pre_swap.pre_mint_secrets.secrets)
+            .map(|(proof, premint)| {
+                let proof_info = ProofInfo::new(
                     proof,
                     self.wallet.mint_url.clone(),
                     State::Unspent,
                     self.wallet.unit.clone(),
-                )
+                )?;
+                Ok::<_, Error>(match premint.derivation_index {
+                    Some(index) => proof_info.with_derivation_index(index),
+                    None => proof_info,
+                })
             })
             .collect::<Result<Vec<ProofInfo>, _>>()?;
 

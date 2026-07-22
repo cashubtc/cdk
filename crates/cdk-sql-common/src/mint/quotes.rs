@@ -805,6 +805,7 @@ where
                         keyset_id,
                         amount: Amount::from(amount),
                         witness: None, // Not storing witness in database currently
+                        metadata: None,
                     })
                 })
                 .collect();
