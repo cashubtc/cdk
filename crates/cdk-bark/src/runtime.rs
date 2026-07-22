@@ -2845,18 +2845,40 @@ impl FederatedBarkRuntime {
         accepted_transition: &FederationJournalEntry,
     ) -> Result<(), Error> {
         let _receive_projection_guard = self.receive_projection.lock().await;
-        let plan = accepted_claim_plan(accepted_plan)?;
+        let plan = accepted_claim_plan(accepted_plan).map_err(|error| {
+            tracing::warn!(
+                stage = "claim_transition_plan_entry",
+                error = %error,
+                "Federated Bark receive-claim transition validation failed"
+            );
+            error
+        })?;
         if accepted_transition.status() != FederationOperationStatus::Applied {
+            tracing::warn!(
+                stage = "claim_transition_status",
+                "Federated Bark receive-claim transition validation failed"
+            );
             return Err(Error::ReceiveClaimPlanInvalid);
         }
         let FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition)) =
             &accepted_transition.envelope.operation
         else {
+            tracing::warn!(
+                stage = "claim_transition_operation_kind",
+                "Federated Bark receive-claim transition validation failed"
+            );
             return Err(Error::ReceiveClaimPlanInvalid);
         };
         let expected_signers =
-            federation_bark_signer_set_for_attempt(&self.federation, transition.attempt)
-                .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+            federation_bark_signer_set_for_attempt(&self.federation, transition.attempt).map_err(
+                |_| {
+                    tracing::warn!(
+                        stage = "claim_transition_signer_set",
+                        "Federated Bark receive-claim transition validation failed"
+                    );
+                    Error::ReceiveClaimPlanInvalid
+                },
+            )?;
         if transition.action_id != plan.action_id
             || transition.quote.as_deref() != plan.quote.as_deref()
             || transition.plan_operation_id != accepted_plan.operation_id
@@ -2864,6 +2886,10 @@ impl FederatedBarkRuntime {
             || transition.attempt < plan.attempt
             || transition.signer_set != expected_signers
         {
+            tracing::warn!(
+                stage = "claim_transition_binding",
+                "Federated Bark receive-claim transition validation failed"
+            );
             return Err(Error::ReceiveClaimPlanInvalid);
         }
         let (phase, stage) = match transition.phase {
@@ -2874,11 +2900,33 @@ impl FederatedBarkRuntime {
             FederationBarkSemanticPhase::ReceiveClaimed => {
                 (FederationLightningReceivePhase::Claimed, "claimed")
             }
-            _ => return Err(Error::ReceiveClaimPlanInvalid),
+            _ => {
+                tracing::warn!(
+                    stage = "claim_transition_phase",
+                    "Federated Bark receive-claim transition validation failed"
+                );
+                return Err(Error::ReceiveClaimPlanInvalid);
+            }
         };
-        let (receive, claim) = self.accepted_receive_claim_plan(intent, prepared, plan)?;
+        let (receive, claim) = self
+            .accepted_receive_claim_plan(intent, prepared, plan)
+            .map_err(|error| {
+                tracing::warn!(
+                    stage = "claim_transition_plan_reconstruction",
+                    error = %error,
+                    "Federated Bark receive-claim transition validation failed"
+                );
+                error
+            })?;
         let outputs = if phase == FederationLightningReceivePhase::Claimed {
-            receive_claim_outputs(transition, &claim)?
+            receive_claim_outputs(transition, &claim).map_err(|error| {
+                tracing::warn!(
+                    stage = "claim_transition_output_reconstruction",
+                    error = %error,
+                    "Federated Bark receive-claim transition validation failed"
+                );
+                error
+            })?
         } else {
             Vec::new()
         };
