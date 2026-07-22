@@ -23,7 +23,10 @@ prometheus = ["cdk-prometheus/default"]
 # precedence; the backends are additive).
 http = ["dep:cdk-http-client", "cdk-http-client/bitreq"]
 grpc = ["dep:tonic"]
-bip353 = []
+# Keep cdk-common's bip353 in lockstep with the http client's, so the
+# `Transport::resolve_dns_txt` gate (and the rate limiter's decorator of it)
+# lines up whenever the HTTP backend is present.
+bip353 = ["cdk-http-client?/bip353"]
 
 [dependencies]
 async-trait.workspace = true
@@ -51,14 +54,15 @@ tonic = { workspace = true, optional = true }
 cdk-http-client = { workspace = true, default-features = false, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "test-util", "sync"] }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "test-util", "sync", "time"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"], optional = true }
 getrandom = { version = "0.2", features = ["js"] }
-tokio = { workspace = true, default-features = false }
+tokio = { workspace = true, default-features = false, features = ["sync"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+gloo-timers = { version = "0.3", features = ["futures"] }
 
 [dev-dependencies]
 rand.workspace = true
