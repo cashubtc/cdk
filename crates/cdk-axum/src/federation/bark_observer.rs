@@ -46,17 +46,41 @@ pub(super) fn is_selected_bark_outgoing_terminal_observer(
     failure_threshold: usize,
     fallback_round: u32,
 ) -> bool {
-    let (required, fallback_round) = if failed_observer_count == 0 {
-        // The actor owns the healthy terminal transition. After its durable
-        // fallback deadline, admit exactly one independent member that can
-        // discover terminal failure without multiplying healthy-path polls.
-        (1, fallback_round.min(1))
+    let members = members.into_iter().collect::<Vec<_>>();
+    if failed_observer_count == 0 {
+        let Some(actor_index) = members.iter().position(|candidate| *candidate == actor) else {
+            return false;
+        };
+        let active_offset = usize::from(fallback_round > 0);
+        return members
+            .get((actor_index + active_offset) % members.len())
+            .is_some_and(|candidate| *candidate == member);
+    }
+
+    // One failure report is not authority. Expand to the existing
+    // independent-observation threshold. The first persisted fallback round
+    // was already consumed by the healthy actor handoff; only a later round
+    // expands failure observers for liveness.
+    is_selected_bark_observer(
+        members,
+        actor,
+        member,
+        failure_threshold,
+        fallback_round.saturating_sub(1),
+    )
+}
+
+pub(super) fn bark_outgoing_terminal_pending_wait(
+    actor: MemberId,
+    member: MemberId,
+    failed_observer_count: usize,
+    fallback_round: u32,
+) -> FederationPaymentAdvancement {
+    if failed_observer_count == 0 && member == actor && fallback_round == 0 {
+        FederationPaymentAdvancement::AwaitingObserverFallback
     } else {
-        // One failure report is not authority. Expand to the existing
-        // independent-observation threshold and retain its liveness fallback.
-        (failure_threshold, fallback_round)
-    };
-    is_selected_bark_observer(members, actor, member, required, fallback_round)
+        FederationPaymentAdvancement::AwaitingExternalEvidence
+    }
 }
 
 pub(super) fn unselected_bark_observer_wait(
@@ -74,8 +98,9 @@ mod tests {
     use cdk::federation::MemberId;
 
     use super::{
-        is_selected_bark_observer, is_selected_bark_outgoing_terminal_observer,
-        required_bark_result_observers, unselected_bark_observer_wait,
+        bark_outgoing_terminal_pending_wait, is_selected_bark_observer,
+        is_selected_bark_outgoing_terminal_observer, required_bark_result_observers,
+        unselected_bark_observer_wait,
     };
     use crate::federation::payment_schedule::FederationPaymentAdvancement;
 
@@ -139,7 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn outgoing_terminal_selection_starts_with_actor_and_one_bounded_fallback() {
+    fn outgoing_terminal_selection_hands_one_lease_to_one_bounded_fallback() {
         let selected = |round| {
             (1..=5)
                 .filter(|id| {
@@ -155,9 +180,25 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(selected(0), vec![4]);
-        assert_eq!(selected(1), vec![4, 5]);
-        assert_eq!(selected(2), vec![4, 5]);
-        assert_eq!(selected(u32::MAX), vec![4, 5]);
+        assert_eq!(selected(1), vec![5]);
+        assert_eq!(selected(2), vec![5]);
+        assert_eq!(selected(u32::MAX), vec![5]);
+    }
+
+    #[test]
+    fn actor_pending_yields_the_terminal_lease_once() {
+        assert_eq!(
+            bark_outgoing_terminal_pending_wait(member(4), member(4), 0, 0),
+            FederationPaymentAdvancement::AwaitingObserverFallback
+        );
+        assert_eq!(
+            bark_outgoing_terminal_pending_wait(member(4), member(5), 0, 1),
+            FederationPaymentAdvancement::AwaitingExternalEvidence
+        );
+        assert_eq!(
+            bark_outgoing_terminal_pending_wait(member(4), member(4), 1, 0),
+            FederationPaymentAdvancement::AwaitingExternalEvidence
+        );
     }
 
     #[test]
@@ -177,7 +218,8 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(selected(0), vec![1, 4, 5]);
-        assert_eq!(selected(1), vec![1, 2, 4, 5]);
-        assert_eq!(selected(2), vec![1, 2, 3, 4, 5]);
+        assert_eq!(selected(1), vec![1, 4, 5]);
+        assert_eq!(selected(2), vec![1, 2, 4, 5]);
+        assert_eq!(selected(3), vec![1, 2, 3, 4, 5]);
     }
 }

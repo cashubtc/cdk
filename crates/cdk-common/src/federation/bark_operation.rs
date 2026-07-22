@@ -1299,6 +1299,18 @@ pub enum FederationBarkConflictKey {
 }
 
 impl FederationBarkOperation {
+    pub(crate) fn preserves_action_actor(&self) -> bool {
+        matches!(
+            self,
+            Self::ActionPlan(plan) if plan.certified_receive_htlcs.is_some()
+        ) || matches!(
+            self,
+            Self::ActionTransition(transition)
+                if transition.evidence_certificate.is_some()
+                    || transition.phase == FederationBarkSemanticPhase::PaymentSucceeded
+        )
+    }
+
     /// Return the family-level kind.
     #[must_use]
     pub const fn kind(&self) -> FederationBarkOperationKind {
@@ -1315,12 +1327,15 @@ impl FederationBarkOperation {
     /// Return the member whose envelope authorization must match this payload.
     #[must_use]
     pub fn claimed_author(&self) -> Option<MemberId> {
+        if self.preserves_action_actor() {
+            // Certificates and payment preimages provide objective authority;
+            // the action keeps the actor selected by its accepted origin.
+            return None;
+        }
         match self {
             Self::ReceiveIntent(operation) => Some(operation.actor),
             Self::ReceivePrepared(operation) => Some(operation.actor),
-            Self::ActionPlan(operation) if operation.certified_receive_htlcs.is_some() => None,
             Self::ActionPlan(operation) => Some(operation.actor),
-            Self::ActionTransition(operation) if operation.evidence_certificate.is_some() => None,
             Self::ActionTransition(operation) => Some(operation.actor),
             Self::MemberObservation(operation) => Some(operation.observer),
             Self::EvidenceCertificate(_) => None,
@@ -4523,6 +4538,39 @@ mod tests {
         assert!(FederationBarkOperation::ActionPlan(plan)
             .validate()
             .is_err());
+    }
+
+    #[test]
+    fn objective_payment_success_can_be_published_by_an_authenticated_fallback() {
+        let FederationBarkOperation::ActionPlan(plan) = send_plan() else {
+            panic!("action plan")
+        };
+        let mut transition = FederationBarkActionTransition::signing_attempt_advanced(
+            operation_id(91),
+            operation_id(92),
+            &plan,
+            2,
+            vec![member(2), member(3)],
+        )
+        .expect("transition fixture");
+
+        transition.phase = FederationBarkSemanticPhase::PaymentSucceeded;
+        assert!(
+            FederationBarkOperation::ActionTransition(transition.clone()).preserves_action_actor()
+        );
+        assert_eq!(
+            FederationBarkOperation::ActionTransition(transition.clone()).claimed_author(),
+            None,
+        );
+
+        transition.phase = FederationBarkSemanticPhase::PaymentFailed;
+        assert!(
+            !FederationBarkOperation::ActionTransition(transition.clone()).preserves_action_actor()
+        );
+        assert_eq!(
+            FederationBarkOperation::ActionTransition(transition).claimed_author(),
+            Some(plan.actor),
+        );
     }
 
     #[test]

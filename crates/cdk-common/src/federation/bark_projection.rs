@@ -115,18 +115,7 @@ impl FederationBarkActionRecord {
             signing_retry_phase,
             actor: match operation.claimed_author() {
                 Some(actor) => actor,
-                None if matches!(
-                    operation,
-                    FederationBarkOperation::ActionTransition(transition)
-                        if transition.evidence_certificate.is_some()
-                ) || matches!(
-                    operation,
-                    FederationBarkOperation::ActionPlan(plan)
-                        if plan.certified_receive_htlcs.is_some()
-                ) =>
-                {
-                    self.actor
-                }
+                None if operation.preserves_action_actor() => self.actor,
                 None => {
                     return Err(super::FederationError::BarkOperationInvalid {
                         reason: "Bark action transition has no authority".to_string(),

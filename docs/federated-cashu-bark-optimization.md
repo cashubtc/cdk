@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, and 11B complete; Milestones 2, 7, and 7A rejected; Milestone 12 deferred; Milestone 13 interrupted; Milestones 14-17, including 15A, not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, and 13 complete; Milestones 2, 7, and 7A rejected; Milestone 12 deferred; Milestones 14-17, including 15A, not started
 
 First recorded: 2026-07-20
 
@@ -985,7 +985,7 @@ behavior yet.
 | 11A | Keep routine Bark maintenance out of active payment paths | Complete | `d44bf71b3` |
 | 11B | Scope Bark predecessor conflicts by action lineage | Complete | `a59e9e6d3` |
 | 12 | Batch simultaneous private custody-signing items per signer and phase | Deferred | docs-only evaluation |
-| 13 | Remove duplicate outgoing status probes and use one bounded actor-first terminal wait | Interrupted — resume | `perf: stage actor-first Bark outgoing status` |
+| 13 | Remove duplicate outgoing status probes and use one bounded actor-first terminal wait | Complete — kept | `perf: streamline federated Bark outgoing status` |
 | 14 | Reduce wallet melt fan-out with threshold-first requests and fast hedging | Not started | — |
 | 15 | Certify outgoing success, failure, and recovered-result quorums | Not started | — |
 | 15A | Combine certified outgoing failure with revocation authorization if the pre-signing boundary remains explicit | Not started | — |
@@ -4068,123 +4068,130 @@ still independently applies and validates the accepted success.
 
 ### Checklist
 
-- [ ] Measure facade calls and underlying Ark RPC attempts separately for at
+- [x] Measure facade calls and underlying Ark RPC attempts separately for at
       least three successful, three multi-round pending, and three terminal
       failure samples; revert the temporary counters before completion.
 - [x] Introduce one typed status result and remove the split failure/success
       query that makes the actor check the same payment twice.
 - [x] On success, accept only a preimage matching the planned invoice; retain
       all four independent result applications and observations.
-- [ ] On a first failure indication, activate enough deterministic observers
+- [x] On a first failure indication, activate enough deterministic observers
       to obtain three independent matching failures. Never accept actor-only
       failure evidence.
 - [x] Activate one deterministic fallback terminal observer after a bounded
       actor deadline without granting that observer initiation authority.
-- [ ] Evaluate at most one bounded `CheckLightningPayment(wait=true)` request
+- [x] Evaluate at most one bounded `CheckLightningPayment(wait=true)` request
       per quote under an explicit global connection budget. It must not block
       the sequential payment observer or replace persisted polling/recovery.
-- [ ] If the waiting request adds head-of-line blocking, connection pressure,
+- [x] If the waiting request adds head-of-line blocking, connection pressure,
       or special recovery machinery, reject only that subcandidate and retain
       the typed actor-first polling improvement.
 - [x] Keep the shared persisted backoff as the fallback. Do not inspect error
       text, reset no-progress state on wallet traffic, or add another timer.
 
-### Interrupted handoff — 2026-07-22
+### Completion findings — 2026-07-22
 
-Status: **Interrupted — resume.** The work below is committed as a tested
-candidate, not as a completed or retained milestone. Do not start Milestone 14
-from this state and do not deploy this candidate to Nocean before completing
-the remaining Milestone 13 gates.
+Status: **Complete — kept.** The final candidate remains contained to the Bark
+runtime, outgoing advancement, and existing deterministic observer selection:
 
-The current candidate is deliberately contained to the Bark runtime and the
-existing outgoing observer selection:
+- one typed facade call now returns `Pending`, preimage-verified `Succeeded`,
+  or `Failed`; the old failure call followed by a second success call is gone;
+- the actor owns the first terminal lease and yields it, rather than remaining
+  active beside the fallback, after the existing bounded fallback deadline;
+- a fallback may publish objective preimage-bound success while the accepted
+  action retains its original actor. Initiation, failure finalization, and
+  revocation remain actor-only;
+- one failure remains non-authoritative. The existing three-member threshold
+  is reactivated before `PaymentFailed`, with one-member-per-round liveness
+  expansion; and
+- exact replay of an already accepted send plan now permits the quote's
+  rollback state `Unpaid`. New side effects remain separately gated on a new
+  quote being `Pending`, so this restart fix does not reopen unpaid quotes.
 
-- `FederatedBarkSendTerminalStatus` carries one actor poll result as
-  `Pending`, a preimage-verified success transition, or one member's failure
-  observation. The old actor failure poll followed by a second success poll is
-  gone.
-- With no accepted failure, only the accepted actor polls initially. The
-  existing persisted six-second observer-fallback deadline admits exactly one
-  deterministic failure-only observer and never expands farther on a healthy
-  path.
-- After the first accepted failure observation, selection returns to the
-  existing three-member independent-failure threshold and its deterministic
-  liveness expansion. The candidate does not make one actor or one fallback
-  authoritative for failure.
-- Success still verifies that the preimage hashes to the planned invoice and
-  still enters the unchanged four-member independent result-application path.
-  No accepted operation, timer, scheduler, error-text rule, or payment-specific
-  backoff was added.
+The final equivalent success comparison used the same local five-member
+loopback federation, SQLite, release binaries, real Signet settlement, and
+three 1,000-sat multi-round melts per side:
 
-The completed local A/B used release binaries, fresh five-member loopback
-federations, SQLite, real Signet payments, automatic refresh disabled only in
-the disposable run, and three 1,000-sat successful melts per side. Every
-sample was multi-round pending before success:
-
-| Measure | Control | Candidate | Change |
+| Measure | Control | Final candidate | Change |
 | --- | ---: | ---: | ---: |
-| Wallet-visible seconds | 44 / 45 / 38 | 43 / 39 / 30 | median 44 -> 39 (-11.4%); max 45 -> 43 (-4.4%) |
-| Terminal-status facade calls | 12 / 12 / 8 | 5 / 5 / 3 | 32 -> 13 (-59.4%) |
-| Total Ark-facing attempts, counting HTLC setup as three | 16 / 16 / 12 | 9 / 9 / 7 | 44 -> 25 (-43.2%) |
-| Status-stage seconds | 18.4 / 16.8 / 6.6 | 18.6 / 14.7 / 5.6 | median -12.5%; max +1.1% |
+| Wallet-visible seconds | 44 / 45 / 38 | 35 / 39 / 35 | median 44 -> 35 (-20.5%); observed max 45 -> 39 (-13.3%) |
+| Terminal-status facade calls | 12 / 12 / 8 | 2 / 2 / 2 | 32 -> 6 (-81.3%) |
+| Total Ark-facing attempts, counting HTLC setup as three | 16 / 16 / 12 | 6 / 6 / 6 | 44 -> 18 (-59.1%) |
+| Status-stage seconds | 18.4 / 16.8 / 6.6 | 6.30 / 6.59 / 6.69 | median 16.8 -> 6.59 (-60.8%); observed max 18.4 -> 6.69 (-63.6%) |
 
-The candidate therefore demonstrates a large request-pressure reduction and
-no whole-payment p95/max regression, but it has **not** passed the declared
-15% status-stage p95 improvement gate. No `Kept` or `Rejected` decision has
-been made. A separate candidate attempt was excluded: its first payment
-succeeded, while the second retried before payment initiation at HTLC setup
-for more than five minutes. The persisted backoff spaced those retries and the
-run was stopped; none of that interval exercised the terminal-status code.
+Each final success made one actor `Pending` request and one fallback
+`Succeeded` request. If the actor sees terminal success immediately, the same
+code has the intended five-attempt path: three HTLC setup requests, one
+initiation, and one typed terminal request. The accepted operation shape did
+not grow: successful samples retained the existing quote, melt, send plan,
+three transitions, and result-observation sequence. The live liveness fallback
+still sometimes admitted a fifth result application where four were already
+sufficient; that pre-existing consensus-message issue belongs to Milestone 15,
+not to this Ark-request optimization.
 
-Correctness evidence completed before interruption:
+Three faithful unroutable-invoice samples exercised terminal failure and safe
+revocation. Terminal calls were 4 / 3 / 3 and total Ark-facing attempts were
+8 / 7 / 7, versus the five failure calls in the baseline. The latter two
+samples accepted exactly three independent failure observations before the
+actor could finalize failure. All samples reached revocation completion,
+restored exact wallet value, and converged across five members. One client was
+interrupted after federation revocation; its durable wallet saga compensated
+the locked value on the next invocation rather than losing it.
 
-- all 17 `cdk-bark` tests passed;
-- all five focused Bark observer-selection tests passed, including actor-only
-  round zero, exactly one bounded fallback, and threshold re-expansion after a
-  first failure;
-- the candidate compiled through `cdk-bark`, `cdk-axum`, and the release mint;
-- a full parallel `cdk-axum` run did not complete because one unrelated deep
-  Aleph recovery test exhausted the default test-thread stack and one timing
-  probe failed under concurrent load. The timing probe passed alone, and the
-  recovery test passed alone with an 8 MiB test-thread stack.
+A separate restart fault was injected exactly at accepted
+`PaymentInitiated`. All five members replayed the accepted plan without a
+projection error, completed failure and revocation, restored the exact wallet
+balance, and converged. The outage caused seven status calls and one bounded
+liveness expansion from three to four accepted failure observations; it did
+not permit failure below threshold. An actor-loss success sample likewise had
+one deterministic fallback publish the sole success transition while the
+action retained the original actor and the external receiver completed once.
 
-Temporary call counters have been removed from source, both disposable
-federations are stopped, and no invoice, payment hash, preimage, private
-configuration, wallet secret, or machine-specific path is recorded here.
+`wait=true` was evaluated and rejected. Each member intentionally has one
+sequential observer worker with a ten-second per-probe deadline. Holding that
+worker in a Bark long poll would head-of-line block unrelated mint and melt
+quotes; making it safe would require a new global connection budget and
+concurrent recovery machinery. The retained `wait=false` call therefore uses
+the already persisted, jittered backoff and keeps at most one active backend
+probe per member. No error text, wallet-traffic reset, new timer, or
+payment-specific scheduler state was added.
 
-Resume in this order:
+Regression coverage passed for all 455 enabled `cdk-common` library tests, all
+17 `cdk-bark` library tests, all six focused observer-selection tests, and all
+14 persisted payment-schedule tests. The focused CDK projection tests for
+outgoing success/failure binding, distinct result quorum, and one false result
+observer also passed. The broad `cdk-axum` library run passed 558 tests with
+two ignored; its two loopback-listener tests were permission-blocked by the
+sandbox before their assertions and both passed when rerun alone with loopback
+permission. Together these cover objective fallback authority,
+preimage binding, accepted-plan replay from `Unpaid`, actor-only round zero,
+exactly one healthy fallback lease at every later round, threshold failure
+selection, fallback-round reset on progress, separate concurrent quote
+schedules, and one persisted attempt lease under concurrent wakes. The
+crash-timing gate combines those deterministic ownership, conflict, and
+authority tests with the live actor-loss and restart faults; it does not claim
+three separate destructive live crashes. A new mock facade was not introduced
+merely to count the single call visible in
+`observe_lightning_send_terminal`; identifier-free live instrumentation
+measured that boundary instead. All real successful samples first returned
+`Pending`; immediate terminal success is covered structurally by that same
+single-call typed branch rather than claimed as a separate live sample.
 
-1. Start from the interruption commit and review the four-file candidate; do
-   not reimplement the typed result or observer selector.
-2. Add contained regression coverage for one-call immediate success, repeated
-   pending across restart, actor loss before/during/after response, one false
-   failure, three matching failures, and concurrent quotes. Introduce a small
-   mockable status seam only if those tests cannot be expressed without it.
-3. Re-add identifier-free temporary counters and obtain at least three real or
-   faithful terminal-failure/revocation samples, including exact call counts,
-   restored value, and convergence. Remove the counters again.
-4. Evaluate `wait=true` only with an explicit global connection budget and no
-   sequential-worker head-of-line blocking. The current Bark facade uses
-   `wait=false`; the likely outcome is to reject this subcandidate and keep
-   persisted polling, but that decision is not complete.
-5. Re-run equivalent success/pending samples if needed, count accepted
-   operations, run restart and actor-fault gates, and decide `Kept` or
-   `Rejected` against both the request-efficiency evidence and the declared
-   latency budgets. Then update this section, remove all instrumentation, run
-   the final formatting/lint/test gates, and create the milestone-completion
-   commit.
+Temporary counters and fine-grained replay diagnostics were removed before
+completion. No invoice, payment hash, preimage, private configuration, wallet
+secret, or machine-specific path is retained in this document.
 
 ### Tests
 
-- [ ] Immediate success makes one terminal status request, pays once, and
+- [x] Immediate success makes one terminal status request, pays once, and
       still obtains four matching result applications.
-- [ ] Repeated `Pending` does not multiply requests across members; timeout,
+- [x] Repeated `Pending` does not multiply requests across members; timeout,
       reconnect, and restart resume the durable schedule.
-- [ ] Actor crash before, during, and after the terminal response activates one
+- [x] Actor crash before, during, and after the terminal response activates one
       fallback and cannot initiate or record the payment twice.
-- [ ] One false or Byzantine failure cannot start revocation; three matching
+- [x] One false or Byzantine failure cannot start revocation; three matching
       independent failures retain the current safe path.
-- [ ] Concurrent quotes respect the connection budget and make progress
+- [x] Concurrent quotes respect the connection budget and make progress
       without worker starvation or Ark rate limiting.
 
 ### Success criteria

@@ -14,8 +14,9 @@ use cdk::nuts::MeltQuoteState;
 use crate::MintState;
 
 use super::bark_observer::{
-    is_selected_bark_observer, is_selected_bark_outgoing_terminal_observer,
-    required_bark_result_observers, unselected_bark_observer_wait,
+    bark_outgoing_terminal_pending_wait, is_selected_bark_observer,
+    is_selected_bark_outgoing_terminal_observer, required_bark_result_observers,
+    unselected_bark_observer_wait,
 };
 use super::payment_schedule::FederationPaymentAdvancement;
 
@@ -345,43 +346,8 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 }
                 let next_epoch =
                     next_observation_epoch(&projection, action.action_id, federation.member_id())?;
-                if plan.actor == federation.member_id() {
-                    return match runtime
-                        .observe_lightning_send_terminal(
-                            &quote,
-                            &projection,
-                            &plan_entry,
-                            initiated,
-                            next_epoch,
-                        )
-                        .await
-                        .map_err(|_| cdk::Error::Internal)?
-                    {
-                        cdk_bark::FederatedBarkSendTerminalStatus::Pending => {
-                            Ok(FederationPaymentAdvancement::AwaitingExternalEvidence)
-                        }
-                        cdk_bark::FederatedBarkSendTerminalStatus::Succeeded(transition) => {
-                            submit_bark_operation(
-                                state,
-                                federation.operation_envelope(FederationOperation::Bark(
-                                    FederationBarkOperation::ActionTransition(*transition),
-                                )),
-                            )
-                            .await
-                        }
-                        cdk_bark::FederatedBarkSendTerminalStatus::Failed(observation) => {
-                            submit_bark_operation(
-                                state,
-                                federation.operation_envelope(FederationOperation::Bark(
-                                    FederationBarkOperation::MemberObservation(observation),
-                                )),
-                            )
-                            .await
-                        }
-                    };
-                }
-                if let Some(observation) = runtime
-                    .observe_lightning_send_failure(
+                match runtime
+                    .observe_lightning_send_terminal(
                         &quote,
                         &projection,
                         &plan_entry,
@@ -391,15 +357,33 @@ pub(super) async fn advance_federated_bark_melt_quote(
                     .await
                     .map_err(|_| cdk::Error::Internal)?
                 {
-                    return submit_bark_operation(
-                        state,
-                        federation.operation_envelope(FederationOperation::Bark(
-                            FederationBarkOperation::MemberObservation(observation),
-                        )),
-                    )
-                    .await;
+                    cdk_bark::FederatedBarkSendTerminalStatus::Pending => {
+                        Ok(bark_outgoing_terminal_pending_wait(
+                            plan.actor,
+                            federation.member_id(),
+                            failed_observer_count,
+                            observer_fallback_round,
+                        ))
+                    }
+                    cdk_bark::FederatedBarkSendTerminalStatus::Succeeded(transition) => {
+                        submit_bark_operation(
+                            state,
+                            federation.operation_envelope(FederationOperation::Bark(
+                                FederationBarkOperation::ActionTransition(*transition),
+                            )),
+                        )
+                        .await
+                    }
+                    cdk_bark::FederatedBarkSendTerminalStatus::Failed(observation) => {
+                        submit_bark_operation(
+                            state,
+                            federation.operation_envelope(FederationOperation::Bark(
+                                FederationBarkOperation::MemberObservation(observation),
+                            )),
+                        )
+                        .await
+                    }
                 }
-                Ok(FederationPaymentAdvancement::AwaitingExternalEvidence)
             }
             FederationBarkSemanticPhase::PaymentSucceeded => {
                 let success_entry = send_transition_entry(

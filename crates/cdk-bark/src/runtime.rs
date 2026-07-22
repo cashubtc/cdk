@@ -166,7 +166,7 @@ pub struct FederatedBarkSendProposal {
     pub expires_at: u32,
 }
 
-/// One actor-owned terminal check for an accepted outgoing Lightning payment.
+/// One selected member's terminal check for an accepted outgoing Lightning payment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FederatedBarkSendTerminalStatus {
     /// Bark has not observed a terminal result yet.
@@ -174,7 +174,7 @@ pub enum FederatedBarkSendTerminalStatus {
     /// Bark verified the invoice preimage and constructed the exact success
     /// transition authorized by the accepted send plan.
     Succeeded(Box<FederationBarkActionTransition>),
-    /// Bark reported terminal failure and constructed this actor's independent
+    /// Bark reported terminal failure and constructed this member's independent
     /// failure observation. Federation failure still requires threshold
     /// matching observations.
     Failed(FederationBarkMemberObservation),
@@ -868,10 +868,12 @@ impl FederatedBarkRuntime {
         Ok(())
     }
 
-    /// Poll one actor-owned accepted payment exactly once and preserve Bark's
-    /// typed terminal result. A failed result creates only one member
-    /// observation; threshold matching evidence remains required before the
-    /// federation can authorize revocation.
+    /// Poll one selected member's accepted payment exactly once and preserve
+    /// Bark's typed terminal result. A success carries an objective preimage
+    /// bound to the accepted invoice, so a deterministic fallback may publish
+    /// it after actor loss without receiving initiation authority. A failed
+    /// result creates only one member observation; threshold matching evidence
+    /// remains required before the federation can authorize revocation.
     pub async fn observe_lightning_send_terminal(
         &self,
         quote: &MeltQuote,
@@ -884,9 +886,6 @@ impl FederatedBarkRuntime {
             return Err(Error::SendReconciliationFailed);
         }
         let plan = accepted_send_plan(accepted_plan)?;
-        if plan.actor != self.member_id {
-            return Err(Error::SendExecutionFailed);
-        }
         let initiated = accepted_send_transition(
             accepted_initiated,
             FederationBarkSemanticPhase::PaymentInitiated,
@@ -903,7 +902,7 @@ impl FederatedBarkRuntime {
             FederationLightningSendStatus::Pending => Ok(FederatedBarkSendTerminalStatus::Pending),
             FederationLightningSendStatus::Succeeded(preimage) => Ok(
                 FederatedBarkSendTerminalStatus::Succeeded(Box::new(payment_succeeded_transition(
-                    self.member_id,
+                    plan.actor,
                     accepted_plan,
                     accepted_initiated,
                     plan,
@@ -957,42 +956,6 @@ impl FederatedBarkRuntime {
             fee: plan.fee_amount,
             result_hash: success.result_hash,
         })
-    }
-
-    /// Independently poll terminal failure. Pending, transport uncertainty,
-    /// and success do not create failure evidence.
-    pub async fn observe_lightning_send_failure(
-        &self,
-        quote: &MeltQuote,
-        projection: &FederationBarkProjectionSnapshot,
-        accepted_plan: &FederationJournalEntry,
-        accepted_initiated: &FederationJournalEntry,
-        observation_epoch: u64,
-    ) -> Result<Option<FederationBarkMemberObservation>, Error> {
-        if observation_epoch == 0 {
-            return Err(Error::SendReconciliationFailed);
-        }
-        let plan = accepted_send_plan(accepted_plan)?;
-        let initiated = accepted_send_transition(
-            accepted_initiated,
-            FederationBarkSemanticPhase::PaymentInitiated,
-        )?;
-        validate_send_transition_binding(&self.federation, accepted_plan, plan, initiated)?;
-        validate_payment_initiated_result(plan, initiated)?;
-        let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
-        let status = self
-            .wallet
-            .poll_lightning_send(&bark_plan)
-            .await
-            .map_err(|_| Error::SendReconciliationFailed)?;
-        if status != FederationLightningSendStatus::Failed {
-            return Ok(None);
-        }
-        Ok(Some(self.lightning_send_failure_observation(
-            plan,
-            initiated,
-            observation_epoch,
-        )?))
     }
 
     fn lightning_send_failure_observation(
@@ -3479,7 +3442,10 @@ impl FederatedBarkRuntime {
 const fn send_quote_state_is_replayable(state: MeltQuoteState) -> bool {
     matches!(
         state,
-        MeltQuoteState::Pending | MeltQuoteState::Paid | MeltQuoteState::Failed
+        MeltQuoteState::Unpaid
+            | MeltQuoteState::Pending
+            | MeltQuoteState::Paid
+            | MeltQuoteState::Failed
     )
 }
 
@@ -3488,11 +3454,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accepted_send_quotes_replay_after_terminal_resolution() {
+    fn accepted_send_quotes_replay_before_and_after_terminal_resolution() {
+        assert!(send_quote_state_is_replayable(MeltQuoteState::Unpaid));
         assert!(send_quote_state_is_replayable(MeltQuoteState::Pending));
         assert!(send_quote_state_is_replayable(MeltQuoteState::Paid));
         assert!(send_quote_state_is_replayable(MeltQuoteState::Failed));
-        assert!(!send_quote_state_is_replayable(MeltQuoteState::Unpaid));
         assert!(!send_quote_state_is_replayable(MeltQuoteState::Unknown));
     }
 
