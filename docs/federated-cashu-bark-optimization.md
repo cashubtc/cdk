@@ -244,13 +244,17 @@ The goal is not merely to make a favorable trace look faster. The goal is to
 reduce the actual work and waiting in the normal payment lifecycle while
 preserving federation payment authority, threshold custody, replay, recovery,
 and standalone CDK behavior. Every retained optimization must identify a
-measured cause, change the smallest owning component, and demonstrate the
-predicted improvement with an equivalent before/after test.
+measured cause, change the smallest owning component, and demonstrate its
+predicted latency, work-reduction, or simplification benefit with equivalent
+before/after evidence.
 
 Simple solutions are preferred. Remove unnecessary operations, distinctions,
 polls, timers, and branches before adding concurrency, caches, queues, tuning
-knobs, or new protocols. A milestone that does not produce its predicted
-improvement is rejected and its production changes are reverted.
+knobs, or new protocols. A solution may be retained without a significant
+speed increase when it measurably reduces code complexity, messages, API calls,
+consensus operations, or other directly attributable work without a material
+latency regression. A milestone that produces none of its predicted benefits
+is rejected and its production changes are reverted.
 
 Related documents:
 
@@ -661,8 +665,22 @@ every milestone.
   improves by at least 15%, the direct delay/work counter moves as predicted,
   and no other primary stage regresses by more than 5%.
 - A protocol-work candidate may instead qualify by removing the exact predicted
-  operations, duplicate items, Ark probes, or messages while end-to-end latency
-  does not regress by more than 5%.
+  messages, API calls, consensus operations, duplicate items, Ark probes,
+  bytes, retries, or other directly measured work while end-to-end latency does
+  not regress by more than 5%.
+- A simplification candidate may instead qualify when it removes a demonstrated
+  source of production complexity—for example branches, states, persisted
+  fields, timers, tasks, configuration, or duplicated backend-specific code—
+  without moving equivalent complexity elsewhere, weakening observability, or
+  causing a material performance regression. Record the relevant source-level
+  before/after counts and explain the reduced behavior or failure surface;
+  line-count reduction alone is not sufficient evidence.
+- These are independent acceptance routes. A candidate retained for protocol
+  work reduction or simplification need not also clear the 15% latency gate,
+  but its performance must still be measured and remain within the stated
+  regression budget. Milestone-specific latency criteria are mandatory only
+  when latency is the claimed benefit; update that milestone's progress record
+  to name the acceptance route actually used.
 - A correctness or liveness fix is retained when the recorded failure becomes
   reproducibly impossible and performance does not regress materially.
 - If the direct counter does not move as predicted or the result misses the
@@ -3699,10 +3717,13 @@ under that milestone containing:
 3. call-path attribution and direct invocation/message/byte counts;
 4. every baseline and candidate sample in execution order;
 5. median, p95 where applicable, variance, direct counter movement, and
-   regressions;
+   regressions, plus source-level complexity counts when simplification is the
+   acceptance route;
 6. focused correctness, adverse-ordering, restart/replay, distributed, and
    standalone test commands and results;
-7. explicit `Kept` or `Rejected` decision against this contract;
+7. explicit `Kept` or `Rejected` decision against this contract, naming the
+   latency, protocol-work, simplification, correctness, or liveness acceptance
+   route;
 8. temporary instrumentation reverted and any retained production metrics
    explicitly justified as bounded, low-cardinality, and low-overhead;
 9. document status and result-log update; and
