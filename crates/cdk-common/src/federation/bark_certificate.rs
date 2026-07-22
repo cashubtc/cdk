@@ -76,6 +76,9 @@ pub struct FederationBarkEvidenceBinding {
 
 impl FederationBarkEvidenceBinding {
     /// Construct the exact certificate statement represented by one local observation.
+    ///
+    /// `config` must be the public config validated when the federation runtime
+    /// was created.
     pub fn from_observation(
         config: &FederationConfig,
         phase: FederationBarkEvidencePhase,
@@ -91,7 +94,10 @@ impl FederationBarkEvidenceBinding {
         let binding = Self {
             version: FEDERATION_BARK_EVIDENCE_CERTIFICATE_VERSION,
             federation_id: config.federation_id,
-            config_digest: config.config_digest()?,
+            // Federation configs are validated before they enter a mint runtime.
+            // Revalidating here repeats threshold-key interpolation for every
+            // attestation in the receive hot path.
+            config_digest: config.config_digest_for_validated_config()?,
             application_key_epoch: application.application_key_epoch,
             action_id: observation.action_id,
             quote: observation
@@ -115,10 +121,13 @@ impl FederationBarkEvidenceBinding {
     }
 
     /// Validate the complete statement against the active accepted configuration.
+    ///
+    /// `config` must be the public config validated when the federation runtime
+    /// was created.
     pub fn validate(&self, config: &FederationConfig) -> Result<()> {
         if self.version != FEDERATION_BARK_EVIDENCE_CERTIFICATE_VERSION
             || self.federation_id != config.federation_id
-            || self.config_digest != config.config_digest()?
+            || self.config_digest != config.config_digest_for_validated_config()?
             || self.quote.is_empty()
             || self.attempt == 0
             || self.amount == Amount::ZERO

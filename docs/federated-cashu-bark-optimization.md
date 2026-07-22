@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 11, 11A, and 11B complete; Milestones 2, 7, and 7A rejected; Milestone 12 deferred; Milestones 13-17, including 15A, not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, and 11B complete; Milestones 2, 7, and 7A rejected; Milestone 12 deferred; Milestone 13 interrupted; Milestones 14-17, including 15A, not started
 
 First recorded: 2026-07-20
 
@@ -980,6 +980,7 @@ behavior yet.
 | 9 | Parallelize independent private signing and receive-secret RPCs within existing phase barriers | Complete | `perf: parallelize federated Bark private RPC phases` |
 | 10 | Replace per-observer consensus entries with signed quorum certificates | Complete | `perf: certify federated Bark observation quorums` |
 | 10A | Resume interrupted recovery-checkpoint promotion after journal/application catch-up | Complete | `fix: resume staged federation checkpoint promotion` |
+| 10B | Remove repeated full federation-config validation from Bark certificate hot paths | Complete | `fix: avoid Bark certificate config revalidation` |
 | 11 | Combine certified HTLC readiness and claim authorization if one accepted operation preserves both boundaries | Complete | `53c98ed36` |
 | 11A | Keep routine Bark maintenance out of active payment paths | Complete | `d44bf71b3` |
 | 11B | Scope Bark predecessor conflicts by action lineage | Complete | `a59e9e6d3` |
@@ -3475,6 +3476,83 @@ selector adjustment, one startup-only local-promotion attempt, and one extended
 regression. It adds no payment-specific behavior and preserves the existing
 cryptographic and database authority checks.
 
+## Milestone 10B: remove repeated certificate config validation
+
+### Goal
+
+Isolate and remove the incoming-payment CPU regression introduced after
+Milestone 7 without weakening Milestone 10's signed observation certificates.
+If the regression could not be fixed with a small, evidenced change, revert the
+responsible milestone.
+
+### Root-cause review
+
+- Milestones 7 and 7A changed no retained production behavior. Milestone 8
+  changed restart reconciliation, and Milestone 9 only made existing private
+  calls concurrent; neither added the measured CPU work.
+- Milestone 10 added certificate bindings. Both binding construction and every
+  binding validation called `FederationConfig::config_digest()`.
+- `config_digest()` first performs full federation-config validation, including
+  threshold BLS aggregate-key interpolation, before hashing. Runtime configs
+  were already validated and already retained the same precomputed digest.
+- Binding validation runs once per attestation and recurs during private
+  delivery, certificate construction, admission, ordered projection, and
+  replay. Historical certificate projection therefore also repeated this work
+  while an unpaid quote was being observed. Milestone 11 retained these hot
+  paths and consequently retained the regression.
+
+Temporary stage probes ruled out Bark I/O as the dominant cost: an ordinary
+poll took 17-19ms, actor HTLC preparation took 101ms for one VTXO, peer
+hydration took 83ms, and ordered receive-prepared application took 2-6ms. In
+contrast, one pre-fix receive caused 516 additional full-config validations,
+about 229.8 seconds accumulated inside that operation, and about 242 aggregate
+member CPU-seconds. The redundant validation accounted for roughly 95% of the
+measured process CPU and produced sustained near-one-core saturation on
+selected members. Even quote creation before payment added 66 validations by
+replaying prior certificates.
+
+### Contained fix and safety argument
+
+Use `config_digest_for_validated_config()` in the two certificate-binding hot
+paths. This returns the digest stored by the already validated runtime config.
+It does not change the digest, signed statement, signer validation, certificate
+threshold, admission rules, ordered projection, or consensus authority. Full
+config validation remains at the boundary where the runtime accepts a config;
+only its redundant repetition for each attestation is removed.
+
+### Evaluation checklist
+
+- [x] Attribute the regression by measuring CPU work, not by inference from
+      milestone size or cryptographic-operation estimates.
+- [x] Reproduce one incoming payment on the CPU-limited deployment and relate
+      process CPU to the instrumented operation counter.
+- [x] Keep the fix confined to certificate binding construction and validation.
+- [x] Pass the complete `cdk-common` federation library suite and the complete
+      `cdk-bark` federation-Bark suite.
+- [x] Deploy a clean release without temporary probes and complete one fresh
+      incoming payment through issuance.
+- [x] Confirm that no full-config validation occurs during the fixed receive
+      and that the former sustained CPU saturation is absent.
+- [x] Remove all temporary instrumentation before completing the milestone.
+
+The clean fixed deployment completed and issued the 10,000-sat receive. All
+five full-config-validation counters remained exactly at their post-startup
+baseline of 30, so the receive added zero calls instead of 516. Member CPU was
+normally 2-5%, with short useful-work bursts up to 26%, rather than sustained
+near-100% utilization. Total member CPU increased by about 8-9 seconds each
+over the complete observation window, which includes normal consensus,
+polling, and idle work. The 454-test `cdk-common` federation suite and all 17
+`cdk-bark` federation-Bark tests passed. The temporary probe strings were also
+absent from the deployed release binary.
+
+This one bounded remote A/B was explicitly used because the regression was
+reported and reliably visible on the slow deployment. Repeated performance,
+fault, and development federation tests remain local as required by this plan.
+
+Result: **Kept.** Milestone 10 remains, with its security properties unchanged.
+The measured CPU regression is removed by reusing the already validated config
+digest; reverting signed quorum certificates is unnecessary.
+
 ## Milestone 11: certified HTLC readiness with claim authorization
 
 ### Goal
@@ -4488,6 +4566,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-22 | Milestone 10 signed-certificate A/B | local release, five loopback members, SQLite, real Signet, three control and three candidate receives | accepted operations 15 -> 9 and application-bearing deliveries 60 -> 36; median application bytes 173,908 -> 172,948; durable median 41s -> 75s; about 5,245 new inner private-JSON bytes per healthy path | Keep by explicit project-owner decision for the 40% application-message reduction. Latency regressed and total bytes did not materially improve, so neither is claimed as a win. |
 | 2026-07-22 | Milestone 10 collector/member fault matrix | same local federation, primary private endpoint unavailable and one selected observer fully offline | standby published one exact-threshold certificate; one already-paid quote issued exactly 1,000 sats in nine operations; four online members converged and the restored fifth reached the same 53-entry journal/application digest with zero failed entries | Durable member signatures can be relayed to a deterministic standby without transferring authority, repeating Bark work, weakening thresholds, or duplicating issuance. |
 | 2026-07-22 | Milestone 10A discovery | local release, full primary-process outage plus final all-member restart | standby certified HTLC readiness, but one restored run promoted a trusted recovery checkpoint before materializing its suffix; the final restart also left that member awaiting a compatible peer view despite identical 53-entry state until one targeted restart | Fix generic checkpoint promotion/startup reconciliation before Milestone 11; do not add Bark-specific replay state. |
+| 2026-07-22 | Milestone 10B certificate CPU regression A/B | CPU-limited five-member deployment, clean release restart, one fresh 10,000-sat incoming receive | pre-fix receive added 516 full-config validations, about 229.8s accumulated validation duration, and about 242 aggregate member CPU-seconds with sustained near-one-core saturation; fixed receive added zero validations and members stayed mostly at 2-5% CPU with brief peaks up to 26%; payment issued exactly once | Keep signed certificates, but use the precomputed digest of the already validated runtime config in certificate binding construction and validation. The signed statement and every threshold/admission guarantee are unchanged; all temporary probes were removed. |
 | 2026-07-22 | Milestone 11 combined authorization | fresh local release federation, SQLite, reusable CLI Signet payer, three incoming and three return melts | incoming core operations 9 -> 8 and application deliveries 36 -> 32; comparable one-VTXO authorization envelopes 10,820-16,603 -> 7,665-8,401 bytes; whole-receive median canonical bytes stayed flat at 32,959 -> 33,001; durable median/max regressed 75/82s -> 131/136s; exact issuance and all-member replay passed | Keep only for the explicit accepted-round reduction and single-copy representation; claim no latency win. The expiry-bound digest is the sole final format, and the development-only recovery compatibility and diagnostics were removed. |
 | 2026-07-22 | Milestone 11A payment-priority guard | fresh local release federation, SQLite, browser-faucet fallback, one incoming followed immediately by one outgoing | incoming issued exactly 1,500 sats in eight core operations with no intervening refresh; outgoing paid once in 23s with an exact 25-sat fee and ten operations; five members converged at 18 applied entries; routine planning resumed after 30s without another Ark call | Keep the bounded pre-plan/recheck guard. The resumed refresh was rejected by a pre-existing cross-lineage `Predecessor` conflict, isolated as Milestone 11B; no incompatible key-format draft or temporary diagnostics remain. |
 | 2026-07-22 | Milestone 11B action-scoped predecessor conflicts | fresh local release federation, SQLite, reusable CLI Signet payer, exact incoming and outgoing cycle, all-member restart | the negative-control run passed journal admission but failed the old global SQL uniqueness constraint; after the matching SQL fix, operation 25 admitted the refresh on all members, restart produced five observations at operations 26-30, all journals converged at 31 entries, and only one member started one Bark refresh movement | Keep the direct cut-through `(action_id, predecessor_operation_id)` invariant in both domain and SQL. The public Ark round remained pending beyond the bounded observation window, so claim admission, replay, and exactly-one start only—not terminal materialization or a latency win. |
