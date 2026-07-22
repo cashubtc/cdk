@@ -26,11 +26,11 @@ use cdk_common::util::{hex, unix_time};
 use cdk_common::{Bolt11Invoice, QuoteId};
 use cln_rpc::model::requests::{
     DecodeRequest, FetchinvoiceRequest, InvoiceRequest, ListinvoicesRequest, ListpaysRequest,
-    OfferRequest, PayRequest, WaitanyinvoiceRequest,
+    OfferRequest, WaitanyinvoiceRequest, XpayRequest,
 };
 use cln_rpc::model::responses::{
     DecodeResponse, InvoiceResponse, ListinvoicesInvoices, ListinvoicesInvoicesStatus,
-    ListpaysPays, ListpaysPaysStatus, PayStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
+    ListpaysPays, ListpaysPaysStatus, WaitanyinvoiceResponse, WaitanyinvoiceStatus,
 };
 use cln_rpc::primitives::{Amount as CLN_Amount, AmountOrAny, Sha256};
 use cln_rpc::ClnRpc;
@@ -46,7 +46,9 @@ pub mod error;
 const CLN_KV_PRIMARY_NAMESPACE: &str = "cdk_cln_lightning_backend";
 const CLN_KV_SECONDARY_NAMESPACE: &str = "payment_indices";
 const CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE: &str = "bolt12_outgoing_payments";
+const CLN_KV_BOLT11_DISPATCH_SECONDARY_NAMESPACE: &str = "bolt11_payment_dispatch";
 const LAST_PAY_INDEX_KV_KEY: &str = "last_pay_index";
+const BOLT12_DISPATCHING_PREFIX: &str = "dispatching_";
 
 /// CLN mint backend
 #[derive(Clone)]
@@ -415,11 +417,16 @@ impl MintPayment for Cln {
         unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        let quote_id = match &options {
+            OutgoingPaymentOptions::Bolt11(options) => options.quote_id.clone(),
+            OutgoingPaymentOptions::Bolt12(options) => options.quote_id.clone(),
+            _ => return Err(payment::Error::UnsupportedPaymentOption),
+        };
         let max_fee_msat: Option<u64>;
         let mut partial_amount: Option<u64> = None;
         let mut amount_msat: Option<u64> = None;
         let payment_lookup_id: PaymentIdentifier;
-
+        let mut dispatched_payment_hash = None;
         let mut cln_client = self.cln_client().await?;
 
         let invoice = match &options {
@@ -449,7 +456,6 @@ impl MintPayment for Cln {
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
                 let offer = &bolt12_options.offer;
-                let quote_id = bolt12_options.quote_id.clone();
                 let quote_payment_identifier = PaymentIdentifier::QuoteId(quote_id.clone());
 
                 self.check_outgoing_unpaided(&quote_payment_identifier)
@@ -499,8 +505,7 @@ impl MintPayment for Cln {
                 let payment_identifier = PaymentIdentifier::Bolt12PaymentHash(payment_hash);
 
                 self.check_outgoing_unpaided(&payment_identifier).await?;
-                self.write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
-                    .await?;
+                dispatched_payment_hash = Some(payment_hash);
                 payment_lookup_id = quote_payment_identifier;
 
                 max_fee_msat = bolt12_options
@@ -511,60 +516,126 @@ impl MintPayment for Cln {
 
                 cln_response.invoice
             }
-            _ => {
-                return Err(payment::Error::UnsupportedPaymentOption);
-            }
+            _ => return Err(payment::Error::UnsupportedPaymentOption),
         };
         if invoice.is_empty() {
             return Err(Error::UnknownInvoice.into());
         }
 
+        match &options {
+            OutgoingPaymentOptions::Bolt11(options) => {
+                self.write_bolt11_dispatch_sentinel(options.bolt11.payment_hash().as_ref())
+                    .await?;
+            }
+            OutgoingPaymentOptions::Bolt12(_) => {
+                let payment_hash = dispatched_payment_hash.ok_or(Error::UnknownInvoice)?;
+                self.write_bolt12_dispatch_state(&quote_id, &payment_hash)
+                    .await?;
+            }
+            _ => return Err(payment::Error::UnsupportedPaymentOption),
+        }
+
         tracing::debug!("Attempting payment with max fee: {:?}", max_fee_msat);
 
         let cln_response = cln_client
-            .call_typed(&PayRequest {
-                bolt11: invoice,
+            .call_typed(&XpayRequest {
+                invstring: invoice,
                 amount_msat: amount_msat.map(CLN_Amount::from_msat),
-                label: None,
-                riskfactor: None,
-                maxfeepercent: None,
-                retry_for: None,
                 maxdelay: None,
-                exemptfee: None,
-                localinvreqid: None,
-                exclude: None,
                 maxfee: max_fee_msat.map(CLN_Amount::from_msat),
-                description: None,
+                layers: None,
+                retry_for: None,
                 partial_msat: partial_amount.map(CLN_Amount::from_msat),
             })
             .await;
 
-        let response = match cln_response {
+        match cln_response {
             Ok(pay_response) => {
-                let status = match pay_response.status {
-                    PayStatus::COMPLETE => MeltQuoteState::Paid,
-                    PayStatus::PENDING => MeltQuoteState::Pending,
-                    PayStatus::FAILED => MeltQuoteState::Failed,
-                };
-
-                MakePaymentResponse {
+                let response = MakePaymentResponse {
                     payment_lookup_id,
                     payment_proof: Some(hex::encode(pay_response.payment_preimage.to_vec())),
-                    status,
+                    status: MeltQuoteState::Paid,
                     total_spent: Amount::new(
                         pay_response.amount_sent_msat.msat(),
                         CurrencyUnit::Msat,
                     )
                     .convert_to(unit)?,
+                };
+
+                match &options {
+                    OutgoingPaymentOptions::Bolt11(options) => {
+                        if let Err(err) = self
+                            .delete_bolt11_dispatch_sentinel(options.bolt11.payment_hash().as_ref())
+                            .await
+                        {
+                            tracing::warn!(
+                            "Could not clear BOLT11 dispatch sentinel for quote {quote_id}: {err}"
+                        );
+                        }
+                    }
+                    OutgoingPaymentOptions::Bolt12(_) => {
+                        if let Some(payment_hash) = dispatched_payment_hash {
+                            if let Err(err) = self
+                                .write_bolt12_quote_payment_hash(&quote_id, &payment_hash)
+                                .await
+                            {
+                                tracing::warn!(
+                                "Could not complete BOLT12 dispatch state for quote {quote_id}: {err}"
+                            );
+                            }
+                        }
+                    }
+                    _ => return Err(payment::Error::UnsupportedPaymentOption),
                 }
+
+                Ok(response)
             }
             Err(err) => {
-                tracing::error!("Could not pay invoice: {}", err);
-                return Err(Error::ClnRpc(err).into());
-            }
-        };
+                let payment_hash = match &options {
+                    OutgoingPaymentOptions::Bolt11(options) => {
+                        Some(*options.bolt11.payment_hash().as_ref())
+                    }
+                    OutgoingPaymentOptions::Bolt12(_) => dispatched_payment_hash,
+                    _ => return Err(payment::Error::UnsupportedPaymentOption),
+                };
 
-        Ok(response)
+                let payment_may_be_live = match payment_hash {
+                    Some(payment_hash) if err.code.is_some() => {
+                        self.has_unresolved_listpays_entry(&mut cln_client, &payment_hash)
+                            .await
+                    }
+                    _ => true,
+                };
+
+                if !payment_may_be_live {
+                    match &options {
+                        OutgoingPaymentOptions::Bolt11(options) => {
+                            if let Err(err) = self
+                                .delete_bolt11_dispatch_sentinel(
+                                    options.bolt11.payment_hash().as_ref(),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "Could not clear BOLT11 dispatch sentinel for quote {quote_id}: {err}"
+                                );
+                            }
+                        }
+                        OutgoingPaymentOptions::Bolt12(_) => {
+                            if let Err(err) = self.delete_bolt12_quote_payment_hash(&quote_id).await
+                            {
+                                tracing::warn!(
+                                    "Could not clear BOLT12 dispatch state for quote {quote_id}: {err}"
+                                );
+                            }
+                        }
+                        _ => return Err(payment::Error::UnsupportedPaymentOption),
+                    }
+                }
+                tracing::error!("Could not pay invoice with xpay: {}", err);
+                Err(Error::ClnRpc(err).into())
+            }
+        }
     }
 
     #[instrument(skip_all)]
@@ -770,9 +841,11 @@ impl MintPayment for Cln {
         &self,
         payment_identifier: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
-        let (payment_hash, missing_payment_state) = match payment_identifier {
+        let (payment_hash, missing_payment_state, dispatching) = match payment_identifier {
             PaymentIdentifier::PaymentHash(hash) | PaymentIdentifier::Bolt12PaymentHash(hash) => {
-                (*hash, MeltQuoteState::Unknown)
+                let dispatching = matches!(payment_identifier, PaymentIdentifier::PaymentHash(_))
+                    && self.has_bolt11_dispatch_sentinel(hash).await?;
+                (*hash, MeltQuoteState::Unknown, dispatching)
             }
             PaymentIdentifier::QuoteId(quote_id) => match self
                 .read_bolt12_quote_payment_hash(quote_id)
@@ -780,12 +853,15 @@ impl MintPayment for Cln {
                 .map_err(payment::Error::from)?
             {
                 Bolt12QuotePaymentHashLookup::Found(payment_hash) => {
-                    (payment_hash, MeltQuoteState::Unpaid)
+                    (payment_hash, MeltQuoteState::Pending, true)
+                }
+                Bolt12QuotePaymentHashLookup::Dispatching(payment_hash) => {
+                    (payment_hash, MeltQuoteState::Unpaid, true)
                 }
                 Bolt12QuotePaymentHashLookup::Missing => {
                     return Ok(outgoing_payment_response_with_status(
                         payment_identifier,
-                        MeltQuoteState::Unpaid,
+                        MeltQuoteState::Unknown,
                     ));
                 }
                 Bolt12QuotePaymentHashLookup::Malformed => {
@@ -817,7 +893,7 @@ impl MintPayment for Cln {
 
         match select_cln_payment(&listpays_response.pays) {
             Some(pays_response) => {
-                let status = cln_pays_status_to_mint_state(pays_response.status);
+                let status = cln_pays_status_with_dispatch(pays_response.status, dispatching);
 
                 Ok(MakePaymentResponse {
                     payment_lookup_id: payment_identifier.clone(),
@@ -833,7 +909,7 @@ impl MintPayment for Cln {
             None => Ok(MakePaymentResponse {
                 payment_lookup_id: payment_identifier.clone(),
                 payment_proof: None,
-                status: missing_payment_state,
+                status: missing_cln_payment_status(missing_payment_state, dispatching),
                 total_spent: Amount::new(0, CurrencyUnit::Msat),
             }),
         }
@@ -887,6 +963,144 @@ impl Cln {
         Ok(())
     }
 
+    async fn write_bolt11_dispatch_sentinel(&self, payment_hash: &[u8; 32]) -> Result<(), Error> {
+        let key = hex::encode(payment_hash);
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        tx.kv_write(
+            CLN_KV_PRIMARY_NAMESPACE,
+            CLN_KV_BOLT11_DISPATCH_SECONDARY_NAMESPACE,
+            &key,
+            &[],
+        )
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn delete_bolt11_dispatch_sentinel(&self, payment_hash: &[u8; 32]) -> Result<(), Error> {
+        let key = hex::encode(payment_hash);
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        tx.kv_remove(
+            CLN_KV_PRIMARY_NAMESPACE,
+            CLN_KV_BOLT11_DISPATCH_SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn has_bolt11_dispatch_sentinel(&self, payment_hash: &[u8; 32]) -> Result<bool, Error> {
+        let key = hex::encode(payment_hash);
+        Ok(self
+            .kv_store
+            .kv_read(
+                CLN_KV_PRIMARY_NAMESPACE,
+                CLN_KV_BOLT11_DISPATCH_SECONDARY_NAMESPACE,
+                &key,
+            )
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?
+            .is_some())
+    }
+
+    async fn delete_bolt12_quote_payment_hash(&self, quote_id: &QuoteId) -> Result<(), Error> {
+        let key = Self::bolt12_quote_payment_hash_key(quote_id)?;
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        tx.kv_remove(
+            CLN_KV_PRIMARY_NAMESPACE,
+            CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+            &key,
+        )
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn has_unresolved_listpays_entry(
+        &self,
+        cln_client: &mut ClnRpc,
+        payment_hash: &[u8; 32],
+    ) -> bool {
+        match cln_client
+            .call_typed(&ListpaysRequest {
+                payment_hash: Some(*Sha256::from_bytes_ref(payment_hash)),
+                bolt11: None,
+                status: None,
+                start: None,
+                index: None,
+                limit: None,
+            })
+            .await
+        {
+            Ok(response) => response.pays.iter().any(|pays| {
+                matches!(
+                    pays.status,
+                    ListpaysPaysStatus::PENDING | ListpaysPaysStatus::COMPLETE
+                )
+            }),
+            Err(err) => {
+                tracing::warn!("Could not query listpays after xpay error: {err}");
+                true
+            }
+        }
+    }
+
+    async fn write_bolt12_dispatch_state(
+        &self,
+        quote_id: &QuoteId,
+        payment_hash: &[u8; 32],
+    ) -> Result<(), Error> {
+        let key = Self::bolt12_quote_payment_hash_key(quote_id)?;
+        let value = format!("{BOLT12_DISPATCHING_PREFIX}{}", hex::encode(payment_hash));
+        let mut tx = self
+            .kv_store
+            .begin_transaction()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        tx.kv_write(
+            CLN_KV_PRIMARY_NAMESPACE,
+            CLN_KV_BOLT12_OUTGOING_SECONDARY_NAMESPACE,
+            &key,
+            value.as_bytes(),
+        )
+        .await
+        .map_err(|e| Error::Database(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| Error::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
     async fn read_bolt12_quote_payment_hash(
         &self,
         quote_id: &QuoteId,
@@ -905,7 +1119,7 @@ impl Cln {
             return Ok(Bolt12QuotePaymentHashLookup::Missing);
         };
 
-        let payment_hash = match String::from_utf8(stored_hash) {
+        let stored_hash = match String::from_utf8(stored_hash) {
             Ok(payment_hash) => payment_hash,
             Err(err) => {
                 tracing::warn!(
@@ -915,8 +1129,17 @@ impl Cln {
             }
         };
 
+        let (payment_hash, dispatching) = match stored_hash.strip_prefix(BOLT12_DISPATCHING_PREFIX)
+        {
+            Some(payment_hash) => (payment_hash.to_owned(), true),
+            None => (stored_hash, false),
+        };
+
         match Self::parse_payment_hash(payment_hash) {
-            Ok(payment_hash) => Ok(Bolt12QuotePaymentHashLookup::Found(payment_hash)),
+            Ok(payment_hash) => match dispatching {
+                true => Ok(Bolt12QuotePaymentHashLookup::Dispatching(payment_hash)),
+                false => Ok(Bolt12QuotePaymentHashLookup::Found(payment_hash)),
+            },
             Err(err) => {
                 tracing::warn!(
                     "CLN: invalid BOLT12 payment hash mapping for quote {quote_id}: {err}"
@@ -942,7 +1165,8 @@ impl Cln {
                     .map_err(payment::Error::from)?
                 {
                     Bolt12QuotePaymentHashLookup::Found(payment_hash) => Ok(Some(payment_hash)),
-                    Bolt12QuotePaymentHashLookup::Missing
+                    Bolt12QuotePaymentHashLookup::Dispatching(_)
+                    | Bolt12QuotePaymentHashLookup::Missing
                     | Bolt12QuotePaymentHashLookup::Malformed => Ok(None),
                 }
             }
@@ -1035,6 +1259,7 @@ impl Cln {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Bolt12QuotePaymentHashLookup {
     Found([u8; 32]),
+    Dispatching([u8; 32]),
     Missing,
     Malformed,
 }
@@ -1044,6 +1269,25 @@ fn cln_pays_status_to_mint_state(status: ListpaysPaysStatus) -> MeltQuoteState {
         ListpaysPaysStatus::PENDING => MeltQuoteState::Pending,
         ListpaysPaysStatus::COMPLETE => MeltQuoteState::Paid,
         ListpaysPaysStatus::FAILED => MeltQuoteState::Failed,
+    }
+}
+
+fn cln_pays_status_with_dispatch(status: ListpaysPaysStatus, dispatching: bool) -> MeltQuoteState {
+    match status {
+        ListpaysPaysStatus::FAILED if dispatching => MeltQuoteState::Pending,
+        ListpaysPaysStatus::FAILED => MeltQuoteState::Unknown,
+        status => cln_pays_status_to_mint_state(status),
+    }
+}
+
+fn missing_cln_payment_status(
+    missing_payment_state: MeltQuoteState,
+    dispatching: bool,
+) -> MeltQuoteState {
+    if dispatching {
+        MeltQuoteState::Pending
+    } else {
+        missing_payment_state
     }
 }
 
@@ -1545,7 +1789,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quote_id_outgoing_lookup_without_mapping_returns_unpaid() {
+    async fn quote_id_outgoing_lookup_without_mapping_returns_unknown() {
         let cln = test_cln_with_memory_kv();
         let payment_identifier = PaymentIdentifier::QuoteId(QuoteId::new());
 
@@ -1555,7 +1799,7 @@ mod tests {
             .expect("missing quote mapping should not require CLN lookup");
 
         assert_eq!(response.payment_lookup_id, payment_identifier);
-        assert_eq!(response.status, MeltQuoteState::Unpaid);
+        assert_eq!(response.status, MeltQuoteState::Unknown);
         assert_eq!(response.payment_proof, None);
         assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Msat));
     }
