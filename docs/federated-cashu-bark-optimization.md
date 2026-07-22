@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 11, 11A, and 11B complete; Milestones 2, 7, and 7A rejected; Milestones 12-17, including 15A, not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 11, 11A, and 11B complete; Milestones 2, 7, and 7A rejected; Milestone 12 deferred; Milestones 13-17, including 15A, not started
 
 First recorded: 2026-07-20
 
@@ -954,7 +954,8 @@ slower measured policy.
 
 ## Milestone status
 
-Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
+Allowed states are `Not started`, `In progress`, `Complete`, `Rejected`, and
+`Deferred`.
 
 | Milestone | Goal | Status | Commit |
 | --- | --- | --- | --- |
@@ -976,8 +977,10 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 9 | Parallelize independent private signing and receive-secret RPCs within existing phase barriers | Complete | `perf: parallelize federated Bark private RPC phases` |
 | 10 | Replace per-observer consensus entries with signed quorum certificates | Complete | `perf: certify federated Bark observation quorums` |
 | 10A | Resume interrupted recovery-checkpoint promotion after journal/application catch-up | Complete | `fix: resume staged federation checkpoint promotion` |
-| 11 | Combine certified HTLC readiness and claim authorization if one accepted operation preserves both boundaries | Not started | — |
-| 12 | Batch simultaneous private custody-signing items per signer and phase | Not started | — |
+| 11 | Combine certified HTLC readiness and claim authorization if one accepted operation preserves both boundaries | Complete | `53c98ed36` |
+| 11A | Keep routine Bark maintenance out of active payment paths | Complete | `d44bf71b3` |
+| 11B | Scope Bark predecessor conflicts by action lineage | Complete | `a59e9e6d3` |
+| 12 | Batch simultaneous private custody-signing items per signer and phase | Deferred | docs-only evaluation |
 | 13 | Remove duplicate outgoing status probes and use one bounded actor-first terminal wait | Not started | — |
 | 14 | Reduce wallet melt fan-out with threshold-first requests and fast hedging | Not started | — |
 | 15 | Certify outgoing success, failure, and recovered-result quorums | Not started | — |
@@ -3819,7 +3822,7 @@ authority. Never delay a single item while waiting to fill a batch.
 
 ### Checklist
 
-- [ ] Measure the distribution of signing-item counts and per-request overhead
+- [x] Measure the distribution of signing-item counts and per-request overhead
       for incoming, outgoing, revocation, and maintenance actions. Reject the
       milestone without a production change if real actions normally contain
       one item or transport overhead is immaterial.
@@ -3873,8 +3876,48 @@ authority. Never delay a single item while waiting to fill a batch.
   not regress by more than 5%; CPU, bytes, retries, and memory remain bounded.
 - The implementation is confined to the custody transport/coordinator and its
   tests, with no batching scheduler or payment-backend branching elsewhere.
-- The milestone records `Kept` or `Rejected` and, if kept, is committed as
+- The milestone records `Kept`, `Rejected`, or `Deferred` and, if kept, is committed as
   `perf: batch federated Bark custody requests`.
+
+### Deferred record — 2026-07-22
+
+Decision: **Deferred at the user's direction.** No production batching code is
+retained.
+
+The preliminary sample covers 25 accepted action plans from the retained local
+federation runs: 12 incoming claims, seven outgoing sends, and six refreshes.
+Twenty-one plans had one input. The four multi-input plans were one incoming,
+one outgoing, and two refreshes, each with two inputs. The retained databases
+contain no failed-send revocation plan; Milestone 9's real failed outgoing
+exercised the common one-input revocation path and remains the applicable
+failure sample.
+
+One input does not necessarily mean one custody item. Existing endpoint metrics
+from three ordinary one-input incoming claims recorded 18 virtual-MuSig
+commitment requests and 18 partial requests in total. With three selected
+signers, that is two virtual-MuSig items per payment, in addition to one
+ordinary FROST item. The same snapshot measured about 30ms of local handler
+time per virtual-MuSig request. A temporary test-only wire probe measured a
+representative commitment payload at 1,420 bytes before and 1,825 bytes after
+the signed REST envelope, and a partial payload at 3,912 and 4,314 bytes. Thus
+batching can remove roughly 402-405 bytes of authentication-envelope overhead
+for each additional item, but it cannot remove the item payload, independent
+validation, nonce, share, or cryptographic work.
+
+The current Bark custody interface presents one item per awaited
+`sign_schnorr`, `begin_musig2`, or `finish_musig2` call. A CDK-only batcher
+cannot see the next item because Bark waits for the current result before
+issuing it. Coalescing those calls behind a timer or second scheduler would
+violate this milestone's containment rule. A clean future attempt therefore
+starts with an explicit Bark batch interface at the existing custody phase
+boundary, followed by one bounded CDK request per selected signer; it should
+not add an implicit collector in CDK.
+
+Reopen this milestone after the higher-impact outgoing milestones, or when a
+representative multi-item workload justifies changing the Bark custody API.
+Re-run the full request/byte/CPU and signing-stage comparison then. The
+temporary wire probe was removed, its focused transport test passed, and the
+worktree contains no Milestone 12 instrumentation or production change.
 
 ## Outgoing BOLT11 melt optimization track
 
@@ -4360,6 +4403,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-22 | Milestone 11 combined authorization | fresh local release federation, SQLite, reusable CLI Signet payer, three incoming and three return melts | incoming core operations 9 -> 8 and application deliveries 36 -> 32; comparable one-VTXO authorization envelopes 10,820-16,603 -> 7,665-8,401 bytes; whole-receive median canonical bytes stayed flat at 32,959 -> 33,001; durable median/max regressed 75/82s -> 131/136s; exact issuance and all-member replay passed | Keep only for the explicit accepted-round reduction and single-copy representation; claim no latency win. The expiry-bound digest is the sole final format, and the development-only recovery compatibility and diagnostics were removed. |
 | 2026-07-22 | Milestone 11A payment-priority guard | fresh local release federation, SQLite, browser-faucet fallback, one incoming followed immediately by one outgoing | incoming issued exactly 1,500 sats in eight core operations with no intervening refresh; outgoing paid once in 23s with an exact 25-sat fee and ten operations; five members converged at 18 applied entries; routine planning resumed after 30s without another Ark call | Keep the bounded pre-plan/recheck guard. The resumed refresh was rejected by a pre-existing cross-lineage `Predecessor` conflict, isolated as Milestone 11B; no incompatible key-format draft or temporary diagnostics remain. |
 | 2026-07-22 | Milestone 11B action-scoped predecessor conflicts | fresh local release federation, SQLite, reusable CLI Signet payer, exact incoming and outgoing cycle, all-member restart | the negative-control run passed journal admission but failed the old global SQL uniqueness constraint; after the matching SQL fix, operation 25 admitted the refresh on all members, restart produced five observations at operations 26-30, all journals converged at 31 entries, and only one member started one Bark refresh movement | Keep the direct cut-through `(action_id, predecessor_operation_id)` invariant in both domain and SQL. The public Ark round remained pending beyond the bounded observation window, so claim admission, replay, and exactly-one start only—not terminal materialization or a latency win. |
+| 2026-07-22 | Milestone 12 preliminary custody-batching evaluation | 25 accepted action plans across retained local runs, prior failed-send sample, endpoint metrics, temporary test-only wire probe | 21/25 plans had one input, but ordinary one-input incoming claims still used two virtual-MuSig items; each extra signed envelope added about 402-405 bytes while item validation and cryptography remained; the current Bark API awaits one item at a time | Defer at the user's direction. Reopen after higher-impact outgoing work or representative multi-item demand, starting with an explicit Bark custody batch API rather than a CDK timer or collector. No instrumentation or production code remains. |
 
 ## Completion checklist
 
