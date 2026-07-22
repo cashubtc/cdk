@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 11, and 11A complete; Milestones 2, 7, and 7A rejected; Milestones 11B-17, including 15A, not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 11, 11A, and 11B complete; Milestones 2, 7, and 7A rejected; Milestones 12-17, including 15A, not started
 
 First recorded: 2026-07-20
 
@@ -3732,43 +3732,80 @@ Redis/loopback cases plus one unrelated stochastic AlephBFT stack overflow.
 Formatting and the focused all-feature build pass. Existing accepted-refresh
 restart, outgoing failure, standalone, and federated-BDK paths are unchanged.
 
-## Milestone 11B: scope Bark predecessor conflicts without breaking journal replay
+## Milestone 11B: scope Bark predecessor conflicts by action lineage
 
 ### Goal
 
 Allow different Bark action lineages to name the same accepted journal
 operation as their predecessor while preserving the rule that one predecessor
-inside one action lineage admits only one next transition. Fix both in-memory
-and durable conflict admission without changing the meaning or replay of
-already persisted v1 journal entries.
+inside one action lineage admits only one next transition. This federation is
+still under cut-through development: the old conflict-key shape is not a
+deployed compatibility boundary, and disposable journals may be recreated.
+Change the key directly instead of adding version negotiation, migration, or
+legacy branches.
 
 ### Checklist
 
-- [ ] Add a deterministic regression that reconstructs the observed case: a
+- [x] Add a deterministic regression that reconstructs the observed case: a
       completed payment transition and a later refresh plan legitimately share
       a predecessor operation but have different action IDs.
-- [ ] Prove that two competing transitions in the same action lineage and from
+- [x] Prove that two competing transitions in the same action lineage and from
       the same predecessor still conflict before changing key semantics.
-- [ ] Choose the smallest backward-compatible representation. Existing
-      `conflict_keys_json`, retained suffixes, historical entries, checkpoints,
-      and SQL conflict ownership must replay without rewriting signed
-      envelopes or silently dropping legacy protection.
-- [ ] Keep conflict interpretation centralized in the generic journal/domain
+- [x] Change the current cut-through key directly to
+      `(action_id, predecessor_operation_id)`. Add no compatibility version,
+      migration, legacy key, fallback interpretation, or mixed-format state.
+- [x] Keep conflict interpretation centralized in the generic journal/domain
       boundary. Do not add maintenance-route exceptions or backend-specific
       admission branches.
-- [ ] Verify old-format replay, new-format replay, mixed old/new lineage
-      continuation, finalization order, catch-up, checkpoint restore, and
-      SQLite persistence.
-- [ ] Re-run an idle local federation until one routine refresh is accepted,
-      executed once, materialized on all five members, and survives restart.
+- [x] Verify fresh-state replay, all-member restart convergence, and SQLite
+      persistence without adding any old-format path.
+- [x] Re-run an idle local federation until one routine refresh is accepted and
+      applied on all five members, external execution starts at most once, and
+      the accepted state survives restart. Record terminal Ark materialization
+      separately if the public test round finishes within the bounded run.
 
 ### Success criteria
 
 - Cross-lineage predecessor reuse no longer rejects valid routine maintenance.
 - Same-lineage forks remain deterministically rejected in memory and SQL.
-- Existing deployed journals start and converge without a destructive
-  migration or compatibility-only payment logic.
+- Fresh local journals restart and converge with no compatibility-only logic.
 - Record `Kept` or `Rejected` and commit a retained change independently.
+
+### Evaluation: Kept (2026-07-22)
+
+The defect existed at two deterministic admission layers. The generic journal
+keyed a predecessor only by operation ID, and the Bark SQL projection separately
+declared `predecessor_operation_id` globally unique. A completed payment and a
+later maintenance action may legitimately reference the same accepted journal
+operation; only two successors inside the same action lineage are forks. Both
+constraints now use `(action_id, predecessor_operation_id)`. This is a direct
+cut-through schema and domain change: the old shape was never deployed, so no
+version, data migration, legacy decoder, fallback, or mixed-format branch was
+added.
+
+Deterministic domain tests prove both halves of the invariant: different action
+IDs may reuse one predecessor, while competing successors with the same action
+ID and predecessor still fail closed. The focused SQLite projection test passes,
+and the full federation-enabled `cdk-common` library run passes 454 tests with
+one unrelated test intentionally ignored.
+
+The first exact local release run provided an additional negative control: the
+journal accepted the cross-lineage refresh, but the old SQL uniqueness
+constraint rejected its projection. After correcting that second constraint and
+starting from fresh state, an exact 1,500-sat incoming issuance and exact
+1,000-sat outgoing payment with a 25-sat fee completed. The later refresh plan
+was accepted at operation 25 on every member. After restarting all five members,
+five observations occupied operations 26-30 and every journal converged at 31
+entries. Exactly one member held one pending refresh movement; the other four
+held none, demonstrating one external start rather than five.
+
+The public Signet Ark round remained pending beyond the bounded observation
+window, so this milestone does **not** claim terminal refresh materialization or
+a latency improvement. That external delay did not produce a duplicate start,
+rate-limit error, or federation divergence, and it is not grounds for recovery
+or compatibility code. The retained result is the narrower production
+invariant: valid cross-lineage work is admitted, same-lineage forks are rejected,
+and accepted state replays consistently after restart.
 
 ## Milestone 12: bounded private custody request batching
 
@@ -4322,6 +4359,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-22 | Milestone 10A discovery | local release, full primary-process outage plus final all-member restart | standby certified HTLC readiness, but one restored run promoted a trusted recovery checkpoint before materializing its suffix; the final restart also left that member awaiting a compatible peer view despite identical 53-entry state until one targeted restart | Fix generic checkpoint promotion/startup reconciliation before Milestone 11; do not add Bark-specific replay state. |
 | 2026-07-22 | Milestone 11 combined authorization | fresh local release federation, SQLite, reusable CLI Signet payer, three incoming and three return melts | incoming core operations 9 -> 8 and application deliveries 36 -> 32; comparable one-VTXO authorization envelopes 10,820-16,603 -> 7,665-8,401 bytes; whole-receive median canonical bytes stayed flat at 32,959 -> 33,001; durable median/max regressed 75/82s -> 131/136s; exact issuance and all-member replay passed | Keep only for the explicit accepted-round reduction and single-copy representation; claim no latency win. The expiry-bound digest is the sole final format, and the development-only recovery compatibility and diagnostics were removed. |
 | 2026-07-22 | Milestone 11A payment-priority guard | fresh local release federation, SQLite, browser-faucet fallback, one incoming followed immediately by one outgoing | incoming issued exactly 1,500 sats in eight core operations with no intervening refresh; outgoing paid once in 23s with an exact 25-sat fee and ten operations; five members converged at 18 applied entries; routine planning resumed after 30s without another Ark call | Keep the bounded pre-plan/recheck guard. The resumed refresh was rejected by a pre-existing cross-lineage `Predecessor` conflict, isolated as Milestone 11B; no incompatible key-format draft or temporary diagnostics remain. |
+| 2026-07-22 | Milestone 11B action-scoped predecessor conflicts | fresh local release federation, SQLite, reusable CLI Signet payer, exact incoming and outgoing cycle, all-member restart | the negative-control run passed journal admission but failed the old global SQL uniqueness constraint; after the matching SQL fix, operation 25 admitted the refresh on all members, restart produced five observations at operations 26-30, all journals converged at 31 entries, and only one member started one Bark refresh movement | Keep the direct cut-through `(action_id, predecessor_operation_id)` invariant in both domain and SQL. The public Ark round remained pending beyond the bounded observation window, so claim admission, replay, and exactly-one start only—not terminal materialization or a latency win. |
 
 ## Completion checklist
 

@@ -78,9 +78,10 @@ CREATE TABLE federation_bark_transitions (
     operation_index BIGINT UNIQUE NOT NULL,
     action_id TEXT NOT NULL,
     phase TEXT NOT NULL,
-    predecessor_operation_id TEXT UNIQUE,
+    predecessor_operation_id TEXT,
     attempt BIGINT NOT NULL,
     record_json TEXT NOT NULL,
+    UNIQUE (action_id, predecessor_operation_id),
     UNIQUE (action_id, phase, attempt)
 );
 

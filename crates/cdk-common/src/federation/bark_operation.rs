@@ -1259,8 +1259,10 @@ pub enum FederationBarkConflictKey {
         /// Custody attempt where applicable.
         attempt: Option<u32>,
     },
-    /// One predecessor may admit only one next transition.
+    /// One action predecessor may admit only one next transition.
     Predecessor {
+        /// Stable action lineage owning the predecessor edge.
+        action_id: FederationBarkActionId,
         /// Exact predecessor operation.
         operation_id: FederationOperationId,
     },
@@ -1449,6 +1451,7 @@ impl FederationBarkOperation {
                     attempt: Some(operation.attempt),
                 });
                 keys.push(FederationBarkConflictKey::Predecessor {
+                    action_id: operation.action_id,
                     operation_id: operation.predecessor_operation_id,
                 });
                 keys.push(FederationBarkConflictKey::ExternalId {
@@ -1495,6 +1498,7 @@ impl FederationBarkOperation {
                         attempt: Some(operation.attempt),
                     },
                     FederationBarkConflictKey::Predecessor {
+                        action_id: operation.action_id,
                         operation_id: operation.predecessor_operation_id,
                     },
                 ];
@@ -3600,8 +3604,8 @@ mod tests {
     use super::*;
     use crate::federation::{
         FederationAddressKeychain, FederationBarkEvidenceAttestation, FederationConfigDigest,
-        FederationConsensusItem, FederationJournalAppendOutcome, FederationOperationEnvelope,
-        InMemoryFederationJournal,
+        FederationConsensusItem, FederationJournalAppendOutcome, FederationOperationConflictKey,
+        FederationOperationEnvelope, InMemoryFederationJournal,
     };
 
     fn digest(seed: u8) -> FederationBarkDigest {
@@ -4432,6 +4436,73 @@ mod tests {
             .append(envelope(FederationBarkOperation::ActionPlan(
                 attempt_conflict
             )))
+            .is_err());
+    }
+
+    #[test]
+    fn predecessor_conflicts_are_scoped_to_the_action_lineage() {
+        let first = refresh_plan();
+        let mut second = first.clone();
+        let predecessor = second.predecessor_operation_id;
+        second.action_id = action(70);
+        second.inputs[0].vtxo_id = vtxo(70);
+        second.inputs[0].locator = FederationBarkVtxoLocator::vtxo_custody(20);
+        second.outputs[0].locator = FederationBarkVtxoLocator::vtxo_custody(21);
+        second.external_id =
+            FederationBarkExternalId::derive_refresh(second.action_id, predecessor, second.attempt)
+                .expect("second refresh external id");
+        second.artifacts.clear();
+        second
+            .bind_refresh_artifacts(800, 900, [maintenance_input_artifact()])
+            .expect("bind second refresh request");
+
+        let mut journal = InMemoryFederationJournal::new();
+        journal
+            .append(envelope(FederationBarkOperation::ActionPlan(first)))
+            .expect("first action");
+        journal
+            .append(envelope(FederationBarkOperation::ActionPlan(second)))
+            .expect("different action may reuse the same predecessor");
+
+        assert_eq!(journal.entries().len(), 2);
+        assert!(journal.entries()[1].conflict_keys.contains(
+            &FederationOperationConflictKey::Bark {
+                key: FederationBarkConflictKey::Predecessor {
+                    action_id: action(70),
+                    operation_id: predecessor,
+                },
+            },
+        ));
+    }
+
+    #[test]
+    fn predecessor_conflicts_still_reject_same_lineage_forks() {
+        let plan = refresh_plan();
+        let plan_operation_id = operation_id(71);
+        let predecessor = operation_id(72);
+        let first = FederationBarkActionTransition::signing_attempt_advanced(
+            plan_operation_id,
+            predecessor,
+            &plan,
+            2,
+            vec![member(2), member(3)],
+        )
+        .expect("first retry transition");
+        let second = FederationBarkActionTransition::signing_attempt_advanced(
+            plan_operation_id,
+            predecessor,
+            &plan,
+            3,
+            vec![member(3), member(4)],
+        )
+        .expect("competing retry transition");
+        let mut journal = InMemoryFederationJournal::new();
+        journal
+            .append(envelope(FederationBarkOperation::ActionTransition(first)))
+            .expect("first lineage edge");
+
+        assert!(journal
+            .append(envelope(FederationBarkOperation::ActionTransition(second)))
             .is_err());
     }
 
