@@ -51,7 +51,7 @@ use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::{CurrencyUnit, MeltQuoteState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::{
     CdkFrostVtxoCustody, Error, FederatedBarkCustodyClient, FederatedBarkLimits,
@@ -238,6 +238,10 @@ pub struct FederatedBarkRuntime {
     wallet: FederationWallet,
     custody: Arc<CdkFrostVtxoCustody>,
     receive_secrets: Arc<FederatedBarkReceiveSecretStore>,
+    // Bark receive replay and terminal acknowledgement are multi-step local
+    // projection mutations. Keep every such operation mutually exclusive so
+    // acknowledgement cannot remove a checkpoint inside a replay await gap.
+    receive_projection: Mutex<()>,
     health: RwLock<RuntimeHealth>,
 }
 
@@ -249,6 +253,7 @@ impl fmt::Debug for FederatedBarkRuntime {
             .field("limits", &self.limits)
             .field("wallet", &"<member-local Bark projection>")
             .field("receive_secrets", &"<encrypted member-local store>")
+            .field("receive_projection", &"<serialized receive projection>")
             .field("health", &"<bounded runtime status>")
             .finish()
     }
@@ -354,6 +359,7 @@ impl FederatedBarkRuntime {
             wallet,
             custody,
             receive_secrets,
+            receive_projection: Mutex::new(()),
             health: RwLock::new(RuntimeHealth {
                 local_frontier: 0,
                 degraded_reason: None,
@@ -2303,6 +2309,7 @@ impl FederatedBarkRuntime {
         intent: &FederationBarkReceiveIntent,
         prepared: &FederationBarkReceivePrepared,
     ) -> Result<(), Error> {
+        let _receive_projection_guard = self.receive_projection.lock().await;
         prepared
             .validate_against_intent(intent)
             .map_err(|_| Error::ReceiveProjectionFailed)?;
@@ -2362,6 +2369,7 @@ impl FederatedBarkRuntime {
         prepared: &FederationBarkReceivePrepared,
         accepted_ready: &FederationJournalEntry,
     ) -> Result<(), Error> {
+        let _receive_projection_guard = self.receive_projection.lock().await;
         if accepted_ready.status() != FederationOperationStatus::Applied {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
@@ -2414,6 +2422,7 @@ impl FederatedBarkRuntime {
         )>,
         Error,
     > {
+        let _receive_projection_guard = self.receive_projection.lock().await;
         if observation_epoch == 0 {
             return Err(Error::ReceiveObservationFailed);
         }
@@ -2496,6 +2505,7 @@ impl FederatedBarkRuntime {
         prepared: &FederationBarkReceivePrepared,
         accepted: &FederationBarkMemberObservation,
     ) -> Result<FederationBarkActionTransition, Error> {
+        let _receive_projection_guard = self.receive_projection.lock().await;
         if accepted.action_id != intent.action_id
             || accepted.quote.as_deref() != Some(intent.quote.as_str())
             || accepted.observer != self.member_id
@@ -2539,6 +2549,7 @@ impl FederatedBarkRuntime {
         ready_operation_id: FederationOperationId,
         proposal: FederatedBarkReceiveClaimProposal,
     ) -> Result<FederationBarkActionPlan, Error> {
+        let _receive_projection_guard = self.receive_projection.lock().await;
         let receive = self.receive_plan(intent, prepared)?;
         let evidence = self
             .wallet
@@ -2646,6 +2657,17 @@ impl FederatedBarkRuntime {
     /// Reconstruct and compare every field of an incoming claim plan before it
     /// can authorize FROST or virtual MuSig2.
     pub async fn validate_receive_claim_plan(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared: &FederationBarkReceivePrepared,
+        plan: &FederationBarkActionPlan,
+    ) -> Result<FederationLightningReceiveClaimPlan, Error> {
+        let _receive_projection_guard = self.receive_projection.lock().await;
+        self.validate_receive_claim_plan_inner(intent, prepared, plan)
+            .await
+    }
+
+    async fn validate_receive_claim_plan_inner(
         &self,
         intent: &FederationBarkReceiveIntent,
         prepared: &FederationBarkReceivePrepared,
@@ -2773,6 +2795,7 @@ impl FederatedBarkRuntime {
         prepared: &FederationBarkReceivePrepared,
         accepted_plan: &FederationJournalEntry,
     ) -> Result<(), Error> {
+        let _receive_projection_guard = self.receive_projection.lock().await;
         let plan = accepted_claim_plan(accepted_plan)?;
         let (receive, claim) = self.accepted_receive_claim_plan(intent, prepared, plan)?;
         if let Some(certified_ready) = certified_receive_htlc_transition(plan)? {
@@ -2807,6 +2830,7 @@ impl FederatedBarkRuntime {
         accepted_plan: &FederationJournalEntry,
         accepted_transition: &FederationJournalEntry,
     ) -> Result<(), Error> {
+        let _receive_projection_guard = self.receive_projection.lock().await;
         let plan = accepted_claim_plan(accepted_plan)?;
         if accepted_transition.status() != FederationOperationStatus::Applied {
             return Err(Error::ReceiveClaimPlanInvalid);
@@ -2865,6 +2889,7 @@ impl FederatedBarkRuntime {
         accepted_plan: FederationJournalEntry,
         accepted_authorization: FederationJournalEntry,
     ) -> Result<FederatedBarkReceiveClaimOutcome, Error> {
+        let _receive_projection_guard = self.receive_projection.lock().await;
         if accepted_plan.status() != FederationOperationStatus::Applied {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
@@ -2874,7 +2899,7 @@ impl FederatedBarkRuntime {
             return Err(Error::ReceiveClaimPlanInvalid);
         };
         let claim = self
-            .validate_receive_claim_plan(intent, prepared, plan)
+            .validate_receive_claim_plan_inner(intent, prepared, plan)
             .await?;
         let receive = self.receive_plan(intent, prepared)?;
         let operation = FederationBarkOperation::ActionPlan(plan.clone());
@@ -3003,6 +3028,7 @@ impl FederatedBarkRuntime {
         intent: &FederationBarkReceiveIntent,
         prepared: &FederationBarkReceivePrepared,
     ) -> Result<(), Error> {
+        let _receive_projection_guard = self.receive_projection.lock().await;
         let receive = self.receive_plan(intent, prepared)?;
         self.wallet
             .acknowledge_lightning_receive_claim(&receive)
@@ -3455,6 +3481,34 @@ const fn send_quote_state_is_replayable(state: MeltQuoteState) -> bool {
 mod tests {
     use super::*;
 
+    const REPLAY_TEST_INVOICE: &str = "lntbs100u1p5j0x82sp5d0rwfh7tgrrlwsegy9rx3tzpt36cqwjqza5x4wvcjxjzscfaf6jspp5d8q7354dg3p8h0kywhqq5dq984r8f5en98hf9ln85ug0w8fx6hhsdqqcqzpc9qyysgqyk54v7tpzprxll7e0jyvtxcpgwttzk84wqsfjsqvcdtq47zt2wssxsmtjhz8dka62mdnf9jafhu3l4cpyfnsx449v4wstrwzzql2w5qqs8uh7p";
+
+    fn replay_test_receive_checkpoint(action_id: &str) -> bark::actions::WalletActionCheckpoint {
+        let invoice = REPLAY_TEST_INVOICE
+            .parse::<bark::ark::lightning::Bolt11Invoice>()
+            .expect("valid replay test invoice");
+        bark::actions::WalletActionCheckpoint::LightningReceive(
+            bark::actions::lightning::receive::LightningReceive {
+                action_id: Some(action_id.to_owned()),
+                federation_request_commitment: None,
+                federation_cashu_amount_sat: None,
+                federation_receive_fee_bound_sat: None,
+                federation_minimum_net_amount_sat: None,
+                federation_policy_version: None,
+                custody_session: None,
+                explicit_anti_dos: None,
+                mailbox_id: None,
+                payment_hash: PaymentHash::from(&invoice),
+                invoice,
+                payment_preimage: Preimage::from([42; 32]),
+                htlc_recv_cltv_delta: 18,
+                anti_dos_token: None,
+                key_index: 0,
+                progress: bark::actions::lightning::receive::Progress::AwaitingPayment,
+            },
+        )
+    }
+
     #[test]
     fn accepted_send_quotes_replay_after_terminal_resolution() {
         assert!(send_quote_state_is_replayable(MeltQuoteState::Pending));
@@ -3483,6 +3537,109 @@ mod tests {
             ),
             Error::CustodySignerUnavailable
         ));
+    }
+
+    #[tokio::test]
+    async fn receive_projection_guard_prevents_terminal_checkpoint_replay_race() {
+        use bark::persist::adaptor::StorageAdaptorWrapper;
+        use bark::persist::BarkPersister;
+
+        let action_id = "federation.receive-replay-race".to_string();
+        let checkpoint = replay_test_receive_checkpoint(&action_id);
+
+        // Reproduce the production interleaving without the runtime guard:
+        // replay materializes the base checkpoint, terminal acknowledgement
+        // deletes it during the awaited reconstruction window, and replay's
+        // second read observes the exact production error.
+        let unguarded_db: Arc<dyn BarkPersister> = Arc::new(StorageAdaptorWrapper::new_memory());
+        let materialized = Arc::new(tokio::sync::Notify::new());
+        let removed = Arc::new(tokio::sync::Notify::new());
+        let replay = tokio::spawn({
+            let db = Arc::clone(&unguarded_db);
+            let action_id = action_id.clone();
+            let checkpoint = checkpoint.clone();
+            let materialized = Arc::clone(&materialized);
+            let removed = Arc::clone(&removed);
+            async move {
+                db.upsert_wallet_action_checkpoint(&action_id, &checkpoint)
+                    .await
+                    .expect("materialize receive checkpoint");
+                materialized.notify_one();
+                removed.notified().await;
+                db.get_wallet_action_checkpoint(&action_id)
+                    .await
+                    .expect("reload receive checkpoint")
+                    .ok_or_else(|| anyhow::anyhow!("accepted receive is not materialized"))
+            }
+        });
+        let cleanup = tokio::spawn({
+            let db = Arc::clone(&unguarded_db);
+            let action_id = action_id.clone();
+            let materialized = Arc::clone(&materialized);
+            let removed = Arc::clone(&removed);
+            async move {
+                materialized.notified().await;
+                db.remove_wallet_action_checkpoint(&action_id)
+                    .await
+                    .expect("acknowledge terminal receive");
+                removed.notify_one();
+            }
+        });
+        cleanup.await.expect("cleanup task");
+        let error = replay
+            .await
+            .expect("replay task")
+            .expect_err("unguarded replay must reproduce the missing checkpoint");
+        assert_eq!(error.to_string(), "accepted receive is not materialized");
+
+        // The runtime's receive-projection mutex makes the same operations
+        // mutually exclusive. Cleanup can run immediately after replay, but
+        // never between its materialization and second read.
+        let guarded_db: Arc<dyn BarkPersister> = Arc::new(StorageAdaptorWrapper::new_memory());
+        let receive_projection = Arc::new(Mutex::new(()));
+        let materialized = Arc::new(tokio::sync::Notify::new());
+        let guarded_replay = tokio::spawn({
+            let db = Arc::clone(&guarded_db);
+            let receive_projection = Arc::clone(&receive_projection);
+            let action_id = action_id.clone();
+            let checkpoint = checkpoint.clone();
+            let materialized = Arc::clone(&materialized);
+            async move {
+                let _guard = receive_projection.lock().await;
+                db.upsert_wallet_action_checkpoint(&action_id, &checkpoint)
+                    .await
+                    .expect("materialize guarded receive checkpoint");
+                materialized.notify_one();
+                tokio::task::yield_now().await;
+                db.get_wallet_action_checkpoint(&action_id)
+                    .await
+                    .expect("reload guarded receive checkpoint")
+                    .ok_or_else(|| anyhow::anyhow!("accepted receive is not materialized"))
+            }
+        });
+        let guarded_cleanup = tokio::spawn({
+            let db = Arc::clone(&guarded_db);
+            let receive_projection = Arc::clone(&receive_projection);
+            let action_id = action_id.clone();
+            let materialized = Arc::clone(&materialized);
+            async move {
+                materialized.notified().await;
+                let _guard = receive_projection.lock().await;
+                db.remove_wallet_action_checkpoint(&action_id)
+                    .await
+                    .expect("acknowledge guarded terminal receive");
+            }
+        });
+        guarded_replay
+            .await
+            .expect("guarded replay task")
+            .expect("guarded replay retains its checkpoint");
+        guarded_cleanup.await.expect("guarded cleanup task");
+        assert!(guarded_db
+            .get_wallet_action_checkpoint(&action_id)
+            .await
+            .expect("load acknowledged guarded checkpoint")
+            .is_none());
     }
 }
 
