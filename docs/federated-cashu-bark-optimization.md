@@ -986,11 +986,13 @@ behavior yet.
 | 11B | Scope Bark predecessor conflicts by action lineage | Complete | `a59e9e6d3` |
 | 12 | Batch simultaneous private custody-signing items per signer and phase | Deferred | docs-only evaluation |
 | 13 | Remove duplicate outgoing status probes and use one bounded actor-first terminal wait | Complete — kept | `perf: streamline federated Bark outgoing status` |
-| 14 | Reduce wallet melt fan-out with threshold-first requests and fast hedging | Not started | — |
+| 14 | Reduce wallet melt fan-out with threshold-first requests and fast hedging | Rejected | `docs: reject threshold-first federated melt fanout` |
 | 15 | Certify outgoing success, failure, and recovered-result quorums | Not started | — |
 | 15A | Combine certified outgoing failure with revocation authorization if the pre-signing boundary remains explicit | Not started | — |
 | 16 | Consolidate Bark/Ark outgoing setup and initiation RPCs | Not started | — |
 | 17 | Remove the separate `PaymentInitiated` operation only if ambiguous initiation remains exactly recoverable | Not started | — |
+| 18 | Replace replicated melt POST bodies with one canonical submission followed by threshold GET verification | Not started | — |
+| 19 | Avoid repeated federation keyset discovery across short-lived wallet processes | Not started | — |
 
 ## Milestone 0: causal baseline
 
@@ -4222,31 +4224,33 @@ new milestone; do not hide a second certificate protocol here.
 
 ### Checklist
 
-- [ ] Measure request starts, completed responses, bytes, first-three latency,
+- [x] Measure request starts, completed responses, bytes, first-three latency,
       hedge activations, and wallet-visible p50/p95 with temporary
       instrumentation, then remove it.
-- [ ] Select the initial three members deterministically and rotate fairly
+- [x] Select the initial three members deterministically and rotate fairly
       without using unreplicated local health as protocol authority.
-- [ ] Choose a subsecond hedge delay from local tail measurements. Start extra
+- [x] Evaluate a subsecond hedge from the control tail, then the smallest
+      measured relaxations after live evidence disproved it. Start extra
       members immediately on timeout, transport failure, invalid response, or
       evidence that a matching threshold cannot be reached.
-- [ ] Apply the same contained collector behavior to quote visibility, melt
+- [x] Apply the same contained collector behavior to quote visibility, melt
       submission, and GET reconciliation where their matching rules agree.
-- [ ] Preserve definitive rejection handling, response validation, BLS share
+- [x] Preserve definitive rejection handling, response validation, BLS share
       aggregation, retries, request identity, and lost-response recovery.
-- [ ] Add no permanent preferred coordinator, background scheduler, or
+- [x] Add no permanent preferred coordinator, background scheduler, or
       backend-specific branch to the generic federation connector.
 
 ### Tests
 
-- [ ] Healthy three-member responses complete with seven public requests and
+- [x] Healthy synthetic three-member responses complete with seven public
+      requests and
       exact change-signature aggregation.
-- [ ] A slow, offline, invalid, or equivocating initial member triggers a
+- [x] A slow, offline, invalid, or equivocating initial member triggers a
       hedge and reaches a valid threshold without accepting mismatched views.
-- [ ] Two unavailable members remain live; loss of three members fails safely.
-- [ ] Response loss after external payment still uses GET-only saga recovery
+- [x] Two unavailable members remain live; loss of three members fails safely.
+- [x] Response loss after external payment still uses GET-only saga recovery
       and never resubmits the Lightning payment.
-- [ ] Mint, swap, standalone, and federated-BDK connector regressions preserve
+- [x] Mint, swap, standalone, and federated-BDK connector regressions preserve
       their current fan-out and security semantics unless separately measured.
 
 ### Success criteria
@@ -4259,6 +4263,94 @@ new milestone; do not hide a second certificate protocol here.
   timeout.
 - The milestone records `Kept` or `Rejected` and, if kept, is committed as
   `perf: hedge federated wallet melt requests`.
+
+### 2026-07-23 progress record — Rejected
+
+The direct control disproved the assumed request model before any candidate
+was retained. A successful real Bark melt starts 16 public requests when the
+wallet's terminal reconciliation is included: one quote POST, five visibility
+GETs, five melt POSTs, and five final GETs. The documented eleven-request
+number was correct only before reconciliation. A fresh short-lived CLI process
+also normally made ten keyset-validation GETs; that separate discovery is
+recorded as Milestone 19 rather than hidden in this change.
+
+The control and candidates used CDK `2ccb4bcbd`, the existing Bark integration
+based on `aa98f5685`, locked release builds, five loopback members with SQLite,
+3-of-5 wallet/signature authority and 4-of-5 consensus, real 1,000-sat Signet
+Lightning invoices, and the public Signet Ark service. The final disposable
+candidate CLI SHA-256 was
+`632d9a0bc7192d53141fae78a22440f641901330801b5e132d4900bc16a0c56c`.
+The clean retained CLI rebuilt after removing the candidate was
+`bc61ccd474f612f472bc45261fb31a005855d8251aecc07b34929d1a43f7b297`.
+The pre-candidate instrumented binary was overwritten before its hash was
+recorded; the identical source revision, build command, topology, and raw
+counter schema were retained, but this is a measurement-hygiene limitation.
+No Nocean host was used.
+
+Temporary identifier-free probes counted collector starts/completions and HTTP
+method, route class, body size, and duration. The three controls were followed
+by three quote-hash rotation attempts, one publisher-aligned tuning sample,
+and three final publisher-aligned samples. All invoices settled once and every
+CLI melt completed successfully.
+
+| Sample | Selection / response hedge | Public starts | Status starts | Melt POST starts | Hedges | Third melt response | Probe span |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| C1 | full fan-out | 16 | 10 | 5 | 0 | 3,014.611ms | 34.831s |
+| C2 | full fan-out | 16 | 10 | 5 | 0 | 3,764.702ms | 35.369s |
+| C3 | full fan-out | 16 | 10 | 5 | 0 | 3,767.302ms | 36.726s |
+| A1 | quote rotation / 950ms | 14 | 8 | 5 | 2 | 4,389.831ms | 51.658s |
+| A2 | quote rotation / 2s | 14 | 8 | 5 | 2 | 5,959.615ms | 47.477s |
+| A3 | quote rotation / 2s | 14 | 8 | 5 | 2 | 7,459.166ms | 45.614s |
+| P1 | operation-publisher rotation / 950ms | 14 | 8 | 5 | 2 | 4,466.149ms | 52.885s |
+| F1 | operation-publisher rotation / 1.5s | 14 | 8 | 5 | 2 | 4,538.470ms | 45.892s |
+| F2 | operation-publisher rotation / 1.5s | 14 | 8 | 5 | 2 | 4,595.655ms | 44.364s |
+| F3 | operation-publisher rotation / 1.5s | 12 | 6 | 5 | 1 | 4,555.592ms | 45.274s |
+
+The first candidate exposed one real issue: quote-ID rotation could omit the
+existing deterministic consensus publisher, whose successors intentionally
+wait in three-second rank slots. Deriving the POST cohort from the canonical
+melt operation ID removed the six-second omitted-primary case. It did not make
+three POSTs sufficient. In every final sample one original POST handler still
+lagged while newly contacted members returned the already accepted state in
+roughly 10-36ms, so the hedge started all five POST bodies anyway. A 950ms
+response hedge was below the observed 1.36s selected-cohort spread; 1.5s and
+2s merely delayed the inevitable hedge. The four-second no-response guard was
+also exercised once.
+
+The final median public request count moved only 16 -> 14 (-12.5%); before
+reconciliation it moved 11 -> 9 rather than the required seven because all
+five melt POSTs still started. In two body-size-comparable samples each melt
+POST was 1,581 bytes, so both control and candidate sent 7,905 request-body
+bytes. Captured response bytes are not a wire-byte comparison because canceled
+futures can leave server responses unobserved. The third-response median
+regressed 3,764.702 -> 4,555.592ms (+21.0%), and the probe-span median regressed
+35.369 -> 45.274s (+28.0%). Some later samples also required the wallet's
+existing proof-consolidation mint fan-out, which adds whole-flow variance, but
+the isolated melt collector stage independently fails the 5% regression gate.
+
+The disposable correctness suite covered exact aggregate change signatures,
+deterministic rotation, one quote POST plus three visibility GETs, three-member
+GET-only recovery, slow and failed initial members, an invalid BLS share, two
+unavailable members, and safe failure with three unavailable members: 13
+focused tests passed. The complete federation-wallet module then passed 101
+tests, including unchanged mint/swap full fan-out, rejection agreement,
+catch-up, timeout, restore, and keyset validation. These tests and roughly 340
+lines of candidate collector machinery were removed with the failed behavior.
+
+Decision: **Rejected.** The candidate missed its seven-request target, started
+the same five large POST bodies, and materially worsened both the isolated
+collector stage and whole-flow timing. Full melt fan-out remains unchanged.
+All temporary probes, counters, candidate tests, and production scheduling
+code were reverted. No protocol, database, public Cashu, standalone, or
+federated-BDK behavior changed. Milestone 18 records the simpler follow-up
+question exposed by the trace: whether one canonical POST can trigger the
+idempotent melt while a threshold of ordinary GET responses supplies wallet
+authority and exact change shares.
+
+The clean retained tree then passed all 93 federation-wallet tests, formatting,
+diff whitespace validation, and the exact locked release federation CLI build.
+A source-tree comparison against `2ccb4bcbd` confirmed that no crate or script
+diff remained; only this plan changed.
 
 ## Milestone 15: outgoing terminal quorum certificates
 
@@ -4478,6 +4570,89 @@ after Milestone 15A.
 - Otherwise retain `PaymentInitiated`, record the proof gap, and commit the
   rejected evaluation without production behavior changes.
 - If kept, commit as `perf: remove redundant Bark initiation boundary`.
+
+## Milestone 18: canonical melt submission with threshold GET verification
+
+### Goal
+
+Investigate the simpler transport split exposed by Milestone 14: use one
+deterministically selected public POST to submit the canonical, idempotent melt
+operation, then obtain wallet authority and exact change signatures from a
+threshold of ordinary melt-status GET responses. The POST response is only a
+submission result; it must never become single-member payment authority.
+
+This is preferable to delayed three-POST hedging only if it removes replicated
+large request bodies without adding a certificate, private wallet protocol,
+second payment path, or latency regression. Reuse the canonical operation ID
+and the mint's existing deterministic publisher order. Treat a lost POST
+response as ambiguous and query threshold status before any bounded fallback
+resubmits the identical operation.
+
+### Checklist
+
+- [ ] Prove that every value currently required from three POST responses is
+      available and validated identically from threshold GET responses,
+      including exact blinded change shares and definitive rejection state.
+- [ ] Separate submission transport from threshold authorization explicitly;
+      one POST success, error, timeout, or disconnect cannot decide payment
+      success or release proofs.
+- [ ] Select the first submitter from the existing canonical melt operation ID
+      publisher order and use only bounded identical-request fallback.
+- [ ] On ambiguous response loss, perform GET-only recovery before resubmitting
+      and prove the Bark payment side effect remains exactly once.
+- [ ] Measure POST and GET starts, body bytes, accepted/duplicate operations,
+      external payment attempts, third-authoritative-response latency, and
+      wallet p50/p95 against the retained full-fan-out control.
+- [ ] Keep quote visibility, mint, swap, standalone, and federated-BDK behavior
+      unchanged unless separately evaluated.
+
+### Tests and success criteria
+
+- [ ] Healthy success uses one melt POST and a three-member authoritative GET,
+      aggregates exact change, and pays once.
+- [ ] Submitter timeout before acceptance, response loss after acceptance, and
+      submitter crash after external payment all recover through GET without a
+      second payment.
+- [ ] Invalid, stale, equivocating, offline, and slow GET members cannot form a
+      result below threshold; two unavailable members remain live and three
+      fail safely.
+- [ ] POST request-body bytes fall by at least 60%, accepted operations and
+      external attempts do not increase, and wallet p95 stays within the 5%
+      regression budget. Otherwise reject and retain full fan-out.
+- [ ] If kept, commit as `perf: verify federated melts after canonical submit`.
+
+## Milestone 19: durable federation keyset-validation cache
+
+### Goal
+
+Avoid repeating federation mint-info and active-keyset discovery every time a
+short-lived CLI process opens the same imported federation. Milestone 14
+normally observed ten extra GETs and 26,120 response bytes before a melt: five
+mint-info responses and five keyset responses. The current cache is in-memory,
+so it disappears between CLI commands.
+
+Persist or derive a compact validation record only if it can be bound to the
+federation config digest, keyset ID/version, aggregate key, member public
+shares, roster, and rotation epoch. Cached data is an optimization, never
+authority: an unknown or changed active keyset must trigger bounded refresh and
+fail closed on mismatch. Do not introduce periodic refresh polling.
+
+### Checklist, tests, and success criteria
+
+- [ ] Attribute all ten requests and identify which advertised values are
+      already authenticated by the imported public config versus which require
+      live member confirmation.
+- [ ] Design the smallest durable record and invalidation rule; prefer no new
+      schema if the imported config already proves the needed values.
+- [ ] Cold start, rotation, changed config digest, stale record, corrupt record,
+      member disagreement, restart, and restore fail closed or refresh without
+      accepting a minority view.
+- [ ] Warm short-lived CLI commands remove at least eight of ten discovery GETs
+      and their bytes with no extra background traffic; cold behavior and
+      standalone wallets remain unchanged.
+- [ ] Wallet-visible p95 improves or stays within 5%, and the retained code is
+      simpler than a general cache-coherence subsystem. Otherwise reject it.
+- [ ] If kept, commit as `perf: reuse validated federation keysets`.
 
 ## End-to-end verification matrix
 
