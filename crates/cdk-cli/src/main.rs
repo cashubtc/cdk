@@ -302,7 +302,8 @@ async fn main() -> Result<()> {
             sub_commands::check_requests::check_requests(&wallet_repository).await
         }
         Commands::MintInfo(sub_command_args) => {
-            sub_commands::mint_info::mint_info(&wallet_repository, sub_command_args).await
+            sub_commands::mint_info::mint_info(&wallet_repository, args.proxy, sub_command_args)
+                .await
         }
         Commands::Mint(sub_command_args) => {
             sub_commands::mint::mint(&wallet_repository, sub_command_args, &default_unit).await
