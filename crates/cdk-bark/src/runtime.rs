@@ -2808,7 +2808,14 @@ impl FederatedBarkRuntime {
             self.wallet
                 .apply_lightning_receive_htlc_replay(&receive, &evidence.vtxos)
                 .await
-                .map_err(|_| Error::ReceiveClaimRecoveryRequired)?;
+                .map_err(|error| {
+                    tracing::warn!(
+                        stage = "claim_plan_certified_htlcs",
+                        error = %error,
+                        "Federated Bark receive-claim replay failed"
+                    );
+                    Error::ReceiveClaimRecoveryRequired
+                })?;
         }
         self.wallet
             .apply_lightning_receive_claim_replay(
@@ -2818,7 +2825,14 @@ impl FederatedBarkRuntime {
                 &[],
             )
             .await
-            .map_err(|_| Error::ReceiveClaimRecoveryRequired)
+            .map_err(|error| {
+                tracing::warn!(
+                    stage = "claim_plan_htlcs_ready",
+                    error = %error,
+                    "Federated Bark receive-claim replay failed"
+                );
+                Error::ReceiveClaimRecoveryRequired
+            })
     }
 
     /// Replay an accepted preimage-disclosure or terminal claim transition
@@ -2852,11 +2866,14 @@ impl FederatedBarkRuntime {
         {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
-        let phase = match transition.phase {
-            FederationBarkSemanticPhase::ReceivePreimageDisclosed => {
-                FederationLightningReceivePhase::PreimageRevealed
+        let (phase, stage) = match transition.phase {
+            FederationBarkSemanticPhase::ReceivePreimageDisclosed => (
+                FederationLightningReceivePhase::PreimageRevealed,
+                "preimage_disclosed",
+            ),
+            FederationBarkSemanticPhase::ReceiveClaimed => {
+                (FederationLightningReceivePhase::Claimed, "claimed")
             }
-            FederationBarkSemanticPhase::ReceiveClaimed => FederationLightningReceivePhase::Claimed,
             _ => return Err(Error::ReceiveClaimPlanInvalid),
         };
         let (receive, claim) = self.accepted_receive_claim_plan(intent, prepared, plan)?;
@@ -2868,12 +2885,26 @@ impl FederatedBarkRuntime {
         self.wallet
             .apply_lightning_receive_claim_replay(&receive, &claim, phase, &outputs)
             .await
-            .map_err(|_| Error::ReceiveClaimRecoveryRequired)?;
+            .map_err(|error| {
+                tracing::warn!(
+                    stage,
+                    error = %error,
+                    "Federated Bark receive-claim transition replay failed"
+                );
+                Error::ReceiveClaimRecoveryRequired
+            })?;
         if phase == FederationLightningReceivePhase::Claimed {
             self.wallet
                 .acknowledge_lightning_receive_claim(&receive)
                 .await
-                .map_err(|_| Error::ReceiveClaimRecoveryRequired)?;
+                .map_err(|error| {
+                    tracing::warn!(
+                        stage = "claimed_acknowledgement",
+                        error = %error,
+                        "Federated Bark receive-claim transition replay failed"
+                    );
+                    Error::ReceiveClaimRecoveryRequired
+                })?;
         }
         Ok(())
     }
