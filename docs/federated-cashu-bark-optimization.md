@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, and 11 complete; Milestones 2, 7, and 7A rejected; Milestones 11A-17, including 15A, not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 11, and 11A complete; Milestones 2, 7, and 7A rejected; Milestones 11B-17, including 15A, not started
 
 First recorded: 2026-07-20
 
@@ -3654,30 +3654,30 @@ payment-specific polling loop.
 
 ### Checklist
 
-- [ ] Reproduce the post-receive refresh/melt race locally with immutable
+- [x] Reproduce the post-receive refresh/melt race locally with immutable
       timestamps for refresh planning, reservation, melt quote creation, and
       terminal completion.
-- [ ] Determine why the existing payment-priority guard can admit a refresh
+- [x] Determine why the existing payment-priority guard can admit a refresh
       immediately before a wallet request, and whether a small terminal-payment
       quiet period or pre-plan work check prevents the race without starving
       maintenance.
-- [ ] Do not preempt or rewrite an accepted refresh. Reuse its current replay
+- [x] Do not preempt or rewrite an accepted refresh. Reuse its current replay
       path and preserve reservation exclusivity and exactly-once Ark work.
-- [ ] Measure incoming-to-outgoing availability, maintenance delay, Ark calls,
+- [x] Measure incoming-to-outgoing availability, maintenance delay, Ark calls,
       accepted operations, and restart recovery against the retained policy.
-- [ ] Reject any candidate that adds a second scheduler, error-string policy,
+- [x] Reject any candidate that adds a second scheduler, error-string policy,
       backend-specific rate-limit handling, or locally authoritative cancel.
 
 ### Tests
 
-- [ ] A wallet melt arriving before routine refresh acceptance wins priority;
+- [x] A wallet melt arriving before routine refresh acceptance wins priority;
       a refresh already accepted remains authoritative and the melt waits
       safely without a duplicate external payment.
-- [ ] Restart at plan acceptance, during the Ark round, and before terminal
+- [x] Restart at plan acceptance, during the Ark round, and before terminal
       materialization converges with the same reservations and one side effect.
-- [ ] Sustained payments cannot starve expiry-critical refresh or emergency
+- [x] Sustained payments cannot starve expiry-critical refresh or emergency
       exit, and idle maintenance still observes its existing bounded cadence.
-- [ ] Incoming, outgoing, failed-send, standalone, and federated-BDK
+- [x] Incoming, outgoing, failed-send, standalone, and federated-BDK
       regressions preserve exact accounting.
 
 ### Success criteria
@@ -3686,6 +3686,88 @@ payment-specific polling loop.
   maintenance in the healthy case, while an accepted refresh stays immutable.
 - Routine maintenance and payment latency improve without more Ark polling,
   consensus entries, or scheduler state.
+- Record `Kept` or `Rejected` and commit a retained change independently.
+
+### Evaluation: Kept (2026-07-22)
+
+The retained change keeps the existing maintenance worker and adds one bounded
+priority decision only before proposing a new routine refresh. It checks twice,
+once before planning and once immediately before submission, so payment work
+that appears during planning wins without cancelling or rewriting an already
+accepted refresh. Expiry-critical continuation, emergency exit, accepted
+refresh replay, custody retries, and their exactly-once external work bypass
+the new guard unchanged.
+
+An incoming claim remains blocking through its `ReceiveClaimed` result
+certificate. The ordinary mint quote's persisted update then provides a
+30-second accounting quiet period in which wallet POST mint can complete. A
+recent BOLT11 melt quote or a locally pending melt likewise blocks only a new
+routine refresh. Both lookups are bounded to the latest 256 journal entries;
+future timestamps do not extend the quiet period. The candidate adds no Ark
+request, consensus operation, scheduler state, polling rule, or error parsing.
+
+The clean local release sample accepted the eight-operation Milestone 11
+incoming path, issued exactly 1,500 sats, and placed no refresh between the
+claim certificate and Cashu mint. An immediate 1,000-sat outgoing payment then
+completed once in 23 seconds with the exact 25-sat fee and ten additional
+accepted operations. All five members converged on the same 18 applied
+operations. External faucet processing dominated the incoming wall clock and
+is not counted as a server latency improvement.
+
+Routine planning resumed after the 30-second window. Its refresh plan was
+deterministically rejected before Ark execution because the global Bark
+`Predecessor` conflict key was already reserved by a completed payment action
+that legitimately named the same journal operation from a different action
+lineage. Restart retried only that same rejected operation with the existing
+bounded backoff; it did not lose an accepted refresh or repeat an Ark side
+effect. This independent journal-key defect is isolated below as Milestone
+11B. It does not weaken the retained payment-priority result or justify an
+incompatible conflict-key edit in this milestone.
+
+Eight focused maintenance tests pass, including result-certificate gating,
+bounded/future-safe quiet timestamps, journal scan bounds, actor selection,
+terminal phases, and retry delay. The full affected Axum library run reached
+all changed tests; its remaining failures were pre-existing environment-bound
+Redis/loopback cases plus one unrelated stochastic AlephBFT stack overflow.
+Formatting and the focused all-feature build pass. Existing accepted-refresh
+restart, outgoing failure, standalone, and federated-BDK paths are unchanged.
+
+## Milestone 11B: scope Bark predecessor conflicts without breaking journal replay
+
+### Goal
+
+Allow different Bark action lineages to name the same accepted journal
+operation as their predecessor while preserving the rule that one predecessor
+inside one action lineage admits only one next transition. Fix both in-memory
+and durable conflict admission without changing the meaning or replay of
+already persisted v1 journal entries.
+
+### Checklist
+
+- [ ] Add a deterministic regression that reconstructs the observed case: a
+      completed payment transition and a later refresh plan legitimately share
+      a predecessor operation but have different action IDs.
+- [ ] Prove that two competing transitions in the same action lineage and from
+      the same predecessor still conflict before changing key semantics.
+- [ ] Choose the smallest backward-compatible representation. Existing
+      `conflict_keys_json`, retained suffixes, historical entries, checkpoints,
+      and SQL conflict ownership must replay without rewriting signed
+      envelopes or silently dropping legacy protection.
+- [ ] Keep conflict interpretation centralized in the generic journal/domain
+      boundary. Do not add maintenance-route exceptions or backend-specific
+      admission branches.
+- [ ] Verify old-format replay, new-format replay, mixed old/new lineage
+      continuation, finalization order, catch-up, checkpoint restore, and
+      SQLite persistence.
+- [ ] Re-run an idle local federation until one routine refresh is accepted,
+      executed once, materialized on all five members, and survives restart.
+
+### Success criteria
+
+- Cross-lineage predecessor reuse no longer rejects valid routine maintenance.
+- Same-lineage forks remain deterministically rejected in memory and SQL.
+- Existing deployed journals start and converge without a destructive
+  migration or compatibility-only payment logic.
 - Record `Kept` or `Rejected` and commit a retained change independently.
 
 ## Milestone 12: bounded private custody request batching
@@ -4239,6 +4321,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-22 | Milestone 10 collector/member fault matrix | same local federation, primary private endpoint unavailable and one selected observer fully offline | standby published one exact-threshold certificate; one already-paid quote issued exactly 1,000 sats in nine operations; four online members converged and the restored fifth reached the same 53-entry journal/application digest with zero failed entries | Durable member signatures can be relayed to a deterministic standby without transferring authority, repeating Bark work, weakening thresholds, or duplicating issuance. |
 | 2026-07-22 | Milestone 10A discovery | local release, full primary-process outage plus final all-member restart | standby certified HTLC readiness, but one restored run promoted a trusted recovery checkpoint before materializing its suffix; the final restart also left that member awaiting a compatible peer view despite identical 53-entry state until one targeted restart | Fix generic checkpoint promotion/startup reconciliation before Milestone 11; do not add Bark-specific replay state. |
 | 2026-07-22 | Milestone 11 combined authorization | fresh local release federation, SQLite, reusable CLI Signet payer, three incoming and three return melts | incoming core operations 9 -> 8 and application deliveries 36 -> 32; comparable one-VTXO authorization envelopes 10,820-16,603 -> 7,665-8,401 bytes; whole-receive median canonical bytes stayed flat at 32,959 -> 33,001; durable median/max regressed 75/82s -> 131/136s; exact issuance and all-member replay passed | Keep only for the explicit accepted-round reduction and single-copy representation; claim no latency win. The expiry-bound digest is the sole final format, and the development-only recovery compatibility and diagnostics were removed. |
+| 2026-07-22 | Milestone 11A payment-priority guard | fresh local release federation, SQLite, browser-faucet fallback, one incoming followed immediately by one outgoing | incoming issued exactly 1,500 sats in eight core operations with no intervening refresh; outgoing paid once in 23s with an exact 25-sat fee and ten operations; five members converged at 18 applied entries; routine planning resumed after 30s without another Ark call | Keep the bounded pre-plan/recheck guard. The resumed refresh was rejected by a pre-existing cross-lineage `Predecessor` conflict, isolated as Milestone 11B; no incompatible key-format draft or temporary diagnostics remain. |
 
 ## Completion checklist
 

@@ -1,19 +1,26 @@
 //! Bounded consensus-stepped Bark refresh and emergency-exit maintenance.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
 use std::sync::Arc;
 
 use cdk::federation::{
     federation_bark_exit_allocation_quote, FederationAddressAllocationScope,
     FederationAddressKeychain, FederationAllocatedAddressRef, FederationBarkActionId,
-    FederationBarkDigest, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkProjectionSnapshot, FederationBarkSemanticPhase, FederationOperation, MemberId,
+    FederationBarkActionKind, FederationBarkDigest, FederationBarkEvidencePhase,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
+    FederationBarkSemanticPhase, FederationOperation, MemberId,
 };
+use cdk::mint::QuoteId;
+use cdk::nuts::MeltQuoteState;
 
 use crate::MintState;
 
 const BARK_MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 const BARK_MAINTENANCE_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(300);
+const BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD: std::time::Duration =
+    std::time::Duration::from_secs(30);
+const BARK_RECENT_PAYMENT_JOURNAL_LIMIT: usize = 256;
 
 pub(crate) fn spawn_federated_bark_maintenance(state: MintState) {
     if state.federation.bark_runtime().is_none() {
@@ -98,14 +105,6 @@ async fn advance_federated_bark_maintenance_inner(
     let projection = crate::federation_bark_ready_projection(&state.mint, &runtime)
         .await
         .map_err(|_| cdk::Error::Internal)?;
-    if target_action_id.is_none()
-        && projection
-            .actions
-            .iter()
-            .any(|action| payment_action_blocks_routine_maintenance(&projection, action))
-    {
-        return Ok(0);
-    }
     let active = projection
         .actions
         .iter()
@@ -129,6 +128,9 @@ async fn advance_federated_bark_maintenance_inner(
         if !controls.automatic_refresh {
             return Ok(0);
         }
+        if routine_payment_work_blocks_maintenance(&state, &projection).await? {
+            return Ok(0);
+        }
         let actor = federation
             .public_config()
             .members
@@ -148,6 +150,9 @@ async fn advance_federated_bark_maintenance_inner(
         };
         if plan.actor != actor {
             return Err(cdk::Error::Internal);
+        }
+        if routine_payment_work_blocks_maintenance(&state, &projection).await? {
+            return Ok(0);
         }
         return submit_bark_operation(
             state.clone(),
@@ -422,6 +427,109 @@ async fn advance_federated_bark_maintenance_inner(
     }
 }
 
+async fn routine_payment_work_blocks_maintenance(
+    state: &MintState,
+    projection: &FederationBarkProjectionSnapshot,
+) -> Result<bool, cdk::Error> {
+    if projection
+        .actions
+        .iter()
+        .any(|action| payment_action_blocks_routine_maintenance(projection, action))
+    {
+        return Ok(true);
+    }
+
+    let now = current_unix_time_seconds();
+    if recent_receive_accounting_blocks_routine_maintenance(state, projection, now).await? {
+        return Ok(true);
+    }
+
+    recent_bolt11_melt_blocks_routine_maintenance(state, now).await
+}
+
+async fn recent_receive_accounting_blocks_routine_maintenance(
+    state: &MintState,
+    projection: &FederationBarkProjectionSnapshot,
+    now: u64,
+) -> Result<bool, cdk::Error> {
+    let store = state.mint.localstore();
+    let Some(tip) = store.get_federation_journal_tip().await? else {
+        return Ok(false);
+    };
+    let journal_floor = recent_payment_journal_floor(tip.index);
+    let quote_ids = projection
+        .actions
+        .iter()
+        .filter(|action| {
+            action.action_kind == Some(FederationBarkActionKind::IncomingClaim)
+                && action.latest_operation_index >= journal_floor
+        })
+        .filter_map(|action| action.quote.as_deref())
+        .map(QuoteId::from_str)
+        .collect::<Result<BTreeSet<_>, _>>()
+        .map_err(|_| cdk::Error::Internal)?
+        .into_iter()
+        .collect::<Vec<_>>();
+    if quote_ids.is_empty() {
+        return Ok(false);
+    }
+
+    let quotes = store.get_mint_quotes_by_ids(&quote_ids).await?;
+    Ok(quotes
+        .into_iter()
+        .flatten()
+        .any(|quote| payment_timestamp_is_quiet(quote.updated_at(), now)))
+}
+
+async fn recent_bolt11_melt_blocks_routine_maintenance(
+    state: &MintState,
+    now: u64,
+) -> Result<bool, cdk::Error> {
+    let store = state.mint.localstore();
+    let Some(tip) = store.get_federation_journal_tip().await? else {
+        return Ok(false);
+    };
+    let next_index = recent_payment_journal_floor(tip.index);
+    let entries = store
+        .get_federation_journal_entries_range(
+            next_index,
+            tip.index.saturating_add(1),
+            BARK_RECENT_PAYMENT_JOURNAL_LIMIT,
+        )
+        .await?;
+    let recent_quotes = entries
+        .iter()
+        .filter_map(|entry| match &entry.envelope.operation {
+            FederationOperation::MeltQuote(operation)
+                if matches!(operation.request, cdk::MeltQuoteRequest::Bolt11(_)) =>
+            {
+                Some((operation.quote.as_str(), operation.metadata.created_time))
+            }
+            _ => None,
+        })
+        .map(|(quote, created_time)| {
+            QuoteId::from_str(quote)
+                .map(|quote| (quote, created_time))
+                .map_err(|_| cdk::Error::Internal)
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    if recent_quotes
+        .values()
+        .any(|created_time| payment_timestamp_is_quiet(*created_time, now))
+    {
+        return Ok(true);
+    }
+    if recent_quotes.is_empty() {
+        return Ok(false);
+    }
+
+    let quote_ids = recent_quotes.keys().cloned().collect::<Vec<_>>();
+    let quotes = store.get_federation_melt_quotes(&quote_ids).await?;
+    Ok(quotes
+        .iter()
+        .any(|quote| quote.state == MeltQuoteState::Pending))
+}
+
 fn payment_action_blocks_routine_maintenance(
     projection: &FederationBarkProjectionSnapshot,
     action: &cdk::federation::FederationBarkActionRecord,
@@ -446,10 +554,19 @@ fn payment_action_blocks_routine_maintenance(
                     && observation.status == FederationBarkObservationStatus::Accepted
         )
     });
+    let claimed_result_certified = projection.observations.iter().any(|record| {
+        matches!(
+            &record.operation,
+            FederationBarkOperation::EvidenceCertificate(certificate)
+                if certificate.binding.action_id == action.action_id
+                    && certificate.binding.phase == FederationBarkEvidencePhase::ReceiveClaimed
+        )
+    });
     payment_state_blocks_routine_maintenance(
         action.phase,
         expires_at,
         accepted_evidence,
+        claimed_result_certified,
         current_unix_time_seconds(),
     )
 }
@@ -458,8 +575,12 @@ fn payment_state_blocks_routine_maintenance(
     phase: FederationBarkSemanticPhase,
     expires_at: Option<u64>,
     accepted_evidence_present: bool,
+    claimed_result_certified: bool,
     now: u64,
 ) -> bool {
+    if phase == FederationBarkSemanticPhase::ReceiveClaimed {
+        return !claimed_result_certified;
+    }
     if payment_phase_is_terminal(phase) {
         return false;
     }
@@ -479,10 +600,19 @@ fn payment_state_blocks_routine_maintenance(
 fn payment_phase_is_terminal(phase: FederationBarkSemanticPhase) -> bool {
     matches!(
         phase,
-        FederationBarkSemanticPhase::ReceiveClaimed
-            | FederationBarkSemanticPhase::PaymentSucceeded
+        FederationBarkSemanticPhase::PaymentSucceeded
             | FederationBarkSemanticPhase::RevocationCompleted
     )
+}
+
+fn payment_timestamp_is_quiet(timestamp: u64, now: u64) -> bool {
+    timestamp <= now
+        && now.saturating_sub(timestamp) < BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD.as_secs()
+}
+
+fn recent_payment_journal_floor(tip_index: u64) -> u64 {
+    let journal_limit = u64::try_from(BARK_RECENT_PAYMENT_JOURNAL_LIMIT).unwrap_or(u64::MAX);
+    tip_index.saturating_sub(journal_limit.saturating_sub(1))
 }
 
 fn current_unix_time_seconds() -> u64 {
@@ -796,8 +926,9 @@ mod tests {
 
     use super::{
         bark_maintenance_retry_delay, payment_phase_is_terminal,
-        payment_state_blocks_routine_maintenance, should_publish_maintenance_plan,
-        BARK_MAINTENANCE_INTERVAL,
+        payment_state_blocks_routine_maintenance, payment_timestamp_is_quiet,
+        recent_payment_journal_floor, should_publish_maintenance_plan, BARK_MAINTENANCE_INTERVAL,
+        BARK_RECENT_PAYMENT_JOURNAL_LIMIT, BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD,
     };
 
     #[test]
@@ -827,7 +958,6 @@ mod tests {
     #[test]
     fn only_terminal_payment_phases_release_routine_maintenance() {
         for phase in [
-            FederationBarkSemanticPhase::ReceiveClaimed,
             FederationBarkSemanticPhase::PaymentSucceeded,
             FederationBarkSemanticPhase::RevocationCompleted,
         ] {
@@ -835,6 +965,7 @@ mod tests {
         }
         for phase in [
             FederationBarkSemanticPhase::ReceivePrepared,
+            FederationBarkSemanticPhase::ReceiveClaimed,
             FederationBarkSemanticPhase::PaymentFailed,
             FederationBarkSemanticPhase::RevocationPlanned,
         ] {
@@ -850,11 +981,13 @@ mod tests {
             FederationBarkSemanticPhase::ReceivePrepared,
             Some(expires_at),
             false,
+            false,
             expires_at,
         ));
         assert!(!payment_state_blocks_routine_maintenance(
             FederationBarkSemanticPhase::ReceivePrepared,
             Some(expires_at),
+            false,
             false,
             expires_at + 901,
         ));
@@ -862,11 +995,13 @@ mod tests {
             FederationBarkSemanticPhase::ReceivePrepared,
             Some(expires_at),
             true,
+            false,
             expires_at + 901,
         ));
         assert!(payment_state_blocks_routine_maintenance(
             FederationBarkSemanticPhase::PaymentFailed,
             None,
+            false,
             false,
             expires_at + 901,
         ));
@@ -874,8 +1009,48 @@ mod tests {
             FederationBarkSemanticPhase::PaymentSucceeded,
             None,
             false,
+            false,
             expires_at,
         ));
+    }
+
+    #[test]
+    fn claimed_receive_blocks_until_result_certificate() {
+        assert!(payment_state_blocks_routine_maintenance(
+            FederationBarkSemanticPhase::ReceiveClaimed,
+            None,
+            true,
+            false,
+            1_000,
+        ));
+        assert!(!payment_state_blocks_routine_maintenance(
+            FederationBarkSemanticPhase::ReceiveClaimed,
+            None,
+            true,
+            true,
+            1_000,
+        ));
+    }
+
+    #[test]
+    fn payment_quiet_period_is_bounded_and_ignores_future_timestamps() {
+        let now = 1_000;
+        let quiet = BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD.as_secs();
+
+        assert!(payment_timestamp_is_quiet(now, now));
+        assert!(payment_timestamp_is_quiet(now - quiet + 1, now));
+        assert!(!payment_timestamp_is_quiet(now - quiet, now));
+        assert!(!payment_timestamp_is_quiet(now + 1, now));
+    }
+
+    #[test]
+    fn recent_payment_scan_is_bounded_by_the_journal_tip() {
+        let limit = u64::try_from(BARK_RECENT_PAYMENT_JOURNAL_LIMIT).expect("journal limit");
+
+        assert_eq!(recent_payment_journal_floor(0), 0);
+        assert_eq!(recent_payment_journal_floor(limit - 1), 0);
+        assert_eq!(recent_payment_journal_floor(limit), 1);
+        assert_eq!(recent_payment_journal_floor(u64::MAX), u64::MAX - limit + 1);
     }
 
     #[test]
