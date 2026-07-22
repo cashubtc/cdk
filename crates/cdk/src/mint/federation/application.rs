@@ -64,6 +64,22 @@ struct FederationBarkResultObservationKey {
     result_hash: cdk_common::federation::FederationBarkDigest,
 }
 
+const FEDERATION_BARK_CERTIFICATE_OBSERVATION_ID_DOMAIN: &[u8] =
+    b"cdk/federation/bark-certificate-observation-id/v1";
+
+fn federation_bark_certificate_observation_id(
+    operation_id: FederationOperationId,
+    observer: MemberId,
+) -> FederationOperationId {
+    let mut bytes = Vec::with_capacity(
+        FEDERATION_BARK_CERTIFICATE_OBSERVATION_ID_DOMAIN.len() + 32 + 2,
+    );
+    bytes.extend_from_slice(FEDERATION_BARK_CERTIFICATE_OBSERVATION_ID_DOMAIN);
+    bytes.extend_from_slice(&operation_id.to_bytes());
+    bytes.extend_from_slice(&observer.get().to_be_bytes());
+    FederationOperationId::from_bytes(sha256::Hash::hash(&bytes).to_byte_array())
+}
+
 #[cfg(test)]
 fn federation_bark_matching_result_observers(
     projection: &cdk_common::federation::FederationBarkProjectionSnapshot,
@@ -345,6 +361,40 @@ impl Mint {
             config.public_config().threshold_params.signature_threshold,
             &template,
         ))
+    }
+
+    async fn federation_bark_certificate_payment_records(
+        &self,
+        entry: &FederationJournalEntry,
+        certificate: &cdk_common::federation::FederationBarkEvidenceCertificate,
+    ) -> Result<Vec<FederationPaymentObservationRecord>, Error> {
+        let observer = certificate
+            .attestations
+            .first()
+            .map(|attestation| attestation.signer)
+            .ok_or(Error::Internal)?;
+        let observation = certificate.observation_for(observer);
+        let projection = self.federation_bark_projection_snapshot().await?;
+        let action = projection
+            .actions
+            .iter()
+            .find(|action| action.action_id == certificate.binding.action_id)
+            .ok_or(Error::Internal)?;
+        let template = self
+            .federation_bark_payment_observation_template(action, &observation)
+            .await?
+            .ok_or(Error::Internal)?;
+        Ok(certificate
+            .signers()
+            .map(|observer| FederationPaymentObservationRecord {
+                operation_id: federation_bark_certificate_observation_id(
+                    entry.operation_id,
+                    observer,
+                ),
+                operation_index: entry.index,
+                observation: template.with_observer(observer),
+            })
+            .collect())
     }
 
     async fn federation_bark_payment_observation_template(
@@ -1155,6 +1205,10 @@ impl Mint {
         let payment_records = match operation {
             FederationBarkOperation::MemberObservation(observation) => {
                 self.federation_bark_result_payment_records(entry, observation)
+                    .await?
+            }
+            FederationBarkOperation::EvidenceCertificate(certificate) => {
+                self.federation_bark_certificate_payment_records(entry, certificate)
                     .await?
             }
             FederationBarkOperation::ReceiveIntent(_)

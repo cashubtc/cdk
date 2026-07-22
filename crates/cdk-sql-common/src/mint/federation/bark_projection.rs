@@ -1241,16 +1241,18 @@ where
     if projection_operation_exists(connection, entry.operation_id).await? {
         return Ok(());
     }
-    if entry
-        .envelope
-        .authorization
-        .as_ref()
-        .map(|authorization| authorization.author)
-        != Some(operation.claimed_author())
-    {
-        return Err(invalid_projection(
-            "Bark projection operation author does not match its envelope",
-        ));
+    if let Some(author) = operation.claimed_author() {
+        if entry
+            .envelope
+            .authorization
+            .as_ref()
+            .map(|authorization| authorization.author)
+            != Some(author)
+        {
+            return Err(invalid_projection(
+                "Bark projection operation author does not match its envelope",
+            ));
+        }
     }
 
     match operation {
@@ -1268,6 +1270,15 @@ where
         }
         FederationBarkOperation::MemberObservation(observation) => {
             apply_observation(connection, entry, operation, observation).await
+        }
+        FederationBarkOperation::EvidenceCertificate(certificate) => {
+            let observer = certificate
+                .attestations
+                .first()
+                .ok_or_else(|| invalid_projection("Bark evidence certificate has no signer"))?
+                .signer;
+            let observation = certificate.observation_for(observer);
+            apply_observation(connection, entry, operation, &observation).await
         }
     }
 }

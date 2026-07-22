@@ -197,6 +197,15 @@ pub struct FederatedBarkReceiveClaimResult {
     output_transitions: Vec<FederationBarkVtxoTransition>,
     artifacts: Vec<FederationBarkArtifact>,
     result_hash: FederationBarkDigest,
+    amount: cdk_common::Amount,
+}
+
+impl FederatedBarkReceiveClaimResult {
+    /// Exact output value already validated by Bark while executing the claim.
+    #[must_use]
+    pub const fn amount(&self) -> cdk_common::Amount {
+        self.amount
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1006,6 +1015,7 @@ impl FederatedBarkRuntime {
             signer_set: initiated.signer_set.clone(),
             request_hash: initiated.result_hash,
             result_hash,
+            evidence_certificate: None,
             external_id: plan.external_id,
             artifacts: vec![artifact],
             vtxo_transitions: Vec::new(),
@@ -2895,6 +2905,7 @@ impl FederatedBarkRuntime {
             signer_set: result.signer_set,
             request_hash: disclosed.result_hash,
             result_hash: result.result_hash,
+            evidence_certificate: None,
             external_id: receive_external_id(
                 b"cdk/bark/receive-claimed-external/v1",
                 result.action_id,
@@ -3795,6 +3806,7 @@ fn send_htlc_transition(
         signer_set: custody_attempt.signer_set.clone(),
         request_hash: plan_commitment,
         result_hash,
+        evidence_certificate: None,
         external_id: plan.external_id,
         artifacts,
         vtxo_transitions,
@@ -3833,6 +3845,7 @@ fn payment_initiated_transition(
         signer_set: htlcs.signer_set.clone(),
         request_hash: htlcs.result_hash,
         result_hash: result_artifact.hash,
+        evidence_certificate: None,
         external_id: plan.external_id,
         artifacts: vec![result_artifact],
         vtxo_transitions: Vec::new(),
@@ -4007,6 +4020,7 @@ fn payment_succeeded_transition(
         signer_set: initiated.signer_set.clone(),
         request_hash: initiated.result_hash,
         result_hash,
+        evidence_certificate: None,
         external_id: plan.external_id,
         artifacts,
         vtxo_transitions,
@@ -4119,6 +4133,7 @@ fn revocation_completed_transition(
         signer_set: custody_attempt.signer_set.clone(),
         request_hash: plan_commitment,
         result_hash,
+        evidence_certificate: None,
         external_id: plan.external_id,
         artifacts,
         vtxo_transitions: transitions,
@@ -4374,6 +4389,7 @@ fn refresh_completed_transition(
         signer_set: custody_attempt.signer_set.clone(),
         request_hash: plan_commitment,
         result_hash,
+        evidence_certificate: None,
         external_id: plan.external_id,
         artifacts,
         vtxo_transitions: transitions,
@@ -4599,6 +4615,7 @@ fn exit_transition(
         signer_set: authorization.signer_set.to_vec(),
         request_hash: plan_commitment,
         result_hash,
+        evidence_certificate: None,
         external_id: plan.external_id,
         artifacts,
         vtxo_transitions: transitions,
@@ -5067,6 +5084,7 @@ fn receive_htlc_transition(
         signer_set: Vec::new(),
         request_hash: bark_digest(&request)?,
         result_hash,
+        evidence_certificate: None,
         external_id: receive_external_id(
             b"cdk/bark/receive-htlc-external/v1",
             intent.action_id,
@@ -5130,6 +5148,7 @@ fn receive_preimage_disclosed_transition(
         signer_set: custody_attempt.signer_set.clone(),
         request_hash: plan_commitment,
         result_hash: bark_digest(&result)?,
+        evidence_certificate: None,
         external_id: receive_external_id(
             b"cdk/bark/receive-preimage-external/v1",
             plan.action_id,
@@ -5218,6 +5237,7 @@ fn receive_claim_result(
         output_transitions,
         artifacts,
         result_hash: bark_digest(&result_bytes)?,
+        amount: cdk_common::Amount::from(materialized_amount_sat),
     })
 }
 

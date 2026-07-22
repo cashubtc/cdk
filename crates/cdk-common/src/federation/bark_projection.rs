@@ -70,7 +70,11 @@ impl FederationBarkActionRecord {
             action_kind,
             phase: operation.phase(),
             signing_retry_phase: None,
-            actor: operation.claimed_author(),
+            actor: operation.claimed_author().ok_or_else(|| {
+                super::FederationError::BarkOperationInvalid {
+                    reason: "Bark action head requires a claimed author".to_string(),
+                }
+            })?,
             attempt,
             origin_operation_id: entry.operation_id,
             origin_operation_index: entry.index,
@@ -109,7 +113,22 @@ impl FederationBarkActionRecord {
             action_kind: action_kind.or(self.action_kind),
             phase,
             signing_retry_phase,
-            actor: operation.claimed_author(),
+            actor: match operation.claimed_author() {
+                Some(actor) => actor,
+                None if matches!(
+                    operation,
+                    FederationBarkOperation::ActionTransition(transition)
+                        if transition.evidence_certificate.is_some()
+                ) =>
+                {
+                    self.actor
+                }
+                None => {
+                    return Err(super::FederationError::BarkOperationInvalid {
+                        reason: "Bark action transition has no authority".to_string(),
+                    });
+                }
+            },
             attempt,
             origin_operation_id: self.origin_operation_id,
             origin_operation_index: self.origin_operation_index,
@@ -420,7 +439,8 @@ fn operation_head_fields(
             Some(transition.plan_operation_id),
             Some(transition.predecessor_operation_id),
         ),
-        FederationBarkOperation::MemberObservation(_) => (None, 0, None, None),
+        FederationBarkOperation::MemberObservation(_)
+        | FederationBarkOperation::EvidenceCertificate(_) => (None, 0, None, None),
     }
 }
 

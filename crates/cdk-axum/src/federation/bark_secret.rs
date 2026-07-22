@@ -6,10 +6,12 @@ use axum::extract::{Json, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cdk::federation::{
+    FederationBarkEvidenceAttestationRequest, FederationBarkEvidenceAttestationResponse,
     FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecret,
     FederationBarkReceiveSecretAcknowledgement, FederationBarkReceiveSecretBinding,
     FederationConfig, FederationRestMessageKind, FederationSignedRequest, MemberConfigPublic,
 };
+use cdk::mint::QuoteId;
 use futures::future::join_all;
 use tracing::instrument;
 
@@ -142,6 +144,107 @@ pub(super) async fn post_bark_receive_secret(
     Ok(Json(response))
 }
 
+#[instrument(skip_all)]
+pub(super) async fn post_bark_evidence_attestation(
+    State(state): State<MintState>,
+    Json(payload): Json<FederationSignedRequest<FederationBarkEvidenceAttestationRequest>>,
+) -> Result<Json<FederationSignedRequest<FederationBarkEvidenceAttestationResponse>>, Response> {
+    let kind = FederationRestMessageKind::BarkEvidenceAttestation;
+    let verified = admit_private_request(&state, &payload, kind).await?;
+    state
+        .ensure_federation_ready_for_authoritative_read()
+        .await
+        .map_err(bark_secret_unavailable_response)?;
+    let runtime_config = federation_runtime_config(&state)?;
+    let public_config = runtime_config.public_config().clone();
+    let federation_id = runtime_config.federation_id();
+    let local_member = runtime_config.private_config().member_id;
+    payload
+        .payload
+        .validate_relayed(&public_config, verified.sender())
+        .map_err(federation_error_response)?;
+    let projection = state
+        .mint
+        .federation_bark_projection_snapshot()
+        .await
+        .map_err(bark_secret_unavailable_response)?;
+    let action = projection
+        .actions
+        .iter()
+        .find(|action| action.action_id == payload.payload.binding.action_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "federation Bark evidence action is unknown",
+            )
+                .into_response()
+        })?;
+    let members = public_config.members.keys().copied().collect::<Vec<_>>();
+    let actor_index = members
+        .iter()
+        .position(|member| *member == action.actor)
+        .ok_or_else(|| bark_secret_store_unavailable_response())?;
+    let local_index = members
+        .iter()
+        .position(|member| *member == local_member)
+        .ok_or_else(|| bark_secret_store_unavailable_response())?;
+    let collector_fallback_round = if local_index >= actor_index {
+        local_index - actor_index
+    } else {
+        members.len() - actor_index + local_index
+    };
+    let collector_fallback_round = u32::try_from(collector_fallback_round)
+        .map_err(|_| bark_secret_store_unavailable_response())?;
+    let store = state
+        .federation
+        .bark_receive_secrets()
+        .ok_or_else(bark_secret_store_unavailable_response)?;
+    let request = payload.payload.clone();
+    let store_config = public_config.clone();
+    tokio::task::spawn_blocking(move || {
+        store.persist_evidence_attestation(&request.binding, request.attestation, &store_config)?;
+        Ok::<_, cdk_bark::Error>(())
+    })
+    .await
+    .map_err(|_| bark_secret_store_unavailable_response())?
+    .map_err(bark_evidence_request_response)?;
+    let response_payload = FederationBarkEvidenceAttestationResponse::new(
+        &payload.payload.binding,
+        payload.payload.attestation.signer,
+    )
+    .map_err(federation_error_response)?;
+    state
+        .record_federation_sequence(kind, verified.sender(), verified.sequence())
+        .await;
+    let runtime_config = federation_runtime_config(&state)?;
+    let response = FederationSignedRequest::new_signed(
+        federation_id,
+        verified.sender(),
+        verified.sequence(),
+        kind,
+        response_payload,
+        runtime_config.private_config(),
+    )
+    .map_err(federation_error_response)?;
+    let quote = payload.payload.binding.quote.parse::<QuoteId>();
+    if let Ok(quote) = quote {
+        let wake_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                super::bark_incoming::advance_federated_bark_mint_quote_from_evidence_delivery(
+                    &wake_state,
+                    &quote,
+                    collector_fallback_round,
+                )
+                .await
+            {
+                tracing::debug!(error = %error, "Bark evidence wake did not advance quote");
+            }
+        });
+    }
+    Ok(Json(response))
+}
+
 fn bark_secret_request_response(error: cdk_bark::Error) -> Response {
     let status = match error {
         cdk_bark::Error::ReceiveSecretRequestInvalid
@@ -154,6 +257,23 @@ fn bark_secret_request_response(error: cdk_bark::Error) -> Response {
         "Federation Bark receive-secret request failed"
     );
     (status, "federation Bark receive-secret request failed").into_response()
+}
+
+fn bark_evidence_request_response(error: cdk_bark::Error) -> Response {
+    let status = match error {
+        cdk_bark::Error::EvidenceAttestationConflict
+        | cdk_bark::Error::EvidenceAttestationInvalid => StatusCode::BAD_REQUEST,
+        _ => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    tracing::warn!(
+        status = status.as_u16(),
+        "Federation Bark evidence-attestation request failed"
+    );
+    (
+        status,
+        "federation Bark evidence-attestation request failed",
+    )
+        .into_response()
 }
 
 fn bark_secret_store_unavailable_response() -> Response {

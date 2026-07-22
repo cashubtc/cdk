@@ -8,10 +8,12 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use cdk_common::federation::{
     payment_hash_for_preimage, preimage_commitment, FederationBarkActionId, FederationBarkDigest,
+    FederationBarkEvidenceAttestation, FederationBarkEvidenceBinding, FederationBarkEvidencePhase,
     FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecret,
     FederationBarkReceiveSecretAcknowledgement, FederationBarkReceiveSecretBinding,
     FederationCheckpointId, FederationConfig, FederationId, FederationOperationId,
     MemberConfigPrivate, MemberId, VerifiedFederationCheckpointQuorum,
+    FEDERATION_MAX_BARK_COLLECTION_ENTRIES,
 };
 use cdk_frost::rand_core::{CryptoRng, OsRng, RngCore};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -35,6 +37,8 @@ const MAX_BACKUP_RECORDS: usize = 4096;
 const ENCRYPTION_AAD_DOMAIN: &[u8] = b"cdk/bark/receive-secret-encryption/v1";
 const RECORDS: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("federated_bark_receive_secrets_v1");
+const EVIDENCE_ATTESTATIONS: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("federated_bark_evidence_attestations_v1");
 
 /// Independent at-rest encryption key for protected receive secrets.
 pub struct FederatedBarkReceiveSecretEncryptionKey(Zeroizing<[u8; 32]>);
@@ -169,6 +173,14 @@ struct ReceiveSecretBackup {
     records: Vec<StoredReceiveSecret>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredEvidenceAttestation {
+    version: u16,
+    binding: FederationBarkEvidenceBinding,
+    attestation: FederationBarkEvidenceAttestation,
+}
+
 /// Transactional encrypted receive-secret store.
 pub struct FederatedBarkReceiveSecretStore {
     database: Database,
@@ -199,6 +211,9 @@ impl FederatedBarkReceiveSecretStore {
             let _ = transaction
                 .open_table(RECORDS)
                 .map_err(|_| Error::ReceiveSecretPersistence)?;
+            let _ = transaction
+                .open_table(EVIDENCE_ATTESTATIONS)
+                .map_err(|_| Error::ReceiveSecretPersistence)?;
         }
         transaction
             .commit()
@@ -207,6 +222,149 @@ impl FederatedBarkReceiveSecretStore {
             database,
             encryption_key,
         })
+    }
+
+    /// Persist the first valid attestation from one signer for an action phase.
+    ///
+    /// Exact retries are idempotent. A different valid statement from the same
+    /// signer and action phase fails closed instead of replacing prior evidence.
+    pub fn persist_evidence_attestation(
+        &self,
+        binding: &FederationBarkEvidenceBinding,
+        attestation: FederationBarkEvidenceAttestation,
+        config: &FederationConfig,
+    ) -> Result<(), Error> {
+        binding
+            .validate(config)
+            .map_err(|_| Error::EvidenceAttestationInvalid)?;
+        attestation
+            .verify(binding, config)
+            .map_err(|_| Error::EvidenceAttestationInvalid)?;
+        let record = StoredEvidenceAttestation {
+            version: STORE_SCHEMA_VERSION,
+            binding: binding.clone(),
+            attestation,
+        };
+        let key = evidence_attestation_key(binding.action_id, binding.phase, attestation.signer);
+        let transaction = self
+            .database
+            .begin_write()
+            .map_err(|_| Error::EvidenceAttestationPersistence)?;
+        {
+            let mut table = transaction
+                .open_table(EVIDENCE_ATTESTATIONS)
+                .map_err(|_| Error::EvidenceAttestationPersistence)?;
+            let existing = table
+                .get(key.as_slice())
+                .map_err(|_| Error::EvidenceAttestationPersistence)?
+                .map(|value| decode_evidence_attestation(value.value()))
+                .transpose()?;
+            match existing {
+                Some(existing) if existing == record => {}
+                Some(_) => return Err(Error::EvidenceAttestationConflict),
+                None => {
+                    let encoded = serde_json::to_vec(&record)
+                        .map_err(|_| Error::EvidenceAttestationPersistence)?;
+                    table
+                        .insert(key.as_slice(), encoded.as_slice())
+                        .map_err(|_| Error::EvidenceAttestationPersistence)?;
+                }
+            }
+        }
+        transaction
+            .commit()
+            .map_err(|_| Error::EvidenceAttestationPersistence)
+    }
+
+    /// Load the sorted valid attestation set matching one exact statement.
+    pub fn evidence_attestations(
+        &self,
+        binding: &FederationBarkEvidenceBinding,
+        config: &FederationConfig,
+    ) -> Result<Vec<FederationBarkEvidenceAttestation>, Error> {
+        binding
+            .validate(config)
+            .map_err(|_| Error::EvidenceAttestationInvalid)?;
+        let transaction = self
+            .database
+            .begin_read()
+            .map_err(|_| Error::EvidenceAttestationPersistence)?;
+        let table = transaction
+            .open_table(EVIDENCE_ATTESTATIONS)
+            .map_err(|_| Error::EvidenceAttestationPersistence)?;
+        let mut attestations = Vec::new();
+        let prefix = evidence_attestation_key_prefix(binding.action_id, binding.phase);
+        for row in table
+            .range(prefix.as_slice()..)
+            .map_err(|_| Error::EvidenceAttestationPersistence)?
+        {
+            let (key, value) = row.map_err(|_| Error::EvidenceAttestationPersistence)?;
+            if !key.value().starts_with(prefix.as_slice()) {
+                break;
+            }
+            let record = decode_evidence_attestation(value.value())?;
+            record
+                .binding
+                .validate(config)
+                .map_err(|_| Error::EvidenceAttestationInvalid)?;
+            record
+                .attestation
+                .verify(&record.binding, config)
+                .map_err(|_| Error::EvidenceAttestationInvalid)?;
+            if record.binding == *binding {
+                attestations.push(record.attestation);
+            }
+        }
+        attestations.sort_by_key(|attestation| attestation.signer);
+        if attestations.len() > FEDERATION_MAX_BARK_COLLECTION_ENTRIES
+            || attestations
+                .windows(2)
+                .any(|pair| pair[0].signer >= pair[1].signer)
+        {
+            return Err(Error::EvidenceAttestationInvalid);
+        }
+        Ok(attestations)
+    }
+
+    /// Load this member's first valid statement for one action phase.
+    pub fn evidence_binding(
+        &self,
+        action_id: FederationBarkActionId,
+        phase: FederationBarkEvidencePhase,
+        signer: MemberId,
+        config: &FederationConfig,
+    ) -> Result<Option<FederationBarkEvidenceBinding>, Error> {
+        let key = evidence_attestation_key(action_id, phase, signer);
+        let transaction = self
+            .database
+            .begin_read()
+            .map_err(|_| Error::EvidenceAttestationPersistence)?;
+        let table = transaction
+            .open_table(EVIDENCE_ATTESTATIONS)
+            .map_err(|_| Error::EvidenceAttestationPersistence)?;
+        let record = table
+            .get(key.as_slice())
+            .map_err(|_| Error::EvidenceAttestationPersistence)?
+            .map(|value| decode_evidence_attestation(value.value()))
+            .transpose()?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        record
+            .binding
+            .validate(config)
+            .map_err(|_| Error::EvidenceAttestationInvalid)?;
+        record
+            .attestation
+            .verify(&record.binding, config)
+            .map_err(|_| Error::EvidenceAttestationInvalid)?;
+        if record.binding.action_id != action_id
+            || record.binding.phase != phase
+            || record.attestation.signer != signer
+        {
+            return Err(Error::EvidenceAttestationInvalid);
+        }
+        Ok(Some(record.binding))
     }
 
     /// Persist, then sign, one exact authenticated prepare-secret request.
@@ -717,6 +875,37 @@ fn decode_record(bytes: &[u8]) -> Result<StoredReceiveSecret, Error> {
         serde_json::from_slice(bytes).map_err(|_| Error::ReceiveSecretRecordInvalid)?;
     if record.version != STORE_SCHEMA_VERSION || record.ciphertext.len() > MAX_CIPHERTEXT_BYTES {
         return Err(Error::ReceiveSecretRecordInvalid);
+    }
+    Ok(record)
+}
+
+fn evidence_attestation_key(
+    action_id: FederationBarkActionId,
+    phase: FederationBarkEvidencePhase,
+    signer: MemberId,
+) -> Vec<u8> {
+    let mut key = evidence_attestation_key_prefix(action_id, phase);
+    key.extend_from_slice(&signer.get().to_be_bytes());
+    key
+}
+
+fn evidence_attestation_key_prefix(
+    action_id: FederationBarkActionId,
+    phase: FederationBarkEvidencePhase,
+) -> Vec<u8> {
+    let mut prefix = action_id.to_bytes().to_vec();
+    prefix.push(match phase {
+        FederationBarkEvidencePhase::ReceiveHtlcsReady => 0,
+        FederationBarkEvidencePhase::ReceiveClaimed => 1,
+    });
+    prefix
+}
+
+fn decode_evidence_attestation(bytes: &[u8]) -> Result<StoredEvidenceAttestation, Error> {
+    let record: StoredEvidenceAttestation =
+        serde_json::from_slice(bytes).map_err(|_| Error::EvidenceAttestationInvalid)?;
+    if record.version != STORE_SCHEMA_VERSION {
+        return Err(Error::EvidenceAttestationInvalid);
     }
     Ok(record)
 }

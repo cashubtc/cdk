@@ -95,7 +95,7 @@ use self::bark_custody::{
     post_bark_virtual_musig_partial,
 };
 #[cfg(feature = "federation-bark")]
-use self::bark_secret::post_bark_receive_secret;
+use self::bark_secret::{post_bark_evidence_attestation, post_bark_receive_secret};
 pub(crate) use self::broadcast::FederationTransactionBroadcaster;
 use self::catch_up_routes::post_journal;
 use self::checkpoint_routes::{
@@ -364,12 +364,19 @@ pub(crate) fn create_federation_router() -> Router<MintState> {
         cdk::federation::FEDERATION_MAX_FROST_SIGNING_REQUEST_BODY_BYTES,
     ));
     #[cfg(feature = "federation-bark")]
-    let bark_secret_router = Router::new().route(
-        "/bark/receive-secrets",
-        post(post_bark_receive_secret).layer(DefaultBodyLimit::max(
-            cdk::federation::FEDERATION_MAX_BARK_RECEIVE_SECRET_REQUEST_BYTES,
-        )),
-    );
+    let bark_secret_router = Router::new()
+        .route(
+            "/bark/receive-secrets",
+            post(post_bark_receive_secret).layer(DefaultBodyLimit::max(
+                cdk::federation::FEDERATION_MAX_BARK_RECEIVE_SECRET_REQUEST_BYTES,
+            )),
+        )
+        .route(
+            "/bark/evidence-attestations",
+            post(post_bark_evidence_attestation).layer(DefaultBodyLimit::max(
+                cdk::federation::FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES,
+            )),
+        );
 
     let router = Router::new()
         .merge(dkg_router)

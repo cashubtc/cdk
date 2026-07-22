@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, and 9 complete; Milestones 2, 7, and 7A rejected; Milestones 10-17, including 15A, not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, and 10 complete; Milestones 2, 7, and 7A rejected; Milestones 10A-17, including 15A, not started
 
 First recorded: 2026-07-20
 
@@ -28,12 +28,18 @@ Run every test federation, repeated performance sample, fault injection, and
 adverse-ordering workload on the local computer, not on the Nocean server. Use
 a local five-member release federation because it is faster, easier to reset,
 and produces cleaner comparisons. A local federation may still use the real
-Signet Ark server and the reusable Wavelength Signet CLI wallet through the
-installed **`$signet-cli-wallet`** skill when a milestone needs end-to-end Bark
-evidence. This is the first-choice payment driver. Use the browser-based
-2nd.dev faucet and store only if the skill-guided CLI-wallet path fails. Nocean
-is limited to read-only field evidence and a narrowly scoped final deployment
-smoke check after all local gates pass; it is not the test or benchmark host.
+Signet Ark server when a milestone needs end-to-end Bark evidence. The required
+payment-driver order is:
+
+1. Invoke the installed **`$signet-cli-wallet`** skill and use its reusable
+   Wavelength Signet CLI wallet workflow.
+2. Use the browser-based 2nd.dev faucet or store only if the skill-guided CLI
+   wallet fails its bounded readiness, funding, invoice-creation, or routing
+   gate.
+
+Nocean is limited to read-only field evidence and a narrowly scoped final
+deployment smoke check after all local gates pass; it is not the test or
+benchmark host.
 
 Use the repository runner for the repeatable five-member topology:
 
@@ -91,9 +97,12 @@ Before a sample:
 
 1. Import the current local federation configuration into a clean `cdk-cli`
    wallet using the ceremony-specific federation import command documented in
-   Option 2 below; that import step is common to both options. Then start the
-   local CLI mint command and capture its Signet BOLT11 invoice outside the
-   repository.
+   Option 2 below; that import step is common to both options. After every
+   fresh DKG, use a never-before-used, ceremony-specific wallet directory.
+   Reusing a directory from an earlier ceremony can retain a stale federation
+   keyset and reject otherwise valid issuance after the invoice has been paid.
+   Then start the local CLI mint command and capture its Signet BOLT11 invoice
+   outside the repository.
 2. Pay that invoice through the skill wrapper:
 
    ```bash
@@ -137,11 +146,12 @@ routing gate.
 ##### Incoming: browser faucet pays the federation invoice
 
 1. After every `fresh` DKG, import that ceremony's generated public config into
-   a clean local CLI wallet before requesting money. Supplying only a member
-   URL does not enable federation mode: the CLI then receives one valid member
-   share and correctly rejects it as an aggregate signature. A retained wallet
-   may also contain a config from an earlier ceremony. Import the current
-   config explicitly with:
+   a never-before-used, ceremony-specific local CLI wallet directory before
+   requesting money. Supplying only a member URL does not enable federation
+   mode: the CLI then receives one valid member share and correctly rejects it
+   as an aggregate signature. Reusing a directory from an earlier ceremony can
+   retain a stale federation keyset and reject otherwise valid issuance after
+   the invoice has been paid. Import the current config explicitly with:
 
    ```bash
    target/release/cdk-cli \
@@ -964,7 +974,8 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 7A | Re-evaluate compounded active consensus cadence across serial payment boundaries | Rejected | `perf: complete federated Bark BOLT11 optimization` |
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Complete | `perf: complete federated Bark BOLT11 optimization` |
 | 9 | Parallelize independent private signing and receive-secret RPCs within existing phase barriers | Complete | `perf: parallelize federated Bark private RPC phases` |
-| 10 | Replace per-observer consensus entries with signed quorum certificates | Not started | — |
+| 10 | Replace per-observer consensus entries with signed quorum certificates | Complete | `perf: certify federated Bark observation quorums` |
+| 10A | Make recovery-checkpoint promotion atomic with journal/application catch-up | Not started | — |
 | 11 | Combine certified HTLC readiness and claim authorization if one accepted operation preserves both boundaries | Not started | — |
 | 12 | Batch simultaneous private custody-signing items per signer and phase | Not started | — |
 | 13 | Remove duplicate outgoing status probes and use one bounded actor-first terminal wait | Not started | — |
@@ -3167,66 +3178,66 @@ subject to an exact recount before implementation.
 
 ### Checklist
 
-- [ ] Specify the exact attestation and certificate schemas before coding.
+- [x] Specify the exact attestation and certificate schemas before coding.
       Domain-separate and bind every signature to the federation/configuration
       epoch, member identity, action and quote identity, payment hash, amount,
       fee, evidence phase, canonical evidence digest, result, and signing
       attempt or other replay-relevant fields.
-- [ ] Reuse the smallest existing authenticated member-signature primitive
+- [x] Reuse the smallest existing authenticated member-signature primitive
       that provides durable public verification; do not design a second
       threshold-signature scheme merely to compress the certificate.
-- [ ] Require unique eligible signers and the unchanged threshold: three for
+- [x] Require unique eligible signers and the unchanged threshold: three for
       HTLC evidence and four for final result evidence in the active
       configuration.
-- [ ] Persist a member's first valid attestation for each exact action and
+- [x] Persist a member's first valid attestation for each exact action and
       evidence phase before returning it. Reject conflicting second
       attestations across retry, restart, reorder, and catch-up while returning
       an identical prior attestation idempotently.
-- [ ] Make each honest HTLC attester independently obtain and validate the
+- [x] Make each honest HTLC attester independently obtain and validate the
       complete canonical HTLC/VTXO artifacts. Publish those artifacts once in
       the certified-ready operation and sign their canonical digest; a hash
       supplied only by the collector is not independent evidence.
-- [ ] Make each honest result attester independently verify the claimed Bark
+- [x] Make each honest result attester independently verify the claimed Bark
       result and corresponding federated balance transition before signing.
-- [ ] Use a deterministic primary collector with a bounded fallback order.
+- [x] Use a deterministic primary collector with a bounded fallback order.
       Collector failure, equivocation, or restart must not lose durable
       attestations or prevent another member from assembling the same
       certificate.
-- [ ] Accept no certificate with duplicate, ineligible, stale, conflicting, or
+- [x] Accept no certificate with duplicate, ineligible, stale, conflicting, or
       invalid signatures, non-canonical artifacts, a wrong threshold, or a
       field mismatch. Verification must be deterministic during live apply,
       replay, checkpoint restore, and catch-up.
-- [ ] Preserve consensus-before-side-effects: neither custody signing nor
+- [x] Preserve consensus-before-side-effects: neither custody signing nor
       preimage use starts before certified HTLC readiness is accepted, and
       Cashu finalization does not derive from an unaccepted result certificate.
-- [ ] Keep the change Bark-specific at the evidence adapter. Do not change the
+- [x] Keep the change Bark-specific at the evidence adapter. Do not change the
       generic mint/melt driver or weaken federated BDK and future backend
       observation rules that lack the same attestable evidence.
-- [ ] Measure both private and consensus messages and bytes. Include
+- [x] Measure both private and consensus messages and bytes. Include
       attestation requests/responses, certificate signatures, canonical
       artifacts, Aleph traffic, accepted operations, and whole-payment latency
       rather than claiming only an operation-count win.
 
 ### Tests
 
-- [ ] Healthy 3-of-5 incoming accepts one certified-ready operation and one
+- [x] Healthy 3-of-5 incoming accepts one certified-ready operation and one
       final result certificate at the exact required thresholds and issues
       once.
-- [ ] Conflicting evidence from a Byzantine collector or member cannot obtain
+- [x] Conflicting evidence from a Byzantine collector or member cannot obtain
       two honest signatures for one phase or combine signatures over different
       payloads.
-- [ ] Duplicate signer, invalid signature, wrong federation epoch, stale
+- [x] Duplicate signer, invalid signature, wrong federation epoch, stale
       attempt, altered amount/fee/hash/artifact, and below-threshold
       certificates are rejected identically by every member.
-- [ ] Primary collector crash before and after gathering a quorum triggers one
+- [x] Primary collector crash before and after gathering a quorum triggers one
       bounded fallback publication without changing the certificate identity
       or repeating Ark/Bark work.
-- [ ] One member offline remains live; loss of the required evidence threshold
+- [x] One member offline remains live; loss of the required evidence threshold
       remains safely pending with no custody or Cashu side effect.
-- [ ] Delayed attestations, restart, replay, catch-up, checkpoint restore, and
+- [x] Delayed attestations, restart, replay, catch-up, checkpoint restore, and
       reordered local notifications converge on one certificate and cannot
       reopen terminal state.
-- [ ] Incoming exact issuance, outgoing success/failure, maintenance, signer
+- [x] Incoming exact issuance, outgoing success/failure, maintenance, signer
       rotation, standalone BOLT11, and federated-BDK regression suites pass.
 
 ### Success criteria
@@ -3242,6 +3253,149 @@ subject to an exact recount before implementation.
   otherwise revert the candidate.
 - The milestone records `Kept` or `Rejected` and, if kept, is committed as
   `perf: certify federated Bark observation quorums`.
+
+### Evaluation record — 2026-07-22
+
+**Kept.** The retained schema uses the existing BIP340 federation-member
+identity signature. Its domain-separated binding includes the schema version,
+federation ID, configuration digest, application epoch, action and quote,
+evidence phase and operation, payment hash, Ark scope, status, amount, fee,
+canonical evidence digest, and attempt. HTLC certificates require exactly
+three sorted unique valid attestations; claimed-result certificates require
+exactly four. A member persists its first valid phase binding before replying,
+exact retries are idempotent, and a conflicting second binding fails closed.
+
+The collector is only a private transport role. Members independently obtain
+or validate the Bark evidence, sign the exact binding, and deliver it through
+the authenticated private API. A deterministic primary collects first. On a
+bounded fallback, it relays the already member-signed durable set to the next
+collector; the relay is authenticated but cannot alter or forge any signer
+statement. Every member revalidates the complete certificate during admission
+and apply. Certified HTLC readiness remains the accepted boundary before
+custody signing or preimage use, and the accepted claimed-result certificate
+remains the boundary before Cashu payment finalization. The generic payment
+driver, federated BDK rules, and standalone backends are unchanged.
+
+Three release incoming controls and three candidate samples on the same local
+five-member Signet topology produced:
+
+| Metric | Milestone 9 control | Milestone 10 candidate | Change |
+| --- | ---: | ---: | ---: |
+| Accepted operations per healthy receive | 15 | 9 | -40% |
+| Application-bearing Aleph deliveries | 60 | 36 | -40% |
+| Median application-bearing Aleph bytes | 173,908 | 172,948 | -0.6% (flat) |
+| Durable quote-to-issued median / observed max | 41s / 74s | 75s / 82s | regressed |
+| Wallet wall median / observed max | 46s / 80s | 80s / 88s | regressed |
+
+The nine operations are one receive intent, receive preparation, mint quote,
+certified HTLC-ready transition, claim plan, preimage transition, claimed
+transition, claimed-result certificate, and mint. The private request and
+acknowledgement carried about 929 and 120 bytes of inner JSON; a healthy path
+used about five remote exchanges, or roughly 5,245 bytes before signed HTTP
+wrappers. Thus the material win is operation and application-message count,
+not total bytes or latency. Temporary phase probes attributed roughly
+2.4-4.9 seconds per independent VTXO validation; the rest of the measured
+post-claim delay was certificate consensus finality. The probes and a
+temporary endpoint-fault hook were removed, and their markers are absent from
+the final release binary.
+
+This candidate does **not** satisfy the original 15% latency criterion. The
+measured latency moved the wrong way, while application bytes were flat and
+bounded private bytes were added. It is retained by explicit project-owner
+decision because removing 40% of application-bearing messages is independently
+worthwhile and the controlled evidence does not show that fewer publications
+caused the external Bark/Ark variance. Future milestones must use this retained
+candidate as their baseline and may not describe Milestone 10 as a latency or
+total-byte improvement.
+
+Fault evidence covered both collector transport and member loss. With the
+primary attestation endpoint unavailable but its consensus/custody process
+healthy, deterministic standbys published the certified-ready and final
+certificate and issued exactly 1,000 sats. An initial implementation allowed
+non-collector timers to race one redundant final proposal; that attempt was
+rejected, the timers were restricted to the active collector, and the retained
+repeat produced one publication and no duplicate or rejected item. With one
+of the four initially selected result observers fully offline, the first
+collector durably held three signatures, the six-second standby received that
+signed set plus its own attestation, and the already-paid quote completed with
+exactly nine accepted operations. The four online members converged, the CLI
+minted exactly 1,000 sats, and the restored fifth member caught up to the same
+53-entry journal and application digest with zero failed entries.
+
+A separate full-process primary outage also let a standby publish certified
+HTLC readiness without repeating Bark work. Restoring that primary exposed a
+pre-existing recovery-checkpoint promotion defect under a farther-ahead
+frontier; it is isolated as Milestone 10A rather than hidden in this result.
+The later selected-observer outage above reconverged normally and proves the
+certificate path itself remains live with one member offline.
+
+The exact final all-member release restart reached identical 53-entry journal
+and application digests with zero failed entries, but the previously offline
+member remained fail-closed for several minutes awaiting a quorum-compatible
+live peer view. Restarting only that member against the now-stable four-member
+quorum restored full readiness immediately. This is recorded as an additional
+Milestone 10A startup-reconciliation symptom; it did not mutate state or repeat
+an external action and is not presented as a clean first-attempt restart pass.
+
+The preferred `$signet-cli-wallet` Wavelength wallet paid the retained incoming
+fault samples and confirmed one 1,000-sat outgoing control with the expected
+25-sat federation fee. When it temporarily lacked enough spendable Signet
+funds, the documented second-option browser faucet funded that reusable wallet;
+testing then returned to the CLI-first path. No browser path was used while the
+CLI wallet was ready and funded.
+
+Validation passed 554 Axum tests (two intentional ignores), 450 cdk-common
+tests (one intentional ignore), all 16 cdk-bark tests, the non-federated mintd
+all-target build, the exact release build, real incoming issuance, real
+outgoing settlement, member loss, all-member catch-up, and clean binary marker
+checks. Certificate tests cover duplicate signers, bad signatures, threshold
+minus one, wrong federation/configuration/attempt, every signed-field mutation,
+first-write-wins persistence, relay authentication, restart durability, and
+deterministic certificate-derived payment observations.
+
+## Milestone 10A: atomic recovery-checkpoint promotion
+
+### Goal
+
+Prevent startup recovery from trusting a farther-ahead recovery checkpoint
+before the checkpoint's journal suffix and application projection have been
+materialized atomically. Milestone 10 fault injection found a restored member
+whose trusted recovery frontier advanced beyond its local journal/application
+frontier. The next catch-up pass then ignored that trusted target as already
+covered and rejected an older scheduled target, leaving the member lagging.
+
+This is a generic federation recovery defect exposed by the Bark test, not a
+reason to add Bark-specific replay logic. Keep the fix in the checkpoint
+catch-up transaction and preserve the existing quorum, digest, and
+materialized-state validation.
+
+### Checklist
+
+- [ ] Add a deterministic regression whose recovery checkpoint is ahead of
+      both the local journal and application frontier.
+- [ ] Do not persist or promote the trusted checkpoint until its complete
+      verified suffix is durable and applied to the same target frontier.
+- [ ] On interruption, resume the bounded suffix transfer and application
+      without skipping the target, accepting an older target, or duplicating
+      side effects.
+- [ ] Prove scheduled and recovery checkpoint lineages still reject conflicting
+      envelopes, digests, terminal results, and unsupported high cursors.
+- [ ] Repeat the full-process Bark collector outage, restart, and exact
+      five-member convergence test locally.
+- [ ] Repeat an all-member start after one member has previously caught up;
+      every member must accept the compatible peer view without a targeted
+      second restart.
+- [ ] Re-run checkpoint paging/restart, AlephBFT catch-up, mint/melt recovery,
+      standalone, and materialized-state regression suites.
+
+### Success criteria
+
+- The restored member reaches the same journal, application, checkpoint, Bark,
+  quote, and balance state as the four uninterrupted members without a manual
+  database reset or repeated external action.
+- No trusted checkpoint can describe state that the local journal/application
+  transaction has not materialized.
+- The smallest generic fix is committed independently before Milestone 11.
 
 ## Milestone 11: certified HTLC readiness with claim authorization
 
@@ -3863,6 +4017,9 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-21 | Milestone 7A active-cadence A/B, reverted | controlled five-member loopback sessions | three ten-serial-operation samples each at 500/400/350/250ms | median elapsed 25,245/22,264/20,568/14,973ms; application messages fixed at 40; median total messages 1,028/1,124/1,184/1,204 | Keep designated publication and 500ms cadence. Fewer publishers did not add delay; faster cadence clears the latency gate only with 9-17% more helper traffic and is rejected. |
 | 2026-07-21 | Milestone 8 restart release gate | local release, five members, injected stale session and removed local next-session backup | quorum-supported session recovery | member 5 restarted from persisted session 0 while peers were on session 1, recovered peer session data, persisted session 1, and all five returned ready | Stop a strictly older live session when a same-frontier quorum selects a newer session, then reuse existing replay. This fixes the observed restart deadlock without weakening divergence checks. |
 | 2026-07-21 | `2c9359634d1a`, exact Linux release hashes recorded above | Nocean update deployment, five existing members, narrow smoke only | binary replacement, restart, convergence, public health, and bounded log scan | remote hashes matched; five members ready and converged at zero lag with Bark ready and live session 1; five public info routes returned 200; zero known failure signatures in the latest 500 lines per member | Final deployment gate passed without resetting DKG/database state or using the remote host for benchmark and fault workloads. |
+| 2026-07-22 | Milestone 10 signed-certificate A/B | local release, five loopback members, SQLite, real Signet, three control and three candidate receives | accepted operations 15 -> 9 and application-bearing deliveries 60 -> 36; median application bytes 173,908 -> 172,948; durable median 41s -> 75s; about 5,245 new inner private-JSON bytes per healthy path | Keep by explicit project-owner decision for the 40% application-message reduction. Latency regressed and total bytes did not materially improve, so neither is claimed as a win. |
+| 2026-07-22 | Milestone 10 collector/member fault matrix | same local federation, primary private endpoint unavailable and one selected observer fully offline | standby published one exact-threshold certificate; one already-paid quote issued exactly 1,000 sats in nine operations; four online members converged and the restored fifth reached the same 53-entry journal/application digest with zero failed entries | Durable member signatures can be relayed to a deterministic standby without transferring authority, repeating Bark work, weakening thresholds, or duplicating issuance. |
+| 2026-07-22 | Milestone 10A discovery | local release, full primary-process outage plus final all-member restart | standby certified HTLC readiness, but one restored run promoted a trusted recovery checkpoint before materializing its suffix; the final restart also left that member awaiting a compatible peer view despite identical 53-entry state until one targeted restart | Fix generic checkpoint promotion/startup reconciliation before Milestone 11; do not add Bark-specific replay state. |
 
 ## Completion checklist
 
@@ -3887,9 +4044,9 @@ Append future evidence here rather than rewriting historical results.
       federated BDK, and standalone regressions pass.
 - [x] Production observability explains every material delay without logging
       secrets or high-cardinality identifiers.
-- [ ] Independent private FROST phases and receive-secret copies run with
+- [x] Independent private FROST phases and receive-secret copies run with
       bounded parallel fan-out and unchanged completion rules.
-- [ ] Bark observation quorums use deterministically verified signed
+- [x] Bark observation quorums use deterministically verified signed
       certificates instead of one consensus entry per observer.
 - [ ] Certified HTLC readiness and claim authorization share one accepted
       boundary only if the separate safety invariants remain explicit.

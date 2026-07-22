@@ -608,7 +608,8 @@ fn validate_authorization_entry(
         }
         FederationBarkOperation::ReceiveIntent(_)
         | FederationBarkOperation::ReceivePrepared(_)
-        | FederationBarkOperation::MemberObservation(_) => {
+        | FederationBarkOperation::MemberObservation(_)
+        | FederationBarkOperation::EvidenceCertificate(_) => {
             anyhow::bail!("Bark custody authorization has no signer attempt")
         }
     }
@@ -628,7 +629,8 @@ fn authorization_signers(
         FederationBarkOperation::ReceiveIntent(_)
         | FederationBarkOperation::ReceivePrepared(_)
         | FederationBarkOperation::ActionTransition(_)
-        | FederationBarkOperation::MemberObservation(_) => {
+        | FederationBarkOperation::MemberObservation(_)
+        | FederationBarkOperation::EvidenceCertificate(_) => {
             anyhow::bail!("Bark custody operation has no signer attempt")
         }
     }

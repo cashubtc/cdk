@@ -10,13 +10,14 @@ use cdk_common::federation::{
     federation_bark_signer_set_for_attempt, FederatedKeyset, FederationAddressAllocationScope,
     FederationAddressKeychain, FederationBarkActionKind, FederationBarkActionPlan,
     FederationBarkActionRecord, FederationBarkActionTransition, FederationBarkArtifact,
-    FederationBarkArtifactKind, FederationBarkDigest, FederationBarkObservationStatus,
-    FederationBarkOperation, FederationBarkProjectionSnapshot, FederationBarkReceiveIntent,
-    FederationBarkSemanticPhase, FederationBarkVtxoInput, FederationBarkVtxoLocator,
-    FederationBarkVtxoState, FederationMaterializedStateKey, FederationMaterializedStateRow,
-    FederationMaterializedStateSnapshot, FederationOperation, FederationOperationId,
-    FederationOperationStatus, FederationPaymentObservationRecord,
-    FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU, FEDERATION_MAX_DERIVATION_INDEX,
+    FederationBarkArtifactKind, FederationBarkDigest, FederationBarkEvidencePhase,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
+    FederationBarkReceiveIntent, FederationBarkSemanticPhase, FederationBarkVtxoInput,
+    FederationBarkVtxoLocator, FederationBarkVtxoState, FederationMaterializedStateKey,
+    FederationMaterializedStateRow, FederationMaterializedStateSnapshot, FederationOperation,
+    FederationOperationId, FederationOperationStatus, FederationPaymentObservationContext,
+    FederationPaymentObservationRecord, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
+    FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::mint::Operation;
@@ -423,30 +424,113 @@ impl Mint {
                         "HTLC evidence does not cover the accepted Cashu liability",
                     ));
                 }
-                let mut observers = BTreeSet::new();
-                for record in &snapshot.observations {
-                    let FederationBarkOperation::MemberObservation(observation) = &record.operation
-                    else {
-                        continue;
-                    };
-                    if observation.action_id == transition.action_id
-                        && observation.quote == transition.quote
-                        && observation.payment_hash == transition.payment_hash
-                        && observation.source_scope
-                            == ark_server_commitment(&application.ark_server_public_key)?
-                        && observation.status == FederationBarkObservationStatus::Accepted
-                        && observation.amount == amount
-                        && observation.fee == fee
-                        && observation.result_hash == transition.result_hash
-                    {
-                        observers.insert(observation.observer);
+                let required = config.public_config().threshold_params.signature_threshold;
+                match &transition.evidence_certificate {
+                    Some(certificate) => {
+                        certificate.verify(config.public_config(), required)?;
+                        let binding = &certificate.binding;
+                        if binding.phase != FederationBarkEvidencePhase::ReceiveHtlcsReady
+                            || binding.action_id != transition.action_id
+                            || transition.actor != action.actor
+                            || transition.quote.as_deref() != Some(binding.quote.as_str())
+                            || binding.evidence_operation_id != transition.predecessor_operation_id
+                            || binding.payment_hash
+                                != transition.payment_hash.ok_or_else(|| {
+                                    bark_state_error("HTLC certificate has no payment hash")
+                                })?
+                            || binding.source_scope
+                                != ark_server_commitment(&application.ark_server_public_key)?
+                            || binding.amount != amount
+                            || binding.fee != fee
+                            || binding.evidence_digest != transition.result_hash
+                            || binding.attempt != transition.attempt
+                        {
+                            return Err(bark_state_error(
+                                "HTLC certificate differs from the accepted transition",
+                            ));
+                        }
+                    }
+                    None => {
+                        let mut observers = BTreeSet::new();
+                        for record in &snapshot.observations {
+                            let FederationBarkOperation::MemberObservation(observation) =
+                                &record.operation
+                            else {
+                                continue;
+                            };
+                            if observation.action_id == transition.action_id
+                                && observation.quote == transition.quote
+                                && observation.payment_hash == transition.payment_hash
+                                && observation.source_scope
+                                    == ark_server_commitment(&application.ark_server_public_key)?
+                                && observation.status == FederationBarkObservationStatus::Accepted
+                                && observation.amount == amount
+                                && observation.fee == fee
+                                && observation.result_hash == transition.result_hash
+                            {
+                                observers.insert(observation.observer);
+                            }
+                        }
+                        if observers.len() < usize::from(required) {
+                            return Err(bark_state_error(
+                                "HTLC evidence has not reached the accepted member threshold",
+                            ));
+                        }
                     }
                 }
-                if observers.len()
-                    < usize::from(config.public_config().threshold_params.signature_threshold)
+            }
+            FederationBarkOperation::EvidenceCertificate(certificate) => {
+                let required = config
+                    .public_config()
+                    .threshold_params
+                    .signature_threshold
+                    .max(
+                        config
+                            .public_config()
+                            .payment_verification_policy(
+                                FederationPaymentObservationContext::MintQuote,
+                            )
+                            .required_matching_observations(),
+                    );
+                certificate.verify(config.public_config(), required)?;
+                let action =
+                    action.ok_or_else(|| bark_state_error("evidence certificate has no action"))?;
+                let FederationBarkOperation::ActionTransition(transition) = &action.operation
+                else {
+                    return Err(bark_state_error(
+                        "result certificate does not follow an action result",
+                    ));
+                };
+                let binding = &certificate.binding;
+                let amount = transition
+                    .vtxo_transitions
+                    .iter()
+                    .filter(|mutation| {
+                        mutation.previous_state.is_none()
+                            && mutation.new_state == FederationBarkVtxoState::Spendable
+                    })
+                    .try_fold(Amount::ZERO, |sum, mutation| {
+                        sum.checked_add(mutation.amount)
+                            .ok_or_else(|| bark_state_error("claim certificate amount overflow"))
+                    })?;
+                if binding.phase != FederationBarkEvidencePhase::ReceiveClaimed
+                    || action.phase != FederationBarkSemanticPhase::ReceiveClaimed
+                    || binding.action_id != action.action_id
+                    || action.quote.as_deref() != Some(binding.quote.as_str())
+                    || binding.evidence_operation_id != action.latest_operation_id
+                    || binding.payment_hash
+                        != action.payment_hash.ok_or_else(|| {
+                            bark_state_error("claim certificate has no payment hash")
+                        })?
+                    || binding.source_scope
+                        != ark_server_commitment(&application.ark_server_public_key)?
+                    || binding.amount != amount
+                    || binding.fee != Amount::ZERO
+                    || binding.evidence_digest != transition.result_hash
+                    || binding.attempt != transition.attempt
                 {
                     return Err(bark_state_error(
-                        "HTLC evidence has not reached the accepted member threshold",
+                        "claim certificate differs from the accepted result",
                     ));
                 }
             }
@@ -2850,6 +2934,7 @@ mod outgoing_tests {
             signer_set: plan.signer_set.clone(),
             request_hash,
             result_hash,
+            evidence_certificate: None,
             external_id: plan.external_id,
             artifacts: vec![FederationBarkArtifact {
                 kind: FederationBarkArtifactKind::Proof,
@@ -2889,6 +2974,7 @@ mod outgoing_tests {
             signer_set: plan.signer_set.clone(),
             request_hash: initiated_result,
             result_hash: artifact.hash,
+            evidence_certificate: None,
             external_id: plan.external_id,
             artifacts: vec![artifact],
             vtxo_transitions: Vec::new(),

@@ -16,8 +16,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use super::journal::{FederationJournalEntry, FederationOperationStatus};
 use super::operation::{canonical_json_bytes, FederationOperationSignature};
 use super::{
-    FederationAllocatedAddressRef, FederationError, FederationFrostApplicationId, FederationId,
-    FederationOperation, FederationOperationId, MemberId, Result,
+    FederationAllocatedAddressRef, FederationBarkEvidenceCertificate, FederationBarkEvidencePhase,
+    FederationError, FederationFrostApplicationId, FederationId, FederationOperation,
+    FederationOperationId, MemberId, Result,
 };
 use crate::Amount;
 
@@ -1020,6 +1021,10 @@ pub struct FederationBarkActionTransition {
     /// operation shape emitted before the SQL projection was installed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vtxo_transitions: Vec<FederationBarkVtxoTransition>,
+    /// Independent-member evidence certificate when this transition replaces
+    /// separately ordered member observations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_certificate: Option<Box<FederationBarkEvidenceCertificate>>,
 }
 
 #[derive(Serialize)]
@@ -1099,6 +1104,8 @@ pub enum FederationBarkOperation {
     ActionTransition(FederationBarkActionTransition),
     /// Accept bounded member-local Ark or chain evidence.
     MemberObservation(FederationBarkMemberObservation),
+    /// Accept a quorum certificate over independently verified Bark evidence.
+    EvidenceCertificate(FederationBarkEvidenceCertificate),
 }
 
 /// Stable family-level Bark operation kind used in authorization references.
@@ -1115,6 +1122,8 @@ pub enum FederationBarkOperationKind {
     ActionTransition,
     /// Member observation.
     MemberObservation,
+    /// Independent-member evidence certificate.
+    EvidenceCertificate,
 }
 
 /// Typed Bark semantic reservation used by the generic federation journal.
@@ -1178,6 +1187,13 @@ pub enum FederationBarkConflictKey {
         /// Source-scoped epoch.
         observation_epoch: u64,
     },
+    /// One evidence phase per action may accept only one exact certificate.
+    EvidenceCertificate {
+        /// Stable action lineage.
+        action_id: FederationBarkActionId,
+        /// Independently verified evidence family.
+        phase: FederationBarkEvidencePhase,
+    },
 }
 
 impl FederationBarkOperation {
@@ -1190,18 +1206,21 @@ impl FederationBarkOperation {
             Self::ActionPlan(_) => FederationBarkOperationKind::ActionPlan,
             Self::ActionTransition(_) => FederationBarkOperationKind::ActionTransition,
             Self::MemberObservation(_) => FederationBarkOperationKind::MemberObservation,
+            Self::EvidenceCertificate(_) => FederationBarkOperationKind::EvidenceCertificate,
         }
     }
 
     /// Return the member whose envelope authorization must match this payload.
     #[must_use]
-    pub const fn claimed_author(&self) -> MemberId {
+    pub fn claimed_author(&self) -> Option<MemberId> {
         match self {
-            Self::ReceiveIntent(operation) => operation.actor,
-            Self::ReceivePrepared(operation) => operation.actor,
-            Self::ActionPlan(operation) => operation.actor,
-            Self::ActionTransition(operation) => operation.actor,
-            Self::MemberObservation(operation) => operation.observer,
+            Self::ReceiveIntent(operation) => Some(operation.actor),
+            Self::ReceivePrepared(operation) => Some(operation.actor),
+            Self::ActionPlan(operation) => Some(operation.actor),
+            Self::ActionTransition(operation) if operation.evidence_certificate.is_some() => None,
+            Self::ActionTransition(operation) => Some(operation.actor),
+            Self::MemberObservation(operation) => Some(operation.observer),
+            Self::EvidenceCertificate(_) => None,
         }
     }
 
@@ -1214,6 +1233,7 @@ impl FederationBarkOperation {
             Self::ActionPlan(operation) => operation.action_id,
             Self::ActionTransition(operation) => operation.action_id,
             Self::MemberObservation(operation) => operation.action_id,
+            Self::EvidenceCertificate(certificate) => certificate.binding.action_id,
         }
     }
 
@@ -1226,6 +1246,7 @@ impl FederationBarkOperation {
             Self::ActionPlan(operation) => operation.quote.as_deref(),
             Self::ActionTransition(operation) => operation.quote.as_deref(),
             Self::MemberObservation(operation) => operation.quote.as_deref(),
+            Self::EvidenceCertificate(certificate) => Some(certificate.binding.quote.as_str()),
         }
     }
 
@@ -1238,6 +1259,7 @@ impl FederationBarkOperation {
             Self::ActionPlan(operation) => operation.payment_hash,
             Self::ActionTransition(operation) => operation.payment_hash,
             Self::MemberObservation(operation) => operation.payment_hash,
+            Self::EvidenceCertificate(certificate) => Some(certificate.binding.payment_hash),
         }
     }
 
@@ -1260,6 +1282,7 @@ impl FederationBarkOperation {
             },
             Self::ActionTransition(operation) => operation.phase,
             Self::MemberObservation(_) => FederationBarkSemanticPhase::Observation,
+            Self::EvidenceCertificate(_) => FederationBarkSemanticPhase::Observation,
         }
     }
 
@@ -1270,6 +1293,7 @@ impl FederationBarkOperation {
             Self::ReceivePrepared(operation) => Some(operation.result_hash),
             Self::ActionTransition(operation) => Some(operation.result_hash),
             Self::MemberObservation(operation) => Some(operation.result_hash),
+            Self::EvidenceCertificate(certificate) => Some(certificate.binding.evidence_digest),
             Self::ReceiveIntent(_) | Self::ActionPlan(_) => None,
         }
     }
@@ -1378,6 +1402,12 @@ impl FederationBarkOperation {
                     observation_epoch: operation.observation_epoch,
                 }]
             }
+            Self::EvidenceCertificate(certificate) => {
+                vec![FederationBarkConflictKey::EvidenceCertificate {
+                    action_id: certificate.binding.action_id,
+                    phase: certificate.binding.phase,
+                }]
+            }
         }
     }
 
@@ -1389,6 +1419,19 @@ impl FederationBarkOperation {
             Self::ActionPlan(operation) => operation.validate()?,
             Self::ActionTransition(operation) => operation.validate()?,
             Self::MemberObservation(operation) => operation.validate()?,
+            Self::EvidenceCertificate(certificate) => {
+                if certificate.attestations.is_empty()
+                    || certificate.attestations.len() > FEDERATION_MAX_BARK_COLLECTION_ENTRIES
+                    || certificate
+                        .attestations
+                        .windows(2)
+                        .any(|pair| pair[0].signer >= pair[1].signer)
+                {
+                    return Err(invalid_bark(
+                        "Bark evidence certificate signer set is invalid",
+                    ));
+                }
+            }
         }
         let actual = self.canonical_bytes()?.len();
         if actual > FEDERATION_MAX_BARK_OPERATION_BYTES {
@@ -2350,6 +2393,7 @@ impl FederationBarkActionTransition {
             external_id: plan.external_id,
             artifacts: Vec::new(),
             vtxo_transitions: Vec::new(),
+            evidence_certificate: None,
         })
     }
 
@@ -2379,6 +2423,38 @@ impl FederationBarkActionTransition {
         ensure_strictly_sorted("Bark artifacts", &self.artifacts)?;
         ensure_strictly_sorted("Bark VTXO transitions", &self.vtxo_transitions)?;
         validate_artifacts(&self.artifacts)?;
+        match &self.evidence_certificate {
+            Some(certificate)
+                if self.phase == FederationBarkSemanticPhase::ReceiveHtlcsReady
+                    && certificate.binding.phase
+                        == FederationBarkEvidencePhase::ReceiveHtlcsReady
+                    && certificate.binding.action_id == self.action_id
+                    && certificate.binding.quote == self.quote.as_deref().unwrap_or_default()
+                    && Some(certificate.binding.payment_hash) == self.payment_hash
+                    && certificate.binding.evidence_operation_id
+                        == self.predecessor_operation_id
+                    && certificate.binding.attempt == self.attempt
+                    && certificate.binding.evidence_digest == self.result_hash =>
+            {
+                let certified_amount = checked_sum(
+                    self.vtxo_transitions
+                        .iter()
+                        .filter(|transition| transition.previous_state.is_none())
+                        .map(|transition| transition.amount),
+                )?;
+                if certified_amount != certificate.binding.amount {
+                    return Err(invalid_bark(
+                        "Bark HTLC certificate amount differs from its artifacts",
+                    ));
+                }
+            }
+            Some(_) => {
+                return Err(invalid_bark(
+                    "Bark evidence certificate does not match its transition",
+                ));
+            }
+            None => {}
+        }
         if self.phase == FederationBarkSemanticPhase::SigningAttemptAdvanced
             && (!self.artifacts.is_empty() || !self.vtxo_transitions.is_empty())
         {
@@ -2827,7 +2903,8 @@ impl FederationBarkAuthorizationReference {
             FederationBarkOperation::ReceiveIntent(_)
             | FederationBarkOperation::ReceivePrepared(_)
             | FederationBarkOperation::ActionTransition(_)
-            | FederationBarkOperation::MemberObservation(_) => {
+            | FederationBarkOperation::MemberObservation(_)
+            | FederationBarkOperation::EvidenceCertificate(_) => {
                 return Err(invalid_bark(
                     "accepted operation does not authorize a custody signer set",
                 ));
@@ -3125,6 +3202,7 @@ fn authorization_kind_matches_phase(
         FederationBarkOperationKind::MemberObservation => {
             phase == FederationBarkSemanticPhase::Observation
         }
+        FederationBarkOperationKind::EvidenceCertificate => false,
     }
 }
 
@@ -3981,7 +4059,7 @@ mod tests {
         };
         intent.actor = member(3);
         let operation = FederationBarkOperation::ReceiveIntent(intent);
-        assert_eq!(operation.claimed_author(), member(3));
+        assert_eq!(operation.claimed_author(), Some(member(3)));
         assert!(operation.validate().is_err());
 
         let FederationBarkOperation::ActionPlan(mut plan) = send_plan() else {

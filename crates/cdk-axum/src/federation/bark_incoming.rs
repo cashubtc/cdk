@@ -1,11 +1,12 @@
 //! Consensus-first orchestration for federated Bark incoming BOLT11 quotes.
 
-use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cdk::federation::{
     ark_server_commitment, federation_bark_description_hash, federation_bark_mailbox_scope,
     payment_hash_for_preimage, preimage_commitment, FederationBarkActionId,
+    FederationBarkEvidenceAttestationRequest, FederationBarkEvidenceBinding,
+    FederationBarkEvidenceCertificate, FederationBarkEvidencePhase,
     FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
     FederationBarkReceiveIntent, FederationBarkReceivePrepared, FederationBarkReceiveProof,
     FederationBarkReceiveSecretBinding, FederationBarkSemanticPhase, FederationBarkUnit,
@@ -33,104 +34,6 @@ const FEDERATION_BARK_RECEIVE_INTENT_LIFETIME_SECONDS: u64 = 7 * 24 * 60 * 60;
 const FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS: u64 = 15 * 60;
 const FEDERATION_BARK_QUOTE_ID_DOMAIN: &[u8] = b"cdk-federation-bark-quote-id-v1";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FederatedBarkReceiveObservationStep<'a> {
-    PollArk,
-    WaitForQuorum,
-    AdvanceFromCache(&'a FederationBarkMemberObservation),
-}
-
-fn matching_receive_observers(
-    projection: &cdk::federation::FederationBarkProjectionSnapshot,
-    expected: &FederationBarkMemberObservation,
-) -> BTreeSet<cdk::federation::MemberId> {
-    projection
-        .observations
-        .iter()
-        .filter_map(|record| match &record.operation {
-            FederationBarkOperation::MemberObservation(existing)
-                if existing.action_id == expected.action_id
-                    && existing.status == expected.status
-                    && existing.payment_hash == expected.payment_hash
-                    && existing.source_scope == expected.source_scope
-                    && existing.amount == expected.amount
-                    && existing.fee == expected.fee
-                    && existing.result_hash == expected.result_hash =>
-            {
-                Some(existing.observer)
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-fn receive_observation_step<'a>(
-    projection: &'a cdk::federation::FederationBarkProjectionSnapshot,
-    action_id: FederationBarkActionId,
-    member_id: cdk::federation::MemberId,
-    is_receive_actor: bool,
-    threshold: usize,
-) -> FederatedBarkReceiveObservationStep<'a> {
-    let accepted = projection
-        .observations
-        .iter()
-        .filter_map(|record| match &record.operation {
-            FederationBarkOperation::MemberObservation(observation)
-                if observation.action_id == action_id
-                    && observation.observer == member_id
-                    && observation.status == FederationBarkObservationStatus::Accepted =>
-            {
-                Some((record.operation_index, observation))
-            }
-            _ => None,
-        })
-        .min_by_key(|(operation_index, _)| *operation_index)
-        .map(|(_, observation)| observation);
-    if is_receive_actor {
-        let quorum_observation = accepted
-            .filter(|observation| {
-                matching_receive_observers(projection, observation).len() >= threshold
-            })
-            .or_else(|| {
-                projection
-                    .observations
-                    .iter()
-                    .filter_map(|record| match &record.operation {
-                        FederationBarkOperation::MemberObservation(observation)
-                            if observation.action_id == action_id
-                                && observation.status
-                                    == FederationBarkObservationStatus::Accepted
-                                && matching_receive_observers(projection, observation).len()
-                                    >= threshold =>
-                        {
-                            Some((record.operation_index, observation))
-                        }
-                        _ => None,
-                    })
-                    .min_by_key(|(operation_index, _)| *operation_index)
-                    .map(|(_, observation)| observation)
-            });
-        if let Some(observation) = quorum_observation {
-            return FederatedBarkReceiveObservationStep::AdvanceFromCache(observation);
-        }
-    }
-    if accepted.is_some()
-        || projection.observations.iter().any(|record| {
-            matches!(
-                &record.operation,
-                FederationBarkOperation::MemberObservation(observation)
-                    if observation.action_id == action_id
-                        && observation.status == FederationBarkObservationStatus::Accepted
-                        && matching_receive_observers(projection, observation).len() >= threshold
-            )
-        })
-    {
-        FederatedBarkReceiveObservationStep::WaitForQuorum
-    } else {
-        FederatedBarkReceiveObservationStep::PollArk
-    }
-}
-
 async fn receive_transition_entry(
     state: &MintState,
     projection: &cdk::federation::FederationBarkProjectionSnapshot,
@@ -152,12 +55,205 @@ async fn receive_transition_entry(
         .ok_or(cdk::Error::Internal)
 }
 
+async fn collect_bark_evidence_certificate(
+    state: &MintState,
+    intent: &FederationBarkReceiveIntent,
+    phase: FederationBarkEvidencePhase,
+    evidence_operation_id: FederationOperationId,
+    attempt: u32,
+    observation: &FederationBarkMemberObservation,
+    required: u16,
+    collector_fallback_round: u32,
+) -> Result<Option<FederationBarkEvidenceCertificate>, cdk::Error> {
+    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+    let (binding, _) = persist_local_bark_evidence_attestation(
+        state,
+        phase,
+        evidence_operation_id,
+        attempt,
+        observation,
+    )?;
+    let store = state
+        .federation
+        .bark_receive_secrets()
+        .ok_or_else(bark_unavailable)?;
+
+    let collector = bark_evidence_collector(
+        federation.public_config().members.keys().copied(),
+        intent.actor,
+        collector_fallback_round,
+    )
+    .ok_or(cdk::Error::Internal)?;
+    let attestations = store
+        .evidence_attestations(&binding, federation.public_config())
+        .map_err(|_| bark_unavailable())?;
+    if federation.member_id() != collector {
+        let collector_member = federation
+            .public_config()
+            .member(collector)
+            .ok_or(cdk::Error::Internal)?;
+        let peer_client = FederationRestPeerClient::new_with_validated_config(
+            Async::default(),
+            federation.public_config(),
+            federation.private_config().clone(),
+            state
+                .federation
+                .peer_sync_config
+                .ok_or_else(bark_unavailable)?,
+        )
+        .map_err(|_| bark_unavailable())?;
+        for attestation in attestations {
+            let request =
+                FederationBarkEvidenceAttestationRequest::new(binding.clone(), attestation);
+            if peer_client
+                .deliver_bark_evidence_attestation(collector_member, &request)
+                .await
+                .is_err()
+            {
+                tracing::debug!(
+                    collector = %collector,
+                    "Bark evidence attestation primary delivery failed"
+                );
+                if let Some(retry_collector) = bark_evidence_retry_collector(
+                    federation.public_config().members.keys().copied(),
+                    intent.actor,
+                    collector_fallback_round,
+                    required,
+                ) {
+                    let retry_member = federation
+                        .public_config()
+                        .member(retry_collector)
+                        .ok_or(cdk::Error::Internal)?;
+                    if peer_client
+                        .deliver_bark_evidence_attestation(retry_member, &request)
+                        .await
+                        .is_err()
+                    {
+                        tracing::debug!(
+                            collector = %retry_collector,
+                            "Bark evidence attestation remains durable for a later delivery retry"
+                        );
+                    }
+                }
+            }
+        }
+        return Ok(None);
+    }
+
+    if attestations.len() < usize::from(required) {
+        return Ok(None);
+    }
+    FederationBarkEvidenceCertificate::new(
+        binding,
+        attestations,
+        federation.public_config(),
+        required,
+    )
+    .map(Some)
+    .map_err(cdk::Error::from)
+}
+
+fn persist_local_bark_evidence_attestation(
+    state: &MintState,
+    phase: FederationBarkEvidencePhase,
+    evidence_operation_id: FederationOperationId,
+    attempt: u32,
+    observation: &FederationBarkMemberObservation,
+) -> Result<
+    (
+        FederationBarkEvidenceBinding,
+        cdk::federation::FederationBarkEvidenceAttestation,
+    ),
+    cdk::Error,
+> {
+    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+    let binding = FederationBarkEvidenceBinding::from_observation(
+        federation.public_config(),
+        phase,
+        evidence_operation_id,
+        attempt,
+        observation,
+    )
+    .map_err(cdk::Error::from)?;
+    let attestation = cdk::federation::FederationBarkEvidenceAttestation::new_signed(
+        &binding,
+        federation.public_config(),
+        federation.private_config(),
+    )
+    .map_err(cdk::Error::from)?;
+    state
+        .federation
+        .bark_receive_secrets()
+        .ok_or_else(bark_unavailable)?
+        .persist_evidence_attestation(&binding, attestation, federation.public_config())
+        .map_err(|_| bark_unavailable())?;
+    Ok((binding, attestation))
+}
+
+fn bark_evidence_collector(
+    members: impl IntoIterator<Item = cdk::federation::MemberId>,
+    actor: cdk::federation::MemberId,
+    fallback_round: u32,
+) -> Option<cdk::federation::MemberId> {
+    let members = members.into_iter().collect::<Vec<_>>();
+    let actor_index = members.iter().position(|member| *member == actor)?;
+    let offset = usize::try_from(fallback_round)
+        .unwrap_or(usize::MAX)
+        .min(members.len().saturating_sub(1));
+    members.get((actor_index + offset) % members.len()).copied()
+}
+
+fn scheduled_bark_evidence_collector_round(fallback_round: u32, required: u16) -> u32 {
+    match fallback_round {
+        0 => 0,
+        fallback_round => u32::from(required).saturating_add(fallback_round - 1),
+    }
+}
+
+fn bark_evidence_retry_collector(
+    members: impl IntoIterator<Item = cdk::federation::MemberId>,
+    actor: cdk::federation::MemberId,
+    current_round: u32,
+    required: u16,
+) -> Option<cdk::federation::MemberId> {
+    let members = members.into_iter().collect::<Vec<_>>();
+    let last_round = u32::try_from(members.len().checked_sub(1)?).ok()?;
+    let retry_round = current_round.saturating_add(1).max(u32::from(required));
+    if retry_round > last_round {
+        return None;
+    }
+    bark_evidence_collector(members, actor, retry_round)
+}
+
 /// Poll and advance one already-created federated Bark quote. Mailbox events
 /// call the same function; they never supply settlement truth themselves.
 pub(super) async fn advance_federated_bark_mint_quote(
     state: &MintState,
     quote_id: &QuoteId,
     observer_fallback_round: u32,
+) -> Result<FederationPaymentAdvancement, cdk::Error> {
+    advance_federated_bark_mint_quote_inner(state, quote_id, observer_fallback_round, None).await
+}
+
+pub(super) async fn advance_federated_bark_mint_quote_from_evidence_delivery(
+    state: &MintState,
+    quote_id: &QuoteId,
+    collector_fallback_round: u32,
+) -> Result<FederationPaymentAdvancement, cdk::Error> {
+    advance_federated_bark_mint_quote_inner(
+        state,
+        quote_id,
+        collector_fallback_round,
+        Some(collector_fallback_round),
+    )
+    .await
+}
+
+async fn advance_federated_bark_mint_quote_inner(
+    state: &MintState,
+    quote_id: &QuoteId,
+    observer_fallback_round: u32,
+    collector_fallback_round_override: Option<u32>,
 ) -> Result<FederationPaymentAdvancement, cdk::Error> {
     let _guard = state.federation.bark_incoming_lock().lock().await;
     let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
@@ -224,118 +320,105 @@ pub(super) async fn advance_federated_bark_mint_quote(
                 .federation_bark_receive_actor(action.origin_operation_id)
                 .await?;
             let is_receive_actor = receive_actor == federation.member_id();
-            let threshold = usize::from(
-                federation
-                    .public_config()
-                    .threshold_params
-                    .signature_threshold,
-            );
-            match receive_observation_step(
-                &projection,
-                action.action_id,
-                federation.member_id(),
-                is_receive_actor,
-                threshold,
-            ) {
-                FederatedBarkReceiveObservationStep::WaitForQuorum => {
-                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
-                }
-                FederatedBarkReceiveObservationStep::AdvanceFromCache(observation) => {
-                    let transition = runtime
-                        .receive_htlc_transition_from_accepted_observation(
-                            &intent,
-                            prepared_record.operation_id,
-                            prepared,
-                            observation,
-                        )
-                        .await
-                        .map_err(|_| bark_unavailable())?;
-                    let envelope = federation.operation_envelope(FederationOperation::Bark(
-                        FederationBarkOperation::ActionTransition(transition),
-                    ));
-                    state
-                        .submit_federation_envelope(envelope)
-                        .await?
-                        .ensure_accepted()?;
-                    return Ok(FederationPaymentAdvancement::Progressed);
-                }
-                FederatedBarkReceiveObservationStep::PollArk => {}
-            }
+            let threshold = federation
+                .public_config()
+                .threshold_params
+                .signature_threshold;
+            let collector_fallback_round = collector_fallback_round_override.unwrap_or_else(|| {
+                scheduled_bark_evidence_collector_round(observer_fallback_round, threshold)
+            });
+            let evidence_collector = bark_evidence_collector(
+                federation.public_config().members.keys().copied(),
+                receive_actor,
+                collector_fallback_round,
+            )
+            .ok_or(cdk::Error::Internal)?;
+            let is_evidence_collector = evidence_collector == federation.member_id();
+            let cached_binding = runtime
+                .receive_secret_store()
+                .evidence_binding(
+                    action.action_id,
+                    FederationBarkEvidencePhase::ReceiveHtlcsReady,
+                    federation.member_id(),
+                    federation.public_config(),
+                )
+                .map_err(|_| bark_unavailable())?;
             if !is_selected_bark_observer(
                 federation.public_config().members.keys().copied(),
                 receive_actor,
                 federation.member_id(),
-                threshold,
+                usize::from(threshold),
                 observer_fallback_round,
             ) {
                 return Ok(unselected_bark_observer_wait(accepted_evidence_present));
             }
-            let next_epoch = projection
-                .observations
-                .iter()
-                .filter_map(|record| match &record.operation {
-                    FederationBarkOperation::MemberObservation(observation)
-                        if observation.action_id == action.action_id
-                            && observation.observer == federation.member_id() =>
+            let (observation, mut transition) = match cached_binding {
+                Some(binding) => {
+                    if binding.evidence_operation_id != prepared_record.operation_id
+                        || binding.attempt != 1
                     {
-                        Some(observation.observation_epoch)
+                        return Err(bark_unavailable());
                     }
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0)
-                .checked_add(1)
-                .ok_or(cdk::Error::Internal)?;
-            let Some((observation, transition)) = runtime
-                .observe_receive_htlcs(
-                    &intent,
-                    prepared_record.operation_id,
-                    prepared,
-                    next_epoch,
-                    is_receive_actor,
-                )
-                .await
-                .map_err(|_| bark_unavailable())?
-            else {
-                return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
+                    let observation = binding.observation_for(federation.member_id());
+                    let transition = if is_evidence_collector {
+                        Some(
+                            runtime
+                                .receive_htlc_transition_from_accepted_observation(
+                                    &intent,
+                                    prepared_record.operation_id,
+                                    prepared,
+                                    &observation,
+                                )
+                                .await
+                                .map_err(|_| bark_unavailable())?,
+                        )
+                    } else {
+                        None
+                    };
+                    (observation, transition)
+                }
+                None => {
+                    let Some((observation, transition)) = runtime
+                        .observe_receive_htlcs(
+                            &intent,
+                            prepared_record.operation_id,
+                            prepared,
+                            1,
+                            is_receive_actor,
+                        )
+                        .await
+                        .map_err(|_| bark_unavailable())?
+                    else {
+                        return Ok(FederationPaymentAdvancement::AwaitingExternalEvidence);
+                    };
+                    (observation, is_evidence_collector.then_some(transition))
+                }
             };
-            let already_observed = projection.observations.iter().any(|record| {
-                matches!(
-                    &record.operation,
-                    FederationBarkOperation::MemberObservation(existing)
-                        if existing.action_id == observation.action_id
-                            && existing.observer == observation.observer
-                            && existing.status == observation.status
-                            && existing.result_hash == observation.result_hash
-                            && existing.amount == observation.amount
-                            && existing.fee == observation.fee
-                )
-            });
-            let mut submitted = 0_usize;
-            if !already_observed {
+            let certificate = collect_bark_evidence_certificate(
+                state,
+                &intent,
+                FederationBarkEvidencePhase::ReceiveHtlcsReady,
+                prepared_record.operation_id,
+                1,
+                &observation,
+                threshold,
+                collector_fallback_round,
+            )
+            .await?;
+            if let (Some(certificate), Some(transition)) = (certificate, transition.as_mut()) {
+                transition.actor = intent.actor;
+                transition.evidence_certificate = Some(Box::new(certificate));
                 let envelope = federation.operation_envelope(FederationOperation::Bark(
-                    FederationBarkOperation::MemberObservation(observation.clone()),
+                    FederationBarkOperation::ActionTransition(transition.clone()),
                 ));
                 state
                     .submit_federation_envelope(envelope)
                     .await?
                     .ensure_accepted()?;
-                submitted = submitted.saturating_add(1);
+                return Ok(FederationPaymentAdvancement::Progressed);
             }
-            let refreshed = state.mint.federation_bark_projection_snapshot().await?;
-            let matching_observers = matching_receive_observers(&refreshed, &observation);
-            if is_receive_actor && matching_observers.len() >= threshold {
-                let envelope = federation.operation_envelope(FederationOperation::Bark(
-                    FederationBarkOperation::ActionTransition(transition),
-                ));
-                state
-                    .submit_federation_envelope(envelope)
-                    .await?
-                    .ensure_accepted()?;
-                submitted = submitted.saturating_add(1);
-            }
-            Ok(if submitted > 0 {
-                FederationPaymentAdvancement::Progressed
+            Ok(if is_evidence_collector {
+                FederationPaymentAdvancement::AwaitingObserverFallback
             } else {
                 FederationPaymentAdvancement::AwaitingFederationEvidence
             })
@@ -473,6 +556,7 @@ pub(super) async fn advance_federated_bark_mint_quote(
                     preimage_disclosed,
                     result,
                 } => {
+                    let claimed_amount = result.amount();
                     let accepted_preimage = if effective_phase
                         == FederationBarkSemanticPhase::ClaimPlanned
                     {
@@ -495,12 +579,30 @@ pub(super) async fn advance_federated_bark_mint_quote(
                         .finalize_receive_claim(&accepted_preimage, *result)
                         .map_err(|_| bark_unavailable())?;
                     let envelope = federation.operation_envelope(FederationOperation::Bark(
-                        FederationBarkOperation::ActionTransition(claimed),
+                        FederationBarkOperation::ActionTransition(claimed.clone()),
                     ));
-                    state
-                        .submit_federation_envelope(envelope)
-                        .await?
-                        .ensure_accepted()?;
+                    let response = state.submit_federation_envelope(envelope).await?;
+                    response.ensure_accepted()?;
+                    let observation = FederationBarkMemberObservation {
+                        version: FEDERATION_BARK_OPERATION_VERSION,
+                        action_id: claimed.action_id,
+                        quote: Some(intent.quote.clone()),
+                        observer: federation.member_id(),
+                        observation_epoch: u64::from(claimed.attempt),
+                        source_scope: intent.ark_server,
+                        payment_hash: Some(intent.payment_hash),
+                        status: FederationBarkObservationStatus::Succeeded,
+                        amount: claimed_amount,
+                        fee: Amount::ZERO,
+                        result_hash: claimed.result_hash,
+                    };
+                    persist_local_bark_evidence_attestation(
+                        state,
+                        FederationBarkEvidencePhase::ReceiveClaimed,
+                        response.operation_id,
+                        claimed.attempt,
+                        &observation,
+                    )?;
                     runtime
                         .acknowledge_receive_claim(&intent, prepared)
                         .await
@@ -510,98 +612,140 @@ pub(super) async fn advance_federated_bark_mint_quote(
             }
         }
         FederationBarkSemanticPhase::ReceiveClaimed => {
-            let FederationBarkOperation::ActionTransition(claimed) = &action.operation else {
-                return Err(cdk::Error::Internal);
-            };
-            let already_observed = projection.observations.iter().any(|record| {
-                matches!(
-                    &record.operation,
-                    FederationBarkOperation::MemberObservation(existing)
-                        if existing.action_id == action.action_id
-                            && existing.observer == federation.member_id()
-                            && existing.status == FederationBarkObservationStatus::Succeeded
-                            && existing.result_hash == claimed.result_hash
-                )
-            });
-            if already_observed {
-                if action.actor == federation.member_id() {
-                    runtime
-                        .acknowledge_receive_claim(&intent, prepared)
-                        .await
-                        .map_err(|_| bark_unavailable())?;
-                }
-                return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
+            advance_receive_claimed_evidence(
+                state,
+                &projection,
+                &action,
+                &intent,
+                observer_fallback_round,
+                collector_fallback_round_override,
+            )
+            .await
+        }
+        _ => Ok(FederationPaymentAdvancement::Complete),
+    }
+}
+
+async fn advance_receive_claimed_evidence(
+    state: &MintState,
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    action: &cdk::federation::FederationBarkActionRecord,
+    intent: &FederationBarkReceiveIntent,
+    observer_fallback_round: u32,
+    collector_fallback_round_override: Option<u32>,
+) -> Result<FederationPaymentAdvancement, cdk::Error> {
+    let federation = state.mint.federation_config().ok_or(cdk::Error::Internal)?;
+    let runtime = state
+        .federation
+        .bark_runtime()
+        .ok_or_else(bark_unavailable)?;
+    let FederationBarkOperation::ActionTransition(claimed) = &action.operation else {
+        return Err(cdk::Error::Internal);
+    };
+    let already_certified = projection.observations.iter().any(|record| {
+        matches!(
+            &record.operation,
+            FederationBarkOperation::EvidenceCertificate(certificate)
+                if certificate.binding.action_id == action.action_id
+                    && certificate.binding.phase == FederationBarkEvidencePhase::ReceiveClaimed
+        )
+    });
+    if already_certified {
+        return Ok(FederationPaymentAdvancement::Complete);
+    }
+    let public_config = federation.public_config();
+    let required = required_bark_result_observers(
+        public_config.threshold_params.signature_threshold,
+        public_config
+            .payment_verification_policy(FederationPaymentObservationContext::MintQuote)
+            .required_matching_observations(),
+    );
+    let required = u16::try_from(required).map_err(|_| cdk::Error::Internal)?;
+    let collector_fallback_round = collector_fallback_round_override.unwrap_or_else(|| {
+        scheduled_bark_evidence_collector_round(observer_fallback_round, required)
+    });
+    let is_evidence_collector = bark_evidence_collector(
+        public_config.members.keys().copied(),
+        action.actor,
+        collector_fallback_round,
+    )
+    .is_some_and(|collector| collector == federation.member_id());
+    let cached_binding = runtime
+        .receive_secret_store()
+        .evidence_binding(
+            action.action_id,
+            FederationBarkEvidencePhase::ReceiveClaimed,
+            federation.member_id(),
+            public_config,
+        )
+        .map_err(|_| bark_unavailable())?;
+    if !is_selected_bark_observer(
+        public_config.members.keys().copied(),
+        action.actor,
+        federation.member_id(),
+        usize::from(required),
+        observer_fallback_round,
+    ) {
+        return Ok(unselected_bark_observer_wait(cached_binding.is_some()));
+    }
+    let observation = match cached_binding {
+        Some(binding) => {
+            if binding.evidence_operation_id != action.latest_operation_id
+                || binding.attempt != claimed.attempt
+            {
+                return Err(bark_unavailable());
             }
+            binding.observation_for(federation.member_id())
+        }
+        None => {
             let amount = runtime
                 .validate_receive_claim_result(claimed)
                 .await
                 .map_err(|_| bark_unavailable())?;
-            let next_epoch = projection
-                .observations
-                .iter()
-                .filter_map(|record| match &record.operation {
-                    FederationBarkOperation::MemberObservation(observation)
-                        if observation.action_id == action.action_id
-                            && observation.observer == federation.member_id() =>
-                    {
-                        Some(observation.observation_epoch)
-                    }
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0)
-                .checked_add(1)
-                .ok_or(cdk::Error::Internal)?;
-            let observation = FederationBarkMemberObservation {
+            FederationBarkMemberObservation {
                 version: FEDERATION_BARK_OPERATION_VERSION,
                 action_id: action.action_id,
                 quote: Some(intent.quote.clone()),
                 observer: federation.member_id(),
-                observation_epoch: next_epoch,
+                observation_epoch: u64::from(claimed.attempt),
                 source_scope: intent.ark_server,
                 payment_hash: Some(intent.payment_hash),
                 status: FederationBarkObservationStatus::Succeeded,
                 amount,
                 fee: Amount::ZERO,
                 result_hash: claimed.result_hash,
-            };
-            let public_config = federation.public_config();
-            let required = required_bark_result_observers(
-                public_config.threshold_params.signature_threshold,
-                public_config
-                    .payment_verification_policy(FederationPaymentObservationContext::MintQuote)
-                    .required_matching_observations(),
-            );
-            let matching_observers = matching_receive_observers(&projection, &observation).len();
-            if matching_observers >= required {
-                return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
             }
-            if !is_selected_bark_observer(
-                public_config.members.keys().copied(),
-                action.actor,
-                federation.member_id(),
-                required,
-                observer_fallback_round,
-            ) {
-                return Ok(unselected_bark_observer_wait(matching_observers > 0));
-            }
-            let envelope = federation.operation_envelope(FederationOperation::Bark(
-                FederationBarkOperation::MemberObservation(observation),
-            ));
-            state
-                .submit_federation_envelope(envelope)
-                .await?
-                .ensure_accepted()?;
-            if action.actor == federation.member_id() {
-                runtime
-                    .acknowledge_receive_claim(&intent, prepared)
-                    .await
-                    .map_err(|_| bark_unavailable())?;
-            }
-            Ok(FederationPaymentAdvancement::Progressed)
         }
-        _ => Ok(FederationPaymentAdvancement::Complete),
+    };
+    let certificate = collect_bark_evidence_certificate(
+        state,
+        intent,
+        FederationBarkEvidencePhase::ReceiveClaimed,
+        action.latest_operation_id,
+        claimed.attempt,
+        &observation,
+        required,
+        collector_fallback_round,
+    )
+    .await?;
+    if let Some(certificate) = certificate {
+        let envelope = federation.operation_envelope(FederationOperation::Bark(
+            FederationBarkOperation::EvidenceCertificate(certificate),
+        ));
+        state
+            .submit_federation_envelope(envelope)
+            .await?
+            .ensure_accepted()?;
+        return Ok(FederationPaymentAdvancement::Progressed);
     }
+    // Only the active collector starts the bounded standby timer. Letting
+    // every attester rotate independently can race multiple publications for
+    // the same logical certificate.
+    Ok(if is_evidence_collector {
+        FederationPaymentAdvancement::AwaitingObserverFallback
+    } else {
+        FederationPaymentAdvancement::AwaitingFederationEvidence
+    })
 }
 
 pub(super) fn receive_is_automatically_terminal(
@@ -757,7 +901,8 @@ async fn accepted_invoice(
             }
             FederationBarkOperation::ActionPlan(_)
             | FederationBarkOperation::ActionTransition(_)
-            | FederationBarkOperation::MemberObservation(_) => {
+            | FederationBarkOperation::MemberObservation(_)
+            | FederationBarkOperation::EvidenceCertificate(_) => {
                 Err(cdk::Error::InvalidPaymentRequest)
             }
         };
@@ -1079,18 +1224,13 @@ fn bark_unavailable() -> cdk::Error {
 
 #[cfg(test)]
 mod tests {
-    use cdk::federation::{
-        FederationBarkDigest, FederationBarkMemberObservation, FederationBarkObservationRecord,
-        FederationBarkObservationStatus, FederationBarkOperation, FederationBarkProjectionSnapshot,
-        FederationOperationId, MemberId, FEDERATION_BARK_OPERATION_VERSION,
-    };
     use cdk::mint::MintQuoteRequest;
     use cdk::nuts::{CurrencyUnit, MintQuoteBolt11Request, PublicKey};
     use cdk::{Amount, Error};
 
     use super::{
-        federated_bark_quote_id, receive_is_automatically_terminal, receive_observation_step,
-        FederatedBarkReceiveObservationStep, FederationBarkActionId, FederationId,
+        bark_evidence_collector, bark_evidence_retry_collector, federated_bark_quote_id,
+        receive_is_automatically_terminal, scheduled_bark_evidence_collector_round, FederationId,
         FEDERATION_BARK_RECEIVE_EXPIRY_GRACE_SECONDS,
     };
 
@@ -1101,40 +1241,6 @@ mod tests {
             description: Some("stable retry".to_string()),
             pubkey,
         })
-    }
-
-    fn member(id: u16) -> MemberId {
-        MemberId::new(id).expect("member ID")
-    }
-
-    fn observation(
-        action_id: FederationBarkActionId,
-        observer: MemberId,
-        operation_index: u64,
-        result_seed: u8,
-    ) -> FederationBarkObservationRecord {
-        FederationBarkObservationRecord {
-            operation_id: FederationOperationId::from_bytes([operation_index as u8; 32]),
-            operation_index,
-            operation: FederationBarkOperation::MemberObservation(
-                FederationBarkMemberObservation {
-                    version: FEDERATION_BARK_OPERATION_VERSION,
-                    action_id,
-                    quote: Some("quote".to_string()),
-                    observer,
-                    observation_epoch: 1,
-                    source_scope: FederationBarkDigest::from_bytes([3; 32]).expect("source scope"),
-                    payment_hash: Some(
-                        FederationBarkDigest::from_bytes([4; 32]).expect("payment hash"),
-                    ),
-                    status: FederationBarkObservationStatus::Accepted,
-                    amount: Amount::from(10_000),
-                    fee: Amount::ZERO,
-                    result_hash: FederationBarkDigest::from_bytes([result_seed; 32])
-                        .expect("result hash"),
-                },
-            ),
-        }
     }
 
     #[test]
@@ -1185,17 +1291,43 @@ mod tests {
     }
 
     #[test]
-    fn receive_observer_without_accepted_evidence_polls_ark() {
-        let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
-        let projection = FederationBarkProjectionSnapshot {
-            observations: vec![observation(action_id, member(2), 1, 9)],
-            ..FederationBarkProjectionSnapshot::default()
+    fn evidence_collector_rotates_once_per_bounded_fallback_round() {
+        let members = || (1..=5).map(|id| cdk::federation::MemberId::new(id).expect("member"));
+        let actor = cdk::federation::MemberId::new(4).expect("actor");
+        let selected = |round| {
+            bark_evidence_collector(members(), actor, round)
+                .expect("collector")
+                .get()
         };
 
-        assert_eq!(
-            receive_observation_step(&projection, action_id, member(1), false, 3),
-            FederatedBarkReceiveObservationStep::PollArk,
-        );
+        assert_eq!(selected(0), 4);
+        assert_eq!(selected(1), 5);
+        assert_eq!(selected(2), 1);
+        assert_eq!(selected(4), 3);
+        assert_eq!(selected(u32::MAX), 3);
+    }
+
+    #[test]
+    fn failed_primary_delivery_skips_to_the_first_standby_observer() {
+        let members = || (1..=5).map(|id| cdk::federation::MemberId::new(id).expect("member"));
+        let actor = cdk::federation::MemberId::new(4).expect("actor");
+        let retry = |round, required| {
+            bark_evidence_retry_collector(members(), actor, round, required)
+                .map(cdk::federation::MemberId::get)
+        };
+
+        assert_eq!(retry(0, 3), Some(2));
+        assert_eq!(retry(3, 3), Some(3));
+        assert_eq!(retry(4, 3), None);
+        assert_eq!(retry(0, 4), Some(3));
+    }
+
+    #[test]
+    fn scheduled_fallback_starts_after_the_required_observer_set() {
+        assert_eq!(scheduled_bark_evidence_collector_round(0, 3), 0);
+        assert_eq!(scheduled_bark_evidence_collector_round(1, 3), 3);
+        assert_eq!(scheduled_bark_evidence_collector_round(2, 3), 4);
+        assert_eq!(scheduled_bark_evidence_collector_round(1, 4), 4);
     }
 
     #[test]
@@ -1217,75 +1349,6 @@ mod tests {
             expires_at,
             true,
             terminal_at,
-        ));
-    }
-
-    #[test]
-    fn accepted_receive_observer_waits_without_polling_ark() {
-        let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
-        let projection = FederationBarkProjectionSnapshot {
-            observations: vec![observation(action_id, member(1), 1, 9)],
-            ..FederationBarkProjectionSnapshot::default()
-        };
-
-        assert_eq!(
-            receive_observation_step(&projection, action_id, member(1), false, 3),
-            FederatedBarkReceiveObservationStep::WaitForQuorum,
-        );
-        assert_eq!(
-            receive_observation_step(&projection, action_id, member(1), true, 3),
-            FederatedBarkReceiveObservationStep::WaitForQuorum,
-        );
-    }
-
-    #[test]
-    fn receive_quorum_stops_members_without_their_own_evidence_from_polling() {
-        let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
-        let projection = FederationBarkProjectionSnapshot {
-            observations: vec![
-                observation(action_id, member(1), 1, 9),
-                observation(action_id, member(2), 2, 9),
-                observation(action_id, member(3), 3, 9),
-            ],
-            ..FederationBarkProjectionSnapshot::default()
-        };
-
-        assert_eq!(
-            receive_observation_step(&projection, action_id, member(5), false, 3),
-            FederatedBarkReceiveObservationStep::WaitForQuorum,
-        );
-        assert!(matches!(
-            receive_observation_step(&projection, action_id, member(5), true, 3),
-            FederatedBarkReceiveObservationStep::AdvanceFromCache(observation)
-                if observation.observer == member(1)
-        ));
-    }
-
-    #[test]
-    fn receive_actor_advances_from_cache_only_after_matching_quorum() {
-        let action_id = FederationBarkActionId::from_bytes([1; 32]).expect("action ID");
-        let mut projection = FederationBarkProjectionSnapshot {
-            observations: vec![
-                observation(action_id, member(1), 1, 9),
-                observation(action_id, member(2), 2, 9),
-                observation(action_id, member(3), 3, 8),
-            ],
-            ..FederationBarkProjectionSnapshot::default()
-        };
-
-        assert_eq!(
-            receive_observation_step(&projection, action_id, member(1), true, 3),
-            FederatedBarkReceiveObservationStep::WaitForQuorum,
-            "conflicting evidence must not complete the quorum",
-        );
-
-        projection
-            .observations
-            .push(observation(action_id, member(3), 4, 9));
-        assert!(matches!(
-            receive_observation_step(&projection, action_id, member(1), true, 3),
-            FederatedBarkReceiveObservationStep::AdvanceFromCache(observation)
-                if observation.observer == member(1)
         ));
     }
 }

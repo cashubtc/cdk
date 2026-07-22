@@ -76,6 +76,15 @@ pub enum Error {
     /// Encrypted backup bytes are malformed, oversized, or inconsistent.
     #[error("protected receive-secret backup is invalid")]
     ReceiveSecretBackupInvalid,
+    /// A durable evidence-attestation write or read failed.
+    #[error("Bark evidence-attestation persistence failed")]
+    EvidenceAttestationPersistence,
+    /// One signer already stored different evidence for the same action phase.
+    #[error("Bark evidence attestation conflicts with existing state")]
+    EvidenceAttestationConflict,
+    /// A durable evidence attestation is malformed or unauthenticated.
+    #[error("Bark evidence attestation is invalid")]
+    EvidenceAttestationInvalid,
     /// The configured unit is not satoshis.
     #[error("federated Bark supports only the satoshi unit")]
     UnsupportedUnit,

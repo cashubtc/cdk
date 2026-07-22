@@ -2137,6 +2137,7 @@ where
             ],
             request_hash: bark_digest(12),
             result_hash: bark_digest(13),
+            evidence_certificate: None,
             external_id: bark_external(14),
             artifacts: vec![input_artifact.clone()],
             vtxo_transitions: vec![FederationBarkVtxoTransition {
@@ -2216,6 +2217,7 @@ where
             ],
             request_hash: bark_digest(16),
             result_hash: bark_digest(17),
+            evidence_certificate: None,
             external_id: bark_external(18),
             artifacts: Vec::new(),
             vtxo_transitions: Vec::new(),
@@ -2241,6 +2243,7 @@ where
             ],
             request_hash: bark_digest(19),
             result_hash: bark_digest(20),
+            evidence_certificate: None,
             external_id: bark_external(21),
             artifacts: vec![input_artifact.clone()],
             vtxo_transitions: vec![FederationBarkVtxoTransition {
@@ -2318,6 +2321,7 @@ where
             ],
             request_hash: bark_digest(22),
             result_hash: bark_digest(23),
+            evidence_certificate: None,
             external_id: bark_external(24),
             artifacts: {
                 let mut artifacts = vec![input_artifact.clone(), output_artifact.clone()];
@@ -2380,6 +2384,7 @@ where
             ],
             request_hash: bark_digest(25),
             result_hash: bark_digest(26),
+            evidence_certificate: None,
             external_id: bark_external(27),
             artifacts: {
                 let mut artifacts = vec![input_artifact.clone(), output_artifact.clone()];
@@ -2428,6 +2433,7 @@ where
             ],
             request_hash: bark_digest(28),
             result_hash: bark_digest(29),
+            evidence_certificate: None,
             external_id: bark_external(30),
             artifacts: Vec::new(),
             vtxo_transitions: Vec::new(),
@@ -2605,6 +2611,7 @@ where
                 .commitment()
                 .expect("send plan commitment"),
             result_hash: htlc_result.hash,
+            evidence_certificate: None,
             external_id: send.external_id,
             artifacts: {
                 let mut artifacts = vec![
@@ -2673,6 +2680,7 @@ where
             signer_set: send.signer_set.clone(),
             request_hash: htlc_transition.result_hash,
             result_hash: initiated_result.hash,
+            evidence_certificate: None,
             external_id: send.external_id,
             artifacts: vec![initiated_result],
             vtxo_transitions: Vec::new(),
@@ -2701,6 +2709,7 @@ where
             signer_set: send.signer_set.clone(),
             request_hash: initiated_transition.result_hash,
             result_hash: bark_digest(52),
+            evidence_certificate: None,
             external_id: send.external_id,
             artifacts: {
                 let mut artifacts = vec![htlc_artifact.clone(), proof];
@@ -2830,6 +2839,7 @@ where
                 .commitment()
                 .expect("recovery send commitment"),
             result_hash: recovery_htlc_result.hash,
+            evidence_certificate: None,
             external_id: recovery_send.external_id,
             artifacts: {
                 let mut artifacts = vec![
@@ -2883,6 +2893,7 @@ where
             signer_set: recovery_send.signer_set.clone(),
             request_hash: recovery_htlc_result.hash,
             result_hash: recovery_initiated_result.hash,
+            evidence_certificate: None,
             external_id: recovery_send.external_id,
             artifacts: vec![recovery_initiated_result.clone()],
             vtxo_transitions: Vec::new(),
@@ -2909,6 +2920,7 @@ where
             signer_set: recovery_send.signer_set.clone(),
             request_hash: recovery_initiated_result.hash,
             result_hash: recovery_failed_result.hash,
+            evidence_certificate: None,
             external_id: recovery_send.external_id,
             artifacts: vec![recovery_failed_result],
             vtxo_transitions: Vec::new(),
@@ -2988,6 +3000,7 @@ where
                 .commitment()
                 .expect("revocation plan commitment"),
             result_hash: revocation_result.hash,
+            evidence_certificate: None,
             external_id: revocation.external_id,
             artifacts: {
                 let mut artifacts = vec![

@@ -801,7 +801,8 @@ impl FederationJournalEntry {
                         });
                     }
                 }
-                super::FederationBarkOperation::MemberObservation(_) => {
+                super::FederationBarkOperation::MemberObservation(_)
+                | super::FederationBarkOperation::EvidenceCertificate(_) => {
                     insert(FederationMaterializedStateKey::BarkObservation {
                         operation_id: self.operation_id,
                     });

@@ -1906,7 +1906,7 @@ impl FederationOperationEnvelope {
             FederationOperation::TransactionBroadcastObservation(observation) => {
                 Some(observation.observer)
             }
-            FederationOperation::Bark(operation) => Some(operation.claimed_author()),
+            FederationOperation::Bark(operation) => operation.claimed_author(),
             FederationOperation::AddressAllocation(_)
             | FederationOperation::MintQuote(_)
             | FederationOperation::Mint(_)

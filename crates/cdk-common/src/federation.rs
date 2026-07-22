@@ -8,6 +8,7 @@ use thiserror::Error;
 
 mod address_allocation;
 mod backup;
+mod bark_certificate;
 mod bark_operation;
 mod bark_operator_status;
 mod bark_projection;
@@ -60,6 +61,13 @@ pub use self::address_allocation::{
 pub use self::backup::{
     FederationDatabaseBackupManifest, FEDERATION_DATABASE_BACKUP_MANIFEST_VERSION,
     FEDERATION_DATABASE_BACKUP_SCHEMA_VERSION,
+};
+pub use self::bark_certificate::{
+    FederationBarkEvidenceAttestation, FederationBarkEvidenceAttestationRequest,
+    FederationBarkEvidenceAttestationResponse, FederationBarkEvidenceBinding,
+    FederationBarkEvidenceCertificate, FederationBarkEvidencePhase,
+    FEDERATION_BARK_EVIDENCE_CERTIFICATE_VERSION,
+    FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES,
 };
 pub use self::bark_operation::{
     federation_bark_custody_transcript_hash, federation_bark_description_hash,

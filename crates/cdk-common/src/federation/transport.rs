@@ -104,6 +104,8 @@ pub enum FederationRestMessageKind {
     BarkCustodyAbort,
     /// Persist one protected Bark receive secret before acknowledging it.
     BarkReceiveSecretPrepare,
+    /// Deliver one durable independently verified Bark evidence attestation.
+    BarkEvidenceAttestation,
     /// Share a member signature over a DKG/setup transcript hash.
     DkgTranscriptSignature,
     /// Confirm that one member assembled the exact finalized DKG config.
@@ -171,6 +173,7 @@ impl FederationRestMessageKind {
             Self::BarkThresholdDh => b"bark_threshold_dh",
             Self::BarkCustodyAbort => b"bark_custody_abort",
             Self::BarkReceiveSecretPrepare => b"bark_receive_secret_prepare",
+            Self::BarkEvidenceAttestation => b"bark_evidence_attestation",
             Self::DkgTranscriptSignature => b"dkg_transcript_signature",
             Self::DkgActivation => b"dkg_activation",
             Self::SubmitOperation => b"submit_operation",
@@ -5813,6 +5816,7 @@ mod tests {
             FederationRestMessageKind::SubmitOperation,
             FederationRestMessageKind::AlephBftActivity,
             FederationRestMessageKind::AlephBftNetworkMessage,
+            FederationRestMessageKind::BarkEvidenceAttestation,
         ] {
             tracker
                 .verify_next_sequence(kind, first_private.member_id, 1)
@@ -5936,6 +5940,7 @@ mod tests {
             FederationRestMessageKind::FrostSigningAbort,
             FederationRestMessageKind::FrostAggregateResult,
             FederationRestMessageKind::BarkReceiveSecretPrepare,
+            FederationRestMessageKind::BarkEvidenceAttestation,
         ] {
             assert!(!kind.has_durable_replay_state(), "unexpected durable kind");
         }

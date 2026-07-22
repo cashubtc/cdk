@@ -32,7 +32,9 @@ use cdk::federation::{
 };
 #[cfg(feature = "federation-bark")]
 use cdk::federation::{
+    FederationBarkEvidenceAttestationRequest, FederationBarkEvidenceAttestationResponse,
     FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveSecretAcknowledgement,
+    FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES,
 };
 use cdk_http_client::{Async, HttpError, Transport};
 use serde::de::DeserializeOwned;
@@ -1004,6 +1006,34 @@ where
         if response.payload.member != member.member_id {
             anyhow::bail!("Bark receive-secret acknowledgement signer differs from target member");
         }
+        Ok(response.payload)
+    }
+
+    #[cfg(feature = "federation-bark")]
+    pub(crate) async fn deliver_bark_evidence_attestation(
+        &self,
+        member: &MemberConfigPublic,
+        request: &FederationBarkEvidenceAttestationRequest,
+    ) -> anyhow::Result<FederationBarkEvidenceAttestationResponse> {
+        request.validate_relayed(&self.public_config, self.private_config.member_id)?;
+        let kind = FederationRestMessageKind::BarkEvidenceAttestation;
+        let signed = self.signed_request(member, kind, request.clone())?;
+        let response: FederationSignedRequest<FederationBarkEvidenceAttestationResponse> = self
+            .http_post_bounded_with_timeout(
+                member,
+                "bark/evidence-attestations",
+                "Bark evidence-attestation delivery",
+                &signed,
+                self.sync_config.peer_request_timeout,
+                FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES,
+            )
+            .await?;
+        self.validate_signed_response(&response, member, kind)?;
+        response.payload.validate(
+            &self.public_config,
+            &request.binding,
+            request.attestation.signer,
+        )?;
         Ok(response.payload)
     }
 

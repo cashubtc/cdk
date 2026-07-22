@@ -12,17 +12,22 @@ use cashu::MintUrl;
 use cdk_common::federation::FederationApplicationDigest;
 use cdk_common::federation::{
     ark_server_commitment, federation_bark_signer_set_for_attempt, payment_hash_for_preimage,
-    preimage_commitment, FederationBarkActionId, FederationBarkFrostApplicationConfig,
-    FederationBarkPolicyConfig, FederationBarkPrepareReceiveSecretRequest,
-    FederationBarkReceiveAntiDosPolicy, FederationBarkReceiveIntent, FederationBarkReceiveProof,
-    FederationBarkReceiveSecretBinding, FederationBarkUnit, FederationBarkVtxoLocator,
-    FederationCheckpointKind, FederationCheckpointQuorum, FederationCheckpointSignature,
-    FederationConfig, FederationDkgCeremonyId, FederationFinalizedItemDigest,
+    preimage_commitment, FederationBarkActionId, FederationBarkEvidenceAttestation,
+    FederationBarkEvidenceAttestationRequest, FederationBarkEvidenceAttestationResponse,
+    FederationBarkEvidenceBinding, FederationBarkEvidenceCertificate, FederationBarkEvidencePhase,
+    FederationBarkFrostApplicationConfig, FederationBarkMemberObservation,
+    FederationBarkObservationStatus, FederationBarkPolicyConfig,
+    FederationBarkPrepareReceiveSecretRequest, FederationBarkReceiveAntiDosPolicy,
+    FederationBarkReceiveIntent, FederationBarkReceiveProof, FederationBarkReceiveSecretBinding,
+    FederationBarkUnit, FederationBarkVtxoLocator, FederationCheckpointKind,
+    FederationCheckpointQuorum, FederationCheckpointSignature, FederationConfig,
+    FederationConfigDigest, FederationDkgCeremonyId, FederationFinalizedItemDigest,
     FederationFrostApplicationConfig, FederationFrostDkgContext, FederationFrostRootPublicConfig,
     FederationFrostRootRecord, FederationFrostWalletConfig, FederationId, FederationJournalDigest,
     FederationMaterializedStateDigest, FederationOnchainConfirmationPolicy, FederationOperationId,
-    MemberConfigPrivate, MemberConfigPublic, MemberId, ThresholdParams,
-    VerifiedFederationCheckpointQuorum, FEDERATION_CHECKPOINT_VERSION,
+    FederationOperationSignature, MemberConfigPrivate, MemberConfigPublic, MemberId,
+    ThresholdParams, VerifiedFederationCheckpointQuorum, FEDERATION_BARK_OPERATION_VERSION,
+    FEDERATION_CHECKPOINT_VERSION, FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES,
 };
 use cdk_common::SecretKey as CdkSecretKey;
 use cdk_common::{Amount, CurrencyUnit};
@@ -587,6 +592,317 @@ fn receive_binding(
         receive_proof: FederationBarkReceiveProof::NoProof,
         expires_at: 1_900_000_000,
     }
+}
+
+fn evidence_observation(
+    config: &FederationConfig,
+    action_seed: u8,
+    observer: MemberId,
+    result_seed: u8,
+) -> FederationBarkMemberObservation {
+    let application = config
+        .frost_wallet
+        .as_ref()
+        .expect("wallet")
+        .bark_application
+        .as_ref()
+        .expect("Bark application");
+    FederationBarkMemberObservation {
+        version: FEDERATION_BARK_OPERATION_VERSION,
+        action_id: FederationBarkActionId::from_bytes([action_seed; 32]).expect("action"),
+        quote: Some(format!("evidence-quote-{action_seed}")),
+        observer,
+        observation_epoch: 1,
+        source_scope: ark_server_commitment(&application.ark_server_public_key).expect("Ark scope"),
+        payment_hash: Some(
+            cdk_common::federation::FederationBarkDigest::from_bytes([61; 32])
+                .expect("payment hash"),
+        ),
+        status: FederationBarkObservationStatus::Accepted,
+        amount: Amount::from(100),
+        fee: Amount::ZERO,
+        result_hash: cdk_common::federation::FederationBarkDigest::from_bytes([result_seed; 32])
+            .expect("result hash"),
+    }
+}
+
+#[test]
+fn evidence_certificate_requires_exact_independent_signatures() {
+    let config = federated_config();
+    let observation = evidence_observation(&config, 31, member(1), 71);
+    let binding = FederationBarkEvidenceBinding::from_observation(
+        &config,
+        FederationBarkEvidencePhase::ReceiveHtlcsReady,
+        FederationOperationId::from_bytes([72; 32]),
+        1,
+        &observation,
+    )
+    .expect("binding");
+    let first = FederationBarkEvidenceAttestation::new_signed(
+        &binding,
+        &config,
+        &private_member(&config, 1),
+    )
+    .expect("first attestation");
+    let second = FederationBarkEvidenceAttestation::new_signed(
+        &binding,
+        &config,
+        &private_member(&config, 2),
+    )
+    .expect("second attestation");
+    let third = FederationBarkEvidenceAttestation::new_signed(
+        &binding,
+        &config,
+        &private_member(&config, 3),
+    )
+    .expect("third attestation");
+    let certificate =
+        FederationBarkEvidenceCertificate::new(binding.clone(), vec![second, first], &config, 2)
+            .expect("certificate");
+    assert_eq!(
+        certificate.signers().collect::<Vec<_>>(),
+        vec![member(1), member(2)]
+    );
+    certificate.verify(&config, 2).expect("valid certificate");
+    let fallback_certificate =
+        FederationBarkEvidenceCertificate::new(binding.clone(), vec![third, second], &config, 2)
+            .expect("fallback certificate");
+    assert_ne!(certificate.attestations, fallback_certificate.attestations);
+    assert_eq!(
+        certificate.certificate_id().expect("certificate ID"),
+        fallback_certificate
+            .certificate_id()
+            .expect("fallback certificate ID")
+    );
+    assert!(certificate.verify(&config, 3).is_err());
+    assert!(
+        FederationBarkEvidenceCertificate::new(binding.clone(), vec![first], &config, 2,).is_err()
+    );
+    assert!(FederationBarkEvidenceCertificate::new(
+        binding.clone(),
+        vec![first, first],
+        &config,
+        2,
+    )
+    .is_err());
+
+    let request = FederationBarkEvidenceAttestationRequest::new(binding.clone(), first);
+    request
+        .validate(&config, member(1))
+        .expect("authenticated sender");
+    assert!(request.validate(&config, member(2)).is_err());
+    request
+        .validate_relayed(&config, member(2))
+        .expect("authenticated member may relay a signed attestation");
+    assert!(request.validate_relayed(&config, member(6)).is_err());
+    let response =
+        FederationBarkEvidenceAttestationResponse::new(&binding, second.signer).expect("response");
+    response
+        .validate(&config, &binding, member(2))
+        .expect("valid response");
+    assert_eq!(response.attestation_signer, member(2));
+    assert_eq!(
+        response.certificate_id,
+        binding.certificate_id().expect("id")
+    );
+    assert!(response.validate(&config, &binding, member(1)).is_err());
+    let request_bytes = serde_json::to_vec(&request).expect("request serialization");
+    let response_bytes = serde_json::to_vec(&response).expect("response serialization");
+    assert!(request_bytes.len() <= FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES);
+    assert!(response_bytes.len() <= FEDERATION_MAX_BARK_EVIDENCE_ATTESTATION_REQUEST_BYTES);
+}
+
+#[test]
+fn evidence_certificate_rejects_every_signed_binding_mutation() {
+    let config = federated_config();
+    let observation = evidence_observation(&config, 41, member(1), 81);
+    let binding = FederationBarkEvidenceBinding::from_observation(
+        &config,
+        FederationBarkEvidencePhase::ReceiveHtlcsReady,
+        FederationOperationId::from_bytes([82; 32]),
+        1,
+        &observation,
+    )
+    .expect("binding");
+    let attestations = [1, 2]
+        .map(|id| {
+            FederationBarkEvidenceAttestation::new_signed(
+                &binding,
+                &config,
+                &private_member(&config, id),
+            )
+            .expect("attestation")
+        })
+        .to_vec();
+    let certificate =
+        FederationBarkEvidenceCertificate::new(binding.clone(), attestations, &config, 2)
+            .expect("certificate");
+    let assert_binding_rejected = |mutated: FederationBarkEvidenceBinding| {
+        let mut candidate = certificate.clone();
+        candidate.binding = mutated;
+        assert!(candidate.verify(&config, 2).is_err());
+    };
+
+    let mut mutated = binding.clone();
+    mutated.version = mutated.version.saturating_add(1);
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.federation_id = FederationId::from_bytes([83; 32]);
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.config_digest = FederationConfigDigest::from_bytes([89; 32]);
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.application_key_epoch = mutated.application_key_epoch.saturating_add(1);
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.action_id = FederationBarkActionId::from_bytes([84; 32]).expect("action");
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.quote.push_str("-different");
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.phase = FederationBarkEvidencePhase::ReceiveClaimed;
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.evidence_operation_id = FederationOperationId::from_bytes([85; 32]);
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.payment_hash =
+        cdk_common::federation::FederationBarkDigest::from_bytes([86; 32]).expect("payment hash");
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.source_scope =
+        cdk_common::federation::FederationBarkDigest::from_bytes([87; 32]).expect("source scope");
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.status = FederationBarkObservationStatus::Succeeded;
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.amount = Amount::from(101);
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.fee = Amount::from(1);
+    assert_binding_rejected(mutated);
+    let mut mutated = binding.clone();
+    mutated.evidence_digest = cdk_common::federation::FederationBarkDigest::from_bytes([88; 32])
+        .expect("evidence digest");
+    assert_binding_rejected(mutated);
+    let mut mutated = binding;
+    mutated.attempt = mutated.attempt.saturating_add(1);
+    assert_binding_rejected(mutated);
+
+    let mut invalid_signature = certificate.clone();
+    let mut signature_bytes = invalid_signature.attestations[0].signature.to_bytes();
+    signature_bytes[0] ^= 1;
+    invalid_signature.attestations[0].signature =
+        FederationOperationSignature::from_slice(&signature_bytes).expect("signature bytes");
+    assert!(invalid_signature.verify(&config, 2).is_err());
+
+    let mut ineligible_signer = certificate;
+    ineligible_signer.attestations[0].signer = member(4);
+    assert!(ineligible_signer.verify(&config, 2).is_err());
+}
+
+#[test]
+fn evidence_attestation_store_is_durable_idempotent_and_first_write_wins() {
+    let config = federated_config();
+    let observation = evidence_observation(&config, 32, member(1), 73);
+    let binding = FederationBarkEvidenceBinding::from_observation(
+        &config,
+        FederationBarkEvidencePhase::ReceiveHtlcsReady,
+        FederationOperationId::from_bytes([74; 32]),
+        1,
+        &observation,
+    )
+    .expect("binding");
+    let first = FederationBarkEvidenceAttestation::new_signed(
+        &binding,
+        &config,
+        &private_member(&config, 1),
+    )
+    .expect("first attestation");
+    let second = FederationBarkEvidenceAttestation::new_signed(
+        &binding,
+        &config,
+        &private_member(&config, 2),
+    )
+    .expect("second attestation");
+    let directory = tempfile::tempdir().expect("temp dir");
+    let path = directory.path().join("evidence.redb");
+    let key = std::sync::Arc::new(
+        FederatedBarkReceiveSecretEncryptionKey::new([94; 32]).expect("storage key"),
+    );
+    let store =
+        FederatedBarkReceiveSecretStore::open(&path, std::sync::Arc::clone(&key)).expect("store");
+    store
+        .persist_evidence_attestation(&binding, first, &config)
+        .expect("first write");
+    store
+        .persist_evidence_attestation(&binding, first, &config)
+        .expect("exact retry");
+    store
+        .persist_evidence_attestation(&binding, second, &config)
+        .expect("second signer");
+    let unrelated_observation = evidence_observation(&config, 33, member(3), 76);
+    let unrelated_binding = FederationBarkEvidenceBinding::from_observation(
+        &config,
+        FederationBarkEvidencePhase::ReceiveHtlcsReady,
+        FederationOperationId::from_bytes([77; 32]),
+        1,
+        &unrelated_observation,
+    )
+    .expect("unrelated binding");
+    let unrelated = FederationBarkEvidenceAttestation::new_signed(
+        &unrelated_binding,
+        &config,
+        &private_member(&config, 3),
+    )
+    .expect("unrelated attestation");
+    store
+        .persist_evidence_attestation(&unrelated_binding, unrelated, &config)
+        .expect("unrelated write");
+    assert_eq!(
+        store
+            .evidence_attestations(&binding, &config)
+            .expect("attestations"),
+        vec![first, second]
+    );
+
+    let conflicting_observation = evidence_observation(&config, 32, member(1), 75);
+    let conflicting_binding = FederationBarkEvidenceBinding::from_observation(
+        &config,
+        FederationBarkEvidencePhase::ReceiveHtlcsReady,
+        FederationOperationId::from_bytes([74; 32]),
+        1,
+        &conflicting_observation,
+    )
+    .expect("conflicting binding");
+    let conflicting = FederationBarkEvidenceAttestation::new_signed(
+        &conflicting_binding,
+        &config,
+        &private_member(&config, 1),
+    )
+    .expect("conflicting attestation");
+    assert!(matches!(
+        store.persist_evidence_attestation(&conflicting_binding, conflicting, &config),
+        Err(Error::EvidenceAttestationConflict)
+    ));
+    drop(store);
+
+    let reopened = FederatedBarkReceiveSecretStore::open(&path, key).expect("reopen store");
+    assert_eq!(
+        reopened
+            .evidence_binding(binding.action_id, binding.phase, member(1), &config,)
+            .expect("stored binding"),
+        Some(binding.clone())
+    );
+    assert_eq!(
+        reopened
+            .evidence_attestations(&binding, &config)
+            .expect("reopened attestations"),
+        vec![first, second]
+    );
 }
 
 fn terminal_checkpoint(

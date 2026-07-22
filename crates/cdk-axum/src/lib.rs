@@ -3579,7 +3579,8 @@ async fn reconcile_federation_bark_runtime(
             }
             FederationBarkOperation::ActionPlan(_)
             | FederationBarkOperation::ActionTransition(_)
-            | FederationBarkOperation::MemberObservation(_) => {}
+            | FederationBarkOperation::MemberObservation(_)
+            | FederationBarkOperation::EvidenceCertificate(_) => {}
         }
     }
     reconcile_federation_bark_maintenance(mint, runtime).await?;
