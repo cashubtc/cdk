@@ -2371,11 +2371,19 @@ impl FederatedBarkRuntime {
     ) -> Result<(), Error> {
         let _receive_projection_guard = self.receive_projection.lock().await;
         if accepted_ready.status() != FederationOperationStatus::Applied {
+            tracing::warn!(
+                stage = "htlcs_ready_status",
+                "Federated Bark receive HTLC replay validation failed"
+            );
             return Err(Error::ReceiveClaimPlanInvalid);
         }
         let FederationOperation::Bark(FederationBarkOperation::ActionTransition(transition)) =
             &accepted_ready.envelope.operation
         else {
+            tracing::warn!(
+                stage = "htlcs_ready_operation_kind",
+                "Federated Bark receive HTLC replay validation failed"
+            );
             return Err(Error::ReceiveClaimPlanInvalid);
         };
         if transition.phase != FederationBarkSemanticPhase::ReceiveHtlcsReady
@@ -2385,11 +2393,30 @@ impl FederatedBarkRuntime {
             || transition.predecessor_operation_id != prepared_operation_id
             || transition.payment_hash != Some(intent.payment_hash)
         {
+            tracing::warn!(
+                stage = "htlcs_ready_binding",
+                "Federated Bark receive HTLC replay validation failed"
+            );
             return Err(Error::ReceiveClaimPlanInvalid);
         }
-        let receive = self.receive_plan(intent, prepared)?;
+        let receive = self.receive_plan(intent, prepared).map_err(|error| {
+            tracing::warn!(
+                stage = "htlcs_ready_receive_plan",
+                error = %error,
+                "Federated Bark receive HTLC replay validation failed"
+            );
+            error
+        })?;
         let evidence =
-            receive_htlc_evidence_from_transition(&self.wallet, &receive, intent, transition)?;
+            receive_htlc_evidence_from_transition(&self.wallet, &receive, intent, transition)
+                .map_err(|error| {
+                    tracing::warn!(
+                        stage = "htlcs_ready_evidence",
+                        error = %error,
+                        "Federated Bark receive HTLC replay validation failed"
+                    );
+                    error
+                })?;
         self.wallet
             .apply_lightning_receive_htlc_replay(&receive, &evidence.vtxos)
             .await
