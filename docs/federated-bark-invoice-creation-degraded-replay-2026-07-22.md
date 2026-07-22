@@ -1,10 +1,12 @@
-# Federated Bark invoice-creation failure and replay-race report
+# Federated Bark invoice-creation failure and replay-compatibility report
 
 Date: 2026-07-22
 
-Status: root cause reproduced locally and the minimal containment fix is
-implemented and locally verified. The fix has not been deployed and no
-production recovery has been performed as part of this investigation.
+Status: two receive-replay defects are confirmed. The concurrency defect has a
+deterministic local reproduction and a locally verified containment fix. A
+second, persistent commitment-version incompatibility was isolated through a
+staged production replay diagnostic; its backward-compatible verifier is
+implemented and awaiting validation and deployment.
 
 Scope: five-member Nocean federation using the federated Bark BOLT11 backend.
 
@@ -43,9 +45,9 @@ Every member-local Bark database contains the exact corresponding
 `PaymentInitiated` checkpoint. This is evidence against a currently missing or
 mis-keyed checkpoint for that outgoing action.
 
-The root cause is an uncoordinated member-local incoming receive projection
-mutation racing terminal incoming-receive cleanup. Production recorded the
-exact signature on one member:
+One confirmed defect is an uncoordinated member-local incoming receive
+projection mutation racing terminal incoming-receive cleanup. Production
+recorded its exact signature on one member:
 
 ```text
 Federated Bark accepted receive evidence replay failed
@@ -69,12 +71,29 @@ Consequently, the degraded state blocks the work that could otherwise reconcile
 or terminalize it. Production maintenance has logged `Internal Error` with no
 progress for more than 100 consecutive rounds.
 
-The minimal CDK fix adds one mutex to each `FederatedBarkRuntime` and holds it
+The concurrency fix adds one mutex to each `FederatedBarkRuntime` and holds it
 across every operation that reads or mutates member-local incoming receive
 projection state. This includes accepted-history application, live HTLC
 observation/preparation, claim planning/execution, and terminal
 acknowledgement. It changes no federation consensus, evidence, payment, or
 custody semantics; it only removes invalid local interleavings.
+
+After deploying that fix, replay progressed beyond the missing-checkpoint race
+but consistently rejected all three historical `ReceiveHtlcsReady` records.
+Bounded stage diagnostics proved that artifact hashes, canonical VTXO decoding,
+VTXO identities, values, expiries, Bark evidence reconstruction, and request
+commitments all match. Only the result commitment differs.
+
+Code history identifies the persistent incompatibility. Historical records use
+`cdk/bark/receive-htlc-evidence/v1`, which commits the reconstructed Bark
+evidence fields and serialized VTXOs. A later change replaced it with
+`cdk/federation/bark-receive-htlc-package/v1`, which commits the request hash,
+CDK VTXO transitions, and artifacts. The accepted operation version remained
+unchanged and replay retained no legacy verifier. New binaries consequently
+validated old, valid records with the new formula and failed closed on every
+startup. The minimal compatibility fix accepts the exact historical digest
+only for transitions without an evidence certificate; certified evidence and
+newly generated transitions remain bound to the current package digest.
 
 ## User-visible failure
 
@@ -223,7 +242,58 @@ longer identifies a specific persistent row mismatch.
 
 ## Root cause and remaining candidates
 
-### Confirmed root cause: receive replay races terminal checkpoint deletion
+### Confirmed root cause: receive result commitment changed without migration
+
+Confidence: confirmed by production record inspection, bounded replay
+diagnostics, and code history.
+
+The three historical accepted `ReceiveHtlcsReady` transitions were created with
+this result commitment:
+
+```text
+SHA256(
+  "cdk/bark/receive-htlc-evidence/v1" ||
+  action_id || payment_hash || destination ||
+  gross_amount || net_amount || fee || minimum_expiry ||
+  length_prefixed_serialized_vtxos
+)
+```
+
+Commit `53c98ed36` changed new receive transitions and replay verification to a
+canonical package commitment:
+
+```text
+domain_hash(
+  "cdk/federation/bark-receive-htlc-package/v1",
+  canonical_json(minimum_expiry, request_hash, transitions, artifacts)
+)
+```
+
+Both formulas are internally sound, but the change did not bump
+`FEDERATION_BARK_OPERATION_VERSION`, migrate accepted journal records, or retain
+a legacy replay verifier. Production therefore retains version-1 records made
+with the first formula while the current binary assumes every version-1 record
+uses the second.
+
+The diagnostic sequence narrowed the failure without logging payment or
+custody identifiers:
+
+1. action-transition validation passed;
+2. VTXO artifact lookup and SHA-256 verification passed;
+3. canonical Bark VTXO deserialization and byte round-trip passed;
+4. VTXO ID, amount, and expiry comparisons passed;
+5. Bark receive evidence reconstruction passed;
+6. the request commitment passed; and
+7. only the result commitment comparison failed.
+
+The backward-compatible rule is deliberately narrow: replay first requires the
+current package digest. If it differs, an uncertified transition may match the
+exact historical evidence digest. A transition carrying an evidence
+certificate never receives the fallback because certificates were introduced
+with, and explicitly bind, the package digest. This restores replay of records
+that were valid when accepted without weakening current certified evidence.
+
+### Confirmed defect: receive replay races terminal checkpoint deletion
 
 Confidence: confirmed by code inspection and deterministic local reproduction.
 This defect directly produces the specific production error.
@@ -416,11 +486,17 @@ validation is likewise outside the critical section. A private validation
 helper avoids recursively acquiring the non-reentrant mutex during claim
 execution.
 
+Replay now also recomputes both receive-result commitment formats. The current
+package commitment is checked first. The legacy evidence commitment is accepted
+only when the transition has no evidence certificate, exactly matching the
+records created before certified package commitments existed. New transition
+creation is unchanged and always emits the current package commitment.
+
 Local verification:
 
 ```text
 cargo test -p cdk-bark --features federation-bark
-17 passed; 0 failed
+18 passed; 0 failed
 
 cargo check -p cdk-axum --features federation-bark
 succeeded
@@ -481,6 +557,14 @@ The minimal fix is implemented at the `FederatedBarkRuntime` boundary. One
 member-local mutex covers both historical replay and live incoming operations,
 including terminal acknowledgement. This scope is necessary because a
 reconciliation-only lock would still allow live cleanup to race replay.
+
+### Implemented: verify legacy receive commitments during replay
+
+Historical uncertified `ReceiveHtlcsReady` records may match the exact
+`receive-htlc-evidence/v1` digest that was authoritative when they were
+accepted. Certified transitions and all new transition generation continue to
+require `bark-receive-htlc-package/v1`. A regression test verifies that the
+legacy digest is rejected whenever a certificate is present.
 
 ### Priority 1: make terminal receive replay idempotent inside Bark
 

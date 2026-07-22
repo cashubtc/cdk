@@ -3625,6 +3625,26 @@ mod tests {
     }
 
     #[test]
+    fn legacy_receive_hash_is_accepted_only_without_a_certificate() {
+        let stored = bark_digest(b"legacy").expect("legacy digest");
+        let current = bark_digest(b"current").expect("current digest");
+        let unrelated = bark_digest(b"unrelated").expect("unrelated digest");
+
+        assert!(receive_htlc_result_hash_matches(
+            stored, current, stored, true
+        ));
+        assert!(!receive_htlc_result_hash_matches(
+            stored, current, stored, false
+        ));
+        assert!(receive_htlc_result_hash_matches(
+            current, current, stored, false
+        ));
+        assert!(!receive_htlc_result_hash_matches(
+            unrelated, current, stored, true
+        ));
+    }
+
+    #[test]
     fn custody_unavailability_survives_backend_error_wrapping() {
         let opaque_error = anyhow::anyhow!("opaque Bark execution failure");
 
@@ -5365,12 +5385,26 @@ fn receive_htlc_evidence_from_transition(
         &transition.artifacts,
     )
     .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
-    if transition.result_hash != expected_result_hash {
+    let legacy_result_hash = legacy_receive_htlc_evidence_hash(&evidence)?;
+    if !receive_htlc_result_hash_matches(
+        transition.result_hash,
+        expected_result_hash,
+        legacy_result_hash,
+        transition.evidence_certificate.is_none(),
+    ) {
         tracing::warn!(
             stage = "evidence_result_hash",
             "Federated Bark receive HTLC evidence reconstruction failed"
         );
         return Err(Error::ReceiveClaimPlanInvalid);
+    }
+    if transition.result_hash == legacy_result_hash
+        && transition.result_hash != expected_result_hash
+    {
+        tracing::info!(
+            stage = "evidence_result_hash_legacy",
+            "Federated Bark receive HTLC evidence matched its legacy commitment"
+        );
     }
     if transition.request_hash != bark_digest(&request)? {
         tracing::warn!(
@@ -5380,6 +5414,33 @@ fn receive_htlc_evidence_from_transition(
         return Err(Error::ReceiveClaimPlanInvalid);
     }
     Ok(evidence)
+}
+
+fn legacy_receive_htlc_evidence_hash(
+    evidence: &bark::federation::FederationLightningReceiveHtlcEvidence,
+) -> Result<FederationBarkDigest, Error> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"cdk/bark/receive-htlc-evidence/v1");
+    bytes.extend_from_slice(&evidence.action_id.to_bytes());
+    bytes.extend_from_slice(&evidence.payment_hash.to_vec());
+    bytes.extend_from_slice(&evidence.destination.index.to_be_bytes());
+    bytes.extend_from_slice(&evidence.gross_amount.to_sat().to_be_bytes());
+    bytes.extend_from_slice(&evidence.net_amount.to_sat().to_be_bytes());
+    bytes.extend_from_slice(&evidence.fee.to_sat().to_be_bytes());
+    bytes.extend_from_slice(&evidence.minimum_expiry.to_be_bytes());
+    for vtxo in &evidence.vtxos {
+        append_bounded_bytes(&mut bytes, &vtxo.serialize())?;
+    }
+    bark_digest(&bytes)
+}
+
+fn receive_htlc_result_hash_matches(
+    stored: FederationBarkDigest,
+    current: FederationBarkDigest,
+    legacy: FederationBarkDigest,
+    legacy_compatible: bool,
+) -> bool {
+    stored == current || (legacy_compatible && stored == legacy)
 }
 
 fn certified_receive_htlc_transition(
