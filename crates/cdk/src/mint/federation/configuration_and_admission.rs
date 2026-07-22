@@ -707,10 +707,13 @@ impl FederationRuntimeConfig {
                     FederationBarkOperation::ActionTransition(transition) => {
                         transition.evidence_certificate.as_deref()
                     }
+                    FederationBarkOperation::ActionPlan(plan) => plan
+                        .certified_receive_htlcs
+                        .as_deref()
+                        .map(|certified| &certified.certificate),
                     FederationBarkOperation::EvidenceCertificate(certificate) => Some(certificate),
                     FederationBarkOperation::ReceiveIntent(_)
                     | FederationBarkOperation::ReceivePrepared(_)
-                    | FederationBarkOperation::ActionPlan(_)
                     | FederationBarkOperation::MemberObservation(_) => None,
                 };
                 if let Some(certificate) = evidence_certificate {

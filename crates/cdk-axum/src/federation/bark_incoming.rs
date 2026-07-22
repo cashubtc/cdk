@@ -225,6 +225,39 @@ fn bark_evidence_retry_collector(
     bark_evidence_collector(members, actor, retry_round)
 }
 
+fn receive_claim_proposal(
+    config: &cdk::federation::FederationConfig,
+    projection: &cdk::federation::FederationBarkProjectionSnapshot,
+    actor: cdk::federation::MemberId,
+) -> Result<cdk_bark::FederatedBarkReceiveClaimProposal, cdk::Error> {
+    let application = config
+        .frost_wallet
+        .as_ref()
+        .and_then(|wallet| wallet.bark_application.as_ref())
+        .ok_or(cdk::Error::Internal)?;
+    let signer_set = config
+        .members
+        .keys()
+        .copied()
+        .take(usize::from(application.threshold))
+        .collect::<Vec<_>>();
+    let next_index = projection
+        .derivation_allocations
+        .iter()
+        .map(|allocation| allocation.locator.index)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1)
+        .filter(|index| *index <= FEDERATION_MAX_DERIVATION_INDEX)
+        .ok_or(cdk::Error::Internal)?;
+    Ok(cdk_bark::FederatedBarkReceiveClaimProposal {
+        actor,
+        signer_set,
+        attempt: 1,
+        output_locator: FederationBarkVtxoLocator::vtxo_custody(next_index),
+    })
+}
+
 /// Poll and advance one already-created federated Bark quote. Mailbox events
 /// call the same function; they never supply settlement truth themselves.
 pub(super) async fn advance_federated_bark_mint_quote(
@@ -408,8 +441,21 @@ async fn advance_federated_bark_mint_quote_inner(
             if let (Some(certificate), Some(transition)) = (certificate, transition.as_mut()) {
                 transition.actor = intent.actor;
                 transition.evidence_certificate = Some(Box::new(certificate));
+                let plan = runtime
+                    .propose_certified_receive_claim(
+                        &intent,
+                        prepared,
+                        transition.clone(),
+                        receive_claim_proposal(
+                            federation.public_config(),
+                            &projection,
+                            intent.actor,
+                        )?,
+                    )
+                    .await
+                    .map_err(|_| bark_unavailable())?;
                 let envelope = federation.operation_envelope(FederationOperation::Bark(
-                    FederationBarkOperation::ActionTransition(transition.clone()),
+                    FederationBarkOperation::ActionPlan(plan),
                 ));
                 state
                     .submit_federation_envelope(envelope)
@@ -427,41 +473,16 @@ async fn advance_federated_bark_mint_quote_inner(
             if action.actor != federation.member_id() {
                 return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
             }
-            let application = federation
-                .public_config()
-                .frost_wallet
-                .as_ref()
-                .and_then(|wallet| wallet.bark_application.as_ref())
-                .ok_or(cdk::Error::Internal)?;
-            let signer_set = federation
-                .public_config()
-                .members
-                .keys()
-                .copied()
-                .take(usize::from(application.threshold))
-                .collect::<Vec<_>>();
-            let next_index = projection
-                .derivation_allocations
-                .iter()
-                .map(|allocation| allocation.locator.index)
-                .max()
-                .unwrap_or(0)
-                .checked_add(1)
-                .ok_or(cdk::Error::Internal)?;
-            if next_index > FEDERATION_MAX_DERIVATION_INDEX {
-                return Err(bark_unavailable());
-            }
             let plan = runtime
                 .propose_receive_claim(
                     &intent,
                     prepared,
                     action.latest_operation_id,
-                    cdk_bark::FederatedBarkReceiveClaimProposal {
-                        actor: federation.member_id(),
-                        signer_set,
-                        attempt: 1,
-                        output_locator: FederationBarkVtxoLocator::vtxo_custody(next_index),
-                    },
+                    receive_claim_proposal(
+                        federation.public_config(),
+                        &projection,
+                        federation.member_id(),
+                    )?,
                 )
                 .await
                 .map_err(|_| bark_unavailable())?;

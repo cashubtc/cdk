@@ -15,12 +15,14 @@ use crate::database::mint::{
 };
 use crate::error::{Error, ErrorResponse};
 use crate::federation::{
-    FederationAlephBftPendingOperationRecord, FederationAlephBftUnitPayload,
-    FederationApplicationDigest, FederationApplicationState, FederationBarkActionId,
-    FederationBarkActionKind, FederationBarkActionPlan, FederationBarkActionTransition,
-    FederationBarkArtifact, FederationBarkArtifactKind, FederationBarkDigest,
-    FederationBarkExternalId, FederationBarkOperation, FederationBarkReceiveIntent,
-    FederationBarkReceivePrepared, FederationBarkReceiveProof,
+    federation_bark_receive_htlc_package_hash, FederationAlephBftPendingOperationRecord,
+    FederationAlephBftUnitPayload, FederationApplicationDigest, FederationApplicationState,
+    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionPlan,
+    FederationBarkActionTransition, FederationBarkArtifact, FederationBarkArtifactKind,
+    FederationBarkCertifiedReceiveHtlcs, FederationBarkDigest, FederationBarkEvidenceAttestation,
+    FederationBarkEvidenceBinding, FederationBarkEvidenceCertificate, FederationBarkEvidencePhase,
+    FederationBarkExternalId, FederationBarkObservationStatus, FederationBarkOperation,
+    FederationBarkReceiveIntent, FederationBarkReceivePrepared, FederationBarkReceiveProof,
     FederationBarkReceiveSecretAcknowledgement, FederationBarkSemanticPhase, FederationBarkUnit,
     FederationBarkVtxoId, FederationBarkVtxoInput, FederationBarkVtxoLocator,
     FederationBarkVtxoOutput, FederationBarkVtxoState, FederationBarkVtxoTransition,
@@ -2119,6 +2121,23 @@ where
     apply_bark_entry(&db, &prepared).await;
 
     let input_artifact = bark_artifact(FederationBarkArtifactKind::Vtxo, b"input-vtxo");
+    let ready_request_hash = bark_digest(12);
+    let ready_vtxo_transition = FederationBarkVtxoTransition {
+        vtxo_id: input_vtxo,
+        locator: input_locator,
+        amount: Amount::from(100),
+        expiry_height: 900_000,
+        previous_state: None,
+        new_state: FederationBarkVtxoState::Observed,
+        artifact_hash: input_artifact.hash,
+    };
+    let ready_result_hash = federation_bark_receive_htlc_package_hash(
+        899_000,
+        ready_request_hash,
+        core::slice::from_ref(&ready_vtxo_transition),
+        core::slice::from_ref(&input_artifact),
+    )
+    .expect("ready package hash");
     let ready = append_bark_operation(
         &mut journal,
         FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
@@ -2135,20 +2154,12 @@ where
                 MemberId::new(1).expect("member"),
                 MemberId::new(2).expect("member"),
             ],
-            request_hash: bark_digest(12),
-            result_hash: bark_digest(13),
+            request_hash: ready_request_hash,
+            result_hash: ready_result_hash,
             evidence_certificate: None,
             external_id: bark_external(14),
             artifacts: vec![input_artifact.clone()],
-            vtxo_transitions: vec![FederationBarkVtxoTransition {
-                vtxo_id: input_vtxo,
-                locator: input_locator,
-                amount: Amount::from(100),
-                expiry_height: 900_000,
-                previous_state: None,
-                new_state: FederationBarkVtxoState::Observed,
-                artifact_hash: input_artifact.hash,
-            }],
+            vtxo_transitions: vec![ready_vtxo_transition],
         }),
     );
     apply_bark_entry(&db, &ready).await;
@@ -2179,6 +2190,7 @@ where
             external_amount: Amount::ZERO,
             fee_amount: Amount::ZERO,
             fee_bound: Amount::ZERO,
+            certified_receive_htlcs: None,
             artifacts: {
                 let mut artifacts = vec![
                     plan_artifact,
@@ -2479,7 +2491,7 @@ where
                 .expect("canonical Bark projection bytes")
         )
         .to_string(),
-        "11747b14cab6b6e9f41d88dff49e9f93610199acfdeca72db59d7365e6c3689d"
+        "59c1b068bf1bcbbbf22060476c385da7a4315467afe1148e92cdd0205ea808cb"
     );
 
     apply_bark_entry(&db, &intent).await;
@@ -2525,6 +2537,7 @@ where
             external_amount: Amount::from(90),
             fee_amount: Amount::from(5),
             fee_bound: Amount::from(5),
+            certified_receive_htlcs: None,
             artifacts: Vec::new(),
             external_id: FederationBarkExternalId::derive_lightning_send(
                 action_id,
@@ -2793,6 +2806,7 @@ where
         external_amount: Amount::from(4),
         fee_amount: Amount::from(1),
         fee_bound: Amount::from(1),
+        certified_receive_htlcs: None,
         artifacts: Vec::new(),
         external_id: FederationBarkExternalId::derive_lightning_send(
             recovery_action,
@@ -2956,6 +2970,7 @@ where
         external_amount: Amount::ZERO,
         fee_amount: Amount::ZERO,
         fee_bound: Amount::ZERO,
+        certified_receive_htlcs: None,
         artifacts: {
             let mut artifacts = vec![recovery_htlc_artifact.clone(), revocation_request];
             artifacts.sort();
@@ -3067,6 +3082,196 @@ where
             .expect("recovered action")
             .phase,
         FederationBarkSemanticPhase::RevocationCompleted
+    );
+
+    let combined_action = bark_action(70);
+    let combined_quote = "bark-combined-receive".to_string();
+    let combined_payment = sha256::Hash::hash(b"combined receive payment");
+    let combined_payment_hash =
+        FederationBarkDigest::from_bytes(combined_payment.to_byte_array()).expect("payment hash");
+    let combined_locator = FederationBarkVtxoLocator::vtxo_custody(70);
+    let combined_output_locator = FederationBarkVtxoLocator::vtxo_custody(71);
+    let combined_vtxo = bark_vtxo(70);
+    let combined_intent = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ReceiveIntent(FederationBarkReceiveIntent {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: combined_action,
+            quote: combined_quote.clone(),
+            actor: MemberId::new(1).expect("member"),
+            cashu_amount: Amount::from(100),
+            gross_amount: Amount::from(100),
+            receive_fee: Amount::ZERO,
+            minimum_net_amount: Amount::from(100),
+            unit: FederationBarkUnit::Sat,
+            description_hash: crate::federation::federation_bark_description_hash(None)
+                .expect("description hash"),
+            description: None,
+            payment_hash: combined_payment_hash,
+            preimage_commitment: bark_digest(71),
+            secret_acknowledgements: vec![FederationBarkReceiveSecretAcknowledgement {
+                member: MemberId::new(1).expect("member"),
+                record_hash: bark_digest(72),
+                signature: FederationOperationSignature::from_slice(&[7; 64]).expect("signature"),
+            }],
+            destination: combined_locator,
+            mailbox_scope: crate::federation::federation_bark_mailbox_scope(&bark_mailbox_id())
+                .expect("mailbox scope"),
+            mailbox_id: bark_mailbox_id(),
+            ark_server: bark_digest(73),
+            network: Network::Regtest,
+            minimum_cltv_delta: 18,
+            fee_policy_version: 1,
+            anti_dos_policy_version: 1,
+            receive_proof: FederationBarkReceiveProof::NoProof,
+            expires_at: 1_900_000_000,
+        }),
+    );
+    apply_bark_entry(&db, &combined_intent).await;
+    let FederationOperation::Bark(FederationBarkOperation::ReceiveIntent(combined_intent_op)) =
+        &combined_intent.envelope.operation
+    else {
+        panic!("combined receive intent");
+    };
+    let combined_prepared = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ReceivePrepared(
+            FederationBarkReceivePrepared::from_invoice(
+                MemberId::new(1).expect("member"),
+                combined_intent.operation_id,
+                combined_intent_op,
+                bark_receive_invoice(combined_payment),
+            )
+            .expect("combined prepared receive"),
+        ),
+    );
+    apply_bark_entry(&db, &combined_prepared).await;
+    let combined_vtxo_artifact =
+        bark_artifact(FederationBarkArtifactKind::Vtxo, b"combined-input-vtxo");
+    let combined_request = bark_artifact(
+        FederationBarkArtifactKind::ArkRequest,
+        b"combined-claim-request",
+    );
+    let combined_transition = FederationBarkVtxoTransition {
+        vtxo_id: combined_vtxo,
+        locator: combined_locator,
+        amount: Amount::from(100),
+        expiry_height: 910_000,
+        previous_state: None,
+        new_state: FederationBarkVtxoState::Observed,
+        artifact_hash: combined_vtxo_artifact.hash,
+    };
+    let mut combined_artifacts = vec![combined_request.clone(), combined_vtxo_artifact];
+    combined_artifacts.sort();
+    let combined_request_hash = bark_digest(76);
+    let combined_result_hash = federation_bark_receive_htlc_package_hash(
+        910_000,
+        combined_request_hash,
+        core::slice::from_ref(&combined_transition),
+        &combined_artifacts,
+    )
+    .expect("combined receive package hash");
+    let combined_certificate = FederationBarkEvidenceCertificate {
+        binding: FederationBarkEvidenceBinding {
+            version: crate::federation::FEDERATION_BARK_EVIDENCE_CERTIFICATE_VERSION,
+            federation_id: federation_id(),
+            config_digest: FederationConfigDigest::from_bytes([74; 32]),
+            application_key_epoch: 1,
+            action_id: combined_action,
+            quote: combined_quote.clone(),
+            phase: FederationBarkEvidencePhase::ReceiveHtlcsReady,
+            evidence_operation_id: combined_prepared.operation_id,
+            payment_hash: combined_payment_hash,
+            source_scope: bark_digest(73),
+            status: FederationBarkObservationStatus::Accepted,
+            amount: Amount::from(100),
+            fee: Amount::ZERO,
+            evidence_digest: combined_result_hash,
+            attempt: 1,
+        },
+        attestations: vec![FederationBarkEvidenceAttestation {
+            signer: MemberId::new(1).expect("member"),
+            signature: FederationOperationSignature::from_slice(&[8; 64]).expect("signature"),
+        }],
+    };
+    let combined_plan = append_bark_operation(
+        &mut journal,
+        FederationBarkOperation::ActionPlan(FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id: combined_action,
+            quote: Some(combined_quote),
+            kind: FederationBarkActionKind::IncomingClaim,
+            actor: MemberId::new(1).expect("member"),
+            predecessor_operation_id: combined_prepared.operation_id,
+            payment_hash: Some(combined_payment_hash),
+            inputs: vec![FederationBarkVtxoInput {
+                vtxo_id: combined_vtxo,
+                locator: combined_locator,
+                amount: Amount::from(100),
+            }],
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: combined_output_locator,
+                amount: Amount::from(100),
+                artifact_hash: combined_request.hash,
+            }],
+            revocation_locator: None,
+            external_amount: Amount::ZERO,
+            fee_amount: Amount::ZERO,
+            fee_bound: Amount::ZERO,
+            artifacts: combined_artifacts,
+            certified_receive_htlcs: Some(Box::new(FederationBarkCertifiedReceiveHtlcs {
+                version: FEDERATION_BARK_OPERATION_VERSION,
+                minimum_expiry: 910_000,
+                request_hash: combined_request_hash,
+                vtxo_transitions: vec![combined_transition],
+                certificate: combined_certificate,
+            })),
+            external_id: bark_external(77),
+            signer_set: vec![
+                MemberId::new(1).expect("member"),
+                MemberId::new(2).expect("member"),
+            ],
+            attempt: 1,
+            expires_at: 910_000,
+        }),
+    );
+    apply_bark_entry(&db, &combined_plan).await;
+    let combined_snapshot = db
+        .get_federation_bark_projection_snapshot()
+        .await
+        .expect("combined receive projection");
+    let combined_action_record = combined_snapshot
+        .actions
+        .iter()
+        .find(|action| action.action_id == combined_action)
+        .expect("combined action");
+    assert_eq!(
+        combined_action_record.phase,
+        FederationBarkSemanticPhase::ClaimPlanned
+    );
+    assert!(matches!(
+        &combined_action_record.operation,
+        FederationBarkOperation::ActionPlan(plan) if plan.certified_receive_htlcs.is_some()
+    ));
+    assert_eq!(
+        combined_snapshot
+            .vtxos
+            .iter()
+            .find(|vtxo| vtxo.vtxo_id == combined_vtxo)
+            .expect("combined VTXO")
+            .state,
+        FederationBarkVtxoState::Reserved
+    );
+    assert!(!combined_snapshot.transitions.iter().any(|transition| {
+        transition.action_id == combined_action
+            && transition.phase == FederationBarkSemanticPhase::ReceiveHtlcsReady
+    }));
+    apply_bark_entry(&db, &combined_plan).await;
+    assert_eq!(
+        db.get_federation_bark_projection_snapshot()
+            .await
+            .expect("combined replay projection"),
+        combined_snapshot
     );
 }
 

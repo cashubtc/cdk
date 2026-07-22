@@ -61,6 +61,7 @@ const BARK_DESCRIPTION_DOMAIN: &[u8] = b"cdk/federation/bark-description/v1";
 const BARK_MAILBOX_SCOPE_DOMAIN: &[u8] = b"cdk/federation/bark-mailbox-scope/v1";
 const BARK_RECEIVE_REQUEST_DOMAIN: &[u8] = b"cdk/federation/bark-receive-request/v1";
 const BARK_RECEIVE_RESULT_DOMAIN: &[u8] = b"cdk/federation/bark-receive-result/v1";
+const BARK_RECEIVE_HTLC_PACKAGE_DOMAIN: &[u8] = b"cdk/federation/bark-receive-htlc-package/v1";
 const BARK_RECEIVE_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-receive-external-id/v1";
 const BARK_SEND_REQUEST_DOMAIN: &str = "cdk/federation/bark-send-request/v1";
 const BARK_SEND_EXTERNAL_ID_DOMAIN: &[u8] = b"cdk/federation/bark-send-external-id/v1";
@@ -640,6 +641,99 @@ pub struct FederationBarkArtifact {
     pub bytes: Vec<u8>,
 }
 
+/// Certified incoming HTLC evidence carried by the claim authorization that
+/// immediately consumes it.
+///
+/// Canonical VTXO bytes remain in the parent action plan's artifact set. This
+/// nested record carries only the exact state transitions and their signed
+/// evidence commitment, avoiding a second copy of the potentially large
+/// artifacts while preserving the former readiness boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FederationBarkCertifiedReceiveHtlcs {
+    /// Nested evidence format.
+    pub version: u16,
+    /// Earliest HTLC policy expiry authenticated by Bark.
+    pub minimum_expiry: u32,
+    /// Commitment to the exact Bark hydration request.
+    pub request_hash: FederationBarkDigest,
+    /// Exact observed VTXO introductions, sorted by canonical identity.
+    pub vtxo_transitions: Vec<FederationBarkVtxoTransition>,
+    /// Independent-member certificate over the canonical HTLC evidence.
+    pub certificate: FederationBarkEvidenceCertificate,
+}
+
+/// Commit to the complete backend-independent incoming HTLC package.
+///
+/// This digest is suitable for member attestations because every member can
+/// recompute it from the canonical operation alone. It binds the hydration
+/// request, every introduced VTXO transition, and the exact VTXO bytes without
+/// requiring CDK's federation layer to decode Bark's private serialization.
+pub fn federation_bark_receive_htlc_package_hash(
+    minimum_expiry: u32,
+    request_hash: FederationBarkDigest,
+    transitions: &[FederationBarkVtxoTransition],
+    artifacts: &[FederationBarkArtifact],
+) -> Result<FederationBarkDigest> {
+    #[derive(Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct PackageCommitment<'a> {
+        minimum_expiry: u32,
+        request_hash: FederationBarkDigest,
+        transitions: &'a [FederationBarkVtxoTransition],
+        artifacts: Vec<&'a FederationBarkArtifact>,
+    }
+
+    if minimum_expiry == 0 {
+        return Err(invalid_bark("receive HTLC package expiry is zero"));
+    }
+    ensure_count("receive HTLC transitions", transitions.len(), false)?;
+    ensure_strictly_sorted("receive HTLC transitions", transitions)?;
+    let vtxo_artifacts = artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+        .collect::<Vec<_>>();
+    if vtxo_artifacts.len() != transitions.len()
+        || transitions.iter().any(|transition| {
+            transition.previous_state.is_some()
+                || transition.new_state != FederationBarkVtxoState::Observed
+                || transition.amount == Amount::ZERO
+                || transition.expiry_height == 0
+                || vtxo_artifacts
+                    .iter()
+                    .filter(|artifact| artifact.hash == transition.artifact_hash)
+                    .count()
+                    != 1
+        })
+        || vtxo_artifacts.iter().any(|artifact| {
+            transitions
+                .iter()
+                .filter(|transition| transition.artifact_hash == artifact.hash)
+                .count()
+                != 1
+        })
+    {
+        return Err(invalid_bark(
+            "receive HTLC package does not map one transition to each VTXO artifact",
+        ));
+    }
+    validate_artifacts(
+        &vtxo_artifacts
+            .iter()
+            .map(|artifact| (*artifact).clone())
+            .collect::<Vec<_>>(),
+    )?;
+    domain_hash(
+        BARK_RECEIVE_HTLC_PACKAGE_DOMAIN,
+        &canonical_json_bytes(&PackageCommitment {
+            minimum_expiry,
+            request_hash,
+            transitions,
+            artifacts: vtxo_artifacts,
+        })?,
+    )
+}
+
 /// Side-effecting Bark action fixed before execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -705,6 +799,12 @@ pub struct FederationBarkActionPlan {
     pub fee_bound: Amount,
     /// Exact sorted canonical artifacts needed by the plan.
     pub artifacts: Vec<FederationBarkArtifact>,
+    /// Certified HTLC evidence combined with an incoming claim authorization.
+    ///
+    /// `None` preserves replay compatibility with claim plans that follow a
+    /// separately accepted `ReceiveHtlcsReady` transition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certified_receive_htlcs: Option<Box<FederationBarkCertifiedReceiveHtlcs>>,
     /// Stable accepted execution identity; never sent as a custom Ark field.
     pub external_id: FederationBarkExternalId,
     /// Initial deterministic signer set, sorted by member.
@@ -1216,6 +1316,7 @@ impl FederationBarkOperation {
         match self {
             Self::ReceiveIntent(operation) => Some(operation.actor),
             Self::ReceivePrepared(operation) => Some(operation.actor),
+            Self::ActionPlan(operation) if operation.certified_receive_htlcs.is_some() => None,
             Self::ActionPlan(operation) => Some(operation.actor),
             Self::ActionTransition(operation) if operation.evidence_certificate.is_some() => None,
             Self::ActionTransition(operation) => Some(operation.actor),
@@ -1358,6 +1459,17 @@ impl FederationBarkOperation {
                     phase,
                     attempt: operation.attempt,
                 });
+                if let Some(certified) = &operation.certified_receive_htlcs {
+                    keys.push(FederationBarkConflictKey::ActionPhase {
+                        action_id: operation.action_id,
+                        phase: FederationBarkSemanticPhase::ReceiveHtlcsReady,
+                        attempt: Some(operation.attempt),
+                    });
+                    keys.push(FederationBarkConflictKey::EvidenceCertificate {
+                        action_id: operation.action_id,
+                        phase: certified.certificate.binding.phase,
+                    });
+                }
                 keys.extend(operation.inputs.iter().map(|input| {
                     FederationBarkConflictKey::VtxoReservation {
                         vtxo_id: input.vtxo_id,
@@ -1391,6 +1503,12 @@ impl FederationBarkOperation {
                         action_id: operation.action_id,
                         phase: operation.phase,
                         attempt: operation.attempt,
+                    });
+                }
+                if let Some(certificate) = &operation.evidence_certificate {
+                    keys.push(FederationBarkConflictKey::EvidenceCertificate {
+                        action_id: operation.action_id,
+                        phase: certificate.binding.phase,
                     });
                 }
                 keys
@@ -1759,6 +1877,90 @@ fn receive_external_id(
 }
 
 impl FederationBarkActionPlan {
+    fn validate_certified_receive_htlcs(&self) -> Result<()> {
+        let Some(certified) = self.certified_receive_htlcs.as_deref() else {
+            return Ok(());
+        };
+        if self.kind != FederationBarkActionKind::IncomingClaim {
+            return Err(invalid_bark(
+                "only an incoming claim may carry certified HTLC evidence",
+            ));
+        }
+        ensure_version(certified.version)?;
+        ensure_count(
+            "certified receive HTLC transitions",
+            certified.vtxo_transitions.len(),
+            false,
+        )?;
+        ensure_strictly_sorted(
+            "certified receive HTLC transitions",
+            &certified.vtxo_transitions,
+        )?;
+        if certified.vtxo_transitions.len() != self.inputs.len() {
+            return Err(invalid_bark(
+                "certified receive HTLC count differs from claim inputs",
+            ));
+        }
+        let mut certified_amount = Amount::ZERO;
+        for (input, transition) in self.inputs.iter().zip(&certified.vtxo_transitions) {
+            transition.locator.validate()?;
+            if transition.previous_state.is_some()
+                || transition.new_state != FederationBarkVtxoState::Observed
+                || transition.vtxo_id != input.vtxo_id
+                || transition.locator != input.locator
+                || transition.amount != input.amount
+                || transition.amount == Amount::ZERO
+                || transition.expiry_height == 0
+                || !self.artifacts.iter().any(|artifact| {
+                    artifact.kind == FederationBarkArtifactKind::Vtxo
+                        && artifact.hash == transition.artifact_hash
+                })
+            {
+                return Err(invalid_bark(
+                    "certified receive HTLC differs from its claim input or artifact",
+                ));
+            }
+            certified_amount = certified_amount
+                .checked_add(transition.amount)
+                .ok_or_else(|| invalid_bark("certified receive HTLC amount overflow"))?;
+        }
+        let binding = &certified.certificate.binding;
+        if u64::from(certified.minimum_expiry) != self.expires_at {
+            return Err(invalid_bark(
+                "certified receive HTLC expiry differs from its claim plan",
+            ));
+        }
+        if binding.phase != FederationBarkEvidencePhase::ReceiveHtlcsReady
+            || binding.action_id != self.action_id
+            || binding.quote != self.quote.as_deref().unwrap_or_default()
+            || binding.evidence_operation_id != self.predecessor_operation_id
+            || Some(binding.payment_hash) != self.payment_hash
+            || binding.status != FederationBarkObservationStatus::Accepted
+        {
+            return Err(invalid_bark(
+                "certified receive HTLC identity differs from its claim plan",
+            ));
+        }
+        if binding.amount != certified_amount || binding.attempt != self.attempt {
+            return Err(invalid_bark(
+                "certified receive HTLC amount or attempt differs from its claim plan",
+            ));
+        }
+        if binding.evidence_digest
+            != federation_bark_receive_htlc_package_hash(
+                certified.minimum_expiry,
+                certified.request_hash,
+                &certified.vtxo_transitions,
+                &self.artifacts,
+            )?
+        {
+            return Err(invalid_bark(
+                "certified receive HTLC digest differs from its exact artifact package",
+            ));
+        }
+        Ok(())
+    }
+
     /// Decode the exact canonical invoice bound to an outgoing plan.
     pub fn lightning_send_invoice(&self) -> Result<Bolt11Invoice> {
         if self.kind != FederationBarkActionKind::LightningSend {
@@ -2069,6 +2271,7 @@ impl FederationBarkActionPlan {
             return Err(invalid_bark("Bark action input must be non-zero"));
         }
         validate_artifacts(&self.artifacts)?;
+        self.validate_certified_receive_htlcs()?;
         if self.attempt == 0 || self.expires_at == 0 || self.fee_amount > self.fee_bound {
             return Err(invalid_bark("invalid Bark attempt, expiry, or fee bound"));
         }
@@ -3396,8 +3599,9 @@ mod tests {
 
     use super::*;
     use crate::federation::{
-        FederationAddressKeychain, FederationConsensusItem, FederationJournalAppendOutcome,
-        FederationOperationEnvelope, InMemoryFederationJournal,
+        FederationAddressKeychain, FederationBarkEvidenceAttestation, FederationConfigDigest,
+        FederationConsensusItem, FederationJournalAppendOutcome, FederationOperationEnvelope,
+        InMemoryFederationJournal,
     };
 
     fn digest(seed: u8) -> FederationBarkDigest {
@@ -3420,6 +3624,181 @@ mod tests {
         MemberId::new(value).expect("member")
     }
 
+    fn certified_receive_claim_plan() -> FederationBarkActionPlan {
+        let action_id = action(80);
+        let predecessor_operation_id = operation_id(81);
+        let payment_hash = digest(82);
+        let vtxo_artifact =
+            bark_artifact(FederationBarkArtifactKind::Vtxo, vec![83; 32]).expect("VTXO artifact");
+        let request_artifact = bark_artifact(
+            FederationBarkArtifactKind::ArkRequest,
+            b"certified-receive-claim".to_vec(),
+        )
+        .expect("claim request artifact");
+        let input = FederationBarkVtxoInput {
+            vtxo_id: vtxo(84),
+            locator: FederationBarkVtxoLocator::vtxo_custody(7),
+            amount: Amount::from(100),
+        };
+        let transition = FederationBarkVtxoTransition {
+            vtxo_id: input.vtxo_id,
+            locator: input.locator,
+            amount: input.amount,
+            expiry_height: 850_000,
+            previous_state: None,
+            new_state: FederationBarkVtxoState::Observed,
+            artifact_hash: vtxo_artifact.hash,
+        };
+        let request_hash = digest(88);
+        let mut artifacts = vec![request_artifact.clone(), vtxo_artifact];
+        artifacts.sort();
+        let evidence_digest = federation_bark_receive_htlc_package_hash(
+            850_000,
+            request_hash,
+            core::slice::from_ref(&transition),
+            &artifacts,
+        )
+        .expect("receive package");
+        let certificate = FederationBarkEvidenceCertificate {
+            binding: super::super::FederationBarkEvidenceBinding {
+                version: super::super::FEDERATION_BARK_EVIDENCE_CERTIFICATE_VERSION,
+                federation_id: federation_id(),
+                config_digest: FederationConfigDigest::from_bytes([85; 32]),
+                application_key_epoch: 1,
+                action_id,
+                quote: "certified-receive".to_string(),
+                phase: FederationBarkEvidencePhase::ReceiveHtlcsReady,
+                evidence_operation_id: predecessor_operation_id,
+                payment_hash,
+                source_scope: digest(86),
+                status: FederationBarkObservationStatus::Accepted,
+                amount: Amount::from(100),
+                fee: Amount::ZERO,
+                evidence_digest,
+                attempt: 1,
+            },
+            attestations: vec![FederationBarkEvidenceAttestation {
+                signer: member(1),
+                signature: FederationOperationSignature::from_slice(&[1; 64]).expect("signature"),
+            }],
+        };
+        FederationBarkActionPlan {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            action_id,
+            quote: Some("certified-receive".to_string()),
+            kind: FederationBarkActionKind::IncomingClaim,
+            actor: member(1),
+            predecessor_operation_id,
+            payment_hash: Some(payment_hash),
+            inputs: vec![input],
+            outputs: vec![FederationBarkVtxoOutput {
+                locator: FederationBarkVtxoLocator::vtxo_custody(8),
+                amount: Amount::from(100),
+                artifact_hash: request_artifact.hash,
+            }],
+            revocation_locator: None,
+            external_amount: Amount::ZERO,
+            fee_amount: Amount::ZERO,
+            fee_bound: Amount::ZERO,
+            artifacts,
+            certified_receive_htlcs: Some(Box::new(FederationBarkCertifiedReceiveHtlcs {
+                version: FEDERATION_BARK_OPERATION_VERSION,
+                minimum_expiry: 850_000,
+                request_hash,
+                vtxo_transitions: vec![transition],
+                certificate,
+            })),
+            external_id: external(89),
+            signer_set: vec![member(1), member(2)],
+            attempt: 1,
+            expires_at: 850_000,
+        }
+    }
+
+    #[test]
+    fn certified_receive_claim_is_one_authority_free_operation() {
+        let plan = certified_receive_claim_plan();
+        let operation = FederationBarkOperation::ActionPlan(plan.clone());
+        operation.validate().expect("combined receive claim");
+        assert_eq!(operation.claimed_author(), None);
+        assert!(operation
+            .conflict_keys()
+            .contains(&FederationBarkConflictKey::ActionPhase {
+                action_id: plan.action_id,
+                phase: FederationBarkSemanticPhase::ReceiveHtlcsReady,
+                attempt: Some(1),
+            }));
+        assert!(operation.conflict_keys().contains(
+            &FederationBarkConflictKey::EvidenceCertificate {
+                action_id: plan.action_id,
+                phase: FederationBarkEvidencePhase::ReceiveHtlcsReady,
+            }
+        ));
+    }
+
+    #[test]
+    fn certified_receive_claim_mutations_fail_closed() {
+        let base = certified_receive_claim_plan();
+        let mut mutations = Vec::new();
+        let mut changed = base.clone();
+        changed
+            .certified_receive_htlcs
+            .as_mut()
+            .expect("certified")
+            .certificate
+            .binding
+            .amount = Amount::from(99);
+        mutations.push(changed);
+        let mut changed = base.clone();
+        changed
+            .certified_receive_htlcs
+            .as_mut()
+            .expect("certified")
+            .minimum_expiry -= 1;
+        mutations.push(changed);
+        let mut changed = base.clone();
+        changed.attempt += 1;
+        mutations.push(changed);
+        let mut changed = base.clone();
+        changed
+            .certified_receive_htlcs
+            .as_mut()
+            .expect("certified")
+            .vtxo_transitions[0]
+            .artifact_hash = digest(90);
+        mutations.push(changed);
+        let mut changed = base.clone();
+        let replacement = bark_artifact(FederationBarkArtifactKind::Vtxo, vec![91; 32])
+            .expect("replacement VTXO artifact");
+        changed
+            .artifacts
+            .retain(|artifact| artifact.kind != FederationBarkArtifactKind::Vtxo);
+        changed.artifacts.push(replacement.clone());
+        changed.artifacts.sort();
+        changed
+            .certified_receive_htlcs
+            .as_mut()
+            .expect("certified")
+            .vtxo_transitions[0]
+            .artifact_hash = replacement.hash;
+        mutations.push(changed);
+        let mut changed = base;
+        changed
+            .certified_receive_htlcs
+            .as_mut()
+            .expect("certified")
+            .certificate
+            .binding
+            .status = FederationBarkObservationStatus::Failed;
+        mutations.push(changed);
+
+        for mutation in mutations {
+            assert!(FederationBarkOperation::ActionPlan(mutation)
+                .validate()
+                .is_err());
+        }
+    }
+
     #[test]
     fn signing_retry_transition_is_canonical_and_preserves_action_identity() {
         let plan = FederationBarkActionPlan {
@@ -3436,6 +3815,7 @@ mod tests {
             external_amount: Amount::ZERO,
             fee_amount: Amount::ZERO,
             fee_bound: Amount::ZERO,
+            certified_receive_htlcs: None,
             artifacts: Vec::new(),
             external_id: external(44),
             signer_set: vec![member(1), member(2)],
@@ -3609,6 +3989,7 @@ mod tests {
             external_amount: Amount::from(100),
             fee_amount: Amount::from(5),
             fee_bound: Amount::from(8),
+            certified_receive_htlcs: None,
             artifacts: Vec::new(),
             external_id: FederationBarkExternalId::derive_lightning_send(
                 action_id,
@@ -3665,6 +4046,7 @@ mod tests {
             external_amount: Amount::ZERO,
             fee_amount: Amount::from(2),
             fee_bound: Amount::from(3),
+            certified_receive_htlcs: None,
             artifacts: Vec::new(),
             external_id: FederationBarkExternalId::derive_refresh(
                 action_id,
@@ -3705,6 +4087,7 @@ mod tests {
             external_amount: Amount::from(95),
             fee_amount: Amount::from(5),
             fee_bound: Amount::from(5),
+            certified_receive_htlcs: None,
             artifacts: Vec::new(),
             external_id: FederationBarkExternalId::derive_emergency_exit(
                 action_id,
@@ -4171,6 +4554,7 @@ mod tests {
             external_amount: Amount::ZERO,
             fee_amount: Amount::ZERO,
             fee_bound: Amount::ZERO,
+            certified_receive_htlcs: None,
             artifacts,
             external_id: FederationBarkExternalId::derive_failed_send_revocation(
                 send.action_id,

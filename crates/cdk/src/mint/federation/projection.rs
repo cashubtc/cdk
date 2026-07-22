@@ -562,7 +562,19 @@ impl Mint {
                 if plan.kind == FederationBarkActionKind::IncomingClaim =>
             {
                 let action = action.ok_or_else(|| bark_state_error("claim plan has no action"))?;
-                if action.phase != FederationBarkSemanticPhase::ReceiveHtlcsReady
+                let intent = self
+                    .federation_bark_receive_intent(action.origin_operation_id)
+                    .await?
+                    .ok_or_else(|| bark_state_error("receive intent is missing"))?;
+                let combined = plan.certified_receive_htlcs.as_deref();
+                let expected_phase = if combined.is_some() {
+                    FederationBarkSemanticPhase::ReceivePrepared
+                } else {
+                    FederationBarkSemanticPhase::ReceiveHtlcsReady
+                };
+                if action.phase != expected_phase
+                    || plan.predecessor_operation_id != action.latest_operation_id
+                    || plan.actor != action.actor
                     || plan.signer_set.len() < usize::from(application.threshold)
                     || plan
                         .signer_set
@@ -573,25 +585,61 @@ impl Mint {
                         "claim plan is not backed by ready HTLCs and an eligible signer set",
                     ));
                 }
-                for input in &plan.inputs {
-                    let vtxo = snapshot
-                        .vtxos
-                        .iter()
-                        .find(|vtxo| vtxo.vtxo_id == input.vtxo_id)
-                        .ok_or_else(|| bark_state_error("claim plan input is unknown"))?;
-                    if vtxo.state != FederationBarkVtxoState::Observed
-                        || vtxo.amount != input.amount
-                        || vtxo.locator != input.locator
-                        || vtxo.locator
-                            != self
-                                .federation_bark_receive_intent(action.origin_operation_id)
-                                .await?
-                                .ok_or_else(|| bark_state_error("receive intent is missing"))?
-                                .destination
+                if let Some(certified) = combined {
+                    let amount = certified.vtxo_transitions.iter().try_fold(
+                        Amount::ZERO,
+                        |sum, mutation| {
+                            sum.checked_add(mutation.amount).ok_or_else(|| {
+                                bark_state_error("certified HTLC evidence amount overflow")
+                            })
+                        },
+                    )?;
+                    let fee = intent.gross_amount.checked_sub(amount).ok_or_else(|| {
+                        bark_state_error("certified HTLC evidence exceeds invoice amount")
+                    })?;
+                    if amount < intent.minimum_net_amount || fee > intent.receive_fee {
+                        return Err(bark_state_error(
+                            "certified HTLC evidence does not cover the accepted Cashu liability",
+                        ));
+                    }
+                    let certificate = &certified.certificate;
+                    certificate.verify(
+                        config.public_config(),
+                        config.public_config().threshold_params.signature_threshold,
+                    )?;
+                    let binding = &certificate.binding;
+                    if binding.phase != FederationBarkEvidencePhase::ReceiveHtlcsReady
+                        || binding.action_id != plan.action_id
+                        || plan.quote.as_deref() != Some(binding.quote.as_str())
+                        || binding.evidence_operation_id != plan.predecessor_operation_id
+                        || Some(binding.payment_hash) != plan.payment_hash
+                        || binding.source_scope
+                            != ark_server_commitment(&application.ark_server_public_key)?
+                        || binding.amount != amount
+                        || binding.fee != fee
+                        || binding.status != FederationBarkObservationStatus::Accepted
+                        || binding.attempt != plan.attempt
                     {
                         return Err(bark_state_error(
-                            "claim plan input differs from accepted HTLC evidence",
+                            "certified HTLC evidence differs from the claim plan",
                         ));
+                    }
+                } else {
+                    for input in &plan.inputs {
+                        let vtxo = snapshot
+                            .vtxos
+                            .iter()
+                            .find(|vtxo| vtxo.vtxo_id == input.vtxo_id)
+                            .ok_or_else(|| bark_state_error("claim plan input is unknown"))?;
+                        if vtxo.state != FederationBarkVtxoState::Observed
+                            || vtxo.amount != input.amount
+                            || vtxo.locator != input.locator
+                            || vtxo.locator != intent.destination
+                        {
+                            return Err(bark_state_error(
+                                "claim plan input differs from accepted HTLC evidence",
+                            ));
+                        }
                     }
                 }
             }
@@ -2895,6 +2943,7 @@ mod outgoing_tests {
             external_amount: Amount::from(1),
             fee_amount: Amount::from(2),
             fee_bound: Amount::from(2),
+            certified_receive_htlcs: None,
             artifacts: Vec::new(),
             external_id: FederationBarkExternalId::from_bytes([4; 32]).expect("external id"),
             signer_set: vec![MemberId::new(1).expect("member")],

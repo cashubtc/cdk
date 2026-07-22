@@ -772,8 +772,27 @@ async fn apply_vtxo_transition<C>(
 where
     C: DatabaseExecutor,
 {
-    let artifact = transition
-        .artifacts
+    apply_vtxo_transition_from_artifacts(
+        connection,
+        entry,
+        transition.action_id,
+        &transition.artifacts,
+        mutation,
+    )
+    .await
+}
+
+async fn apply_vtxo_transition_from_artifacts<C>(
+    connection: &C,
+    entry: &FederationJournalEntry,
+    action_id: cdk_common::federation::FederationBarkActionId,
+    artifacts: &[cdk_common::federation::FederationBarkArtifact],
+    mutation: &cdk_common::federation::FederationBarkVtxoTransition,
+) -> Result<(), Error>
+where
+    C: DatabaseExecutor,
+{
+    let artifact = artifacts
         .iter()
         .find(|artifact| {
             artifact.kind == cdk_common::federation::FederationBarkArtifactKind::Vtxo
@@ -799,7 +818,7 @@ where
                 FederationBarkVtxoState::Reserved
                     | FederationBarkVtxoState::PendingSpend
                     | FederationBarkVtxoState::Exiting
-            ) && previous.reservation_action_id != Some(transition.action_id)
+            ) && previous.reservation_action_id != Some(action_id)
             {
                 return Err(invalid_projection(
                     "Bark VTXO transition is not owned by this action",
@@ -808,7 +827,7 @@ where
             let reservation_action_id = match mutation.new_state {
                 FederationBarkVtxoState::Reserved
                 | FederationBarkVtxoState::PendingSpend
-                | FederationBarkVtxoState::Exiting => Some(transition.action_id),
+                | FederationBarkVtxoState::Exiting => Some(action_id),
                 _ => None,
             };
             let updated = FederationBarkVtxoRecord {
@@ -833,7 +852,7 @@ where
                 .materialized_amount
                 .checked_add(mutation.amount)
                 .ok_or_else(|| invalid_projection("Bark allocation amount overflow"))?;
-            if allocation.action_id != transition.action_id
+            if allocation.action_id != action_id
                 || materialized_amount > allocation.amount
                 || allocation.vtxo_ids.contains(&mutation.vtxo_id)
             {
@@ -851,7 +870,7 @@ where
                 reservation_action_id: match mutation.new_state {
                     FederationBarkVtxoState::Reserved
                     | FederationBarkVtxoState::PendingSpend
-                    | FederationBarkVtxoState::Exiting => Some(transition.action_id),
+                    | FederationBarkVtxoState::Exiting => Some(action_id),
                     _ => None,
                 },
                 origin_operation_id: entry.operation_id,
@@ -1002,6 +1021,7 @@ where
         ));
     }
     let existing = get_action(connection, plan.action_id).await?;
+    let combined_receive_claim = plan.certified_receive_htlcs.is_some();
     let refresh_exit_escalation = existing.as_ref().is_some_and(|action| {
         action.phase == cdk_common::federation::FederationBarkSemanticPhase::RefreshPlanned
             && plan.kind == cdk_common::federation::FederationBarkActionKind::EmergencyExit
@@ -1010,7 +1030,11 @@ where
         Some(action) => {
             ensure_same_action_binding(action, operation)?;
             ensure_predecessor(action, plan.predecessor_operation_id)?;
-            if !transition_allowed(action, operation.phase()) {
+            if !(transition_allowed(action, operation.phase())
+                || combined_receive_claim
+                    && action.phase
+                        == cdk_common::federation::FederationBarkSemanticPhase::ReceivePrepared)
+            {
                 return Err(invalid_projection("invalid Bark action plan transition"));
             }
             action.advanced(entry, operation)?
@@ -1031,6 +1055,19 @@ where
     match &existing {
         Some(previous) => update_action(connection, previous, &action).await?,
         None => insert_action(connection, &action).await?,
+    }
+
+    if let Some(certified) = plan.certified_receive_htlcs.as_deref() {
+        for mutation in &certified.vtxo_transitions {
+            apply_vtxo_transition_from_artifacts(
+                connection,
+                entry,
+                plan.action_id,
+                &plan.artifacts,
+                mutation,
+            )
+            .await?;
+        }
     }
 
     for input in &plan.inputs {

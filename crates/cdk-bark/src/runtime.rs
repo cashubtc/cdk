@@ -30,21 +30,22 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::{FeeRate, ScriptBuf, Transaction};
 use cdk_common::federation::{
     ark_server_commitment, federation_bark_exit_allocation_quote,
-    federation_bark_receive_request_hash, federation_bark_signer_set_for_attempt,
-    validate_federation_bark_lightning_send_expiry, FederationAllocatedAddressRef,
-    FederationBarkActionId, FederationBarkActionKind, FederationBarkActionPlan,
-    FederationBarkActionStatus, FederationBarkActionTransition, FederationBarkArtifact,
-    FederationBarkArtifactKind, FederationBarkDigest, FederationBarkExternalId,
-    FederationBarkMemberObservation, FederationBarkObservationStatus, FederationBarkOperation,
-    FederationBarkOperatorStatus, FederationBarkPolicyConfig, FederationBarkProjectionSnapshot,
-    FederationBarkProtocolStatus, FederationBarkReceiveIntent, FederationBarkReceivePrepared,
-    FederationBarkReceiveSecretBinding, FederationBarkReceiveSecretCoverage,
-    FederationBarkSemanticPhase, FederationBarkVtxoId, FederationBarkVtxoInput,
-    FederationBarkVtxoLocator, FederationBarkVtxoOutput, FederationBarkVtxoState,
-    FederationBarkVtxoStatusCount, FederationBarkVtxoTransition, FederationConfig,
-    FederationJournalEntry, FederationOperation, FederationOperationId, FederationOperationStatus,
-    MemberId, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU, FEDERATION_BARK_OPERATION_VERSION,
-    FEDERATION_BARK_OPERATOR_STATUS_VERSION, FEDERATION_MAX_DERIVATION_INDEX,
+    federation_bark_receive_htlc_package_hash, federation_bark_receive_request_hash,
+    federation_bark_signer_set_for_attempt, validate_federation_bark_lightning_send_expiry,
+    FederationAllocatedAddressRef, FederationBarkActionId, FederationBarkActionKind,
+    FederationBarkActionPlan, FederationBarkActionStatus, FederationBarkActionTransition,
+    FederationBarkArtifact, FederationBarkArtifactKind, FederationBarkCertifiedReceiveHtlcs,
+    FederationBarkDigest, FederationBarkExternalId, FederationBarkMemberObservation,
+    FederationBarkObservationStatus, FederationBarkOperation, FederationBarkOperatorStatus,
+    FederationBarkPolicyConfig, FederationBarkProjectionSnapshot, FederationBarkProtocolStatus,
+    FederationBarkReceiveIntent, FederationBarkReceivePrepared, FederationBarkReceiveSecretBinding,
+    FederationBarkReceiveSecretCoverage, FederationBarkSemanticPhase, FederationBarkVtxoId,
+    FederationBarkVtxoInput, FederationBarkVtxoLocator, FederationBarkVtxoOutput,
+    FederationBarkVtxoState, FederationBarkVtxoStatusCount, FederationBarkVtxoTransition,
+    FederationConfig, FederationJournalEntry, FederationOperation, FederationOperationId,
+    FederationOperationStatus, MemberId, FEDERATION_BARK_EXIT_FEE_RATE_SAT_PER_KWU,
+    FEDERATION_BARK_OPERATION_VERSION, FEDERATION_BARK_OPERATOR_STATUS_VERSION,
+    FEDERATION_MAX_DERIVATION_INDEX,
 };
 use cdk_common::mint::{MeltPaymentRequest, MeltQuote};
 use cdk_common::{CurrencyUnit, MeltQuoteState};
@@ -576,6 +577,7 @@ impl FederatedBarkRuntime {
             external_amount: amount,
             fee_amount: fee,
             fee_bound: fee,
+            certified_receive_htlcs: None,
             artifacts: Vec::new(),
             external_id,
             signer_set: proposal.signer_set,
@@ -1128,6 +1130,7 @@ impl FederatedBarkRuntime {
             external_amount: cdk_common::Amount::ZERO,
             fee_amount: cdk_common::Amount::ZERO,
             fee_bound: cdk_common::Amount::ZERO,
+            certified_receive_htlcs: None,
             artifacts,
             external_id: FederationBarkExternalId::derive_failed_send_revocation(
                 send.action_id,
@@ -1438,6 +1441,7 @@ impl FederatedBarkRuntime {
             external_amount: cdk_common::Amount::ZERO,
             fee_amount: fee,
             fee_bound,
+            certified_receive_htlcs: None,
             artifacts: Vec::new(),
             external_id: FederationBarkExternalId::derive_refresh(
                 action_id,
@@ -1834,6 +1838,7 @@ impl FederatedBarkRuntime {
             external_amount: minimum_recovered,
             fee_amount: fee_bound,
             fee_bound,
+            certified_receive_htlcs: None,
             artifacts: Vec::new(),
             external_id: FederationBarkExternalId::derive_emergency_exit(
                 refresh.action_id,
@@ -2460,7 +2465,8 @@ impl FederatedBarkRuntime {
                     Error::ReceiveObservationFailed
                 })?,
         };
-        let result_hash = receive_htlc_evidence_hash(&evidence)?;
+        let transition =
+            receive_htlc_transition(self.member_id, prepared_operation_id, intent, &evidence)?;
         let member_observation = FederationBarkMemberObservation {
             version: FEDERATION_BARK_OPERATION_VERSION,
             action_id: intent.action_id,
@@ -2472,15 +2478,8 @@ impl FederatedBarkRuntime {
             status: FederationBarkObservationStatus::Accepted,
             amount: cdk_common::Amount::from(evidence.net_amount.to_sat()),
             fee: cdk_common::Amount::from(evidence.fee.to_sat()),
-            result_hash,
+            result_hash: transition.result_hash,
         };
-        let transition = receive_htlc_transition(
-            self.member_id,
-            prepared_operation_id,
-            intent,
-            &evidence,
-            result_hash,
-        )?;
         Ok(Some((member_observation, transition)))
     }
 
@@ -2519,20 +2518,15 @@ impl FederatedBarkRuntime {
                 );
                 Error::ReceiveObservationFailed
             })?;
-        let result_hash = receive_htlc_evidence_hash(&evidence)?;
+        let transition =
+            receive_htlc_transition(self.member_id, prepared_operation_id, intent, &evidence)?;
         if accepted.amount != cdk_common::Amount::from(evidence.net_amount.to_sat())
             || accepted.fee != cdk_common::Amount::from(evidence.fee.to_sat())
-            || accepted.result_hash != result_hash
+            || accepted.result_hash != transition.result_hash
         {
             return Err(Error::ReceiveObservationFailed);
         }
-        receive_htlc_transition(
-            self.member_id,
-            prepared_operation_id,
-            intent,
-            &evidence,
-            result_hash,
-        )
+        Ok(transition)
     }
 
     /// Construct one exact incoming-claim action plan from the local copy of
@@ -2583,6 +2577,70 @@ impl FederatedBarkRuntime {
             proposal.output_locator,
             &claim,
         )
+    }
+
+    /// Combine threshold-certified HTLC evidence with the exact incoming
+    /// claim reservation. The certificate still authorizes only readiness;
+    /// the outer plan separately commits the custody inputs, output, and
+    /// signer set before any preimage disclosure.
+    pub async fn propose_certified_receive_claim(
+        &self,
+        intent: &FederationBarkReceiveIntent,
+        prepared: &FederationBarkReceivePrepared,
+        certified_ready: FederationBarkActionTransition,
+        proposal: FederatedBarkReceiveClaimProposal,
+    ) -> Result<FederationBarkActionPlan, Error> {
+        let certificate = certified_ready
+            .evidence_certificate
+            .as_deref()
+            .ok_or(Error::ReceiveClaimPlanInvalid)?
+            .clone();
+        if certified_ready.phase != FederationBarkSemanticPhase::ReceiveHtlcsReady
+            || certified_ready.action_id != intent.action_id
+            || certified_ready.quote.as_deref() != Some(intent.quote.as_str())
+            || certified_ready.plan_operation_id != certified_ready.predecessor_operation_id
+            || certified_ready.payment_hash != Some(intent.payment_hash)
+            || certificate.binding.evidence_digest != certified_ready.result_hash
+        {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        let receive = self.receive_plan(intent, prepared)?;
+        let certified_evidence = receive_htlc_evidence_from_transition(
+            &self.wallet,
+            &receive,
+            intent,
+            &certified_ready,
+        )?;
+        let predecessor_operation_id = certified_ready.predecessor_operation_id;
+        let mut plan = self
+            .propose_receive_claim(intent, prepared, predecessor_operation_id, proposal)
+            .await?;
+        let ready_artifacts = certified_ready
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+            .cloned()
+            .collect::<Vec<_>>();
+        let plan_artifacts = plan
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+            .cloned()
+            .collect::<Vec<_>>();
+        if ready_artifacts != plan_artifacts {
+            return Err(Error::ReceiveClaimPlanInvalid);
+        }
+        plan.certified_receive_htlcs = Some(Box::new(FederationBarkCertifiedReceiveHtlcs {
+            version: FEDERATION_BARK_OPERATION_VERSION,
+            minimum_expiry: certified_evidence.minimum_expiry,
+            request_hash: certified_ready.request_hash,
+            vtxo_transitions: certified_ready.vtxo_transitions,
+            certificate,
+        }));
+        FederationBarkOperation::ActionPlan(plan.clone())
+            .validate()
+            .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+        Ok(plan)
     }
 
     /// Reconstruct and compare every field of an incoming claim plan before it
@@ -2683,7 +2741,15 @@ impl FederatedBarkRuntime {
         self.wallet
             .validate_lightning_receive_claim_plan(&receive, &claim)
             .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
-        let expected = self.claim_action_plan(
+        if let Some(certified_ready) = certified_receive_htlc_transition(plan)? {
+            receive_htlc_evidence_from_transition(
+                &self.wallet,
+                &receive,
+                intent,
+                &certified_ready,
+            )?;
+        }
+        let mut expected = self.claim_action_plan(
             intent,
             plan.predecessor_operation_id,
             plan.actor,
@@ -2691,6 +2757,7 @@ impl FederatedBarkRuntime {
             output.locator,
             &claim,
         )?;
+        expected.certified_receive_htlcs = plan.certified_receive_htlcs.clone();
         if &expected != plan {
             return Err(Error::ReceiveClaimPlanInvalid);
         }
@@ -2708,6 +2775,18 @@ impl FederatedBarkRuntime {
     ) -> Result<(), Error> {
         let plan = accepted_claim_plan(accepted_plan)?;
         let (receive, claim) = self.accepted_receive_claim_plan(intent, prepared, plan)?;
+        if let Some(certified_ready) = certified_receive_htlc_transition(plan)? {
+            let evidence = receive_htlc_evidence_from_transition(
+                &self.wallet,
+                &receive,
+                intent,
+                &certified_ready,
+            )?;
+            self.wallet
+                .apply_lightning_receive_htlc_replay(&receive, &evidence.vtxos)
+                .await
+                .map_err(|_| Error::ReceiveClaimRecoveryRequired)?;
+        }
         self.wallet
             .apply_lightning_receive_claim_replay(
                 &receive,
@@ -3059,6 +3138,7 @@ impl FederatedBarkRuntime {
             external_amount: cdk_common::Amount::ZERO,
             fee_amount: cdk_common::Amount::ZERO,
             fee_bound: cdk_common::Amount::ZERO,
+            certified_receive_htlcs: None,
             artifacts,
             external_id: receive_external_id(
                 b"cdk/bark/receive-claim-external/v1",
@@ -4960,24 +5040,6 @@ fn send_success_preimage(
     Ok(preimage)
 }
 
-fn receive_htlc_evidence_hash(
-    evidence: &bark::federation::FederationLightningReceiveHtlcEvidence,
-) -> Result<FederationBarkDigest, Error> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"cdk/bark/receive-htlc-evidence/v1");
-    bytes.extend_from_slice(&evidence.action_id.to_bytes());
-    bytes.extend_from_slice(&evidence.payment_hash.to_vec());
-    bytes.extend_from_slice(&evidence.destination.index.to_be_bytes());
-    bytes.extend_from_slice(&evidence.gross_amount.to_sat().to_be_bytes());
-    bytes.extend_from_slice(&evidence.net_amount.to_sat().to_be_bytes());
-    bytes.extend_from_slice(&evidence.fee.to_sat().to_be_bytes());
-    bytes.extend_from_slice(&evidence.minimum_expiry.to_be_bytes());
-    for vtxo in &evidence.vtxos {
-        append_bounded_bytes(&mut bytes, &vtxo.serialize())?;
-    }
-    bark_digest(&bytes)
-}
-
 fn receive_htlc_evidence_from_transition(
     wallet: &FederationWallet,
     plan: &FederationLightningReceivePlan,
@@ -5026,7 +5088,14 @@ fn receive_htlc_evidence_from_transition(
     request.extend_from_slice(&intent.action_id.to_bytes());
     request.extend_from_slice(&intent.destination.index.to_be_bytes());
     request.extend_from_slice(&evidence.minimum_expiry.to_be_bytes());
-    if transition.result_hash != receive_htlc_evidence_hash(&evidence)?
+    if transition.result_hash
+        != federation_bark_receive_htlc_package_hash(
+            evidence.minimum_expiry,
+            transition.request_hash,
+            &transition.vtxo_transitions,
+            &transition.artifacts,
+        )
+        .map_err(|_| Error::ReceiveClaimPlanInvalid)?
         || transition.request_hash != bark_digest(&request)?
     {
         return Err(Error::ReceiveClaimPlanInvalid);
@@ -5034,12 +5103,51 @@ fn receive_htlc_evidence_from_transition(
     Ok(evidence)
 }
 
+fn certified_receive_htlc_transition(
+    plan: &FederationBarkActionPlan,
+) -> Result<Option<FederationBarkActionTransition>, Error> {
+    let Some(certified) = plan.certified_receive_htlcs.as_deref() else {
+        return Ok(None);
+    };
+    let transition = FederationBarkActionTransition {
+        version: FEDERATION_BARK_OPERATION_VERSION,
+        action_id: plan.action_id,
+        quote: plan.quote.clone(),
+        phase: FederationBarkSemanticPhase::ReceiveHtlcsReady,
+        actor: plan.actor,
+        plan_operation_id: plan.predecessor_operation_id,
+        predecessor_operation_id: plan.predecessor_operation_id,
+        payment_hash: plan.payment_hash,
+        attempt: plan.attempt,
+        signer_set: Vec::new(),
+        request_hash: certified.request_hash,
+        result_hash: certified.certificate.binding.evidence_digest,
+        evidence_certificate: Some(Box::new(certified.certificate.clone())),
+        external_id: receive_external_id(
+            b"cdk/bark/receive-htlc-external/v1",
+            plan.action_id,
+            plan.predecessor_operation_id,
+            plan.attempt,
+        )?,
+        artifacts: plan
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.kind == FederationBarkArtifactKind::Vtxo)
+            .cloned()
+            .collect(),
+        vtxo_transitions: certified.vtxo_transitions.clone(),
+    };
+    FederationBarkOperation::ActionTransition(transition.clone())
+        .validate()
+        .map_err(|_| Error::ReceiveClaimPlanInvalid)?;
+    Ok(Some(transition))
+}
+
 fn receive_htlc_transition(
     actor: MemberId,
     prepared_operation_id: FederationOperationId,
     intent: &FederationBarkReceiveIntent,
     evidence: &bark::federation::FederationLightningReceiveHtlcEvidence,
-    result_hash: FederationBarkDigest,
 ) -> Result<FederationBarkActionTransition, Error> {
     let mut artifacts = evidence
         .vtxos
@@ -5071,6 +5179,14 @@ fn receive_htlc_transition(
     request.extend_from_slice(&intent.action_id.to_bytes());
     request.extend_from_slice(&intent.destination.index.to_be_bytes());
     request.extend_from_slice(&evidence.minimum_expiry.to_be_bytes());
+    let request_hash = bark_digest(&request)?;
+    let result_hash = federation_bark_receive_htlc_package_hash(
+        evidence.minimum_expiry,
+        request_hash,
+        &vtxo_transitions,
+        &artifacts,
+    )
+    .map_err(|_| Error::ReceiveObservationFailed)?;
     Ok(FederationBarkActionTransition {
         version: FEDERATION_BARK_OPERATION_VERSION,
         action_id: intent.action_id,
@@ -5082,7 +5198,7 @@ fn receive_htlc_transition(
         payment_hash: Some(intent.payment_hash),
         attempt: 1,
         signer_set: Vec::new(),
-        request_hash: bark_digest(&request)?,
+        request_hash,
         result_hash,
         evidence_certificate: None,
         external_id: receive_external_id(

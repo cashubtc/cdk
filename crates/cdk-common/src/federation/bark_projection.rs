@@ -119,6 +119,10 @@ impl FederationBarkActionRecord {
                     operation,
                     FederationBarkOperation::ActionTransition(transition)
                         if transition.evidence_certificate.is_some()
+                ) || matches!(
+                    operation,
+                    FederationBarkOperation::ActionPlan(plan)
+                        if plan.certified_receive_htlcs.is_some()
                 ) =>
                 {
                     self.actor

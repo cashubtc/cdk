@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, and 10A complete; Milestones 2, 7, and 7A rejected; Milestones 11-17, including 15A, not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, and 11 complete; Milestones 2, 7, and 7A rejected; Milestones 11A-17, including 15A, not started
 
 First recorded: 2026-07-20
 
@@ -3487,45 +3487,45 @@ an opaque batch.
 
 ### Checklist
 
-- [ ] Start only after Milestone 10 has a retained, measured certificate
+- [x] Start only after Milestone 10 has a retained, measured certificate
       design. If Milestone 10 is rejected, reject this dependency rather than
       implementing a second evidence mechanism.
-- [ ] Document the invariant currently protected by the
+- [x] Document the invariant currently protected by the
       `ReceiveHtlcsReady` -> claim-plan boundary and every field or local state
       needed to construct and validate the claim plan.
-- [ ] Prove the complete claim plan can be prepared from already authenticated
+- [x] Prove the complete claim plan can be prepared from already authenticated
       data before acceptance without reserving/spending inputs, disclosing a
       preimage, creating nonce material, or trusting a collector's local view.
-- [ ] Define one canonical combined operation whose stable identity binds the
+- [x] Define one canonical combined operation whose stable identity binds the
       certificate, artifacts, reservations, output locator, signer roster,
       attempt, actor authority, and quote/action identity.
-- [ ] Preserve conflict detection, reservation exclusivity, deterministic
+- [x] Preserve conflict detection, reservation exclusivity, deterministic
       signer rotation, idempotent retry, and terminal result derivation.
-- [ ] Keep preimage disclosure, external claim execution, and claimed result as
+- [x] Keep preimage disclosure, external claim execution, and claimed result as
       their existing later boundaries unless independently justified in a new
       milestone.
-- [ ] Reject the candidate if it needs a preliminary consensus reservation, a
+- [x] Reject the candidate if it needs a preliminary consensus reservation, a
       second private voting protocol, duplicated large artifacts, or special
       recovery machinery that restores the boundary under another name.
-- [ ] Compare operation count, consensus/private messages and bytes, accepted
+- [x] Compare operation count, consensus/private messages and bytes, accepted
       payload size, recovery complexity, and latency against the retained
       Milestone 10 design.
 
 ### Tests
 
-- [ ] Healthy incoming accepts exactly one combined authorization, then starts
+- [x] Healthy incoming accepts exactly one combined authorization, then starts
       FROST, claims once, and issues the exact amount.
-- [ ] Conflicting certificate, reservation, output locator, signer roster,
+- [x] Conflicting certificate, reservation, output locator, signer roster,
       attempt, actor, or artifact proposals cannot reserve inputs or start
       signing before acceptance.
-- [ ] Collector/actor crash before proposal, after proposal, and immediately
+- [x] Collector/actor crash before proposal, after proposal, and immediately
       after acceptance recovers through the existing deterministic publisher
       and signer-attempt paths without duplicate work.
-- [ ] Concurrent receive actions cannot reserve the same VTXO or make a
+- [x] Concurrent receive actions cannot reserve the same VTXO or make a
       locally prepared losing plan affect durable state.
-- [ ] Signer loss, delayed old messages, replay, catch-up, checkpoint restore,
+- [x] Signer loss, delayed old messages, replay, catch-up, checkpoint restore,
       and all-member restart converge on the same authorization and result.
-- [ ] Existing outgoing, failed-send, refresh, standalone BOLT11, and
+- [x] Existing outgoing, failed-send, refresh, standalone BOLT11, and
       federated-BDK regressions remain unchanged.
 
 ### Success criteria
@@ -3541,6 +3541,152 @@ an opaque batch.
   improvement does not satisfy the plan's evidence gate, revert it.
 - The milestone records `Kept` or `Rejected` and, if kept, is committed as
   `perf: combine certified Bark readiness and claim authorization`.
+
+### Evaluation record — 2026-07-22
+
+**Kept on the protocol-work simplification route; no latency win is claimed.**
+The retained operation carries the existing three-member readiness certificate
+inside the exact incoming claim plan. Its domain-separated digest binds the
+Bark-authenticated minimum expiry, hydration request, sorted VTXO transitions,
+and the exact canonical VTXO artifacts. The parent plan separately binds the
+quote/action identity, actor, inputs and reservations, output locator, signer
+roster, attempt, and expiry. Admission verifies the certificate and stateful
+predecessor; Bark independently decodes the VTXOs and reconstructs the complete
+claim. One SQL transaction materializes the certified VTXOs and reserves them
+for the claim. FROST, preimage disclosure, external claim execution, claimed
+result, result certificate, and Cashu issuance remain later accepted
+boundaries.
+
+There is no preliminary reservation, second voting protocol, duplicate VTXO
+artifact set, scheduler, or recovery format. A certificate-bearing claim has
+no single claimed consensus author because any deterministic collector may
+transport it, but the plan's original action actor remains explicit and is
+checked before execution. The old separately accepted readiness transition is
+retained only for replay of already accepted journals; new healthy receives do
+not publish it.
+
+Three clean exact-release Signet receives on a fresh local five-member
+federation produced:
+
+| Metric | Milestone 10 retained path | Milestone 11 candidate | Change |
+| --- | ---: | ---: | ---: |
+| Core accepted operations per receive | 9 | 8 | -11.1% |
+| Application-bearing Aleph deliveries | 36 | 32 | -11.1% |
+| One-VTXO readiness plus claim envelope | 10,820-16,603 bytes | 7,665-8,401 bytes | smaller in every comparable sample |
+| Median canonical envelopes for the whole receive | 32,959 bytes | 33,001 bytes | flat; one candidate carried two VTXOs |
+| Durable quote-to-issued median / observed max | 75s / 82s | 131s / 136s | regressed |
+| Payer-terminal-to-CLI median / observed max | 21s / 21s | 26s / 27s | regressed |
+
+Each candidate issued its exact 1,677-, 1,647-, or 1,617-sat amount. The core
+operations were one receive intent, preparation, mint quote, combined claim
+authorization, preimage transition, claimed transition, claimed-result
+certificate, and mint. The existing attestation requests, three independent
+HTLC verifiers, and four independent result verifiers are unchanged, so
+private certificate traffic neither improves nor regresses. Whole-path bytes
+were flat because the real payer delivered two HTLC VTXOs in one sample; the
+combined format itself stores the artifact bytes only once.
+
+The three-sample timing gate moved in the wrong direction. External Signet
+routing varied substantially and fewer accepted rounds provide no causal
+mechanism for the increase, but the measurements do not establish a latency
+improvement. Consistent with the project-owner decision on Milestone 10, the
+candidate is retained only for the explicit consensus-work reduction and
+smaller authorization representation. Future work must use the slower
+observations as the honest current timing record and must not describe this as
+a latency optimization.
+
+Deterministic regressions reject certificate, amount, expiry, attempt,
+transition, and artifact-package mutations; admission and Bark reconstruction
+also bind the actor, output, signer set, and complete claim. The projection
+test proves direct `ReceivePrepared` to combined claim application, atomic
+reservation, exact replay, and absence of a separately materialized readiness
+transition. Existing conflict keys preserve action-phase, certificate, and
+VTXO reservation exclusivity. The retained Milestone 10 collector-outage and
+member-loss matrix continues to cover pre-publication fallback, while the
+candidate's full common, Bark, SQL, CDK, and Axum suites cover signer retry,
+delayed messages, replay, catch-up, checkpoint restore, and outgoing/federated
+BDK behavior.
+
+The final clean federation completed three return melts as controls. Two
+automatic refreshes temporarily won the VTXO reservation before an outgoing
+attempt; accepted refresh and pending melt replayed after restart and each
+external payment occurred once. This did not add or alter an incoming core
+operation, but the long second occurrence is recorded as Milestone 11A rather
+than hidden in this result. A later live collector-outage payment was excluded
+because the independent payer failed before producing HTLC evidence; it added
+only unpaid intent/preparation state and the payer retained its balance.
+
+After the terminal flows and an all-member restart, all five members held the
+same 68-operation order and application digests with zero failed, rejected, or
+duplicate entries. The excluded payer failure then added only its three unpaid
+setup operations; after restoring the stopped member, all five converged at 71
+applied entries with the same digests and still no failed or rejected entry.
+The exact amounts and one-sat final Cashu change reconciled, and the reusable
+payer retained the returned Signet funds. The final bounded log scan found no
+rate-limit, resource-exhaustion, nonce-reuse, invalid-operation, actor/audit
+mismatch, or panic signal.
+
+Validation passed 459 cdk-common tests with one intentional ignore, all 16
+cdk-bark tests, the focused SQLite atomic-projection regression, all 811 CDK
+tests after filtering three sandbox-only network cases, and 562 Axum tests
+with four intentional ignores and three unrelated outliers. The two
+loopback-bind outliers passed with local-network permission; the stochastic
+Byzantine convergence outlier passed alone. The standalone mintd all-target
+check, affected all-feature check, exact federation release build, formatting,
+and diff checks also passed.
+
+During development, an intermediate digest that omitted the explicit Bark
+minimum expiry existed solely to recover one already-paid test receive. After
+exact issuance and return of those funds, its fallback helper, branch, example,
+and diagnostic logging were deleted. The final source and release binary accept
+only the canonical expiry-bound digest, and no temporary instrumentation
+remains.
+
+## Milestone 11A: prevent routine maintenance from monopolizing fresh receive value
+
+### Goal
+
+Keep an already accepted refresh safe and replayable while preventing routine
+maintenance from making freshly received value unavailable to a wallet melt
+for many minutes. This is a reservation-priority/liveness investigation, not a
+reason to cancel accepted custody work, weaken consensus ownership, or add a
+payment-specific polling loop.
+
+### Checklist
+
+- [ ] Reproduce the post-receive refresh/melt race locally with immutable
+      timestamps for refresh planning, reservation, melt quote creation, and
+      terminal completion.
+- [ ] Determine why the existing payment-priority guard can admit a refresh
+      immediately before a wallet request, and whether a small terminal-payment
+      quiet period or pre-plan work check prevents the race without starving
+      maintenance.
+- [ ] Do not preempt or rewrite an accepted refresh. Reuse its current replay
+      path and preserve reservation exclusivity and exactly-once Ark work.
+- [ ] Measure incoming-to-outgoing availability, maintenance delay, Ark calls,
+      accepted operations, and restart recovery against the retained policy.
+- [ ] Reject any candidate that adds a second scheduler, error-string policy,
+      backend-specific rate-limit handling, or locally authoritative cancel.
+
+### Tests
+
+- [ ] A wallet melt arriving before routine refresh acceptance wins priority;
+      a refresh already accepted remains authoritative and the melt waits
+      safely without a duplicate external payment.
+- [ ] Restart at plan acceptance, during the Ark round, and before terminal
+      materialization converges with the same reservations and one side effect.
+- [ ] Sustained payments cannot starve expiry-critical refresh or emergency
+      exit, and idle maintenance still observes its existing bounded cadence.
+- [ ] Incoming, outgoing, failed-send, standalone, and federated-BDK
+      regressions preserve exact accounting.
+
+### Success criteria
+
+- A fresh wallet request is not delayed behind newly eligible routine
+  maintenance in the healthy case, while an accepted refresh stays immutable.
+- Routine maintenance and payment latency improve without more Ark polling,
+  consensus entries, or scheduler state.
+- Record `Kept` or `Rejected` and commit a retained change independently.
 
 ## Milestone 12: bounded private custody request batching
 
@@ -4092,6 +4238,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-22 | Milestone 10 signed-certificate A/B | local release, five loopback members, SQLite, real Signet, three control and three candidate receives | accepted operations 15 -> 9 and application-bearing deliveries 60 -> 36; median application bytes 173,908 -> 172,948; durable median 41s -> 75s; about 5,245 new inner private-JSON bytes per healthy path | Keep by explicit project-owner decision for the 40% application-message reduction. Latency regressed and total bytes did not materially improve, so neither is claimed as a win. |
 | 2026-07-22 | Milestone 10 collector/member fault matrix | same local federation, primary private endpoint unavailable and one selected observer fully offline | standby published one exact-threshold certificate; one already-paid quote issued exactly 1,000 sats in nine operations; four online members converged and the restored fifth reached the same 53-entry journal/application digest with zero failed entries | Durable member signatures can be relayed to a deterministic standby without transferring authority, repeating Bark work, weakening thresholds, or duplicating issuance. |
 | 2026-07-22 | Milestone 10A discovery | local release, full primary-process outage plus final all-member restart | standby certified HTLC readiness, but one restored run promoted a trusted recovery checkpoint before materializing its suffix; the final restart also left that member awaiting a compatible peer view despite identical 53-entry state until one targeted restart | Fix generic checkpoint promotion/startup reconciliation before Milestone 11; do not add Bark-specific replay state. |
+| 2026-07-22 | Milestone 11 combined authorization | fresh local release federation, SQLite, reusable CLI Signet payer, three incoming and three return melts | incoming core operations 9 -> 8 and application deliveries 36 -> 32; comparable one-VTXO authorization envelopes 10,820-16,603 -> 7,665-8,401 bytes; whole-receive median canonical bytes stayed flat at 32,959 -> 33,001; durable median/max regressed 75/82s -> 131/136s; exact issuance and all-member replay passed | Keep only for the explicit accepted-round reduction and single-copy representation; claim no latency win. The expiry-bound digest is the sole final format, and the development-only recovery compatibility and diagnostics were removed. |
 
 ## Completion checklist
 
@@ -4120,7 +4267,7 @@ Append future evidence here rather than rewriting historical results.
       bounded parallel fan-out and unchanged completion rules.
 - [x] Bark observation quorums use deterministically verified signed
       certificates instead of one consensus entry per observer.
-- [ ] Certified HTLC readiness and claim authorization share one accepted
+- [x] Certified HTLC readiness and claim authorization share one accepted
       boundary only if the separate safety invariants remain explicit.
 - [ ] Multi-item custody signing uses bounded per-signer phase requests when
       measurement shows that batching removes material transport overhead.
