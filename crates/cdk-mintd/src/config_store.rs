@@ -315,4 +315,70 @@ mod tests {
             Err(ConfigStoreError::UnsupportedFormatVersion { .. })
         ));
     }
+
+    #[tokio::test]
+    async fn not_initialized_and_signing_identity_mismatch_are_rejected() {
+        let repository = repository().await;
+        assert!(matches!(
+            repository.active().await,
+            Err(ConfigStoreError::NotInitialized)
+        ));
+        assert!(matches!(
+            repository.replace("next".to_owned(), "signer").await,
+            Err(ConfigStoreError::NotInitialized)
+        ));
+        assert!(matches!(
+            repository.mark_applied("next").await,
+            Err(ConfigStoreError::NotInitialized)
+        ));
+
+        repository
+            .initialize(ConfigEnvelope::new("first".to_owned(), "signer".to_owned()))
+            .await
+            .expect("initialize configuration");
+        assert!(matches!(
+            repository.replace("second".to_owned(), "other-signer").await,
+            Err(ConfigStoreError::SigningIdentityMismatch)
+        ));
+        assert_eq!(
+            repository.active().await.expect("read configuration").toml,
+            "first"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_applied_is_idempotent_for_current_document() {
+        let repository = repository().await;
+        repository
+            .initialize(ConfigEnvelope::new("doc".to_owned(), "signer".to_owned()))
+            .await
+            .expect("initialize configuration");
+
+        assert!(repository
+            .mark_applied("doc")
+            .await
+            .expect("mark applied once"));
+        assert!(
+            repository
+                .active()
+                .await
+                .expect("read configuration")
+                .applied
+        );
+        assert!(repository
+            .mark_applied("doc")
+            .await
+            .expect("mark applied twice"));
+        assert!(
+            repository
+                .active()
+                .await
+                .expect("read configuration")
+                .applied
+        );
+
+        let debug = format!("{repository:?}");
+        assert!(debug.contains("ConfigRepository"));
+        assert!(!debug.contains("store:"));
+    }
 }

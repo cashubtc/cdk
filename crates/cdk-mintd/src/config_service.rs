@@ -684,4 +684,264 @@ url = "file:{}"
         let _ = std::fs::remove_file(signer_path);
         let _ = std::fs::remove_file(postgres_path);
     }
+
+    #[test]
+    fn seed_secret_and_inactive_sections_are_resolved_and_pruned() {
+        let _env_lock = crate::test_utils::env_lock();
+        const SEED_ENV: &str = "CDK_MINTD_TEST_CONFIG_SEED_SECRET";
+        let seed = "a".repeat(32);
+        std::env::set_var(SEED_ENV, &seed);
+
+        let document = format!(
+            r#"
+[info]
+seed = "env:{SEED_ENV}"
+
+[mint_info]
+name = "pruned"
+
+[database]
+engine = "sqlite"
+
+[database.postgres]
+url = "env:SHOULD_BE_PRUNED"
+
+[auth]
+auth_enabled = false
+openid_discovery = "https://example.com/.well-known/openid-configuration"
+openid_client_id = "client"
+
+[auth_database]
+[auth_database.postgres]
+url = "env:SHOULD_BE_PRUNED"
+
+[signatory]
+enabled = false
+address = "127.0.0.1"
+port = 15060
+allow_insecure = true
+"#
+        );
+
+        let resolved = ConfigurationService::validate_document(&document)
+            .expect("validate seed-backed document");
+        assert_eq!(resolved.settings.info.seed.as_deref(), Some(seed.as_str()));
+        assert!(resolved.settings.database.postgres.is_none());
+        assert!(resolved.settings.auth.is_none());
+        assert!(resolved.settings.auth_database.is_none());
+        assert!(resolved.settings.signatory.is_none());
+        assert!(format!("{resolved:?}").contains("redacted"));
+
+        let identity = discover_signing_identity(&resolved.settings).expect("seed identity");
+        assert!(!identity.fingerprint.is_empty());
+
+        std::env::remove_var(SEED_ENV);
+    }
+
+    #[test]
+    fn file_secret_errors_empty_env_name_and_missing_file_are_reported() {
+        let missing = crate::test_utils::unique_temp_path("missing_config_secret");
+        assert!(matches!(
+            ConfigurationService::validate_document(&document("env:", "empty-name")),
+            Err(ConfigurationServiceError::EmptySecret {
+                field: "info.mnemonic"
+            })
+        ));
+        assert!(matches!(
+            ConfigurationService::validate_document(&document(
+                &format!("file:{}", missing.display()),
+                "missing-file"
+            )),
+            Err(ConfigurationServiceError::FileSecret {
+                field: "info.mnemonic",
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn authored_mint_pubkey_must_match_signer() {
+        let secret_one = crate::test_utils::unique_temp_path("pubkey_config_secret_one");
+        let secret_two = crate::test_utils::unique_temp_path("pubkey_config_secret_two");
+        std::fs::write(&secret_one, TEST_MNEMONIC_ONE).expect("write signing secret");
+        std::fs::write(&secret_two, TEST_MNEMONIC_TWO).expect("write other signing secret");
+
+        let identity = discover_signing_identity(
+            &ConfigurationService::validate_document(&document(
+                &format!("file:{}", secret_one.display()),
+                "identity",
+            ))
+            .expect("resolve identity document")
+            .settings,
+        )
+        .expect("discover identity");
+        let other = discover_signing_identity(
+            &ConfigurationService::validate_document(&document(
+                &format!("file:{}", secret_two.display()),
+                "other",
+            ))
+            .expect("resolve other document")
+            .settings,
+        )
+        .expect("discover other");
+
+        let mismatch = format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[mint_info]
+name = "mismatch"
+pubkey = "{}"
+
+[database]
+engine = "sqlite"
+"#,
+            secret_one.display(),
+            other.pubkey
+        );
+        assert!(matches!(
+            ConfigurationService::validate_import(&mismatch).await,
+            Err(ConfigurationServiceError::SigningIdentityChange)
+        ));
+
+        let matching = format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[mint_info]
+name = "match"
+pubkey = "{}"
+
+[database]
+engine = "sqlite"
+"#,
+            secret_one.display(),
+            identity.pubkey
+        );
+        ConfigurationService::validate_import(&matching)
+            .await
+            .expect("matching pubkey");
+        let _ = std::fs::remove_file(secret_one);
+        let _ = std::fs::remove_file(secret_two);
+    }
+
+    #[test]
+    fn remote_signatory_requires_async_discovery() {
+        let settings = Settings {
+            signatory: Some(crate::config::Signatory {
+                enabled: true,
+                address: "127.0.0.1".to_owned(),
+                port: 15060,
+                tls_dir: None,
+                allow_insecure: true,
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            discover_signing_identity(&settings),
+            Err(ConfigurationServiceError::SigningIdentity(message))
+                if message.contains("asynchronous")
+        ));
+    }
+
+    #[test]
+    fn same_primary_database_compares_engine_and_postgres_fields() {
+        let sqlite = Database::default();
+        let other_sqlite = Database {
+            engine: DatabaseEngine::Sqlite,
+            postgres: Some(crate::config::PostgresConfig {
+                url: "postgresql://ignored".to_owned(),
+                ..Default::default()
+            }),
+        };
+        assert!(same_primary_database(&sqlite, &other_sqlite));
+
+        let left = Database {
+            engine: DatabaseEngine::Postgres,
+            postgres: Some(crate::config::PostgresConfig {
+                url: "postgresql://a".to_owned(),
+                tls_mode: Some("disable".to_owned()),
+                max_connections: Some(5),
+                connection_timeout_seconds: Some(3),
+            }),
+        };
+        let right = Database {
+            engine: DatabaseEngine::Postgres,
+            postgres: Some(crate::config::PostgresConfig {
+                url: "postgresql://a".to_owned(),
+                tls_mode: Some("disable".to_owned()),
+                max_connections: Some(5),
+                connection_timeout_seconds: Some(3),
+            }),
+        };
+        assert!(same_primary_database(&left, &right));
+        let mut different = right.clone();
+        different
+            .postgres
+            .as_mut()
+            .expect("postgres")
+            .url = "postgresql://b".to_owned();
+        assert!(!same_primary_database(&left, &different));
+        assert!(!same_primary_database(
+            &left,
+            &Database {
+                engine: DatabaseEngine::Postgres,
+                postgres: None,
+            }
+        ));
+        assert!(!same_primary_database(&sqlite, &left));
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn initialize_rejects_existing_mint_pubkey_mismatch_and_mark_applied_tracks_document() {
+        let secret_path = crate::test_utils::unique_temp_path("init_pubkey_config_secret");
+        std::fs::write(&secret_path, TEST_MNEMONIC_ONE).expect("write signing secret");
+        let service = service().await;
+        let first = document(&format!("file:{}", secret_path.display()), "first");
+        let identity = discover_signing_identity(
+            &ConfigurationService::validate_document(&first)
+                .expect("resolve")
+                .settings,
+        )
+        .expect("identity");
+
+        std::fs::write(&secret_path, TEST_MNEMONIC_TWO).expect("swap mnemonic");
+        let other = discover_signing_identity(
+            &ConfigurationService::validate_document(&document(
+                &format!("file:{}", secret_path.display()),
+                "other",
+            ))
+            .expect("resolve other")
+            .settings,
+        )
+        .expect("other identity");
+        std::fs::write(&secret_path, TEST_MNEMONIC_ONE).expect("restore mnemonic");
+
+        assert!(matches!(
+            service.initialize(&first, Some(other.pubkey)).await,
+            Err(ConfigurationServiceError::SigningIdentityChange)
+        ));
+
+        service
+            .initialize(&first, Some(identity.pubkey))
+            .await
+            .expect("initialize with matching mint pubkey");
+        assert!(service.mark_applied(&first).await.expect("mark applied"));
+        assert!(service.startup().await.expect("startup").applied);
+
+        let second = document(&format!("file:{}", secret_path.display()), "second");
+        service
+            .apply(&second, false)
+            .await
+            .expect("replace document");
+        assert!(!service
+            .mark_applied(&first)
+            .await
+            .expect("stale document remains unapplied"));
+
+        let _ = std::fs::remove_file(secret_path);
+    }
 }
