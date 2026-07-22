@@ -28,11 +28,12 @@ Run every test federation, repeated performance sample, fault injection, and
 adverse-ordering workload on the local computer, not on the Nocean server. Use
 a local five-member release federation because it is faster, easier to reset,
 and produces cleaner comparisons. A local federation may still use the real
-Signet Ark server and the reusable Wavelength Signet CLI wallet when a
-milestone needs end-to-end Bark evidence. Use the browser-based 2nd.dev faucet
-and store only if the CLI-wallet path fails. Nocean is limited to read-only
-field evidence and a narrowly scoped final deployment smoke check after all
-local gates pass; it is not the test or benchmark host.
+Signet Ark server and the reusable Wavelength Signet CLI wallet through the
+installed **`$signet-cli-wallet`** skill when a milestone needs end-to-end Bark
+evidence. This is the first-choice payment driver. Use the browser-based
+2nd.dev faucet and store only if the skill-guided CLI-wallet path fails. Nocean
+is limited to read-only field evidence and a narrowly scoped final deployment
+smoke check after all local gates pass; it is not the test or benchmark host.
 
 Use the repository runner for the repeatable five-member topology:
 
@@ -67,12 +68,13 @@ document or a commit.
 
 #### Option 1: reusable Wavelength CLI wallet (preferred)
 
-For every real Signet payment sample, first load and follow the installed Codex
-skill named **`signet-cli-wallet`**. It owns the reusable Wavelength `waved` and
-`wavecli` configuration, daemon lifecycle, fixed Signet/datadir wrapper,
-funding, send/receive commands, status inspection, and secret-handling rules.
-Do not reconstruct its daemon flags, call bare `wavecli`, create a disposable
-wallet, or copy its private configuration into this repository.
+For every real Signet payment sample, first invoke, load, and follow the
+installed Codex skill **`$signet-cli-wallet`**. It owns the reusable Wavelength
+`waved` and `wavecli` configuration, daemon lifecycle, fixed Signet/datadir
+wrapper, funding, send/receive commands, status inspection, and
+secret-handling rules. Do not reconstruct its daemon flags, call bare
+`wavecli`, create a disposable wallet, or copy its private configuration into
+this repository.
 
 Before a sample:
 
