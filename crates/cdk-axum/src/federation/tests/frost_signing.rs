@@ -108,7 +108,8 @@ async fn run_live_signing_case(
     private_configs: Vec<MemberConfigPrivate>,
     threshold: u16,
     failure: SigningFailure,
-) {
+    phase_delays: &[Duration],
+) -> Duration {
     let registration = application_registration().expect("application registration");
     let derivation = SigningDerivation::application_key();
     let message = [91; 32];
@@ -209,6 +210,19 @@ async fn run_live_signing_case(
             );
         }
     }
+    if !phase_delays.is_empty() {
+        assert_eq!(phase_delays.len(), context.signer_set().len());
+        for (signer, phase_delay) in context.signer_set().iter().zip(phase_delays) {
+            let receiver = MemberId::new(signer.get()).expect("configured signer");
+            for path in [
+                "frost/signing/commitments",
+                "frost/signing/packages",
+                "frost/signing/results",
+            ] {
+                transport.delay_next_posts_before_delivery(path, receiver, [*phase_delay]);
+            }
+        }
+    }
     let client = FederationRestPeerClient::new(
         transport.clone(),
         &public_config,
@@ -219,6 +233,7 @@ async fn run_live_signing_case(
         &client,
         public.clone(),
     );
+    let started = tokio::time::Instant::now();
     if matches!(failure, SigningFailure::Commitment | SigningFailure::Share) {
         let path = match failure {
             SigningFailure::Commitment => "frost/signing/commitments",
@@ -267,6 +282,7 @@ async fn run_live_signing_case(
             .await
             .expect("threshold signature over live private REST routes");
     }
+    started.elapsed()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,14 +296,44 @@ enum SigningFailure {
 #[tokio::test]
 async fn live_private_rest_frost_signing_succeeds_two_of_three() {
     let (public, first, second, third) = transport_config_three();
-    run_live_signing_case(public, vec![first, second, third], 2, SigningFailure::None).await;
+    run_live_signing_case(
+        public,
+        vec![first, second, third],
+        2,
+        SigningFailure::None,
+        &[],
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn live_private_rest_frost_signing_succeeds_three_of_five() {
     let (public, private) =
         transport_config_five_with_threshold(ThresholdParams::new(5, 3, 3).expect("threshold"));
-    run_live_signing_case(public, private, 3, SigningFailure::None).await;
+    run_live_signing_case(public, private, 3, SigningFailure::None, &[]).await;
+}
+
+#[tokio::test]
+async fn live_private_rest_frost_phases_wait_for_slowest_peer_not_sum() {
+    let (public, private) =
+        transport_config_five_with_threshold(ThresholdParams::new(5, 3, 3).expect("threshold"));
+    let elapsed = run_live_signing_case(
+        public,
+        private,
+        3,
+        SigningFailure::None,
+        &[
+            Duration::from_millis(40),
+            Duration::from_millis(70),
+            Duration::from_millis(100),
+        ],
+    )
+    .await;
+
+    assert!(
+        elapsed < Duration::from_millis(600),
+        "three differently delayed private RPC phases should wait for the 100 ms slowest signer in each phase: {elapsed:?}"
+    );
 }
 
 #[tokio::test]
@@ -298,6 +344,7 @@ async fn lost_post_signer_response_burns_nonce_and_retry_attempt_succeeds() {
         vec![first, second, third],
         2,
         SigningFailure::Commitment,
+        &[],
     )
     .await;
 }
@@ -305,7 +352,14 @@ async fn lost_post_signer_response_burns_nonce_and_retry_attempt_succeeds() {
 #[tokio::test]
 async fn lost_share_response_burns_attempt_and_fresh_attempt_succeeds() {
     let (public, first, second, third) = transport_config_three();
-    run_live_signing_case(public, vec![first, second, third], 2, SigningFailure::Share).await;
+    run_live_signing_case(
+        public,
+        vec![first, second, third],
+        2,
+        SigningFailure::Share,
+        &[],
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -316,6 +370,7 @@ async fn another_member_aggregates_cached_shares_after_coordinator_loss() {
         vec![first, second, third],
         2,
         SigningFailure::AggregateResult,
+        &[],
     )
     .await;
 }

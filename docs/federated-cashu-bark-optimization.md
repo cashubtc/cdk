@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, and 8 complete; Milestones 2, 7, and 7A rejected; Milestones 9-17, including 15A, not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, and 9 complete; Milestones 2, 7, and 7A rejected; Milestones 10-17, including 15A, not started
 
 First recorded: 2026-07-20
 
@@ -963,7 +963,7 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 7 | Tune consensus timing only if post-reduction evidence still shows a material delay | Rejected | `docs: record Bark payment consensus timing evaluation` |
 | 7A | Re-evaluate compounded active consensus cadence across serial payment boundaries | Rejected | `perf: complete federated Bark BOLT11 optimization` |
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Complete | `perf: complete federated Bark BOLT11 optimization` |
-| 9 | Parallelize independent private signing and receive-secret RPCs within existing phase barriers | Not started | — |
+| 9 | Parallelize independent private signing and receive-secret RPCs within existing phase barriers | Complete | `perf: parallelize federated Bark private RPC phases` |
 | 10 | Replace per-observer consensus entries with signed quorum certificates | Not started | — |
 | 11 | Combine certified HTLC readiness and claim authorization if one accepted operation preserves both boundaries | Not started | — |
 | 12 | Batch simultaneous private custody-signing items per signer and phase | Not started | — |
@@ -2992,9 +2992,9 @@ Do not change any consensus operation, threshold, signer roster, required
 acknowledgement, protocol phase barrier, or external side effect. This is a
 contained transport scheduling change, not a new signing protocol.
 
-### Current evidence
+### Baseline evidence
 
-- Ordinary FROST coordination currently awaits the selected signers one at a
+- Ordinary FROST coordination awaited the selected signers one at a
   time while collecting nonce commitments, then signature shares, then
   aggregate-result acknowledgements. With three signers, the three phases can
   contain up to nine serially awaited private HTTP calls even though calls to
@@ -3002,48 +3002,48 @@ contained transport scheduling change, not a new signing protocol.
 - Bark virtual-transaction signing already uses bounded unordered concurrency,
   providing an in-tree model for concurrent peer fan-out without removing
   protocol phases.
-- Receive-secret replication currently awaits each remote member in sequence.
+- Receive-secret replication awaited each remote member in sequence.
   The copies are independent, but the existing required recipient and
   acknowledgement policy must remain unchanged.
 
 ### Checklist
 
-- [ ] Add temporary per-phase timing and private-RPC counters, measure at least
+- [x] Add temporary per-phase timing and private-RPC counters, measure at least
       three incoming and three outgoing local-federation baselines, and remove
       the instrumentation before the milestone ends.
-- [ ] Record the exact existing completion and failure rule for commitments,
+- [x] Record the exact existing completion and failure rule for commitments,
       shares, result acknowledgements, and receive-secret copies before
       changing their scheduling.
-- [ ] Run calls to different members concurrently within each FROST phase while
+- [x] Run calls to different members concurrently within each FROST phase while
       retaining strict barriers between commitment collection, signing-package
       delivery/share collection, aggregation, and result notification.
-- [ ] Replicate receive secrets concurrently to the same required recipients
+- [x] Replicate receive secrets concurrently to the same required recipients
       and wait for the same required acknowledgements as the baseline.
-- [ ] Bound concurrency by the accepted signer/member set; add no unbounded
+- [x] Bound concurrency by the accepted signer/member set; add no unbounded
       queue, retry loop, rate-limit parser, or new scheduling subsystem.
-- [ ] Preserve stable session, action, signer, attempt, and request identities,
+- [x] Preserve stable session, action, signer, attempt, and request identities,
       deterministic error handling, idempotency, timeout behavior, and nonce
       abort/quarantine behavior under cancellation and partial failure.
-- [ ] Reuse one small contained fan-out helper if both call sites have the same
+- [x] Reuse one small contained fan-out helper if both call sites have the same
       semantics; otherwise keep the two direct implementations rather than
       inventing a generic RPC framework.
-- [ ] Recount private requests, accepted operations, protocol messages, bytes,
+- [x] Recount private requests, accepted operations, protocol messages, bytes,
       and phase/wallet latency. The request and consensus counts must not rise.
 
 ### Tests
 
-- [ ] Inject different delays into all three selected signers and show each
+- [x] Inject different delays into all three selected signers and show each
       phase completes near the slowest required response rather than the sum of
       the response times.
-- [ ] One unavailable or failing signer preserves the existing bounded retry,
+- [x] One unavailable or failing signer preserves the existing bounded retry,
       roster-advance, and nonce-lifecycle behavior.
-- [ ] Actor cancellation, participant restart, delayed old response, duplicate
+- [x] Actor cancellation, participant restart, delayed old response, duplicate
       response, replay, catch-up, and all-member restart cannot cross a phase
       early, reuse a nonce, or execute a side effect twice.
-- [ ] Concurrent receive-secret replication survives one delayed or failed
+- [x] Concurrent receive-secret replication survives one delayed or failed
       recipient according to the unchanged acknowledgement rule and never
       exposes a claim before the required copies are durable.
-- [ ] Healthy incoming, outgoing, failed-send revocation, refresh, and
+- [x] Healthy incoming, outgoing, failed-send revocation, refresh, and
       standalone/federated-BDK regressions preserve results and accounting.
 
 ### Success criteria
@@ -3056,6 +3056,95 @@ contained transport scheduling change, not a new signing protocol.
   appears.
 - The milestone records `Kept` or `Rejected` and, if kept, is committed as
   `perf: parallelize federated Bark private RPC phases`.
+
+### Result (2026-07-22)
+
+Decision: **Kept.** The change is limited to the two private coordinators.
+Each coordinator launches the already-required member calls together with
+`join_all`; no scheduler, queue, retry policy, configuration knob, or generic
+RPC abstraction was added. FROST still has strict commitment, share,
+aggregation, and result-notification barriers. Receive-secret replication
+still waits for all attempted recipients before it sorts and verifies the
+acknowledgements and enforces the unchanged signature threshold including the
+invoice actor.
+
+The pre-change failure rules were preserved explicitly. Commitments and shares
+require every selected signer; after all bounded calls return, the first error
+in accepted signer order fails the phase and burns the exact selected attempt
+as ambiguous. Aggregate-result notification still requires every selected
+acknowledgement and returns the first signer-order error. Receive-secret
+delivery remains best effort per eligible recipient, followed by unique,
+cryptographically valid acknowledgements at the unchanged threshold with the
+actor present. Stable sessions, attempts, requests, signer sets, and payloads
+are unchanged.
+
+Temporary probes measured three successful incoming and three successful
+outgoing Signet payments before and after the scheduling change on the same
+persisted local five-member release federation. The preferred Wavelength CLI
+wallet paid incoming invoices. Its first outgoing invoice produced three
+matching failed observations and the existing revocation completed safely, so
+the bounded workflow fell back to fresh 2nd.dev store invoices; all six
+measured store orders were paid exactly once with the expected 25-sat fee.
+
+| Private stage | Sequential p95 | Concurrent p95 | Change |
+| --- | ---: | ---: | ---: |
+| Receive-secret replication, 3 samples | 72.593ms | 32.504ms | -55.2% |
+| FROST commitments, 6 samples | 72.047ms | 59.788ms | -17.0% |
+| FROST shares, 6 samples | 54.085ms | 59.196ms | +9.4% |
+| FROST result acknowledgements, 6 samples | 9.811ms | 7.456ms | -24.0% |
+| All measured private stages | 72.047ms | 59.196ms | -17.8% |
+
+The noisy share-stage p95 was one slower maximum in a six-sample set; its mean
+still improved from 47.862ms to 45.602ms. Combined FROST-phase mean improved
+15.3%, while combined FROST p95 improved 7.8%. This is not presented as a
+material whole-payment speedup: the approximately 20-25-second successful
+outgoing duration remained dominated by Ark and consensus work. The retained
+benefit is the directly measured 17.8% private-stage p95 reduction, especially
+the 55.2% receive-secret reduction, without a new mechanism.
+
+Request and consensus work did not increase on the healthy path. Every receive
+still attempted four secret copies; every FROST operation still attempted
+three commitments, three shares, and three result acknowledgements with
+byte-identical payload schemas. Each healthy incoming payment still accepted
+15 operations and each healthy outgoing payment still accepted 10. The
+candidate changed no consensus item or private message body, so accepted and
+wire bytes per operation are unchanged.
+
+A deterministic in-memory 3-of-5 regression injected 40ms, 70ms, and 100ms
+delays into every selected signer in every FROST phase and proved that each
+phase waits near its slowest peer rather than summing all three delays. The
+existing lost-commitment, lost-share, aggregate-result failover, signer-roster
+rotation, stale-attempt, catch-up, timeout, and backpressure tests passed.
+Existing protected-secret persistence, acknowledgement, conflict, recovery,
+and threshold checks cover the unchanged post-fan-out receive-secret rule.
+The real failed outgoing route exercised safe revocation, and an all-member
+restart after the six candidate payments restored all five members to the same
+186-operation order and application digests. A bounded log scan found no rate
+limit, resource exhaustion, nonce-reuse, invalid-operation, actor-mismatch,
+audit, or panic signal. All temporary probes were removed before final
+validation.
+
+Final validation used a fresh release build with no probe marker in the
+binary. The complete federation-enabled `cdk-axum` library suite passed with
+555 tests and two intentional ignores. One unrelated deep AlephBFT stress test
+overflows the platform's default test-thread stack, so the complete run used
+an 8 MiB `RUST_MIN_STACK`; that same test passes individually with the same
+setting. The 11 focused FROST tests, standalone all-target check, protected
+receive-secret regression, changed-file format check, and normal Clippy pass
+also passed. Strict `-D warnings` Clippy remains blocked by pre-existing
+warnings in unrelated federation files and the configured Bark fork; the
+candidate emits no warning in a modified file.
+
+The clean binary then completed a fresh local 3-of-5 Signet smoke without the
+measurement probes. The preferred Wavelength CLI wallet paid a 2,000-sat
+incoming invoice; the quote reached `PAID`, then `ISSUED`, and the CLI minted
+exactly 2,000 sats. The federation next paid one fresh 1,000-sat fallback store
+invoice in 23 seconds with the expected 25-sat fee, the store independently
+reported `PAID`, and the CLI retained exactly 975 sats. All five members
+converged on the same 26 accepted operations and identical order/application
+digests before and after an all-member restart. The final bounded log scan
+again found no rate-limit, resource-exhaustion, nonce-reuse,
+invalid-operation, actor-mismatch, audit-mismatch, or panic signal.
 
 ## Milestone 10: signed observation quorum certificates
 

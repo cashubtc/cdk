@@ -10,6 +10,7 @@ use cdk::federation::{
     FederationBarkReceiveSecretAcknowledgement, FederationBarkReceiveSecretBinding,
     FederationConfig, FederationRestMessageKind, FederationSignedRequest, MemberConfigPublic,
 };
+use futures::future::join_all;
 use tracing::instrument;
 
 use crate::MintState;
@@ -53,20 +54,20 @@ where
             previous = Some(member.member_id);
         }
         let mut acknowledgements = initial;
-        for member in eligible {
+        let results = join_all(eligible.iter().map(|member| {
             let request = FederationBarkPrepareReceiveSecretRequest::new(
                 binding.clone(),
                 member.member_id,
                 *secret.as_bytes(),
             );
-            if let Ok(acknowledgement) = self
-                .client
-                .prepare_bark_receive_secret(member, &request)
-                .await
-            {
-                acknowledgements.push(acknowledgement);
+            async move {
+                self.client
+                    .prepare_bark_receive_secret(member, &request)
+                    .await
             }
-        }
+        }))
+        .await;
+        acknowledgements.extend(results.into_iter().flatten());
         acknowledgements.sort_by_key(|acknowledgement| acknowledgement.member);
         if acknowledgements
             .windows(2)

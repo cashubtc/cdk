@@ -35,6 +35,7 @@ use cdk_frost::{
     VirtualMusigTranscript,
 };
 use cdk_frost_bip32::{FrostBip32, WalletBranch, WalletIndex};
+use futures::future::join_all;
 use sha2::{Digest, Sha256};
 use tracing::instrument;
 
@@ -138,64 +139,81 @@ where
         }
         let commitment_request =
             FederationFrostCommitmentRequest::new(context, derivation, authorization);
-        let mut commitments = Vec::with_capacity(context.signer_set().len());
-        for signer in context.signer_set() {
-            let member_id = cdk::federation::MemberId::new(signer.get())?;
-            let member = public_config
-                .member(member_id)
-                .ok_or(cdk::federation::FederationError::UnknownMember { member_id })?;
-            match self
-                .client
+        let signer_members = context
+            .signer_set()
+            .iter()
+            .map(|signer| {
+                let member_id = cdk::federation::MemberId::new(signer.get())?;
+                let member = public_config
+                    .member(member_id)
+                    .ok_or(cdk::federation::FederationError::UnknownMember { member_id })?;
+                Ok((*signer, member))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let commitment_results = join_all(signer_members.iter().map(|(_, member)| {
+            self.client
                 .request_frost_commitment(member, &commitment_request)
-                .await
-            {
+        }))
+        .await;
+        let mut commitments = Vec::with_capacity(signer_members.len());
+        let mut commitment_error = None;
+        for result in commitment_results {
+            match result {
                 Ok(commitment) => commitments.push(commitment),
-                Err(error) => {
-                    self.abort_selected(
-                        public_config,
-                        context,
-                        authorization,
-                        cdk_frost::NonceBurnReason::AmbiguousResponse,
-                    )
-                    .await;
-                    return Err(error);
-                }
+                Err(error) if commitment_error.is_none() => commitment_error = Some(error),
+                Err(_) => {}
             }
         }
-        let commitments = cdk_frost::NonceCommitmentSet::new(commitments)?;
-        let mut shares = Vec::with_capacity(context.signer_set().len());
-        for signer in context.signer_set() {
-            let member_id = cdk::federation::MemberId::new(signer.get())?;
-            let member = public_config
-                .member(member_id)
-                .ok_or(cdk::federation::FederationError::UnknownMember { member_id })?;
-            let commitment = commitments
-                .commitments()
-                .get(signer)
-                .ok_or_else(|| anyhow::anyhow!("selected signer commitment is missing"))?;
-            let package = FederationFrostSigningPackageRequest::new(
+        if let Some(error) = commitment_error {
+            self.abort_selected(
+                public_config,
                 context,
-                commitment.nonce_id(),
                 authorization,
-                &commitments,
-            )?;
-            match self
-                .client
-                .request_frost_signature_share(member, &package)
-                .await
-            {
+                cdk_frost::NonceBurnReason::AmbiguousResponse,
+            )
+            .await;
+            return Err(error);
+        }
+        let commitments = cdk_frost::NonceCommitmentSet::new(commitments)?;
+        let signing_packages = signer_members
+            .iter()
+            .map(|(signer, member)| {
+                let commitment = commitments
+                    .commitments()
+                    .get(signer)
+                    .ok_or_else(|| anyhow::anyhow!("selected signer commitment is missing"))?;
+                let package = FederationFrostSigningPackageRequest::new(
+                    context,
+                    commitment.nonce_id(),
+                    authorization,
+                    &commitments,
+                )?;
+                Ok((*member, package))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let share_results =
+            join_all(signing_packages.iter().map(|(member, package)| {
+                self.client.request_frost_signature_share(member, package)
+            }))
+            .await;
+        let mut shares = Vec::with_capacity(signing_packages.len());
+        let mut share_error = None;
+        for result in share_results {
+            match result {
                 Ok(share) => shares.push(share),
-                Err(error) => {
-                    self.abort_selected(
-                        public_config,
-                        context,
-                        authorization,
-                        cdk_frost::NonceBurnReason::AmbiguousResponse,
-                    )
-                    .await;
-                    return Err(error);
-                }
+                Err(error) if share_error.is_none() => share_error = Some(error),
+                Err(_) => {}
             }
+        }
+        if let Some(error) = share_error {
+            self.abort_selected(
+                public_config,
+                context,
+                authorization,
+                cdk_frost::NonceBurnReason::AmbiguousResponse,
+            )
+            .await;
+            return Err(error);
         }
         let signature = ParticipantKeyManager::aggregate_for_derivation(
             &self.public,
@@ -216,14 +234,14 @@ where
             package_hash,
             signature,
         );
-        for signer in context.signer_set() {
-            let member_id = cdk::federation::MemberId::new(signer.get())?;
-            let member = public_config
-                .member(member_id)
-                .ok_or(cdk::federation::FederationError::UnknownMember { member_id })?;
+        let result_notifications = join_all(signer_members.iter().map(|(_, member)| {
             self.client
                 .notify_frost_aggregate_result(member, &notification)
-                .await?;
+        }))
+        .await;
+        let result_error = result_notifications.into_iter().find_map(Result::err);
+        if let Some(error) = result_error {
+            return Err(error);
         }
         Ok(CoordinatedFrostSignature {
             signature,
