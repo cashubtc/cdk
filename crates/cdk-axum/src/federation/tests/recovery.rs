@@ -1655,6 +1655,29 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
         .commit()
         .await
         .expect("commit target checkpoint proof");
+    target.mark_federation_awaiting_quorum(0).await;
+    let restart_client = FederationRestPeerClient::new(
+        MockFederationTransport::default(),
+        &public_config,
+        target_private.clone(),
+    )
+    .expect("restart checkpoint client");
+    assert_eq!(
+        sync_loop::run_federation_peer_sync_round(&target, &restart_client, &[])
+            .await,
+        0
+    );
+    assert!(target_db
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+        .expect("ahead checkpoint remains untrusted")
+        .is_none());
+    let ahead_frontier = target_db
+        .get_federation_checkpoint_frontier()
+        .await
+        .expect("frontier before checkpoint suffix");
+    assert_eq!(ahead_frontier.journal_next_index, 0);
+    assert_eq!(ahead_frontier.application_next_index, 0);
 
     let source_entries = source_db
         .get_federation_journal_entries()
@@ -1750,26 +1773,34 @@ async fn checkpoint_catch_up_applies_bounded_history_and_promotes_target() {
             .expect("restart exact staged checkpoint frontier");
     target.federation.consensus = restarted_consensus;
     target.federation.sequences = restarted_sequences;
-    let empty_request = FederationJournalCatchUpRequest::new(checkpoint.journal_next_index)
-        .with_target_checkpoint(checkpoint_id)
-        .with_aleph_bft_next_item_index(checkpoint.finalized_next_item_index);
-    let empty_response = FederationJournalCatchUpResponse::from_journal(
-        public_config.federation_id,
-        &InMemoryFederationJournal::from_base(
-            checkpoint.journal_next_index,
-            checkpoint.journal_order_digest,
-        ),
-        checkpoint.materialized_state_digest,
-        &empty_request,
-        100,
-        100,
-    );
-    let applied = target
-        .apply_federation_checkpoint_catch_up_response(&empty_response, &quorum)
+    target.mark_federation_awaiting_quorum(checkpoint.journal_next_index)
+        .await;
+    let resumed_target = sync_loop::next_local_checkpoint_catch_up_target(&target)
         .await
-        .expect("promote exact staged checkpoint after restart");
+        .expect("resume staged checkpoint target")
+        .expect("staged checkpoint remains a target until promotion");
+    assert_eq!(
+        resumed_target
+            .checkpoint
+            .id()
+            .expect("resumed checkpoint id"),
+        checkpoint_id
+    );
+    assert_eq!(
+        sync_loop::run_federation_peer_sync_round(&target, &restart_client, &[])
+            .await,
+        0
+    );
+    assert!(target_db
+        .get_trusted_federation_checkpoint_quorum()
+        .await
+        .expect("trusted checkpoint after resumed sync round")
+        .is_some());
+    assert!(sync_loop::next_local_checkpoint_catch_up_target(&target)
+        .await
+        .expect("inspect promoted checkpoint target")
+        .is_none());
 
-    assert!(applied.is_empty());
     let trusted = target_db
         .get_trusted_federation_checkpoint_quorum()
         .await
@@ -2989,4 +3020,3 @@ async fn checkpoint_page_streaming_keeps_only_one_bounded_page_in_flight() {
         "checkpoint_catch_up_streaming pages={page_count} operations={operation_count} largest_page_bytes={largest_page_bytes} transferred_bytes={transferred_bytes}"
     );
 }
-

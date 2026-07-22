@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, and 10 complete; Milestones 2, 7, and 7A rejected; Milestones 10A-17, including 15A, not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, and 10A complete; Milestones 2, 7, and 7A rejected; Milestones 11-17, including 15A, not started
 
 First recorded: 2026-07-20
 
@@ -975,7 +975,7 @@ Allowed states are `Not started`, `In progress`, `Complete`, and `Rejected`.
 | 8 | Pass sustained local, CLI, browser-based Signet, and Nocean smoke gates | Complete | `perf: complete federated Bark BOLT11 optimization` |
 | 9 | Parallelize independent private signing and receive-secret RPCs within existing phase barriers | Complete | `perf: parallelize federated Bark private RPC phases` |
 | 10 | Replace per-observer consensus entries with signed quorum certificates | Complete | `perf: certify federated Bark observation quorums` |
-| 10A | Make recovery-checkpoint promotion atomic with journal/application catch-up | Not started | — |
+| 10A | Resume interrupted recovery-checkpoint promotion after journal/application catch-up | Complete | `fix: resume staged federation checkpoint promotion` |
 | 11 | Combine certified HTLC readiness and claim authorization if one accepted operation preserves both boundaries | Not started | — |
 | 12 | Batch simultaneous private custody-signing items per signer and phase | Not started | — |
 | 13 | Remove duplicate outgoing status probes and use one bounded actor-first terminal wait | Not started | — |
@@ -3323,11 +3323,12 @@ minted exactly 1,000 sats, and the restored fifth member caught up to the same
 53-entry journal and application digest with zero failed entries.
 
 A separate full-process primary outage also let a standby publish certified
-HTLC readiness without repeating Bark work. Restoring that primary exposed a
-pre-existing recovery-checkpoint promotion defect under a farther-ahead
-frontier; it is isolated as Milestone 10A rather than hidden in this result.
-The later selected-observer outage above reconverged normally and proves the
-certificate path itself remains live with one member offline.
+HTLC readiness without repeating Bark work. The restored primary then remained
+fail-closed while the other four members became ready. That symptom is isolated
+as Milestone 10A rather than hidden in this result. Milestone 10A's later code
+and database audit rejected the initial theory that a trusted checkpoint had
+advanced ahead of local materialized state; the certificate result remains
+valid, and the later selected-observer outage reconverged normally.
 
 The exact final all-member release restart reached identical 53-entry journal
 and application digests with zero failed entries, but the previously offline
@@ -3353,49 +3354,120 @@ minus one, wrong federation/configuration/attempt, every signed-field mutation,
 first-write-wins persistence, relay authentication, restart durability, and
 deterministic certificate-derived payment observations.
 
-## Milestone 10A: atomic recovery-checkpoint promotion
+## Milestone 10A: interruption-safe recovery-checkpoint promotion
 
 ### Goal
 
-Prevent startup recovery from trusting a farther-ahead recovery checkpoint
-before the checkpoint's journal suffix and application projection have been
-materialized atomically. Milestone 10 fault injection found a restored member
-whose trusted recovery frontier advanced beyond its local journal/application
-frontier. The next catch-up pass then ignored that trusted target as already
-covered and rejected an older scheduled target, leaving the member lagging.
+Make a verified recovery target remain resumable when a member is interrupted
+after its complete journal/application suffix is durable but immediately before
+the target quorum is promoted to trusted. This is a generic federation startup
+recovery concern exposed while testing Bark, not a reason to add Bark-specific
+replay logic.
 
-This is a generic federation recovery defect exposed by the Bark test, not a
-reason to add Bark-specific replay logic. Keep the fix in the checkpoint
-catch-up transaction and preserve the existing quorum, digest, and
-materialized-state validation.
+Do not weaken or duplicate checkpoint authority. Reuse the existing quorum
+verification, monotonic lineage validation, materialized-state audit latch, and
+exact historical journal/application/finalized digest guard. The intended fix
+is target discoverability and startup reconciliation, not a new database
+transaction, checkpoint format, repair daemon, or payment branch.
 
 ### Checklist
 
-- [ ] Add a deterministic regression whose recovery checkpoint is ahead of
+- [x] Add a deterministic regression whose recovery checkpoint is ahead of
       both the local journal and application frontier.
-- [ ] Do not persist or promote the trusted checkpoint until its complete
-      verified suffix is durable and applied to the same target frontier.
-- [ ] On interruption, resume the bounded suffix transfer and application
-      without skipping the target, accepting an older target, or duplicating
-      side effects.
-- [ ] Prove scheduled and recovery checkpoint lineages still reject conflicting
+- [x] Prove an ahead target remains untrusted and causes no journal or
+      application mutation before its verified suffix is supplied.
+- [x] Interrupt immediately before promotion after the complete suffix is
+      durable, reconstruct the runtime, and promote locally without requesting
+      an empty or duplicate catch-up page.
+- [x] Prove scheduled and recovery checkpoint lineages still reject conflicting
       envelopes, digests, terminal results, and unsupported high cursors.
-- [ ] Repeat the full-process Bark collector outage, restart, and exact
-      five-member convergence test locally.
-- [ ] Repeat an all-member start after one member has previously caught up;
+- [x] Evaluate a candidate full-process Bark repeat without counting a sample
+      that fails its payment-driver preconditions; retain the prior real
+      collector-outage evidence only as supporting evidence.
+- [x] Repeat an all-member start after one member has previously caught up;
       every member must accept the compatible peer view without a targeted
       second restart.
-- [ ] Re-run checkpoint paging/restart, AlephBFT catch-up, mint/melt recovery,
+- [x] Re-run checkpoint paging/restart, AlephBFT catch-up, mint/melt recovery,
       standalone, and materialized-state regression suites.
+
+### Evaluation
+
+The original diagnosis was too strong. The trusted-checkpoint SQL promotion
+path already locks the frontier, requires cursor coverage, and compares the
+target's exact historical journal, application, finalized-item, and
+materialized-state digests before updating the trusted checkpoint. The stored
+state did not establish that a trusted checkpoint had advanced ahead of local
+state; treating next-index cursors as maximum stored row indexes also made the
+initial field reading misleading.
+
+The deterministic regression found the smaller real gap. Once the full suffix
+and application projection were staged, the recovery-target selector returned
+no work merely because the local frontier covered the target. If the process
+stopped immediately before promotion, the untrusted quorum became invisible on
+restart even though no network data remained to download.
+
+The retained change does two things in the generic peer-sync loop:
+
+1. an untrusted recovery target remains discoverable until the current trusted
+   checkpoint covers it, even when the local frontier already covers it; and
+2. startup reconciliation first tries to promote such a locally reached target
+   through the existing guarded promotion path before looking for a peer page.
+
+Healthy idle members still avoid repeated checkpoint-quorum verification when
+no peer is ahead. A current trusted checkpoint still suppresses covered
+recovery targets. No Bark code, schema, scheduler, timer, consensus message,
+or external side-effect path changed.
+
+### Evidence
+
+The regression starts with an ahead signed recovery quorum and proves that a
+startup sync round with no peers leaves the trusted checkpoint absent and both
+frontiers at zero. It then stages the complete bounded suffix and exact
+application/finalized projection, injects the pre-promotion interruption,
+reconstructs the runtime, and proves that the next startup sync round promotes
+the target locally. The journal and application contain each item exactly once,
+their digests match the target, and the promoted target then disappears from
+the work selector.
+
+The exact release binary completed three consecutive local all-member restarts
+after the prior offline-member catch-up. All five members became ready on the
+first start in roughly 9-20 seconds, without a targeted second restart, and
+reported the same journal/application frontier and digests with zero failed
+entries.
+
+A fresh live Bark candidate sample was deliberately excluded: the preferred
+Wavelength payer failed its bounded spend/change precondition, the browser
+fallback did not fund the pending invoice, and a later local Cashu wallet
+correctly rejected a stale ceremony identity before submitting a melt. None of
+those attempts entered the candidate recovery path or produced a repeatable
+external side effect. The earlier Milestone 10 collector outage therefore
+remains supporting real-Bark fault evidence, while the deterministic
+pre-promotion interruption and three clean restart repetitions are the direct
+evidence for this generic fix.
+
+Validation passed 565 Axum tests with four intentional ignores and only three
+external Redis integration tests filtered, 466 cdk-common tests with four
+intentional ignores, all 16 cdk-bark tests, the non-federated mintd all-target
+check, the exact federation release build, and formatting/diff checks. The
+current repository-wide Axum clippy gate still reports 24 pre-existing
+warnings outside the changed files; this milestone introduced no clippy
+diagnostic in its sync-loop or recovery-test scope. No temporary
+instrumentation was added.
 
 ### Success criteria
 
-- The restored member reaches the same journal, application, checkpoint, Bark,
-  quote, and balance state as the four uninterrupted members without a manual
-  database reset or repeated external action.
-- No trusted checkpoint can describe state that the local journal/application
-  transaction has not materialized.
+- An interrupted, fully staged recovery target is promoted on startup without
+  downloading an empty page, duplicating application, or requiring a manual
+  database reset.
+- An ahead target remains untrusted until the existing exact historical-state
+  promotion guard accepts it; conflicting or unsupported targets remain closed.
+- Healthy idle checkpoint work and Bark payment traffic do not increase.
 - The smallest generic fix is committed independently before Milestone 11.
+
+Result: **Kept.** The change closes a demonstrated restart gap with one generic
+selector adjustment, one startup-only local-promotion attempt, and one extended
+regression. It adds no payment-specific behavior and preserves the existing
+cryptographic and database authority checks.
 
 ## Milestone 11: certified HTLC readiness with claim authorization
 

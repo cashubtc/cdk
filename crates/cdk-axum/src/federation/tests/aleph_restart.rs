@@ -501,4 +501,3 @@ async fn run_five_member_restart_case(restarted_indexes: &[usize]) {
     )
     .await;
 }
-

@@ -259,8 +259,6 @@ async fn apply_checkpoint_discovered_during_peer_sync<T>(
 ) where
     T: Transport,
 {
-    // Inspecting a checkpoint target verifies its quorum. Keep that work off the idle path by
-    // first proving that a peer has state this member still needs.
     let local_operation_count = match local_peer_order_status(state).await {
         Ok(status) => status.operation_count,
         Err(err) => {
@@ -271,27 +269,44 @@ async fn apply_checkpoint_discovered_during_peer_sync<T>(
             return;
         }
     };
-    let Some(source_status) = peer_statuses
+    let source_status = peer_statuses
         .iter()
         .filter(|status| status.operation_count > local_operation_count)
-        .max_by_key(|status| status.operation_count)
-    else {
+        .max_by_key(|status| status.operation_count);
+    // Inspecting a checkpoint target verifies its quorum. Keep that work off the healthy idle
+    // path unless a peer is ahead. During startup, however, a crash can leave a complete suffix
+    // durable immediately before its quorum is promoted. That exact target needs no more network
+    // data, but it must remain discoverable so the existing promotion guard can finish recovery.
+    if source_status.is_none()
+        && matches!(
+            state.federation_sync_status().await,
+            Some(crate::FederationSyncStatus::Healthy)
+        )
+    {
         return;
-    };
-    let target_available = match next_local_checkpoint_catch_up_target(state).await {
-        Ok(Some(_)) => true,
-        Ok(None) => false,
+    }
+    let target = match next_local_checkpoint_catch_up_target(state).await {
+        Ok(Some(target)) => target,
+        Ok(None) => return,
         Err(err) => {
             tracing::warn!(
                 "Could not inspect late federation checkpoint target: {}",
                 err
             );
-            false
+            return;
         }
     };
-    if !target_available {
-        return;
+    match promote_locally_reached_checkpoint_target(state, &target).await {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(err) => {
+            tracing::warn!("Could not promote reached federation checkpoint: {}", err);
+            return;
+        }
     }
+    let Some(source_status) = source_status else {
+        return;
+    };
     let Some(source) = peers
         .iter()
         .find(|peer| peer.member_id == source_status.member_id)
@@ -304,6 +319,28 @@ async fn apply_checkpoint_discovered_during_peer_sync<T>(
             "Federation late checkpoint catch-up failed: {}",
             err
         );
+    }
+}
+
+async fn promote_locally_reached_checkpoint_target(
+    state: &MintState,
+    target: &FederationCheckpointQuorum,
+) -> anyhow::Result<bool> {
+    let db = state.mint.localstore();
+    let frontier = db.get_federation_checkpoint_frontier().await?;
+    if frontier.materialized_state_audit_mismatch
+        || frontier
+            .ensure_covers_checkpoint(&target.checkpoint)
+            .is_err()
+    {
+        return Ok(false);
+    }
+    state.federation.persist_checkpoint_quorum(target).await?;
+    let trusted = db.get_trusted_federation_checkpoint_quorum().await?;
+    let target_id = target.checkpoint.id()?;
+    match trusted {
+        Some(trusted) => Ok(trusted.checkpoint.id()? == target_id),
+        None => Ok(false),
     }
 }
 
@@ -670,16 +707,12 @@ pub(super) async fn next_local_checkpoint_catch_up_target(
     ) {
         return Ok(None);
     }
+    if current_checkpoint.is_some_and(|current| current.covers(&recovery.checkpoint)) {
+        return Ok(None);
+    }
     recovery
         .checkpoint
         .validate_promotion_from(current_checkpoint)?;
-    let frontier = db.get_federation_checkpoint_frontier().await?;
-    if frontier
-        .ensure_covers_checkpoint(&recovery.checkpoint)
-        .is_ok()
-    {
-        return Ok(None);
-    }
     super::verify_checkpoint_quorum_with_metrics(
         &recovery,
         public_config,
