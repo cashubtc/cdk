@@ -305,6 +305,10 @@ fn load_settings_from_sources(
 }
 
 pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
+    validate_payment_backends(settings)?;
+    settings
+        .validate_backend_pairing()
+        .map_err(anyhow::Error::msg)?;
     validate_listen_config(settings)?;
     validate_signing_config(settings)?;
     validate_lightning_config(settings)?;
@@ -313,6 +317,23 @@ pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
     validate_auth_config(settings)?;
     validate_management_rpc_config(settings)?;
     validate_prometheus_config(settings)?;
+
+    Ok(())
+}
+
+fn validate_payment_backends(settings: &config::Settings) -> Result<()> {
+    let has_lightning_backend = settings
+        .ln
+        .iter()
+        .any(|ln| ln.ln_backend != LnBackend::None);
+    let has_onchain_backend = settings
+        .onchain
+        .as_ref()
+        .is_some_and(|onchain| onchain.onchain_backend != config::OnchainBackend::None);
+
+    if !has_lightning_backend && !has_onchain_backend {
+        bail!("At least one payment backend (Lightning or On-chain) must be configured");
+    }
 
     Ok(())
 }
@@ -409,28 +430,18 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
             LnBackend::None => {}
             #[cfg(feature = "cln")]
             LnBackend::Cln => {
-                let default_cln;
-                let cln = match settings.cln.as_ref() {
-                    Some(c) => c,
-                    None => {
-                        default_cln = config::Cln::default();
-                        &default_cln
-                    }
-                };
+                let cln = settings.cln.as_ref().ok_or_else(|| {
+                    anyhow!("CLN backend selected but [cln] config section is missing")
+                })?;
                 if cln.rpc_path.as_os_str().is_empty() {
                     bail!("CLN rpc_path must be set via [cln].rpc_path or CDK_MINTD_CLN_RPC_PATH");
                 }
             }
             #[cfg(feature = "lnbits")]
             LnBackend::LNbits => {
-                let default_lnbits;
-                let lnbits = match settings.lnbits.as_ref() {
-                    Some(l) => l,
-                    None => {
-                        default_lnbits = config::LNbits::default();
-                        &default_lnbits
-                    }
-                };
+                let lnbits = settings.lnbits.as_ref().ok_or_else(|| {
+                    anyhow!("LNbits backend selected but [lnbits] config section is missing")
+                })?;
                 if lnbits.admin_api_key.is_empty() {
                     bail!("LNbits admin_api_key must be set via [lnbits].admin_api_key or CDK_MINTD_LNBITS_ADMIN_API_KEY");
                 }
@@ -445,14 +456,9 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
             }
             #[cfg(feature = "lnd")]
             LnBackend::Lnd => {
-                let default_lnd;
-                let lnd = match settings.lnd.as_ref() {
-                    Some(l) => l,
-                    None => {
-                        default_lnd = config::Lnd::default();
-                        &default_lnd
-                    }
-                };
+                let lnd = settings.lnd.as_ref().ok_or_else(|| {
+                    anyhow!("LND backend selected but [lnd] config section is missing")
+                })?;
                 if lnd.address.is_empty() {
                     bail!("LND address must be set via [lnd].address or CDK_MINTD_LND_ADDRESS");
                 }
@@ -467,14 +473,11 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
             }
             #[cfg(feature = "fakewallet")]
             LnBackend::FakeWallet => {
-                let default_fake_wallet;
-                let fake_wallet = match settings.fake_wallet.as_ref() {
-                    Some(f) => f,
-                    None => {
-                        default_fake_wallet = config::FakeWallet::default();
-                        &default_fake_wallet
-                    }
-                };
+                let fake_wallet = settings.fake_wallet.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "Fake wallet backend selected but [fake_wallet] config section is missing"
+                    )
+                })?;
                 if fake_wallet.supported_units.is_empty() {
                     bail!("Fake wallet supported_units must contain at least one unit via [fake_wallet].supported_units or CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS");
                 }
@@ -484,14 +487,11 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
             }
             #[cfg(feature = "grpc-processor")]
             LnBackend::GrpcProcessor => {
-                let default_grpc_processor;
-                let grpc_processor = match settings.grpc_processor.as_ref() {
-                    Some(g) => g,
-                    None => {
-                        default_grpc_processor = config::GrpcProcessor::default();
-                        &default_grpc_processor
-                    }
-                };
+                let grpc_processor = settings.grpc_processor.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "gRPC payment processor backend selected but [grpc_processor] config section is missing"
+                    )
+                })?;
                 if grpc_processor.supported_units.is_empty() {
                     bail!("gRPC payment processor supported_units must contain at least one unit via [grpc_processor].supported_units or CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS");
                 }
@@ -500,8 +500,11 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                 }
             }
             #[cfg(feature = "ldk-node")]
-            // LDK node has no required-field validation; defaults are usable.
-            LnBackend::LdkNode => {}
+            LnBackend::LdkNode => {
+                if settings.ldk_node.is_none() {
+                    bail!("LDK Node backend selected but [ldk_node] config section is missing");
+                }
+            }
         }
     }
 
@@ -518,6 +521,25 @@ fn validate_onchain_config(settings: &config::Settings) -> Result<()> {
     }
     if onchain.min_melt > onchain.max_melt {
         bail!("On-chain min_melt cannot be greater than max_melt");
+    }
+
+    match onchain.onchain_backend {
+        config::OnchainBackend::None => {}
+        #[cfg(feature = "bdk")]
+        config::OnchainBackend::Bdk => {
+            let bdk = settings.bdk.as_ref().ok_or_else(|| {
+                anyhow!("BDK onchain backend selected but [bdk] config section is missing")
+            })?;
+            bdk.validate().map_err(anyhow::Error::msg)?;
+        }
+        #[cfg(feature = "fakewallet")]
+        config::OnchainBackend::FakeWallet => {
+            if settings.fake_wallet.is_none() {
+                bail!(
+                    "Fake wallet onchain backend selected but [fake_wallet] config section is missing"
+                );
+            }
+        }
     }
 
     Ok(())
@@ -2495,7 +2517,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
     #[tokio::test]
     async fn database_configuration_public_api_round_trip() {
         let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_public_config_api");
@@ -2515,6 +2537,11 @@ mnemonic = "file:{}"
 
 [mint_info]
 name = "first-public"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
 
 [database]
 engine = "sqlite"
@@ -3544,7 +3571,7 @@ engine = "sqlite"
 
     #[cfg(feature = "cln")]
     #[test]
-    fn test_load_settings_reports_missing_cln_rpc_path() {
+    fn test_load_settings_reports_missing_cln_config() {
         assert_load_settings_error(
             &format!(
                 r#"
@@ -3558,13 +3585,13 @@ engine = "sqlite"
 ln_backend = "cln"
 "#
             ),
-            "CLN rpc_path must be set",
+            "CLN backend selected but [cln] config section is missing",
         );
     }
 
     #[cfg(feature = "lnbits")]
     #[test]
-    fn test_load_settings_reports_missing_lnbits_credentials() {
+    fn test_load_settings_reports_missing_lnbits_config() {
         assert_load_settings_error(
             &format!(
                 r#"
@@ -3578,13 +3605,13 @@ engine = "sqlite"
 ln_backend = "lnbits"
 "#
             ),
-            "LNbits admin_api_key must be set",
+            "LNbits backend selected but [lnbits] config section is missing",
         );
     }
 
     #[cfg(feature = "lnd")]
     #[test]
-    fn test_load_settings_reports_missing_lnd_address() {
+    fn test_load_settings_reports_missing_lnd_config() {
         assert_load_settings_error(
             &format!(
                 r#"
@@ -3598,7 +3625,7 @@ engine = "sqlite"
 ln_backend = "lnd"
 "#
             ),
-            "LND address must be set",
+            "LND backend selected but [lnd] config section is missing",
         );
     }
 
@@ -3723,6 +3750,8 @@ engine = "sqlite"
 
 [onchain]
 onchain_backend = "fakewallet"
+
+[fake_wallet]
 "#
             ),
         )
