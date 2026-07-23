@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, and 13 complete; Milestones 2, 7, 7A, 14, 15, and 16 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestones 17-19 not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, and 13 complete; Milestones 2, 7, 7A, 14, 15, 16, and 17 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestones 17A, 18, and 19 not started
 
 First recorded: 2026-07-20
 
@@ -987,10 +987,11 @@ behavior yet.
 | 12 | Batch simultaneous private custody-signing items per signer and phase | Deferred | docs-only evaluation |
 | 13 | Remove duplicate outgoing status probes and use one bounded actor-first terminal wait | Complete — kept | `perf: streamline federated Bark outgoing status` |
 | 14 | Reduce wallet melt fan-out with threshold-first requests and fast hedging | Rejected | `docs: reject threshold-first federated melt fanout` |
-| 15 | Certify outgoing success, failure, and recovered-result quorums | Not started | — |
-| 15A | Combine certified outgoing failure with revocation authorization if the pre-signing boundary remains explicit | Not started | — |
-| 16 | Consolidate Bark/Ark outgoing setup and initiation RPCs | Not started | — |
-| 17 | Remove the separate `PaymentInitiated` operation only if ambiguous initiation remains exactly recoverable | Not started | — |
+| 15 | Certify outgoing success, failure, and recovered-result quorums | Rejected | `cfc997f71` |
+| 15A | Combine certified outgoing failure with revocation authorization if the pre-signing boundary remains explicit | Rejected — prerequisite | `cfc997f71` |
+| 16 | Consolidate Bark/Ark outgoing setup and initiation RPCs | Rejected | `8bd0eb147` |
+| 17 | Remove the separate `PaymentInitiated` operation only if ambiguous initiation remains exactly recoverable | Rejected | `docs: retain Bark payment initiation boundary` |
+| 17A | Make Ark initiation exactly idempotent and recover a paid lost response | Not started | — |
 | 18 | Replace replicated melt POST bodies with one canonical submission followed by threshold GET verification | Not started | — |
 | 19 | Avoid repeated federation keyset discovery across short-lived wallet processes | Not started | — |
 
@@ -4706,6 +4707,8 @@ patch.
 
 ## Milestone 17: `PaymentInitiated` boundary audit
 
+Status: **Complete — rejected.**
+
 ### Goal
 
 Only after the lower-risk outgoing milestones, investigate whether accepted
@@ -4722,7 +4725,7 @@ after Milestone 15A.
 
 ### Checklist
 
-- [ ] Document the exact invariant and recovery decisions currently carried by
+- [x] Document the exact invariant and recovery decisions currently carried by
       `PaymentInitiated`, including the Ark acknowledgement and every ambiguous
       transport outcome.
 - [ ] Prove Ark initiation is durable and idempotent under the exact payment
@@ -4731,12 +4734,12 @@ after Milestone 15A.
 - [ ] Define deterministic retry/fallback authority from accepted state without
       a local-only lease, new journal marker, private vote, or duplicate side
       effect.
-- [ ] Keep `SendPlanned` before FROST, `SendHtlcsCosigned` before initiation,
+- [x] Keep `SendPlanned` before FROST, `SendHtlcsCosigned` before initiation,
       and terminal success/failure evidence after the external result.
-- [ ] Reject the candidate if any new recovery flag, compensating operation,
+- [x] Reject the candidate if any new recovery flag, compensating operation,
       timeout-dependent safety decision, or second initiation protocol restores
       the removed boundary under another name.
-- [ ] Measure the exact operation/message reduction and causal-stage latency
+- [x] Measure the exact operation/message reduction and causal-stage latency
       against the retained Milestone 15/15A path.
 
 ### Tests
@@ -4762,6 +4765,146 @@ after Milestone 15A.
 - Otherwise retain `PaymentInitiated`, record the proof gap, and commit the
   rejected evaluation without production behavior changes.
 - If kept, commit as `perf: remove redundant Bark initiation boundary`.
+
+### 2026-07-23 progress record — Rejected at the proof gate
+
+The retained operation is smaller in authority than its name suggests, but it
+is not redundant. After `SendHtlcsCosigned` is accepted, only the accepted
+actor calls Ark. Bark first receives an ordinary successful initiation RPC,
+then persists its member-local `PaymentInitiated` checkpoint, and only then
+does CDK publish the deterministic transition. Consensus admission binds that
+transition to the accepted action, actor, payment hash, exact HTLC-result
+digest, external ID, attempt, signer set, and predecessor. Followers replay
+the accepted transition without making a second initiation request; it is
+their ordered boundary for enabling terminal polling. Success or threshold
+failure must follow this operation.
+
+The transition is not an Ark receipt. Its sole `ArkResult` artifact is
+deterministically reconstructed from CDK fields and carries no Ark signature,
+attempt identifier, database revision, or response body. Its evidence is that
+the authorized actor obtained an ordinary successful RPC return and then
+published that fact through consensus.
+
+The exact ambiguity matrix is:
+
+| Actor outcome after accepted HTLCs | Durable/local state | Retained recovery |
+| --- | --- | --- |
+| Crash before Ark request | accepted HTLCs; local `HtlcReceived` | same actor retries after restart; no other member may initiate |
+| RPC validation rejects before the payment manager | local `HtlcReceived`; no attempt | same actor retries; no initiation transition is proposed |
+| Payment manager fails before or after storing | attempt may be absent or `Requested` | the server currently masks the error as RPC success, so CDK may accept `PaymentInitiated`; Ark reconciliation later reports failure if a stored attempt never reached CLN |
+| Ark stores, response is lost while still open | Ark pending; local `HtlcReceived` | same actor retry reaches the existing-open-attempt path, which is masked as RPC success, then publishes |
+| Ark settles before a lost-response retry | Ark terminal; HTLC may already be `ln-spent`; local `HtlcReceived` | current spendability validation can reject before the retry reaches the existing attempt, leaving the federation before `PaymentInitiated` despite a paid invoice |
+| Local checkpoint exists, actor crashes before consensus | member-local `PaymentInitiated`; federation remains at accepted HTLCs | same actor republishes the deterministic transition after restart |
+| Transition is accepted | every member can derive the initiated checkpoint | selected observers may poll; fallback observers may prove success, while failure still needs three checks |
+
+The required removal proof fails below Ark. The current Ark server stores a
+payment hash, amount, mailbox, and linked HTLC IDs, but not an exact digest of
+the full initiation request. Its insert explicitly rejects an already-open
+attempt instead of returning an exact prior result. More importantly, the
+Lightning manager catches every payment-start error, logs it, and still
+returns a successful initiation RPC. Once an attempt is terminal, the current
+partial uniqueness rule permits another row for the same payment hash. These
+semantics are useful for the original actor's best-effort retry, but they are
+not durable exact idempotency that can safely authorize a different member or
+concurrent fallback to repeat the side effect.
+
+Status GET cannot close the gap. A missing Ark attempt is a `NotFound` error,
+and Bark intentionally collapses missing, malformed, and transport-error
+responses to `Pending` until HTLC expiry. Even if `NotFound` were exposed, a
+GET followed by a fallback POST races a delayed original actor. A local timer
+or health lease would grant unreplicated payment authority. A consensus actor
+handoff, retry authorization, or durable "initiation attempted" marker would
+replace the removed operation rather than eliminate it. Keeping initiation
+actor-only avoids that duplicate-authority problem but fails the milestone's
+actor-failover requirement.
+
+The cost is real and bounded. Across the two Milestone-13 local data
+sets, 17 successful payments each contained exactly one 1,502-byte
+`PaymentInitiated` envelope, one finalized item, and no duplicate finalized
+item: 25,534 stored envelope bytes in total. On the current retained path,
+removal would take healthy success from ten accepted operations to nine; the
+older seven-to-six target no longer applies because Milestones 15 and 15A were
+rejected. The controlled designated-publication benchmark measured about
+2.05s median finality for one serial accepted operation, so one consensus
+boundary is potentially material. The persisted payment data does not contain
+per-phase timestamps, and no unsafe candidate was run, so this milestone makes
+no unsupported `PaymentInitiated`-specific p95 claim.
+
+Decision: **Rejected before implementation.** A candidate cannot pass the
+stated safety precondition without first changing Ark initiation into an exact,
+durable, full-request-idempotent operation. Milestone 16 evaluated that broader
+cross-repository change and rejected it on its measured latency/complexity
+gate. Reintroducing part of it here or adding consensus failover state would
+combine rejected complexity with a nominal operation deletion. No production
+code, schema, test, instrumentation, or runtime behavior changed.
+`PaymentInitiated` remains the explicit consensus boundary. Reopen this audit
+only after an independently justified Ark change supplies exact durable
+idempotency and a response-loss test proves safe cross-actor retry.
+
+## Milestone 17A: exact Ark initiation and lost-response recovery
+
+Status: **Not started — production-relevant issue discovered by Milestone 17.**
+
+### Goal
+
+Fix the retained outgoing path where Ark can pay an invoice, lose the
+initiation response, mark the HTLC `ln-spent`, and then reject the actor's
+identical retry before CDK can publish `PaymentInitiated`. Make initiation
+durably exact-idempotent without reviving Milestone 16's RPC consolidation,
+VTXO registration changes, protocol-version bump, or broader state-machine
+refactor.
+
+The durable identity must include the complete signed invoice string, payment
+amount, mailbox, and canonical HTLC VTXO ID set. Store it before the external
+payment attempt. An exact retry must return the same semantic success whether
+the attempt is requested, pending, succeeded, or failed. Any changed field
+must fail before mutation. A pre-store database or validation failure must not
+be converted into a successful RPC response.
+
+### Checklist
+
+- [ ] Reproduce the paid-before-retry failure against the retained Bark/Ark
+      code with a proxy that forwards initiation once and discards its response.
+- [ ] Add the smallest migration needed to persist the exact initiation
+      identity; no compatibility branch is required for cut-through test data.
+- [ ] Make payment-attempt insertion concurrency-safe: one exact request
+      stores, an identical overlap is a no-op, and conflicting reuse fails.
+- [ ] Let an already-`ln-spent` HTLC reach only the exact identity decision;
+      ordinary new spends and mismatched retries must remain rejected.
+- [ ] Propagate failures that occur before an exact attempt is durable. Preserve
+      existing CLN reconciliation for failures after the durable boundary.
+- [ ] Add no new polling loop, timer, rate-limit parsing, consensus operation,
+      Bark/CDK payment phase, or backend-specific federation branch.
+
+### Tests
+
+- [ ] Lost response after Ark accepts, before and after settlement, retries
+      exactly and produces one payment plus one accepted `PaymentInitiated`.
+- [ ] Concurrent identical starts yield one stored attempt and one no-op;
+      changed invoice, amount, mailbox, or HTLC set fails without mutation.
+- [ ] Missing, malformed, wrong-policy, spendable, unregistered, and
+      `ln-spent` HTLC cases preserve their intended validation boundaries.
+- [ ] Ark/CLN failure before durable storage is returned to the caller; failure
+      after storage remains reconcilable as pending or terminal.
+- [ ] Server restart between durable storage, CLN submission, terminal
+      settlement, and retry converges without duplicate payment or stuck CDK
+      state.
+- [ ] Standalone Bark outgoing success/failure/revocation and federated CDK
+      outgoing success/restart/lost-wallet-response regressions remain exact.
+
+### Success criteria
+
+- The reproduced paid-before-retry failure passes without loosening new-payment
+  spendability or accepting a conflicting request.
+- Healthy initiation latency and request count remain within 5% of control;
+  response-loss recovery reaches `PaymentInitiated` without another consensus
+  operation or polling subsystem.
+- Keep only the contained exact-idempotency repair and focused tests. Otherwise
+  revert it, record the remaining production risk, and do not reopen Milestone
+  17.
+- If kept, commit the Bark/Ark repair independently as
+  `fix: make Bark payment initiation exactly idempotent`, then update this plan
+  in a separate CDK documentation commit.
 
 ## Milestone 18: canonical melt submission with threshold GET verification
 
