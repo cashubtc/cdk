@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, 20, 21, and 22 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestone 23 not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, 20, 21, 22, and 23 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped
 
 First recorded: 2026-07-20
 
@@ -1021,7 +1021,7 @@ behavior yet.
 | 20 | Preserve payment-capable Bark liquidity across rapid successive melts | Complete — kept | `perf: preserve Bark liquidity for queued melts` |
 | 21 | Re-audit the `PaymentInitiated` boundary after exact Ark idempotency | Complete — kept | `perf: finalize Bark melts from accepted HTLCs` |
 | 22 | Reject a duplicate paid melt without halting consensus | Complete — kept | `fix: reject duplicate federated melts safely` |
-| 23 | Attribute every mint and melt latency stage precisely before further tuning | Not started | — |
+| 23 | Attribute every mint and melt latency stage precisely before further tuning | Complete | `docs: attribute federated Bark payment latency` |
 
 ## Milestone 0: causal baseline
 
@@ -5671,7 +5671,7 @@ closed and halt application.
 
 ## Milestone 23: precise mint and melt timing attribution
 
-Status: **Not started. Read-only measurement milestone.**
+Status: **Complete — measurement only.**
 
 ### Goal
 
@@ -5734,26 +5734,192 @@ an external payer/store interval separately rather than charging it to CDK.
 
 ### Checklist and success criteria
 
-- [ ] Freeze source revisions, release hashes, Bark revision, topology,
+- [x] Freeze source revisions, release hashes, Bark revision, topology,
       thresholds, database, amount, and Signet endpoint before sampling.
-- [ ] Produce three healthy incoming and three healthy outgoing local samples
+- [x] Produce three healthy incoming and three healthy outgoing local samples
       with an explicit event timeline for every required boundary above.
-- [ ] Record Bark-only outgoing evidence beside the federated melt timeline;
+- [x] Record Bark-only outgoing evidence beside the federated melt timeline;
       use it only as a baseline, not as proof about any federated stage.
-- [ ] Attribute every material interval to one owning layer with direct start
+- [x] Attribute every material interval to one owning layer with direct start
       and end evidence; list any irreducible unknown interval explicitly.
-- [ ] Reconcile each timeline to the client-observed total and account for
+- [x] Reconcile each timeline to the client-observed total and account for
       concurrent spans without double-counting.
-- [ ] Count the operations, private RPCs, Ark calls, FROST actions, and
+- [x] Count the operations, private RPCs, Ark calls, FROST actions, and
       consensus submit/finality/application intervals that occur in each span.
-- [ ] Run one restart/replay sample for each direction to verify that timing
+- [x] Run one restart/replay sample for each direction to verify that timing
       probes do not change recovery, accounting, or convergence.
-- [ ] Remove all temporary instrumentation; rebuild and rerun a no-probe smoke
+- [x] Remove all temporary instrumentation; rebuild and rerun a no-probe smoke
       sample that preserves exact payment behavior and timing shape.
-- [ ] Update the evidence and result log, name the largest confirmed delays,
+- [x] Update the evidence and result log, name the largest confirmed delays,
       and create separately numbered optimization milestones only for causes
       supported by these measurements. Commit the documentation and any
       temporary-instrumentation cleanup together.
+
+### Evaluation record — 2026-07-23
+
+This milestone changed no payment behavior. Measurements used CDK
+`6491b92b2`, Bark `72eebde1`, release builds, five loopback members, SQLite,
+a 3-of-5 custody-signature threshold, a four-member payment-verification
+threshold, the retained 500ms active consensus cadence, and the public Bark
+Signet service. Incoming samples were 2,000 sats and outgoing samples were
+1,000 sats with a 25-sat reserve. The exact final no-probe binaries were
+SHA-256 `2eb6ab4e926c8db025e5d4f925251bdde9275124ea7d34f20a29fd4028a27e9a`
+for `cdk-mintd` and
+`47391391f80f40f19ef8ea1faea8152faccc1155fa9d296775f1c896d6f48cc1`
+for `cdk-cli`.
+
+Disposable monotonic probes recorded handler boundaries, private peer RPCs,
+Bark/Ark calls, and each accepted operation's queue, finality, and slowest
+member-application spans. They neither changed a request nor influenced
+scheduling. With only three samples per direction, this record reports the
+median, range, and observed maximum rather than presenting the maximum as a
+statistically meaningful p95.
+
+#### Incoming attribution
+
+All three successful receives used exactly eight core accepted operations:
+`ReceiveIntent`, `ReceivePrepared`, `MintQuote`, combined claim authorization,
+preimage disclosure, claimed result, one result certificate, and `Mint`.
+
+| Sample | Quote request to invoice | Accepted HTLC evidence to mint notification | Bark claim inside that tail | Core operations |
+| --- | ---: | ---: | ---: | ---: |
+| Healthy 1 | 6.751s | 12.093s | 0.705s | 8 |
+| Healthy 2 | 7.516s | 12.240s | 0.684s | 8 |
+| All-member restart | 6.754s | 25.958s | included, not separately refined | 8 |
+
+The quote median was 6.754s with a 6.751-7.516s range. The two uninterrupted
+post-evidence tails were 12.093-12.240s; the restart sample's observed maximum
+was 25.958s. Durable quote creation-to-issuance clocks were 178, 163, and 164
+seconds, but those spans include the human/public-faucet payment interval and
+are not CDK protocol latency.
+
+The first quote's 6.751 seconds reconcile as follows:
+
+| Non-overlapping quote stage | Time | Direct owner |
+| --- | ---: | --- |
+| Four concurrent protected-secret copies | 0.036s | private federation API |
+| Accept `ReceiveIntent` | 2.067s | 0.024s queue + 2.013s consensus + 0.030s apply |
+| Create Bark invoice | 0.100s | Bark/Ark |
+| Accept `ReceivePrepared` | 1.885s | 0.360s queue + 1.507s consensus + 0.018s apply |
+| Accept `MintQuote` | 2.496s | 0.478s queue + 2.012s consensus + 0.006s apply |
+| First HTLC status check | 0.095s | Bark/Ark |
+| Handler handoffs and rounding remainder | 0.072s | CDK/measurement |
+| **Total** | **6.751s** | |
+
+The second quote reproduced the same shape: its Bark invoice took 0.318s,
+its first status check 0.094s, and the three consensus lifecycles took 2.326s,
+2.173s, and 2.492s. Bark/Ark therefore does not explain the quote total; the
+three serial accepted boundaries do.
+
+The two uninterrupted post-evidence tails decompose more precisely:
+
+| Accepted lifecycle | Healthy 1: queue / consensus / apply | Healthy 2: queue / consensus / apply |
+| --- | ---: | ---: |
+| Combined claim authorization | 0.420 / 1.522 / 0.029s | 0.131 / 1.518 / 0.031s |
+| Preimage disclosure | 0.247 / 2.031 / 0.033s | 0.275 / 2.012 / 0.035s |
+| Claimed result | 0.448 / 1.525 / 0.041s | 0.463 / 1.511 / 0.051s |
+| Result certificate | 0.281 / 2.028 / 0.020s | 0.294 / 2.019 / 0.019s |
+| Cashu mint | 0.469 / 1.998 / 0.103s | 0.474 / 2.510 / 0.047s |
+| **Five lifecycle totals** | **11.195s** | **11.390s** |
+
+The 0.705/0.684-second Bark claim runs between those accepted boundaries.
+After adding it, only 0.193/0.166 seconds remain for scheduler, handler, and
+wallet-notification handoffs. This reconciles exactly to 12.093/12.240
+seconds. The claim is already small enough for the decision: further
+instrumenting its sub-steps would not change the priority.
+
+The restart sample retained the same eight-operation shape and issued exactly
+2,000 sats once. Its five post-evidence accepted lifecycles consumed 23.785 of
+25.958 seconds. The largest stalls were a 6.383-second claim-authorization
+lifecycle, including 3.843 seconds queued, and a 10.577-second claimed-result
+lifecycle, including 10.057 seconds awaiting finality. All five members later
+reported identical order and application digests.
+
+The ordinary private/external call cardinality was four concurrent
+receive-secret requests, three independently selected HTLC checks, two
+non-collector HTLC-attestation deliveries, one custody claim action, and three
+non-collector claimed-result-attestation deliveries. At the Bark/Ark boundary
+this is one invoice preparation, three selected status checks, and one claim;
+accepted evidence suppresses repeat Ark I/O. The private calls and Bark claim
+were bounded concurrent work, not the serial multi-second owner.
+
+#### Outgoing attribution
+
+The three instrumented store payments all settled exactly once and used nine
+core accepted operations: `MeltQuote`, `Melt`, send plan, HTLC result, success
+result, and four success observations. The observations were submitted
+concurrently and cost one wall-clock consensus wave, not four serial waves.
+
+| Sample | CLI wall | Bark custody/Ark work | Core operations | Outcome |
+| --- | ---: | ---: | ---: | --- |
+| Healthy 1 | 18.99s | 2.25s | 9 | paid once |
+| Healthy 2 | 17.21s | 1.47s | 9 | paid once |
+| All-member restart | 34.92s | 2.93s | 9 | paid once after replay |
+
+The three-sample CLI median was 18.99s, range 17.21-34.92s. The two
+uninterrupted samples reconcile without overlapping concurrent observations:
+
+| Non-overlapping phase | Healthy 1 | Healthy 2 |
+| --- | ---: | ---: |
+| Accept melt quote | 2.029s | 3.024s |
+| Accept proof reservation/melt | 3.049s | 2.531s |
+| Accept send plan | 2.511s | 2.014s |
+| FROST, HTLC/Ark setup and accepted HTLC result | 5.186s | 4.063s |
+| Terminal check and accepted success | 2.473s | 2.235s |
+| Four observations through one concurrent finality wave | 3.024s | 3.019s |
+| Client response/persistence | 0.718s | 0.324s |
+| **CLI total** | **18.990s** | **17.210s** |
+
+Inside the fourth and fifth rows, actual custody and Ark work was
+1.930s + 0.100s + 0.218s in the first sample and
+1.232s + 0.137s + 0.099s in the second: one FROST/HTLC action, the retained
+four setup/initiation Ark RPCs, and one actor-first terminal check. The rest is
+accepted-operation finality and handoff time. Healthy queue waits were
+generally 0-0.5 seconds, consensus finality generally 1.5-3.0 seconds, and
+application generally below 0.1 seconds; the HTLC-result application was the
+only repeatable larger apply span at 0.3-0.7 seconds.
+
+The restart sample preserved one external payment and exact accounting.
+Restart/catch-up inflated the success and concurrent-observation portions
+rather than Bark work. Four finalized duplicates appeared during recovery,
+but no duplicate operation was accepted and every member converged.
+
+The standalone Bark comparison remains 2.91 seconds CLI and about 1.80
+seconds durable action time. It is consistent with the direct federated
+Bark/Ark measurements and confirms that micro-optimizing ordinary Ark calls
+cannot recover the remaining 15-20 seconds.
+
+#### Driver exclusions and final clean run
+
+The preferred Wavelength driver failed two attempted incoming payments before
+the federation received HTLC evidence; both were refunded and excluded. For
+outgoing, a Wavelength receiver on the same public Ark service reported its
+invoice complete while the federation's Ark status remained pending for more
+than twelve minutes, even after on-demand checks. That same-Ark circular route
+is a test-driver limitation, not evidence of a healthy federation failure, and
+was excluded. The public faucet and store supplied the successful cohorts.
+
+After removing every temporary probe, source and binary scans contained no
+Milestone 23 timing marker. Formatting, the federation-enabled `cdk-mintd`
+check, and the exact release build passed. The final no-probe 1,000-sat store
+melt completed in 21.39 seconds, paid a 25-sat fee, and left the exact
+875-sat spendable balance. Its payment protocol again used nine operations;
+one preceding generic wallet `Swap` selected the required proof value. The
+store reported `PAID`, and all five members converged at 71 accepted journal
+entries with identical order/application digests.
+
+Decision: **measurement complete; no production change retained.** The
+largest confirmed delays are the three serial consensus lifecycles in receive
+quote creation, the five serial lifecycles after incoming HTLC evidence, and
+roughly six accepted waves across an outgoing payment. Bark/Ark work is not
+the dominant owner. No new tuning milestone is opened from timing alone:
+Milestone 5 already audited the remaining receive boundaries and retained
+their side-effect, authorization, requester-binding, and replay invariants;
+Milestones 10, 11, 13, and 21 already removed the safe redundant operations;
+and Milestones 7/7A already rejected faster consensus cadence because its CPU
+cost harms constrained members. Reopen a boundary only after a new safety
+argument changes that earlier audit, not merely because this measurement
+confirms it is expensive.
 
 ## End-to-end verification matrix
 
@@ -5866,6 +6032,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-23 | Milestone 21 direct terminal result | fresh five-member local release control/candidate federations, SQLite, real Signet, three 1,000-sat melts per side plus a controlled nine/ten-operation AlephBFT probe | accepted operations 10 -> 9; CLI median 20 -> 18s and observed p95/max 22 -> 18s; controlled serial median 18,456 -> 17,233ms; total/helper deliveries -9.8%/-11.7%; all five candidate members converged and every payment settled once | Keep the direct `SendHtlcsCosigned` -> terminal edge. Exact Ark idempotency and typed `NotFound` preserve actor-loss recovery; healthy initiation remains one POST; no replacement protocol state, loop, timer, or configuration was added. |
 | 2026-07-23 | Milestone 22 duplicate-paid-melt discovery | retained local five-member release federation, SQLite, accidental reuse of one already paid 1,000-sat store invoice | one new melt operation finalized, then all five members recorded the same index as failed and halted deterministic application on `Request already paid`; each stopped at 135 applied plus one failed journal entry while 151 finalized items existed; no second Bark action or external payment occurred | A wallet-level duplicate must be a deterministic rejection, never a consensus-halting apply error. Preserve the evidence and fix this after Milestone 21 with admission, later-operation, replay, and exactly-once regressions. |
 | 2026-07-23 | Milestone 22 deterministic duplicate-melt rejection | exact two-member live AlephBFT regression plus mint-domain, catch-up, restart, and standalone tests | pre-fix exact regression timed out after 20s with the application task stopped; fixed run completed in about 1.96s, rejected both pending and paid siblings on both members, applied a later valid item, and made exactly one backend payment | Keep the mint-domain lookup-ID lock as the authoritative invariant and classify its business-rule results at deterministic apply. A racy stateful pre-admission duplicate would not remove the ordered check or preserve a common member view. |
+| 2026-07-23 | Milestone 23 precise timing attribution | local five-member release federation, SQLite, real Signet, three incoming and three outgoing successes with one restart per direction, then one clean no-probe melt | incoming quote median 6.754s across three serial accepted operations; uninterrupted post-evidence tails 12.093/12.240s with 11.195/11.390s in five accepted lifecycles and 0.705/0.684s in Bark claim; outgoing CLI 18.99/17.21/34.92s with only 2.25/1.47/2.93s in Bark custody/Ark work; final no-probe melt 21.39s and all five members converged | Consensus boundaries, not ordinary Bark/Ark calls, own the remaining latency. Keep the safety-audited boundaries and rejected cadence result until a new invariant-preserving simplification exists; remove all probes and retain documentation only. |
 
 ## Completion checklist
 
