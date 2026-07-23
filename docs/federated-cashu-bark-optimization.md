@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, and 13 complete; Milestones 2, 7, and 7A rejected; Milestone 12 deferred; Milestones 14-17, including 15A, not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, and 13 complete; Milestones 2, 7, 7A, 14, 15, and 16 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestones 17-19 not started
 
 First recorded: 2026-07-20
 
@@ -4581,6 +4581,8 @@ operations without weakening or concealing the pre-signing boundary.
 
 ## Milestone 16: consolidate Bark/Ark outgoing RPCs
 
+Status: **Complete — rejected.**
+
 ### Goal
 
 Reduce the four Ark setup/initiation requests without changing their checks.
@@ -4596,31 +4598,31 @@ small and explicit; do not maintain two long-lived payment state machines.
 
 ### Checklist
 
-- [ ] Measure actual transport calls, payload bytes, server validation time,
+- [x] Measure actual transport calls, payload bytes, server validation time,
       response-loss retries, and registration cache hits before changing the
       API.
-- [ ] Specify an atomic, idempotent request contract keyed by the same payment
+- [x] Specify an atomic, idempotent request contract keyed by the same payment
       and package identities as today.
-- [ ] Preserve full VTXO ancestry, ownership, spendability, package, amount,
+- [x] Preserve full VTXO ancestry, ownership, spendability, package, amount,
       fee, HTLC, expiry, nonce, authorization, and duplicate-payment checks.
-- [ ] Make repeated identical requests return the same semantic result; reject
+- [x] Make repeated identical requests return the same semantic result; reject
       conflicting reuse before mutation.
-- [ ] Define one bounded version/capability transition and remove obsolete
+- [x] Define one bounded version/capability transition and remove obsolete
       fallback code once the coordinated deployment is complete.
 - [ ] Recount Ark requests, bytes, server work, accepted operations, and p95 on
       healthy, pending, failure, revocation, and response-loss paths.
 
 ### Tests
 
-- [ ] A healthy payment completes with one setup/cosign RPC, one initiation
+- [x] A healthy payment completes with one setup/cosign RPC, one initiation
       RPC, and one terminal request after Milestone 13.
-- [ ] Missing, malformed, conflicting, already-spent, or incomplete input
+- [x] Missing, malformed, conflicting, already-spent, or incomplete input
       chains fail with no partial registration or initiation.
-- [ ] Response loss and identical retry cannot double-pay or create conflicting
+- [x] Response loss and identical retry cannot double-pay or create conflicting
       registered VTXOs; conflicting retry is rejected.
 - [ ] Server crash at each atomic boundary, Bark/CDK restart, replay, and
       catch-up converge on the same payment and wallet state.
-- [ ] Standalone Bark clients and supported mixed-version deployment behavior
+- [x] Standalone Bark clients and supported mixed-version deployment behavior
       pass or are rejected before rollout with an explicit upgrade boundary.
 
 ### Success criteria
@@ -4631,6 +4633,76 @@ small and explicit; do not maintain two long-lived payment state machines.
   behavior do not regress.
 - The milestone records `Kept` or `Rejected` and, if kept, uses scoped commits
   in CDK and Bark/Ark that record the measured protocol change.
+
+### 2026-07-23 progress record — Rejected
+
+The disposable candidate carried complete signed input chains in the existing
+HTLC-cosign request and complete signed HTLC/change output chains in the
+existing initiation request. The server validated each chain before mutation,
+registered and spent cosign inputs in one transaction, and registered
+initiation outputs together with the exact durable payment-attempt identity.
+Exact retries were no-ops; changed invoice, amount, mailbox, or HTLC set was a
+conflict. Because this project is still cut-through, client and server both
+required one new protocol version and rejected the old version rather than
+maintaining parallel flows.
+
+The implementation exercise found three correctness requirements that a
+future attempt must retain:
+
+1. A combined cosign update cannot independently register and spend the same
+   VTXO through two ordinary tree transitions. It needs one explicitly
+   validated `unregistered -> spent` transition, while ordinary OOR spending
+   must continue rejecting unregistered inputs.
+2. Output-chain registration and payment-attempt creation must commit in one
+   database transaction. A response between two commits would otherwise leave
+   ambiguous partial state.
+3. An exact initiation retry can arrive after Lightning already settled and
+   the HTLC became `ln-spent`. Spend-state validation must allow that request
+   to reach the atomic identity decision; only an exact persisted request may
+   succeed, and any conflict must fail before registration or payment work.
+
+The candidate passed all 86 Bark server library tests, exact ordered-input and
+HTLC-output-set validation, atomic unregistered-input registration/spending,
+sequential and concurrent Postgres idempotency, conflicting-retry rejection,
+and the explicit all-at-once version boundary. A standalone local Bark/Ark
+test completed all three outgoing variants. A response-loss E2E forwarded the
+first initiation, discarded its response, observed exactly one wallet retry,
+paid the invoice once, and ended with no pending send. The crash/restart and
+failure/revocation matrices were not run after the decisive healthy-path
+performance gate failed.
+
+The equivalent control was unmodified Bark `aa98f5685d70`. Control and
+candidate used the same local integration topology, daemon versions,
+unoptimized test binaries, warmed build artifacts, and three successful
+outgoing payments. Temporary identifier-free probes measured only the four
+setup/initiation calls or their two combined replacements and were not retained.
+
+| Sample | Control: four RPCs | Candidate: two RPCs | Control request bytes | Candidate request bytes | Wallet control | Wallet candidate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 72.861ms | 70.986ms | 2,387 | 2,387 | 2.270s | 2.265s |
+| 2 | 86.729ms | 81.677ms | 3,360 | 3,360 | 2.293s | 2.282s |
+| 3 | 100.718ms | 95.520ms | 4,320 | 4,320 | 2.321s | 2.305s |
+
+The request count did fall exactly from four to two. Moving the already
+required serialized VTXO chains between envelopes left request bytes exactly
+unchanged, and response bytes remained 309 in each sample. The three-sample
+observed Ark-stage p95 improved only 100.718 -> 95.520ms (5.16%), far below
+the required 15%. Its median improved 86.729 -> 81.677ms (5.83%).
+Wallet-visible observed p95 improved only 2.321 -> 2.305s (0.69%), and its
+median improved about 0.51%. The result is consistent with the local calls
+carrying the same bytes and performing the same chain validation; eliminating
+two loopback request envelopes is not the dominant cost.
+
+Decision: **Rejected on the measured latency gate.** The two-RPC contract was
+safe after the fixes above, but its 5.16% Ark-stage improvement does not
+justify a protocol-version bump, new atomic transition mode, payment identity
+migration, and cross-repository API change. The candidate production code,
+candidate-only tests, temporary harness accommodations, and probes were
+discarded. The retained CDK and Bark/Ark behavior is unchanged; this record is
+the only milestone artifact. Reconsider consolidation only if production-like
+network latency evidence predicts a materially larger win, and start from the
+three correctness requirements above rather than reviving the discarded
+patch.
 
 ## Milestone 17: `PaymentInitiated` boundary audit
 
