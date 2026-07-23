@@ -31,10 +31,7 @@ use crate::{
     column_as_nullable_string, column_as_number, column_as_string, unpack_into,
 };
 
-#[rustfmt::skip]
-mod migrations {
-    include!(concat!(env!("OUT_DIR"), "/migrations_wallet.rs"));
-}
+mod migrations;
 
 /// Wallet SQLite Database
 #[derive(Debug, Clone)]

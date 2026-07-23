@@ -963,7 +963,7 @@ impl Mint {
                     .await?;
                 }
 
-                mint_quote.add_issuance(amount_issued)?;
+                mint_quote.add_issuance(amount_issued.clone())?;
                 tx.update_mint_quote(&mut mint_quote).await?;
 
                 // Mint operations have no input fees
@@ -1996,5 +1996,74 @@ mod batch_mint_tests {
             result.unwrap_err(),
             Error::UnsupportedPaymentMethod
         ));
+    }
+}
+
+#[cfg(test)]
+mod journal_tests {
+    //! End-to-end checks that a real mint ISSUE emits the expected append-only
+    //! journal events for the mint quote, its payments/issuances, and the blind
+    //! signatures the mint hands out.
+
+    use std::sync::Arc;
+
+    use cdk_common::database::event_log::{Delta, Entity, Event, Snapshot};
+    use cdk_common::Amount;
+
+    use crate::test_helpers::mint::{create_test_mint_with_db, mint_test_proofs, read_journal};
+
+    /// A real mint quote gets a creation snapshot, a payment delta once the
+    /// invoice is settled, and an issuance delta when tokens are minted; each
+    /// blind signature the mint issues gets its own immutable snapshot.
+    #[tokio::test]
+    async fn issue_journals_mint_quote_payments_issuance_and_signatures() {
+        let file = format!(
+            "{}/cdk_journal_issue_test.sqlite",
+            std::env::temp_dir().display()
+        );
+        let _ = std::fs::remove_file(&file);
+
+        let db = Arc::new(
+            cdk_sqlite::mint::MintSqliteDatabase::new(file.as_str())
+                .await
+                .expect("file-backed mint db"),
+        );
+        let mint = create_test_mint_with_db(db).await.expect("build mint");
+
+        // Runs the full flow: quote creation, payment settlement, and issuance
+        // with blind signatures.
+        mint_test_proofs(&mint, Amount::from(64))
+            .await
+            .expect("mint proofs");
+
+        let events = read_journal(&file);
+
+        // The mint quote is snapshotted at creation.
+        assert!(
+            events.iter().any(|(entity, _, e)| *entity == Entity::MintQuote
+                && matches!(e, Event::Snapshot(s) if matches!(s.as_ref(), Snapshot::MintQuote(_)))),
+            "missing mint quote snapshot"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|(_, _, e)| matches!(e, Event::Delta(Delta::MintQuotePayment(_)))),
+            "missing mint quote payment delta"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|(_, _, e)| matches!(e, Event::Delta(Delta::MintQuoteIssuance(_)))),
+            "missing mint quote issuance delta"
+        );
+
+        // Every issued blind signature is snapshotted under its own record.
+        assert!(
+            events.iter().any(|(entity, _, e)| *entity == Entity::BlindSignature
+                && matches!(e, Event::Snapshot(s) if matches!(s.as_ref(), Snapshot::BlindSignature(_)))),
+            "missing blind signature snapshot"
+        );
+
+        let _ = std::fs::remove_file(&file);
     }
 }

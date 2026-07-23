@@ -20,6 +20,7 @@ use crate::pool::{DatabasePool, Pool, PooledResource};
 
 mod auth;
 mod completed_operations;
+mod event_log;
 mod keys;
 mod keyvalue;
 mod proofs;
@@ -27,10 +28,7 @@ mod quotes;
 mod saga;
 mod signatures;
 
-#[rustfmt::skip]
-mod migrations {
-    include!(concat!(env!("OUT_DIR"), "/migrations_mint.rs"));
-}
+mod migrations;
 
 pub use auth::SQLMintAuthDatabase;
 #[cfg(feature = "prometheus")]

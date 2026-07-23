@@ -40,6 +40,9 @@ mod subscription;
 mod swap;
 mod verification;
 
+#[cfg(test)]
+mod keyset_journal_tests;
+
 pub use builder::{KeysetRotation, MintBuilder, MintMeltLimits, UnitConfig};
 pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
@@ -149,6 +152,11 @@ impl Mint {
         max_inputs: usize,
         max_outputs: usize,
     ) -> Result<Self, Error> {
+        // Wrap the store so every mutation of a journaled entity is recorded on
+        // the same transaction. This is the single choke point through which all
+        // mints are built, so orchestration never calls `add_journal` directly.
+        let localstore: DynMintDatabase = Arc::new(database::JournaledDatabase::new(localstore));
+
         let keysets = signatory.keysets().await?;
         if !keysets
             .keysets

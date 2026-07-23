@@ -55,10 +55,7 @@ where
     }
 }
 
-#[rustfmt::skip]
-mod migrations {
-    include!(concat!(env!("OUT_DIR"), "/migrations_mint_auth.rs"));
-}
+mod migrations;
 
 #[async_trait]
 impl<RM> MintAuthTransaction<database::Error> for SQLTransaction<RM>

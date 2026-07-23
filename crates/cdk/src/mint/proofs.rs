@@ -35,7 +35,9 @@ impl Mint {
                 cdk_common::database::Error::AttemptUpdateSpentProof
                 | cdk_common::database::Error::AttemptRemoveSpentProof => Error::TokenAlreadySpent,
                 err => err.into(),
-            })
+            })?;
+
+        Ok(())
     }
 }
 

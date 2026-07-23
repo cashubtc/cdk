@@ -75,7 +75,15 @@ pub(crate) fn should_fail_for(operation: &str) -> bool {
 /// ```
 pub async fn create_test_mint() -> Result<Mint, Error> {
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await?);
+    create_test_mint_with_db(db).await
+}
 
+/// Same as [`create_test_mint`] but builds the mint on a caller-supplied
+/// database. Useful for file-backed sqlite so a test can open a second
+/// connection and inspect tables (e.g. the `journal`).
+pub async fn create_test_mint_with_db(
+    db: Arc<cdk_sqlite::mint::MintSqliteDatabase>,
+) -> Result<Mint, Error> {
     let mut mint_builder = MintBuilder::new(db.clone());
 
     let fee_reserve = FeeReserve {
@@ -222,6 +230,41 @@ pub async fn create_test_blinded_messages(
     let blinded_messages = pre_mint.blinded_messages().to_vec();
 
     Ok((blinded_messages, pre_mint))
+}
+
+/// Reads every append-only `journal` row, in id order, from a file-backed
+/// sqlite mint database, decoding each `event` blob into an [`Event`].
+///
+/// The mint must be built on a file path (not `:memory:`) so this independent
+/// connection can see the committed rows.
+pub(crate) fn read_journal(
+    path: &str,
+) -> Vec<(
+    cdk_common::database::event_log::Entity,
+    String,
+    cdk_common::database::event_log::Event,
+)> {
+    use cdk_common::database::event_log::{Entity, Event};
+
+    let conn = rusqlite::Connection::open(path).expect("open journal db");
+    let mut stmt = conn
+        .prepare("SELECT entity, record, event FROM journal ORDER BY id")
+        .expect("prepare journal query");
+    let rows = stmt
+        .query_map([], |row| {
+            let entity: i64 = row.get(0)?;
+            let record: String = row.get(1)?;
+            let event: Vec<u8> = row.get(2)?;
+            Ok((entity, record, event))
+        })
+        .expect("query journal");
+    rows.map(|row| {
+        let (entity, record, bytes) = row.expect("journal row");
+        let entity = Entity::try_from(entity as u8).expect("known entity");
+        let event = Event::from_bytes(&bytes).expect("decode event");
+        (entity, record, event)
+    })
+    .collect()
 }
 
 /// Gets the active keyset ID from the mint.

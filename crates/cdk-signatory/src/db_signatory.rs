@@ -6,10 +6,11 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
+use cdk_common::database::{self, JournaledDatabase};
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
-use cdk_common::{database, Error, PublicKey};
+use cdk_common::{Error, PublicKey};
 use tokio::sync::RwLock;
 use tracing::instrument;
 
@@ -47,6 +48,12 @@ impl DbSignatory {
         mut supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<Self, Error> {
+        // Wrap the keystore so keyset creation and activation are journaled
+        // automatically, including the boot-time re-activation done by
+        // `init_keysets` below.
+        let localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync> =
+            Arc::new(JournaledDatabase::new(localstore));
+
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
         init_keysets(xpriv, &secp_ctx, &localstore, &supported_units).await?;
