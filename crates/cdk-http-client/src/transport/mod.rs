@@ -12,10 +12,14 @@ use url::Url;
 use crate::{HttpClient, HttpClientBuilder};
 use crate::{HttpError, RawResponse};
 
-/// Expected HTTP transport
+/// Expected HTTP transport.
+///
+/// Callers that construct a transport implicitly may add a [`Default`] bound,
+/// while configured transports can be supplied directly without implementing
+/// a meaningless default configuration.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait Transport: Default + Send + Sync + Debug + Clone {
+pub trait Transport: Send + Sync + Debug + Clone {
     /// Connect to a WebSocket endpoint using this transport.
     async fn ws_connect(
         &self,
@@ -37,9 +41,16 @@ pub trait Transport: Default + Send + Sync + Debug + Clone {
         accept_invalid_certs: bool,
     ) -> Result<(), HttpError>;
 
-    #[cfg(all(feature = "bip353", not(target_arch = "wasm32")))]
     /// DNS resolver to get TXT records from a domain name.
-    async fn resolve_dns_txt(&self, domain: &str) -> Result<Vec<String>, HttpError>;
+    ///
+    /// Transports that support DNS resolution should override this method. The
+    /// default implementation keeps the trait API stable when the `bip353`
+    /// feature is disabled.
+    async fn resolve_dns_txt(&self, _domain: &str) -> Result<Vec<String>, HttpError> {
+        Err(HttpError::Other(
+            "DNS TXT resolution is not enabled for this transport".to_owned(),
+        ))
+    }
 
     /// HTTP GET request.
     async fn http_get<R>(&self, url: Url, auth: Option<AuthToken>) -> Result<R, HttpError>
