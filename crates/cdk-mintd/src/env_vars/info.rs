@@ -63,6 +63,12 @@ impl Info {
             }
         }
 
+        if let Ok(interval_str) = env::var(ENV_KEYSET_ROTATION_INTERVAL_SECONDS) {
+            if let Ok(interval) = interval_str.parse() {
+                self.keyset_rotation_interval_seconds = Some(interval);
+            }
+        }
+
         // Logging configuration
         if let Ok(output_str) = env::var(ENV_LOGGING_OUTPUT) {
             if let Ok(output) = LoggingOutput::from_str(&output_str) {

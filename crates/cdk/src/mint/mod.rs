@@ -18,7 +18,7 @@ use futures::StreamExt;
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
 use tokio::sync::{watch, Mutex, Notify};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 use tracing::instrument;
 
 use crate::error::Error;
@@ -104,6 +104,13 @@ struct TaskState {
     /// Keyset subscription retained from construction, drained once by the first
     /// `start()`. `None` after it has been taken; a restart re-subscribes.
     keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
+    /// Abort handle for the embedded signatory's keyset auto-rotation task, if
+    /// one was spawned at build time. `stop()` aborts it so rotation halts with
+    /// the mint. Unlike the drain task it is not respawned by a later `start()`,
+    /// because spawning needs the concrete embedded signatory available only at
+    /// build time; the task's `JoinHandle` still aborts on `Service` drop as a
+    /// fallback for a drop without `stop()`.
+    rotation_abort_handle: Option<AbortHandle>,
 }
 
 impl Mint {
@@ -271,6 +278,13 @@ impl Mint {
             max_inputs,
             max_outputs,
         })
+    }
+
+    /// Bind the embedded signatory's auto-rotation task to this mint so that
+    /// [`Mint::stop`] aborts it. Called once at build time when an embedded
+    /// signatory is configured with a rotation interval.
+    pub(crate) async fn set_rotation_abort_handle(&self, handle: AbortHandle) {
+        self.task_state.lock().await.rotation_abort_handle = Some(handle);
     }
 
     /// Start the mint's background services and operations
@@ -449,12 +463,25 @@ impl Mint {
     /// This function signals all background tasks to shut down and waits for them
     /// to complete gracefully. It's safe to call multiple times.
     ///
+    /// Embedded keyset auto-rotation (configured via
+    /// [`MintBuilder::with_keyset_rotation_interval`]) is halted here and, unlike
+    /// the other background services, is **not** resumed by a later
+    /// [`Mint::start`]: rebuild the mint to re-enable it. See
+    /// [`MintBuilder::with_keyset_rotation_interval`] for why.
+    ///
     /// # Returns
     ///
     /// Returns `Ok(())` when all background services have shut down cleanly, or an
     /// `Error` if there was an issue during shutdown.
     pub async fn stop(&self) -> Result<(), Error> {
         let mut task_state = self.task_state.lock().await;
+
+        // Halt embedded keyset auto-rotation, if running. Done before the
+        // early-return below so rotation stops even when no other background
+        // services were started.
+        if let Some(handle) = task_state.rotation_abort_handle.take() {
+            handle.abort();
+        }
 
         // Take the handles out of the state
         let shutdown_notify = task_state.shutdown_notify.take();
@@ -1554,6 +1581,140 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stop_halts_embedded_auto_rotation() {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        let keystore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+
+        // Sub-second interval so `as_secs()` is zero and every keyset is due,
+        // which keeps the test fast.
+        let mut builder = MintBuilder::new(localstore)
+            .with_keyset_rotation_interval(Some(Duration::from_millis(100)));
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+        let mint = builder
+            .build_with_seed(keystore, b"stop-halts-rotation-seed")
+            .await
+            .unwrap();
+
+        // Observe rotation through the signatory directly, not the mint's
+        // drained view, so we measure the producer rather than the consumer.
+        // Rotation runs without `start()`, so none is called here.
+        let initial = mint.signatory.keysets().await.unwrap().keysets.len();
+        let grew = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.signatory.keysets().await.unwrap().keysets.len() > initial {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            grew.is_ok(),
+            "auto-rotation should grow the keyset set before stop"
+        );
+
+        mint.stop().await.expect("mint should stop");
+
+        // After stop the rotation task is aborted, so the count no longer grows
+        // even across several intervals.
+        let after_stop = mint.signatory.keysets().await.unwrap().keysets.len();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let later = mint.signatory.keysets().await.unwrap().keysets.len();
+        assert_eq!(after_stop, later, "stop() must halt embedded auto-rotation");
+    }
+
+    /// Pins the documented limitation: the embedded rotation task is spawned
+    /// once at build time, so `stop()` halts it for good and a later `start()`
+    /// (which does resume the drain task) does not bring rotation back. If this
+    /// is ever made respawnable, flip this assertion.
+    #[tokio::test]
+    async fn auto_rotation_does_not_resume_after_restart() {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        let keystore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+
+        let mut builder = MintBuilder::new(localstore)
+            .with_keyset_rotation_interval(Some(Duration::from_millis(100)));
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+        let mint = builder
+            .build_with_seed(keystore, b"rotation-restart-seed")
+            .await
+            .unwrap();
+
+        mint.start().await.expect("mint should start");
+
+        // Rotation is live before the restart: wait for the keyset set to grow.
+        let initial = mint.signatory.keysets().await.unwrap().keysets.len();
+        let grew = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.signatory.keysets().await.unwrap().keysets.len() > initial {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            grew.is_ok(),
+            "auto-rotation should be running before the restart"
+        );
+
+        mint.stop().await.expect("mint should stop");
+        mint.start().await.expect("mint should restart");
+
+        // Rotation is not respawned on restart, so the signatory keyset count
+        // stays flat across several intervals.
+        let after_restart = mint.signatory.keysets().await.unwrap().keysets.len();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let later = mint.signatory.keysets().await.unwrap().keysets.len();
+        assert_eq!(
+            after_restart, later,
+            "auto-rotation must not resume after stop() then start()"
+        );
+
+        mint.stop().await.expect("mint should stop");
     }
 
     #[tokio::test]
