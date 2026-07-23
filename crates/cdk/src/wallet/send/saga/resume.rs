@@ -4,7 +4,7 @@
 //! by a crash. It determines the actual state by querying the mint and
 //! either completes the operation or compensates.
 
-use cdk_common::wallet::{OperationData, SendSagaState, WalletSaga};
+use cdk_common::wallet::{OperationData, SendSagaState, TransactionStatus, WalletSaga};
 use tracing::instrument;
 
 use crate::nuts::State;
@@ -45,6 +45,8 @@ impl Wallet {
                     "Send saga {} in ProofsReserved state - compensating",
                     saga.id
                 );
+                self.update_transaction_status_by_saga_id(saga.id, TransactionStatus::Failed)
+                    .await?;
                 self.compensate_send(&saga.id).await?;
                 Ok(RecoveryAction::Compensated)
             }
@@ -77,6 +79,8 @@ impl Wallet {
                 "No reserved proofs found for rolling back send saga {} - assuming swap success",
                 saga_id
             );
+            self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
+                .await?;
             self.localstore.delete_saga(saga_id).await?;
             return Ok(RecoveryAction::Recovered);
         }
@@ -90,6 +94,8 @@ impl Wallet {
                 let proof_ys: Vec<_> = reserved_proofs.iter().map(|p| p.y).collect();
                 self.localstore
                     .update_proofs_state(proof_ys, State::Spent)
+                    .await?;
+                self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
                     .await?;
                 self.localstore.delete_saga(saga_id).await?;
                 Ok(RecoveryAction::Recovered)
@@ -143,6 +149,8 @@ impl Wallet {
                 "No reserved proofs found for send saga {} - cleaning up orphaned saga",
                 saga_id
             );
+            self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
+                .await?;
             self.localstore.delete_saga(saga_id).await?;
             return Ok(RecoveryAction::Recovered);
         }
@@ -157,6 +165,8 @@ impl Wallet {
                 );
                 self.localstore
                     .update_proofs_state(proof_ys, State::Spent)
+                    .await?;
+                self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
                     .await?;
                 self.localstore.delete_saga(saga_id).await?;
                 Ok(RecoveryAction::Recovered)
@@ -216,11 +226,13 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, ProofState, State};
     use cdk_common::wallet::{
-        OperationData, SendOperationData, SendSagaState, WalletSaga, WalletSagaState,
+        OperationData, SendOperationData, SendSagaState, Transaction, TransactionDirection,
+        TransactionStatus, WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
 
@@ -397,6 +409,25 @@ mod tests {
             }),
         );
         db.add_saga(saga).await.unwrap();
+        db.add_transaction(Transaction {
+            mint_url: mint_url.clone(),
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::from(100),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![proof_y],
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(saga_id),
+            status: TransactionStatus::Pending,
+        })
+        .await
+        .unwrap();
 
         let mock_client = Arc::new(MockMintConnector::new());
         mock_client.set_check_state_response(Ok(CheckStateResponse {
@@ -420,6 +451,8 @@ mod tests {
         assert_eq!(proofs.len(), 1);
 
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions[0].status, TransactionStatus::Completed);
     }
 
     #[tokio::test]
@@ -510,6 +543,25 @@ mod tests {
             }),
         );
         db.add_saga(saga).await.unwrap();
+        db.add_transaction(Transaction {
+            mint_url: mint_url.clone(),
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::from(100),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![proof_y],
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(saga_id),
+            status: TransactionStatus::Pending,
+        })
+        .await
+        .unwrap();
 
         // Mock: proofs are spent
         let mock_client = Arc::new(MockMintConnector::new());
@@ -533,6 +585,8 @@ mod tests {
         assert_eq!(proofs.len(), 1);
 
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions[0].status, TransactionStatus::Failed);
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ use cdk_common::nuts::{MeltQuoteState, MintQuoteState};
 use cdk_common::secret::Secret;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
-    self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId,
+    self, MintQuote, ProofInfo, Transaction, TransactionDirection, TransactionId, TransactionStatus,
 };
 use cdk_common::{
     database, Amount, CurrencyUnit, Id, KeySet, KeySetInfo, Keys, MintInfo, PaymentMethod, Proof,
@@ -690,7 +690,8 @@ where
                 payment_request,
                 payment_proof,
                 payment_method,
-                saga_id
+                saga_id,
+                status
             FROM
                 transactions
             WHERE
@@ -733,7 +734,8 @@ where
                 payment_request,
                 payment_proof,
                 payment_method,
-                saga_id
+                saga_id,
+                status
             FROM
                 transactions
             "#,
@@ -898,9 +900,9 @@ where
         query(
                r#"
    INSERT INTO transactions
-   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method, saga_id)
+   (id, mint_url, direction, unit, amount, fee, ys, timestamp, memo, metadata, quote_id, payment_request, payment_proof, payment_method, saga_id, status)
    VALUES
-   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method, :saga_id)
+   (:id, :mint_url, :direction, :unit, :amount, :fee, :ys, :timestamp, :memo, :metadata, :quote_id, :payment_request, :payment_proof, :payment_method, :saga_id, :status)
    ON CONFLICT(id) DO UPDATE SET
        mint_url = excluded.mint_url,
        direction = excluded.direction,
@@ -914,7 +916,8 @@ where
        payment_request = excluded.payment_request,
        payment_proof = excluded.payment_proof,
        payment_method = excluded.payment_method,
-       saga_id = excluded.saga_id
+       saga_id = excluded.saga_id,
+       status = excluded.status
    ;
            "#,
            )?
@@ -936,6 +939,7 @@ where
            .bind("payment_proof", transaction.payment_proof)
            .bind("payment_method", transaction.payment_method.map(|pm| pm.to_string()))
            .bind("saga_id", transaction.saga_id.map(|id| id.to_string()))
+           .bind("status", transaction.status.to_string())
            .execute(&*conn)
            .await?;
 
@@ -2248,7 +2252,8 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             payment_request,
             payment_proof,
             payment_method,
-            saga_id
+            saga_id,
+            status
         ) = row
     );
 
@@ -2283,6 +2288,7 @@ fn sql_row_to_transaction(row: Vec<Column>) -> Result<Transaction, Error> {
             .transpose()
             .map_err(Error::from)?,
         saga_id,
+        status: column_as_string!(status, TransactionStatus::from_str),
     })
 }
 

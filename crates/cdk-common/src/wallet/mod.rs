@@ -560,6 +560,9 @@ pub struct Transaction {
     /// Saga ID if this transaction was part of a saga
     #[serde(default)]
     pub saga_id: Option<Uuid>,
+    /// Transaction status
+    #[serde(default)]
+    pub status: TransactionStatus,
 }
 
 impl Transaction {
@@ -616,6 +619,42 @@ pub enum TransactionDirection {
     Incoming,
     /// Outgoing transaction (i.e., send or melt)
     Outgoing,
+}
+
+/// Wallet transaction status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionStatus {
+    /// The transaction is still in progress.
+    Pending,
+    /// The transaction completed successfully.
+    #[default]
+    Completed,
+    /// The transaction failed or was revoked.
+    Failed,
+}
+
+impl fmt::Display for TransactionStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Completed => write!(f, "completed"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+impl FromStr for TransactionStatus {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            _ => Err(Error::InvalidTransactionStatus),
+        }
+    }
 }
 
 impl std::fmt::Display for TransactionDirection {
@@ -1375,5 +1414,55 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn transaction_status_round_trips_and_rejects_unknown_values() {
+        for status in [
+            TransactionStatus::Pending,
+            TransactionStatus::Completed,
+            TransactionStatus::Failed,
+        ] {
+            assert_eq!(
+                TransactionStatus::from_str(&status.to_string()).expect("valid status"),
+                status
+            );
+        }
+
+        assert!(matches!(
+            TransactionStatus::from_str("unknown"),
+            Err(Error::InvalidTransactionStatus)
+        ));
+    }
+
+    #[test]
+    fn transaction_without_status_defaults_to_completed() {
+        let transaction = Transaction {
+            mint_url: MintUrl::from_str("https://mint.example.com").expect("valid mint URL"),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(10),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+            status: TransactionStatus::Pending,
+        };
+        let mut value = serde_json::to_value(transaction).expect("serialize transaction");
+        value
+            .as_object_mut()
+            .expect("transaction serializes as an object")
+            .remove("status");
+
+        let decoded: Transaction =
+            serde_json::from_value(value).expect("deserialize legacy transaction");
+
+        assert_eq!(decoded.status, TransactionStatus::Completed);
     }
 }

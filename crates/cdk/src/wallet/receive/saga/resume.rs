@@ -11,9 +11,16 @@
 //!   If the mint cached the response (NUT-19), signatures are returned immediately.
 //! - **Fallback**: If replay fails, check if inputs are spent and use `/restore`.
 
-use cdk_common::wallet::{OperationData, ReceiveOperationData, ReceiveSagaState, WalletSaga};
+use std::collections::HashMap;
+
+use cdk_common::wallet::{
+    OperationData, ReceiveOperationData, ReceiveSagaState, Transaction, TransactionDirection,
+    TransactionId, TransactionStatus, WalletSaga,
+};
+use cdk_common::{Amount, ProofsMethods};
 use tracing::instrument;
 
+use crate::util::unix_time;
 use crate::wallet::receive::saga::compensation::RemovePendingProofs;
 use crate::wallet::recovery::{RecoveryAction, RecoveryHelpers};
 use crate::wallet::saga::CompensatingAction;
@@ -86,8 +93,61 @@ impl Wallet {
                 "No pending proofs found for receive saga {} - cleaning up orphaned saga",
                 saga_id
             );
+            self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
+                .await?;
             self.localstore.delete_saga(saga_id).await?;
             return Ok(RecoveryAction::Recovered);
+        }
+
+        let proof_ys: Vec<_> = pending_proofs.iter().map(|proof| proof.y).collect();
+        let transaction_id = TransactionId::new(proof_ys.clone());
+        if self
+            .localstore
+            .get_transaction(transaction_id)
+            .await?
+            .is_none()
+        {
+            let proofs = pending_proofs
+                .iter()
+                .map(|proof| proof.proof.clone())
+                .collect::<Vec<_>>();
+            let input_amount = proofs.total_amount()?;
+            let fee = match self.get_proofs_fee(&proofs).await {
+                Ok(fee) => fee.total,
+                Err(error) => {
+                    tracing::warn!(
+                        "Receive saga {} - couldn't reconstruct the historical fee ({}), \
+                         recording the pending transaction with zero fee",
+                        saga_id,
+                        error
+                    );
+                    Amount::ZERO
+                }
+            };
+            let amount = data
+                .amount
+                .unwrap_or(input_amount)
+                .checked_sub(fee)
+                .unwrap_or(Amount::ZERO);
+
+            self.upsert_transaction(Transaction {
+                mint_url: self.mint_url.clone(),
+                direction: TransactionDirection::Incoming,
+                amount,
+                fee,
+                unit: self.unit.clone(),
+                ys: proof_ys,
+                timestamp: unix_time(),
+                memo: None,
+                metadata: HashMap::new(),
+                quote_id: None,
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+                saga_id: Some(*saga_id),
+                status: TransactionStatus::Pending,
+            })
+            .await?;
         }
 
         if let Some(new_proofs) = self
@@ -103,6 +163,8 @@ impl Wallet {
         {
             let input_ys: Vec<_> = pending_proofs.iter().map(|p| p.y).collect();
             self.localstore.update_proofs(new_proofs, input_ys).await?;
+            self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
+                .await?;
             self.localstore.delete_saga(saga_id).await?;
             return Ok(RecoveryAction::Recovered);
         }
@@ -122,6 +184,8 @@ impl Wallet {
                     "Receive saga {} - input proofs not spent, compensating",
                     saga_id
                 );
+                self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
+                    .await?;
                 self.compensate_receive(saga_id).await?;
                 Ok(RecoveryAction::Compensated)
             }
@@ -169,6 +233,8 @@ impl Wallet {
             }
         }
 
+        self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Completed)
+            .await?;
         self.localstore.delete_saga(saga_id).await?;
 
         Ok(())
@@ -195,7 +261,8 @@ mod tests {
 
     use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, ProofState, RestoreResponse, State};
     use cdk_common::wallet::{
-        OperationData, ReceiveOperationData, ReceiveSagaState, WalletSaga, WalletSagaState,
+        OperationData, ReceiveOperationData, ReceiveSagaState, TransactionStatus, WalletSaga,
+        WalletSagaState,
     };
     use cdk_common::Amount;
 
@@ -316,12 +383,9 @@ mod tests {
         let proofs = db.get_proofs(None, None, None, None).await.unwrap();
         assert!(proofs.is_empty());
 
-        // No transactions should be recorded
-        assert!(db
-            .list_transactions(None, None, None)
-            .await
-            .unwrap()
-            .is_empty());
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].status, TransactionStatus::Failed);
     }
 
     #[tokio::test]
@@ -389,6 +453,8 @@ mod tests {
         let reserved = db.get_reserved_proofs(&saga_id).await.unwrap();
         assert!(reserved.is_empty());
 
-        // Note: Receive saga does not record transactions
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].status, TransactionStatus::Completed);
     }
 }

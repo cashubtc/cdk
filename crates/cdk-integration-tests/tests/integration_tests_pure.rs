@@ -31,7 +31,7 @@ use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
 use cdk::types::QuoteTTL;
-use cdk::wallet::types::{TransactionDirection, TransactionId};
+use cdk::wallet::types::{TransactionDirection, TransactionId, TransactionStatus};
 use cdk::wallet::{MintConnector, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint::OperationKind;
@@ -146,6 +146,7 @@ async fn test_swap_to_send() {
     assert_eq!(Amount::from(0), transaction.fee);
     assert_eq!(CurrencyUnit::Sat, transaction.unit);
     assert_eq!(token_proofs.ys().unwrap(), transaction.ys);
+    assert_eq!(TransactionStatus::Pending, transaction.status);
 
     // Alice sends cashu, Carol receives
     let wallet_carol = create_test_wallet_for_mint(mint_bob.clone())
@@ -182,6 +183,7 @@ async fn test_swap_to_send() {
     assert_eq!(CurrencyUnit::Sat, transaction.unit);
     assert_eq!(token_proofs.ys().unwrap(), transaction.ys);
     assert_eq!(token.memo().clone(), transaction.memo);
+    assert_eq!(TransactionStatus::Completed, transaction.status);
 }
 
 /// Tests the NUT-06 functionality (mint discovery):
@@ -233,6 +235,7 @@ async fn test_mint_nut06() {
     assert_eq!(Amount::from(64), transaction.amount);
     assert_eq!(Amount::from(0), transaction.fee);
     assert_eq!(CurrencyUnit::Sat, transaction.unit);
+    assert_eq!(TransactionStatus::Completed, transaction.status);
 
     let initial_mint_url = wallet_alice.mint_url.clone();
     let mint_info_before = wallet_alice

@@ -46,6 +46,9 @@ pub struct Transaction {
     pub payment_method: Option<PaymentMethod>,
     /// Saga ID if this transaction was part of a saga
     pub saga_id: Option<String>,
+    /// Transaction status
+    #[serde(default)]
+    pub status: TransactionStatus,
 }
 
 impl From<cdk::wallet::types::Transaction> for Transaction {
@@ -66,6 +69,7 @@ impl From<cdk::wallet::types::Transaction> for Transaction {
             payment_proof: tx.payment_proof,
             payment_method: tx.payment_method.map(Into::into),
             saga_id: tx.saga_id.map(|id| id.to_string()),
+            status: tx.status.into(),
         }
     }
 }
@@ -98,6 +102,7 @@ impl TryFrom<Transaction> for cdk::wallet::types::Transaction {
                 .map(|id| Uuid::from_str(&id))
                 .transpose()
                 .map_err(|e| FfiError::internal(format!("Invalid saga_id: {}", e)))?,
+            status: tx.status.into(),
         })
     }
 }
@@ -159,6 +164,38 @@ impl From<TransactionDirection> for cdk::wallet::types::TransactionDirection {
         match direction {
             TransactionDirection::Incoming => cdk::wallet::types::TransactionDirection::Incoming,
             TransactionDirection::Outgoing => cdk::wallet::types::TransactionDirection::Outgoing,
+        }
+    }
+}
+
+/// FFI-compatible transaction status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, uniffi::Enum)]
+pub enum TransactionStatus {
+    /// The transaction is still in progress.
+    Pending,
+    /// The transaction completed successfully.
+    #[default]
+    Completed,
+    /// The transaction failed or was revoked.
+    Failed,
+}
+
+impl From<cdk::wallet::types::TransactionStatus> for TransactionStatus {
+    fn from(status: cdk::wallet::types::TransactionStatus) -> Self {
+        match status {
+            cdk::wallet::types::TransactionStatus::Pending => Self::Pending,
+            cdk::wallet::types::TransactionStatus::Completed => Self::Completed,
+            cdk::wallet::types::TransactionStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+impl From<TransactionStatus> for cdk::wallet::types::TransactionStatus {
+    fn from(status: TransactionStatus) -> Self {
+        match status {
+            TransactionStatus::Pending => Self::Pending,
+            TransactionStatus::Completed => Self::Completed,
+            TransactionStatus::Failed => Self::Failed,
         }
     }
 }

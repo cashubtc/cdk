@@ -434,6 +434,9 @@ pub enum Error {
     /// Invalid transaction direction
     #[error("Invalid transaction direction")]
     InvalidTransactionDirection,
+    /// Invalid transaction status
+    #[error("Invalid transaction status")]
+    InvalidTransactionStatus,
     /// Invalid transaction id
     #[error("Invalid transaction id")]
     InvalidTransactionId,
@@ -716,6 +719,7 @@ impl Error {
             | Self::IncorrectQuoteAmount
             | Self::InvoiceDescriptionUnsupported
             | Self::InvalidTransactionDirection
+            | Self::InvalidTransactionStatus
             | Self::InvalidTransactionId
             | Self::InvalidOperationKind
             | Self::InvalidOperationState

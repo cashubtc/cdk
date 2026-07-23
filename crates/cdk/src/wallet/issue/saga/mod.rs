@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::wallet::{
     IssueSagaState, MintOperationData, OperationData, ProofInfo, Transaction, TransactionDirection,
-    WalletSaga, WalletSagaState,
+    TransactionStatus, WalletSaga, WalletSagaState,
 };
 use cdk_common::{PaymentMethod, SecretKey};
 use tracing::instrument;
@@ -45,7 +45,7 @@ use tracing::instrument;
 use self::compensation::{MintCompensation, ReleaseMintQuote};
 use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
+use crate::dhke::{construct_proofs, hash_to_curve};
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::{MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
@@ -854,6 +854,37 @@ impl<'a> MintSaga<'a, Prepared> {
                 return Err(Error::ConcurrentUpdate);
             }
 
+            let transaction_ys = premint_secrets
+                .secrets
+                .iter()
+                .map(|pre_mint| hash_to_curve(pre_mint.secret.as_bytes()))
+                .collect::<Result<Vec<_>, _>>()?;
+            let first_quote_id = quote_ids.first().cloned();
+            let first_quote_request = quote_infos
+                .first()
+                .map(|quote| quote.request.clone())
+                .unwrap_or_default();
+
+            wallet
+                .upsert_transaction(Transaction {
+                    mint_url: wallet.mint_url.clone(),
+                    direction: TransactionDirection::Incoming,
+                    amount: saga.amount,
+                    fee: Amount::ZERO,
+                    unit: wallet.unit.clone(),
+                    ys: transaction_ys,
+                    timestamp: unix_time(),
+                    memo: None,
+                    metadata: HashMap::new(),
+                    quote_id: first_quote_id.clone(),
+                    payment_request: Some(first_quote_request.clone()),
+                    payment_proof: None,
+                    payment_method: Some(payment_method.clone()),
+                    saga_id: Some(operation_id),
+                    status: TransactionStatus::Pending,
+                })
+                .await?;
+
             let mint_res =
                 post_mint_request_with_legacy_fallback(wallet, &payment_method, &mint_request)
                     .await?;
@@ -881,11 +912,6 @@ impl<'a> MintSaga<'a, Prepared> {
             let minted_amount = proofs.total_amount()?;
 
             // Extract first quote info before consuming quote_infos
-            let first_quote_request = quote_infos
-                .first()
-                .map(|q| q.request.clone())
-                .unwrap_or_default();
-
             // Update quote states - for batch, update each quote with its own amount.
             for (index, mut quote_info) in quote_infos.into_iter().enumerate() {
                 if payment_method == PaymentMethod::Known(KnownMethod::Bolt11) {
@@ -920,11 +946,8 @@ impl<'a> MintSaga<'a, Prepared> {
             wallet.localstore.update_proofs(proof_infos, vec![]).await?;
 
             // For transaction, use the first quote's request
-            let first_quote_id = quote_ids.first().cloned();
-
             wallet
-                .localstore
-                .add_transaction(Transaction {
+                .upsert_transaction(Transaction {
                     mint_url: wallet.mint_url.clone(),
                     direction: TransactionDirection::Incoming,
                     amount: minted_amount,
@@ -939,6 +962,7 @@ impl<'a> MintSaga<'a, Prepared> {
                     payment_proof: None,
                     payment_method: Some(payment_method.clone()),
                     saga_id: Some(operation_id),
+                    status: TransactionStatus::Completed,
                 })
                 .await?;
 
@@ -979,6 +1003,12 @@ impl<'a> MintSaga<'a, Prepared> {
                         "Mint saga execution failed (definitive): {}. Running compensations.",
                         e
                     );
+                    wallet
+                        .update_transaction_status_by_saga_id(
+                            operation_id,
+                            TransactionStatus::Failed,
+                        )
+                        .await?;
                     if let Err(comp_err) = execute_compensations(&mut compensations).await {
                         tracing::error!("Compensation failed: {}", comp_err);
                     }

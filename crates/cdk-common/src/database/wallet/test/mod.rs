@@ -18,7 +18,7 @@ use crate::mint_url::MintUrl;
 use crate::nuts::{Id, KeySetInfo, Keys, MintInfo, Proof, State};
 use crate::wallet::{
     MeltQuote, MintQuote, OperationData, ProofInfo, SwapOperationData, SwapSagaState, Transaction,
-    TransactionDirection, WalletSaga, WalletSagaState,
+    TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
 };
 
 /// Generate a unique test ID
@@ -149,6 +149,7 @@ fn test_transaction(mint_url: MintUrl, direction: TransactionDirection) -> Trans
         payment_proof: None,
         payment_method: None,
         saga_id: None,
+        status: TransactionStatus::Completed,
     }
 }
 
@@ -860,6 +861,27 @@ where
     assert_eq!(retrieved.unwrap().id(), tx_id);
 }
 
+/// Test updating a transaction's status through the idempotent add operation.
+pub async fn update_transaction_status<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mut transaction = test_transaction(test_mint_url(), TransactionDirection::Outgoing);
+    transaction.status = TransactionStatus::Pending;
+    let tx_id = transaction.id();
+
+    db.add_transaction(transaction.clone()).await.unwrap();
+    transaction.status = TransactionStatus::Completed;
+    db.add_transaction(transaction).await.unwrap();
+
+    let retrieved = db
+        .get_transaction(tx_id)
+        .await
+        .unwrap()
+        .expect("transaction exists");
+    assert_eq!(retrieved.status, TransactionStatus::Completed);
+}
+
 /// Test listing transactions
 pub async fn list_transactions<DB>(db: DB)
 where
@@ -1560,6 +1582,7 @@ macro_rules! wallet_db_test {
             increment_keyset_counter,
             keyset_counter_isolation,
             add_and_get_transaction,
+            update_transaction_status,
             list_transactions,
             filter_transactions_by_mint,
             remove_transaction,

@@ -68,7 +68,7 @@ use cdk_common::amount::KeysetFeeAndAmounts;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
     KeysetLoadPolicy, OperationData, P2PKLockedProofSendMode, SendOperationData, SendSagaState,
-    Transaction, TransactionDirection, WalletSaga, WalletSagaState,
+    Transaction, TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
 };
 use cdk_common::Id;
 use tracing::instrument;
@@ -926,6 +926,7 @@ impl<'a> SendSaga<'a, Prepared> {
                     payment_proof: None,
                     payment_method: None,
                     saga_id: Some(operation_id),
+                    status: TransactionStatus::Pending,
                 })
                 .await?;
 
@@ -975,6 +976,12 @@ impl<'a> SendSaga<'a, Prepared> {
                         "Send saga confirmation failed (definitive): {}. Running compensations.",
                         e
                     );
+                    self.wallet
+                        .update_transaction_status_by_saga_id(
+                            operation_id,
+                            TransactionStatus::Failed,
+                        )
+                        .await?;
                     execute_compensations(&mut self.compensations).await?;
                 }
                 Err(e)
@@ -1025,7 +1032,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
             // Already spent by recipient
             tracing::info!("Cannot revoke: token already claimed by recipient");
             // We should finalize the saga as "Spent"
-            self.finalize().await?;
+            self.finalize(TransactionStatus::Completed).await?;
             return Err(Error::Custom("Token already claimed".to_string()));
         }
 
@@ -1070,7 +1077,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                     }
                 };
 
-                self.finalize().await?;
+                self.finalize(TransactionStatus::Failed).await?;
 
                 Ok(amount_recovered)
             }
@@ -1118,7 +1125,7 @@ impl<'a> SendSaga<'a, TokenCreated> {
                 "Token for operation {} has been claimed",
                 self.state_data.operation_id
             );
-            self.finalize().await?;
+            self.finalize(TransactionStatus::Completed).await?;
             Ok(true)
         } else {
             Ok(false)
@@ -1126,7 +1133,11 @@ impl<'a> SendSaga<'a, TokenCreated> {
     }
 
     /// Finalize the saga (delete from DB)
-    async fn finalize(self) -> Result<(), Error> {
+    async fn finalize(self, status: TransactionStatus) -> Result<(), Error> {
+        self.wallet
+            .update_transaction_status_by_saga_id(self.state_data.operation_id, status)
+            .await?;
+
         if let Err(e) = self
             .wallet
             .localstore

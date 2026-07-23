@@ -39,7 +39,7 @@ use bitcoin::XOnlyPublicKey;
 use cdk_common::util::unix_time;
 use cdk_common::wallet::{
     OperationData, ProofInfo, ReceiveOperationData, ReceiveSagaState, Transaction,
-    TransactionDirection, WalletSaga, WalletSagaState,
+    TransactionDirection, TransactionStatus, WalletSaga, WalletSagaState,
 };
 use tracing::instrument;
 
@@ -385,11 +385,42 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             return Err(Error::ConcurrentUpdate);
         }
 
+        let total_amount = self
+            .state_data
+            .proofs_amount
+            .checked_sub(fee_breakdown.total)
+            .unwrap_or(Amount::ZERO);
+        self.wallet
+            .upsert_transaction(Transaction {
+                mint_url: self.wallet.mint_url.clone(),
+                direction: TransactionDirection::Incoming,
+                amount: total_amount,
+                fee: fee_breakdown.total,
+                unit: self.wallet.unit.clone(),
+                ys: proofs_ys.clone(),
+                timestamp: unix_time(),
+                memo: self.state_data.memo.clone(),
+                metadata: self.state_data.options.metadata.clone(),
+                quote_id: None,
+                payment_request: None,
+                payment_proof: None,
+                payment_method: None,
+                saga_id: Some(operation_id),
+                status: TransactionStatus::Pending,
+            })
+            .await?;
+
         let swap_response = match self.wallet.client.post_swap(pre_swap.swap_request).await {
             Ok(response) => response,
             Err(err) => {
                 if err.is_definitive_failure() {
                     tracing::error!("Failed to post swap request (definitive): {}", err);
+                    self.wallet
+                        .update_transaction_status_by_saga_id(
+                            operation_id,
+                            TransactionStatus::Failed,
+                        )
+                        .await?;
                     execute_compensations(&mut self.compensations).await?;
                 } else {
                     tracing::warn!("Failed to post swap request (ambiguous): {}.", err,);
@@ -434,8 +465,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
             .await?;
 
         self.wallet
-            .localstore
-            .add_transaction(Transaction {
+            .upsert_transaction(Transaction {
                 mint_url: self.wallet.mint_url.clone(),
                 direction: TransactionDirection::Incoming,
                 amount: total_amount,
@@ -450,6 +480,7 @@ impl<'a> ReceiveSaga<'a, Prepared> {
                 payment_proof: None,
                 payment_method: None,
                 saga_id: Some(operation_id),
+                status: TransactionStatus::Completed,
             })
             .await?;
 

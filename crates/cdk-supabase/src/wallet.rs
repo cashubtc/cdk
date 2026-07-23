@@ -21,7 +21,8 @@ use cdk_common::nuts::{
 use cdk_common::secret::Secret;
 use cdk_common::util::hex;
 use cdk_common::wallet::{
-    self, MintQuote, Transaction, TransactionDirection, TransactionId, WalletSaga,
+    self, MintQuote, Transaction, TransactionDirection, TransactionId, TransactionStatus,
+    WalletSaga,
 };
 use reqwest::{Client, StatusCode};
 use scrypt::Params as ScryptParams;
@@ -2872,6 +2873,8 @@ struct TransactionTable {
     payment_method: Option<String>,
     #[serde(default)]
     saga_id: Option<String>,
+    #[serde(default = "default_transaction_status")]
+    status: String,
     /// Extra fields from other applications (captured during deserialization, ignored during serialization)
     #[serde(default, skip_serializing, flatten)]
     _extra: serde_json::Map<String, serde_json::Value>,
@@ -2928,6 +2931,8 @@ impl TryInto<Transaction> for TransactionTable {
                 .map(|s| uuid::Uuid::parse_str(&s))
                 .transpose()
                 .map_err(|_| DatabaseError::Internal("Invalid saga_id uuid".into()))?,
+            status: TransactionStatus::from_str(&self.status)
+                .map_err(|_| DatabaseError::Internal("Invalid transaction status".into()))?,
         })
     }
 }
@@ -2955,9 +2960,14 @@ impl TryFrom<Transaction> for TransactionTable {
             payment_proof: t.payment_proof,
             payment_method: t.payment_method.map(|p| p.to_string()),
             saga_id: t.saga_id.map(|u| u.to_string()),
+            status: t.status.to_string(),
             _extra: Default::default(),
         })
     }
+}
+
+fn default_transaction_status() -> String {
+    TransactionStatus::Completed.to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
