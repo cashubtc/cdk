@@ -139,6 +139,13 @@ fn query_pairs(conn: &rusqlite::Connection, sql: &str) -> Result<Vec<(String, i6
         .map_err(|e| Error::Database(Box::new(e)))
 }
 
+fn source_mint_quote_accounting(conn: &rusqlite::Connection) -> Result<Vec<(String, i64)>, Error> {
+    query_pairs(
+        conn,
+        "SELECT quote || ':' || COALESCE(amount_paid, CASE WHEN lower(state) IN ('paid', 'issued') THEN amount ELSE 0 END), COALESCE(amount_issued, CASE WHEN lower(state) = 'issued' THEN amount ELSE 0 END) FROM mint_quotes ORDER BY quote",
+    )
+}
+
 fn liability_totals(
     conn: &rusqlite::Connection,
     sql: &str,
@@ -198,10 +205,7 @@ pub fn verify_nutshell_migration(
         )))));
     }
 
-    let source_quote_accounting = query_pairs(
-        &source,
-        "SELECT quote || ':' || COALESCE(amount_paid, 0), COALESCE(amount_issued, 0) FROM mint_quotes ORDER BY quote",
-    )?;
+    let source_quote_accounting = source_mint_quote_accounting(&source)?;
     let target_quote_accounting = query_pairs(
         &target,
         "SELECT id || ':' || amount_paid, amount_issued FROM mint_quote ORDER BY id",
@@ -804,7 +808,7 @@ fn read_proofs_chunk_sqlite(
     let query_str = if spent {
         "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_used ORDER BY secret LIMIT ? OFFSET ?;"
     } else {
-        "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_pending ORDER BY secret LIMIT ? OFFSET ?;"
+        "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_pending pending WHERE NOT EXISTS (SELECT 1 FROM proofs_used used WHERE used.y = pending.y) ORDER BY secret LIMIT ? OFFSET ?;"
     };
     let target_state = if spent {
         ProofState::Spent
@@ -1407,6 +1411,69 @@ mod tests {
 
         let error = validate_nutshell_schema(&conn).expect_err("old schema should be rejected");
         assert!(error.to_string().contains("schema version 35"));
+    }
+
+    #[test]
+    fn quote_accounting_uses_state_fallback_for_null_legacy_columns() {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE mint_quotes (
+                quote TEXT PRIMARY KEY,
+                amount INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                amount_paid INTEGER,
+                amount_issued INTEGER
+            );
+            INSERT INTO mint_quotes VALUES ('paid', 10, 'PAID', NULL, NULL);
+            INSERT INTO mint_quotes VALUES ('issued', 20, 'issued', NULL, NULL);
+            INSERT INTO mint_quotes VALUES ('unpaid', 30, 'unpaid', NULL, NULL);",
+        )
+        .expect("create quote fixtures");
+
+        assert_eq!(
+            source_mint_quote_accounting(&conn).expect("read quote accounting"),
+            vec![
+                ("issued:20".to_string(), 20),
+                ("paid:10".to_string(), 0),
+                ("unpaid:0".to_string(), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn pending_proof_reader_excludes_proofs_already_spent() {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory database");
+        conn.execute_batch(
+            "CREATE TABLE proofs_used (
+                amount INTEGER NOT NULL,
+                id TEXT NOT NULL,
+                c TEXT NOT NULL,
+                secret TEXT NOT NULL,
+                witness TEXT,
+                melt_quote TEXT,
+                y TEXT NOT NULL
+            );
+            CREATE TABLE proofs_pending (
+                amount INTEGER NOT NULL,
+                id TEXT NOT NULL,
+                c TEXT NOT NULL,
+                secret TEXT NOT NULL,
+                witness TEXT,
+                melt_quote TEXT,
+                y TEXT NOT NULL
+            );
+            INSERT INTO proofs_used VALUES (1, '0000000000000000', '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798', 'spent', NULL, NULL, 'duplicate-y');
+            INSERT INTO proofs_pending VALUES (1, '0000000000000000', '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798', 'duplicate', NULL, NULL, 'duplicate-y');
+            INSERT INTO proofs_pending VALUES (1, '0000000000000000', '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798', 'pending', NULL, NULL, 'pending-y');",
+        )
+        .expect("create proof fixtures");
+
+        let pending =
+            read_proofs_chunk_sqlite(&conn, CHUNK_SIZE, 0, false).expect("read pending proofs");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0.secret.to_string(), "pending");
+        assert_eq!(pending[0].3, ProofState::Pending);
+        assert_eq!(source_proof_count(&conn).expect("count unique proofs"), 2);
     }
 
     #[test]

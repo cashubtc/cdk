@@ -817,7 +817,7 @@ async fn read_proofs_chunk_postgres(
     let query_str = if spent {
         "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_used ORDER BY secret LIMIT $1 OFFSET $2;"
     } else {
-        "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_pending ORDER BY secret LIMIT $1 OFFSET $2;"
+        "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_pending pending WHERE NOT EXISTS (SELECT 1 FROM proofs_used used WHERE used.y = pending.y) ORDER BY secret LIMIT $1 OFFSET $2;"
     };
     let target_state = if spent {
         ProofState::Spent

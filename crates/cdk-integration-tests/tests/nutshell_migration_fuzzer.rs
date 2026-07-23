@@ -680,32 +680,6 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
     // Read the seed from nutshell's database directly
     let conn = rusqlite::Connection::open(&nutshell_db_path)?;
 
-    // Fault-injected melts can leave the test wallet's local proof state stale
-    // even though Nutshell committed the proof as spent. Derive the authoritative
-    // balance from the source database without repairing the wallet store; saga
-    // recovery after migration must reconcile the stale state through public APIs.
-    let mut stmt = conn.prepare("SELECT y FROM proofs_used")?;
-    let spent_ys: std::collections::HashSet<cdk::nuts::PublicKey> = stmt
-        .query_map([], |row| row.get::<_, String>(0))?
-        .filter_map(Result::ok)
-        .filter_map(|y| cdk::nuts::PublicKey::from_hex(&y).ok())
-        .collect();
-    let mut balances_before = Vec::new();
-    for (i, store) in wallet_stores.iter().enumerate() {
-        let balance = Amount::try_sum(
-            store
-                .get_proofs(None, None, None, None)
-                .await?
-                .into_iter()
-                .filter(|proof_info| {
-                    proof_info.state == State::Unspent && !spent_ys.contains(&proof_info.y)
-                })
-                .map(|proof_info| proof_info.proof.amount),
-        )?;
-        println!("Wallet {i} balance before migration: {balance}");
-        balances_before.push(balance);
-    }
-
     conn.execute(
         "INSERT INTO proofs_pending (amount, id, c, secret, y, witness, created, melt_quote) VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch(), NULL)",
         rusqlite::params![
@@ -721,12 +695,37 @@ async fn test_nutshell_migration_fuzzer() -> Result<()> {
                 .transpose()?,
         ],
     )?;
+    println!("Inserted deterministic pending proof {forced_pending_y}");
+
+    // Fault-injected melts can leave the test wallet's local proof state stale in
+    // either direction. Derive the authoritative balance from Nutshell's state
+    // tables without repairing the wallet store; saga recovery after migration
+    // must reconcile that stale state through public APIs.
+    let mut stmt = conn.prepare("SELECT y FROM proofs_used UNION SELECT y FROM proofs_pending")?;
+    let unavailable_ys: std::collections::HashSet<cdk::nuts::PublicKey> = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(Result::ok)
+        .filter_map(|y| cdk::nuts::PublicKey::from_hex(&y).ok())
+        .collect();
+    let mut balances_before = Vec::new();
+    for (i, store) in wallet_stores.iter().enumerate() {
+        let balance = Amount::try_sum(
+            store
+                .get_proofs(None, None, None, None)
+                .await?
+                .into_iter()
+                .filter(|proof_info| !unavailable_ys.contains(&proof_info.y))
+                .map(|proof_info| proof_info.proof.amount),
+        )?;
+        println!("Wallet {i} balance before migration: {balance}");
+        balances_before.push(balance);
+    }
+
     let failed_melt_quote = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO melt_quotes (quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time, paid_time, fee_paid, proof, state, expiry) VALUES (?1, 'bolt11', 'failed-fixture', ?2, 'sat', 2, 0, 0, unixepoch(), NULL, 0, NULL, 'FAILED', unixepoch() + 3600)",
         rusqlite::params![failed_melt_quote, format!("checking-{failed_melt_quote}")],
     )?;
-    println!("Inserted deterministic pending proof {forced_pending_y}");
     let seed_str: String = conn.query_row(
         "SELECT seed FROM keysets WHERE active = 1 LIMIT 1;",
         [],
