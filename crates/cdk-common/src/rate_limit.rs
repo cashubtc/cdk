@@ -127,6 +127,14 @@ struct BucketState {
     /// Theoretical arrival time: the moment the most recently reserved request
     /// is scheduled for.
     arrival_time: Instant,
+    /// Time to earn one request's worth of budget.
+    emission_interval: Duration,
+    /// Burst window: how far the arrival time may run ahead of now before
+    /// callers must wait.
+    tolerance: Duration,
+    /// When `false` the bucket admits every request immediately, bypassing
+    /// pacing. Toggled at runtime through [`TokenBucket::set_enabled`].
+    enabled: bool,
 }
 
 /// Handle to the single background writer for a persisted bucket.
@@ -143,15 +151,18 @@ struct Writer {
 
 #[derive(Debug)]
 struct TokenBucketInner {
-    /// Time to earn one request's worth of budget.
-    emission_interval: Duration,
-    /// Burst window: how far the arrival time may run ahead of now before
-    /// callers must wait.
-    tolerance: Duration,
     state: Mutex<BucketState>,
     persistence: Option<Arc<dyn BudgetStore>>,
     /// Loads the budget once and starts the single writer, both on first use.
     started: OnceCell<Option<Writer>>,
+}
+
+/// Derive the GCRA parameters (emission interval and burst tolerance) from a
+/// [`RateLimitConfig`].
+fn params_from_config(config: RateLimitConfig) -> (Duration, Duration) {
+    let emission_interval = Duration::from_secs(60) / config.refill_per_minute.get();
+    let tolerance = emission_interval * (config.capacity.get() - 1);
+    (emission_interval, tolerance)
 }
 
 /// A GCRA rate limiter.
@@ -191,20 +202,41 @@ impl TokenBucket {
     }
 
     fn build(config: RateLimitConfig, persistence: Option<Arc<dyn BudgetStore>>) -> Self {
-        let emission_interval = Duration::from_secs(60) / config.refill_per_minute.get();
-        let tolerance = emission_interval * (config.capacity.get() - 1);
+        let (emission_interval, tolerance) = params_from_config(config);
 
         Self {
             inner: Arc::new(TokenBucketInner {
-                emission_interval,
-                tolerance,
                 state: Mutex::new(BucketState {
                     arrival_time: Instant::now(),
+                    emission_interval,
+                    tolerance,
+                    enabled: true,
                 }),
                 persistence,
                 started: OnceCell::new(),
             }),
         }
+    }
+
+    /// Replace the pacing configuration and enable pacing.
+    ///
+    /// Affects every clone that shares this bucket (main and blind-auth
+    /// clients). The current budget (arrival time) is kept; only the sustained
+    /// rate and burst window change.
+    pub fn set_config(&self, config: RateLimitConfig) {
+        let (emission_interval, tolerance) = params_from_config(config);
+        let mut state = lock(&self.inner.state);
+        state.emission_interval = emission_interval;
+        state.tolerance = tolerance;
+        state.enabled = true;
+    }
+
+    /// Enable or disable pacing at runtime.
+    ///
+    /// While disabled the bucket admits every request immediately and reserves
+    /// nothing. Re-enabling resumes pacing from the current budget.
+    pub fn set_enabled(&self, enabled: bool) {
+        lock(&self.inner.state).enabled = enabled;
     }
 
     /// Wait until a slot is available, then run `action` and return its output.
@@ -227,25 +259,34 @@ impl TokenBucket {
     /// slot. Persistence never blocks here: `publish` only updates the cache.
     async fn reserve_slot(&self) -> Duration {
         self.ensure_started().await;
-        let (wait, millis) = self.advance();
-        self.publish(millis);
-        wait
+        match self.advance() {
+            Some((wait, millis)) => {
+                self.publish(millis);
+                wait
+            }
+            // Pacing is disabled: admit immediately, reserve nothing.
+            None => Duration::ZERO,
+        }
     }
 
     /// Consume a slot without waiting.
     ///
     /// Returns `true` and consumes a slot if one is available within the burst
-    /// window; returns `false` and reserves nothing otherwise.
+    /// window; returns `false` and reserves nothing otherwise. When pacing is
+    /// disabled it always returns `true` without reserving.
     pub async fn try_acquire(&self) -> bool {
         self.ensure_started().await;
         let reserved = {
             let mut state = lock(&self.inner.state);
+            if !state.enabled {
+                return true;
+            }
             let base = state.arrival_time.max(Instant::now());
             let ahead = base.saturating_duration_since(Instant::now());
-            if ahead > self.inner.tolerance {
+            if ahead > state.tolerance {
                 None
             } else {
-                state.arrival_time = base + self.inner.emission_interval;
+                state.arrival_time = base + state.emission_interval;
                 Some(tat_to_unix_millis(state.arrival_time))
             }
         };
@@ -260,15 +301,19 @@ impl TokenBucket {
 
     /// Advance the theoretical arrival time by one slot under the lock. Returns
     /// the wait before the slot may be used and the new budget (wall-clock TAT
-    /// in millis) to publish, so the caller need not relock the state.
-    fn advance(&self) -> (Duration, u64) {
+    /// in millis) to publish, so the caller need not relock the state. Returns
+    /// `None` when pacing is disabled, so the caller admits without reserving.
+    fn advance(&self) -> Option<(Duration, u64)> {
         let mut state = lock(&self.inner.state);
+        if !state.enabled {
+            return None;
+        }
         let now = Instant::now();
         let base = state.arrival_time.max(now);
         let ahead = base.saturating_duration_since(now);
-        let wait = ahead.saturating_sub(self.inner.tolerance);
-        state.arrival_time = base + self.inner.emission_interval;
-        (wait, tat_to_unix_millis(state.arrival_time))
+        let wait = ahead.saturating_sub(state.tolerance);
+        state.arrival_time = base + state.emission_interval;
+        Some((wait, tat_to_unix_millis(state.arrival_time)))
     }
 
     /// On first use, load the persisted budget once and start the single writer.
@@ -294,11 +339,12 @@ impl TokenBucket {
                     // value cannot wedge the wallet. The side effect is that a
                     // restart forgives any backpressure beyond one burst:
                     // inherited debt is never more than `tolerance`.
+                    let mut state = lock(&self.inner.state);
                     let debt = tat_wall
                         .duration_since(SystemTime::now())
                         .unwrap_or_default()
-                        .min(self.inner.tolerance);
-                    lock(&self.inner.state).arrival_time = Instant::now() + debt;
+                        .min(state.tolerance);
+                    state.arrival_time = Instant::now() + debt;
                 }
 
                 // Start the one writer. It owns only the store and channels (never
@@ -716,6 +762,20 @@ mod tests {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
     }
 
+    #[test]
+    fn kv_key_ignores_default_port() {
+        // `Url::parse` normalizes a scheme-default port away, so an explicit
+        // `:443` and an implicit default map to one budget for the same host.
+        let implicit = kv_key_for(&MintUrl::from_str("https://mint.example.com").unwrap());
+        let explicit = kv_key_for(&MintUrl::from_str("https://mint.example.com:443").unwrap());
+        assert_eq!(implicit, explicit);
+        assert_eq!(implicit.as_deref(), Some("mint_example_com"));
+
+        // A non-default port still yields a distinct budget.
+        let other = kv_key_for(&MintUrl::from_str("https://mint.example.com:8443").unwrap());
+        assert_ne!(implicit, other);
+    }
+
     // Timing tests use a 200ms emission interval (refill 300/min) so the pace
     // signal sits well clear of scheduler noise: an unthrottled burst finishes
     // in well under 100ms, a paced request waits ~200ms.
@@ -749,6 +809,61 @@ mod tests {
         assert!(bucket.try_acquire().await);
         assert!(!bucket.try_acquire().await);
         // A failed try_acquire reserves nothing, so it stays false.
+        assert!(!bucket.try_acquire().await);
+    }
+
+    #[tokio::test]
+    async fn disabled_bucket_admits_immediately() {
+        // capacity 1 => the second acquire would normally block.
+        let bucket = TokenBucket::new(config(1, 60));
+        bucket.set_enabled(false);
+        let start = StdInstant::now();
+        for _ in 0..10 {
+            bucket.acquire(async {}).await;
+        }
+        assert!(start.elapsed() < Duration::from_millis(100));
+        // try_acquire also always admits while disabled.
+        assert!(bucket.try_acquire().await);
+        assert!(bucket.try_acquire().await);
+    }
+
+    #[tokio::test]
+    async fn re_enabling_resumes_pacing() {
+        let bucket = TokenBucket::new(config(1, 300));
+        bucket.set_enabled(false);
+        // Drain freely while disabled.
+        for _ in 0..5 {
+            bucket.acquire(async {}).await;
+        }
+        // Re-enable with a fresh config; the first burst slot is free, the next
+        // one must wait for the ~200ms emission interval.
+        bucket.set_config(config(1, 300));
+        bucket.acquire(async {}).await;
+        let start = StdInstant::now();
+        bucket.acquire(async {}).await;
+        assert!(start.elapsed() >= Duration::from_millis(150));
+    }
+
+    #[tokio::test]
+    async fn set_config_changes_rate() {
+        // Start slow (capacity 1), then widen the burst so several go through.
+        let bucket = TokenBucket::new(config(1, 60));
+        bucket.set_config(config(5, 600));
+        let start = StdInstant::now();
+        for _ in 0..5 {
+            bucket.acquire(async {}).await;
+        }
+        assert!(start.elapsed() < Duration::from_millis(100));
+    }
+
+    #[tokio::test]
+    async fn set_config_re_enables_a_disabled_bucket() {
+        let bucket = TokenBucket::new(config(2, 600));
+        bucket.set_enabled(false);
+        // set_config turns pacing back on, so the burst is enforced again.
+        bucket.set_config(config(2, 600));
+        assert!(bucket.try_acquire().await);
+        assert!(bucket.try_acquire().await);
         assert!(!bucket.try_acquire().await);
     }
 

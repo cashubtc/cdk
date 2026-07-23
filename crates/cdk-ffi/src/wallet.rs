@@ -4,7 +4,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use bip39::Mnemonic;
-use cdk::wallet::{Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
+use cdk::wallet::{RateLimitConfig, Wallet as CdkWallet, WalletBuilder as CdkWalletBuilder};
 
 use crate::error::FfiError;
 use crate::token::Token;
@@ -114,6 +114,36 @@ impl Wallet {
     pub fn set_metadata_cache_ttl(&self, ttl_secs: Option<u64>) {
         let ttl = ttl_secs.map(std::time::Duration::from_secs);
         self.inner.set_metadata_cache_ttl(ttl);
+    }
+
+    /// Change client-side request rate limiting on this wallet.
+    ///
+    /// A new wallet is built with the default limiter enabled. Use this to
+    /// disable it, restore the default, or set a custom burst and refill. It
+    /// takes effect immediately on the live wallet and is shared by the main and
+    /// blind-auth clients.
+    ///
+    /// Returns an error if a `Custom` value has a zero field.
+    pub fn set_rate_limit(&self, rate_limit: RateLimit) -> Result<(), FfiError> {
+        match rate_limit {
+            RateLimit::Default => self
+                .inner
+                .set_rate_limiting_config(RateLimitConfig::default()),
+            RateLimit::Disabled => self.inner.disable_rate_limiting(),
+            RateLimit::Custom {
+                capacity,
+                refill_per_minute,
+            } => {
+                let config =
+                    RateLimitConfig::try_new(capacity, refill_per_minute).ok_or_else(|| {
+                        FfiError::internal(
+                            "rate limit capacity and refill_per_minute must be non-zero",
+                        )
+                    })?;
+                self.inner.set_rate_limiting_config(config);
+            }
+        }
+        Ok(())
     }
 
     /// Get total balance
@@ -913,6 +943,42 @@ impl Wallet {
     }
 }
 
+/// Client-side request pacing for a wallet's mint traffic.
+///
+/// A new wallet always starts with the built-in default pacing so it stays
+/// under a mint's per-minute request cap. Pass one of these to
+/// [`Wallet::set_rate_limit`] to change it on a live wallet.
+///
+/// # Example
+///
+/// ```ignore
+/// // Turn pacing off (e.g. a mint with no request cap).
+/// wallet.set_rate_limit(RateLimit::Disabled)?;
+///
+/// // Restore the built-in default pacing.
+/// wallet.set_rate_limit(RateLimit::Default)?;
+///
+/// // Allow a burst of 20 requests, refilling 60 per minute.
+/// wallet.set_rate_limit(RateLimit::Custom {
+///     capacity: 20,
+///     refill_per_minute: 60,
+/// })?;
+/// ```
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum RateLimit {
+    /// Built-in default pacing (capacity 10, refill 45/min).
+    Default,
+    /// No client-side pacing.
+    Disabled,
+    /// Custom burst capacity and per-minute refill. Both must be non-zero.
+    Custom {
+        /// Maximum burst: requests allowed back-to-back before pacing kicks in.
+        capacity: u32,
+        /// Sustained rate: requests earned back per minute.
+        refill_per_minute: u32,
+    },
+}
+
 /// Configuration for creating wallets
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct WalletConfig {
@@ -972,5 +1038,41 @@ mod tests {
             .await
             .expect("trait call should mint zero from empty quote store");
         assert!(trait_minted.is_zero());
+    }
+
+    #[test]
+    fn set_rate_limit_accepts_default_disabled_and_custom() {
+        let wallet = test_wallet();
+
+        wallet
+            .set_rate_limit(RateLimit::Default)
+            .expect("default is always valid");
+        wallet
+            .set_rate_limit(RateLimit::Disabled)
+            .expect("disabled is always valid");
+        wallet
+            .set_rate_limit(RateLimit::Custom {
+                capacity: 20,
+                refill_per_minute: 60,
+            })
+            .expect("non-zero custom is valid");
+    }
+
+    #[test]
+    fn set_rate_limit_rejects_zero_custom() {
+        let wallet = test_wallet();
+
+        assert!(wallet
+            .set_rate_limit(RateLimit::Custom {
+                capacity: 0,
+                refill_per_minute: 60,
+            })
+            .is_err());
+        assert!(wallet
+            .set_rate_limit(RateLimit::Custom {
+                capacity: 10,
+                refill_per_minute: 0,
+            })
+            .is_err());
     }
 }

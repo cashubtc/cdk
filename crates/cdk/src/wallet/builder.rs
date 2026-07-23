@@ -257,10 +257,13 @@ impl WalletBuilder {
         // A single rate-limited transport, shared by the main client and the
         // blind-auth client so both draw down one persisted budget and reuse one
         // connection pool.
-        let shared_transport = self.rate_limit.take().map(|config| {
-            let bucket = TokenBucket::for_mint(config, &mint_url, localstore.clone());
-            Arc::new(RateLimitedTransport::with_bucket(Async::default(), bucket))
-        });
+        let rate_limit_bucket = self
+            .rate_limit
+            .take()
+            .map(|config| TokenBucket::for_mint(config, &mint_url, localstore.clone()));
+        let shared_transport = rate_limit_bucket
+            .clone()
+            .map(|bucket| Arc::new(RateLimitedTransport::with_bucket(Async::default(), bucket)));
 
         // The auth wallet comes either from a CAT set on the builder (built here
         // so it can share the transport) or from a pre-built wallet supplied
@@ -315,6 +318,7 @@ impl WalletBuilder {
             seed,
             client: client.clone(),
             subscription: SubscriptionManager::new(client, self.use_http_subscription),
+            rate_limit: rate_limit_bucket,
         })
     }
 }

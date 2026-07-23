@@ -141,6 +141,12 @@ pub struct Wallet {
     seed: [u8; 64],
     client: Arc<dyn MintConnector + Send + Sync>,
     subscription: SubscriptionManager,
+    /// Handle to the shared client-side rate limiter, when one was built.
+    ///
+    /// `None` when the wallet was built with rate limiting disabled. Cloning the
+    /// bucket shares one budget, so this reconfigures the same limiter the
+    /// transport paces through.
+    rate_limit: Option<TokenBucket>,
 }
 
 const ALPHANUMERIC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -279,6 +285,27 @@ impl Wallet {
             .seed(seed)
             .target_proof_count(target_proof_count.unwrap_or(3))
             .build()
+    }
+
+    /// Replace the client-side rate-limit configuration at runtime.
+    ///
+    /// Affects the shared budget used by both the main and blind-auth clients.
+    /// This is a no-op when the wallet was built with rate limiting disabled
+    /// ([`WalletBuilder::without_rate_limiting`]), since there is no limiter to
+    /// reconfigure.
+    pub fn set_rate_limiting_config(&self, config: RateLimitConfig) {
+        if let Some(bucket) = &self.rate_limit {
+            bucket.set_config(config);
+        }
+    }
+
+    /// Disable client-side rate limiting at runtime.
+    ///
+    /// A no-op when the wallet was built without rate limiting.
+    pub fn disable_rate_limiting(&self) {
+        if let Some(bucket) = &self.rate_limit {
+            bucket.set_enabled(false);
+        }
     }
 
     /// Subscribe to events
