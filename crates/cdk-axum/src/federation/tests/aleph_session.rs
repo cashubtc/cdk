@@ -896,6 +896,330 @@ async fn byzantine_paid_melt_observation_without_saga_rejects_item_without_halt(
 }
 
 #[tokio::test]
+async fn duplicate_pending_and_paid_melts_reject_without_halting_later_finality() {
+    let session = start_two_member_aleph_bft_live_session(fast_aleph_bft_live_session_options(
+        CdkAlephBftNetworkPumpConfig {
+            session_id: 0,
+            max_messages_per_tick: 128,
+            max_peer_deliveries_per_message: 128,
+        },
+        500,
+    ))
+    .await
+    .expect("start two-member live session");
+    let runtime_config = session
+        .first_state
+        .mint
+        .federation_config()
+        .expect("federation config")
+        .clone();
+    let request = cdk::MeltQuoteRequest::Bolt11(MeltQuoteBolt11Request {
+        request: create_fake_invoice(1_000, String::new()),
+        unit: CurrencyUnit::Sat,
+        options: None,
+    });
+    let cdk::MeltQuoteRequest::Bolt11(bolt11_request) = &request else {
+        unreachable!("test request is bolt11");
+    };
+    let request_lookup_id =
+        PaymentIdentifier::PaymentHash(*bolt11_request.request.payment_hash().as_ref());
+    let original_quote = QuoteId::new();
+    let pending_duplicate_quote = QuoteId::new();
+    let duplicate_quote = QuoteId::new();
+
+    for quote in [
+        &original_quote,
+        &pending_duplicate_quote,
+        &duplicate_quote,
+    ] {
+        let quote_envelope = test_melt_quote_operation_with_lookup_id(
+            &runtime_config,
+            quote.clone(),
+            request.clone(),
+            request_lookup_id.clone(),
+        );
+        let operation_id =
+            submit_live_operation_allowing_pending_timeout(&session.first_state, quote_envelope)
+                .await;
+        for state in [&session.first_state, &session.second_state] {
+            assert_eq!(
+                wait_for_terminal_operation(state, operation_id).await,
+                FederationOperationStatus::Applied
+            );
+        }
+    }
+
+    let original_inputs = vec![
+        proof_for_amount(&session.first_state, 1, "duplicate-paid-original-one"),
+        proof_for_amount(&session.first_state, 1, "duplicate-paid-original-two"),
+    ];
+    let original_input_ys = original_inputs
+        .iter()
+        .map(|proof| proof.y().expect("original proof y"))
+        .collect::<Vec<_>>();
+    let original_envelope = runtime_config
+        .melt_operation(cdk::nuts::MeltRequest::new(
+            original_quote.clone(),
+            original_inputs,
+            None,
+        ))
+        .expect("original melt envelope");
+    let original_operation_id = original_envelope
+        .operation_id()
+        .expect("original operation id");
+    let pending_duplicate_inputs = vec![
+        proof_for_amount(&session.first_state, 1, "duplicate-pending-second-one"),
+        proof_for_amount(&session.first_state, 1, "duplicate-pending-second-two"),
+    ];
+    let pending_duplicate_input_ys = pending_duplicate_inputs
+        .iter()
+        .map(|proof| proof.y().expect("pending duplicate proof y"))
+        .collect::<Vec<_>>();
+    let pending_duplicate_envelope = runtime_config
+        .melt_operation(cdk::nuts::MeltRequest::new(
+            pending_duplicate_quote.clone(),
+            pending_duplicate_inputs,
+            None,
+        ))
+        .expect("pending duplicate melt envelope");
+    let pending_duplicate_operation_id = pending_duplicate_envelope
+        .operation_id()
+        .expect("pending duplicate operation id");
+    {
+        let consensus = session
+            .first_state
+            .federation
+            .consensus
+            .as_ref()
+            .expect("consensus");
+        let mut consensus = consensus.lock().await;
+        assert_eq!(
+            consensus
+                .submit_operation(original_envelope)
+                .expect("queue original melt"),
+            FederationConsensusItemAdmission::Accepted
+        );
+        assert_eq!(
+            consensus
+                .submit_operation(pending_duplicate_envelope)
+                .expect("queue concurrent duplicate melt"),
+            FederationConsensusItemAdmission::Accepted
+        );
+    }
+    let pending_driver_quote = QuoteId::new();
+    let pending_driver_operation_id = submit_live_operation_allowing_pending_timeout(
+        &session.second_state,
+        mint_quote_envelope(&session.second_state, &pending_driver_quote),
+    )
+    .await;
+    for state in [&session.first_state, &session.second_state] {
+        assert_eq!(
+            wait_for_terminal_operation(state, original_operation_id).await,
+            FederationOperationStatus::Applied
+        );
+        assert_eq!(
+            wait_for_terminal_operation(state, pending_duplicate_operation_id).await,
+            FederationOperationStatus::Rejected
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_melt_quote(&pending_duplicate_quote)
+                .await
+                .expect("pending duplicate quote lookup")
+                .expect("pending duplicate quote")
+                .state,
+            MeltQuoteState::Unpaid
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&pending_duplicate_input_ys)
+                .await
+                .expect("pending duplicate proof states"),
+            vec![None, None]
+        );
+        assert!(
+            !matches!(
+                state.federation_sync_status().await,
+                Some(crate::FederationSyncStatus::Halted { .. })
+            ),
+            "concurrent duplicate melt must not halt a member"
+        );
+        assert_eq!(
+            wait_for_terminal_operation(state, pending_driver_operation_id).await,
+            FederationOperationStatus::Applied
+        );
+    }
+
+    let actor_observation =
+        submit_melt_payment_observation_from_backend(&session.first_state, &original_quote).await;
+    for state in [&session.first_state, &session.second_state] {
+        assert_eq!(
+            wait_for_terminal_operation(state, actor_observation.operation_id).await,
+            FederationOperationStatus::Applied
+        );
+    }
+    let follower_observation = matching_melt_payment_observation_envelope(
+        &session.second_state,
+        &actor_observation.observation,
+    );
+    let follower_observation_id = submit_live_operation_allowing_pending_timeout(
+        &session.second_state,
+        follower_observation,
+    )
+    .await;
+    for state in [&session.first_state, &session.second_state] {
+        assert_eq!(
+            wait_for_terminal_operation(state, follower_observation_id).await,
+            FederationOperationStatus::Applied
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_melt_quote(&original_quote)
+                .await
+                .expect("original quote lookup")
+                .expect("original quote")
+                .state,
+            MeltQuoteState::Paid
+        );
+    }
+
+    let duplicate_inputs = vec![
+        proof_for_amount(&session.first_state, 1, "duplicate-paid-second-one"),
+        proof_for_amount(&session.first_state, 1, "duplicate-paid-second-two"),
+    ];
+    let duplicate_input_ys = duplicate_inputs
+        .iter()
+        .map(|proof| proof.y().expect("duplicate proof y"))
+        .collect::<Vec<_>>();
+    let duplicate_envelope = runtime_config
+        .melt_operation(cdk::nuts::MeltRequest::new(
+            duplicate_quote.clone(),
+            duplicate_inputs,
+            None,
+        ))
+        .expect("duplicate melt envelope");
+    let duplicate_operation_id = duplicate_envelope
+        .operation_id()
+        .expect("duplicate operation id");
+    let duplicate_retry = duplicate_envelope.clone();
+    let submit_state = session.first_state.clone();
+    let duplicate_submit = tokio::spawn(async move {
+        submit_state
+            .submit_federation_envelope_to_consensus(duplicate_envelope)
+            .await
+    });
+    let duplicate_error = time::timeout(Duration::from_secs(20), duplicate_submit)
+        .await
+        .expect("duplicate melt submission timeout")
+        .expect("duplicate melt submission task")
+        .expect_err("duplicate paid melt must be rejected");
+    assert!(matches!(duplicate_error, cdk::Error::RequestAlreadyPaid));
+
+    for state in [&session.first_state, &session.second_state] {
+        assert_eq!(
+            wait_for_terminal_operation(state, duplicate_operation_id).await,
+            FederationOperationStatus::Rejected
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_melt_quote(&duplicate_quote)
+                .await
+                .expect("duplicate quote lookup")
+                .expect("duplicate quote")
+                .state,
+            MeltQuoteState::Unpaid
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&duplicate_input_ys)
+                .await
+                .expect("duplicate proof states"),
+            vec![None, None]
+        );
+        assert_eq!(
+            state
+                .mint
+                .localstore()
+                .get_proofs_states(&original_input_ys)
+                .await
+                .expect("original proof states"),
+            vec![Some(cdk::nuts::State::Spent), Some(cdk::nuts::State::Spent)]
+        );
+        assert!(
+            !matches!(
+                state.federation_sync_status().await,
+                Some(crate::FederationSyncStatus::Halted { .. })
+            ),
+            "a duplicate paid melt must not halt a member"
+        );
+        assert!(state.federation_aleph_bft_live_session_active().await);
+    }
+
+    assert!(matches!(
+        session
+            .first_state
+            .submit_federation_envelope_to_consensus(duplicate_retry)
+            .await,
+        Err(cdk::Error::RequestAlreadyPaid)
+    ));
+
+    let trailing_quote = QuoteId::new();
+    let trailing_envelope = mint_quote_envelope(&session.second_state, &trailing_quote);
+    let trailing_operation_id =
+        submit_live_operation_allowing_pending_timeout(&session.second_state, trailing_envelope)
+            .await;
+    for state in [&session.first_state, &session.second_state] {
+        assert_eq!(
+            wait_for_terminal_operation(state, trailing_operation_id).await,
+            FederationOperationStatus::Applied
+        );
+        assert!(
+            state
+                .mint
+                .localstore()
+                .get_mint_quote(&trailing_quote)
+                .await
+                .expect("trailing quote lookup")
+                .is_some()
+        );
+        let (restarted, _) = crate::create_federation_runtime_state(&state.mint)
+            .await
+            .expect("restart runtime from rejected melt history");
+        let restarted = restarted.expect("restarted consensus");
+        assert_eq!(
+            restarted
+                .lock()
+                .await
+                .journal()
+                .entry_by_operation_id(duplicate_operation_id)
+                .expect("restarted duplicate journal entry")
+                .status(),
+            FederationOperationStatus::Rejected
+        );
+        assert_eq!(
+            restarted
+                .lock()
+                .await
+                .journal()
+                .entry_by_operation_id(pending_duplicate_operation_id)
+                .expect("restarted pending duplicate journal entry")
+                .status(),
+            FederationOperationStatus::Rejected
+        );
+    }
+}
+
+#[tokio::test]
 async fn stateful_invalid_chain_deposit_rejects_item_without_halt() {
     let (public_config, local_private, peer_private) = transport_config();
     let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
@@ -2538,4 +2862,3 @@ async fn aleph_bft_live_sessions_auto_rotate_after_session_completion() {
     drop(first_handle);
     drop(second_handle);
 }
-

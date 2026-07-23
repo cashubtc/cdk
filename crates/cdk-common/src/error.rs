@@ -621,6 +621,7 @@ mod tests {
         // Test definitive failures
         assert!(Error::AmountOverflow.is_definitive_failure());
         assert!(Error::MintingDisabled.is_definitive_failure());
+        assert!(Error::RequestAlreadyPaid.is_definitive_failure());
         assert!(Error::MaxInputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
         assert!(Error::MaxOutputsExceeded { actual: 2, max: 1 }.is_definitive_failure());
 
@@ -853,6 +854,7 @@ impl Error {
             | Self::UnpaidQuote
             | Self::IssuedQuote
             | Self::PaidQuote
+            | Self::RequestAlreadyPaid
             | Self::MeltingDisabled
             | Self::UnknownKeySet
             | Self::InactiveKeyset

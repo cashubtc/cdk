@@ -126,7 +126,7 @@ pub(super) async fn mark_federation_operation_apply_failure(
     operation_id: FederationOperationId,
     error: cdk::Error,
 ) -> Result<(FederationOperationStatus, cdk::Error), cdk::Error> {
-    if !error.is_definitive_failure() {
+    if !is_definitive_federation_apply_rejection(&error) {
         let status = persist_federation_operation_apply_failure(mint, operation_id, None).await?;
         return Ok((status, error));
     }
@@ -135,6 +135,13 @@ pub(super) async fn mark_federation_operation_apply_failure(
     let status =
         persist_federation_operation_apply_failure(mint, operation_id, Some(&rejection)).await?;
     Ok((status, cdk::Error::from(rejection)))
+}
+
+fn is_definitive_federation_apply_rejection(error: &cdk::Error) -> bool {
+    // A wallet-facing PendingQuote remains ambiguous, but after consensus
+    // ordering it means an earlier operation already owns the related quote.
+    // The losing operation made no state change and is safe to reject.
+    error.is_definitive_failure() || matches!(error, cdk::Error::PendingQuote)
 }
 
 pub(crate) async fn apply_federation_journal_entry_for_replay(
@@ -677,5 +684,24 @@ impl FederationNodeRuntime {
             .ok_or_else(|| runtime_unavailable("AlephBFT activity receiver"))?;
         handle.mark_peer_activity(operation_id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_definitive_federation_apply_rejection;
+
+    #[test]
+    fn ordered_pending_quote_is_a_rejection_without_changing_wallet_semantics() {
+        assert!(!cdk::Error::PendingQuote.is_definitive_failure());
+        assert!(is_definitive_federation_apply_rejection(
+            &cdk::Error::PendingQuote
+        ));
+        assert!(is_definitive_federation_apply_rejection(
+            &cdk::Error::RequestAlreadyPaid
+        ));
+        assert!(!is_definitive_federation_apply_rejection(
+            &cdk::Error::Internal
+        ));
     }
 }

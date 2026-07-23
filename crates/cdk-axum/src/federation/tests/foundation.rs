@@ -4356,6 +4356,20 @@ fn test_melt_quote_operation(
     )
 }
 
+fn test_melt_quote_operation_with_lookup_id(
+    config: &cdk::mint::FederationRuntimeConfig,
+    quote: QuoteId,
+    request: cdk::MeltQuoteRequest,
+    request_lookup_id: PaymentIdentifier,
+) -> FederationOperationEnvelope {
+    let envelope = test_melt_quote_operation(config, quote, request);
+    let FederationOperation::MeltQuote(mut operation) = envelope.operation else {
+        unreachable!("test melt quote helper always creates a melt quote operation");
+    };
+    operation.metadata.request_lookup_id = Some(request_lookup_id);
+    config.operation_envelope(FederationOperation::MeltQuote(operation))
+}
+
 async fn melt_quote(state: &MintState, amount_msat: u64) -> QuoteId {
     melt_quote_with_description(state, amount_msat, "".to_string()).await
 }

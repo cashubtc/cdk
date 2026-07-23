@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, 20, and 21 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestones 22 and 23 not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, 20, 21, and 22 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestone 23 not started
 
 First recorded: 2026-07-20
 
@@ -1020,7 +1020,7 @@ behavior yet.
 | 19 | Avoid repeated federation keyset discovery across short-lived wallet processes | Complete — kept | `perf: reuse validated federation keysets` |
 | 20 | Preserve payment-capable Bark liquidity across rapid successive melts | Complete — kept | `perf: preserve Bark liquidity for queued melts` |
 | 21 | Re-audit the `PaymentInitiated` boundary after exact Ark idempotency | Complete — kept | `perf: finalize Bark melts from accepted HTLCs` |
-| 22 | Reject a duplicate paid melt without halting consensus | Not started | — |
+| 22 | Reject a duplicate paid melt without halting consensus | Complete — kept | `fix: reject duplicate federated melts safely` |
 | 23 | Attribute every mint and melt latency stage precisely before further tuning | Not started | — |
 
 ## Milestone 0: causal baseline
@@ -5568,7 +5568,7 @@ the external side effect through the unchanged accepted
 
 ## Milestone 22: reject a duplicate paid melt without halting consensus
 
-Status: **Not started.**
+Status: **Complete — kept.**
 
 ### Goal
 
@@ -5598,21 +5598,76 @@ run directory for Milestone 21 measurements.
 
 ### Checklist, tests, and success criteria
 
-- [ ] Trace where melt lookup-ID uniqueness is knowable during admission and
+- [x] Trace where melt lookup-ID uniqueness is knowable during admission and
       why the accepted operation can still fail during deterministic apply.
-- [ ] Add a regression that pays one quote, submits a distinct quote carrying
+- [x] Add a regression that pays one quote, submits a distinct quote carrying
       the same lookup ID, and proves the second request is rejected without a
       failed journal entry or stopped application task.
-- [ ] Prefer deterministic pre-admission rejection using existing mint-domain
-      validation. Do not weaken the database uniqueness invariant or treat a
-      business-rule error as retryable.
-- [ ] Prove the original quote remains paid, the duplicate remains unpaid or is
+- [x] Evaluate deterministic pre-admission rejection using existing
+      mint-domain validation; retain ordered-apply rejection when pre-admission
+      cannot provide one deterministic member view. Do not weaken the database
+      uniqueness invariant or treat a business-rule error as retryable.
+- [x] Prove the original quote remains paid, the duplicate remains unpaid or is
       rejected durably, proofs are not spent twice, no second Bark/Ark action
       starts, and later valid consensus operations still apply on all members.
-- [ ] Cover concurrent duplicate submissions, replay, restart, catch-up, and
+- [x] Cover concurrent duplicate submissions, replay, restart, catch-up, and
       standalone mint behavior without adding compatibility state.
-- [ ] Update this record with the smallest owning fix, exact local evidence,
+- [x] Update this record with the smallest owning fix, exact local evidence,
       temporary-instrumentation cleanup, and a focused conventional commit.
+
+### Evaluation — 2026-07-23
+
+The uniqueness rule already had one authoritative owner:
+`load_melt_quotes_exclusively` locks and reads every quote with the same
+backend lookup ID before proof reservation, saga creation, or payment. It
+returns `PendingQuote` when an earlier ordered sibling owns the request and
+`RequestAlreadyPaid` when that sibling is paid. The failure occurred one layer
+above it: finalized-operation application classified neither result as a
+terminal rejection, persisted the entry as `Failed`, and propagated the
+non-retryable error into the AlephBFT application task.
+
+A stateful public pre-admission check was deliberately not added. Two
+concurrent unpaid siblings could both pass it, members at different applied
+frontiers could disagree, and deterministic ordering would still need the
+existing exclusive domain check. The smallest safe boundary is therefore the
+ordered apply result: retain the authoritative mint-domain invariant, classify
+`RequestAlreadyPaid` as a definitive business failure, and classify
+`PendingQuote` as definitive only in federation apply. Wallet-facing
+`PendingQuote` remains ambiguous and unchanged.
+
+The exact two-member live regression timed out after 20 seconds before the
+fix, reproducing the stopped application task. With the fix it completed in
+about 1.96 seconds. It orders two distinct quotes for the same payment hash
+together, applies the winner, durably rejects the pending loser on both
+members, settles the winner once, rejects a third paid sibling, then applies a
+later valid mint operation. It also proves:
+
+- the paid quote and spent proofs are unchanged;
+- both duplicate quotes remain unpaid and their fresh proofs remain unused;
+- exactly one backend payment occurs and no duplicate saga or completion row
+  is created;
+- resubmission returns the same terminal error;
+- both rejected entries survive runtime reconstruction; and
+- neither member halts.
+
+The mint-domain regression independently proves rejection before payment or
+proof mutation. Existing standalone pending/paid lookup-ID tests remain green,
+and existing generic rejection catch-up and trusted-checkpoint restart tests
+prove later replay continues past rejected entries. All 455 `cdk-common`
+library tests passed. The CDK federation library run passed 789 tests; its
+three loopback-listener tests passed unchanged with socket permission. The new
+live regression and its focused classification test passed, as did the two
+generic replay tests. One unrelated existing five-member Axum stress test
+exhausted the default test-thread stack and passed unchanged with an 8 MiB
+stack; the new path is not involved. Federation-enabled checks pass for
+`cdk-common`, `cdk`, `cdk-axum`, and `cdk-mintd`.
+
+No schema, timer, polling rule, payment-backend branch, compatibility state,
+or external request was added. No temporary instrumentation remains.
+
+Decision: **Kept.** Deterministic wallet business-rule conflicts now become
+durable `Rejected` entries, while transient and internal failures still fail
+closed and halt application.
 
 ## Milestone 23: precise mint and melt timing attribution
 
@@ -5810,6 +5865,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-23 | Milestone 20 terminal-melt maintenance quiet period | same persisted local five-member release federation, SQLite, real Signet, four control and six candidate 1,000-sat melts without top-up | control's fifth quote found 0 spendable and 15,900 reserved for 37:04-37:34; candidate completed all six with one spendable change after every terminal result, no refresh reservation, unchanged one-movement send shape, zero duplicates, and identical 123-entry restart digests | Keep the existing 30-second maintenance guard but restart it from durable `paid_time`. This removes the measured pre-lock reservation window without adding a queue, timer, schema, backend branch, consensus operation, or external call. |
 | 2026-07-23 | Milestone 21 direct terminal result | fresh five-member local release control/candidate federations, SQLite, real Signet, three 1,000-sat melts per side plus a controlled nine/ten-operation AlephBFT probe | accepted operations 10 -> 9; CLI median 20 -> 18s and observed p95/max 22 -> 18s; controlled serial median 18,456 -> 17,233ms; total/helper deliveries -9.8%/-11.7%; all five candidate members converged and every payment settled once | Keep the direct `SendHtlcsCosigned` -> terminal edge. Exact Ark idempotency and typed `NotFound` preserve actor-loss recovery; healthy initiation remains one POST; no replacement protocol state, loop, timer, or configuration was added. |
 | 2026-07-23 | Milestone 22 duplicate-paid-melt discovery | retained local five-member release federation, SQLite, accidental reuse of one already paid 1,000-sat store invoice | one new melt operation finalized, then all five members recorded the same index as failed and halted deterministic application on `Request already paid`; each stopped at 135 applied plus one failed journal entry while 151 finalized items existed; no second Bark action or external payment occurred | A wallet-level duplicate must be a deterministic rejection, never a consensus-halting apply error. Preserve the evidence and fix this after Milestone 21 with admission, later-operation, replay, and exactly-once regressions. |
+| 2026-07-23 | Milestone 22 deterministic duplicate-melt rejection | exact two-member live AlephBFT regression plus mint-domain, catch-up, restart, and standalone tests | pre-fix exact regression timed out after 20s with the application task stopped; fixed run completed in about 1.96s, rejected both pending and paid siblings on both members, applied a later valid item, and made exactly one backend payment | Keep the mint-domain lookup-ID lock as the authoritative invariant and classify its business-rule results at deterministic apply. A racy stateful pre-admission duplicate would not remove the ordered check or preserve a common member view. |
 
 ## Completion checklist
 
@@ -5853,7 +5909,7 @@ Append future evidence here rather than rewriting historical results.
 - [x] Exact Ark initiation either removes `PaymentInitiated` with safe
       cross-member retry and fewer accepted operations or re-proves why the
       boundary remains necessary after Milestone 17A.
-- [ ] A second quote for an already paid BOLT11 lookup ID is rejected without
+- [x] A second quote for an already paid BOLT11 lookup ID is rejected without
       halting deterministic application or repeating the external payment.
 - [ ] Outgoing success, failure, and recovered-result evidence use the retained
       independent verifier thresholds with fewer consensus entries.

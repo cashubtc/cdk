@@ -1433,6 +1433,148 @@ async fn apply_federation_melt_rejects_paid_quote_reuse_with_different_change_ou
 }
 
 #[tokio::test]
+async fn apply_federation_melt_rejects_distinct_quote_for_paid_lookup_id_before_payment() {
+    let policy = FederationPaymentObservationPolicy::member_quorum(2);
+    let runtime_config = runtime_config_with_payment_policy(policy);
+    let (mint, localstore, make_payment_calls) =
+        federated_test_mint_with_counting_payment_processor(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let request = pending_melt_quote_request(1_000);
+    let MeltQuoteRequest::Bolt11(bolt11_request) = &request else {
+        panic!("expected bolt11 test request");
+    };
+    let request_lookup_id =
+        PaymentIdentifier::PaymentHash(*bolt11_request.request.payment_hash().as_ref());
+    let original_quote = QuoteId::new();
+    let duplicate_quote = QuoteId::new();
+
+    for quote in [&original_quote, &duplicate_quote] {
+        let response = test_melt_quote_response(quote, &request);
+        let entry = appended_entry(
+            &mut journal,
+            runtime_config.melt_quote_operation(
+                quote.clone(),
+                request.clone(),
+                response,
+                FederationMeltQuoteMetadata {
+                    request_lookup_id: Some(request_lookup_id.clone()),
+                    ..FederationMeltQuoteMetadata::default()
+                },
+            ),
+        );
+        persist_and_apply_entry(&mint, &entry).await;
+    }
+
+    let original_inputs = vec![
+        proof_for_runtime(&runtime_config, "paid-lookup-original-input-one"),
+        proof_for_runtime(&runtime_config, "paid-lookup-original-input-two"),
+    ];
+    let original_input_ys = original_inputs
+        .ys()
+        .expect("paid lookup original input ys");
+    let original_entry = appended_entry(
+        &mut journal,
+        runtime_config
+            .melt_operation(MeltRequest::new(
+                original_quote.clone(),
+                original_inputs,
+                None,
+            ))
+            .expect("paid lookup original melt operation"),
+    );
+    persist_and_apply_entry(&mint, &original_entry).await;
+    assert!(mint
+        .probe_federation_melt_quote_payment(&original_quote)
+        .await
+        .expect("start original outgoing payment")
+        .is_none());
+    assert_eq!(make_payment_calls.load(Ordering::Relaxed), 1);
+    apply_paid_melt_observation_quorum(
+        &mint,
+        &runtime_config,
+        &mut journal,
+        &original_quote,
+        "paid-lookup-original-preimage",
+    )
+    .await;
+
+    let duplicate_inputs = vec![
+        proof_for_runtime(&runtime_config, "paid-lookup-duplicate-input-one"),
+        proof_for_runtime(&runtime_config, "paid-lookup-duplicate-input-two"),
+    ];
+    let duplicate_input_ys = duplicate_inputs
+        .ys()
+        .expect("paid lookup duplicate input ys");
+    let duplicate_envelope = runtime_config
+        .melt_operation(MeltRequest::new(
+            duplicate_quote.clone(),
+            duplicate_inputs,
+            None,
+        ))
+        .expect("paid lookup duplicate melt operation");
+    let duplicate_operation_id = duplicate_envelope
+        .operation_id()
+        .expect("paid lookup duplicate operation id");
+    let duplicate_entry = appended_entry(&mut journal, duplicate_envelope);
+    persist_journal_entry(&localstore, &duplicate_entry).await;
+
+    assert!(matches!(
+        mint.apply_federation_journal_entries(std::slice::from_ref(&duplicate_entry))
+            .await,
+        Err(Error::RequestAlreadyPaid)
+    ));
+    assert_eq!(
+        localstore
+            .get_melt_quote(&original_quote)
+            .await
+            .expect("original quote lookup")
+            .expect("original quote")
+            .state,
+        MeltQuoteState::Paid
+    );
+    assert_eq!(
+        localstore
+            .get_melt_quote(&duplicate_quote)
+            .await
+            .expect("duplicate quote lookup")
+            .expect("duplicate quote")
+            .state,
+        MeltQuoteState::Unpaid
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&original_input_ys)
+            .await
+            .expect("original proof states"),
+        vec![Some(State::Spent), Some(State::Spent)]
+    );
+    assert_eq!(
+        localstore
+            .get_proofs_states(&duplicate_input_ys)
+            .await
+            .expect("duplicate proof states"),
+        vec![None, None]
+    );
+    assert!(localstore
+        .get_melt_saga_by_quote_id(&duplicate_quote)
+        .await
+        .expect("duplicate saga lookup")
+        .is_none());
+    assert!(localstore
+        .get_completed_operation(&super::super::federation_operation_uuid(
+            duplicate_operation_id
+        ))
+        .await
+        .expect("duplicate completed-operation lookup")
+        .is_none());
+    assert_eq!(
+        make_payment_calls.load(Ordering::Relaxed),
+        1,
+        "duplicate lookup ID must fail before a second backend payment"
+    );
+}
+
+#[tokio::test]
 async fn apply_federation_melt_keeps_terminal_zero_change_paid_quote_immutable() {
     let policy = FederationPaymentObservationPolicy::member_quorum(2);
     let runtime_config = runtime_config_with_payment_policy(policy);
