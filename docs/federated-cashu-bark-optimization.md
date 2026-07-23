@@ -4370,34 +4370,34 @@ with one recovery certificate, reducing fifteen operations to nine.
 
 ### Checklist
 
-- [ ] Reuse Milestone 10's domain-separated schema, durable first-attestation
+- [x] Reuse Milestone 10's domain-separated schema, durable first-attestation
       rule, authenticated private route, collector fallback, and deterministic
       certificate verification; do not create an outgoing-only signature
       system.
-- [ ] Bind success attestations to the invoice/payment hash, valid preimage,
+- [x] Bind success attestations to the invoice/payment hash, valid preimage,
       exact accepted send result, VTXO transition, action/attempt, epoch, and
       result digest. Require four unique eligible attestations.
-- [ ] Bind failure attestations to the exact initiated payment and Ark terminal
+- [x] Bind failure attestations to the exact initiated payment and Ark terminal
       result. Require three unique eligible members that checked failure
       independently.
-- [ ] Bind recovery attestations to the accepted revocation result and exact
+- [x] Bind recovery attestations to the accepted revocation result and exact
       restored balance transition. Require four unique eligible applications.
-- [ ] Preserve idempotent first-attestation persistence and reject conflicts,
+- [x] Preserve idempotent first-attestation persistence and reject conflicts,
       mixed attempts, duplicate signers, altered results, stale epochs, and
       below-threshold certificates identically on every member.
-- [ ] Count private attestation requests/responses, certificate bytes,
+- [x] Count private attestation requests/responses, certificate bytes,
       application-bearing and helper consensus traffic, accepted operations,
       and whole-payment latency for success and failure.
 
 ### Tests
 
-- [ ] Healthy success accepts one four-member result certificate, finalizes
+- [x] Healthy success accepts one four-member result certificate, finalizes
       Cashu once, and uses exactly seven accepted operations.
-- [ ] One invalid preimage, unapplied Bark transition, or conflicting honest
+- [x] One invalid preimage, unapplied Bark transition, or conflicting honest
       result cannot obtain a valid certificate.
-- [ ] Failure requires three independent checks; one actor report or mixed
+- [x] Failure requires three independent checks; one actor report or mixed
       failure evidence cannot authorize recovery.
-- [ ] Recovery releases proofs only after one four-member certificate over the
+- [x] Recovery releases proofs only after one four-member certificate over the
       accepted revocation result.
 - [ ] Collector crash/equivocation, member restart, delayed attestation,
       replay, catch-up, and checkpoint restore converge on one certificate.
@@ -4413,7 +4413,127 @@ with one recovery certificate, reducing fifteen operations to nine.
 - The milestone records `Kept` or `Rejected` and, if kept, is committed as
   `perf: certify federated Bark outgoing results`.
 
+### 2026-07-23 progress record — Rejected
+
+Status: **Complete — rejected.** The candidate correctly reused Milestone 10's
+signed binding, durable first-write store, authenticated private transport,
+deterministic collector/fallback, and exact certificate verifier. It added no
+second signature system. Success and recovered-result certificates required
+four unique members; embedded terminal-failure certificates required three
+members that each independently checked Ark. Admission and ordered projection
+bound the phase, accepted predecessor operation, invoice payment hash, valid
+preimage or failed result, action, attempt, application epoch, Ark source,
+amount, fee, transition digest, and exact threshold. Mixed attempts, duplicate
+or ineligible signers, changed fields, invalid signatures, stale epochs, and
+below-threshold certificates failed closed.
+
+The equivalent control was CDK `ae81f80a9` (production code identical to the
+retained Milestone 13 commit) and Bark `aa98f5685d70`. Control and candidate
+used locked release builds, separate fresh five-member loopback federations,
+SQLite, 3-of-5 signature authority, 4-of-5 consensus/payment authority, the
+same local workstation, and fresh 1,000-sat real Signet invoices from the
+reusable CLI wallet. No Nocean host was used. The control mintd/CLI SHA-256
+values were
+`fba2f4a85c52b2eb2bba45ac34d1ef1dc395a909410eb64271d034c36bcf46a6`
+and
+`1e3aa6fc38e7d30405f07f924d7a060b4dfb0ce39680715647b0016210b4e6ff`;
+the final candidate values were
+`669a24c234720ee6a56aeb3ea0c72c8afc1bb40b2d1d58ba0181352f3773d63e`
+and
+`2387a9f31e3a6fb01eeae369b520a0681d6cd5218655416ab4d5f9284575aa74`.
+
+The successful control and final candidate traces, in execution order, were:
+
+| Sample | CLI wall | Accepted melt to terminal evidence | Initiated to accepted success | Accepted success to terminal evidence | Core operations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| C1 | 34.33s | 28.699s | 14.962s | 3.502s | 10 |
+| C2 | 37.29s | 32.630s | 17.524s | 3.508s | 10 |
+| C3 | 31.71s | 26.596s | 10.362s | 3.437s | 10 |
+| F1 | 49.95s[^m15-swap] | 35.232s | 12.557s | 5.029s | 7 |
+| F2 | 43.20s | 36.377s | 12.676s | 5.574s | 7 |
+| F3 | 47.40s[^m15-swap] | 35.831s | 11.613s | 5.623s | 7 |
+
+[^m15-swap]: The reused candidate wallet performed a proof-consolidation swap
+    before the melt. The server-side interval starts at the accepted melt and
+    excludes that client-only operation; whole-wallet timing from those two
+    samples is not used as an acceptance claim.
+
+The accepted-melt-to-terminal median regressed 28.699 -> 35.831s (+24.9%);
+the three-sample observed p95 regressed about 32.24 -> 36.32s (+12.7%). The
+isolated terminal-evidence tail regressed 3.502 -> 5.574s (+59.2%), with an
+observed p95 of about 3.51 -> 5.62s (+60.2%). Ark status was not the cause: the
+initiated-to-success median improved 14.962 -> 12.557s. An initial candidate
+incorrectly inherited the preceding terminal-status fallback counter and sent
+both measured certificates directly to the last-resort collector. Resetting a
+new result to collector round zero fixed that scheduling error, and the final
+three certificates were published by their primary actors, but the tail
+regression remained.
+
+The remaining delay is structural. In the control, four independent result
+applications submit four observations concurrently and Aleph batches them in
+one round. The certificate path must first wait for all four applications and
+private attestations, then submit the assembled certificate to consensus. It
+therefore serializes evidence collection before the same consensus boundary.
+Polling, backoff, Ark rate limiting, or the reduced number of accepted items
+cannot remove that dependency without either weakening independent
+verification or adding a substantially different consensus/attestation
+protocol. No such redesign belongs in this contained milestone.
+
+The candidate did meet its cardinality and payload targets. Healthy success
+used exactly seven core operations rather than ten, and one four-attestation
+certificate envelope was 1,751 bytes rather than four 804-byte observation
+envelopes (3,216 bytes, -45.6%). The clean failure path used exactly nine
+operations rather than the normal fifteen and returned terminal failure in
+44s versus the 49s retained baseline. Its embedded three-attestation
+certificate was 1,246 JSON bytes inside a 2,699-byte transition; the
+four-attestation recovery certificate envelope was 1,751 bytes. The comparable
+old three failure observations, 1,429-byte failure transition, and four
+recovery observations totaled 7,036 envelope bytes versus 4,450 (-36.8%). The
+direct private path was bounded to three delivery request/response pairs on
+success, two solicitation pairs for failure, and three delivery pairs for
+recovery. Derived application deliveries fell 40 -> 28 on success and 60 ->
+36 on failure; private traffic was six and ten messages respectively. Helper
+Aleph traffic was not separately instrumented, so no unsupported total-wire
+claim is made.
+
+Focused certificate schema, signature, exact-threshold, binding-mutation,
+durable first-write, preimage, projection, and certified-failure tests passed.
+The complete `cdk` federation-enabled library suite passed 789 tests. A broad
+candidate `cdk-axum` run reached 556 passes and two ignored tests; two restart
+assertions still expected the old client-facing `Unpaid` response after a
+certified rollback and were candidate-only follow-up work, not a retained-tree
+failure. The dedicated collector crash/equivocation/checkpoint fault matrix was
+not run after the decisive latency gate failed. Live success finalized exact
+Cashu value once with four signers; live terminal failure required three
+independent checks, restored exact value only after a four-signer recovery
+certificate, exposed a standard client-facing `Failed` state, and converged
+across five members.
+
+Decision: **Rejected on the latency route.** The message and byte reductions
+are real, but the candidate failed both the required 15% terminal-stage
+improvement and the 5% whole-server regression budget. All certificate phases,
+private solicitation behavior, public-response adaptation, tests, temporary
+probes, and the shared extraction were removed. The retained crate tree is
+identical to `ae81f80a9`; only this plan records the experiment. No production
+instrumentation, invoice, payment hash, preimage, wallet state, private member
+configuration, temporary path, or machine-specific identifier remains. The
+retained release was rebuilt after reversion. Its disposable candidate-era
+database correctly rejected the now-unknown operation variants; because this
+is cut-through test state, it was replaced with a fresh local DKG rather than
+adding compatibility code. All five retained-code members then passed the
+ready/convergence check. The retained 455-test `cdk-common` federation suite
+(one ignored microbenchmark), all 17 `cdk-bark` federation tests, formatting,
+and diff whitespace validation passed. The milestone commit is
+`docs: reject outgoing Bark terminal certificates`; its hash is the commit
+containing this record.
+
 ## Milestone 15A: certified failure and revocation authorization
+
+Status: **Skipped — prerequisite rejected.** Milestone 15 retained no outgoing
+terminal certificates, so there is no certified-failure operation to combine
+with revocation authorization. Reopen this milestone only if a later design
+first retains an equivalent certificate without the measured serialized
+attestation/consensus latency regression.
 
 ### Goal
 
@@ -4754,6 +4874,9 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-22 | Milestone 11B action-scoped predecessor conflicts | fresh local release federation, SQLite, reusable CLI Signet payer, exact incoming and outgoing cycle, all-member restart | the negative-control run passed journal admission but failed the old global SQL uniqueness constraint; after the matching SQL fix, operation 25 admitted the refresh on all members, restart produced five observations at operations 26-30, all journals converged at 31 entries, and only one member started one Bark refresh movement | Keep the direct cut-through `(action_id, predecessor_operation_id)` invariant in both domain and SQL. The public Ark round remained pending beyond the bounded observation window, so claim admission, replay, and exactly-one start only—not terminal materialization or a latency win. |
 | 2026-07-22 | Milestone 12 preliminary custody-batching evaluation | 25 accepted action plans across retained local runs, prior failed-send sample, endpoint metrics, temporary test-only wire probe | 21/25 plans had one input, but ordinary one-input incoming claims still used two virtual-MuSig items; each extra signed envelope added about 402-405 bytes while item validation and cryptography remained; the current Bark API awaits one item at a time | Defer at the user's direction. Reopen after higher-impact outgoing work or representative multi-item demand, starting with an explicit Bark custody batch API rather than a CDK timer or collector. No instrumentation or production code remains. |
 | 2026-07-22 | Milestone 13 interrupted candidate | local release, fresh five-member loopback federations, SQLite, real Signet, three control and three candidate outgoing successes | terminal-status calls 32 -> 13 (-59.4%); total Ark-facing attempts 44 -> 25 (-43.2%); wallet-visible median 44s -> 39s and max 45s -> 43s; status-stage median improved 12.5% while max regressed 1.1% | Commit the contained typed actor-first candidate for later resumption, but make no keep/reject decision: terminal-failure, restart/fault, connection-budget, accepted-operation, and 15% status-p95 gates remain open; temporary counters were removed and local federations stopped. |
+| 2026-07-22 | Milestone 13 final typed actor-first status | local release, five loopback members, SQLite, real Signet, three success controls/candidates plus failure and actor-loss faults | success terminal calls 32 -> 6 and total Ark-facing attempts 44 -> 18; wallet median 44 -> 35s; status median 16.8 -> 6.59s; failure used 4/3/3 terminal calls and exact revocation restored value | Keep one typed actor-first status check with bounded success fallback and unchanged three-member failure authority; reject `wait=true` because it would block the sequential observer worker. |
+| 2026-07-23 | Milestone 14 threshold-first melt fan-out | local release, five loopback members, SQLite, real Signet, three controls and three final candidates | median public starts 16 -> 14 but all five melt POST bodies still started; third authoritative response 3,764.702 -> 4,555.592ms (+21.0%); probe median 35.369 -> 45.274s (+28.0%) | Reject and revert: partial hedging saved only status GETs, preserved the expensive full POST fan-out, and exceeded the latency budget. Milestone 18 isolates canonical POST plus threshold GET verification. |
+| 2026-07-23 | Milestone 15 outgoing terminal certificates | interleaved local release control/candidate, separate five-member loopback federations, SQLite, real Signet | success operations 10 -> 7 and comparable evidence envelopes 3,216 -> 1,751 bytes, but terminal-evidence median 3.502 -> 5.574s (+59.2%) and melt-to-terminal median 28.699 -> 35.831s (+24.9%); failure operations 15 -> 9 | Reject and revert: private attestation collection serializes before consensus, while independent observations were batched concurrently. Message/byte reductions are real but fail the required latency route. |
 
 ## Completion checklist
 
@@ -4786,7 +4909,7 @@ Append future evidence here rather than rewriting historical results.
       boundary only if the separate safety invariants remain explicit.
 - [ ] Multi-item custody signing uses bounded per-signer phase requests when
       measurement shows that batching removes material transport overhead.
-- [ ] Outgoing success uses one typed actor-first terminal check with bounded
+- [x] Outgoing success uses one typed actor-first terminal check with bounded
       fallback, while terminal failure still requires three independent checks.
 - [ ] Healthy wallet melt transport starts at threshold and hedges promptly
       without weakening matching-view or signature-share validation.
