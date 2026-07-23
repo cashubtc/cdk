@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, and 20 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, and 20 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestone 21 in progress
 
 First recorded: 2026-07-20
 
@@ -995,6 +995,7 @@ behavior yet.
 | 18 | Replace replicated melt POST bodies with one canonical submission followed by threshold GET verification | Rejected | `c63e49cd0` |
 | 19 | Avoid repeated federation keyset discovery across short-lived wallet processes | Complete — kept | `perf: reuse validated federation keysets` |
 | 20 | Preserve payment-capable Bark liquidity across rapid successive melts | Complete — kept | `perf: preserve Bark liquidity for queued melts` |
+| 21 | Re-audit the `PaymentInitiated` boundary after exact Ark idempotency | In progress | — |
 
 ## Milestone 0: causal baseline
 
@@ -5369,6 +5370,78 @@ passes three complete back-to-back pairs, does not delay a genuinely due
 refresh beyond 30 seconds after payment, and leaves every consensus,
 side-effect, replay, accounting, and standalone-backend boundary intact.
 
+## Milestone 21: re-audit `PaymentInitiated` after exact Ark idempotency
+
+### Goal
+
+Reopen Milestone 17's proof gate because retained Bark Milestone 17A supplied
+the prerequisite that Milestone 17 explicitly lacked: Ark now persists the
+complete initiation identity before the side effect, accepts an identical
+retry in every attempt state, rejects conflicting reuse, and recovers a lost
+response after server restart. Determine whether
+`SendHtlcsCosigned` can now authorize the exact idempotent request and terminal
+observation directly, removing one serial consensus operation without adding
+replacement state, traffic, or timing-dependent authority.
+
+The default remains to retain `PaymentInitiated`. Exact server idempotency is
+necessary but not sufficient: a candidate must also prove cross-member
+request identity, safe actor loss, typed `NotFound` handling, follower-local
+Bark checkpoint materialization, terminal predecessor binding, replay, and
+failure/revocation behavior.
+
+### Candidate proof shape
+
+- `SendPlanned` remains accepted before custody signing and
+  `SendHtlcsCosigned` remains accepted before Ark initiation.
+- The accepted actor submits the exact initiation request first. Other members
+  do not speculatively POST merely because the payment remains pending.
+- Followers may poll the accepted HTLC package without treating local
+  `HtlcReceived` as federation evidence that Ark has initiated it. A typed Ark
+  `NotFound` is distinct from timeout, malformed response, and transport
+  uncertainty; only the former may activate one deterministic fallback
+  initiator. The exact-idempotency rule makes a delayed-actor race safe.
+- Success still requires a verified invoice preimage and the existing
+  four-member applied-result authority. Failure still requires three
+  independent matching checks before the existing accepted revocation path.
+- Terminal transitions bind directly to the accepted
+  `SendHtlcsCosigned` operation. Bark may retain its member-local
+  `PaymentInitiated` checkpoint, but it must be derived or persisted locally
+  without becoming new consensus, a private vote, or a second protocol marker.
+
+### Checklist, tests, and success criteria
+
+- [ ] Freeze three equivalent healthy outgoing controls and record
+      `PaymentInitiated` envelope bytes, accepted/application-bearing/helper
+      messages, initiation/status RPCs, causal-stage time, and whole-wallet
+      time.
+- [ ] Prove that two different federation members construct the same complete
+      Ark initiation identity from accepted state and that concurrent or
+      delayed cross-member retry creates exactly one payment attempt.
+- [ ] Distinguish only typed Ark `NotFound` for fallback. Error text, timeout,
+      malformed response, and unavailable transport remain pending and cannot
+      grant authority.
+- [ ] Remove the semantic phase, transition artifact, projection edge,
+      admission branch, replay branch, and operator-status handling rather
+      than leaving compatibility or dead protocol state.
+- [ ] Preserve the existing generic payment schedule and bounded actor-first
+      observer handoff; add no polling loop, timer, queue, or configuration
+      knob.
+- [ ] Actor loss before request, during a lost response, after durable Ark
+      acceptance, and after settlement completes once through deterministic
+      fallback.
+- [ ] `NotFound`, pending, success, failure, invalid preimage, conflicting
+      retry, expiry, restart, replay, catch-up, checkpoint restore, and
+      one/two-member loss preserve exact accounting and convergence.
+- [ ] Standalone Bark, standalone CDK BOLT11, federated BDK, healthy outgoing,
+      safe revocation, and lost-wallet-response regressions remain unchanged.
+- [ ] Keep only if one accepted operation and its application traffic
+      disappear, healthy initiation POSTs do not increase, the affected stage
+      p95 improves by at least 15%, whole-wallet p95 remains within 5%, and no
+      replacement protocol state or complexity is added. Otherwise revert and
+      record the still-required boundary.
+- [ ] If kept, use focused cut-through commits in Bark and CDK; if rejected,
+      retain only this evidence record.
+
 ## End-to-end verification matrix
 
 - [x] Healthy 3-of-5 incoming and outgoing success.
@@ -5516,6 +5589,9 @@ Append future evidence here rather than rewriting historical results.
       without weakening matching-view or signature-share validation.
 - [x] Rapid successive melts retain payment-capable Bark liquidity instead of
       waiting behind a long routine refresh reservation.
+- [ ] Exact Ark initiation either removes `PaymentInitiated` with safe
+      cross-member retry and fewer accepted operations or re-proves why the
+      boundary remains necessary after Milestone 17A.
 - [ ] Outgoing success, failure, and recovered-result evidence use the retained
       independent verifier thresholds with fewer consensus entries.
 - [ ] Certified terminal failure authorizes revocation in the same accepted
