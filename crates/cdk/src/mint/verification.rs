@@ -7,6 +7,9 @@ use super::{Error, Mint};
 
 /// Maximum allowed length in bytes for proof secret or witness content
 const MAX_PROOF_CONTENT_LEN: usize = 1024;
+// Witnesses carry one signature per accepted SIG_ALL message format per signer
+// (NUT-11), so they get more headroom than secrets.
+const MAX_PROOF_WITNESS_LEN: usize = 8192;
 
 /// Maximum allowed length in bytes for request fields (description, extra)
 pub(crate) const MAX_REQUEST_FIELD_LEN: usize = 1024;
@@ -227,15 +230,15 @@ impl Mint {
             if let Some(witness) = &proof.witness {
                 let witness_str = serde_json::to_string(witness)?;
                 let witness_len = witness_str.len();
-                if witness_len > MAX_PROOF_CONTENT_LEN {
+                if witness_len > MAX_PROOF_WITNESS_LEN {
                     tracing::warn!(
                         "Proof witness exceeds max content length: {} > {}",
                         witness_len,
-                        MAX_PROOF_CONTENT_LEN
+                        MAX_PROOF_WITNESS_LEN
                     );
                     return Err(Error::ProofContentTooLarge {
                         actual: witness_len,
-                        max: MAX_PROOF_CONTENT_LEN,
+                        max: MAX_PROOF_WITNESS_LEN,
                     });
                 }
             }

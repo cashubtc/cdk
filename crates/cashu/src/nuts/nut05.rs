@@ -217,6 +217,22 @@ where
 
         msg
     }
+
+    fn sig_all_msg_to_sign_v1(&self) -> Vec<u8> {
+        super::nut10::sig_all_msg_to_sign_v1(
+            Some(&self.quote.to_string()),
+            &self.inputs,
+            self.outputs.as_deref().unwrap_or(&[]),
+        )
+    }
+
+    fn sig_all_msg_to_sign_legacy(&self) -> String {
+        super::nut10::sig_all_msg_to_sign_legacy(
+            Some(&self.quote.to_string()),
+            &self.inputs,
+            self.outputs.as_deref().unwrap_or(&[]),
+        )
+    }
 }
 
 /// Melt Method Settings
