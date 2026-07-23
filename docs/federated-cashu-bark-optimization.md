@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, and 17A complete; Milestones 2, 7, 7A, 14, 15, 16, and 17 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestones 18 and 19 not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, and 17A complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestones 19 and 20 not started
 
 First recorded: 2026-07-20
 
@@ -4997,36 +4997,107 @@ resubmits the identical operation.
 
 ### Checklist
 
-- [ ] Prove that every value currently required from three POST responses is
+- [x] Prove that every value currently required from three POST responses is
       available and validated identically from threshold GET responses,
       including exact blinded change shares and definitive rejection state.
-- [ ] Separate submission transport from threshold authorization explicitly;
+- [x] Separate submission transport from threshold authorization explicitly;
       one POST success, error, timeout, or disconnect cannot decide payment
       success or release proofs.
-- [ ] Select the first submitter from the existing canonical melt operation ID
+- [x] Select the first submitter from the existing canonical melt operation ID
       publisher order and use only bounded identical-request fallback.
-- [ ] On ambiguous response loss, perform GET-only recovery before resubmitting
+- [x] On ambiguous response loss, perform GET-only recovery before resubmitting
       and prove the Bark payment side effect remains exactly once.
-- [ ] Measure POST and GET starts, body bytes, accepted/duplicate operations,
+- [x] Measure POST and GET starts, body bytes, accepted/duplicate operations,
       external payment attempts, third-authoritative-response latency, and
       wallet p50/p95 against the retained full-fan-out control.
-- [ ] Keep quote visibility, mint, swap, standalone, and federated-BDK behavior
+- [x] Keep quote visibility, mint, swap, standalone, and federated-BDK behavior
       unchanged unless separately evaluated.
 
 ### Tests and success criteria
 
-- [ ] Healthy success uses one melt POST and a three-member authoritative GET,
+- [x] Healthy success uses one melt POST and a three-member authoritative GET,
       aggregates exact change, and pays once.
-- [ ] Submitter timeout before acceptance, response loss after acceptance, and
+- [x] Submitter timeout before acceptance, response loss after acceptance, and
       submitter crash after external payment all recover through GET without a
       second payment.
-- [ ] Invalid, stale, equivocating, offline, and slow GET members cannot form a
+- [x] Invalid, stale, equivocating, offline, and slow GET members cannot form a
       result below threshold; two unavailable members remain live and three
       fail safely.
-- [ ] POST request-body bytes fall by at least 60%, accepted operations and
+- [x] POST request-body bytes fall by at least 60%, accepted operations and
       external attempts do not increase, and wallet p95 stays within the 5%
       regression budget. Otherwise reject and retain full fan-out.
-- [ ] If kept, commit as `perf: verify federated melts after canonical submit`.
+- [x] Record the keep/reject decision; if kept, commit as
+      `perf: verify federated melts after canonical submit`.
+
+### 2026-07-23 progress record — Rejected
+
+The candidate separated transport from authority exactly as proposed. The
+wallet computed the canonical `Melt` operation ID, selected the same rank-zero
+publisher used by the member-side coordinator, sent one idempotent public
+POST, and accepted only a matching threshold of ordinary status GETs. Original
+blinded change outputs stayed available until terminal recovery so malformed
+or wrong member shares could be ignored instead of poisoning an honest
+threshold. A lost POST response triggered GET-only recovery before any bounded
+identical-request fallback.
+
+The first release candidate exposed a direct 15-18-second regression: the one
+selected POST was also the request that synchronously ran
+`observe_melt_quote`, whereas full fan-out returned from three non-actor
+handlers while the actor continued. A contained follow-up used the existing
+public Cashu `prefer_async` request flag only for the federation connector.
+The public federation handler still waited for consensus acceptance, then
+returned `PENDING` without duplicating the accepted-operation worker wake;
+synchronous callers and standalone mints retained their existing behavior.
+The final live samples confirmed that this removed the specific handler wait.
+
+Control and candidate used the same CDK base, the same adjacent Bark source,
+locked release builds, a fresh five-member loopback federation with SQLite,
+3-of-5 wallet/signature authority, 4-of-5 consensus, fresh backend liquidity
+per sample, real 1,000-sat Signet invoices, and the public Signet Ark service.
+No Nocean benchmark was run. The reusable Wavelength wallet created the
+outgoing invoices and confirmed every receipt `COMPLETE`; its first 5,000-sat
+funding attempt failed before creating activity, so the authenticated browser
+faucet supplied the documented fallback funding. One stale browser session was
+detected before payment evidence and reauthenticated rather than counted as a
+payment attempt.
+
+| Sample | Control POST/GET stage | Control wallet | Final POST/GET stage | Final wallet |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 2,504.378ms | 46.72s | 2,499.239ms | 76.08s |
+| 2 | 2,461.695ms | 35.61s | 3,554.877ms | 43.05s |
+| 3 | 2,994.999ms | 36.99s | 3,471.172ms | 41.86s |
+| median | 2,504.378ms | 36.99s | 3,471.172ms | 43.05s |
+| observed max | 2,994.999ms | 46.72s | 3,554.877ms | 76.08s |
+
+The direct work counter moved as predicted but did not satisfy the complete
+protocol-work gate. Melt POSTs fell 15 -> 3 and POST request-body bytes fell
+23,715 -> 4,743 (-80%). Status GETs rose 30 -> 45 (+50%), so total public melt
+starts rose 45 -> 48 (+6.7%). Accepted melts stayed three, external payments
+stayed three, and finalized duplicates stayed zero. The final POST handler
+sum was 9.510 seconds across three requests. Despite removing the original
+15-18-second synchronous wait, the POST/GET-stage median regressed 38.6% and
+its observed max regressed 18.7%; whole-wallet median regressed 16.4% and its
+observed max regressed 62.8%. The first whole-wallet tail includes public
+Signet variance, but the isolated local stage independently exceeds the 5%
+budget.
+
+The disposable candidate passed 100 federation-wallet tests and 91 federation
+custom-handler tests. Coverage included exact change aggregation, deterministic
+publisher parity, lost responses, GET-before-fallback, threshold rejection,
+invalid shares, two unavailable members, safe failure with three unavailable
+members, asynchronous consensus-before-response, on-demand status progression,
+duplicate requests, restart, catch-up, and unchanged standalone compilation.
+A stale direct-route test connector initially lacked status GET support; adding
+that production-equivalent test route made its concurrency regression pass and
+did not alter production behavior.
+
+Decision: **Rejected.** The 80% POST-body reduction is real, but it adds GET
+requests and fails both the isolated-stage and whole-wallet latency budgets.
+All candidate production code, tests, test-double changes, and temporary
+instrumentation were reverted. Full melt POST fan-out remains unchanged. The
+clean retained tree passed all 93 federation-wallet tests, all 90 federation
+custom-handler tests, standalone `cdk` and `cdk-axum` checks, whitespace
+validation, and both exact locked release builds. Only this plan changed.
 
 ## Milestone 19: durable federation keyset-validation cache
 
@@ -5060,6 +5131,61 @@ fail closed on mismatch. Do not introduce periodic refresh polling.
 - [ ] Wallet-visible p95 improves or stays within 5%, and the retained code is
       simpler than a general cache-coherence subsystem. Otherwise reject it.
 - [ ] If kept, commit as `perf: reuse validated federation keysets`.
+
+## Milestone 20: preserve liquidity across rapid successive melts
+
+### Goal
+
+Investigate why a successful outgoing payment can leave all remaining Bark
+value reserved by routine refresh work, making an immediately following melt
+quote fail despite sufficient Cashu balance. Restore bounded back-to-back
+payment availability with the smallest change in the owning Bark maintenance
+or reservation boundary. Do not bypass an accepted action, steal inputs from
+an in-flight external side effect, or make member-local liquidity state
+federation authority.
+
+### Current evidence
+
+This occurred in both the retained Milestone 18 control and its rejected
+candidate, so it is not caused by canonical POST transport. After one
+successful 1,000-sat melt with a 25-sat fee, the local release federation
+reported zero spendable Bark value and one reserved VTXO worth 3,975 sats
+behind `refresh_planned`. Immediate subsequent quote creation returned the
+backend amount-mismatch error even though the Cashu wallet still had enough
+value. A fresh 5,000-sat incoming payment created one independent spendable
+VTXO and made the next outgoing payment succeed.
+
+In the final Milestone 18 run, the routine refresh remained active for about
+553 seconds while a later incoming payment and outgoing payment completed.
+That is too long for refresh to be treated as an invisible short reservation,
+and it forced fresh incoming liquidity before each equivalent outgoing sample.
+The exact cause—refresh selection, all-liquidity reservation, Ark round delay,
+or release/retry scheduling—must be measured before choosing a fix.
+
+### Checklist, tests, and success criteria
+
+- [ ] Reproduce at least three pairs of back-to-back 1,000-sat melts locally
+      without an intervening top-up; record spendable, reserved, pending-spend,
+      refresh phase, quote result, and exact reservation lifetime.
+- [ ] Trace the owning call path from terminal send change through maintenance
+      selection, accepted refresh plan, Bark input reservation, and release or
+      completion. Distinguish a required Ark lock from avoidable CDK scheduling.
+- [ ] Evaluate the smallest safe correction first: do not plan routine refresh
+      when it would reserve all payment-capable value, or yield an unstarted
+      maintenance plan to fresh payment demand. Do not add a new queue, timeout,
+      or liquidity classifier unless the measured state machine requires it.
+- [ ] Preserve consensus-before-side-effects, accepted-action replay,
+      predecessor lineage, exactly-once refresh/payment execution, and
+      deterministic accounting across restart and member loss.
+- [ ] Add focused reservation, concurrent-demand, terminal-release, restart,
+      and one/two-member fault regressions. Federated BDK and standalone
+      payment backends remain unchanged unless the same generic state contract
+      is explicitly proven.
+- [ ] Keep only if three back-to-back melts succeed from sufficient existing
+      Bark value without an incoming top-up, refresh still eventually
+      completes or safely yields, external attempts and accepted operations do
+      not increase, and wallet p95 stays within the 5% regression budget.
+- [ ] If kept, commit as `perf: preserve Bark liquidity for queued melts`.
 
 ## End-to-end verification matrix
 
@@ -5165,6 +5291,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-23 | Milestone 14 threshold-first melt fan-out | local release, five loopback members, SQLite, real Signet, three controls and three final candidates | median public starts 16 -> 14 but all five melt POST bodies still started; third authoritative response 3,764.702 -> 4,555.592ms (+21.0%); probe median 35.369 -> 45.274s (+28.0%) | Reject and revert: partial hedging saved only status GETs, preserved the expensive full POST fan-out, and exceeded the latency budget. Milestone 18 isolates canonical POST plus threshold GET verification. |
 | 2026-07-23 | Milestone 15 outgoing terminal certificates | interleaved local release control/candidate, separate five-member loopback federations, SQLite, real Signet | success operations 10 -> 7 and comparable evidence envelopes 3,216 -> 1,751 bytes, but terminal-evidence median 3.502 -> 5.574s (+59.2%) and melt-to-terminal median 28.699 -> 35.831s (+24.9%); failure operations 15 -> 9 | Reject and revert: private attestation collection serializes before consensus, while independent observations were batched concurrently. Message/byte reductions are real but fail the required latency route. |
 | 2026-07-23 | Milestone 17A exact Ark initiation | isolated Bark/Ark control and candidate, fresh databases, local CLN fault injection | the control paid once but rejected the lost-response retry after its HTLC became `ln-spent`; the candidate recovered after Ark restart with one attempt and zero pending value; healthy initiation median 10.705 -> 9.836ms, observed max 11.430 -> 11.064ms, request count 3 -> 3, whole test 92.48 -> 95.93s | Keep durable full-request identity before the external side effect and exact retry in every terminal state. Partial uniqueness preserves a safe new-HTLC retry after terminal failure; no CDK protocol, consensus, polling, or standalone path changed. |
+| 2026-07-23 | Milestone 18 canonical melt submission | local release, fresh five-member loopback federation, SQLite, three retained controls and three final real-Signet candidates | melt POSTs 15 -> 3 and body bytes 23,715 -> 4,743, but GETs 30 -> 45 and total starts 45 -> 48; POST/GET-stage median 2,504.378 -> 3,471.172ms; wallet median 36.99 -> 43.05s and observed max 46.72 -> 76.08s; three payments, three accepted melts, zero duplicates in both | Reject and revert: one canonical POST plus threshold GET preserved authority and exactly-once payment, and `prefer_async` removed the first 15-18s handler wait, but the final candidate still exceeded the isolated and whole-wallet 5% latency budgets. Full fan-out remains. |
 
 ## Completion checklist
 
@@ -5201,6 +5328,8 @@ Append future evidence here rather than rewriting historical results.
       fallback, while terminal failure still requires three independent checks.
 - [ ] Healthy wallet melt transport starts at threshold and hedges promptly
       without weakening matching-view or signature-share validation.
+- [ ] Rapid successive melts retain payment-capable Bark liquidity instead of
+      waiting behind a long routine refresh reservation.
 - [ ] Outgoing success, failure, and recovered-result evidence use the retained
       independent verifier thresholds with fewer consensus entries.
 - [ ] Certified terminal failure authorizes revocation in the same accepted
