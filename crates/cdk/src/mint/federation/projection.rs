@@ -260,7 +260,7 @@ impl Mint {
                         ));
                     };
                     let (amount, fee, expected_result_hash) = match action.phase {
-                        FederationBarkSemanticPhase::PaymentInitiated => {
+                        FederationBarkSemanticPhase::SendHtlcsCosigned => {
                             let plan_entry = self
                                 .localstore()
                                 .get_federation_journal_entry_by_operation_id(
@@ -273,13 +273,12 @@ impl Mint {
                             )) = &plan_entry.envelope.operation
                             else {
                                 return Err(bark_state_error(
-                                    "payment initiation references a non-plan",
+                                    "outgoing HTLC result references a non-plan",
                                 ));
                             };
-                            validate_payment_initiated_result(plan, transition)?;
                             if plan.kind != FederationBarkActionKind::LightningSend {
                                 return Err(bark_state_error(
-                                    "payment initiation references a non-send plan",
+                                    "outgoing HTLC result references a non-send plan",
                                 ));
                             }
                             (
@@ -1039,37 +1038,6 @@ impl Mint {
                 }
             }
             FederationBarkOperation::ActionTransition(transition)
-                if transition.phase == FederationBarkSemanticPhase::PaymentInitiated =>
-            {
-                let action =
-                    action.ok_or_else(|| bark_state_error("payment initiation has no action"))?;
-                let plan_entry = self
-                    .localstore()
-                    .get_federation_journal_entry_by_operation_id(transition.plan_operation_id)
-                    .await?
-                    .ok_or_else(|| bark_state_error("accepted send plan is missing"))?;
-                let FederationOperation::Bark(FederationBarkOperation::ActionPlan(plan)) =
-                    &plan_entry.envelope.operation
-                else {
-                    return Err(bark_state_error("payment initiation references a non-plan"));
-                };
-                validate_send_transition_header(action, plan_entry.operation_id, plan, transition)?;
-                let FederationBarkOperation::ActionTransition(previous) = &action.operation else {
-                    return Err(bark_state_error(
-                        "payment initiation does not follow an HTLC result",
-                    ));
-                };
-                if action.phase != FederationBarkSemanticPhase::SendHtlcsCosigned
-                    || transition.predecessor_operation_id != action.latest_operation_id
-                    || transition.request_hash != previous.result_hash
-                {
-                    return Err(bark_state_error(
-                        "payment initiation differs from its accepted HTLC predecessor",
-                    ));
-                }
-                validate_payment_initiated_result(plan, transition)?;
-            }
-            FederationBarkOperation::ActionTransition(transition)
                 if transition.phase == FederationBarkSemanticPhase::PaymentSucceeded =>
             {
                 let action =
@@ -1087,15 +1055,15 @@ impl Mint {
                 validate_send_transition_header(action, plan_entry.operation_id, plan, transition)?;
                 let FederationBarkOperation::ActionTransition(previous) = &action.operation else {
                     return Err(bark_state_error(
-                        "payment success does not follow payment initiation",
+                        "payment success does not follow an HTLC result",
                     ));
                 };
-                if action.phase != FederationBarkSemanticPhase::PaymentInitiated
+                if action.phase != FederationBarkSemanticPhase::SendHtlcsCosigned
                     || transition.predecessor_operation_id != action.latest_operation_id
                     || transition.request_hash != previous.result_hash
                 {
                     return Err(bark_state_error(
-                        "payment success differs from its accepted initiation predecessor",
+                        "payment success differs from its accepted HTLC predecessor",
                     ));
                 }
                 validate_payment_success_proof(plan, transition)?;
@@ -1175,15 +1143,15 @@ impl Mint {
                 validate_send_transition_header(action, plan_entry.operation_id, plan, transition)?;
                 let FederationBarkOperation::ActionTransition(previous) = &action.operation else {
                     return Err(bark_state_error(
-                        "payment failure does not follow payment initiation",
+                        "payment failure does not follow an HTLC result",
                     ));
                 };
-                if action.phase != FederationBarkSemanticPhase::PaymentInitiated
+                if action.phase != FederationBarkSemanticPhase::SendHtlcsCosigned
                     || transition.predecessor_operation_id != action.latest_operation_id
                     || transition.request_hash != previous.result_hash
                 {
                     return Err(bark_state_error(
-                        "payment failure differs from its accepted initiation predecessor",
+                        "payment failure differs from its accepted HTLC predecessor",
                     ));
                 }
                 validate_payment_failed_result(plan, transition)?;
@@ -2504,55 +2472,22 @@ pub(super) fn validate_payment_success_proof(
     Ok(())
 }
 
-fn validate_payment_initiated_result(
-    plan: &FederationBarkActionPlan,
-    transition: &FederationBarkActionTransition,
-) -> Result<(), Error> {
-    let payment_hash = plan
-        .payment_hash
-        .ok_or_else(|| bark_state_error("send plan payment hash is missing"))?;
-    let mut result_bytes = b"cdk/bark/send-payment-initiated/v1".to_vec();
-    result_bytes.extend_from_slice(&plan.action_id.to_bytes());
-    result_bytes.extend_from_slice(&payment_hash.to_bytes());
-    result_bytes.extend_from_slice(&transition.request_hash.to_bytes());
-    result_bytes.extend_from_slice(&plan.external_id.to_bytes());
-    let mut artifacts = transition
-        .artifacts
-        .iter()
-        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult);
-    let artifact = artifacts
-        .next()
-        .ok_or_else(|| bark_state_error("payment initiation result is missing"))?;
-    let expected =
-        FederationBarkDigest::from_bytes(sha256::Hash::hash(&result_bytes).to_byte_array())?;
-    if artifacts.next().is_some()
-        || artifact.bytes != result_bytes
-        || artifact.hash != expected
-        || transition.result_hash != expected
-    {
-        return Err(bark_state_error(
-            "payment initiation result differs from its accepted request",
-        ));
-    }
-    Ok(())
-}
-
 fn payment_failed_result_hash(
     plan: &FederationBarkActionPlan,
-    initiated_result_hash: FederationBarkDigest,
+    htlc_result_hash: FederationBarkDigest,
 ) -> Result<FederationBarkDigest, Error> {
-    let bytes = payment_failed_result_bytes(plan, initiated_result_hash)?;
+    let bytes = payment_failed_result_bytes(plan, htlc_result_hash)?;
     FederationBarkDigest::from_bytes(sha256::Hash::hash(&bytes).to_byte_array())
         .map_err(Error::from)
 }
 
 fn payment_failed_result_bytes(
     plan: &FederationBarkActionPlan,
-    initiated_result_hash: FederationBarkDigest,
+    htlc_result_hash: FederationBarkDigest,
 ) -> Result<Vec<u8>, Error> {
     let mut bytes = b"cdk/bark/send-payment-failed/v1".to_vec();
     bytes.extend_from_slice(&plan.action_id.to_bytes());
-    bytes.extend_from_slice(&initiated_result_hash.to_bytes());
+    bytes.extend_from_slice(&htlc_result_hash.to_bytes());
     bytes.extend_from_slice(
         &plan
             .payment_hash
@@ -2577,7 +2512,7 @@ fn validate_payment_failed_result(
         || transition.result_hash != expected.hash
     {
         return Err(bark_state_error(
-            "payment failure result differs from its accepted initiation",
+            "payment failure result differs from its accepted HTLC result",
         ));
     }
     Ok(())
@@ -3003,11 +2938,10 @@ mod outgoing_tests {
     }
 
     #[test]
-    fn outgoing_failure_result_binds_the_initiated_result_and_payment_hash() {
+    fn outgoing_failure_result_binds_the_accepted_htlc_result_and_payment_hash() {
         let plan = send_plan(digest(12));
-        let initiated_result = digest(13);
-        let bytes =
-            payment_failed_result_bytes(&plan, initiated_result).expect("failure result bytes");
+        let htlc_result = digest(13);
+        let bytes = payment_failed_result_bytes(&plan, htlc_result).expect("failure result bytes");
         let artifact = bark_projection_artifact(FederationBarkArtifactKind::ArkResult, bytes)
             .expect("failure artifact");
         let transition = FederationBarkActionTransition {
@@ -3021,7 +2955,7 @@ mod outgoing_tests {
             payment_hash: plan.payment_hash,
             attempt: plan.attempt,
             signer_set: plan.signer_set.clone(),
-            request_hash: initiated_result,
+            request_hash: htlc_result,
             result_hash: artifact.hash,
             evidence_certificate: None,
             external_id: plan.external_id,

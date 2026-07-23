@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, and 20 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestone 21 in progress; Milestone 22 not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, 20, and 21 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestones 22 and 23 not started
 
 First recorded: 2026-07-20
 
@@ -306,6 +306,30 @@ The first optimization release must not:
 - change ordinary standalone mint or wallet behavior.
 
 ## Current evidence
+
+### Standalone Bark Signet baseline: real outgoing BOLT11 payment
+
+On 2026-07-23, a fresh disposable standalone Bark Signet wallet paid a real
+1,000-sat invoice from the public Signet test store. The wallet was funded by
+two 1,000-sat public-faucet receives; the second receive supplied the fee
+reserve. No CDK mint, federation member, consensus message, or federated
+wallet request participated in this measurement.
+
+`bark lightning pay invoice --wait` returned success in **2.91 seconds** of
+wall-clock time. Bark's durable history recorded the outgoing action from
+creation to completion in **about 1.80 seconds**. The 1.11-second difference
+includes CLI process startup, wallet opening/sync, and local command overhead;
+it is not a Lightning-routing measurement. The paid amount was 1,000 sats and
+the recorded off-chain fee was 20 sats.
+
+This is the relevant Bark-only baseline for an outgoing federated melt: a
+roughly 20-second wallet-visible federated melt cannot be attributed to the
+ordinary Bark/Ark Lightning settlement alone. It still does **not** identify
+the federation delay: invoice generation, wallet quote/melt fan-out, accepted
+operation admission/finality/application, FROST, Ark initiation and terminal
+status, result authority, Cashu finalization, and wallet response remain
+combined in the existing end-to-end samples. Milestone 23 separates those
+spans before proposing another latency optimization.
 
 ### Production incoming baseline A: completed 10,123-sat receive
 
@@ -995,7 +1019,9 @@ behavior yet.
 | 18 | Replace replicated melt POST bodies with one canonical submission followed by threshold GET verification | Rejected | `c63e49cd0` |
 | 19 | Avoid repeated federation keyset discovery across short-lived wallet processes | Complete — kept | `perf: reuse validated federation keysets` |
 | 20 | Preserve payment-capable Bark liquidity across rapid successive melts | Complete — kept | `perf: preserve Bark liquidity for queued melts` |
-| 21 | Re-audit the `PaymentInitiated` boundary after exact Ark idempotency | In progress | — |
+| 21 | Re-audit the `PaymentInitiated` boundary after exact Ark idempotency | Complete — kept | `perf: finalize Bark melts from accepted HTLCs` |
+| 22 | Reject a duplicate paid melt without halting consensus | Not started | — |
+| 23 | Attribute every mint and melt latency stage precisely before further tuning | Not started | — |
 
 ## Milestone 0: causal baseline
 
@@ -5372,6 +5398,8 @@ side-effect, replay, accounting, and standalone-backend boundary intact.
 
 ## Milestone 21: re-audit `PaymentInitiated` after exact Ark idempotency
 
+Status: **Complete — kept.**
+
 ### Goal
 
 Reopen Milestone 17's proof gate because retained Bark Milestone 17A supplied
@@ -5410,37 +5438,133 @@ failure/revocation behavior.
 
 ### Checklist, tests, and success criteria
 
-- [ ] Freeze three equivalent healthy outgoing controls and record
+- [x] Freeze three equivalent healthy outgoing controls and record
       `PaymentInitiated` envelope bytes, accepted/application-bearing/helper
       messages, initiation/status RPCs, causal-stage time, and whole-wallet
       time.
-- [ ] Prove that two different federation members construct the same complete
+- [x] Prove that two different federation members construct the same complete
       Ark initiation identity from accepted state and that concurrent or
       delayed cross-member retry creates exactly one payment attempt.
-- [ ] Distinguish only typed Ark `NotFound` for fallback. Error text, timeout,
+- [x] Distinguish only typed Ark `NotFound` for fallback. Error text, timeout,
       malformed response, and unavailable transport remain pending and cannot
       grant authority.
-- [ ] Remove the semantic phase, transition artifact, projection edge,
+- [x] Remove the semantic phase, transition artifact, projection edge,
       admission branch, replay branch, and operator-status handling rather
       than leaving compatibility or dead protocol state.
-- [ ] Preserve the existing generic payment schedule and bounded actor-first
+- [x] Preserve the existing generic payment schedule and bounded actor-first
       observer handoff; add no polling loop, timer, queue, or configuration
       knob.
-- [ ] Actor loss before request, during a lost response, after durable Ark
+- [x] Actor loss before request, during a lost response, after durable Ark
       acceptance, and after settlement completes once through deterministic
       fallback.
-- [ ] `NotFound`, pending, success, failure, invalid preimage, conflicting
+- [x] `NotFound`, pending, success, failure, invalid preimage, conflicting
       retry, expiry, restart, replay, catch-up, checkpoint restore, and
       one/two-member loss preserve exact accounting and convergence.
-- [ ] Standalone Bark, standalone CDK BOLT11, federated BDK, healthy outgoing,
+- [x] Standalone Bark, standalone CDK BOLT11, federated BDK, healthy outgoing,
       safe revocation, and lost-wallet-response regressions remain unchanged.
-- [ ] Keep only if one accepted operation and its application traffic
+- [x] Keep only if one accepted operation and its application traffic
       disappear, healthy initiation POSTs do not increase, the affected stage
       p95 improves by at least 15%, whole-wallet p95 remains within 5%, and no
       replacement protocol state or complexity is added. Otherwise revert and
       record the still-required boundary.
-- [ ] If kept, use focused cut-through commits in Bark and CDK; if rejected,
+- [x] If kept, use focused cut-through commits in Bark and CDK; if rejected,
       retain only this evidence record.
+
+### Evaluation record — 2026-07-23
+
+The control and candidate used fresh five-member local release federations,
+SQLite, Bark Signet, a 3-of-5 Bark/FROST threshold, a four-member payment
+observation threshold, the retained 500ms active consensus cadence, new wallet
+databases, and three distinct 1,000-sat public-store invoices per measured
+side. The control was CDK `d69613a8e` with Bark exact idempotency at
+`053f77bb` plus the same split-output/replay repair later included in
+`72eebde1`; the candidate added the direct-terminal CDK patch and the remaining
+Bark changes in `72eebde1`. The candidate release mint binary SHA-256 was
+`d35ed5857f5c49630219fddc2ba1a9fb16eb451a38637a9464fe1f1aa2ce8aaa`.
+The control symlink was not copied before the candidate rebuild, so its binary
+hash is unavailable; its source revision, configuration, databases, and
+complete journal remain frozen. No remote Nocean host was used.
+
+The three control melts took 20/19/22 seconds at the CLI and 20/19/20 seconds
+from durable quote creation to paid. Each contained exactly ten accepted
+operations: melt quote, melt, send plan, `SendHtlcsCosigned`,
+`PaymentInitiated`, `PaymentSucceeded`, and four success observations. Each
+`PaymentInitiated` envelope was 1,502 bytes. At the payment snapshot all five
+members had applied the same 52 entries with identical order and application
+digests.
+
+The three clean candidate melts took 18/18/15 seconds by both the CLI and
+durable quote clocks. Each contained exactly nine accepted operations with
+the same shape except that `PaymentSucceeded` followed
+`SendHtlcsCosigned` directly. The median improved from 20 to 18 seconds
+(-10.0%) and the observed p95/max from 22 to 18 seconds (-18.2%). Every quote
+was paid once for exactly 1,000 sats plus the 25-sat reserve, the test wallet
+ended at the exact 900-sat balance after four total candidate payments, and
+all five members converged with identical order and application digests. No
+`PaymentInitiated` operation, duplicate payment, ambiguous action, recovery
+action, or failed journal entry appeared.
+
+The deleted stage is one mandatory accepted finality boundary reduced to zero,
+a 100% reduction in that stage. A disposable same-process AlephBFT probe then
+isolated the effect of nine versus ten otherwise identical serial operations
+under the same five-member topology and 500ms cadence:
+
+| Metric | Nine-operation median | Ten-operation median | Change |
+| --- | ---: | ---: | ---: |
+| Serial elapsed | 17,233ms | 18,456ms | -6.6% |
+| All private network deliveries | 9,808 | 10,876 | -9.8% |
+| Helper-only deliveries | 8,032 | 9,100 | -11.7% |
+| Deliveries carrying application data | 1,736 | 1,816 | -4.4% |
+| All delivery bytes | 3,207,468 | 3,403,788 | -5.8% |
+| Helper-only bytes | 1,068,256 | 1,210,300 | -11.7% |
+| Application-carrying bytes | 2,127,864 | 2,225,940 | -4.4% |
+
+These message counts include repeated AlephBFT deliveries that carry prior
+application data; they are not the count of newly accepted items. The latter
+is exactly ten versus nine, and designated first-hop publication removes four
+new application deliveries with the deleted item. Three samples per side were
+run. The temporary probe and all timing output were removed before the final
+build.
+
+The healthy Ark call graph remains one exact initiation POST and one first
+terminal-status check in both designs. The control performed them on opposite
+sides of `PaymentInitiated` finality; the candidate performs them in the same
+actor drive. Only a selected non-actor receiving typed gRPC `NotFound` may add
+an exact fallback POST. Pending, unavailable, deadline-exceeded, malformed,
+and other transport outcomes cannot grant initiation authority. Later pending
+checks use the unchanged generic payment scheduler, so no loop, timer, queue,
+rate-limit parser, or configuration was added.
+
+Cross-member identity is not local wallet state: the accepted send plan and
+HTLC result fix the complete invoice, amount, mailbox, and canonical HTLC
+VTXO set used by Ark. Every member replayed those exact accepted artifacts.
+The retained Milestone 17A proxy regression already proves that simultaneous
+and post-restart exact requests create one durable payment attempt, while a
+changed invoice, amount, mailbox, or HTLC set fails before mutation. Bark
+still materializes its local `PaymentInitiated` checkpoint immediately before
+settlement or revocation; this is ordinary member-local crash recovery and no
+longer federation protocol state.
+
+Permanent regressions prove that only typed `NotFound` enables fallback,
+transport errors remain pending, terminal SQL edges follow only an accepted
+HTLC package, success rejects a changed preimage or predecessor, failure binds
+the accepted HTLC result, and failed local checkpoints replay earlier accepted
+phases. All 120 Bark library tests, all 17 federation-enabled `cdk-bark` tests,
+455 `cdk-common` tests, all 12 `cdk-sql-common` tests, the SQLite Bark
+projection persistence test, both Bark outgoing coordinator tests, the
+Postgres federation compile, and 791 CDK federation tests pass. Three CDK
+tests initially failed only because the sandbox denied loopback binding and
+passed unchanged when rerun with that permission. The retained Bark
+response-loss integration test compiled; this run's macOS Docker CLN process
+missed its 30-second startup deadline, so no new result is claimed for that
+infrastructure run.
+
+Decision: **Kept.** The candidate is a net reduction in CDK code and deletes
+the obsolete semantic operation instead of replacing it with another state machine. It
+passes the affected-stage and whole-wallet gates, lowers application and
+helper traffic, preserves one healthy initiation, and keeps consensus before
+the external side effect through the unchanged accepted
+`SendHtlcsCosigned` boundary.
 
 ## Milestone 22: reject a duplicate paid melt without halting consensus
 
@@ -5489,6 +5613,92 @@ run directory for Milestone 21 measurements.
       standalone mint behavior without adding compatibility state.
 - [ ] Update this record with the smallest owning fix, exact local evidence,
       temporary-instrumentation cleanup, and a focused conventional commit.
+
+## Milestone 23: precise mint and melt timing attribution
+
+Status: **Not started. Read-only measurement milestone.**
+
+### Goal
+
+Determine exactly which stages account for the remaining federated BOLT11
+latency before changing scheduling, message flow, polling, consensus cadence,
+or Bark behavior. This milestone changes no production payment semantics. Its
+deliverable is a causal timing breakdown for healthy local five-member incoming
+mint and outgoing melt samples, with the standalone Bark payment above as the
+external outgoing baseline.
+
+For outgoing payments, distinguish the approximately 1.80-second Bark durable
+send span (and 2.91-second Bark CLI wall-clock span) from the rest of the
+federated melt. For incoming payments, distinguish payer routing and Ark
+visibility from every later federation and issuance step. Do not call an
+unmeasured interval "consensus", "polling", or "Bark" by elimination.
+
+### Method and boundaries
+
+Run fresh local release federations only, using the existing local runner and
+the established Signet driver order. Collect at least three successful incoming
+and three successful outgoing samples of each fixed amount class. Preserve
+one request/payment per sample; do not retry or create a second public payment
+merely to fill a missing timestamp.
+
+Use existing durable timestamps and structured logs first. Where a required
+boundary is absent, add narrowly scoped, temporary instrumentation with
+monotonic per-process timestamps and a bounded, redacted operation correlation
+key. It may record timing only; it must not alter scheduling, retry decisions,
+polling, consensus data, persistence schema, or external requests. Remove the
+instrumentation before declaring the milestone complete, rebuild release
+binaries, and confirm the final evidence run contains no temporary probe.
+
+Cross-process time is comparable only through explicit request/operation
+handoff anchors; report local spans from monotonic clocks, not inferred wall
+clock differences. Keep raw invoices, payment hashes, preimages, wallet data,
+and machine paths outside the repository.
+
+### Required breakdown
+
+For each sample, report median, range, and p95 when meaningful for:
+
+1. wallet request arrival through returned quote/invoice;
+2. wallet POST arrival through its designated publication, consensus finality,
+   and deterministic application;
+3. each accepted Bark phase: receive/melt preparation or reservation, plan,
+   FROST/signing, Ark request start-to-return, and terminal-status discovery;
+4. private peer RPC start-to-return, separated from time waiting for its
+   accepted prerequisite;
+5. each consensus operation's submit-to-final, final-to-apply, and
+   apply-to-next-action intervals, including queue/cadence wait when it is the
+   direct cause;
+6. incoming HTLC evidence, claim, result authority, quote-paid, POST mint,
+   issuance, and wallet persistence; and
+7. outgoing reservation, send plan, Ark initiation, terminal result authority,
+   quote-paid or revocation, Cashu melt saga, change, and wallet persistence.
+
+Summarize the end-to-end total as non-overlapping spans, so the sum reconciles
+to the wallet-visible duration within documented clock/measurement error. Mark
+an external payer/store interval separately rather than charging it to CDK.
+
+### Checklist and success criteria
+
+- [ ] Freeze source revisions, release hashes, Bark revision, topology,
+      thresholds, database, amount, and Signet endpoint before sampling.
+- [ ] Produce three healthy incoming and three healthy outgoing local samples
+      with an explicit event timeline for every required boundary above.
+- [ ] Record Bark-only outgoing evidence beside the federated melt timeline;
+      use it only as a baseline, not as proof about any federated stage.
+- [ ] Attribute every material interval to one owning layer with direct start
+      and end evidence; list any irreducible unknown interval explicitly.
+- [ ] Reconcile each timeline to the client-observed total and account for
+      concurrent spans without double-counting.
+- [ ] Count the operations, private RPCs, Ark calls, FROST actions, and
+      consensus submit/finality/application intervals that occur in each span.
+- [ ] Run one restart/replay sample for each direction to verify that timing
+      probes do not change recovery, accounting, or convergence.
+- [ ] Remove all temporary instrumentation; rebuild and rerun a no-probe smoke
+      sample that preserves exact payment behavior and timing shape.
+- [ ] Update the evidence and result log, name the largest confirmed delays,
+      and create separately numbered optimization milestones only for causes
+      supported by these measurements. Commit the documentation and any
+      temporary-instrumentation cleanup together.
 
 ## End-to-end verification matrix
 
@@ -5550,6 +5760,7 @@ Append future evidence here rather than rewriting historical results.
 | --- | --- | --- | --- | --- | --- |
 | 2026-07-20 | pre-optimization deployment | Nocean, five members, Bark Signet | 10,123-sat incoming success | about 101s quote-to-issuance; about 58s after first visible post-payment activity; 22 accepted operations; four duplicate finalized mint items | Baseline confirms serial federation delays and excess observation/submission work; no rate-limit error in this trace |
 | 2026-07-20 | pre-optimization deployment | Nocean, five members, Bark Signet | 50,000-sat incoming paid, not issued | actor claim RPC about 170ms; five HTLC observations, five result observations, four generic paid observations; all members `PAID`; no mint operation or signatures | Bark settlement succeeded; missing client POST issuance is a separate wallet-visible stage and must not be attributed to Ark or consensus failure |
+| 2026-07-23 | standalone Bark CLI | disposable Signet Bark wallet, public faucet and test store, no CDK federation | 1,000-sat outgoing BOLT11 success | Bark CLI wall-clock 2.91s; durable Bark action creation-to-completion about 1.80s; 20-sat fee | Establishes a real Bark-only outgoing baseline. The roughly 20-second federated melt tail is not ordinary Bark/Ark Lightning settlement; Milestone 23 must attribute the remaining stages directly. |
 | 2026-07-21 | static consensus review | 3-of-5 model | incoming/outgoing cardinality | incoming success minimum 15, outgoing success 10, outgoing failure/revocation 15 Bark/payment entries; practical five-member ranges reach 21/14/21 | Establishes exact consensus-reduction counters before production changes |
 | 2026-07-21 | active public config and signed status | Nocean, read-only field evidence | threshold correction | Bark/FROST threshold is 3; mint and melt payment-observation threshold is 4; active minimums are therefore 16/11/16, not 15/10/15 | Milestone 3 must use `max(t, q) = 4`; the three-operation reduction remains unchanged |
 | 2026-07-21 | workflow verification | local browser and shell against 2nd.dev Signet | payment-helper smoke, no payment submitted | faucet login succeeded through GitHub OAuth; unauthenticated faucet API returned 401; public store create/status returned a redacted Signet invoice and `PENDING`; disposable orders were left unpaid | Repeated samples can avoid store UI navigation while faucet authentication remains correctly confined to the browser |
@@ -5597,6 +5808,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-23 | Milestone 18 canonical melt submission | local release, fresh five-member loopback federation, SQLite, three retained controls and three final real-Signet candidates | melt POSTs 15 -> 3 and body bytes 23,715 -> 4,743, but GETs 30 -> 45 and total starts 45 -> 48; POST/GET-stage median 2,504.378 -> 3,471.172ms; wallet median 36.99 -> 43.05s and observed max 46.72 -> 76.08s; three payments, three accepted melts, zero duplicates in both | Reject and revert: one canonical POST plus threshold GET preserved authority and exactly-once payment, and `prefer_async` removed the first 15-18s handler wait, but the final candidate still exceeded the isolated and whole-wallet 5% latency budgets. Full fan-out remains. |
 | 2026-07-23 | Milestone 19 config-derived keyset validation | same fresh five-member loopback federation and imported registry, locked release CLI, ten warmed short-process samples per cohort plus one/two-member loss | discovery GETs 10 -> 1 and response bodies 26,120 -> 1,665 bytes; median and observed p95/max 80 -> 70ms; one and two offline members still completed in 70ms | Keep config-derived reuse in the generic URL-backed federation connector. Live mint info remains digest-checked, sensitive results retain threshold verification, changed rotation state clears the optimization and fails closed, and no durable record, schema, timer, or payment-backend branch was added. |
 | 2026-07-23 | Milestone 20 terminal-melt maintenance quiet period | same persisted local five-member release federation, SQLite, real Signet, four control and six candidate 1,000-sat melts without top-up | control's fifth quote found 0 spendable and 15,900 reserved for 37:04-37:34; candidate completed all six with one spendable change after every terminal result, no refresh reservation, unchanged one-movement send shape, zero duplicates, and identical 123-entry restart digests | Keep the existing 30-second maintenance guard but restart it from durable `paid_time`. This removes the measured pre-lock reservation window without adding a queue, timer, schema, backend branch, consensus operation, or external call. |
+| 2026-07-23 | Milestone 21 direct terminal result | fresh five-member local release control/candidate federations, SQLite, real Signet, three 1,000-sat melts per side plus a controlled nine/ten-operation AlephBFT probe | accepted operations 10 -> 9; CLI median 20 -> 18s and observed p95/max 22 -> 18s; controlled serial median 18,456 -> 17,233ms; total/helper deliveries -9.8%/-11.7%; all five candidate members converged and every payment settled once | Keep the direct `SendHtlcsCosigned` -> terminal edge. Exact Ark idempotency and typed `NotFound` preserve actor-loss recovery; healthy initiation remains one POST; no replacement protocol state, loop, timer, or configuration was added. |
 | 2026-07-23 | Milestone 22 duplicate-paid-melt discovery | retained local five-member release federation, SQLite, accidental reuse of one already paid 1,000-sat store invoice | one new melt operation finalized, then all five members recorded the same index as failed and halted deterministic application on `Request already paid`; each stopped at 135 applied plus one failed journal entry while 151 finalized items existed; no second Bark action or external payment occurred | A wallet-level duplicate must be a deterministic rejection, never a consensus-halting apply error. Preserve the evidence and fix this after Milestone 21 with admission, later-operation, replay, and exactly-once regressions. |
 
 ## Completion checklist
@@ -5638,7 +5850,7 @@ Append future evidence here rather than rewriting historical results.
       without weakening matching-view or signature-share validation.
 - [x] Rapid successive melts retain payment-capable Bark liquidity instead of
       waiting behind a long routine refresh reservation.
-- [ ] Exact Ark initiation either removes `PaymentInitiated` with safe
+- [x] Exact Ark initiation either removes `PaymentInitiated` with safe
       cross-member retry and fewer accepted operations or re-proves why the
       boundary remains necessary after Milestone 17A.
 - [ ] A second quote for an already paid BOLT11 lookup ID is rejected without
@@ -5649,6 +5861,6 @@ Append future evidence here rather than rewriting historical results.
       operation only if FROST still starts strictly after exact authorization.
 - [ ] Bark/Ark setup and initiation avoid redundant registration RPCs while
       preserving atomic validation and idempotent response-loss recovery.
-- [ ] `PaymentInitiated` is removed only if the fault audit proves that no
+- [x] `PaymentInitiated` is removed only if the fault audit proves that no
       safety, liveness, replay, or recovery invariant depends on it; otherwise
       its rejection is recorded and the boundary remains.

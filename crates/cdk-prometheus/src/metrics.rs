@@ -2230,7 +2230,7 @@ mod tests {
         }
         metrics.set_federation_bark_projection_lag("2", 3);
         metrics.set_federation_bark_vtxos("2", "reserved", 2, 42_000);
-        metrics.set_federation_bark_action_phase("2", "payment_initiated", 1, 17);
+        metrics.set_federation_bark_action_phase("2", "send_htlcs_cosigned", 1, 17);
         metrics.set_federation_bark_exposure("2", "ambiguous", 1, 21_000);
         metrics.set_federation_bark_protocol_records("2", "virtual_musig2", 2);
         metrics.set_federation_bark_receive_secret_coverage("2", "locally_retained", 3);
@@ -2241,7 +2241,7 @@ mod tests {
         for expected in [
             "state=\"degraded\"",
             "state=\"reserved\"",
-            "phase=\"payment_initiated\"",
+            "phase=\"send_htlcs_cosigned\"",
             "risk=\"ambiguous\"",
             "protocol=\"virtual_musig2\"",
             "coverage=\"locally_retained\"",

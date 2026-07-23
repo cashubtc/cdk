@@ -67,6 +67,13 @@ fn matching_observer_count(
         .unwrap_or(0)
 }
 
+fn fallback_may_initiate(
+    is_actor: bool,
+    status: &cdk_bark::FederatedBarkSendTerminalStatus,
+) -> bool {
+    !is_actor && matches!(status, cdk_bark::FederatedBarkSendTerminalStatus::Missing)
+}
+
 /// Advance one accepted pending melt by at most one consensus-visible phase.
 pub(super) async fn advance_federated_bark_melt_quote(
     state: &MintState,
@@ -97,7 +104,6 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 action.phase,
                 FederationBarkSemanticPhase::SendPlanned
                     | FederationBarkSemanticPhase::SendHtlcsCosigned
-                    | FederationBarkSemanticPhase::PaymentInitiated
                     | FederationBarkSemanticPhase::PaymentSucceeded
                     | FederationBarkSemanticPhase::PaymentFailed
                     | FederationBarkSemanticPhase::RevocationPlanned
@@ -128,7 +134,6 @@ pub(super) async fn advance_federated_bark_melt_quote(
         let htlc_entry = if matches!(
             effective_phase,
             FederationBarkSemanticPhase::SendHtlcsCosigned
-                | FederationBarkSemanticPhase::PaymentInitiated
                 | FederationBarkSemanticPhase::PaymentSucceeded
                 | FederationBarkSemanticPhase::PaymentFailed
                 | FederationBarkSemanticPhase::RevocationPlanned
@@ -149,33 +154,6 @@ pub(super) async fn advance_federated_bark_melt_quote(
         if let Some(htlcs) = &htlc_entry {
             runtime
                 .apply_lightning_send_htlcs(&quote, &projection, &plan_entry, htlcs)
-                .await
-                .map_err(|_| cdk::Error::Internal)?;
-        }
-
-        let initiated_entry = if matches!(
-            effective_phase,
-            FederationBarkSemanticPhase::PaymentInitiated
-                | FederationBarkSemanticPhase::PaymentSucceeded
-                | FederationBarkSemanticPhase::PaymentFailed
-                | FederationBarkSemanticPhase::RevocationPlanned
-                | FederationBarkSemanticPhase::RevocationCompleted
-        ) {
-            Some(
-                send_transition_entry(
-                    state,
-                    &projection,
-                    action.action_id,
-                    FederationBarkSemanticPhase::PaymentInitiated,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-        if let Some(initiated) = &initiated_entry {
-            runtime
-                .apply_lightning_send_initiated(&quote, &projection, &plan_entry, initiated)
                 .await
                 .map_err(|_| cdk::Error::Internal)?;
         }
@@ -272,28 +250,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 .await
             }
             FederationBarkSemanticPhase::SendHtlcsCosigned => {
-                if plan.actor != federation.member_id() {
-                    return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
-                }
-                let transition = runtime
-                    .initiate_lightning_send(
-                        &quote,
-                        &projection,
-                        &plan_entry,
-                        htlc_entry.as_ref().ok_or(cdk::Error::Internal)?,
-                    )
-                    .await
-                    .map_err(|_| cdk::Error::Internal)?;
-                submit_bark_operation(
-                    state,
-                    federation.operation_envelope(FederationOperation::Bark(
-                        FederationBarkOperation::ActionTransition(transition),
-                    )),
-                )
-                .await
-            }
-            FederationBarkSemanticPhase::PaymentInitiated => {
-                let initiated = initiated_entry.as_ref().ok_or(cdk::Error::Internal)?;
+                let htlcs = htlc_entry.as_ref().ok_or(cdk::Error::Internal)?;
                 let threshold = usize::from(
                     federation
                         .public_config()
@@ -311,7 +268,7 @@ pub(super) async fn advance_federated_bark_melt_quote(
                         return Ok(FederationPaymentAdvancement::AwaitingFederationEvidence);
                     }
                     let transition = runtime
-                        .finalize_lightning_send_failure(&plan_entry, initiated)
+                        .finalize_lightning_send_failure(&plan_entry, htlcs)
                         .map_err(|_| cdk::Error::Internal)?;
                     return submit_bark_operation(
                         state,
@@ -346,18 +303,42 @@ pub(super) async fn advance_federated_bark_melt_quote(
                 }
                 let next_epoch =
                     next_observation_epoch(&projection, action.action_id, federation.member_id())?;
-                match runtime
+                let is_actor = plan.actor == federation.member_id();
+                if is_actor {
+                    runtime
+                        .initiate_lightning_send(&quote, &projection, &plan_entry, htlcs)
+                        .await
+                        .map_err(|_| cdk::Error::Internal)?;
+                }
+                let mut status = runtime
                     .observe_lightning_send_terminal(
                         &quote,
                         &projection,
                         &plan_entry,
-                        initiated,
+                        htlcs,
                         next_epoch,
                     )
                     .await
-                    .map_err(|_| cdk::Error::Internal)?
-                {
-                    cdk_bark::FederatedBarkSendTerminalStatus::Pending => {
+                    .map_err(|_| cdk::Error::Internal)?;
+                if fallback_may_initiate(is_actor, &status) {
+                    runtime
+                        .initiate_lightning_send(&quote, &projection, &plan_entry, htlcs)
+                        .await
+                        .map_err(|_| cdk::Error::Internal)?;
+                    status = runtime
+                        .observe_lightning_send_terminal(
+                            &quote,
+                            &projection,
+                            &plan_entry,
+                            htlcs,
+                            next_epoch,
+                        )
+                        .await
+                        .map_err(|_| cdk::Error::Internal)?;
+                }
+                match status {
+                    cdk_bark::FederatedBarkSendTerminalStatus::Pending
+                    | cdk_bark::FederatedBarkSendTerminalStatus::Missing => {
                         Ok(bark_outgoing_terminal_pending_wait(
                             plan.actor,
                             federation.member_id(),
@@ -762,7 +743,7 @@ mod tests {
     };
     use cdk::Amount;
 
-    use super::matching_observer_count;
+    use super::{fallback_may_initiate, matching_observer_count};
 
     fn member(id: u16) -> MemberId {
         MemberId::new(id).expect("member ID")
@@ -842,5 +823,21 @@ mod tests {
             ),
             3,
         );
+    }
+
+    #[test]
+    fn only_a_typed_missing_status_authorizes_fallback_initiation() {
+        assert!(!fallback_may_initiate(
+            false,
+            &cdk_bark::FederatedBarkSendTerminalStatus::Pending,
+        ));
+        assert!(fallback_may_initiate(
+            false,
+            &cdk_bark::FederatedBarkSendTerminalStatus::Missing,
+        ));
+        assert!(!fallback_may_initiate(
+            true,
+            &cdk_bark::FederatedBarkSendTerminalStatus::Missing,
+        ));
     }
 }

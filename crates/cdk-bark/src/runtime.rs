@@ -171,6 +171,9 @@ pub struct FederatedBarkSendProposal {
 pub enum FederatedBarkSendTerminalStatus {
     /// Bark has not observed a terminal result yet.
     Pending,
+    /// The Ark server returned typed `NotFound`, so a selected fallback may
+    /// submit the exact idempotent request fixed by accepted HTLC state.
+    Missing,
     /// Bark verified the invoice preimage and constructed the exact success
     /// transition authorized by the accepted send plan.
     Succeeded(Box<FederationBarkActionTransition>),
@@ -818,19 +821,17 @@ impl FederatedBarkRuntime {
         Ok(())
     }
 
-    /// Initiate exactly one already-cosigned outgoing payment. Only the
-    /// accepted actor performs the idempotent Ark request.
+    /// Initiate the exact already-cosigned outgoing payment. The coordinator
+    /// selects the accepted actor first and may later authorize a fallback;
+    /// Ark's persisted identity makes concurrent or delayed retries exact.
     pub async fn initiate_lightning_send(
         &self,
         quote: &MeltQuote,
         projection: &FederationBarkProjectionSnapshot,
         accepted_plan: &FederationJournalEntry,
         accepted_htlcs: &FederationJournalEntry,
-    ) -> Result<FederationBarkActionTransition, Error> {
+    ) -> Result<(), Error> {
         let plan = accepted_send_plan(accepted_plan)?;
-        if plan.actor != self.member_id {
-            return Err(Error::SendExecutionFailed);
-        }
         let htlcs = accepted_send_transition(
             accepted_htlcs,
             FederationBarkSemanticPhase::SendHtlcsCosigned,
@@ -841,30 +842,6 @@ impl FederatedBarkRuntime {
             .initiate_lightning_send(&bark_plan)
             .await
             .map_err(|_| Error::SendExecutionFailed)?;
-        payment_initiated_transition(self.member_id, accepted_plan, accepted_htlcs, plan, htlcs)
-    }
-
-    /// Replay an accepted payment-initiation phase locally without contacting
-    /// the Ark server.
-    pub async fn apply_lightning_send_initiated(
-        &self,
-        quote: &MeltQuote,
-        projection: &FederationBarkProjectionSnapshot,
-        accepted_plan: &FederationJournalEntry,
-        accepted_initiated: &FederationJournalEntry,
-    ) -> Result<(), Error> {
-        let plan = accepted_send_plan(accepted_plan)?;
-        let transition = accepted_send_transition(
-            accepted_initiated,
-            FederationBarkSemanticPhase::PaymentInitiated,
-        )?;
-        validate_send_transition_binding(&self.federation, accepted_plan, plan, transition)?;
-        validate_payment_initiated_result(plan, transition)?;
-        let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
-        self.wallet
-            .apply_lightning_send_initiated(&bark_plan)
-            .await
-            .map_err(|_| Error::SendReconciliationFailed)?;
         Ok(())
     }
 
@@ -879,19 +856,18 @@ impl FederatedBarkRuntime {
         quote: &MeltQuote,
         projection: &FederationBarkProjectionSnapshot,
         accepted_plan: &FederationJournalEntry,
-        accepted_initiated: &FederationJournalEntry,
+        accepted_htlcs: &FederationJournalEntry,
         observation_epoch: u64,
     ) -> Result<FederatedBarkSendTerminalStatus, Error> {
         if observation_epoch == 0 {
             return Err(Error::SendReconciliationFailed);
         }
         let plan = accepted_send_plan(accepted_plan)?;
-        let initiated = accepted_send_transition(
-            accepted_initiated,
-            FederationBarkSemanticPhase::PaymentInitiated,
+        let htlcs = accepted_send_transition(
+            accepted_htlcs,
+            FederationBarkSemanticPhase::SendHtlcsCosigned,
         )?;
-        validate_send_transition_binding(&self.federation, accepted_plan, plan, initiated)?;
-        validate_payment_initiated_result(plan, initiated)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, plan, htlcs)?;
         let bark_plan = self.validate_lightning_send_plan(quote, projection, plan)?;
         let status = self
             .wallet
@@ -900,19 +876,20 @@ impl FederatedBarkRuntime {
             .map_err(|_| Error::SendReconciliationFailed)?;
         match status {
             FederationLightningSendStatus::Pending => Ok(FederatedBarkSendTerminalStatus::Pending),
+            FederationLightningSendStatus::Missing => Ok(FederatedBarkSendTerminalStatus::Missing),
             FederationLightningSendStatus::Succeeded(preimage) => Ok(
                 FederatedBarkSendTerminalStatus::Succeeded(Box::new(payment_succeeded_transition(
                     plan.actor,
                     accepted_plan,
-                    accepted_initiated,
+                    accepted_htlcs,
                     plan,
-                    initiated,
+                    htlcs,
                     projection,
                     preimage,
                 )?)),
             ),
             FederationLightningSendStatus::Failed => Ok(FederatedBarkSendTerminalStatus::Failed(
-                self.lightning_send_failure_observation(plan, initiated, observation_epoch)?,
+                self.lightning_send_failure_observation(plan, htlcs, observation_epoch)?,
             )),
         }
     }
@@ -961,10 +938,10 @@ impl FederatedBarkRuntime {
     fn lightning_send_failure_observation(
         &self,
         plan: &FederationBarkActionPlan,
-        initiated: &FederationBarkActionTransition,
+        htlcs: &FederationBarkActionTransition,
         observation_epoch: u64,
     ) -> Result<FederationBarkMemberObservation, Error> {
-        let (_, result_hash) = payment_failed_result(plan, initiated.result_hash)?;
+        let (_, result_hash) = payment_failed_result(plan, htlcs.result_hash)?;
         Ok(FederationBarkMemberObservation {
             version: FEDERATION_BARK_OPERATION_VERSION,
             action_id: plan.action_id,
@@ -986,19 +963,18 @@ impl FederatedBarkRuntime {
     pub fn finalize_lightning_send_failure(
         &self,
         accepted_plan: &FederationJournalEntry,
-        accepted_initiated: &FederationJournalEntry,
+        accepted_htlcs: &FederationJournalEntry,
     ) -> Result<FederationBarkActionTransition, Error> {
         let plan = accepted_send_plan(accepted_plan)?;
         if plan.actor != self.member_id {
             return Err(Error::SendExecutionFailed);
         }
-        let initiated = accepted_send_transition(
-            accepted_initiated,
-            FederationBarkSemanticPhase::PaymentInitiated,
+        let htlcs = accepted_send_transition(
+            accepted_htlcs,
+            FederationBarkSemanticPhase::SendHtlcsCosigned,
         )?;
-        validate_send_transition_binding(&self.federation, accepted_plan, plan, initiated)?;
-        validate_payment_initiated_result(plan, initiated)?;
-        let (artifact, result_hash) = payment_failed_result(plan, initiated.result_hash)?;
+        validate_send_transition_binding(&self.federation, accepted_plan, plan, htlcs)?;
+        let (artifact, result_hash) = payment_failed_result(plan, htlcs.result_hash)?;
         Ok(FederationBarkActionTransition {
             version: FEDERATION_BARK_OPERATION_VERSION,
             action_id: plan.action_id,
@@ -1006,11 +982,11 @@ impl FederatedBarkRuntime {
             phase: FederationBarkSemanticPhase::PaymentFailed,
             actor: self.member_id,
             plan_operation_id: accepted_plan.operation_id,
-            predecessor_operation_id: accepted_initiated.operation_id,
+            predecessor_operation_id: accepted_htlcs.operation_id,
             payment_hash: plan.payment_hash,
-            attempt: initiated.attempt,
-            signer_set: initiated.signer_set.clone(),
-            request_hash: initiated.result_hash,
+            attempt: htlcs.attempt,
+            signer_set: htlcs.signer_set.clone(),
+            request_hash: htlcs.result_hash,
             result_hash,
             evidence_certificate: None,
             external_id: plan.external_id,
@@ -3537,7 +3513,7 @@ const fn bark_action_phase_is_ambiguous(phase: FederationBarkSemanticPhase) -> b
     matches!(
         phase,
         FederationBarkSemanticPhase::ReceivePreimageDisclosed
-            | FederationBarkSemanticPhase::PaymentInitiated
+            | FederationBarkSemanticPhase::SendHtlcsCosigned
     )
 }
 
@@ -3921,82 +3897,13 @@ fn send_htlc_transition(
     })
 }
 
-fn payment_initiated_transition(
-    actor: MemberId,
-    accepted_plan: &FederationJournalEntry,
-    accepted_htlcs: &FederationJournalEntry,
-    plan: &FederationBarkActionPlan,
-    htlcs: &FederationBarkActionTransition,
-) -> Result<FederationBarkActionTransition, Error> {
-    let mut result_bytes = Vec::new();
-    result_bytes.extend_from_slice(b"cdk/bark/send-payment-initiated/v1");
-    result_bytes.extend_from_slice(&plan.action_id.to_bytes());
-    result_bytes.extend_from_slice(
-        &plan
-            .payment_hash
-            .ok_or(Error::SendExecutionFailed)?
-            .to_bytes(),
-    );
-    result_bytes.extend_from_slice(&htlcs.result_hash.to_bytes());
-    result_bytes.extend_from_slice(&plan.external_id.to_bytes());
-    let result_artifact = bark_artifact(FederationBarkArtifactKind::ArkResult, result_bytes)?;
-    Ok(FederationBarkActionTransition {
-        version: FEDERATION_BARK_OPERATION_VERSION,
-        action_id: plan.action_id,
-        quote: plan.quote.clone(),
-        phase: FederationBarkSemanticPhase::PaymentInitiated,
-        actor,
-        plan_operation_id: accepted_plan.operation_id,
-        predecessor_operation_id: accepted_htlcs.operation_id,
-        payment_hash: plan.payment_hash,
-        attempt: htlcs.attempt,
-        signer_set: htlcs.signer_set.clone(),
-        request_hash: htlcs.result_hash,
-        result_hash: result_artifact.hash,
-        evidence_certificate: None,
-        external_id: plan.external_id,
-        artifacts: vec![result_artifact],
-        vtxo_transitions: Vec::new(),
-    })
-}
-
-fn validate_payment_initiated_result(
-    plan: &FederationBarkActionPlan,
-    transition: &FederationBarkActionTransition,
-) -> Result<(), Error> {
-    let mut result_bytes = Vec::new();
-    result_bytes.extend_from_slice(b"cdk/bark/send-payment-initiated/v1");
-    result_bytes.extend_from_slice(&plan.action_id.to_bytes());
-    result_bytes.extend_from_slice(
-        &plan
-            .payment_hash
-            .ok_or(Error::SendReconciliationFailed)?
-            .to_bytes(),
-    );
-    result_bytes.extend_from_slice(&transition.request_hash.to_bytes());
-    result_bytes.extend_from_slice(&plan.external_id.to_bytes());
-    let mut artifacts = transition
-        .artifacts
-        .iter()
-        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult);
-    let artifact = artifacts.next().ok_or(Error::SendReconciliationFailed)?;
-    if artifacts.next().is_some()
-        || artifact.bytes != result_bytes
-        || artifact.hash != transition.result_hash
-        || artifact.hash != bark_digest(&result_bytes)?
-    {
-        return Err(Error::SendReconciliationFailed);
-    }
-    Ok(())
-}
-
 fn payment_failed_result(
     plan: &FederationBarkActionPlan,
-    initiated_result_hash: FederationBarkDigest,
+    htlc_result_hash: FederationBarkDigest,
 ) -> Result<(FederationBarkArtifact, FederationBarkDigest), Error> {
     let mut result_bytes = b"cdk/bark/send-payment-failed/v1".to_vec();
     result_bytes.extend_from_slice(&plan.action_id.to_bytes());
-    result_bytes.extend_from_slice(&initiated_result_hash.to_bytes());
+    result_bytes.extend_from_slice(&htlc_result_hash.to_bytes());
     result_bytes.extend_from_slice(
         &plan
             .payment_hash
@@ -4060,9 +3967,9 @@ fn append_locator(bytes: &mut Vec<u8>, locator: FederationBarkVtxoLocator) {
 fn payment_succeeded_transition(
     actor: MemberId,
     accepted_plan: &FederationJournalEntry,
-    accepted_initiated: &FederationJournalEntry,
+    accepted_htlcs: &FederationJournalEntry,
     plan: &FederationBarkActionPlan,
-    initiated: &FederationBarkActionTransition,
+    htlcs: &FederationBarkActionTransition,
     projection: &FederationBarkProjectionSnapshot,
     preimage: Preimage,
 ) -> Result<FederationBarkActionTransition, Error> {
@@ -4072,7 +3979,7 @@ fn payment_succeeded_transition(
     )?;
     let mut result_bytes = b"cdk/bark/send-payment-succeeded/v1".to_vec();
     result_bytes.extend_from_slice(&plan.action_id.to_bytes());
-    result_bytes.extend_from_slice(&initiated.result_hash.to_bytes());
+    result_bytes.extend_from_slice(&htlcs.result_hash.to_bytes());
     result_bytes.extend_from_slice(preimage.as_ref());
     let result_hash = bark_digest(&result_bytes)?;
     let mut artifacts = vec![proof];
@@ -4122,11 +4029,11 @@ fn payment_succeeded_transition(
         phase: FederationBarkSemanticPhase::PaymentSucceeded,
         actor,
         plan_operation_id: accepted_plan.operation_id,
-        predecessor_operation_id: accepted_initiated.operation_id,
+        predecessor_operation_id: accepted_htlcs.operation_id,
         payment_hash: plan.payment_hash,
-        attempt: initiated.attempt,
-        signer_set: initiated.signer_set.clone(),
-        request_hash: initiated.result_hash,
+        attempt: htlcs.attempt,
+        signer_set: htlcs.signer_set.clone(),
+        request_hash: htlcs.result_hash,
         result_hash,
         evidence_certificate: None,
         external_id: plan.external_id,

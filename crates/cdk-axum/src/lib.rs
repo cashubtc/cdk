@@ -3468,7 +3468,6 @@ async fn reconcile_federation_bark_runtime(
                 if matches!(
                     transition.phase,
                     cdk::federation::FederationBarkSemanticPhase::SendHtlcsCosigned
-                        | cdk::federation::FederationBarkSemanticPhase::PaymentInitiated
                         | cdk::federation::FederationBarkSemanticPhase::PaymentSucceeded
                         | cdk::federation::FederationBarkSemanticPhase::PaymentFailed
                         | cdk::federation::FederationBarkSemanticPhase::RevocationCompleted
@@ -3512,11 +3511,6 @@ async fn reconcile_federation_bark_runtime(
                     cdk::federation::FederationBarkSemanticPhase::SendHtlcsCosigned => {
                         runtime
                             .apply_lightning_send_htlcs(&quote, &projection, &plan_entry, entry)
-                            .await
-                    }
-                    cdk::federation::FederationBarkSemanticPhase::PaymentInitiated => {
-                        runtime
-                            .apply_lightning_send_initiated(&quote, &projection, &plan_entry, entry)
                             .await
                     }
                     cdk::federation::FederationBarkSemanticPhase::PaymentSucceeded => runtime

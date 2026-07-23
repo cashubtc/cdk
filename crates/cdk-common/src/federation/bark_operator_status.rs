@@ -316,7 +316,7 @@ mod tests {
             actions: vec![FederationBarkActionStatus {
                 action_id,
                 kind: Some(FederationBarkActionKind::LightningSend),
-                phase: FederationBarkSemanticPhase::PaymentInitiated,
+                phase: FederationBarkSemanticPhase::SendHtlcsCosigned,
                 signing_retry_phase: None,
                 actor: member,
                 local_actor: true,

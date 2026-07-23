@@ -1166,7 +1166,7 @@ fn bark_operator_fixture() -> FederationBarkOperatorStatus {
         actions: vec![FederationBarkActionStatus {
             action_id: FederationBarkActionId::from_bytes([8; 32]).expect("action"),
             kind: Some(FederationBarkActionKind::LightningSend),
-            phase: FederationBarkSemanticPhase::PaymentInitiated,
+            phase: FederationBarkSemanticPhase::SendHtlcsCosigned,
             signing_retry_phase: None,
             actor: MemberId::new(1).expect("member"),
             local_actor: true,
@@ -1199,7 +1199,7 @@ fn bark_status_line_reports_risk_without_sensitive_material() {
     assert!(line.contains("readiness=ready"));
     assert!(line.contains("ambiguous_actions=1"));
     assert!(line.contains("receive_local_retained=1"));
-    assert!(action_line.contains("phase=payment_initiated"));
+    assert!(action_line.contains("phase=send_htlcs_cosigned"));
     for secret in [
         "lnbc-sensitive-invoice",
         "preimage-secret",

@@ -2674,38 +2674,6 @@ where
     else {
         panic!("expected HTLC transition")
     };
-    let initiated_result = bark_artifact(
-        FederationBarkArtifactKind::ArkResult,
-        b"send-payment-initiated",
-    );
-    let initiated = append_bark_operation(
-        &mut journal,
-        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
-            version: FEDERATION_BARK_OPERATION_VERSION,
-            action_id: send.action_id,
-            quote: send.quote.clone(),
-            phase: FederationBarkSemanticPhase::PaymentInitiated,
-            actor: send.actor,
-            plan_operation_id: first_send.operation_id,
-            predecessor_operation_id: htlcs.operation_id,
-            payment_hash: send.payment_hash,
-            attempt: send.attempt,
-            signer_set: send.signer_set.clone(),
-            request_hash: htlc_transition.result_hash,
-            result_hash: initiated_result.hash,
-            evidence_certificate: None,
-            external_id: send.external_id,
-            artifacts: vec![initiated_result],
-            vtxo_transitions: Vec::new(),
-        }),
-    );
-    apply_bark_entry(&db, &initiated).await;
-
-    let FederationOperation::Bark(FederationBarkOperation::ActionTransition(initiated_transition)) =
-        &initiated.envelope.operation
-    else {
-        panic!("expected initiated transition")
-    };
     let proof = bark_artifact(FederationBarkArtifactKind::Proof, &[51; 32]);
     let succeeded = append_bark_operation(
         &mut journal,
@@ -2716,11 +2684,11 @@ where
             phase: FederationBarkSemanticPhase::PaymentSucceeded,
             actor: send.actor,
             plan_operation_id: first_send.operation_id,
-            predecessor_operation_id: initiated.operation_id,
+            predecessor_operation_id: htlcs.operation_id,
             payment_hash: send.payment_hash,
             attempt: send.attempt,
             signer_set: send.signer_set.clone(),
-            request_hash: initiated_transition.result_hash,
+            request_hash: htlc_transition.result_hash,
             result_hash: bark_digest(52),
             evidence_certificate: None,
             external_id: send.external_id,
@@ -2742,7 +2710,6 @@ where
     );
     apply_bark_entry(&db, &succeeded).await;
     apply_bark_entry(&db, &htlcs).await;
-    apply_bark_entry(&db, &initiated).await;
     apply_bark_entry(&db, &succeeded).await;
 
     let succeeded_snapshot = db
@@ -2888,33 +2855,6 @@ where
     );
     apply_bark_entry(&db, &recovery_htlcs).await;
 
-    let recovery_initiated_result = bark_artifact(
-        FederationBarkArtifactKind::ArkResult,
-        b"recovery-payment-initiated",
-    );
-    let recovery_initiated = append_bark_operation(
-        &mut journal,
-        FederationBarkOperation::ActionTransition(FederationBarkActionTransition {
-            version: FEDERATION_BARK_OPERATION_VERSION,
-            action_id: recovery_action,
-            quote: recovery_send.quote.clone(),
-            phase: FederationBarkSemanticPhase::PaymentInitiated,
-            actor: recovery_send.actor,
-            plan_operation_id: recovery_plan.operation_id,
-            predecessor_operation_id: recovery_htlcs.operation_id,
-            payment_hash: recovery_send.payment_hash,
-            attempt: recovery_send.attempt,
-            signer_set: recovery_send.signer_set.clone(),
-            request_hash: recovery_htlc_result.hash,
-            result_hash: recovery_initiated_result.hash,
-            evidence_certificate: None,
-            external_id: recovery_send.external_id,
-            artifacts: vec![recovery_initiated_result.clone()],
-            vtxo_transitions: Vec::new(),
-        }),
-    );
-    apply_bark_entry(&db, &recovery_initiated).await;
-
     let recovery_failed_result = bark_artifact(
         FederationBarkArtifactKind::ArkResult,
         b"recovery-payment-failed",
@@ -2928,11 +2868,11 @@ where
             phase: FederationBarkSemanticPhase::PaymentFailed,
             actor: recovery_send.actor,
             plan_operation_id: recovery_plan.operation_id,
-            predecessor_operation_id: recovery_initiated.operation_id,
+            predecessor_operation_id: recovery_htlcs.operation_id,
             payment_hash: recovery_send.payment_hash,
             attempt: recovery_send.attempt,
             signer_set: recovery_send.signer_set.clone(),
-            request_hash: recovery_initiated_result.hash,
+            request_hash: recovery_htlc_result.hash,
             result_hash: recovery_failed_result.hash,
             evidence_certificate: None,
             external_id: recovery_send.external_id,

@@ -978,8 +978,6 @@ pub enum FederationBarkSemanticPhase {
     ReceiveClaimed,
     /// Outgoing HTLC package was co-signed.
     SendHtlcsCosigned,
-    /// Exact outgoing payment was initiated.
-    PaymentInitiated,
     /// Outgoing payment succeeded.
     PaymentSucceeded,
     /// Outgoing payment terminally failed but may still require recovery.
@@ -1000,7 +998,7 @@ pub enum FederationBarkSemanticPhase {
 
 impl FederationBarkSemanticPhase {
     /// Complete fixed phase domain for bounded metrics.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 20] = [
         Self::ReceiveIntent,
         Self::ReceivePrepared,
         Self::SendPlanned,
@@ -1013,7 +1011,6 @@ impl FederationBarkSemanticPhase {
         Self::ReceivePreimageDisclosed,
         Self::ReceiveClaimed,
         Self::SendHtlcsCosigned,
-        Self::PaymentInitiated,
         Self::PaymentSucceeded,
         Self::PaymentFailed,
         Self::RevocationCompleted,
@@ -1040,7 +1037,6 @@ impl FederationBarkSemanticPhase {
             Self::ReceivePreimageDisclosed => "receive_preimage_disclosed",
             Self::ReceiveClaimed => "receive_claimed",
             Self::SendHtlcsCosigned => "send_htlcs_cosigned",
-            Self::PaymentInitiated => "payment_initiated",
             Self::PaymentSucceeded => "payment_succeeded",
             Self::PaymentFailed => "payment_failed",
             Self::RevocationCompleted => "revocation_completed",
@@ -1068,7 +1064,6 @@ impl FederationBarkSemanticPhase {
             Self::ReceivePreimageDisclosed => 10,
             Self::ReceiveClaimed => 11,
             Self::SendHtlcsCosigned => 12,
-            Self::PaymentInitiated => 13,
             Self::PaymentSucceeded => 14,
             Self::PaymentFailed => 15,
             Self::RevocationCompleted => 16,
@@ -2769,19 +2764,6 @@ impl FederationBarkActionTransition {
                         "outgoing HTLC result must spend inputs, retain HTLC value, and bind one Ark result",
                     ));
                 }
-            }
-            FederationBarkSemanticPhase::PaymentInitiated
-                if !self.vtxo_transitions.is_empty()
-                    || self
-                        .artifacts
-                        .iter()
-                        .filter(|artifact| artifact.kind == FederationBarkArtifactKind::ArkResult)
-                        .count()
-                        != 1 =>
-            {
-                return Err(invalid_bark(
-                    "payment initiation must bind one Ark result without VTXO mutations",
-                ));
             }
             FederationBarkSemanticPhase::PaymentSucceeded => {
                 let valid_spends = !self.vtxo_transitions.is_empty()

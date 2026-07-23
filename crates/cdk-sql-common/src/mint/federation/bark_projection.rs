@@ -27,7 +27,6 @@ fn phase_label(phase: cdk_common::federation::FederationBarkSemanticPhase) -> &'
         Phase::ReceivePreimageDisclosed => "receive_preimage_disclosed",
         Phase::ReceiveClaimed => "receive_claimed",
         Phase::SendHtlcsCosigned => "send_htlcs_cosigned",
-        Phase::PaymentInitiated => "payment_initiated",
         Phase::PaymentSucceeded => "payment_succeeded",
         Phase::PaymentFailed => "payment_failed",
         Phase::RevocationCompleted => "revocation_completed",
@@ -374,9 +373,8 @@ fn direct_transition_allowed(
             | (Phase::ClaimPlanned, Phase::ReceivePreimageDisclosed)
             | (Phase::ReceivePreimageDisclosed, Phase::ReceiveClaimed)
             | (Phase::SendPlanned, Phase::SendHtlcsCosigned)
-            | (Phase::SendHtlcsCosigned, Phase::PaymentInitiated)
             | (
-                Phase::PaymentInitiated,
+                Phase::SendHtlcsCosigned,
                 Phase::PaymentSucceeded | Phase::PaymentFailed
             )
             | (Phase::PaymentFailed, Phase::RevocationPlanned)
@@ -412,7 +410,6 @@ fn transition_allowed(
                 | Phase::ReceivePreimageDisclosed
                 | Phase::SendPlanned
                 | Phase::SendHtlcsCosigned
-                | Phase::PaymentInitiated
                 | Phase::PaymentFailed
                 | Phase::RevocationPlanned
                 | Phase::RefreshPlanned
@@ -1414,5 +1411,21 @@ mod tests {
         ] {
             assert!(!direct_transition_allowed(previous, next));
         }
+    }
+
+    #[test]
+    fn outgoing_terminal_results_follow_the_accepted_htlc_package_directly() {
+        assert!(direct_transition_allowed(
+            Phase::SendHtlcsCosigned,
+            Phase::PaymentSucceeded,
+        ));
+        assert!(direct_transition_allowed(
+            Phase::SendHtlcsCosigned,
+            Phase::PaymentFailed,
+        ));
+        assert!(!direct_transition_allowed(
+            Phase::SendPlanned,
+            Phase::PaymentSucceeded,
+        ));
     }
 }
