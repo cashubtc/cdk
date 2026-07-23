@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, and 19 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestone 20 not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, and 20 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped
 
 First recorded: 2026-07-20
 
@@ -994,7 +994,7 @@ behavior yet.
 | 17A | Make Ark initiation exactly idempotent and recover a paid lost response | Complete — kept | `053f77bb` (Bark) |
 | 18 | Replace replicated melt POST bodies with one canonical submission followed by threshold GET verification | Rejected | `c63e49cd0` |
 | 19 | Avoid repeated federation keyset discovery across short-lived wallet processes | Complete — kept | `perf: reuse validated federation keysets` |
-| 20 | Preserve payment-capable Bark liquidity across rapid successive melts | Not started | — |
+| 20 | Preserve payment-capable Bark liquidity across rapid successive melts | Complete — kept | `perf: preserve Bark liquidity for queued melts` |
 
 ## Milestone 0: causal baseline
 
@@ -5245,28 +5245,129 @@ or release/retry scheduling—must be measured before choosing a fix.
 
 ### Checklist, tests, and success criteria
 
-- [ ] Reproduce at least three pairs of back-to-back 1,000-sat melts locally
+- [x] Reproduce at least three pairs of back-to-back 1,000-sat melts locally
       without an intervening top-up; record spendable, reserved, pending-spend,
       refresh phase, quote result, and exact reservation lifetime.
-- [ ] Trace the owning call path from terminal send change through maintenance
+- [x] Trace the owning call path from terminal send change through maintenance
       selection, accepted refresh plan, Bark input reservation, and release or
       completion. Distinguish a required Ark lock from avoidable CDK scheduling.
-- [ ] Evaluate the smallest safe correction first: do not plan routine refresh
+- [x] Evaluate the smallest safe correction first: do not plan routine refresh
       when it would reserve all payment-capable value, or yield an unstarted
       maintenance plan to fresh payment demand. Do not add a new queue, timeout,
       or liquidity classifier unless the measured state machine requires it.
-- [ ] Preserve consensus-before-side-effects, accepted-action replay,
+- [x] Preserve consensus-before-side-effects, accepted-action replay,
       predecessor lineage, exactly-once refresh/payment execution, and
       deterministic accounting across restart and member loss.
-- [ ] Add focused reservation, concurrent-demand, terminal-release, restart,
+- [x] Add focused reservation, concurrent-demand, terminal-release, restart,
       and one/two-member fault regressions. Federated BDK and standalone
       payment backends remain unchanged unless the same generic state contract
       is explicitly proven.
-- [ ] Keep only if three back-to-back melts succeed from sufficient existing
+- [x] Keep only if three back-to-back melts succeed from sufficient existing
       Bark value without an incoming top-up, refresh still eventually
       completes or safely yields, external attempts and accepted operations do
       not increase, and wallet p95 stays within the 5% regression budget.
-- [ ] If kept, commit as `perf: preserve Bark liquidity for queued melts`.
+- [x] If kept, commit as `perf: preserve Bark liquidity for queued melts`.
+
+### Evaluation: Kept (2026-07-23)
+
+The control and candidate used the same local five-member, 3-of-5, loopback
+federation, SQLite stores, locked release feature set, real Signet, and
+persisted wallet/federation state. The source parent was `4aaafb2acef6`; Bark
+was held at `053f77bb97b6` with the same pre-existing outgoing fixes in both
+cohorts. The reconstructed control and final candidate `cdk-mintd` SHA-256
+hashes were respectively
+`227268e3e94c2b7ff0d46a17a30b567b87c24b2b030eb5c3ee63f22348c3674c`
+and
+`4d0a7b787cf56d3dfbc5227b89aae1b1261128f5aaa4edb2638dfa36259327fe`.
+Both used the exact locked release build command documented for the local
+federation. No remote federation was used.
+
+One 20,000-sat receive funded the control. The preferred reusable Signet wallet
+failed before Lightning submission because its own VTXO lineage limit was
+exhausted, so the documented authenticated faucet fallback paid that setup
+invoice. Four consecutive 1,000-sat melts then succeeded without a top-up,
+each with an exact 25-sat fee. Their CLI durations were 35.25, 37.44, 40.85,
+and 46.97 seconds; durable quote-create-to-paid durations were 35, 38, 39, and
+47 seconds. The next quote failed on all five members with the backend amount
+mismatch. At that point the only remaining 15,900-sat VTXO had moved from
+spendable to reserved behind one accepted `refresh_planned` action.
+
+The control refresh eventually completed after public Signet confirmation and
+created one replacement 15,900-sat spendable VTXO. The accepted CDK
+reservation lasted between 37 minutes 4 seconds and 37 minutes 34 seconds.
+Bark acquired its required round lock 31 minutes 43 seconds before completion,
+leaving between 5 minutes 21 seconds and 5 minutes 51 seconds of avoidable CDK
+reservation before Bark owned the external side effect. This explains the
+failure precisely:
+
+1. terminal send change becomes spendable;
+2. routine maintenance sees the VTXO as refresh-due;
+3. `propose_refresh` selects all value at the earliest expiry;
+4. the accepted action plan immediately reserves that input in the
+   deterministic CDK projection;
+5. Bark only acquires its local lock later while applying the accepted plan;
+6. a new melt cannot construct the expected amount from zero spendable value.
+
+The existing guard used the melt quote operation's creation timestamp and
+tested `Pending` only after that timestamp became old. Each real payment took
+35-47 seconds, so it had already consumed the entire 30-second quiet period
+before reaching `Paid`. The smallest correction is therefore to treat durable
+`paid_time` as a fresh terminal-payment quiet timestamp. A `Pending` quote
+still blocks maintenance; a recently `Paid` quote blocks only for the existing
+30 seconds; an old, missing, or future `paid_time` does not block. This changes
+one existing maintenance predicate and adds no queue, schema, timer,
+rate-limit parsing, liquidity class, payment-backend branch, consensus
+operation, or Bark RPC.
+
+After the control refresh completed, the exact persisted federation restarted
+on the candidate binary. Six consecutive 1,000-sat melts then succeeded
+without a top-up, again with exact 25-sat fees. Their CLI durations were 25.13,
+20.63, 25.30, 22.36, 21.16, and 24.68 seconds; durable durations were 24, 18,
+22, 22, 21, and 25 seconds. The preferred Signet wallet timed out while
+creating these test invoices, before producing an invoice, so the documented
+store fallback supplied each fresh invoice. Because the receiver differs,
+these figures prove the 5% no-regression gate but are not claimed as a causal
+latency improvement.
+
+| Metric | Control | Candidate |
+| --- | --- | --- |
+| Rapid melts without top-up | four succeed; fifth quote rejected | six of six succeed |
+| Liquidity before fifth quote | 0 spendable; 15,900 reserved | 11,800 spendable; no active refresh |
+| Routine-refresh reservation during chain | 37:04-37:34 total, including 5:21-5:51 before Bark lock | none |
+| CLI median; observed max | 39.15s; 46.97s | 23.52s; 25.30s |
+| Successful-send shape | one Bark movement per melt; no duplicates | unchanged |
+
+After every candidate terminal result, one spendable change VTXO remained and
+no new refresh action appeared. The six balances were 14,875, 13,850, 12,825,
+11,800, 10,775, and 9,750 sats. More than five minutes after the final payment,
+maintenance had safely yielded without a hidden suppression: the replacement
+VTXO's refresh trigger was still 65 blocks beyond the observed Signet tip.
+Across control and candidate there were ten successful melts, ten melt-quote
+operations, ten melt operations, one external Bark movement per success, and
+zero duplicate finalized items. The final five-member state converged at 123
+applied journal entries with identical order and application digests.
+
+An all-member candidate restart preserved ten `Paid` rows and the 9,750-sat
+spendable VTXO on every member, added no operation or Bark movement, and
+reconverged at the same 123-entry digest. The focused scheduler test covers
+pending demand, recent terminal demand, the exact release boundary, missing
+and future timestamps, and unrelated quote states. The SQLite transition test
+proves `paid_time` persistence. Existing accepted-plan replay, deterministic
+actor, one/two-member fault, standalone, and federated-BDK regressions remain
+unchanged; the full `cdk-axum` federation suite reached 560 passed, two
+ignored, and one load-sensitive journal-convergence failure that passed in
+39.24 seconds unchanged in isolation.
+
+All nine maintenance tests, package formatting, diff validation,
+warning-clean Clippy after allowing only the plan's pre-existing warning
+categories, and the exact locked release build pass. No temporary
+instrumentation remains.
+
+Decision: **Kept.** Restarting the already existing bounded quiet period from
+the actual durable terminal time removes the measured avoidable reservation,
+passes three complete back-to-back pairs, does not delay a genuinely due
+refresh beyond 30 seconds after payment, and leaves every consensus,
+side-effect, replay, accounting, and standalone-backend boundary intact.
 
 ## End-to-end verification matrix
 
@@ -5374,6 +5475,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-23 | Milestone 17A exact Ark initiation | isolated Bark/Ark control and candidate, fresh databases, local CLN fault injection | the control paid once but rejected the lost-response retry after its HTLC became `ln-spent`; the candidate recovered after Ark restart with one attempt and zero pending value; healthy initiation median 10.705 -> 9.836ms, observed max 11.430 -> 11.064ms, request count 3 -> 3, whole test 92.48 -> 95.93s | Keep durable full-request identity before the external side effect and exact retry in every terminal state. Partial uniqueness preserves a safe new-HTLC retry after terminal failure; no CDK protocol, consensus, polling, or standalone path changed. |
 | 2026-07-23 | Milestone 18 canonical melt submission | local release, fresh five-member loopback federation, SQLite, three retained controls and three final real-Signet candidates | melt POSTs 15 -> 3 and body bytes 23,715 -> 4,743, but GETs 30 -> 45 and total starts 45 -> 48; POST/GET-stage median 2,504.378 -> 3,471.172ms; wallet median 36.99 -> 43.05s and observed max 46.72 -> 76.08s; three payments, three accepted melts, zero duplicates in both | Reject and revert: one canonical POST plus threshold GET preserved authority and exactly-once payment, and `prefer_async` removed the first 15-18s handler wait, but the final candidate still exceeded the isolated and whole-wallet 5% latency budgets. Full fan-out remains. |
 | 2026-07-23 | Milestone 19 config-derived keyset validation | same fresh five-member loopback federation and imported registry, locked release CLI, ten warmed short-process samples per cohort plus one/two-member loss | discovery GETs 10 -> 1 and response bodies 26,120 -> 1,665 bytes; median and observed p95/max 80 -> 70ms; one and two offline members still completed in 70ms | Keep config-derived reuse in the generic URL-backed federation connector. Live mint info remains digest-checked, sensitive results retain threshold verification, changed rotation state clears the optimization and fails closed, and no durable record, schema, timer, or payment-backend branch was added. |
+| 2026-07-23 | Milestone 20 terminal-melt maintenance quiet period | same persisted local five-member release federation, SQLite, real Signet, four control and six candidate 1,000-sat melts without top-up | control's fifth quote found 0 spendable and 15,900 reserved for 37:04-37:34; candidate completed all six with one spendable change after every terminal result, no refresh reservation, unchanged one-movement send shape, zero duplicates, and identical 123-entry restart digests | Keep the existing 30-second maintenance guard but restart it from durable `paid_time`. This removes the measured pre-lock reservation window without adding a queue, timer, schema, backend branch, consensus operation, or external call. |
 
 ## Completion checklist
 
@@ -5412,7 +5514,7 @@ Append future evidence here rather than rewriting historical results.
       fallback, while terminal failure still requires three independent checks.
 - [ ] Healthy wallet melt transport starts at threshold and hedges promptly
       without weakening matching-view or signature-share validation.
-- [ ] Rapid successive melts retain payment-capable Bark liquidity instead of
+- [x] Rapid successive melts retain payment-capable Bark liquidity instead of
       waiting behind a long routine refresh reservation.
 - [ ] Outgoing success, failure, and recovered-result evidence use the retained
       independent verifier thresholds with fewer consensus entries.

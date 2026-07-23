@@ -527,7 +527,17 @@ async fn recent_bolt11_melt_blocks_routine_maintenance(
     let quotes = store.get_federation_melt_quotes(&quote_ids).await?;
     Ok(quotes
         .iter()
-        .any(|quote| quote.state == MeltQuoteState::Pending))
+        .any(|quote| melt_quote_blocks_routine_maintenance(quote.state, quote.paid_time, now)))
+}
+
+fn melt_quote_blocks_routine_maintenance(
+    state: MeltQuoteState,
+    paid_time: Option<u64>,
+    now: u64,
+) -> bool {
+    state == MeltQuoteState::Pending
+        || (state == MeltQuoteState::Paid
+            && paid_time.is_some_and(|paid_time| payment_timestamp_is_quiet(paid_time, now)))
 }
 
 fn payment_action_blocks_routine_maintenance(
@@ -923,12 +933,14 @@ async fn submit_bark_operation(
 #[cfg(test)]
 mod tests {
     use cdk::federation::{FederationBarkSemanticPhase, MemberId};
+    use cdk::nuts::MeltQuoteState;
 
     use super::{
-        bark_maintenance_retry_delay, payment_phase_is_terminal,
-        payment_state_blocks_routine_maintenance, payment_timestamp_is_quiet,
-        recent_payment_journal_floor, should_publish_maintenance_plan, BARK_MAINTENANCE_INTERVAL,
-        BARK_RECENT_PAYMENT_JOURNAL_LIMIT, BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD,
+        bark_maintenance_retry_delay, melt_quote_blocks_routine_maintenance,
+        payment_phase_is_terminal, payment_state_blocks_routine_maintenance,
+        payment_timestamp_is_quiet, recent_payment_journal_floor, should_publish_maintenance_plan,
+        BARK_MAINTENANCE_INTERVAL, BARK_RECENT_PAYMENT_JOURNAL_LIMIT,
+        BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD,
     };
 
     #[test]
@@ -1041,6 +1053,53 @@ mod tests {
         assert!(payment_timestamp_is_quiet(now - quiet + 1, now));
         assert!(!payment_timestamp_is_quiet(now - quiet, now));
         assert!(!payment_timestamp_is_quiet(now + 1, now));
+    }
+
+    #[test]
+    fn terminal_melt_restarts_payment_quiet_period() {
+        let now = 1_000;
+        let quiet = BARK_ROUTINE_MAINTENANCE_PAYMENT_QUIET_PERIOD.as_secs();
+        let payment_started_before_quiet_period = now - quiet;
+
+        assert!(!payment_timestamp_is_quiet(
+            payment_started_before_quiet_period,
+            now,
+        ));
+        assert!(melt_quote_blocks_routine_maintenance(
+            MeltQuoteState::Pending,
+            None,
+            now,
+        ));
+        assert!(melt_quote_blocks_routine_maintenance(
+            MeltQuoteState::Paid,
+            Some(now),
+            now,
+        ));
+        assert!(melt_quote_blocks_routine_maintenance(
+            MeltQuoteState::Paid,
+            Some(now - quiet + 1),
+            now,
+        ));
+        assert!(!melt_quote_blocks_routine_maintenance(
+            MeltQuoteState::Paid,
+            Some(now - quiet),
+            now,
+        ));
+        assert!(!melt_quote_blocks_routine_maintenance(
+            MeltQuoteState::Paid,
+            None,
+            now,
+        ));
+        assert!(!melt_quote_blocks_routine_maintenance(
+            MeltQuoteState::Paid,
+            Some(now + 1),
+            now,
+        ));
+        assert!(!melt_quote_blocks_routine_maintenance(
+            MeltQuoteState::Unpaid,
+            Some(now),
+            now,
+        ));
     }
 
     #[test]
