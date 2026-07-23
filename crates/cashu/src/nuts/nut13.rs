@@ -10,9 +10,9 @@ use tracing::instrument;
 
 use super::nut00::{BlindedMessage, PreMint, PreMintSecrets};
 use super::nut01::SecretKey;
-use super::nut02::Id;
+use super::nut02::{Id, KeySetVersion};
 use crate::amount::{FeeAndAmounts, SplitTarget};
-use crate::dhke::blind_message;
+use crate::dhke::blind_message_for_version;
 use crate::secret::Secret;
 use crate::util::hex;
 use crate::{Amount, SECP256K1};
@@ -41,14 +41,19 @@ pub enum Error {
     /// SecretKey Error
     #[error(transparent)]
     SecpError(#[from] bitcoin::secp256k1::Error),
+    /// BLS blinding factor derivation failed
+    #[error("BLS blinding factor derivation exhausted the attempt space")]
+    BlsDerivationExhausted,
 }
 
 impl Secret {
     /// Create new [`Secret`] from seed
     pub fn from_seed(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         match keyset_id.get_version() {
-            super::nut02::KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
-            super::nut02::KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
+            KeySetVersion::Version01 | KeySetVersion::Version02 => {
+                Self::derive(seed, keyset_id, counter)
+            }
         }
     }
 
@@ -64,7 +69,7 @@ impl Secret {
         )))
     }
 
-    fn derive(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
+    fn derive(seed: &[u8], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         let mut message = Vec::new();
         message.extend_from_slice(b"Cashu_KDF_HMAC_SHA256");
         message.extend_from_slice(&keyset_id.to_bytes());
@@ -84,8 +89,9 @@ impl SecretKey {
     /// Create new [`SecretKey`] from seed
     pub fn from_seed(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         match keyset_id.get_version() {
-            super::nut02::KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
-            super::nut02::KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            KeySetVersion::Version00 => Self::legacy_derive(seed, keyset_id, counter),
+            KeySetVersion::Version01 => Self::derive(seed, keyset_id, counter),
+            KeySetVersion::Version02 => Self::derive_bls(seed, keyset_id, counter),
         }
     }
 
@@ -99,7 +105,7 @@ impl SecretKey {
         Ok(Self::from(derived_xpriv.private_key))
     }
 
-    fn derive(seed: &[u8; 64], keyset_id: Id, counter: u32) -> Result<Self, Error> {
+    fn derive(seed: &[u8], keyset_id: Id, counter: u32) -> Result<Self, Error> {
         let mut message = Vec::new();
         message.extend_from_slice(b"Cashu_KDF_HMAC_SHA256");
         message.extend_from_slice(&keyset_id.to_bytes());
@@ -114,6 +120,42 @@ impl SecretKey {
         Ok(Self::from(secp256k1::SecretKey::from_slice(
             &result_bytes[..32],
         )?))
+    }
+
+    fn derive_bls(seed: &[u8], keyset_id: Id, counter: u32) -> Result<Self, Error> {
+        Self::derive_bls_with_attempt(seed, keyset_id, counter).map(|(secret_key, _)| secret_key)
+    }
+
+    fn derive_bls_with_attempt(
+        seed: &[u8],
+        keyset_id: Id,
+        counter: u32,
+    ) -> Result<(Self, u32), Error> {
+        let mut message = Vec::new();
+        message.extend_from_slice(b"Cashu_KDF_HMAC_SHA256");
+        message.extend_from_slice(&keyset_id.to_bytes());
+        message.extend_from_slice(&(counter as u64).to_be_bytes());
+        message.extend_from_slice(b"\x01");
+
+        for attempt in 0..=u32::MAX {
+            let mut attempt_message = message.clone();
+            attempt_message.extend_from_slice(&attempt.to_be_bytes());
+
+            let mut engine = HmacEngine::<sha256::Hash>::new(seed);
+            engine.input(&attempt_message);
+            let hmac_result = hmac::Hmac::<sha256::Hash>::from_engine(engine);
+            let result_bytes = hmac_result.to_byte_array();
+
+            if result_bytes.iter().all(|byte| *byte == 0) {
+                continue;
+            }
+
+            if let Ok(secret_key) = Self::bls_from_slice(&result_bytes) {
+                return Ok((secret_key, attempt));
+            }
+        }
+
+        Err(Error::BlsDerivationExhausted)
     }
 }
 
@@ -137,7 +179,11 @@ impl PreMintSecrets {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
 
-            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+            let (blinded, r) = blind_message_for_version(
+                &secret.to_bytes(),
+                Some(blinding_factor),
+                keyset_id.get_version(),
+            )?;
 
             let blinded_message = BlindedMessage::new(amount, keyset_id, blinded);
 
@@ -171,7 +217,11 @@ impl PreMintSecrets {
             let secret = Secret::from_seed(seed, keyset_id, counter)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, counter)?;
 
-            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+            let (blinded, r) = blind_message_for_version(
+                &secret.to_bytes(),
+                Some(blinding_factor),
+                keyset_id.get_version(),
+            )?;
 
             let amount = Amount::ZERO;
 
@@ -204,7 +254,11 @@ impl PreMintSecrets {
             let secret = Secret::from_seed(seed, keyset_id, i)?;
             let blinding_factor = SecretKey::from_seed(seed, keyset_id, i)?;
 
-            let (blinded, r) = blind_message(&secret.to_bytes(), Some(blinding_factor))?;
+            let (blinded, r) = blind_message_for_version(
+                &secret.to_bytes(),
+                Some(blinding_factor),
+                keyset_id.get_version(),
+            )?;
 
             let blinded_message = BlindedMessage::new(Amount::ZERO, keyset_id, blinded);
 
@@ -502,6 +556,29 @@ mod tests {
         // Verify outputs are valid hex strings of correct length
         assert_eq!(secret.to_string().len(), 64); // 32 bytes as hex
         assert_eq!(secret_key.secret_bytes().len(), 32);
+    }
+
+    #[test]
+    fn test_v3_secret_derivation_vector() {
+        let seed = b"nut13 v3 test seed";
+        let keyset_id =
+            Id::from_str("02abd02ebc1ff44652153375162407deaf0b30e590844cca0b6e4894a08a8828dd")
+                .unwrap();
+        let counter = 3;
+
+        let secret = Secret::derive(seed, keyset_id, counter).unwrap();
+        let (blinding_factor, accepted_attempt) =
+            SecretKey::derive_bls_with_attempt(seed, keyset_id, counter).unwrap();
+
+        assert_eq!(
+            secret.to_string(),
+            "7a45e04943504b25273e9569ab7019ab62f814dade23998c12f5f4cb1bb7978a"
+        );
+        assert_eq!(
+            blinding_factor.to_secret_hex(),
+            "236dbcb12fc064ceeae6c5e2de7f79258374dccbf23ac0afdf72cf9eb53540c9"
+        );
+        assert_eq!(accepted_attempt, 1);
     }
 
     #[test]

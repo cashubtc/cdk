@@ -103,6 +103,12 @@ impl SecretData {
 fn check_duplicate_pubkeys(pubkeys: &[PublicKey]) -> Result<(), Error> {
     let mut x_coords = std::collections::HashSet::with_capacity(pubkeys.len());
     for pk in pubkeys {
+        // P2PK/HTLC spending conditions are secp256k1-only. A non-secp key (e.g. a
+        // BLS point parsed from an attacker-controlled NUT-10 secret) can never
+        // satisfy a signature and would panic in `x_only_public_key`, so reject it.
+        if !matches!(pk, PublicKey::Secp256k1(_)) {
+            return Err(Error::NUT11(crate::nuts::nut11::Error::NonSecp256k1Pubkey));
+        }
         if !x_coords.insert(pk.x_only_public_key().serialize()) {
             return Err(Error::NUT11(crate::nuts::nut11::Error::DuplicatePubkey));
         }

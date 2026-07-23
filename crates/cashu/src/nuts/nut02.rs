@@ -22,7 +22,7 @@ use thiserror::Error;
 
 use super::nut01::Keys;
 #[cfg(feature = "mint")]
-use super::nut01::{MintKeyPair, MintKeys};
+use super::nut01::{MintKeyPair, MintKeys, SecretKey};
 use crate::nuts::nut00::CurrencyUnit;
 use crate::util::hex;
 use crate::{ensure_cdk, Amount};
@@ -34,7 +34,7 @@ pub enum Error {
     #[error(transparent)]
     HexError(#[from] hex::Error),
     /// Keyset length error
-    #[error("NUT02: ID length invalid, expected 8 bytes (short/v1) or 33 bytes (v2)")]
+    #[error("NUT02: ID length invalid, expected 8 bytes (short/v1) or 33 bytes (v2/v3)")]
     Length,
     /// Unknown version
     #[error("NUT02: Unknown Version")]
@@ -60,6 +60,8 @@ pub enum KeySetVersion {
     Version00,
     /// Version 01
     Version01,
+    /// Version 02
+    Version02,
 }
 
 impl KeySetVersion {
@@ -68,6 +70,7 @@ impl KeySetVersion {
         match self {
             Self::Version00 => 0,
             Self::Version01 => 1,
+            Self::Version02 => 2,
         }
     }
 
@@ -76,6 +79,7 @@ impl KeySetVersion {
         match byte {
             0 => Ok(Self::Version00),
             1 => Ok(Self::Version01),
+            2 => Ok(Self::Version02),
             _ => Err(Error::UnknownVersion),
         }
     }
@@ -85,6 +89,7 @@ impl KeySetVersion {
         match value {
             1 => Ok(Self::Version00),
             2 => Ok(Self::Version01),
+            3 => Ok(Self::Version02),
             _ => Err(Error::UnknownVersion),
         }
     }
@@ -94,6 +99,7 @@ impl KeySetVersion {
         match self {
             Self::Version00 => 1,
             Self::Version01 => 2,
+            Self::Version02 => 3,
         }
     }
 }
@@ -103,6 +109,7 @@ impl fmt::Display for KeySetVersion {
         match self {
             KeySetVersion::Version00 => f.write_str("00"),
             KeySetVersion::Version01 => f.write_str("01"),
+            KeySetVersion::Version02 => f.write_str("02"),
         }
     }
 }
@@ -157,7 +164,9 @@ impl Id {
         let version = KeySetVersion::from_byte(&bytes[0])?;
         let id = match version {
             KeySetVersion::Version00 => IdBytes::V1(bytes[1..].try_into()?),
-            KeySetVersion::Version01 => IdBytes::V2(bytes[1..].try_into()?),
+            KeySetVersion::Version01 | KeySetVersion::Version02 => {
+                IdBytes::V2(bytes[1..].try_into()?)
+            }
         };
         Ok(Self { version, id })
     }
@@ -222,6 +231,19 @@ impl Id {
         }
     }
 
+    /// *** V3 KEYSET ***
+    /// Create [`Id`] v3 using the v2 data string shape over BLS G2 compressed keys.
+    pub fn v3_from_data(
+        map: &Keys,
+        unit: &CurrencyUnit,
+        input_fee_ppk: u64,
+        expiry: Option<u64>,
+    ) -> Self {
+        let mut id = Self::v2_from_data(map, unit, input_fee_ppk, expiry);
+        id.version = KeySetVersion::Version02;
+        id
+    }
+
     /// *** V1 VERSION ***
     /// As per NUT-02:
     ///   1. sort public keys by their amount in ascending order
@@ -241,7 +263,7 @@ impl Id {
         let pubkeys_concat: Vec<u8> = keys
             .iter()
             .map(|(_, pubkey)| pubkey.to_bytes())
-            .collect::<Vec<[u8; 33]>>()
+            .collect::<Vec<Vec<u8>>>()
             .concat();
 
         let hash = Sha256::hash(&pubkeys_concat);
@@ -278,10 +300,10 @@ impl Id {
                     id: IdBytes::V1(idbytes),
                 })
             }
-            KeySetVersion::Version01 => {
+            KeySetVersion::Version01 | KeySetVersion::Version02 => {
                 // We return the first match or error
                 for keyset_info in keysets_info.iter() {
-                    if keyset_info.id.version == KeySetVersion::Version01
+                    if keyset_info.id.version == short_id.version
                         && keyset_info.id.id.to_vec().starts_with(&short_id.prefix)
                     {
                         return Ok(keyset_info.id);
@@ -358,6 +380,11 @@ impl TryFrom<String> for Id {
                     .try_into()
                     .map_err(|_| Error::Length)?,
             ),
+            KeySetVersion::Version02 => IdBytes::V2(
+                hex::decode(&s[2..])?
+                    .try_into()
+                    .map_err(|_| Error::Length)?,
+            ),
         };
 
         Ok(Self { version, id })
@@ -415,7 +442,7 @@ impl From<Id> for ShortKeysetId {
                 IdBytes::V1(idbytes) => Vec::from(&idbytes),
                 _ => panic!("Unexpected IdBytes length"),
             },
-            KeySetVersion::Version01 => match id.id {
+            KeySetVersion::Version01 | KeySetVersion::Version02 => match id.id {
                 IdBytes::V2(idbytes) => Vec::from(&idbytes[..7]),
                 _ => panic!("Unexpected IdBytes length"),
             },
@@ -509,6 +536,12 @@ impl KeySet {
         let keys_id = match self.id.version {
             KeySetVersion::Version00 => Id::v1_from_keys(&self.keys),
             KeySetVersion::Version01 => Id::v2_from_data(
+                &self.keys,
+                &self.unit,
+                self.input_fee_ppk,
+                self.final_expiry,
+            ),
+            KeySetVersion::Version02 => Id::v3_from_data(
                 &self.keys,
                 &self.unit,
                 self.input_fee_ppk,
@@ -620,21 +653,53 @@ impl MintKeySet {
     ) -> Self {
         let mut map = BTreeMap::new();
         for (i, amount) in amounts.iter().enumerate() {
-            let secret_key = xpriv
-                .derive_priv(
-                    secp,
-                    &[ChildNumber::from_hardened_idx(i as u32).expect("order is valid index")],
-                )
-                .expect("RNG busted")
-                .private_key;
-            let public_key = secret_key.public_key(secp);
-            map.insert(
-                amount.into(),
-                MintKeyPair {
-                    secret_key: secret_key.into(),
-                    public_key: public_key.into(),
-                },
-            );
+            let mint_key_pair = match version {
+                KeySetVersion::Version00 | KeySetVersion::Version01 => {
+                    let secret_key = xpriv
+                        .derive_priv(
+                            secp,
+                            &[ChildNumber::from_hardened_idx(i as u32)
+                                .expect("order is valid index")],
+                        )
+                        .expect("RNG busted")
+                        .private_key;
+                    let public_key = secret_key.public_key(secp);
+                    MintKeyPair {
+                        secret_key: secret_key.into(),
+                        public_key: public_key.into(),
+                    }
+                }
+                KeySetVersion::Version02 => {
+                    let mut attempt = 0;
+                    loop {
+                        let secret_bytes = xpriv
+                            .derive_priv(
+                                secp,
+                                &[
+                                    ChildNumber::from_hardened_idx(i as u32)
+                                        .expect("order is valid index"),
+                                    ChildNumber::from_hardened_idx(attempt)
+                                        .expect("attempt is valid index"),
+                                ],
+                            )
+                            .expect("RNG busted")
+                            .private_key
+                            .secret_bytes();
+
+                        if secret_bytes.iter().all(|byte| *byte == 0) {
+                            attempt = attempt.checked_add(1).expect("attempt space exhausted");
+                            continue;
+                        }
+
+                        if let Ok(secret_key) = SecretKey::bls_from_slice(&secret_bytes) {
+                            break MintKeyPair::from_secret_key(secret_key);
+                        }
+
+                        attempt = attempt.checked_add(1).expect("attempt space exhausted");
+                    }
+                }
+            };
+            map.insert(amount.into(), mint_key_pair);
         }
 
         let keys = MintKeys::new(map);
@@ -642,6 +707,9 @@ impl MintKeySet {
             KeySetVersion::Version00 => Id::v1_from_keys(&keys.clone().into()),
             KeySetVersion::Version01 => {
                 Id::v2_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
+            }
+            KeySetVersion::Version02 => {
+                Id::v3_from_data(&keys.clone().into(), &unit, input_fee_ppk, final_expiry)
             }
         };
         Self {
@@ -722,6 +790,12 @@ impl From<MintKeySet> for Id {
         match keyset.id.version {
             KeySetVersion::Version00 => Id::v1_from_keys(&keys),
             KeySetVersion::Version01 => Id::v2_from_data(
+                &keys,
+                &keyset.unit,
+                keyset.input_fee_ppk,
+                keyset.final_expiry,
+            ),
+            KeySetVersion::Version02 => Id::v3_from_data(
                 &keys,
                 &keyset.unit,
                 keyset.input_fee_ppk,
@@ -832,6 +906,12 @@ mod test {
         }
     "#;
 
+    const BLS_V3_KEYSET_VECTOR_KEY: &str = "93e02b6052719f607dacd3a088274f65596bd0d09920b61ab5da61bbdc7f5049334cf11213945d57e5ac7d055d042b7e024aa2b2f08f0a91260805272dc51051c6e47ad4fa403b02b4510b647ae3d1770bac0326a805bbefd48056c8c121bdb8";
+    const BLS_V3_KEYSET_VECTOR_1_ID: &str =
+        "02ce4c47836fd0e64f37a08254777b7fd0dedb95fc1ddd0acadf5600674c743c5d";
+    const BLS_V3_KEYSET_VECTOR_2_ID: &str =
+        "02b532391cadf8c5d98bf0ff05b85e3cfb76a8175d71822140df3396c20cf40588";
+
     #[test]
     fn test_deserialization_and_id_generation() {
         let _id = Id::from_str("009a1f293253e41e").unwrap();
@@ -874,6 +954,96 @@ mod test {
             Id::from_str("012fbb01a4e200c76df911eeba3b8fe1831202914b24664f4bccbd25852a6708f8")
                 .unwrap();
         assert_eq!(id, id_from_str);
+    }
+
+    #[test]
+    fn test_v3_deserialization_and_id_generation() {
+        let unit = CurrencyUnit::Sat;
+        let vector_1 = format!(
+            r#"{{
+                "1":"{key}",
+                "2":"{key}"
+            }}"#,
+            key = BLS_V3_KEYSET_VECTOR_KEY
+        );
+        let keys: Keys = serde_json::from_str(&vector_1).unwrap();
+        let id = Id::v3_from_data(&keys, &unit, 0, None);
+        assert_eq!(id, Id::from_str(BLS_V3_KEYSET_VECTOR_1_ID).unwrap());
+
+        let vector_2 = format!(
+            r#"{{
+                "1":"{key}",
+                "2":"{key}",
+                "4":"{key}",
+                "8":"{key}"
+            }}"#,
+            key = BLS_V3_KEYSET_VECTOR_KEY
+        );
+        let keys: Keys = serde_json::from_str(&vector_2).unwrap();
+        let id = Id::v3_from_data(&keys, &unit, 100, Some(2_000_000_000));
+        assert_eq!(id, Id::from_str(BLS_V3_KEYSET_VECTOR_2_ID).unwrap());
+    }
+
+    #[cfg(feature = "mint")]
+    #[test]
+    fn test_v3_mint_key_derivation_uses_rejection_sampled_bip32_child_bytes() {
+        use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
+
+        use crate::nuts::nut01::SecretKey;
+        use crate::SECP256K1;
+
+        let seed = [1u8; 64];
+        let derivation_path = DerivationPath::from_str("m/0'/0'/0'").unwrap();
+        let keyset = super::MintKeySet::generate_from_seed(
+            &SECP256K1,
+            &seed,
+            &[1],
+            CurrencyUnit::Sat,
+            derivation_path.clone(),
+            0,
+            None,
+            KeySetVersion::Version02,
+        );
+
+        let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, &seed)
+            .unwrap()
+            .derive_priv(&SECP256K1, &derivation_path)
+            .unwrap();
+        let old_one_level_child = xpriv
+            .derive_priv(&SECP256K1, &[ChildNumber::from_hardened_idx(0).unwrap()])
+            .unwrap()
+            .private_key;
+        let old_reduced_secret_key =
+            SecretKey::bls_from_reduced_bytes(&old_one_level_child.secret_bytes());
+
+        let mut attempt = 0;
+        let expected_secret_key = loop {
+            let child = xpriv
+                .derive_priv(
+                    &SECP256K1,
+                    &[
+                        ChildNumber::from_hardened_idx(0).unwrap(),
+                        ChildNumber::from_hardened_idx(attempt).unwrap(),
+                    ],
+                )
+                .unwrap()
+                .private_key;
+            let secret_bytes = child.secret_bytes();
+
+            if secret_bytes.iter().all(|byte| *byte == 0) {
+                attempt += 1;
+                continue;
+            }
+
+            match SecretKey::bls_from_slice(&secret_bytes) {
+                Ok(secret_key) => break secret_key,
+                Err(_) => attempt += 1,
+            }
+        };
+
+        let key_pair = keyset.keys.get(&1.into()).unwrap();
+        assert_eq!(key_pair.secret_key, expected_secret_key);
+        assert_ne!(key_pair.secret_key, old_reduced_secret_key);
     }
 
     #[test]
@@ -978,8 +1148,8 @@ mod test {
                     panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes))
                 })
             }
-            KeySetVersion::Version01 => {
-                let mut rand_bytes = vec![1u8; 33];
+            KeySetVersion::Version01 | KeySetVersion::Version02 => {
+                let mut rand_bytes = vec![version.to_byte(); 33];
                 rand::thread_rng().fill_bytes(&mut rand_bytes[1..]);
                 Id::from_bytes(&rand_bytes).unwrap_or_else(|e| {
                     panic!("Failed to create Id from {}: {e}", hex::encode(rand_bytes))

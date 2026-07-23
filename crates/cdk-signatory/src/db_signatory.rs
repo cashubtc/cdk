@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
-use cdk_common::dhke::{sign_message, verify_message};
+use cdk_common::dhke::{sign_message, verify_bls_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
+use cdk_common::nut02::KeySetVersion;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
 use cdk_common::{database, Error, PublicKey};
 use tokio::sync::{watch, RwLock};
@@ -183,7 +184,17 @@ impl Signatory for DbSignatory {
         proofs.into_iter().try_for_each(|proof| {
             let (_, key) = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
             let key_pair = key.keys.get(&proof.amount).ok_or(Error::UnknownKeySet)?;
-            verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
+            match proof.keyset_id.get_version() {
+                KeySetVersion::Version00 | KeySetVersion::Version01 => {
+                    verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
+                }
+                KeySetVersion::Version02 => {
+                    if proof.dleq.is_some() {
+                        return Err(Error::DHKE(cdk_common::dhke::Error::TokenNotVerified));
+                    }
+                    verify_bls_message(key_pair.public_key, proof.c, proof.secret.as_bytes())?;
+                }
+            }
             Ok(())
         })
     }

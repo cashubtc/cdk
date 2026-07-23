@@ -46,10 +46,10 @@ use tracing::instrument;
 use self::compensation::RemovePendingProofs;
 use self::state::{Finalized, Initial, Prepared};
 use super::ReceiveOptions;
-use crate::dhke::construct_proofs;
+use crate::dhke::{construct_proofs, verify_bls_message};
 use crate::nuts::nut00::ProofsMethods;
 use crate::nuts::nut10::Kind;
-use crate::nuts::{Conditions, Proofs, PublicKey, SecretKey, SigFlag, State};
+use crate::nuts::{Conditions, KeySetVersion, Proofs, PublicKey, SecretKey, SigFlag, State};
 use crate::util::hex;
 use crate::wallet::saga::{
     add_compensation, clear_compensations, execute_compensations, new_compensations, Compensations,
@@ -92,7 +92,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
 
     /// Prepare proofs for receiving.
     ///
-    /// Verifies DLEQ proofs, signs P2PK proofs if keys provided, and adds HTLC preimages.
+    /// Verifies proof signatures, signs P2PK proofs if keys provided, and adds HTLC preimages.
     /// No database changes are made in this step.
     #[instrument(skip_all)]
     pub async fn prepare(
@@ -138,17 +138,33 @@ impl<'a> ReceiveSaga<'a, Initial> {
             .map(|s| (s.x_only_public_key(&SECP256K1).0, s.clone()))
             .collect();
 
-        // Process each proof: verify DLEQ, handle P2PK/HTLC
+        // Process each proof: verify mint signature, handle P2PK/HTLC
         for proof in &mut proofs {
-            // Verify that proof DLEQ is valid
-            if proof.dleq.is_some() {
-                let keys = self
-                    .wallet
-                    .keyset_with_policy(proof.keyset_id, keyset_policy)
-                    .await?
-                    .keys;
-                let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
-                proof.verify_dleq(key)?;
+            match proof.keyset_id.get_version() {
+                KeySetVersion::Version00 | KeySetVersion::Version01 => {
+                    if proof.dleq.is_some() {
+                        let keys = self
+                            .wallet
+                            .keyset_with_policy(proof.keyset_id, keyset_policy)
+                            .await?
+                            .keys;
+                        let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
+                        proof.verify_dleq(key)?;
+                    }
+                }
+                KeySetVersion::Version02 => {
+                    if proof.dleq.is_some() {
+                        return Err(Error::CouldNotVerifyDleq);
+                    }
+                    let keys = self
+                        .wallet
+                        .keyset_with_policy(proof.keyset_id, keyset_policy)
+                        .await?
+                        .keys;
+                    let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
+                    verify_bls_message(key, proof.c, proof.secret.as_bytes())
+                        .map_err(|_| Error::CouldNotVerifyDleq)?;
+                }
             }
 
             if let Ok(secret) =

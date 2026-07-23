@@ -2,8 +2,6 @@
 //!
 //! <https://github.com/cashubtc/nuts/blob/main/12.md>
 
-use core::ops::Deref;
-
 use bitcoin::secp256k1::hashes::{hmac, sha256, Hash, HashEngine, HmacEngine};
 use bitcoin::secp256k1::{self, Scalar};
 use serde::{Deserialize, Serialize};
@@ -11,7 +9,7 @@ use thiserror::Error;
 
 use super::nut00::{BlindSignature, Proof};
 use super::nut01::{PublicKey, SecretKey};
-use super::nut02::Id;
+use super::nut02::{Id, KeySetVersion};
 use crate::dhke::{hash_e, hash_to_curve};
 use crate::{Amount, SECP256K1};
 
@@ -91,7 +89,7 @@ fn verify_dleq(
     let r1: PublicKey = s.public_key().combine(&a)?.into(); // s*G + (-a)
 
     // b = s*B'
-    let s: Scalar = Scalar::from(s.deref().to_owned());
+    let s: Scalar = Scalar::from(*s.as_secp256k1()?);
     let b: PublicKey = blinded_message.mul_tweak(&SECP256K1, &s)?.into();
 
     // c = e*C'
@@ -126,7 +124,8 @@ fn derive_deterministic_nonce(
         message.extend_from_slice(&blinded_signature.to_uncompressed_bytes());
         message.push(counter);
 
-        let mut engine = HmacEngine::<sha256::Hash>::new(mint_secret_key.as_secret_bytes());
+        let secret_bytes = mint_secret_key.to_secret_bytes();
+        let mut engine = HmacEngine::<sha256::Hash>::new(&secret_bytes);
         engine.input(&message);
         let hmac_result = hmac::Hmac::<sha256::Hash>::from_engine(engine);
         let result_bytes = hmac_result.to_byte_array();
@@ -204,15 +203,20 @@ impl BlindSignature {
         blinded_message: &PublicKey,
         mint_secretkey: &SecretKey,
     ) -> Result<Self, Error> {
-        Ok(Self {
-            amount,
-            keyset_id,
-            c: blinded_signature,
-            dleq: Some(calculate_dleq(
+        let dleq = match keyset_id.get_version() {
+            KeySetVersion::Version00 | KeySetVersion::Version01 => Some(calculate_dleq(
                 blinded_signature,
                 blinded_message,
                 mint_secretkey,
             )?),
+            KeySetVersion::Version02 => None,
+        };
+
+        Ok(Self {
+            amount,
+            keyset_id,
+            c: blinded_signature,
+            dleq,
         })
     }
 
@@ -483,5 +487,30 @@ mod tests {
         assert!(blind_sig
             .verify_dleq(secret_key.public_key(), blinded_message)
             .is_ok());
+    }
+
+    #[test]
+    fn test_v3_blind_signature_omits_dleq() {
+        use crate::nuts::nut02::{Id, KeySetVersion};
+
+        let keyset_id =
+            Id::from_bytes(&[vec![KeySetVersion::Version02.to_byte()], vec![1; 32]].concat())
+                .expect("valid v3 keyset id");
+        let blinded_message =
+            crate::nuts::nut01::BlsG1PublicKey::hash_to_curve(b"blinded message").into();
+        let mint_secretkey = SecretKey::bls_from_reduced_bytes(&[7u8; 32]);
+        let blinded_signature = crate::dhke::sign_message(&mint_secretkey, &blinded_message)
+            .expect("sign blinded message");
+
+        let blind_sig = BlindSignature::new(
+            Amount::from(1),
+            blinded_signature,
+            keyset_id,
+            &blinded_message,
+            &mint_secretkey,
+        )
+        .expect("blind signature");
+
+        assert!(blind_sig.dleq.is_none());
     }
 }

@@ -1072,8 +1072,16 @@ pub trait Wallet: Send + Sync {
     /// Restore wallet from seed with custom [`NUT13Options`]
     async fn restore_with_opts(&self, opts: NUT13Options) -> Result<Restored, Self::Error>;
 
-    /// Verify DLEQ proofs in a token
-    async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error>;
+    /// Verify token proof signatures against the mint keys.
+    ///
+    /// This verifies DLEQ proofs for v1/v2 keysets and BLS pairings for v3 keysets.
+    async fn verify_token_signatures(&self, token_str: &str) -> Result<(), Self::Error>;
+
+    /// Verify DLEQ proofs in a token.
+    #[deprecated(note = "use verify_token_signatures instead")]
+    async fn verify_token_dleq(&self, token_str: &str) -> Result<(), Self::Error> {
+        self.verify_token_signatures(token_str).await
+    }
 
     /// Pay a NUT-18 payment request
     async fn pay_request(
