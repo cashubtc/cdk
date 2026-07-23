@@ -7,31 +7,20 @@ use async_trait::async_trait;
 use cdk_common::database::{self, Error, MintSignatureTransaction, MintSignaturesDatabase};
 use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
-use cdk_common::{Amount, BlindSignature, BlindSignatureDleq, Id, PublicKey, SecretKey};
+use cdk_common::{Amount, BlindSignature, Id, PublicKey};
 
 use super::proofs::sql_row_to_hashmap_amount;
 use super::{SQLMintDatabase, SQLTransaction};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
-use crate::{column_as_nullable_string, column_as_number, column_as_string, unpack_into};
+use crate::{column_as_number, column_as_string, unpack_into};
 
 pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignature, Error> {
     unpack_into!(
         let (
-            keyset_id, amount, c, dleq_e, dleq_s
+            keyset_id, amount, c
         ) = row
     );
-
-    let dleq = match (
-        column_as_nullable_string!(dleq_e),
-        column_as_nullable_string!(dleq_s),
-    ) {
-        (Some(e), Some(s)) => Some(BlindSignatureDleq {
-            e: SecretKey::from_hex(e)?,
-            s: SecretKey::from_hex(s)?,
-        }),
-        _ => None,
-    };
 
     let amount: u64 = column_as_number!(amount);
 
@@ -39,8 +28,30 @@ pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignat
         amount: Amount::from(amount),
         keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
         c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
-        dleq,
+        dleq: None,
     })
+}
+
+pub(crate) fn sql_row_to_blind_signature_and_secret(
+    row: Vec<Column>,
+) -> Result<(BlindSignature, PublicKey), Error> {
+    unpack_into!(
+        let (
+            blinded_message, keyset_id, amount, c
+        ) = row
+    );
+
+    let amount: u64 = column_as_number!(amount);
+
+    Ok((
+        BlindSignature {
+            amount: Amount::from(amount),
+            keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+            c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
+            dleq: None,
+        },
+        column_as_string!(blinded_message, PublicKey::from_hex, PublicKey::from_slice),
+    ))
 }
 
 #[async_trait]
@@ -67,7 +78,7 @@ where
         // Select all existing rows for the given blinded messages at once
         let mut existing_rows = query(
             r#"
-            SELECT blinded_message, c, dleq_e, dleq_s
+            SELECT blinded_message, c
             FROM blind_signature
             WHERE blinded_message IN (:blinded_messages)
             FOR UPDATE
@@ -86,7 +97,7 @@ where
         .map(|mut row| {
             Ok((
                 column_as_string!(&row.remove(0), PublicKey::from_hex, PublicKey::from_slice),
-                (row[0].clone(), row[1].clone(), row[2].clone()),
+                (row[0].clone()),
             ))
         })
         .collect::<Result<HashMap<_, _>, Error>>()?;
@@ -99,9 +110,9 @@ where
                     query(
                         r#"
                         INSERT INTO blind_signature
-                        (blinded_message, amount, keyset_id, c, quote_id, dleq_e, dleq_s, created_time, signed_time, order_index)
+                        (blinded_message, amount, keyset_id, c, quote_id, created_time, signed_time, order_index)
                         VALUES
-                        (:blinded_message, :amount, :keyset_id, :c, :quote_id, :dleq_e, :dleq_s, :created_time, :signed_time, :order_index)
+                        (:blinded_message, :amount, :keyset_id, :c, :quote_id, :created_time, :signed_time, :order_index)
                         "#,
                     )?
                     .bind("blinded_message", message.to_bytes().to_vec())
@@ -109,14 +120,6 @@ where
                     .bind("keyset_id", signature.keyset_id.to_string())
                     .bind("c", signature.c.to_bytes().to_vec())
                     .bind("quote_id", quote_id.as_ref().map(|q| q.to_string()))
-                    .bind(
-                        "dleq_e",
-                        signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()),
-                    )
-                    .bind(
-                        "dleq_s",
-                        signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
-                    )
                     .bind("created_time", current_time as i64)
                     .bind("signed_time", current_time as i64)
                     .bind("order_index", i as i64)
@@ -136,27 +139,19 @@ where
                     .execute(&self.inner)
                     .await?;
                 }
-                Some((c, _dleq_e, _dleq_s)) => {
+                Some(c) => {
                     // Blind message exists: check if c is NULL
                     match c {
                         Column::Null => {
-                            // Blind message with no c: Update with missing columns c, dleq_e, dleq_s
+                            // Blind message with no c: Update with missing columns c
                             query(
                                 r#"
                                 UPDATE blind_signature
-                                SET c = :c, dleq_e = :dleq_e, dleq_s = :dleq_s, signed_time = :signed_time, amount = :amount
+                                SET c = :c, signed_time = :signed_time, amount = :amount
                                 WHERE blinded_message = :blinded_message
                                 "#,
                             )?
                             .bind("c", signature.c.to_bytes().to_vec())
-                            .bind(
-                                "dleq_e",
-                                signature.dleq.as_ref().map(|dleq| dleq.e.to_secret_hex()),
-                            )
-                            .bind(
-                                "dleq_s",
-                                signature.dleq.as_ref().map(|dleq| dleq.s.to_secret_hex()),
-                            )
                             .bind("blinded_message", message.to_bytes().to_vec())
                             .bind("signed_time", current_time as i64)
                             .bind("amount", u64::from(signature.amount) as i64)
@@ -215,8 +210,6 @@ where
                 keyset_id,
                 amount,
                 c,
-                dleq_e,
-                dleq_s,
                 blinded_message
             FROM
                 blind_signature
@@ -272,8 +265,6 @@ where
                 keyset_id,
                 amount,
                 c,
-                dleq_e,
-                dleq_s,
                 blinded_message
             FROM
                 blind_signature
@@ -321,9 +312,7 @@ where
             SELECT
                 keyset_id,
                 amount,
-                c,
-                dleq_e,
-                dleq_s
+                c
             FROM
                 blind_signature
             WHERE
@@ -353,9 +342,7 @@ where
             SELECT
                 keyset_id,
                 amount,
-                c,
-                dleq_e,
-                dleq_s
+                c
             FROM
                 blind_signature
             WHERE
@@ -369,6 +356,38 @@ where
         .into_iter()
         .map(sql_row_to_blind_signature)
         .collect::<Result<Vec<BlindSignature>, _>>()?)
+    }
+
+    /// Get [`BlindSignature`]s and blinded secret as [`PublicKey`] for quote
+    async fn get_blind_signatures_and_secret_for_quote(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Vec<(BlindSignature, PublicKey)>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                blinded_message,
+                keyset_id,
+                amount,
+                c
+            FROM
+                blind_signature
+            WHERE
+                quote_id=:quote_id AND c IS NOT NULL
+            ORDER BY order_index ASC
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_blind_signature_and_secret)
+        .collect::<Result<Vec<(BlindSignature, PublicKey)>, _>>()?)
     }
 
     /// Get total proofs redeemed by keyset id

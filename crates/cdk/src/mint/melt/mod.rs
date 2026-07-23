@@ -17,9 +17,11 @@ use cdk_common::payment::{
 use cdk_common::quote_id::QuoteId;
 use cdk_common::subscription::Params;
 use cdk_common::{
-    MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse, MeltQuoteCustomRequest,
-    MeltQuoteCustomResponse, MeltQuoteOnchainRequest, MeltQuoteOnchainResponse, MeltQuoteResponse,
+    BlindSignature, MeltOptions, MeltQuoteBolt12Request, MeltQuoteCreateResponse,
+    MeltQuoteCustomRequest, MeltQuoteCustomResponse, MeltQuoteOnchainRequest,
+    MeltQuoteOnchainResponse, MeltQuoteResponse,
 };
+use cdk_signatory::signatory::ReconstructDleqArguments;
 use lightning::offers::offer::Offer;
 use tracing::instrument;
 
@@ -822,10 +824,24 @@ impl Mint {
 
             self.handle_pending_melt_quote(&mut quote).await?;
 
-            let blind_signatures = self
+            let signatures_and_secrets = self
                 .localstore
-                .get_blind_signatures_for_quote(quote_id)
+                .get_blind_signatures_and_secret_for_quote(quote_id)
                 .await?;
+
+            let mut blind_signatures: Vec<BlindSignature> =
+                Vec::with_capacity(signatures_and_secrets.len());
+
+            for (blind_signature, blind_secret) in signatures_and_secrets.iter() {
+                let dleq = self
+                    .signatory
+                    .reconstruct_dleq(ReconstructDleqArguments {
+                        blind_signature: blind_signature.clone(),
+                        blind_secret: *blind_secret,
+                    })
+                    .await?;
+                blind_signatures.push(dleq);
+            }
 
             let change = (!blind_signatures.is_empty()).then_some(blind_signatures);
 
