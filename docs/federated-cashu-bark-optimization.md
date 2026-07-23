@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, and 13 complete; Milestones 2, 7, 7A, 14, 15, 16, and 17 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestones 17A, 18, and 19 not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, and 17A complete; Milestones 2, 7, 7A, 14, 15, 16, and 17 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestones 18 and 19 not started
 
 First recorded: 2026-07-20
 
@@ -991,7 +991,7 @@ behavior yet.
 | 15A | Combine certified outgoing failure with revocation authorization if the pre-signing boundary remains explicit | Rejected — prerequisite | `cfc997f71` |
 | 16 | Consolidate Bark/Ark outgoing setup and initiation RPCs | Rejected | `8bd0eb147` |
 | 17 | Remove the separate `PaymentInitiated` operation only if ambiguous initiation remains exactly recoverable | Rejected | `docs: retain Bark payment initiation boundary` |
-| 17A | Make Ark initiation exactly idempotent and recover a paid lost response | Not started | — |
+| 17A | Make Ark initiation exactly idempotent and recover a paid lost response | Complete — kept | `053f77bb` (Bark) |
 | 18 | Replace replicated melt POST bodies with one canonical submission followed by threshold GET verification | Not started | — |
 | 19 | Avoid repeated federation keyset discovery across short-lived wallet processes | Not started | — |
 
@@ -4843,7 +4843,7 @@ idempotency and a response-loss test proves safe cross-actor retry.
 
 ## Milestone 17A: exact Ark initiation and lost-response recovery
 
-Status: **Not started — production-relevant issue discovered by Milestone 17.**
+Status: **Complete — kept.**
 
 ### Goal
 
@@ -4857,39 +4857,43 @@ refactor.
 The durable identity must include the complete signed invoice string, payment
 amount, mailbox, and canonical HTLC VTXO ID set. Store it before the external
 payment attempt. An exact retry must return the same semantic success whether
-the attempt is requested, pending, succeeded, or failed. Any changed field
-must fail before mutation. A pre-store database or validation failure must not
-be converted into a successful RPC response.
+the attempt is requested, pending, succeeded, or failed. While an attempt is
+open or succeeded, any changed field must fail before mutation. After a
+terminal failure, the same exact attempt remains an idempotent no-op, while a
+different canonical HTLC set may begin the existing supported retry only after
+the invoice, amount, and mailbox still match and ordinary HTLC validation
+passes. A pre-store database or validation failure must not be converted into
+a successful RPC response.
 
 ### Checklist
 
-- [ ] Reproduce the paid-before-retry failure against the retained Bark/Ark
+- [x] Reproduce the paid-before-retry failure against the retained Bark/Ark
       code with a proxy that forwards initiation once and discards its response.
-- [ ] Add the smallest migration needed to persist the exact initiation
+- [x] Add the smallest migration needed to persist the exact initiation
       identity; no compatibility branch is required for cut-through test data.
-- [ ] Make payment-attempt insertion concurrency-safe: one exact request
+- [x] Make payment-attempt insertion concurrency-safe: one exact request
       stores, an identical overlap is a no-op, and conflicting reuse fails.
-- [ ] Let an already-`ln-spent` HTLC reach only the exact identity decision;
+- [x] Let an already-`ln-spent` HTLC reach only the exact identity decision;
       ordinary new spends and mismatched retries must remain rejected.
-- [ ] Propagate failures that occur before an exact attempt is durable. Preserve
+- [x] Propagate failures that occur before an exact attempt is durable. Preserve
       existing CLN reconciliation for failures after the durable boundary.
-- [ ] Add no new polling loop, timer, rate-limit parsing, consensus operation,
+- [x] Add no new polling loop, timer, rate-limit parsing, consensus operation,
       Bark/CDK payment phase, or backend-specific federation branch.
 
 ### Tests
 
-- [ ] Lost response after Ark accepts, before and after settlement, retries
+- [x] Lost response after Ark accepts, before and after settlement, retries
       exactly and produces one payment plus one accepted `PaymentInitiated`.
-- [ ] Concurrent identical starts yield one stored attempt and one no-op;
+- [x] Concurrent identical starts yield one stored attempt and one no-op;
       changed invoice, amount, mailbox, or HTLC set fails without mutation.
-- [ ] Missing, malformed, wrong-policy, spendable, unregistered, and
+- [x] Missing, malformed, wrong-policy, spendable, unregistered, and
       `ln-spent` HTLC cases preserve their intended validation boundaries.
-- [ ] Ark/CLN failure before durable storage is returned to the caller; failure
+- [x] Ark/CLN failure before durable storage is returned to the caller; failure
       after storage remains reconcilable as pending or terminal.
-- [ ] Server restart between durable storage, CLN submission, terminal
+- [x] Server restart between durable storage, CLN submission, terminal
       settlement, and retry converges without duplicate payment or stuck CDK
       state.
-- [ ] Standalone Bark outgoing success/failure/revocation and federated CDK
+- [x] Standalone Bark outgoing success/failure/revocation and federated CDK
       outgoing success/restart/lost-wallet-response regressions remain exact.
 
 ### Success criteria
@@ -4905,6 +4909,74 @@ be converted into a successful RPC response.
 - If kept, commit the Bark/Ark repair independently as
   `fix: make Bark payment initiation exactly idempotent`, then update this plan
   in a separate CDK documentation commit.
+
+### Result — 2026-07-23
+
+Decision: **Kept.** The retained Bark commit is `053f77bb`. It adds one
+`invoice` column to the existing payment-attempt table and keeps the existing
+partial uniqueness rule that permits a later attempt only after a prior one is
+terminal. The exact attempt identity is the complete signed invoice, amount,
+mailbox, and sorted unique HTLC VTXO IDs. It is committed in the same database
+transaction as the HTLC links before `getinfo`, intra-Ark settlement, or CLN
+submission. An atomic partial-index `INSERT ... ON CONFLICT` makes simultaneous
+identical starts converge on one attempt; a conflicting open attempt fails.
+
+The server consults that durable identity before ordinary VTXO spendability.
+An exact retry therefore returns success even if settlement already marked the
+HTLC `ln-spent`, and it does so in `Requested`, `Submitted`, `Succeeded`, and
+`Failed`. A changed request cannot use this exception. A different HTLC set is
+allowed only after `Failed`, with the same invoice, amount, and mailbox, and
+then passes the complete existing validation and insertion path as a new
+attempt.
+
+That terminal-failure distinction was required by evidence, not compatibility
+speculation. The first candidate made payment hash globally unique. The
+existing `bark_pay_ln_fails_then_succeeds` regression then ended with 2 BTC
+instead of 1.5 BTC: after a no-route failure and safe revocation, opening a
+channel could no longer retry the same still-payable invoice with new HTLCs.
+The global uniqueness change was rejected. Restoring partial uniqueness plus
+the narrow failed-attempt rule made that exact regression pass.
+
+The retained fault test forwards two simultaneous identical initiation calls,
+rejects changed invoice, amount, mailbox, and HTLC set, waits for the invoice
+to settle, restarts Ark before releasing the lost response, and lets Bark retry
+once. It completes with one payment attempt, no conflicting attempt, zero
+pending send balance, and exact no-op retries in all four attempt statuses.
+The unmodified control failed at the reproduced boundary: Ark had paid and
+marked the HTLC `ln-spent`, then rejected the retry before Bark could recover.
+A separate no-active-CLN test proves a pre-store error reaches the caller and
+leaves zero attempts.
+
+This fault is exercised at the local Ark boundary rather than against the
+unchanged public Signet server. The candidate's recovered RPC success feeds the
+unchanged CDK transition constructor; the federation-enabled CDK regressions
+separately prove that transition remains admissible as one
+`PaymentInitiated` operation.
+
+Three equivalent healthy payments produced three initiation RPCs in both
+control and candidate:
+
+| Metric | Control `aa98f568` | Candidate `053f77bb` | Change |
+| --- | ---: | ---: | ---: |
+| Initiation RPC latency samples | 10.705 / 9.148 / 11.430ms | 9.836 / 11.064 / 9.456ms | — |
+| Median initiation latency | 10.705ms | 9.836ms | -8.1% |
+| Observed p95/max initiation latency | 11.430ms | 11.064ms | -3.2% |
+| Initiation request count | 3 | 3 | unchanged |
+| Whole three-payment test | 92.48s | 95.93s | +3.7% |
+
+The RPC and whole-test results are within the 5% regression budget; the
+whole-test interval includes local CLN routing and setup noise. Focused final
+validation passed 83 Bark server unit tests, all 17 federation-enabled
+`cdk-bark` tests, exact paid-invoice replay, two-wallet same-invoice
+contention, failure-then-success, revocation refresh, both paid-payment
+revocation guards, both invoice/HTLC policy mismatches, and unregistered-HTLC
+rejection. Fresh databases applied the migration in every integration run.
+
+No CDK protocol, consensus operation, observer, timer, poll, RPC shape, or
+standalone-CDK path changed. Temporary response-loss plumbing and the local
+Docker/CLN harness accommodations were test-only; the former remains only as a
+bounded regression and the latter was removed before commit. No temporary
+instrumentation or host-specific value remains.
 
 ## Milestone 18: canonical melt submission with threshold GET verification
 
@@ -5092,6 +5164,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-22 | Milestone 13 final typed actor-first status | local release, five loopback members, SQLite, real Signet, three success controls/candidates plus failure and actor-loss faults | success terminal calls 32 -> 6 and total Ark-facing attempts 44 -> 18; wallet median 44 -> 35s; status median 16.8 -> 6.59s; failure used 4/3/3 terminal calls and exact revocation restored value | Keep one typed actor-first status check with bounded success fallback and unchanged three-member failure authority; reject `wait=true` because it would block the sequential observer worker. |
 | 2026-07-23 | Milestone 14 threshold-first melt fan-out | local release, five loopback members, SQLite, real Signet, three controls and three final candidates | median public starts 16 -> 14 but all five melt POST bodies still started; third authoritative response 3,764.702 -> 4,555.592ms (+21.0%); probe median 35.369 -> 45.274s (+28.0%) | Reject and revert: partial hedging saved only status GETs, preserved the expensive full POST fan-out, and exceeded the latency budget. Milestone 18 isolates canonical POST plus threshold GET verification. |
 | 2026-07-23 | Milestone 15 outgoing terminal certificates | interleaved local release control/candidate, separate five-member loopback federations, SQLite, real Signet | success operations 10 -> 7 and comparable evidence envelopes 3,216 -> 1,751 bytes, but terminal-evidence median 3.502 -> 5.574s (+59.2%) and melt-to-terminal median 28.699 -> 35.831s (+24.9%); failure operations 15 -> 9 | Reject and revert: private attestation collection serializes before consensus, while independent observations were batched concurrently. Message/byte reductions are real but fail the required latency route. |
+| 2026-07-23 | Milestone 17A exact Ark initiation | isolated Bark/Ark control and candidate, fresh databases, local CLN fault injection | the control paid once but rejected the lost-response retry after its HTLC became `ln-spent`; the candidate recovered after Ark restart with one attempt and zero pending value; healthy initiation median 10.705 -> 9.836ms, observed max 11.430 -> 11.064ms, request count 3 -> 3, whole test 92.48 -> 95.93s | Keep durable full-request identity before the external side effect and exact retry in every terminal state. Partial uniqueness preserves a safe new-HTLC retry after terminal failure; no CDK protocol, consensus, polling, or standalone path changed. |
 
 ## Completion checklist
 
