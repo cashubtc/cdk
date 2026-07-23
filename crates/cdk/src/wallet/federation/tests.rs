@@ -1505,6 +1505,109 @@ fn federated_mint_connector_trusted_public_config_urls_skip_full_aggregate_valid
     assert_eq!(connector.public_config(), &public_config);
 }
 
+#[tokio::test]
+async fn validated_config_url_members_skip_redundant_keyset_discovery() {
+    let bundle = threshold_bundle();
+    let outputs = blinded_outputs(&bundle);
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    for member_id in [member_id(1), member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        connector.set_mint_keys_error("validated config should avoid key discovery");
+        connector.set_post_mint_response(Ok(share_response(&bundle, member_id, &outputs)));
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new_with_validated_config_and_member_cache(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig::default(),
+        true,
+    )
+    .expect("connector with config-derived member cache");
+
+    assert_eq!(
+        connector
+            .get_mint_keys()
+            .await
+            .expect("aggregate keys from validated config"),
+        vec![advertised]
+    );
+    connector
+        .get_mint_keyset(outputs[0].keyset_id)
+        .await
+        .expect("one aggregate keyset from validated config");
+    let response = connector
+        .post_mint(
+            &PaymentMethod::Known(KnownMethod::Bolt11),
+            MintRequest {
+                quote: "paid-quote".to_string(),
+                outputs: outputs.clone(),
+                signature: None,
+            },
+        )
+        .await
+        .expect("mint response without key discovery");
+    assert_aggregate_response_valid(&bundle, &outputs, &response);
+}
+
+#[tokio::test]
+async fn config_derived_member_cache_fails_closed_and_clears_on_rotation() {
+    let bundle = threshold_rotation_bundle();
+    let rotated_config = rotated_public_config(&bundle);
+    let rotated_keyset = rotated_config
+        .keysets
+        .iter()
+        .find(|keyset| keyset.active)
+        .map(super::validation::federated_keyset_to_keyset)
+        .expect("rotated active keyset");
+    let mut connectors = BTreeMap::new();
+    let mut raw_connectors = Vec::new();
+
+    for member_id in [member_id(1), member_id(2), member_id(3)] {
+        let connector = Arc::new(MockMintConnector::new());
+        connector.set_active_keyset(rotated_keyset.clone());
+        connector.set_mint_info_response(Ok(MintInfo::new().federation(
+            rotated_config
+                .mint_info_for_member(member_id)
+                .expect("rotated federation mint info"),
+        )));
+        raw_connectors.push((member_id, connector.clone()));
+        connectors.insert(member_id, connector as Arc<dyn MintConnector + Send + Sync>);
+    }
+
+    let connector = FederatedMintConnector::new_with_validated_config_and_member_cache(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig::default(),
+        true,
+    )
+    .expect("connector with stale config-derived member cache");
+
+    let err = connector
+        .get_mint_info()
+        .await
+        .expect_err("rotated member metadata must not match the imported config");
+    assert!(err.to_string().contains("matching mint info"));
+
+    for (member_id, connector) in raw_connectors {
+        connector.set_mint_info_response(Ok(federation_mint_info(&bundle, member_id)));
+        connector.set_mint_keys_error("cleared cache must perform live validation");
+    }
+    let err = connector
+        .get_mint_keys()
+        .await
+        .expect_err("failed live validation must remain closed");
+    assert!(err
+        .to_string()
+        .contains("insufficient federation keyset advertisements"));
+}
+
 #[test]
 fn federated_mint_connector_builds_http_members_from_invite_code() {
     let bundle = threshold_bundle();

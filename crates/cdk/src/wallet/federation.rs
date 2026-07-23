@@ -376,7 +376,9 @@ impl FederatedMintConnector {
     /// This is intended for trusted local registries that fully validated the
     /// federation config when it was imported. New external configs should use
     /// [`Self::from_public_config_urls_with_config`] so threshold aggregate keys
-    /// and setup proofs are checked before the connector is constructed.
+    /// and setup proofs are checked before the connector is constructed. Since
+    /// every member connector is derived directly from that validated config,
+    /// this path also reuses its member/keyset validation across process starts.
     pub fn from_validated_public_config_urls_with_config(
         public_config: FederationConfig,
         config: FederatedMintConnectorConfig,
@@ -394,7 +396,12 @@ impl FederatedMintConnector {
                 )
             })
             .collect();
-        Self::new_with_validated_config(public_config, member_connectors, config)
+        Self::new_with_validated_config_and_member_cache(
+            public_config,
+            member_connectors,
+            config,
+            true,
+        )
     }
 
     /// Create a wallet connector with an explicit member-call policy.
@@ -416,6 +423,20 @@ impl FederatedMintConnector {
         public_config: FederationConfig,
         member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
         config: FederatedMintConnectorConfig,
+    ) -> Result<Self, Error> {
+        Self::new_with_validated_config_and_member_cache(
+            public_config,
+            member_connectors,
+            config,
+            false,
+        )
+    }
+
+    fn new_with_validated_config_and_member_cache(
+        public_config: FederationConfig,
+        member_connectors: BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        config: FederatedMintConnectorConfig,
+        derive_member_cache_from_config_urls: bool,
     ) -> Result<Self, Error> {
         public_config.validate_wallet_runtime_metadata()?;
         let config_digest = public_config.config_digest_for_validated_config()?;
@@ -460,6 +481,8 @@ impl FederatedMintConnector {
             }
             None => default_quote_coordinator_member_id,
         };
+        let valid_member_connectors_cache =
+            derive_member_cache_from_config_urls.then(|| member_connectors.clone());
 
         Ok(Self {
             public_config,
@@ -467,7 +490,9 @@ impl FederatedMintConnector {
             member_connectors,
             quote_coordinator_member_id,
             config,
-            valid_member_connectors_cache: Arc::new(tokio::sync::RwLock::new(None)),
+            valid_member_connectors_cache: Arc::new(tokio::sync::RwLock::new(
+                valid_member_connectors_cache,
+            )),
             melt_change_outputs: Arc::new(tokio::sync::RwLock::new(BTreeMap::new())),
         })
     }
@@ -2071,6 +2096,16 @@ impl MintConnector for FederatedMintConnector {
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<KeySet, Error> {
         let threshold = usize::from(self.public_config.threshold_params.signature_threshold);
+        if self
+            .valid_member_connectors_cache
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|cached| cached.len() >= threshold)
+        {
+            return self.aggregate_keyset(keyset_id);
+        }
+
         let mut valid_members = 0usize;
         let mut failures = Vec::new();
 
@@ -2349,12 +2384,39 @@ impl MintConnector for FederatedMintConnector {
             return Ok(mint_info);
         }
 
-        self.call_first_healthy_member_from(
-            &member_connectors,
-            "mint info",
-            |connector| async move { connector.get_mint_info().await },
-        )
-        .await
+        let mut failures = Vec::new();
+        for (member_id, connector) in &member_connectors {
+            let result = tokio::time::timeout(
+                self.config.member_fallback_timeout,
+                connector.get_mint_info(),
+            )
+            .await;
+            match result {
+                Err(_) => failures.push(format!(
+                    "member {}: timed out after {}s",
+                    member_id,
+                    self.config.member_fallback_timeout.as_secs()
+                )),
+                Ok(Err(err)) => failures.push(format!("member {}: {}", member_id, err)),
+                Ok(Ok(mint_info)) => {
+                    match FederationWalletConnector::validate_member_mint_info_with_config_digest(
+                        &self.public_config,
+                        *member_id,
+                        &mint_info,
+                        self.config_digest,
+                    ) {
+                        Ok(()) => return Ok(mint_info),
+                        Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+                    }
+                }
+            }
+        }
+
+        *self.valid_member_connectors_cache.write().await = None;
+        Err(Error::InvalidMintResponse(format!(
+            "no federation member advertised matching mint info: {}",
+            failures.join("; ")
+        )))
     }
 
     async fn post_check_state(

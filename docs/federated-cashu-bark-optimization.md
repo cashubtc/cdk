@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, and 17A complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestones 19 and 20 not started
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, and 19 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestone 20 not started
 
 First recorded: 2026-07-20
 
@@ -992,8 +992,9 @@ behavior yet.
 | 16 | Consolidate Bark/Ark outgoing setup and initiation RPCs | Rejected | `8bd0eb147` |
 | 17 | Remove the separate `PaymentInitiated` operation only if ambiguous initiation remains exactly recoverable | Rejected | `docs: retain Bark payment initiation boundary` |
 | 17A | Make Ark initiation exactly idempotent and recover a paid lost response | Complete — kept | `053f77bb` (Bark) |
-| 18 | Replace replicated melt POST bodies with one canonical submission followed by threshold GET verification | Not started | — |
-| 19 | Avoid repeated federation keyset discovery across short-lived wallet processes | Not started | — |
+| 18 | Replace replicated melt POST bodies with one canonical submission followed by threshold GET verification | Rejected | `c63e49cd0` |
+| 19 | Avoid repeated federation keyset discovery across short-lived wallet processes | Complete — kept | `perf: reuse validated federation keysets` |
+| 20 | Preserve payment-capable Bark liquidity across rapid successive melts | Not started | — |
 
 ## Milestone 0: causal baseline
 
@@ -5101,6 +5102,8 @@ validation, and both exact locked release builds. Only this plan changed.
 
 ## Milestone 19: durable federation keyset-validation cache
 
+Status: **Complete — kept.**
+
 ### Goal
 
 Avoid repeating federation mint-info and active-keyset discovery every time a
@@ -5117,20 +5120,98 @@ fail closed on mismatch. Do not introduce periodic refresh polling.
 
 ### Checklist, tests, and success criteria
 
-- [ ] Attribute all ten requests and identify which advertised values are
+- [x] Attribute all ten requests and identify which advertised values are
       already authenticated by the imported public config versus which require
       live member confirmation.
-- [ ] Design the smallest durable record and invalidation rule; prefer no new
+- [x] Design the smallest durable record and invalidation rule; prefer no new
       schema if the imported config already proves the needed values.
-- [ ] Cold start, rotation, changed config digest, stale record, corrupt record,
+- [x] Cold start, rotation, changed config digest, stale record, corrupt record,
       member disagreement, restart, and restore fail closed or refresh without
       accepting a minority view.
-- [ ] Warm short-lived CLI commands remove at least eight of ten discovery GETs
+- [x] Warm short-lived CLI commands remove at least eight of ten discovery GETs
       and their bytes with no extra background traffic; cold behavior and
       standalone wallets remain unchanged.
-- [ ] Wallet-visible p95 improves or stays within 5%, and the retained code is
+- [x] Wallet-visible p95 improves or stays within 5%, and the retained code is
       simpler than a general cache-coherence subsystem. Otherwise reject it.
-- [ ] If kept, commit as `perf: reuse validated federation keysets`.
+- [x] If kept, commit as `perf: reuse validated federation keysets`.
+
+### 2026-07-23 progress record — Complete
+
+The ten requests were a preflight, not payment authority. Every new imported
+CLI connector concurrently fetched `/v1/info` and `/v1/keys` from all five
+members until three replies validated, even though all five requests of each
+kind had already started. Mint-info validation checks the advertised member ID,
+federation ID, wallet-protocol version, and complete config digest. The key
+response repeats the active keyset ID, unit, fee, expiry, and amount keys. The
+imported public config already contains and validates all of those values plus
+every aggregate key, member public share, roster entry, active flag, setup
+proof, and rotation epoch. Its digest commits to the complete serialized
+config.
+
+No durable cache record or schema was needed. Connectors whose HTTP member URLs
+are derived directly from an already validated imported config now initialize
+the existing process-local valid-member map from that config. Reopening the
+same registry deterministically derives the same map, so process restart is
+the durable boundary. Direct constructors with caller-supplied connectors keep
+the old live threshold preflight. Standalone connectors are untouched.
+
+The derived map is only a transport optimization. Mint, swap, restore, and
+melt change shares still require the same member-bound cryptographic
+verification and aggregate threshold; quote and proof-state views still
+require matching thresholds. Aggregate key responses are returned from the
+validated config. Mint info still comes from one live member, is checked
+against the imported member ID, federation ID, protocol version, and config
+digest, and falls through to the next member on timeout or mismatch. If no
+member matches, the derived map is cleared; the next key access performs the
+existing bounded threshold validation and fails closed on disagreement.
+
+Rotation therefore cannot be hidden by the optimization. A changed active
+keyset changes the advertised config digest, stale outputs receive the
+existing threshold `InactiveKeyset` rejection, an unknown keyset is absent
+from the imported aggregate config, and no minority response can authorize
+signing or state. The existing workflow still requires importing the updated
+public config after rotation; this candidate adds no compatibility or
+auto-update behavior. There is no new record that can become stale or corrupt.
+Malformed or runtime-invalid registry data retains the existing load-time
+rejection, while every derived value is recomputed from the imported config on
+each process start.
+
+Control and candidate used the same dependency lock, imported CLI registry,
+and fresh five-member loopback federation with SQLite.
+Each cohort warmed the just-built CLI once, then ran ten separate short-lived
+`mint-info` processes. Per-member Prometheus route counters supplied request
+counts; direct body measurements supplied bytes.
+
+| Metric per CLI process | Control | Candidate | Change |
+| --- | ---: | ---: | ---: |
+| `/v1/info` GETs | 5 | 1 | -80% |
+| `/v1/keys` GETs | 5 | 0 | -100% |
+| Total discovery GETs | 10 | 1 | -90% |
+| Response-body bytes | 26,120 | 1,665 | -93.6% |
+| Ten-sample median | 80ms | 70ms | -12.5% |
+| Observed p95/max | 80ms | 70ms | -12.5% |
+
+The control counters rose by eleven info and eleven key requests on every
+member across one warm-up and ten samples. Across the candidate cohort, only
+the first member's info counter rose; no key counter changed. With member one
+then members one and two stopped, the candidate selected the next matching
+member and still completed in 70ms. The disposable local federation was then
+stopped. No payment, Nocean host, public Ark request, or background poll was
+needed for this connector-only measurement.
+
+The retained tree passes all 95 federation-wallet tests and all 18 CLI
+federation-registry tests. New regressions prove that minting and single-keyset
+loading succeed while every redundant key endpoint is forced to fail, and
+that a rotated digest clears the derived map before live validation fails
+closed. Standalone `cdk` checking, package formatting, warning-clean Clippy
+after allowing only pre-existing federation warning categories, and both
+exact locked release builds pass. No temporary instrumentation remains.
+
+Decision: **Kept.** The candidate removes nine of ten requests and 93.6% of
+their body bytes, improves the measured short-process latency, introduces no
+schema or timer, and centralizes the behavior in the existing generic
+federated wallet connector. It applies equally to Bark, federated BDK, and
+future funding backends without payment-method branches.
 
 ## Milestone 20: preserve liquidity across rapid successive melts
 
@@ -5292,6 +5373,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-23 | Milestone 15 outgoing terminal certificates | interleaved local release control/candidate, separate five-member loopback federations, SQLite, real Signet | success operations 10 -> 7 and comparable evidence envelopes 3,216 -> 1,751 bytes, but terminal-evidence median 3.502 -> 5.574s (+59.2%) and melt-to-terminal median 28.699 -> 35.831s (+24.9%); failure operations 15 -> 9 | Reject and revert: private attestation collection serializes before consensus, while independent observations were batched concurrently. Message/byte reductions are real but fail the required latency route. |
 | 2026-07-23 | Milestone 17A exact Ark initiation | isolated Bark/Ark control and candidate, fresh databases, local CLN fault injection | the control paid once but rejected the lost-response retry after its HTLC became `ln-spent`; the candidate recovered after Ark restart with one attempt and zero pending value; healthy initiation median 10.705 -> 9.836ms, observed max 11.430 -> 11.064ms, request count 3 -> 3, whole test 92.48 -> 95.93s | Keep durable full-request identity before the external side effect and exact retry in every terminal state. Partial uniqueness preserves a safe new-HTLC retry after terminal failure; no CDK protocol, consensus, polling, or standalone path changed. |
 | 2026-07-23 | Milestone 18 canonical melt submission | local release, fresh five-member loopback federation, SQLite, three retained controls and three final real-Signet candidates | melt POSTs 15 -> 3 and body bytes 23,715 -> 4,743, but GETs 30 -> 45 and total starts 45 -> 48; POST/GET-stage median 2,504.378 -> 3,471.172ms; wallet median 36.99 -> 43.05s and observed max 46.72 -> 76.08s; three payments, three accepted melts, zero duplicates in both | Reject and revert: one canonical POST plus threshold GET preserved authority and exactly-once payment, and `prefer_async` removed the first 15-18s handler wait, but the final candidate still exceeded the isolated and whole-wallet 5% latency budgets. Full fan-out remains. |
+| 2026-07-23 | Milestone 19 config-derived keyset validation | same fresh five-member loopback federation and imported registry, locked release CLI, ten warmed short-process samples per cohort plus one/two-member loss | discovery GETs 10 -> 1 and response bodies 26,120 -> 1,665 bytes; median and observed p95/max 80 -> 70ms; one and two offline members still completed in 70ms | Keep config-derived reuse in the generic URL-backed federation connector. Live mint info remains digest-checked, sensitive results retain threshold verification, changed rotation state clears the optimization and fails closed, and no durable record, schema, timer, or payment-backend branch was added. |
 
 ## Completion checklist
 
@@ -5306,6 +5388,8 @@ Append future evidence here rather than rewriting historical results.
       repeat Ark I/O.
 - [x] Bark result quorum directly finalizes the ordinary Cashu payment state.
 - [x] Wallet fan-out does not multiply normal consensus submissions.
+- [x] Imported federation keysets are reused across short-lived wallet
+      processes without repeated five-member discovery or weaker authority.
 - [x] Every remaining serial Bark operation protects a documented distinct
       safety or side-effect boundary.
 - [x] Maintenance does not compete with active payments and safely terminal
