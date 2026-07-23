@@ -507,6 +507,7 @@ mod tests {
     const TEST_MNEMONIC_TWO: &str =
         "legal winner thank year wave sausage worth useful legal winner thank yellow";
 
+    #[cfg(feature = "fakewallet")]
     fn document(secret_reference: &str, name: &str) -> String {
         format!(
             r#"
@@ -515,6 +516,11 @@ mnemonic = "{secret_reference}"
 
 [mint_info]
 name = "{name}"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
 
 [database]
 engine = "sqlite"
@@ -545,6 +551,7 @@ mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon aban
         ));
     }
 
+    #[cfg(feature = "fakewallet")]
     #[test]
     fn missing_empty_and_relative_secret_references_are_rejected() {
         let _env_lock = crate::test_utils::env_lock();
@@ -572,7 +579,7 @@ mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon aban
         std::env::remove_var(EMPTY);
     }
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
     #[tokio::test]
     async fn initialize_apply_and_validate_only_use_one_record() {
         let secret_path = crate::test_utils::unique_temp_path("atomic_config_secret");
@@ -615,6 +622,7 @@ mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon aban
         let _ = std::fs::remove_file(secret_path);
     }
 
+    #[cfg(feature = "fakewallet")]
     #[test]
     fn startup_document_ignores_general_operational_environment_overrides() {
         let _env_lock = crate::test_utils::env_lock();
@@ -626,6 +634,11 @@ mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon aban
 [info]
 listen_port = 8091
 mnemonic = "file:{}"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
 
 [database]
 engine = "sqlite"
@@ -640,7 +653,72 @@ engine = "sqlite"
         let _ = std::fs::remove_file(secret_path);
     }
 
-    #[cfg(feature = "sqlite")]
+    #[test]
+    fn configuration_without_payment_backend_is_rejected() {
+        let secret_path = crate::test_utils::unique_temp_path("no_payment_backend_secret");
+        std::fs::write(&secret_path, TEST_MNEMONIC_ONE).expect("write signing secret");
+        let document = format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[ln]
+ln_backend = "none"
+
+[database]
+engine = "sqlite"
+"#,
+            secret_path.display()
+        );
+        let error = ConfigurationService::validate_document(&document)
+            .expect_err("configuration without a payment backend should fail");
+        assert!(
+            matches!(
+                &error,
+                ConfigurationServiceError::Validation(message)
+                    if message.contains("At least one payment backend")
+            ),
+            "unexpected error: {error}"
+        );
+
+        let _ = std::fs::remove_file(secret_path);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn selected_backend_without_its_configuration_section_is_rejected() {
+        let secret_path = crate::test_utils::unique_temp_path("missing_backend_section_secret");
+        std::fs::write(&secret_path, TEST_MNEMONIC_ONE).expect("write signing secret");
+        let document = format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[ln]
+ln_backend = "fakewallet"
+
+[database]
+engine = "sqlite"
+"#,
+            secret_path.display()
+        );
+        let error = ConfigurationService::validate_document(&document)
+            .expect_err("selected backend without its config section should fail");
+        assert!(
+            matches!(
+                &error,
+                ConfigurationServiceError::Validation(message)
+                    if message.contains(
+                        "Fake wallet backend selected but [fake_wallet] config section is missing"
+                    )
+            ),
+            "unexpected error: {error}"
+        );
+
+        let _ = std::fs::remove_file(secret_path);
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
     #[tokio::test]
     async fn apply_rejects_signer_and_primary_database_changes() {
         let signer_path = crate::test_utils::unique_temp_path("signer_config_secret");
@@ -667,6 +745,11 @@ engine = "sqlite"
 [info]
 mnemonic = "file:{}"
 
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+
 [database]
 engine = "postgres"
 
@@ -685,6 +768,7 @@ url = "file:{}"
         let _ = std::fs::remove_file(postgres_path);
     }
 
+    #[cfg(feature = "fakewallet")]
     #[test]
     fn seed_secret_and_inactive_sections_are_resolved_and_pruned() {
         let _env_lock = crate::test_utils::env_lock();
@@ -699,6 +783,11 @@ seed = "env:{SEED_ENV}"
 
 [mint_info]
 name = "pruned"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
 
 [database]
 engine = "sqlite"
@@ -738,6 +827,7 @@ allow_insecure = true
         std::env::remove_var(SEED_ENV);
     }
 
+    #[cfg(feature = "fakewallet")]
     #[test]
     fn file_secret_errors_empty_env_name_and_missing_file_are_reported() {
         let missing = crate::test_utils::unique_temp_path("missing_config_secret");
@@ -759,6 +849,7 @@ allow_insecure = true
         ));
     }
 
+    #[cfg(feature = "fakewallet")]
     #[tokio::test]
     async fn authored_mint_pubkey_must_match_signer() {
         let secret_one = crate::test_utils::unique_temp_path("pubkey_config_secret_one");
@@ -794,6 +885,11 @@ mnemonic = "file:{}"
 name = "mismatch"
 pubkey = "{}"
 
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+
 [database]
 engine = "sqlite"
 "#,
@@ -813,6 +909,11 @@ mnemonic = "file:{}"
 [mint_info]
 name = "match"
 pubkey = "{}"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
 
 [database]
 engine = "sqlite"
@@ -890,7 +991,7 @@ engine = "sqlite"
         assert!(!same_primary_database(&sqlite, &left));
     }
 
-    #[cfg(feature = "sqlite")]
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
     #[tokio::test]
     async fn initialize_rejects_existing_mint_pubkey_mismatch_and_mark_applied_tracks_document() {
         let secret_path = crate::test_utils::unique_temp_path("init_pubkey_config_secret");
