@@ -32,6 +32,28 @@ pub(crate) fn sql_row_to_blind_signature(row: Vec<Column>) -> Result<BlindSignat
     })
 }
 
+pub(crate) fn sql_row_to_blind_signature_and_secret(
+    row: Vec<Column>,
+) -> Result<(BlindSignature, PublicKey), Error> {
+    unpack_into!(
+        let (
+            blinded_message, keyset_id, amount, c
+        ) = row
+    );
+
+    let amount: u64 = column_as_number!(amount);
+
+    Ok((
+        BlindSignature {
+            amount: Amount::from(amount),
+            keyset_id: column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+            c: column_as_string!(c, PublicKey::from_hex, PublicKey::from_slice),
+            dleq: None,
+        },
+        column_as_string!(blinded_message, PublicKey::from_hex, PublicKey::from_slice),
+    ))
+}
+
 #[async_trait]
 impl<RM> MintSignatureTransaction for SQLTransaction<RM>
 where
@@ -334,6 +356,38 @@ where
         .into_iter()
         .map(sql_row_to_blind_signature)
         .collect::<Result<Vec<BlindSignature>, _>>()?)
+    }
+
+    /// Get [`BlindSignature`]s and blinded secret as [`PublicKey`] for quote
+    async fn get_blind_signatures_and_secret_for_quote(
+        &self,
+        quote_id: &QuoteId,
+    ) -> Result<Vec<(BlindSignature, PublicKey)>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(query(
+            r#"
+            SELECT
+                blinded_message,
+                keyset_id,
+                amount,
+                c
+            FROM
+                blind_signature
+            WHERE
+                quote_id=:quote_id AND c IS NOT NULL
+            ORDER BY order_index ASC
+            "#,
+        )?
+        .bind("quote_id", quote_id.to_string())
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_blind_signature_and_secret)
+        .collect::<Result<Vec<(BlindSignature, PublicKey)>, _>>()?)
     }
 
     /// Get total proofs redeemed by keyset id
