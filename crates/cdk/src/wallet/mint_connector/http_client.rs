@@ -185,7 +185,10 @@ where
     }
 
     /// Create new [`HttpClient`]
-    pub fn new(mint_url: MintUrl, auth_wallet: Option<AuthWallet>) -> Self {
+    pub fn new(mint_url: MintUrl, auth_wallet: Option<AuthWallet>) -> Self
+    where
+        T: Default,
+    {
         Self {
             transport: T::default().into(),
             mint_url,
@@ -219,7 +222,10 @@ where
         proxy: Url,
         host_matcher: Option<&str>,
         accept_invalid_certs: bool,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Error>
+    where
+        T: Default,
+    {
         let mut transport = T::default();
         transport
             .with_proxy(proxy, host_matcher, accept_invalid_certs)
@@ -977,7 +983,10 @@ where
     }
 
     /// Create new [`AuthHttpClient`]
-    pub fn new(mint_url: MintUrl, cat: Option<AuthToken>) -> Self {
+    pub fn new(mint_url: MintUrl, cat: Option<AuthToken>) -> Self
+    where
+        T: Default,
+    {
         Self {
             transport: T::default().into(),
             mint_url,
@@ -1006,7 +1015,10 @@ where
         host_matcher: Option<&str>,
         accept_invalid_certs: bool,
         cat: Option<AuthToken>,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, Error>
+    where
+        T: Default,
+    {
         let mut transport = T::default();
         transport
             .with_proxy(proxy, host_matcher, accept_invalid_certs)

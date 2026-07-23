@@ -3,6 +3,7 @@
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 
 use super::WsError;
 
@@ -67,6 +68,31 @@ impl WsReceiver {
     }
 }
 
+/// Adapt an established WebSocket stream to CDK's sender and receiver types.
+///
+/// This is useful for transports that perform the HTTP upgrade themselves,
+/// such as an encrypted tunnel, and then construct a WebSocket stream over the
+/// resulting bidirectional byte stream.
+pub fn from_websocket_stream<S>(ws_stream: WebSocketStream<S>) -> (WsSender, WsReceiver)
+where
+    WebSocketStream<S>: futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error>
+        + futures::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+        + Unpin
+        + Send
+        + 'static,
+{
+    let (sink, stream) = ws_stream.split();
+
+    (
+        WsSender {
+            inner: Box::new(sink),
+        },
+        WsReceiver {
+            inner: Box::new(stream),
+        },
+    )
+}
+
 /// Connect to a WebSocket endpoint with optional headers.
 ///
 /// `headers` is a slice of `(name, value)` pairs to include in the upgrade request.
@@ -91,16 +117,7 @@ pub async fn connect(
         .await
         .map_err(|e| WsError::Connection(e.to_string()))?;
 
-    let (sink, stream) = ws_stream.split();
-
-    Ok((
-        WsSender {
-            inner: Box::new(sink),
-        },
-        WsReceiver {
-            inner: Box::new(stream),
-        },
-    ))
+    Ok(from_websocket_stream(ws_stream))
 }
 
 /// Connect to a WebSocket endpoint through an Arti Tor client.
@@ -143,14 +160,5 @@ pub(crate) async fn connect_tor(
             .await
             .map_err(|e| WsError::Connection(e.to_string()))?;
 
-    let (sink, stream) = ws_stream.split();
-
-    Ok((
-        WsSender {
-            inner: Box::new(sink),
-        },
-        WsReceiver {
-            inner: Box::new(stream),
-        },
-    ))
+    Ok(from_websocket_stream(ws_stream))
 }
