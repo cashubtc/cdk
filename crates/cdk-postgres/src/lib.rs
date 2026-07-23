@@ -538,10 +538,7 @@ mod test {
             SslMode::NativeTls(_)
         ));
         assert!(matches!(
-            ssl_mode_from_config(
-                Some("disable"),
-                "postgres://localhost/cdk?sslmode=require"
-            ),
+            ssl_mode_from_config(Some("disable"), "postgres://localhost/cdk?sslmode=require"),
             SslMode::NoTls(_)
         ));
     }
