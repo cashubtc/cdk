@@ -1,6 +1,6 @@
 # Federated Cashu Bark BOLT11 optimization implementation plan
 
-Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, and 20 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestone 21 in progress
+Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, and 20 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped; Milestone 21 in progress; Milestone 22 not started
 
 First recorded: 2026-07-20
 
@@ -5442,6 +5442,54 @@ failure/revocation behavior.
 - [ ] If kept, use focused cut-through commits in Bark and CDK; if rejected,
       retain only this evidence record.
 
+## Milestone 22: reject a duplicate paid melt without halting consensus
+
+Status: **Not started.**
+
+### Goal
+
+Make deterministic application of a newly accepted melt request safe when its
+BOLT11 lookup ID already belongs to a paid quote. The invalid request must be
+rejected identically on every member without stopping AlephBFT, changing the
+original paid quote, reserving or spending proofs, or contacting Bark/Ark.
+This is a generic federation correctness prerequisite discovered during
+Milestone 21 measurement, not a Bark-specific retry optimization.
+
+### Discovery evidence — 2026-07-23
+
+An accidental local resubmission used an already paid 1,000-sat store invoice
+for a new quote in the retained five-member release federation. The new quote
+remained unpaid and no Bark action was created, but its melt operation was
+finalized before the duplicate lookup-ID invariant was applied. Every member
+then recorded the same operation at index 135 as `failed`, with 135 earlier
+operations still `applied`, and stopped its live AlephBFT session on the
+non-retryable `Request already paid` application error. All five databases
+contained 151 finalized items but only 136 journal entries, so later finalized
+items could not be applied.
+
+The external payment was not repeated, but one ordinary invalid wallet request
+halted the whole federation. Preserve the stopped disposable state until the
+failure is covered by a deterministic regression; use a separate fresh local
+run directory for Milestone 21 measurements.
+
+### Checklist, tests, and success criteria
+
+- [ ] Trace where melt lookup-ID uniqueness is knowable during admission and
+      why the accepted operation can still fail during deterministic apply.
+- [ ] Add a regression that pays one quote, submits a distinct quote carrying
+      the same lookup ID, and proves the second request is rejected without a
+      failed journal entry or stopped application task.
+- [ ] Prefer deterministic pre-admission rejection using existing mint-domain
+      validation. Do not weaken the database uniqueness invariant or treat a
+      business-rule error as retryable.
+- [ ] Prove the original quote remains paid, the duplicate remains unpaid or is
+      rejected durably, proofs are not spent twice, no second Bark/Ark action
+      starts, and later valid consensus operations still apply on all members.
+- [ ] Cover concurrent duplicate submissions, replay, restart, catch-up, and
+      standalone mint behavior without adding compatibility state.
+- [ ] Update this record with the smallest owning fix, exact local evidence,
+      temporary-instrumentation cleanup, and a focused conventional commit.
+
 ## End-to-end verification matrix
 
 - [x] Healthy 3-of-5 incoming and outgoing success.
@@ -5549,6 +5597,7 @@ Append future evidence here rather than rewriting historical results.
 | 2026-07-23 | Milestone 18 canonical melt submission | local release, fresh five-member loopback federation, SQLite, three retained controls and three final real-Signet candidates | melt POSTs 15 -> 3 and body bytes 23,715 -> 4,743, but GETs 30 -> 45 and total starts 45 -> 48; POST/GET-stage median 2,504.378 -> 3,471.172ms; wallet median 36.99 -> 43.05s and observed max 46.72 -> 76.08s; three payments, three accepted melts, zero duplicates in both | Reject and revert: one canonical POST plus threshold GET preserved authority and exactly-once payment, and `prefer_async` removed the first 15-18s handler wait, but the final candidate still exceeded the isolated and whole-wallet 5% latency budgets. Full fan-out remains. |
 | 2026-07-23 | Milestone 19 config-derived keyset validation | same fresh five-member loopback federation and imported registry, locked release CLI, ten warmed short-process samples per cohort plus one/two-member loss | discovery GETs 10 -> 1 and response bodies 26,120 -> 1,665 bytes; median and observed p95/max 80 -> 70ms; one and two offline members still completed in 70ms | Keep config-derived reuse in the generic URL-backed federation connector. Live mint info remains digest-checked, sensitive results retain threshold verification, changed rotation state clears the optimization and fails closed, and no durable record, schema, timer, or payment-backend branch was added. |
 | 2026-07-23 | Milestone 20 terminal-melt maintenance quiet period | same persisted local five-member release federation, SQLite, real Signet, four control and six candidate 1,000-sat melts without top-up | control's fifth quote found 0 spendable and 15,900 reserved for 37:04-37:34; candidate completed all six with one spendable change after every terminal result, no refresh reservation, unchanged one-movement send shape, zero duplicates, and identical 123-entry restart digests | Keep the existing 30-second maintenance guard but restart it from durable `paid_time`. This removes the measured pre-lock reservation window without adding a queue, timer, schema, backend branch, consensus operation, or external call. |
+| 2026-07-23 | Milestone 22 duplicate-paid-melt discovery | retained local five-member release federation, SQLite, accidental reuse of one already paid 1,000-sat store invoice | one new melt operation finalized, then all five members recorded the same index as failed and halted deterministic application on `Request already paid`; each stopped at 135 applied plus one failed journal entry while 151 finalized items existed; no second Bark action or external payment occurred | A wallet-level duplicate must be a deterministic rejection, never a consensus-halting apply error. Preserve the evidence and fix this after Milestone 21 with admission, later-operation, replay, and exactly-once regressions. |
 
 ## Completion checklist
 
@@ -5592,6 +5641,8 @@ Append future evidence here rather than rewriting historical results.
 - [ ] Exact Ark initiation either removes `PaymentInitiated` with safe
       cross-member retry and fewer accepted operations or re-proves why the
       boundary remains necessary after Milestone 17A.
+- [ ] A second quote for an already paid BOLT11 lookup ID is rejected without
+      halting deterministic application or repeating the external payment.
 - [ ] Outgoing success, failure, and recovered-result evidence use the retained
       independent verifier thresholds with fewer consensus entries.
 - [ ] Certified terminal failure authorizes revocation in the same accepted
