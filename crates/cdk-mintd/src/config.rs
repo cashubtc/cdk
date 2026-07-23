@@ -225,21 +225,38 @@ impl Default for Ln {
     }
 }
 
+/// Accepts `[ln]` or `[[ln]]` and preserves clear missing-field errors.
+struct LnOneOrManyVisitor;
+
+impl<'de> serde::de::Visitor<'de> for LnOneOrManyVisitor {
+    type Value = Vec<Ln>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a single [ln] table or an array of [[ln]] tables")
+    }
+
+    fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let ln = Ln::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+        Ok(vec![ln])
+    }
+
+    fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        Vec::<Ln>::deserialize(serde::de::value::SeqAccessDeserializer::new(seq))
+    }
+}
+
+/// Accepts a single `[ln]` table or an array of `[[ln]]` tables.
 fn deserialize_ln<'de, D>(deserializer: D) -> Result<Vec<Ln>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum LnOneOrMany {
-        Many(Vec<Ln>),
-        One(Ln),
-    }
-
-    match LnOneOrMany::deserialize(deserializer)? {
-        LnOneOrMany::Many(ln) => Ok(ln),
-        LnOneOrMany::One(ln) => Ok(vec![ln]),
-    }
+    deserializer.deserialize_any(LnOneOrManyVisitor)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -1945,6 +1962,53 @@ max_melt = 500000
         assert_eq!(settings.ln.len(), 1);
         assert_eq!(settings.ln[0].ln_backend, LnBackend::FakeWallet);
         assert_eq!(settings.ln[0].unit, CurrencyUnit::Sat);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_legacy_ln_block_missing_bounds_errors() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_ln_block_missing_bounds");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        // Bounds are required; omitting them must error, naming the field.
+        let config_content = r#"
+[ln]
+ln_backend = "fakewallet"
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let err = Settings::try_new(Some(&config_path))
+            .expect_err("missing bounds should fail")
+            .to_string();
+        assert!(err.contains("min_mint"), "unexpected error: {err}");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn test_onchain_block_missing_bounds_errors() {
+        use std::{env, fs};
+
+        let temp_dir = env::temp_dir().join("cdk_test_onchain_block_missing_bounds");
+        fs::create_dir_all(&temp_dir).expect("Failed to create temp dir");
+        let config_path = temp_dir.join("config.toml");
+
+        let config_content = r#"
+[onchain]
+onchain_backend = "fakewallet"
+"#;
+        fs::write(&config_path, config_content).expect("Failed to write config file");
+
+        let err = Settings::try_new(Some(&config_path))
+            .expect_err("missing bounds should fail")
+            .to_string();
+        assert!(err.contains("min_mint"), "unexpected error: {err}");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
