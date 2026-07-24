@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib"]
 name = "cdk_ffi_dart"
 
 [[bin]]
-name = "uniffi-bindgen"
+name = "uniffi-bindgen-dart"
 path = "uniffi-bindgen.rs"
 
 [dependencies]

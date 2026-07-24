@@ -601,7 +601,7 @@
               # Generate Dart bindings via the custom uniffi-bindgen binary
               # Must run from bindings/dart/rust/ so it finds uniffi.toml
               (cd bindings/dart/rust && \
-                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen -- \
+                cargo run --release -p cdk-ffi-dart --bin uniffi-bindgen-dart -- \
                   "../../../$CDK_FFI_LIB" --out-dir ../../../target/dart-bindings)
             '';
             doCheck = false;
@@ -627,9 +627,10 @@
               cargo build --release -p cdk-ffi-kotlin --target "${hostTarget}"
 
               # Generate Kotlin bindings
-              cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen -- generate \
-                --library "target/${hostTarget}/release/libcdk_ffi.$LIB_EXT" \
+              cargo run --release -p cdk-ffi-kotlin --bin uniffi-bindgen-kotlin -- generate \
+                --library "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
                 --language kotlin \
+                --config bindings/kotlin/rust/uniffi.toml \
                 --out-dir target/kotlin-bindings \
                 --no-format
             '';
@@ -644,11 +645,11 @@
               cp -r target/kotlin-bindings/org $out/cdk-jvm/src/main/kotlin/
 
               # Copy native library
-              cp "target/${hostTarget}/release/libcdk_ffi.$LIB_EXT" \
-                "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT"
+              cp "target/${hostTarget}/release/libcdk_ffi_kotlin.$LIB_EXT" \
+                "$out/cdk-jvm/src/main/resources/libcdk_ffi_kotlin.$LIB_EXT"
 
               # Strip debug symbols
-              strip -x "$out/cdk-jvm/src/main/resources/libcdk_ffi.$LIB_EXT" 2>/dev/null || true
+              strip -x "$out/cdk-jvm/src/main/resources/libcdk_ffi_kotlin.$LIB_EXT" 2>/dev/null || true
             '';
           }
         );
