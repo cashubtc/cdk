@@ -17,6 +17,8 @@ CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-mutinynet-public-esplora}"
 PAYMENT_MODE="${PAYMENT_MODE:-federated-bdk}"
 CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS:-20}"
 CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
+ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS="${ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS:-200}"
+ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK="${ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK:-1}"
 STATUS_TIMEOUT_SECS="${STATUS_TIMEOUT_SECS:-900}"
 STATUS_POLL_SECS="${STATUS_POLL_SECS:-2}"
 SESSION="${SESSION:-cdk-federation}"
@@ -52,6 +54,65 @@ runtime_config() {
     printf '%s/runtime-config.toml' "$(member_dir "$1")"
 }
 
+update_runtime_aleph_bft_settings() {
+    local member="$1"
+    local config temporary
+    config="$(runtime_config "$member")"
+    [[ -f "$config" ]] || die "member $member runtime config is missing"
+    temporary="$(mktemp "${config}.tmp.XXXXXX")"
+    awk \
+        -v interval="$ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS" \
+        -v pump="$ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK" '
+        function emit_missing_settings() {
+            if (!saw_interval) {
+                print "aleph_bft_active_unit_interval_ms = " interval
+            }
+            if (!saw_pump) {
+                print "aleph_bft_network_pump_max_messages_per_tick = " pump
+            }
+        }
+        /^\[federation\.peer_sync\]$/ {
+            in_peer_sync = 1
+            saw_peer_sync = 1
+            saw_interval = 0
+            saw_pump = 0
+            print
+            next
+        }
+        /^\[/ {
+            if (in_peer_sync) {
+                emit_missing_settings()
+                in_peer_sync = 0
+            }
+            print
+            next
+        }
+        in_peer_sync && /^aleph_bft_active_unit_interval_ms[[:space:]]*=/ {
+            print "aleph_bft_active_unit_interval_ms = " interval
+            saw_interval = 1
+            next
+        }
+        in_peer_sync && /^aleph_bft_network_pump_max_messages_per_tick[[:space:]]*=/ {
+            print "aleph_bft_network_pump_max_messages_per_tick = " pump
+            saw_pump = 1
+            next
+        }
+        { print }
+        END {
+            if (in_peer_sync) {
+                emit_missing_settings()
+            } else if (!saw_peer_sync) {
+                print ""
+                print "[federation.peer_sync]"
+                print "aleph_bft_active_unit_interval_ms = " interval
+                print "aleph_bft_network_pump_max_messages_per_tick = " pump
+            }
+        }
+    ' "$config" >"$temporary"
+    chmod 600 "$temporary"
+    mv "$temporary" "$config"
+}
+
 private_setup_config() {
     printf '%s/dkg-setup-private.json' "$(member_dir "$1")"
 }
@@ -72,7 +133,9 @@ require_commands() {
     [[ -x "$MINTD" ]] || die "missing executable $MINTD"
     for value in "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
         "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" "$PROMETHEUS_PORT_START" \
-        "$MINIMUM_CONFIRMATIONS" "$FEE_POLICY_VERSION"; do
+        "$MINIMUM_CONFIRMATIONS" "$FEE_POLICY_VERSION" \
+        "$ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS" \
+        "$ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK"; do
         [[ "$value" =~ ^[1-9][0-9]*$ ]] \
             || die "numeric settings must be positive integers"
     done
@@ -233,6 +296,10 @@ $development_policy_config
 public_config_path = "$(member_dir "$member")/dkg-final/federation-public.json"
 private_config_path = "$(private_final_config "$member")"
 
+[federation.peer_sync]
+aleph_bft_active_unit_interval_ms = $ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS
+aleph_bft_network_pump_max_messages_per_tick = $ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK
+
 [federation.onchain_wallet]
 $wallet_config
 EOF
@@ -306,6 +373,8 @@ run_runtime_member() {
     local member="$1"
     exec env \
         CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS=180 \
+        CDK_MINTD_FEDERATION_ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS="$ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS" \
+        CDK_MINTD_FEDERATION_ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK="$ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK" \
         RUST_LOG="${RUST_LOG:-info}" \
         "$MINTD" \
             --work-dir "$(work_dir "$member")" \
@@ -545,10 +614,13 @@ start_runtime() {
         jq -e '.frost_wallet == null' "$FINAL_PUBLIC" >/dev/null \
             || die "fakewallet public config unexpectedly contains a FROST wallet"
     fi
+    local member
+    for member in $(seq 1 "$MEMBERS"); do
+        update_runtime_aleph_bft_settings "$member"
+    done
     if tmux has-session -t "$SESSION" 2>/dev/null; then
         die "federation tmux session is already running; use restart or stop first"
     fi
-    local member
     tmux new-session -d -s "$SESSION" -n federation -x 240 -y 80 -c "$PWD" \
         -e "SESSION=$SESSION" \
         "exec bash scripts/nocean_federation_control.sh runtime-member 1"

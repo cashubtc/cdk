@@ -11,6 +11,10 @@ pub const ENV_FEDERATION_PRIVATE_CONFIG_PATH: &str = "CDK_MINTD_FEDERATION_PRIVA
 pub const ENV_FEDERATION_RESTORE_MANIFEST_PATH: &str = "CDK_MINTD_FEDERATION_RESTORE_MANIFEST_PATH";
 pub const ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS: &str =
     "CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS";
+pub const ENV_FEDERATION_ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS: &str =
+    "CDK_MINTD_FEDERATION_ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS";
+pub const ENV_FEDERATION_ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK: &str =
+    "CDK_MINTD_FEDERATION_ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK";
 pub const ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND: &str =
     "CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND";
 pub const ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT: &str =
@@ -76,6 +80,30 @@ impl Federation {
                 ));
             }
             self.peer_sync.operation_submission_timeout_secs = timeout;
+        }
+
+        if let Ok(interval) = env::var(ENV_FEDERATION_ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS) {
+            let interval = interval.parse::<u64>().map_err(|_| {
+                anyhow!("Federation AlephBFT active unit interval must fit in u64 milliseconds")
+            })?;
+            if interval == 0 {
+                return Err(anyhow!(
+                    "Federation AlephBFT active unit interval must be greater than zero"
+                ));
+            }
+            self.peer_sync.aleph_bft_active_unit_interval_ms = interval;
+        }
+
+        if let Ok(limit) = env::var(ENV_FEDERATION_ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK) {
+            let limit = limit
+                .parse::<usize>()
+                .map_err(|_| anyhow!("Federation AlephBFT network pump limit must fit in usize"))?;
+            if limit == 0 {
+                return Err(anyhow!(
+                    "Federation AlephBFT network pump limit must be greater than zero"
+                ));
+            }
+            self.peer_sync.aleph_bft_network_pump_max_messages_per_tick = limit;
         }
 
         if let Ok(max_round) = env::var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND) {
@@ -200,6 +228,8 @@ mod tests {
         env::remove_var(ENV_FEDERATION_PRIVATE_CONFIG_PATH);
         env::remove_var(ENV_FEDERATION_RESTORE_MANIFEST_PATH);
         env::remove_var(ENV_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS);
+        env::remove_var(ENV_FEDERATION_ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS);
+        env::remove_var(ENV_FEDERATION_ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK);
         env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND);
         env::remove_var(ENV_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT);
         env::remove_var(ENV_FEDERATION_ONCHAIN_WALLET_ENABLED);
@@ -249,6 +279,62 @@ mod tests {
             config.restore_manifest_path,
             Some(PathBuf::from("/tmp/restore-manifest.json"))
         );
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_overrides_aleph_bft_active_unit_and_pump_settings() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS, "100");
+        env::set_var(
+            ENV_FEDERATION_ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK,
+            "8",
+        );
+
+        let config = Federation::default()
+            .from_env()
+            .expect("federation env config");
+
+        assert_eq!(config.peer_sync.aleph_bft_active_unit_interval_ms, 100);
+        assert_eq!(
+            config
+                .peer_sync
+                .aleph_bft_network_pump_max_messages_per_tick,
+            8
+        );
+
+        clear_federation_env();
+    }
+
+    #[test]
+    fn federation_env_rejects_zero_aleph_bft_active_unit_and_pump_settings() {
+        let _guard = env_lock();
+        clear_federation_env();
+        env::set_var(ENV_FEDERATION_ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS, "0");
+        let interval_err = Federation::default()
+            .from_env()
+            .expect_err("zero active unit interval should fail");
+        assert!(
+            interval_err
+                .to_string()
+                .contains("must be greater than zero"),
+            "error should explain invalid active unit interval: {interval_err}"
+        );
+
+        clear_federation_env();
+        env::set_var(
+            ENV_FEDERATION_ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK,
+            "0",
+        );
+        let pump_err = Federation::default()
+            .from_env()
+            .expect_err("zero pump limit should fail");
+        assert!(
+            pump_err.to_string().contains("must be greater than zero"),
+            "error should explain invalid pump limit: {pump_err}"
+        );
+
         clear_federation_env();
     }
 

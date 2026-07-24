@@ -718,6 +718,24 @@ fn federation_peer_sync_config_rejects_invalid_values() {
         ),
         (
             FederationPeerSyncConfig {
+                aleph_bft_active_unit_interval: Duration::ZERO,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "AlephBFT active unit interval",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
+                aleph_bft_network_pump_max_messages_per_tick: 0,
+                ..valid
+            },
+            FederationPeerSyncConfigError::ZeroValue {
+                field: "AlephBFT network pump max messages per tick",
+            },
+        ),
+        (
+            FederationPeerSyncConfig {
                 aleph_bft_live_session_max_round: Some(0),
                 ..valid
             },

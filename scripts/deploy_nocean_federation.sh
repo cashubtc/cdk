@@ -27,6 +27,8 @@ BARK_APPLICATION_KEY_EPOCH="${BARK_APPLICATION_KEY_EPOCH:-1}"
 PROMETHEUS_PORT_START="${PROMETHEUS_PORT_START:-21985}"
 CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS="${CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS:-20}"
 CHECKPOINT_INTERVAL_FINALIZED_ITEMS="${CHECKPOINT_INTERVAL_FINALIZED_ITEMS:-20}"
+ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS="${ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS:-100}"
+ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK="${ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK:-8}"
 CONTROL_SCRIPT="$SCRIPT_DIR/nocean_federation_control.sh"
 CONTROL_RENDERER="$SCRIPT_DIR/render_bark_federation_control.py"
 BARK_REPO_ROOT="${BARK_REPO_ROOT:-$REPO_ROOT/../bark-cdk}"
@@ -60,6 +62,8 @@ Relevant environment overrides:
   BARK_ARK_SERVER_PUBLIC_KEY, BARK_APPLICATION_KEY_EPOCH
   PROMETHEUS_PORT_START
   CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS, CHECKPOINT_INTERVAL_FINALIZED_ITEMS
+  ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS
+  ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK
 EOF
 }
 
@@ -112,7 +116,9 @@ for value in "$STATUS_TIMEOUT_SECS" "$STATUS_POLL_SECS" "$MINIMUM_CONFIRMATIONS"
     "$FEE_POLICY_VERSION" "$APPLICATION_KEY_EPOCH" "$BARK_APPLICATION_KEY_EPOCH" \
     "$PROMETHEUS_PORT_START" \
     "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
-    "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS"; do
+    "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" \
+    "$ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS" \
+    "$ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK"; do
     [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "numeric settings must be positive integers"
 done
 ((PROMETHEUS_PORT_START + 5 - 1 <= 65535)) \
@@ -137,7 +143,10 @@ python3 "$CONTROL_RENDERER" \
     --server-address "$BARK_SERVER_ADDRESS" \
     --esplora-url "$BARK_ESPLORA_URL" \
     --ark-server-public-key "$BARK_ARK_SERVER_PUBLIC_KEY" \
-    --application-key-epoch "$BARK_APPLICATION_KEY_EPOCH"
+    --application-key-epoch "$BARK_APPLICATION_KEY_EPOCH" \
+    --aleph-bft-active-unit-interval-ms "$ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS" \
+    --aleph-bft-network-pump-max-messages-per-tick \
+        "$ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK"
 chmod 755 "$GENERATED_CONTROL_SCRIPT"
 
 RUST_VERSION="$(awk -F '"' '/^[[:space:]]*channel[[:space:]]*=/ { print $2; exit }' \
@@ -194,7 +203,8 @@ ssh "$SSH_HOST" bash -s -- \
     "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
     "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" "$PAYMENT_MODE" \
     "$BARK_SERVER_ADDRESS" "$BARK_ESPLORA_URL" "$BARK_ARK_SERVER_PUBLIC_KEY" \
-    "$BARK_APPLICATION_KEY_EPOCH" <<'REMOTE_SCRIPT'
+    "$BARK_APPLICATION_KEY_EPOCH" "$ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS" \
+    "$ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 
 REMOTE_DIR="$1"
@@ -220,6 +230,8 @@ export BARK_SERVER_ADDRESS="${20}"
 export BARK_ESPLORA_URL="${21}"
 export BARK_ARK_SERVER_PUBLIC_KEY="${22}"
 export BARK_APPLICATION_KEY_EPOCH="${23}"
+export ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS="${24}"
+export ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK="${25}"
 
 cd "$HOME/$REMOTE_DIR"
 for command in sha256sum tmux curl timeout awk find jq; do
@@ -251,6 +263,21 @@ tmux_is_healthy() {
     panes="$(tmux list-panes -t cdk-federation -F '#{pane_title} #{pane_current_command} #{pane_dead}')"
     [[ "$(printf '%s\n' "$panes" | wc -l | tr -d '[:space:]')" == "6" ]] || return 1
     [[ "$(awk '$1 ~ /^member-/ && $2 == "cdk-mintd" && $3 == "0" { count++ } END { print count + 0 }' <<<"$panes")" == "5" ]]
+}
+
+runtime_consensus_settings_are_applied() {
+    local member settings
+    for member in 1 2 3 4 5; do
+        settings="$(awk '
+            /^\[federation\.peer_sync\]$/ { in_peer_sync = 1; next }
+            /^\[/ { in_peer_sync = 0 }
+            in_peer_sync && $1 == "aleph_bft_active_unit_interval_ms" { interval = $3 }
+            in_peer_sync && $1 == "aleph_bft_network_pump_max_messages_per_tick" { pump = $3 }
+            END { print interval ":" pump }
+        ' "member-$member/runtime-config.toml")"
+        [[ "$settings" == "$ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS:$ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK" ]] \
+            || return 1
+    done
 }
 
 public_routes_are_healthy() {
@@ -326,7 +353,10 @@ attempt=0
 echo "Waiting up to $STATUS_TIMEOUT_SECS seconds for dual DKG and $PAYMENT_MODE readiness..."
 while ((SECONDS < deadline)); do
     attempt=$((attempt + 1))
-    if tmux_is_healthy && public_routes_are_healthy && private_state_is_healthy; then
+    if tmux_is_healthy \
+        && runtime_consensus_settings_are_applied \
+        && public_routes_are_healthy \
+        && private_state_is_healthy; then
         echo "Federation deployment is healthy."
         tmux list-panes -t cdk-federation \
             -F '#{pane_index} #{pane_title} #{pane_current_command} dead=#{pane_dead}'

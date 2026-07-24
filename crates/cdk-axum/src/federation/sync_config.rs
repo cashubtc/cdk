@@ -16,6 +16,8 @@ const DEFAULT_FEDERATION_PRIVATE_REST_OUTBOUND_CONCURRENCY_LIMIT: usize = 64;
 const DEFAULT_FEDERATION_PENDING_MEMPOOL_ITEM_LIMIT: usize = 1024;
 const DEFAULT_FEDERATION_RESPONSE_WAITER_LIMIT: usize = 1024;
 const DEFAULT_FEDERATION_RESPONSE_CACHE_LIMIT: usize = 4096;
+const DEFAULT_FEDERATION_ALEPH_BFT_ACTIVE_UNIT_INTERVAL: Duration = Duration::from_millis(200);
+const DEFAULT_FEDERATION_ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK: usize = 1;
 
 /// Invalid federation peer synchronization configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -61,6 +63,10 @@ pub struct FederationPeerSyncConfig {
     pub response_waiter_limit: usize,
     /// Maximum number of accepted operation responses retained for idempotent local waiters.
     pub response_cache_limit: usize,
+    /// Unit-creation interval while an AlephBFT session has pending application work.
+    pub aleph_bft_active_unit_interval: Duration,
+    /// Maximum fresh outbound AlephBFT messages drained by one network-pump invocation.
+    pub aleph_bft_network_pump_max_messages_per_tick: usize,
     /// Optional AlephBFT live-session round cap used to force natural session rollover.
     pub aleph_bft_live_session_max_round: Option<u16>,
     /// Optional number of capped AlephBFT live-session rollovers before restoring the normal cap.
@@ -83,6 +89,9 @@ impl Default for FederationPeerSyncConfig {
             pending_mempool_item_limit: DEFAULT_FEDERATION_PENDING_MEMPOOL_ITEM_LIMIT,
             response_waiter_limit: DEFAULT_FEDERATION_RESPONSE_WAITER_LIMIT,
             response_cache_limit: DEFAULT_FEDERATION_RESPONSE_CACHE_LIMIT,
+            aleph_bft_active_unit_interval: DEFAULT_FEDERATION_ALEPH_BFT_ACTIVE_UNIT_INTERVAL,
+            aleph_bft_network_pump_max_messages_per_tick:
+                DEFAULT_FEDERATION_ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK,
             aleph_bft_live_session_max_round: None,
             aleph_bft_live_session_rotation_limit: None,
         }
@@ -148,6 +157,16 @@ impl FederationPeerSyncConfig {
         if self.response_cache_limit == 0 {
             return Err(FederationPeerSyncConfigError::ZeroValue {
                 field: "response cache limit",
+            });
+        }
+        if self.aleph_bft_active_unit_interval.is_zero() {
+            return Err(FederationPeerSyncConfigError::ZeroValue {
+                field: "AlephBFT active unit interval",
+            });
+        }
+        if self.aleph_bft_network_pump_max_messages_per_tick == 0 {
+            return Err(FederationPeerSyncConfigError::ZeroValue {
+                field: "AlephBFT network pump max messages per tick",
             });
         }
         if self.aleph_bft_live_session_max_round == Some(0) {

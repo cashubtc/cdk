@@ -65,6 +65,7 @@ pub(crate) struct FederationAlephBftLiveSessionOptions {
     max_round: u16,
     time_to_reach_max_round: Duration,
     delay_config: Option<DelayConfig>,
+    active_unit_interval: Duration,
     automatic_rotation_limit: Option<usize>,
     replay_target_next_unit_index_by_member: BTreeMap<MemberId, u64>,
     aleph_bft_channel_capacity: usize,
@@ -105,6 +106,7 @@ impl FederationAlephBftLiveSessionOptions {
         sync_config: FederationPeerSyncConfig,
     ) -> Self {
         let mut options = Self::new(pump_config);
+        options.active_unit_interval = sync_config.aleph_bft_active_unit_interval;
         if let Some(max_round) = sync_config.aleph_bft_live_session_max_round {
             let rotation_limit = sync_config
                 .aleph_bft_live_session_rotation_limit
@@ -236,6 +238,8 @@ impl Default for FederationAlephBftLiveSessionOptions {
             max_round: CDK_ALEPH_BFT_MAX_ROUND,
             time_to_reach_max_round: Duration::from_secs(0),
             delay_config: None,
+            active_unit_interval: FederationPeerSyncConfig::default()
+                .aleph_bft_active_unit_interval,
             automatic_rotation_limit: None,
             replay_target_next_unit_index_by_member: BTreeMap::new(),
             aleph_bft_channel_capacity: crate::FEDERATION_ALEPH_BFT_CHANNEL_CAPACITY,
@@ -575,13 +579,22 @@ where
         state,
         sync_config,
         FederationAlephBftLiveSessionOptions::from_sync_config(
-            CdkAlephBftNetworkPumpConfig::default(),
+            cdk_aleph_bft_network_pump_config(sync_config),
             sync_config,
         )
         .with_replay_target_next_unit_index_by_member(replay_target_next_unit_index_by_member),
         transport,
     )
     .await
+}
+
+fn cdk_aleph_bft_network_pump_config(
+    sync_config: FederationPeerSyncConfig,
+) -> CdkAlephBftNetworkPumpConfig {
+    CdkAlephBftNetworkPumpConfig {
+        max_messages_per_tick: sync_config.aleph_bft_network_pump_max_messages_per_tick,
+        ..CdkAlephBftNetworkPumpConfig::default()
+    }
 }
 
 /// Start the live upstream AlephBFT session with explicit testable work bounds.
@@ -1279,7 +1292,7 @@ fn aleph_bft_config(
             node_index,
             session_id,
             options.max_round,
-            cdk_aleph_bft_delay_config_with_activity(activity_hint),
+            cdk_aleph_bft_delay_config_with_activity(activity_hint, options.active_unit_interval),
             options.time_to_reach_max_round,
         ),
     };
@@ -1301,21 +1314,27 @@ fn aleph_bft_live_session_options_for_startup(
 
 #[cfg(test)]
 fn cdk_aleph_bft_delay_config() -> DelayConfig {
-    cdk_aleph_bft_delay_config_with_activity(CdkAlephBftActivityHint::default())
+    cdk_aleph_bft_delay_config_with_activity(
+        CdkAlephBftActivityHint::default(),
+        FederationPeerSyncConfig::default().aleph_bft_active_unit_interval,
+    )
 }
 
-fn cdk_aleph_bft_delay_config_with_activity(activity_hint: CdkAlephBftActivityHint) -> DelayConfig {
+fn cdk_aleph_bft_delay_config_with_activity(
+    activity_hint: CdkAlephBftActivityHint,
+    active_unit_interval: Duration,
+) -> DelayConfig {
     let mut delay_config = default_delay_config();
-    let default_unit_creation_delay = Arc::clone(&delay_config.unit_creation_delay);
+    let startup_unit_creation_delay = (delay_config.unit_creation_delay)(0);
     delay_config.unit_creation_delay = Arc::new(move |round| {
-        if activity_hint.is_active() {
-            // Keep AlephBFT's round-aware cadence so empty helper units cannot
-            // outrun dissemination while real work awaits finalization.
-            default_unit_creation_delay(round)
+        if round == 0 {
+            startup_unit_creation_delay
+        } else if activity_hint.is_active() {
+            active_unit_interval
         } else if round > CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND {
             CDK_ALEPH_BFT_IDLE_UNIT_CREATION_DELAY
         } else {
-            default_unit_creation_delay(round)
+            active_unit_interval
         }
     });
     delay_config
@@ -2180,6 +2199,31 @@ mod tests {
     }
 
     #[test]
+    fn aleph_bft_live_session_uses_configured_active_cadence_and_pump_limit() {
+        let default_sync_config = FederationPeerSyncConfig::default();
+        assert_eq!(
+            default_sync_config.aleph_bft_active_unit_interval,
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            default_sync_config.aleph_bft_network_pump_max_messages_per_tick,
+            1
+        );
+
+        let sync_config = FederationPeerSyncConfig {
+            aleph_bft_active_unit_interval: Duration::from_millis(100),
+            aleph_bft_network_pump_max_messages_per_tick: 8,
+            ..FederationPeerSyncConfig::default()
+        };
+        let pump_config = cdk_aleph_bft_network_pump_config(sync_config);
+        let options =
+            FederationAlephBftLiveSessionOptions::from_sync_config(pump_config, sync_config);
+
+        assert_eq!(options.active_unit_interval, Duration::from_millis(100));
+        assert_eq!(options.pump_config.max_messages_per_tick, 8);
+    }
+
+    #[test]
     fn aleph_bft_live_session_default_delay_slows_idle_tail_rounds() {
         let delay_config = cdk_aleph_bft_delay_config();
         let early_delay =
@@ -2194,7 +2238,9 @@ mod tests {
     #[test]
     fn aleph_bft_live_session_activity_hint_keeps_tail_rounds_on_active_cadence() {
         let activity_hint = CdkAlephBftActivityHint::default();
-        let delay_config = cdk_aleph_bft_delay_config_with_activity(activity_hint.clone());
+        let active_unit_interval = Duration::from_millis(123);
+        let delay_config =
+            cdk_aleph_bft_delay_config_with_activity(activity_hint.clone(), active_unit_interval);
         let default_delay_config = default_delay_config();
         let early_round = CDK_ALEPH_BFT_IDLE_SLOWDOWN_AFTER_ROUND;
         let idle_early_delay = (delay_config.unit_creation_delay)(early_round);
@@ -2208,11 +2254,11 @@ mod tests {
         activity_hint.mark_local_pending();
         assert_eq!(
             (delay_config.unit_creation_delay)(early_round),
-            (default_delay_config.unit_creation_delay)(early_round)
+            active_unit_interval
         );
         assert_eq!(
             (delay_config.unit_creation_delay)(tail_round),
-            (default_delay_config.unit_creation_delay)(tail_round)
+            active_unit_interval
         );
         assert_eq!(
             (delay_config.unit_creation_delay)(early_round),
@@ -2231,7 +2277,12 @@ mod tests {
         activity_hint.mark_network_activity([[1u8; 32]]);
         assert_eq!(
             (delay_config.unit_creation_delay)(tail_round),
-            (default_delay_config.unit_creation_delay)(tail_round)
+            active_unit_interval
+        );
+        assert_eq!(
+            (delay_config.unit_creation_delay)(0),
+            (default_delay_config.unit_creation_delay)(0),
+            "configured active cadence must preserve the upstream startup delay"
         );
     }
 }

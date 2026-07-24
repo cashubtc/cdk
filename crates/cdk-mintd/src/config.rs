@@ -1592,6 +1592,12 @@ pub struct FederationPeerSync {
     /// Maximum number of accepted operation responses retained locally.
     #[serde(default = "default_federation_response_cache_limit")]
     pub response_cache_limit: usize,
+    /// Unit-creation interval while AlephBFT has pending application work.
+    #[serde(default = "default_federation_aleph_bft_active_unit_interval_ms")]
+    pub aleph_bft_active_unit_interval_ms: u64,
+    /// Maximum fresh outbound AlephBFT messages drained by one network-pump invocation.
+    #[serde(default = "default_federation_aleph_bft_network_pump_max_messages_per_tick")]
+    pub aleph_bft_network_pump_max_messages_per_tick: usize,
     /// Optional AlephBFT live-session round cap used to force natural rollover.
     #[serde(default)]
     pub aleph_bft_live_session_max_round: Option<u16>,
@@ -1619,6 +1625,10 @@ impl Default for FederationPeerSync {
             pending_mempool_item_limit: default_federation_pending_mempool_item_limit(),
             response_waiter_limit: default_federation_response_waiter_limit(),
             response_cache_limit: default_federation_response_cache_limit(),
+            aleph_bft_active_unit_interval_ms: default_federation_aleph_bft_active_unit_interval_ms(
+            ),
+            aleph_bft_network_pump_max_messages_per_tick:
+                default_federation_aleph_bft_network_pump_max_messages_per_tick(),
             aleph_bft_live_session_max_round: None,
             aleph_bft_live_session_rotation_limit: None,
         }
@@ -1628,6 +1638,16 @@ impl Default for FederationPeerSync {
 #[cfg(feature = "federation")]
 fn default_federation_peer_sync_interval_secs() -> u64 {
     5
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_aleph_bft_active_unit_interval_ms() -> u64 {
+    200
+}
+
+#[cfg(feature = "federation")]
+fn default_federation_aleph_bft_network_pump_max_messages_per_tick() -> usize {
+    1
 }
 
 #[cfg(feature = "federation")]

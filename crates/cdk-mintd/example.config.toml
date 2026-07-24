@@ -406,6 +406,11 @@ max_delay_time = 3
 # pending_mempool_item_limit = 1024
 # response_waiter_limit = 1024
 # response_cache_limit = 4096
+# Unit cadence while application work is pending. The round-zero startup delay
+# and idle slowdown remain unchanged.
+# aleph_bft_active_unit_interval_ms = 200
+# Maximum fresh outbound messages drained by one network-pump invocation.
+# aleph_bft_network_pump_max_messages_per_tick = 1
 # Optional AlephBFT live-session round cap. Leave unset for the production
 # default; set a small value only in local smoke/regtest runs that deliberately
 # exercise automatic session rollover.

@@ -1661,6 +1661,11 @@ fn federation_peer_sync_config(settings: &config::Settings) -> cdk_axum::Federat
         pending_mempool_item_limit: peer_sync.pending_mempool_item_limit,
         response_waiter_limit: peer_sync.response_waiter_limit,
         response_cache_limit: peer_sync.response_cache_limit,
+        aleph_bft_active_unit_interval: std::time::Duration::from_millis(
+            peer_sync.aleph_bft_active_unit_interval_ms,
+        ),
+        aleph_bft_network_pump_max_messages_per_tick: peer_sync
+            .aleph_bft_network_pump_max_messages_per_tick,
         aleph_bft_live_session_max_round: peer_sync.aleph_bft_live_session_max_round,
         aleph_bft_live_session_rotation_limit: peer_sync.aleph_bft_live_session_rotation_limit,
     }
@@ -4895,6 +4900,8 @@ engine = "sqlite"
                     pending_mempool_item_limit: 53,
                     response_waiter_limit: 59,
                     response_cache_limit: 61,
+                    aleph_bft_active_unit_interval_ms: 63,
+                    aleph_bft_network_pump_max_messages_per_tick: 65,
                     aleph_bft_live_session_max_round: Some(67),
                     aleph_bft_live_session_rotation_limit: Some(71),
                 },
@@ -4934,6 +4941,11 @@ engine = "sqlite"
         assert_eq!(sync_config.pending_mempool_item_limit, 53);
         assert_eq!(sync_config.response_waiter_limit, 59);
         assert_eq!(sync_config.response_cache_limit, 61);
+        assert_eq!(
+            sync_config.aleph_bft_active_unit_interval,
+            std::time::Duration::from_millis(63)
+        );
+        assert_eq!(sync_config.aleph_bft_network_pump_max_messages_per_tick, 65);
         assert_eq!(sync_config.aleph_bft_live_session_max_round, Some(67));
         assert_eq!(sync_config.aleph_bft_live_session_rotation_limit, Some(71));
         sync_config.validate().expect("valid sync config");

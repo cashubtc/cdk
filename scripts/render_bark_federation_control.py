@@ -13,6 +13,8 @@ def parse_args():
     parser.add_argument("--esplora-url", required=True)
     parser.add_argument("--ark-server-public-key", required=True)
     parser.add_argument("--application-key-epoch", required=True)
+    parser.add_argument("--aleph-bft-active-unit-interval-ms", required=True)
+    parser.add_argument("--aleph-bft-network-pump-max-messages-per-tick", required=True)
     return parser.parse_args()
 
 
@@ -46,6 +48,16 @@ BARK_ARK_SERVER_PUBLIC_KEY="${{BARK_ARK_SERVER_PUBLIC_KEY:-{args.ark_server_publ
 BARK_APPLICATION_KEY_EPOCH="${{BARK_APPLICATION_KEY_EPOCH:-{args.application_key_epoch}}}"
 BARK_POLICY_CONFIG="$PWD/config/bark-policy.json"
 ''',
+    )
+    replace_once(
+        'ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS="${ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS:-200}"',
+        "ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS="
+        f'"${{ALEPH_BFT_ACTIVE_UNIT_INTERVAL_MS:-{args.aleph_bft_active_unit_interval_ms}}}"',
+    )
+    replace_once(
+        'ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK="${ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK:-1}"',
+        "ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK="
+        f'"${{ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK:-{args.aleph_bft_network_pump_max_messages_per_tick}}}"',
     )
     replace_once(
         "for command in tmux curl jq awk find ps seq; do",
