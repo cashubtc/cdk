@@ -798,14 +798,16 @@ impl MintPayment for FakeWallet {
                 payment_amount: final_amount,
                 payment_id: payment_hash_clone.to_string(),
             };
-            let mut incoming = incoming_payment.write().await;
-            incoming
-                .entry(payment_hash_clone.clone())
-                .or_insert_with(Vec::new)
-                .push(response.clone());
+            {
+                let mut incoming = incoming_payment.write().await;
+                incoming
+                    .entry(payment_hash_clone.clone())
+                    .or_insert_with(Vec::new)
+                    .push(response.clone());
+            }
 
             // Send the message after waiting for the specified duration
-            if sender.send(response.clone()).await.is_err() {
+            if sender.send(response).await.is_err() {
                 tracing::error!("Failed to send label: {:?}", payment_hash_clone);
             }
         });
@@ -905,4 +907,51 @@ pub fn create_fake_invoice(amount_msat: u64, description: String) -> Bolt11Invoi
         .min_final_cltv_expiry_delta(144)
         .build_signed(|hash| Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key))
         .expect("Failed to build fake invoice")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cdk_common::payment::Bolt11IncomingPaymentOptions;
+
+    #[tokio::test]
+    async fn payment_status_remains_readable_when_notification_channel_is_full() {
+        let wallet = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: Amount::new(0, CurrencyUnit::Sat).into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::new(),
+            HashSet::new(),
+            0,
+            CurrencyUnit::Sat,
+        );
+        let mut payment_ids = Vec::new();
+
+        for _ in 0..9 {
+            let payment = wallet
+                .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
+                    Bolt11IncomingPaymentOptions {
+                        amount: Amount::new(1, CurrencyUnit::Sat),
+                        ..Default::default()
+                    },
+                ))
+                .await
+                .expect("create incoming payment");
+            payment_ids.push(payment.request_lookup_id);
+        }
+
+        time::sleep(Duration::from_millis(50)).await;
+        time::timeout(Duration::from_secs(1), async {
+            for payment_id in payment_ids {
+                let payments = wallet
+                    .check_incoming_payment_status(&payment_id)
+                    .await
+                    .expect("check incoming payment");
+                assert_eq!(payments.len(), 1);
+            }
+        })
+        .await
+        .expect("payment status remains readable");
+    }
 }
