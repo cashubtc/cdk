@@ -90,26 +90,34 @@ impl DbSignatory {
     /// Any operation performed with keysets, are done through this trait and never to the database
     /// directly.
     async fn reload_keys_from_db(&self) -> Result<(), Error> {
-        let mut keysets = self.keysets.write().await;
-        let mut active_keysets = self.active_keysets.write().await;
-        keysets.clear();
-        active_keysets.clear();
-
+        // Build the replacement state before touching the live maps. Every
+        // `await` (the DB reads) happens here, before any lock is held, so an
+        // abort mid-reload (for example `stop()` aborting the rotation task)
+        // cannot leave the in-memory keysets empty. The old state stays intact
+        // until the synchronous swap below.
         let db_active_keysets = self.localstore.get_active_keysets().await?;
+        let keyset_infos = self.localstore.get_keyset_infos().await?;
 
-        for mut info in self.localstore.get_keyset_infos().await? {
+        let mut new_keysets = HashMap::new();
+        let mut new_active_keysets = HashMap::new();
+        for mut info in keyset_infos {
             let id = info.id;
             let keyset = self.generate_keyset(&info);
             info.active = db_active_keysets.get(&info.unit) == Some(&info.id);
             if info.active {
-                active_keysets.insert(info.unit.clone(), id);
+                new_active_keysets.insert(info.unit.clone(), id);
             }
-            keysets.insert(id, (info, keyset));
+            new_keysets.insert(id, (info, keyset));
         }
 
-        // Publish the new snapshot to any keyset subscribers. Sending while the
-        // locks are held keeps the published set consistent with in-memory
-        // state.
+        let mut keysets = self.keysets.write().await;
+        let mut active_keysets = self.active_keysets.write().await;
+        // Swap and publish with no `await` in between, so the section is
+        // abort-safe and the published set stays consistent with in-memory
+        // state. Sending while the locks are held keeps concurrent reloads from
+        // publishing out of order.
+        *keysets = new_keysets;
+        *active_keysets = new_active_keysets;
         self.keyset_updates.send_replace(SignatoryKeysets {
             pubkey: self.xpub,
             keysets: keysets.values().map(|k| k.into()).collect(),
@@ -219,7 +227,10 @@ impl DbSignatory {
     }
 
     async fn auto_rotation_loop(weak: Weak<Self>, interval: Duration) {
-        let mut ticker = tokio::time::interval(Duration::from_secs(60));
+        // Check once per `interval`. The first tick fires immediately, so a
+        // freshly built keyset (age 0) is only rotated once it has aged past
+        // `interval` on a later tick.
+        let mut ticker = tokio::time::interval(interval);
 
         loop {
             ticker.tick().await;
