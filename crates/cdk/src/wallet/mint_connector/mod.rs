@@ -23,10 +23,18 @@ use crate::OidcClient;
 pub mod http_client;
 pub mod transport;
 
+pub use transport::{RateLimitConfig, TokenBucket};
+
 /// Auth HTTP Client with async transport
 pub type AuthHttpClient = http_client::AuthHttpClient<transport::Async>;
 /// Default Http Client with async transport (non-Tor)
 pub type HttpClient = http_client::HttpClient<transport::Async>;
+/// Rate-limited HTTP Client with async transport
+pub type RateLimitedHttpClient =
+    http_client::HttpClient<transport::RateLimitedTransport<transport::Async>>;
+/// Rate-limited Auth HTTP Client with async transport
+pub type RateLimitedAuthHttpClient =
+    http_client::AuthHttpClient<transport::RateLimitedTransport<transport::Async>>;
 /// Tor Auth HTTP Client with async transport (only when `tor` feature is enabled and not on wasm32)
 #[cfg(all(feature = "tor", not(target_arch = "wasm32")))]
 pub type TorAuthHttpClient = http_client::AuthHttpClient<transport::TorAsync>;

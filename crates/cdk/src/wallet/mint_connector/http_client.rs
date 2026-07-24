@@ -176,8 +176,20 @@ where
         transport: T,
         auth_wallet: Option<AuthWallet>,
     ) -> Self {
+        Self::with_shared_transport(mint_url, Arc::new(transport), auth_wallet)
+    }
+
+    /// Create new [`HttpClient`] sharing an existing transport instance.
+    ///
+    /// Lets several clients (for example the main and blind-auth clients) reuse
+    /// one transport, and so its connection pool and any rate limiter it wraps.
+    pub fn with_shared_transport(
+        mint_url: MintUrl,
+        transport: Arc<T>,
+        auth_wallet: Option<AuthWallet>,
+    ) -> Self {
         Self {
-            transport: transport.into(),
+            transport,
             mint_url,
             auth_wallet: Arc::new(RwLock::new(auth_wallet)),
             cache_support: Default::default(),
@@ -988,8 +1000,18 @@ where
     }
     /// Create new [`AuthHttpClient`] with a provided transport implementation.
     pub fn with_transport(mint_url: MintUrl, transport: T, cat: Option<AuthToken>) -> Self {
+        Self::with_shared_transport(mint_url, Arc::new(transport), cat)
+    }
+
+    /// Create new [`AuthHttpClient`] sharing an existing transport instance, so
+    /// it reuses the transport's connection pool and any rate limiter it wraps.
+    pub fn with_shared_transport(
+        mint_url: MintUrl,
+        transport: Arc<T>,
+        cat: Option<AuthToken>,
+    ) -> Self {
         Self {
-            transport: transport.into(),
+            transport,
             mint_url,
             cat: Arc::new(RwLock::new(
                 cat.unwrap_or(AuthToken::ClearAuth("".to_string())),

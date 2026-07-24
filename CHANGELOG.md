@@ -7,6 +7,12 @@
 
 ## [Unreleased]
 
+### Added
+- cdk: Client-side request rate limiting for the wallet, using a GCRA token bucket shared across the main and blind-auth clients, with a per-mint budget persisted in the wallet key-value store by a single background writer (`TokenBucket::flush` forces it out); tune it with `WalletBuilder::with_rate_limiting_config` (build a `RateLimitConfig` via `RateLimitConfig::try_new`) or turn it off with `WalletBuilder::without_rate_limiting` ([crodas]).
+
+### Changed
+- cdk: Wallets now rate-limit their outbound requests to a mint by default (a burst followed by roughly 45 requests/minute) to stay under a mint's per-minute cap. Bulk flows are paced rather than rejected; disable with `WalletBuilder::without_rate_limiting` or raise the limit with `WalletBuilder::with_rate_limiting_config` ([crodas]).
+
 ## [0.17.0](https://github.com/cashubtc/cdk/releases/tag/v0.17.0)
 
 ### Summary
