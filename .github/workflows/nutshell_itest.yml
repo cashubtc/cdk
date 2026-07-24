@@ -53,3 +53,23 @@ jobs:
       - name: Show Docker logs if tests fail
         if: failure()
         run: docker logs nutshell-wallet || true
+
+  nutshell-migration-integration-tests:
+    name: Nutshell Migration Integration Tests
+    runs-on: self-hosted
+    timeout-minutes: 45
+    steps:
+      - name: checkout
+        uses: actions/checkout@v5
+      - uses: cachix/cachix-action@v17
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+      - name: Test Nutshell Migration
+        run: |
+          for seed in 137 202002 2002002002; do
+            echo "Running migration fuzzer with seed ${seed}"
+            CDK_MIGRATION_FUZZ_SEED="${seed}" nix develop -i -L .#integration --command just nutshell-migration-itest
+          done

@@ -1,0 +1,5 @@
+ALTER TABLE mint_quote
+    ALTER COLUMN expiry TYPE BIGINT;
+
+ALTER TABLE melt_quote
+    ALTER COLUMN expiry TYPE BIGINT;

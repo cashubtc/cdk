@@ -1,0 +1,1323 @@
+use std::collections::{BTreeMap, HashSet};
+use std::str::FromStr;
+
+use bitcoin::bip32::DerivationPath;
+use cdk_common::database::{
+    Error, MintDatabase, MintKeysDatabase, MintProofsDatabase, MintQuotesDatabase,
+    MintSignaturesDatabase,
+};
+use cdk_common::mint::{MeltPaymentRequest, MeltQuote, MintKeySetInfo, MintQuote, Operation};
+use cdk_common::payment::PaymentIdentifier;
+use cdk_common::quote_id::QuoteId;
+use cdk_common::secret::Secret;
+use cdk_common::util::hex;
+use cdk_common::{
+    Amount, BlindSignature, BlindSignatureDleq, BlindedMessage, CurrencyUnit, Id, KeySet, Keys,
+    MeltQuoteState, MintQuoteState, PaymentMethod, Proof, PublicKey, SecretKey,
+    State as ProofState,
+};
+use chrono::NaiveDateTime;
+
+use super::{connect_client, MintPgDatabase, PgConfig};
+
+const MAX_SUPPORTED_NUTSHELL_VERSION: &str = "0.20.2";
+const SUPPORTED_NUTSHELL_SCHEMA_VERSION: i32 = 36;
+// Nutshell readers use OFFSET pagination, whose cost grows with every page.
+// Large pages keep that overhead bounded while remaining comfortably below the
+// memory available in the documented 6 GiB migration environment.
+const CHUNK_SIZE: i64 = 100_000;
+
+enum MigratedPromise {
+    Signature(PublicKey, BlindSignature, Option<QuoteId>, Id, u64),
+    Message(BlindedMessage, Option<QuoteId>, Id, u64),
+}
+
+type PendingMeltRequest = (QuoteId, Amount<CurrencyUnit>, Amount<CurrencyUnit>);
+
+async fn source_count(client: &tokio_postgres::Client, table: &str) -> Result<usize, Error> {
+    let sql = format!("SELECT COUNT(*) FROM {table}");
+    client
+        .query_one(&sql, &[])
+        .await
+        .map(|row| row.get::<_, i64>(0) as usize)
+        .map_err(|e| Error::Database(Box::new(e)))
+}
+
+async fn source_proof_count(client: &tokio_postgres::Client) -> Result<usize, Error> {
+    client
+        .query_one(
+            "SELECT COUNT(*) FROM (SELECT y FROM proofs_used UNION SELECT y FROM proofs_pending) proofs",
+            &[],
+        )
+        .await
+        .map(|row| row.get::<_, i64>(0) as usize)
+        .map_err(|e| Error::Database(Box::new(e)))
+}
+
+async fn validate_nutshell_schema(client: &tokio_postgres::Client) -> Result<(), Error> {
+    let version = client
+        .query_one("SELECT version FROM dbversions WHERE db = 'mint'", &[])
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?
+        .get::<_, i32>(0);
+    if version != SUPPORTED_NUTSHELL_SCHEMA_VERSION {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Unsupported Nutshell mint schema version {version}; expected version {SUPPORTED_NUTSHELL_SCHEMA_VERSION} from Nutshell {MAX_SUPPORTED_NUTSHELL_VERSION}"
+        )))));
+    }
+    Ok(())
+}
+
+async fn validate_melt_quote_lookup_ids(client: &tokio_postgres::Client) -> Result<(), Error> {
+    let duplicate = client
+        .query_opt(
+            "SELECT checking_id FROM melt_quotes WHERE lower(state) IN ('paid', 'pending') GROUP BY checking_id HAVING COUNT(*) > 1 LIMIT 1",
+            &[],
+        )
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    if let Some(row) = duplicate {
+        let checking_id: String = row.try_get(0).map_err(|e| Error::Database(Box::new(e)))?;
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Nutshell contains multiple paid or pending melt quotes for checking_id {checking_id}"
+        )))));
+    }
+    Ok(())
+}
+
+async fn connect_for_verification(
+    url: &str,
+    tls_mode: Option<&str>,
+) -> Result<tokio_postgres::Client, Error> {
+    connect_client(url, tls_mode)
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))
+}
+
+async fn pg_pairs(client: &tokio_postgres::Client, sql: &str) -> Result<Vec<(String, i64)>, Error> {
+    client
+        .query(sql, &[])
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?
+        .into_iter()
+        .map(|row| Ok((row.try_get(0)?, row.try_get(1)?)))
+        .collect::<Result<_, tokio_postgres::Error>>()
+        .map_err(|e| Error::Database(Box::new(e)))
+}
+
+async fn pg_liabilities(
+    client: &tokio_postgres::Client,
+    sql: &str,
+) -> Result<BTreeMap<String, (i64, i64)>, Error> {
+    client
+        .query(sql, &[])
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?
+        .into_iter()
+        .map(|row| Ok((row.try_get(0)?, (row.try_get(1)?, row.try_get(2)?))))
+        .collect::<Result<_, tokio_postgres::Error>>()
+        .map_err(|e| Error::Database(Box::new(e)))
+}
+
+/// Independently verify an already migrated Nutshell 0.20.2 Postgres database.
+pub async fn verify_nutshell_migration(
+    cdk_db_url: &str,
+    cdk_tls_mode: Option<&str>,
+    nutshell_db_url: &str,
+) -> Result<(), Error> {
+    let source = connect_for_verification(nutshell_db_url, None).await?;
+    let target = connect_for_verification(cdk_db_url, cdk_tls_mode).await?;
+    validate_nutshell_schema(&source).await?;
+
+    for (source_table, target_table) in [
+        ("keysets", "keyset"),
+        ("mint_quotes", "mint_quote"),
+        ("melt_quotes", "melt_quote"),
+        ("promises", "blind_signature"),
+    ] {
+        let expected = source_count(&source, source_table).await?;
+        let actual = source_count(&target, target_table).await?;
+        if expected != actual {
+            return Err(Error::Database(Box::new(std::io::Error::other(format!(
+                "Verification failed for {source_table}: source has {expected} rows, target has {actual}"
+            )))));
+        }
+    }
+    let expected_proofs = source_proof_count(&source).await?;
+    if expected_proofs != source_count(&target, "proof").await? {
+        return Err(Error::Database(Box::new(std::io::Error::other(
+            "Verification failed: proof counts differ",
+        ))));
+    }
+
+    let source_accounting = pg_pairs(
+        &source,
+        "SELECT quote || ':' || COALESCE(amount_paid, CASE WHEN lower(state) IN ('paid', 'issued') THEN amount ELSE 0 END)::text, COALESCE(amount_issued, CASE WHEN lower(state) = 'issued' THEN amount ELSE 0 END)::bigint FROM mint_quotes ORDER BY quote",
+    )
+    .await?;
+    let target_accounting = pg_pairs(
+        &target,
+        "SELECT id || ':' || amount_paid::text, amount_issued::bigint FROM mint_quote ORDER BY id",
+    )
+    .await?;
+    if source_accounting != target_accounting {
+        return Err(Error::Database(Box::new(std::io::Error::other(
+            "Verification failed: mint quote accounting differs",
+        ))));
+    }
+    let source_order = pg_pairs(
+        &source,
+        "SELECT lower(b_), COALESCE(order_index, 0)::bigint FROM promises ORDER BY lower(b_)",
+    )
+    .await?;
+    let target_order = pg_pairs(&target, "SELECT lower(encode(blinded_message, 'hex')), order_index::bigint FROM blind_signature ORDER BY lower(encode(blinded_message, 'hex'))").await?;
+    if source_order != target_order {
+        return Err(Error::Database(Box::new(std::io::Error::other(
+            "Verification failed: promise order indexes differ",
+        ))));
+    }
+
+    let source_liabilities = pg_liabilities(&source, "SELECT k.id, COALESCE((SELECT SUM(amount) FROM promises p WHERE p.id = k.id AND p.c_ IS NOT NULL), 0)::bigint, COALESCE((SELECT SUM(amount) FROM proofs_used u WHERE u.id = k.id), 0)::bigint FROM keysets k ORDER BY k.id").await?;
+    let target_liabilities = pg_liabilities(&target, "SELECT keyset_id, total_issued::bigint, total_redeemed::bigint FROM keyset_amounts ORDER BY keyset_id").await?;
+    if source_liabilities != target_liabilities {
+        return Err(Error::Database(Box::new(std::io::Error::other(
+            "Verification failed: per-keyset liabilities differ",
+        ))));
+    }
+    tracing::info!(
+        proofs = expected_proofs,
+        "Independent Nutshell migration verification succeeded"
+    );
+    Ok(())
+}
+
+fn parse_nutshell_version(v: &str) -> Option<(u32, u32, u32)> {
+    let parts: Vec<&str> = v.split('.').collect();
+    if parts.len() >= 2 {
+        let major = parts[0].parse::<u32>().ok()?;
+        let minor = parts[1].parse::<u32>().ok()?;
+        let patch = if parts.len() >= 3 {
+            parts[2].parse::<u32>().ok().unwrap_or(0)
+        } else {
+            0
+        };
+        Some((major, minor, patch))
+    } else {
+        None
+    }
+}
+
+fn parse_nutshell_timestamp(v: &str) -> u64 {
+    if let Ok(ts) = v.parse::<u64>() {
+        return ts;
+    }
+    if let Ok(ts_f) = v.parse::<f64>() {
+        return ts_f as u64;
+    }
+    for fmt in &[
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+    ] {
+        if let Ok(dt) = NaiveDateTime::parse_from_str(v, fmt) {
+            return dt.and_utc().timestamp() as u64;
+        }
+    }
+    0
+}
+
+async fn read_keysets_postgres(
+    client: &tokio_postgres::Client,
+) -> Result<Vec<MintKeySetInfo>, Error> {
+    let has_final_expiry: bool = client
+        .query_one(
+            "SELECT EXISTS (
+                SELECT 1 
+                FROM information_schema.columns 
+                WHERE table_name='keysets' AND column_name='final_expiry'
+            );",
+            &[],
+        )
+        .await
+        .map(|row| row.get(0))
+        .unwrap_or(false);
+
+    let query = if has_final_expiry {
+        "SELECT id, derivation_path, valid_from::text, valid_to::text, active, version, unit, input_fee_ppk, amounts, final_expiry FROM keysets;"
+    } else {
+        "SELECT id, derivation_path, valid_from::text, valid_to::text, active, version, unit, input_fee_ppk, amounts, NULL::integer FROM keysets;"
+    };
+
+    let rows = client
+        .query(query, &[])
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let mut keysets = Vec::new();
+    for r in rows {
+        let id_str: String = r.get(0);
+        let derivation_path_str: String = r.get(1);
+        let valid_from_str: String = r.get(2);
+        let _valid_to_str: Option<String> = r.get(3);
+        let active: bool = r.get(4);
+        let version: String = r.get(5);
+        let unit_str: String = r.get(6);
+        let input_fee_ppk: i32 = r.get::<_, Option<i32>>(7).unwrap_or(0);
+        let amounts_str: String = r
+            .get::<_, Option<String>>(8)
+            .unwrap_or_else(|| "[]".to_string());
+        let final_expiry_val: Option<i32> = r.get(9);
+
+        let amounts_vec: Vec<u64> = if amounts_str.is_empty() || amounts_str == "[]" {
+            (0..32).map(|i| 2_u64.pow(i)).collect()
+        } else {
+            serde_json::from_str(&amounts_str)
+                .unwrap_or_else(|_| (0..32).map(|i| 2_u64.pow(i)).collect())
+        };
+
+        let valid_from = parse_nutshell_timestamp(&valid_from_str);
+        let final_expiry = final_expiry_val.filter(|&v| v > 0).map(|v| v as u64);
+
+        let id = match Id::from_str(&id_str) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping keyset due to invalid Keyset ID '{}': {:?}",
+                    id_str,
+                    e
+                );
+                continue;
+            }
+        };
+
+        let unit = match CurrencyUnit::from_str(&unit_str) {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping keyset {} due to invalid CurrencyUnit '{}': {:?}",
+                    id,
+                    unit_str,
+                    e
+                );
+                continue;
+            }
+        };
+
+        let derivation_path = match DerivationPath::from_str(&derivation_path_str) {
+            Ok(dp) => dp,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping keyset {} due to invalid DerivationPath '{}': {:?}",
+                    id,
+                    derivation_path_str,
+                    e
+                );
+                continue;
+            }
+        };
+
+        let issuer_version =
+            match cdk_common::common::IssuerVersion::from_str(&format!("nutshell/{}", version)) {
+                Ok(iv) => Some(iv),
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping keyset {} due to invalid version format '{}': {:?}",
+                        id,
+                        version,
+                        e
+                    );
+                    continue;
+                }
+            };
+
+        keysets.push(MintKeySetInfo {
+            id,
+            unit,
+            active,
+            valid_from,
+            derivation_path,
+            derivation_path_index: None,
+            amounts: amounts_vec,
+            input_fee_ppk: input_fee_ppk as u64,
+            final_expiry,
+            issuer_version,
+        });
+    }
+    Ok(keysets)
+}
+
+async fn verify_keyset_id(
+    client: &tokio_postgres::Client,
+    keyset: &MintKeySetInfo,
+) -> Result<(), Error> {
+    let rows = client
+        .query(
+            "SELECT amount::text, pubkey FROM pubkeys WHERE id = $1 ORDER BY amount",
+            &[&keyset.id.to_string()],
+        )
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let configured_amounts: HashSet<u64> = keyset.amounts.iter().copied().collect();
+    let keys = rows
+        .into_iter()
+        .map(|row| {
+            let amount = row
+                .get::<_, String>(0)
+                .parse::<u64>()
+                .map_err(|e| Error::Database(Box::new(e)))?;
+            Ok((amount, row.get::<_, String>(1)))
+        })
+        .collect::<Result<Vec<_>, Error>>()?
+        .into_iter()
+        .filter(|(amount, _)| configured_amounts.contains(amount))
+        .map(|(amount, public_key)| {
+            let public_key = PublicKey::from_hex(&public_key).map_err(|e| {
+                Error::Database(Box::new(std::io::Error::other(format!(
+                    "Invalid public key for keyset {} amount {amount}: {e}",
+                    keyset.id
+                ))))
+            })?;
+            Ok((Amount::from(amount), public_key))
+        })
+        .collect::<Result<BTreeMap<_, _>, Error>>()?;
+
+    if keys.len() != configured_amounts.len() {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Keyset {} has {} configured denominations but {} corresponding public keys",
+            keyset.id,
+            configured_amounts.len(),
+            keys.len()
+        )))));
+    }
+
+    KeySet {
+        id: keyset.id,
+        unit: keyset.unit.clone(),
+        active: Some(keyset.active),
+        keys: Keys::new(keys),
+        input_fee_ppk: keyset.input_fee_ppk,
+        final_expiry: keyset.final_expiry,
+    }
+    .verify_id()
+    .map_err(|e| {
+        Error::Database(Box::new(std::io::Error::other(format!(
+            "Keyset {} public keys do not match its stored id: {e}",
+            keyset.id
+        ))))
+    })
+}
+
+async fn read_mint_quotes_chunk_postgres(
+    client: &tokio_postgres::Client,
+    limit: i64,
+    offset: i64,
+) -> Result<
+    Vec<(
+        MintQuote,
+        String,
+        Option<u64>,
+        Amount<CurrencyUnit>,
+        Amount<CurrencyUnit>,
+    )>,
+    Error,
+> {
+    let rows = client.query("SELECT quote, method, request, checking_id, unit, amount, created_time::text, paid_time::text, state, pubkey, amount_paid, amount_issued, updated_at::text FROM mint_quotes ORDER BY quote LIMIT $1 OFFSET $2;", &[&limit, &offset])
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let mut chunk = Vec::new();
+    for r in rows {
+        let quote: String = r.get(0);
+        let method_str: String = r.get(1);
+        let request: String = r.get(2);
+        let checking_id: String = r.get(3);
+        let unit_str: String = r.get(4);
+        let amount: i64 = r.get(5);
+        let created_time_str: Option<String> = r.get(6);
+        let paid_time_str: Option<String> = r.get(7);
+        let state_str: String = r.get(8);
+        let pubkey_str: Option<String> = r.get(9);
+        let stored_amount_paid: Option<i64> = r.get(10);
+        let stored_amount_issued: Option<i64> = r.get(11);
+        let updated_at = r
+            .get::<_, Option<String>>(12)
+            .map(|value| parse_nutshell_timestamp(&value));
+
+        let q_id = match QuoteId::from_str(&quote) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping mint quote due to invalid QuoteId '{}': {:?}",
+                    quote,
+                    e
+                );
+                continue;
+            }
+        };
+        let unit = match CurrencyUnit::from_str(&unit_str) {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping mint quote {} due to invalid CurrencyUnit '{}': {:?}",
+                    quote,
+                    unit_str,
+                    e
+                );
+                continue;
+            }
+        };
+        let created_time = created_time_str
+            .as_ref()
+            .map(|t| parse_nutshell_timestamp(t))
+            .unwrap_or_else(cdk_common::util::unix_time);
+        let expiry = created_time + 86400; // default 24h
+
+        let request_lookup_id_kind = if checking_id.len() == 64 && hex::decode(&checking_id).is_ok()
+        {
+            "payment_hash"
+        } else {
+            "custom"
+        };
+        let request_lookup_id = match PaymentIdentifier::new(request_lookup_id_kind, &checking_id) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping mint quote {} due to invalid PaymentIdentifier '{}': {:?}",
+                    quote,
+                    checking_id,
+                    e
+                );
+                continue;
+            }
+        };
+
+        let state_mapped = match state_str.to_lowercase().as_str() {
+            "paid" => MintQuoteState::Paid,
+            "issued" => MintQuoteState::Issued,
+            _ => MintQuoteState::Unpaid,
+        };
+
+        let amount_paid = Amount::from(stored_amount_paid.unwrap_or_else(|| {
+            if state_mapped == MintQuoteState::Paid || state_mapped == MintQuoteState::Issued {
+                amount
+            } else {
+                0
+            }
+        }) as u64)
+        .with_unit(unit.clone());
+        let amount_issued = Amount::from(stored_amount_issued.unwrap_or_else(|| {
+            if state_mapped == MintQuoteState::Issued {
+                amount
+            } else {
+                0
+            }
+        }) as u64)
+        .with_unit(unit.clone());
+
+        let pubkey = pubkey_str
+            .as_ref()
+            .and_then(|pk| PublicKey::from_hex(pk).ok());
+
+        let method = match PaymentMethod::from_str(&method_str) {
+            Ok(m) => m,
+            Err(_) => PaymentMethod::from("bolt11"),
+        };
+
+        let quote_obj = MintQuote::new(
+            Some(q_id),
+            request,
+            unit.clone(),
+            Some(Amount::from(amount as u64).with_unit(unit.clone())),
+            expiry,
+            request_lookup_id,
+            pubkey,
+            Amount::ZERO.with_unit(unit.clone()),
+            Amount::ZERO.with_unit(unit.clone()),
+            method,
+            created_time,
+            updated_at.unwrap_or(created_time),
+            vec![],
+            vec![],
+            None,
+        );
+
+        let paid_time = paid_time_str.as_ref().map(|t| parse_nutshell_timestamp(t));
+
+        chunk.push((
+            quote_obj,
+            checking_id,
+            paid_time,
+            amount_paid,
+            amount_issued,
+        ));
+    }
+    Ok(chunk)
+}
+
+async fn read_melt_quotes_chunk_postgres(
+    client: &tokio_postgres::Client,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<MeltQuote>, Error> {
+    let rows = client.query("SELECT quote, method, request, checking_id, unit, amount, fee_reserve, paid, created_time::text, paid_time::text, state, expiry::text, proof FROM melt_quotes ORDER BY quote LIMIT $1 OFFSET $2;", &[&limit, &offset])
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let mut chunk = Vec::new();
+    for r in rows {
+        let quote: String = r.get(0);
+        let method_str: String = r.get(1);
+        let request_str: String = r.get(2);
+        let checking_id: String = r.get(3);
+        let unit_str: String = r.get(4);
+        let amount: i64 = r.get(5);
+        let fee_reserve = r
+            .try_get::<_, Option<i64>>(6)
+            .map_err(|e| Error::Database(Box::new(e)))?
+            .unwrap_or(0);
+        let created_time_str: Option<String> = r.get(8);
+        let paid_time_str: Option<String> = r.get(9);
+        let state_str: String = r.get(10);
+        let expiry_str: Option<String> = r.get(11);
+        let payment_proof: Option<String> = r.get(12);
+
+        let q_id = match QuoteId::from_str(&quote) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping melt quote due to invalid QuoteId '{}': {:?}",
+                    quote,
+                    e
+                );
+                continue;
+            }
+        };
+        let unit = match CurrencyUnit::from_str(&unit_str) {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping melt quote {} due to invalid CurrencyUnit '{}': {:?}",
+                    quote,
+                    unit_str,
+                    e
+                );
+                continue;
+            }
+        };
+        let created_time = created_time_str
+            .as_ref()
+            .map(|t| parse_nutshell_timestamp(t))
+            .unwrap_or_else(cdk_common::util::unix_time);
+        let expiry = expiry_str
+            .as_ref()
+            .map(|t| parse_nutshell_timestamp(t))
+            .unwrap_or(created_time + 86400);
+        let paid_time = paid_time_str.as_ref().map(|t| parse_nutshell_timestamp(t));
+
+        let request = if let Ok(bolt11) = lightning_invoice::Bolt11Invoice::from_str(&request_str) {
+            MeltPaymentRequest::Bolt11 { bolt11 }
+        } else {
+            serde_json::from_str(&request_str).unwrap_or_else(|_| MeltPaymentRequest::Custom {
+                method: "bolt11".to_string(),
+                request: request_str,
+            })
+        };
+
+        let request_lookup_id = if checking_id.len() == 64 {
+            if let Ok(bytes) = hex::decode(&checking_id) {
+                if let Ok(arr) = bytes.try_into() {
+                    Some(PaymentIdentifier::PaymentHash(arr))
+                } else {
+                    Some(PaymentIdentifier::CustomId(checking_id))
+                }
+            } else {
+                Some(PaymentIdentifier::CustomId(checking_id))
+            }
+        } else {
+            Some(PaymentIdentifier::CustomId(checking_id))
+        };
+
+        let state_mapped = match state_str.to_lowercase().as_str() {
+            "paid" => MeltQuoteState::Paid,
+            "pending" => MeltQuoteState::Pending,
+            // CDK's persisted melt quote schema has no FAILED state. A failed
+            // Nutshell payment is neither paid nor in flight.
+            "failed" => MeltQuoteState::Unpaid,
+            _ => MeltQuoteState::Unpaid,
+        };
+
+        let method = match PaymentMethod::from_str(&method_str) {
+            Ok(m) => m,
+            Err(_) => PaymentMethod::from("bolt11"),
+        };
+
+        let quote_res = match MeltQuote::from_db(
+            q_id.clone(),
+            unit,
+            request,
+            amount as u64,
+            fee_reserve as u64,
+            state_mapped,
+            expiry,
+            payment_proof,
+            request_lookup_id,
+            None,
+            created_time,
+            paid_time,
+            method,
+            None,
+            None,
+            vec![],
+            None,
+        ) {
+            Ok(q) => q,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping melt quote {} due to serialization/mapping failure: {:?}",
+                    q_id,
+                    e
+                );
+                continue;
+            }
+        };
+        chunk.push(quote_res);
+    }
+    Ok(chunk)
+}
+
+async fn read_promises_chunk_postgres(
+    client: &tokio_postgres::Client,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<MigratedPromise>, Error> {
+    let rows = client.query("SELECT amount, id, b_, c_, dleq_e, dleq_s, mint_quote, melt_quote, order_index FROM promises ORDER BY b_ LIMIT $1 OFFSET $2;", &[&limit, &offset])
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let mut chunk = Vec::new();
+    for r in rows {
+        let amount_val: i64 = r.get(0);
+        let keyset_id_str: String = r.get(1);
+        let b_str: String = r.get(2);
+        let c_str: Option<String> = r.get(3);
+        let dleq_e_str: Option<String> = r.get(4);
+        let dleq_s_str: Option<String> = r.get(5);
+        let mint_quote_str: Option<String> = r.get(6);
+        let melt_quote_str: Option<String> = r.get(7);
+        let order_index = r.get::<_, Option<i32>>(8).unwrap_or(0) as u64;
+
+        let amount = Amount::from(amount_val as u64);
+        let keyset_id = match Id::from_str(&keyset_id_str) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping promise row due to invalid Keyset ID '{}': {:?}",
+                    keyset_id_str,
+                    e
+                );
+                continue;
+            }
+        };
+        let blinded_message_pubkey = match PublicKey::from_hex(&b_str) {
+            Ok(pk) => pk,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping promise row due to invalid B_ public key '{}': {:?}",
+                    b_str,
+                    e
+                );
+                continue;
+            }
+        };
+
+        let q_id = mint_quote_str
+            .as_ref()
+            .or(melt_quote_str.as_ref())
+            .and_then(|q| QuoteId::from_str(q).ok());
+
+        if let Some(ref c_hex) = c_str {
+            let c_pk = match PublicKey::from_hex(c_hex) {
+                Ok(pk) => pk,
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping promise row due to invalid C_ public key '{}': {:?}",
+                        c_hex,
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            let dleq = match (dleq_e_str.as_ref(), dleq_s_str.as_ref()) {
+                (Some(e), Some(s)) => {
+                    let parsed_e = match SecretKey::from_hex(e) {
+                        Ok(sk) => sk,
+                        Err(err) => {
+                            tracing::warn!(
+                                "Skipping promise row due to invalid DLEQ e secret key '{}': {:?}",
+                                e,
+                                err
+                            );
+                            continue;
+                        }
+                    };
+                    let parsed_s = match SecretKey::from_hex(s) {
+                        Ok(sk) => sk,
+                        Err(err) => {
+                            tracing::warn!(
+                                "Skipping promise row due to invalid DLEQ s secret key '{}': {:?}",
+                                s,
+                                err
+                            );
+                            continue;
+                        }
+                    };
+                    Some(BlindSignatureDleq {
+                        e: parsed_e,
+                        s: parsed_s,
+                    })
+                }
+                _ => None,
+            };
+
+            let cdk_sig = BlindSignature {
+                amount,
+                keyset_id,
+                c: c_pk,
+                dleq,
+            };
+            chunk.push(MigratedPromise::Signature(
+                blinded_message_pubkey,
+                cdk_sig,
+                q_id,
+                keyset_id,
+                order_index,
+            ));
+        } else {
+            let cdk_msg = BlindedMessage {
+                amount,
+                keyset_id,
+                blinded_secret: blinded_message_pubkey,
+                witness: None,
+            };
+            chunk.push(MigratedPromise::Message(
+                cdk_msg,
+                q_id,
+                keyset_id,
+                order_index,
+            ));
+        }
+    }
+    Ok(chunk)
+}
+
+async fn read_proofs_chunk_postgres(
+    client: &tokio_postgres::Client,
+    limit: i64,
+    offset: i64,
+    spent: bool,
+) -> Result<Vec<(Proof, Option<QuoteId>, Id, ProofState)>, Error> {
+    let query_str = if spent {
+        "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_used ORDER BY secret LIMIT $1 OFFSET $2;"
+    } else {
+        "SELECT amount, id, c, secret, witness, melt_quote FROM proofs_pending pending WHERE NOT EXISTS (SELECT 1 FROM proofs_used used WHERE used.y = pending.y) ORDER BY secret LIMIT $1 OFFSET $2;"
+    };
+    let target_state = if spent {
+        ProofState::Spent
+    } else {
+        ProofState::Pending
+    };
+
+    let rows = client
+        .query(query_str, &[&limit, &offset])
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let mut chunk = Vec::new();
+    for r in rows {
+        let amount_val: i64 = r.get(0);
+        let id_str: String = r.get(1);
+        let c_str: String = r.get(2);
+        let secret_str: String = r.get(3);
+        let witness_str: Option<String> = r.get(4);
+        let melt_quote_str: Option<String> = r.get(5);
+
+        let keyset_id = match Id::from_str(&id_str) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping proof due to invalid Keyset ID '{}': {:?}",
+                    id_str,
+                    e
+                );
+                continue;
+            }
+        };
+
+        let secret = match Secret::from_str(&secret_str) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping proof due to invalid Secret '{}': {:?}",
+                    secret_str,
+                    e
+                );
+                continue;
+            }
+        };
+
+        let c = match PublicKey::from_hex(&c_str) {
+            Ok(pk) => pk,
+            Err(e) => {
+                tracing::warn!(
+                    "Skipping proof due to invalid C_ public key '{}': {:?}",
+                    c_str,
+                    e
+                );
+                continue;
+            }
+        };
+
+        let cdk_proof = Proof {
+            amount: Amount::from(amount_val as u64),
+            keyset_id,
+            secret,
+            c,
+            witness: witness_str
+                .as_ref()
+                .and_then(|w| serde_json::from_str(w).ok()),
+            dleq: None,
+            p2pk_e: None,
+        };
+
+        let melt_q_id = melt_quote_str
+            .as_ref()
+            .and_then(|q| QuoteId::from_str(q).ok());
+
+        chunk.push((cdk_proof, melt_q_id, keyset_id, target_state));
+    }
+    Ok(chunk)
+}
+
+async fn read_pending_melt_requests_postgres(
+    client: &tokio_postgres::Client,
+) -> Result<Vec<PendingMeltRequest>, Error> {
+    let rows = client
+        .query(
+            "SELECT p.melt_quote, SUM(p.amount)::bigint, COALESCE(SUM(k.input_fee_ppk), 0)::bigint, m.unit
+             FROM proofs_pending p
+             JOIN keysets k ON k.id = p.id
+             JOIN melt_quotes m ON m.quote = p.melt_quote
+             WHERE p.melt_quote IS NOT NULL
+             GROUP BY p.melt_quote, m.unit",
+            &[],
+        )
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+    let mut requests = Vec::new();
+    for row in rows {
+        let quote: String = row.get(0);
+        let inputs_amount: i64 = row.get(1);
+        let fee_ppk: i64 = row.get(2);
+        let unit: String = row.get(3);
+        let quote_id = QuoteId::from_str(&quote)
+            .map_err(|e| Error::Database(Box::new(std::io::Error::other(e.to_string()))))?;
+        let unit = CurrencyUnit::from_str(&unit)
+            .map_err(|e| Error::Database(Box::new(std::io::Error::other(e.to_string()))))?;
+        requests.push((
+            quote_id,
+            Amount::from(inputs_amount as u64).with_unit(unit.clone()),
+            Amount::from((fee_ppk as u64).div_ceil(1000)).with_unit(unit),
+        ));
+    }
+    Ok(requests)
+}
+
+async fn migrate_from_nutshell_into(
+    cdk_db_url: &str,
+    cdk_tls_mode: Option<&str>,
+    nutshell_db_url: &str,
+) -> Result<(), Error> {
+    tracing::info!("Starting nutshell database migration...");
+
+    // Connect to source database
+    let client = connect_client(nutshell_db_url, None)
+        .await
+        .map_err(|e| Error::Database(Box::new(e)))?;
+
+    validate_nutshell_schema(&client).await?;
+    validate_melt_quote_lookup_ids(&client).await?;
+    let source_keysets = source_count(&client, "keysets").await?;
+    let source_mint_quotes = source_count(&client, "mint_quotes").await?;
+    let source_melt_quotes = source_count(&client, "melt_quotes").await?;
+    let source_promises = source_count(&client, "promises").await?;
+    let source_spent_proofs = source_count(&client, "proofs_used").await?;
+    let source_pending_proofs = source_count(&client, "proofs_pending").await?;
+    let source_proofs = source_proof_count(&client).await?;
+
+    // 1. Read and validate keysets (Pre-flight checks on nutshell version)
+    let nutshell_keysets = read_keysets_postgres(&client).await?;
+    if nutshell_keysets.len() != source_keysets {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Source validation failed: read {} of {source_keysets} keysets",
+            nutshell_keysets.len()
+        )))));
+    }
+
+    let max_v = parse_nutshell_version(MAX_SUPPORTED_NUTSHELL_VERSION).unwrap_or((0, 20, 1));
+    for keyset in &nutshell_keysets {
+        verify_keyset_id(&client, keyset).await?;
+        if let Some(ref version_str) = keyset.issuer_version {
+            let ver_clean = version_str.to_string().replace("nutshell/", "");
+            if let Some(keyset_v) = parse_nutshell_version(&ver_clean) {
+                if keyset_v > max_v {
+                    return Err(Error::Database(Box::new(std::io::Error::other(format!(
+                        "Unsupported Nutshell version: {}. Maximum supported version is: {}.",
+                        ver_clean, MAX_SUPPORTED_NUTSHELL_VERSION
+                    )))));
+                }
+                if keyset_v < (0, 15, 0) {
+                    return Err(Error::Database(Box::new(std::io::Error::other(format!(
+                        "Unsupported Nutshell keyset {} from version {ver_clean}; pre-0.15 keysets cannot be migrated or verified by CDK",
+                        keyset.id
+                    )))));
+                }
+            }
+        }
+    }
+
+    // 2. Setup target database connection
+    let db_config = PgConfig::new(cdk_db_url, cdk_tls_mode, Some(20), Some(10));
+    let db = MintPgDatabase::new(db_config).await?;
+    // VACUUM cannot run inside the migration transactions. Reuse one dedicated
+    // target connection so keyset_amounts can be compacted at chunk boundaries.
+    let maintenance = connect_for_verification(cdk_db_url, cdk_tls_mode).await?;
+
+    // 3. Pre-flight checks on target database population
+    let existing_keyset_infos = db.get_keyset_infos().await?;
+    if !existing_keyset_infos.is_empty()
+        || !db.get_mint_quotes().await?.is_empty()
+        || !db.get_melt_quotes().await?.is_empty()
+        || !db.get_total_issued().await?.is_empty()
+        || !db.get_total_redeemed().await?.is_empty()
+    {
+        return Err(Error::Database(Box::new(std::io::Error::other(
+            "Target CDK database already contains mint data! Aborting migration to prevent accidental data overwrite/corruption."
+        ))));
+    }
+
+    tracing::info!("Database pre-flight checks passed.");
+
+    // Start transactions
+    let mut key_tx = MintKeysDatabase::begin_transaction(&db).await?;
+
+    let mut skipped_keysets_count = 0;
+    let mut skipped_promises_count = 0;
+    let mut skipped_proofs_count = 0;
+
+    let mut migrated_keysets = 0;
+    let mut migrated_mint_quotes = 0;
+    let mut migrated_melt_quotes = 0;
+    let mut _migrated_promises = 0;
+    let mut migrated_promises_signed = 0;
+    let mut migrated_proofs = 0;
+
+    // Map and migrate keysets
+    let mut migrated_keyset_ids = HashSet::new();
+    for keyset in nutshell_keysets {
+        if let Some(ref version_str) = keyset.issuer_version {
+            let ver_clean = version_str.to_string().replace("nutshell/", "");
+            if let Some(keyset_v) = parse_nutshell_version(&ver_clean) {
+                if keyset_v < (0, 15, 0) {
+                    tracing::warn!(
+                        "Skipping keyset {} because it was generated under nutshell version {} (pre-0.15 keysets use a different derivation path not supported by CDK).",
+                        keyset.id,
+                        ver_clean
+                    );
+                    println!(
+                        "WARNING: Skipping keyset {} because it was generated under nutshell version {} (pre-0.15 keysets use a different derivation path not supported by CDK).",
+                        keyset.id,
+                        ver_clean
+                    );
+                    skipped_keysets_count += 1;
+                    continue;
+                }
+            }
+        }
+
+        let keyset_id = keyset.id;
+        key_tx.add_keyset_info(keyset).await?;
+        migrated_keyset_ids.insert(keyset_id);
+        migrated_keysets += 1;
+    }
+
+    // Keysets use a separate database transaction API from the mint tables. The
+    // public migration wrapper restores all target tables on any error after
+    // this commit, preserving all-or-nothing behavior for callers.
+    key_tx.commit().await?;
+    tracing::info!("Migrated keysets successfully.");
+
+    let mut tx = MintDatabase::begin_transaction(&db).await?;
+
+    // 4. Chunked Migration of Mint Quotes
+    let mut offset = 0;
+    while offset < source_mint_quotes as i64 {
+        let chunk = read_mint_quotes_chunk_postgres(&client, CHUNK_SIZE, offset).await?;
+
+        for (quote_obj, checking_id, paid_time_opt, amount_paid, amount_issued) in chunk {
+            let mut acquired_quote = tx.add_mint_quote(quote_obj.clone()).await?;
+
+            if amount_paid.value() > 0 {
+                let paid_time = paid_time_opt.unwrap_or(quote_obj.created_time);
+                acquired_quote
+                    .add_payment(amount_paid, checking_id, Some(paid_time))
+                    .map_err(|e| Error::Database(Box::new(std::io::Error::other(e.to_string()))))?;
+            }
+
+            if amount_issued.value() > 0 {
+                let _ = acquired_quote
+                    .add_issuance(amount_issued)
+                    .map_err(|e| Error::Database(Box::new(std::io::Error::other(e.to_string()))))?;
+            }
+
+            tx.update_mint_quote(&mut acquired_quote).await?;
+            migrated_mint_quotes += 1;
+        }
+
+        offset += CHUNK_SIZE;
+        tx.commit().await?;
+        tx = MintDatabase::begin_transaction(&db).await?;
+    }
+    tracing::info!("Migrated mint quotes successfully.");
+
+    // 5. Chunked Migration of Melt Quotes
+    let mut offset = 0;
+    while offset < source_melt_quotes as i64 {
+        let chunk = read_melt_quotes_chunk_postgres(&client, CHUNK_SIZE, offset).await?;
+
+        for quote in chunk {
+            tx.add_melt_quote(quote).await?;
+            migrated_melt_quotes += 1;
+        }
+
+        offset += CHUNK_SIZE;
+        tx.commit().await?;
+        tx = MintDatabase::begin_transaction(&db).await?;
+    }
+    tracing::info!("Migrated melt quotes successfully.");
+
+    // 6. Chunked Migration of Promises (Blind Signatures / Blinded Messages)
+    let dummy_operation = Operation::new_mint(
+        Amount::ZERO,
+        PaymentMethod::from_str("bolt11").unwrap_or_else(|_| PaymentMethod::from("bolt11")),
+    );
+    let mut offset = 0;
+    while offset < source_promises as i64 {
+        let chunk = read_promises_chunk_postgres(&client, CHUNK_SIZE, offset).await?;
+
+        for promise in chunk {
+            match promise {
+                MigratedPromise::Signature(
+                    blinded_message_pubkey,
+                    cdk_sig,
+                    q_id,
+                    keyset_id,
+                    order_index,
+                ) => {
+                    if !migrated_keyset_ids.contains(&keyset_id) {
+                        skipped_promises_count += 1;
+                        continue;
+                    }
+                    tx.add_blind_signatures_with_order(
+                        &[blinded_message_pubkey],
+                        &[cdk_sig],
+                        q_id,
+                        &[order_index],
+                    )
+                    .await?;
+                    _migrated_promises += 1;
+                    migrated_promises_signed += 1;
+                }
+                MigratedPromise::Message(cdk_msg, q_id, keyset_id, order_index) => {
+                    if !migrated_keyset_ids.contains(&keyset_id) {
+                        skipped_promises_count += 1;
+                        continue;
+                    }
+                    tx.add_blinded_messages_with_order(
+                        q_id.as_ref(),
+                        &[cdk_msg],
+                        &dummy_operation,
+                        &[order_index],
+                    )
+                    .await?;
+                    _migrated_promises += 1;
+                }
+            }
+        }
+
+        offset += CHUNK_SIZE;
+        tx.commit().await?;
+        maintenance
+            .batch_execute("VACUUM keyset_amounts")
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        tx = MintDatabase::begin_transaction(&db).await?;
+    }
+    tracing::info!("Migrated promises successfully.");
+
+    // 7. Chunked Migration of Proofs
+    for spent in &[true, false] {
+        let mut offset = 0;
+        let table_count = if *spent {
+            source_spent_proofs
+        } else {
+            source_pending_proofs
+        };
+        while offset < table_count as i64 {
+            let chunk = read_proofs_chunk_postgres(&client, CHUNK_SIZE, offset, *spent).await?;
+
+            for (cdk_proof, melt_q_id, keyset_id, target_state) in chunk {
+                if !migrated_keyset_ids.contains(&keyset_id) {
+                    skipped_proofs_count += 1;
+                    continue;
+                }
+
+                let _y = cdk_proof.y()?;
+                let mut acquired = tx
+                    .add_proofs(vec![cdk_proof], melt_q_id, &dummy_operation)
+                    .await?;
+                tx.update_proofs_state(&mut acquired, target_state).await?;
+                migrated_proofs += 1;
+            }
+
+            offset += CHUNK_SIZE;
+            tx.commit().await?;
+            maintenance
+                .batch_execute("VACUUM keyset_amounts")
+                .await
+                .map_err(|e| Error::Database(Box::new(e)))?;
+            tx = MintDatabase::begin_transaction(&db).await?;
+        }
+    }
+    tracing::info!("Migrated proofs successfully.");
+
+    for (quote_id, inputs_amount, inputs_fee) in
+        read_pending_melt_requests_postgres(&client).await?
+    {
+        tx.add_melt_request(&quote_id, inputs_amount, inputs_fee)
+            .await?;
+    }
+
+    if source_keysets != migrated_keysets + skipped_keysets_count
+        || source_mint_quotes != migrated_mint_quotes
+        || source_melt_quotes != migrated_melt_quotes
+        || source_promises != _migrated_promises + skipped_promises_count
+        || source_proofs != migrated_proofs + skipped_proofs_count
+    {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Source verification failed: source/migrated counts differ (keysets {source_keysets}/{migrated_keysets}, mint quotes {source_mint_quotes}/{migrated_mint_quotes}, melt quotes {source_melt_quotes}/{migrated_melt_quotes}, promises {source_promises}/{_migrated_promises}, proofs {source_proofs}/{migrated_proofs})"
+        )))));
+    }
+
+    tx.commit().await?;
+    tracing::info!("Transaction committed successfully.");
+
+    // Perform verification
+    let mut target_promises_signed = 0;
+    let mut target_proofs = 0;
+    let target_keysets = db.get_keyset_infos().await?;
+    for keyset in &target_keysets {
+        target_promises_signed += db.get_blind_signatures_for_keyset(&keyset.id).await?.len();
+        target_proofs += db.get_proofs_by_keyset_id(&keyset.id).await?.0.len();
+    }
+
+    let target_keysets_count = target_keysets.len();
+    let target_mint_quotes = db.get_mint_quotes().await?.len();
+    let target_melt_quotes = db.get_melt_quotes().await?.len();
+
+    tracing::info!("Verifying migrated data consistency...");
+    if target_keysets_count != migrated_keysets {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Verification failed: Keyset count mismatch. Expected {}, found {}",
+            migrated_keysets, target_keysets_count
+        )))));
+    }
+    if target_mint_quotes != migrated_mint_quotes {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Verification failed: Mint quote count mismatch. Expected {}, found {}",
+            migrated_mint_quotes, target_mint_quotes
+        )))));
+    }
+    if target_melt_quotes != migrated_melt_quotes {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Verification failed: Melt quote count mismatch. Expected {}, found {}",
+            migrated_melt_quotes, target_melt_quotes
+        )))));
+    }
+    if target_promises_signed != migrated_promises_signed {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Verification failed: Promise signature count mismatch. Expected {}, found {}",
+            migrated_promises_signed, target_promises_signed
+        )))));
+    }
+    if target_proofs != migrated_proofs {
+        return Err(Error::Database(Box::new(std::io::Error::other(format!(
+            "Verification failed: Proof count mismatch. Expected {}, found {}",
+            migrated_proofs, target_proofs
+        )))));
+    }
+    tracing::info!("Verification success: All target database row counts match migrated source records exactly!");
+
+    if skipped_keysets_count > 0 {
+        let msg = format!(
+            "Migration warning: Skipped {} keyset(s), {} promise(s), and {} proof(s) because they were generated under a Nutshell version < 0.15.0.",
+            skipped_keysets_count,
+            skipped_promises_count,
+            skipped_proofs_count
+        );
+        tracing::warn!("{}", msg);
+        println!("\nWARNING: {}", msg);
+    }
+
+    tracing::info!(
+        "Migration complete: Nutshell mint has been fully and successfully migrated to CDK!"
+    );
+
+    Ok(())
+}
+
+/// Migrates a Nutshell database to an empty CDK Postgres database.
+pub async fn migrate_from_nutshell(
+    cdk_db_url: &str,
+    cdk_tls_mode: Option<&str>,
+    nutshell_db_url: &str,
+) -> Result<(), Error> {
+    let db_config = PgConfig::new(cdk_db_url, cdk_tls_mode, Some(20), Some(10));
+    let _initialized_target = MintPgDatabase::new(db_config).await?;
+    let target = connect_for_verification(cdk_db_url, cdk_tls_mode).await?;
+    for table in [
+        "keyset",
+        "mint_quote",
+        "melt_quote",
+        "blind_signature",
+        "proof",
+        "keyset_amounts",
+    ] {
+        if source_count(&target, table).await? != 0 {
+            return Err(Error::Database(Box::new(std::io::Error::other(format!(
+                "Target CDK table {table} is not empty; migration requires an empty target"
+            )))));
+        }
+    }
+    drop(target);
+
+    match migrate_from_nutshell_into(cdk_db_url, cdk_tls_mode, nutshell_db_url).await {
+        Ok(()) => verify_nutshell_migration(cdk_db_url, cdk_tls_mode, nutshell_db_url).await,
+        Err(error) => {
+            let cleanup = connect_for_verification(cdk_db_url, cdk_tls_mode).await?;
+            cleanup
+                .batch_execute(
+                    "TRUNCATE TABLE keyset, mint_quote, melt_quote, blind_signature, proof, keyset_amounts CASCADE",
+                )
+                .await
+                .map_err(|cleanup_error| Error::Database(Box::new(cleanup_error)))?;
+            Err(error)
+        }
+    }
+}

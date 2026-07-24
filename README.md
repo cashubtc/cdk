@@ -23,6 +23,8 @@ nix develop .#regtest
 
 For more details on available environments, see the [Development Guide](DEVELOPMENT.md).
 
+Migrating an existing Nutshell mint? See the [Nutshell migration guide](docs/nutshell-migration.md).
+
 ## Project structure
 
 The project is split up into several crates in the `crates/` directory:

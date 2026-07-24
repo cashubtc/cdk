@@ -23,7 +23,7 @@ cdk-common = { workspace = true, features = ["test"] }
 cdk-prometheus = { workspace = true, optional = true }
 bitcoin.workspace = true
 cdk-sql-common = { workspace = true }
-rusqlite = { version = "0.31", features = ["bundled"]}
+rusqlite.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"]}
 tracing.workspace = true
@@ -31,6 +31,7 @@ serde.workspace = true
 serde_json.workspace = true
 lightning-invoice.workspace = true
 uuid.workspace = true
+chrono = { version = "0.4", default-features = false }
 paste.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

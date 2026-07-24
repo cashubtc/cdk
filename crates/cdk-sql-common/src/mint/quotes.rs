@@ -731,6 +731,30 @@ where
         Ok(())
     }
 
+    async fn add_blinded_messages_with_order(
+        &mut self,
+        quote_id: Option<&QuoteId>,
+        blinded_messages: &[BlindedMessage],
+        operation: &Operation,
+        order_indexes: &[u64],
+    ) -> Result<(), Self::Err> {
+        if blinded_messages.len() != order_indexes.len() {
+            return Err(database::Error::Internal(
+                "Mismatched array lengths for blinded messages and order indexes".to_string(),
+            ));
+        }
+        self.add_blinded_messages(quote_id, blinded_messages, operation)
+            .await?;
+        for (message, order_index) in blinded_messages.iter().zip(order_indexes) {
+            query("UPDATE blind_signature SET order_index = :order_index WHERE blinded_message = :blinded_message")?
+                .bind("order_index", *order_index as i64)
+                .bind("blinded_message", message.blinded_secret.to_bytes().to_vec())
+                .execute(&self.inner)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn delete_blinded_messages(
         &mut self,
         blinded_secrets: &[PublicKey],

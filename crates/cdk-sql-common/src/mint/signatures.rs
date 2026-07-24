@@ -206,6 +206,30 @@ where
         Ok(())
     }
 
+    async fn add_blind_signatures_with_order(
+        &mut self,
+        blinded_messages: &[PublicKey],
+        blind_signatures: &[BlindSignature],
+        quote_id: Option<QuoteId>,
+        order_indexes: &[u64],
+    ) -> Result<(), Self::Err> {
+        if blinded_messages.len() != order_indexes.len() {
+            return Err(database::Error::Internal(
+                "Mismatched array lengths for blinded messages and order indexes".to_string(),
+            ));
+        }
+        self.add_blind_signatures(blinded_messages, blind_signatures, quote_id)
+            .await?;
+        for (message, order_index) in blinded_messages.iter().zip(order_indexes) {
+            query("UPDATE blind_signature SET order_index = :order_index WHERE blinded_message = :blinded_message")?
+                .bind("order_index", *order_index as i64)
+                .bind("blinded_message", message.to_bytes().to_vec())
+                .execute(&self.inner)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn get_blind_signatures(
         &mut self,
         blinded_messages: &[PublicKey],

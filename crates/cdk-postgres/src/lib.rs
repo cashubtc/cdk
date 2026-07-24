@@ -21,6 +21,9 @@ use tokio_postgres::{connect, Client, Error as PgError, NoTls};
 mod db;
 mod value;
 
+/// Nutshell migration module
+pub mod migrate;
+
 #[derive(Debug)]
 /// Postgres connection pool
 pub struct PgConnectionPool;
@@ -147,6 +150,30 @@ fn ssl_mode_from_config(tls_mode: Option<&str>, url: &str) -> SslMode {
         },
         // No explicit tls_mode: fall back to URL-based detection
         None => ssl_mode_from_url(url),
+    }
+}
+
+pub(crate) async fn connect_client(url: &str, tls_mode: Option<&str>) -> Result<Client, PgError> {
+    let (_, url) = PgConfig::strip_schema(url);
+    match ssl_mode_from_config(tls_mode, &url) {
+        SslMode::NativeTls(tls) => {
+            let (client, connection) = connect(&url, tls).await?;
+            tokio::spawn(async move {
+                if let Err(error) = connection.await {
+                    tracing::error!(%error, "Postgres connection failed");
+                }
+            });
+            Ok(client)
+        }
+        SslMode::NoTls(tls) => {
+            let (client, connection) = connect(&url, tls).await?;
+            tokio::spawn(async move {
+                if let Err(error) = connection.await {
+                    tracing::error!(%error, "Postgres connection failed");
+                }
+            });
+            Ok(client)
+        }
     }
 }
 
@@ -471,5 +498,17 @@ mod test {
             !rendered.contains("hunter2secret"),
             "PgConfig Debug leaked the DB password: {rendered}"
         );
+    }
+
+    #[test]
+    fn explicit_tls_mode_takes_precedence_over_url() {
+        assert!(matches!(
+            ssl_mode_from_config(Some("require"), "host=localhost dbname=cdk"),
+            SslMode::NativeTls(_)
+        ));
+        assert!(matches!(
+            ssl_mode_from_config(Some("disable"), "postgres://localhost/cdk?sslmode=require"),
+            SslMode::NoTls(_)
+        ));
     }
 }
