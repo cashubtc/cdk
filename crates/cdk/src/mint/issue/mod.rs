@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
+use bitcoin::hashes::sha256::Hash as Sha256Hash;
+use bitcoin::hashes::Hash;
+use bitcoin::secp256k1::schnorr::Signature;
 use cdk_common::database::mint::Acquired;
 use cdk_common::mint::{MintQuote, Operation};
+use cdk_common::nut00::KnownMethod;
 use cdk_common::payment::{
     Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
     IncomingPaymentOptions, OnchainIncomingPaymentOptions, WaitPaymentResponse,
@@ -10,8 +14,9 @@ use cdk_common::quote_id::QuoteId;
 use cdk_common::util::unix_time;
 use cdk_common::{
     database, ensure_cdk, Amount, BatchMintRequest, BlindedMessage, CurrencyUnit, Error,
-    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteOnchainResponse, MintQuoteState,
-    MintRequest, MintResponse, NotificationPayload, PaymentMethod, PublicKey,
+    MintQuoteBolt11Response, MintQuoteBolt12Response, MintQuoteCustomResponse,
+    MintQuoteOnchainResponse, MintQuoteRequest, MintQuoteResponse, MintQuoteState, MintRequest,
+    MintResponse, NotificationPayload, PaymentMethod, PublicKey,
 };
 use tracing::instrument;
 
@@ -19,8 +24,6 @@ use crate::mint::verification::MAX_REQUEST_FIELD_LEN;
 use crate::Mint;
 
 mod auth;
-
-use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 
 /// Input enum to handle both single and batch mint formats (internal to CDK, not spec)
 #[derive(Debug, Clone)]
@@ -405,6 +408,121 @@ impl Mint {
         let result = async {
             let quotes = self.localstore.get_mint_quotes().await?;
             Ok(quotes)
+        }
+        .await;
+
+        #[cfg(feature = "prometheus")]
+        {
+            metrics.record(result.is_ok());
+        }
+
+        result
+    }
+
+    /// Retrieves mint quotes with pubkey from the database
+    ///
+    /// # Returns
+    /// * `Vec<MintQuote>` - List of mint quotes filtered by pubkeys
+    /// * `Error` if database access fails
+    #[instrument(skip_all)]
+    pub async fn get_mint_quote_by_pubkey(
+        &self,
+        pubkeys: Vec<PublicKey>,
+        signatures: Vec<Signature>,
+    ) -> Result<Vec<MintQuoteResponse<QuoteId>>, Error> {
+        #[cfg(feature = "prometheus")]
+        let metrics = super::MintMetricGuard::new("mint_quotes_by_pubkeys");
+
+        pubkeys.len().ne(&signatures.len()).then(|| {
+            tracing::error!("Signatures must be the same length of publickeys");
+            Error::SignatureMissingOrInvalid
+        });
+
+        let mint_pubkey = self
+            .mint_info()
+            .await?
+            .pubkey
+            .ok_or(Error::MissingPubkey)?
+            .to_hex();
+
+        for (pubkey, signature) in pubkeys.iter().zip(signatures.iter()) {
+            let pubkey_hex = pubkey.to_hex();
+
+            let mut preimage = Vec::with_capacity(24 + mint_pubkey.len() + pubkey_hex.len());
+            preimage.extend_from_slice(b"Cashu_MintQuoteLookup_v1");
+            preimage.extend_from_slice(mint_pubkey.as_bytes());
+            preimage.extend_from_slice(pubkey_hex.as_bytes());
+
+            let hash = Sha256Hash::hash(&preimage).to_byte_array();
+
+            pubkey.verify(&hash, signature).map_err(|e| {
+                tracing::error!("Failed to validate signature: {}", e);
+                Error::SignatureMissingOrInvalid
+            })?;
+        }
+
+        let result: Result<Vec<MintQuoteResponse<QuoteId>>, Error> = async {
+            let quotes = self.localstore.get_mint_quotes_by_pubkey(&pubkeys).await?;
+
+            quotes
+                .iter()
+                .map(|q| match q.payment_method {
+                    PaymentMethod::Known(KnownMethod::Bolt11) => {
+                        Ok(MintQuoteResponse::Bolt11(MintQuoteBolt11Response::<
+                            QuoteId,
+                        > {
+                            quote: q.id.clone(),
+                            request: q.request.clone(),
+                            amount: q.amount.clone().map(|a| a.into()),
+                            unit: Some(q.unit.clone()),
+                            state: q.state(),
+                            expiry: Some(q.expiry),
+                            pubkey: q.pubkey,
+                        }))
+                    }
+                    PaymentMethod::Known(KnownMethod::Bolt12) => {
+                        Ok(MintQuoteResponse::Bolt12(MintQuoteBolt12Response::<
+                            QuoteId,
+                        > {
+                            quote: q.id.clone(),
+                            request: q.request.clone(),
+                            amount: q.amount.clone().map(|a| a.into()),
+                            unit: q.unit.clone(),
+                            expiry: Some(q.expiry),
+                            pubkey: q.pubkey.ok_or(Error::PubkeyRequired)?,
+                            amount_paid: q.amount_paid().into(),
+                            amount_issued: q.amount_issued().into(),
+                        }))
+                    }
+                    PaymentMethod::Known(KnownMethod::Onchain) => {
+                        Ok(MintQuoteResponse::Onchain(MintQuoteOnchainResponse::<
+                            QuoteId,
+                        > {
+                            quote: q.id.clone(),
+                            request: q.request.clone(),
+                            unit: q.unit.clone(),
+                            expiry: Some(q.expiry),
+                            pubkey: q.pubkey.ok_or(Error::PubkeyRequired)?,
+                            amount_paid: q.amount_paid().into(),
+                            amount_issued: q.amount_issued().into(),
+                        }))
+                    }
+                    _ => Ok(MintQuoteResponse::Custom {
+                        method: q.payment_method.clone(),
+                        response: MintQuoteCustomResponse {
+                            quote: q.id.clone(),
+                            request: q.request.clone(),
+                            amount: q.amount.clone().map(|a| a.into()),
+                            unit: Some(q.unit.clone()),
+                            expiry: Some(q.expiry),
+                            pubkey: q.pubkey,
+                            extra: q.extra_json.clone().unwrap_or_default(),
+                            amount_paid: q.amount_paid().into(),
+                            amount_issued: q.amount_issued().into(),
+                        },
+                    }),
+                })
+                .collect()
         }
         .await;
 
