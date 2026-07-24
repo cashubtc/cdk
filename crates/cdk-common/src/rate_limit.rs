@@ -555,6 +555,20 @@ impl<T: Default> Default for RateLimitedTransport<T> {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl<T: Transport> Transport for RateLimitedTransport<T> {
+    async fn ws_connect(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<
+        (
+            cdk_http_client::ws::WsSender,
+            cdk_http_client::ws::WsReceiver,
+        ),
+        cdk_http_client::ws::WsError,
+    > {
+        self.inner.ws_connect(url, headers).await
+    }
+
     fn with_proxy(
         &mut self,
         proxy: Url,
