@@ -72,6 +72,15 @@ pub struct MintBuilder {
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     use_keyset_v2: Option<bool>,
     keyset_rotations: Vec<KeysetRotation>,
+    keyset_rotation_interval: Option<std::time::Duration>,
+    /// Cooperative-shutdown handle for the embedded auto-rotation task, set in
+    /// `build_with_seed` and handed to the `Mint` in `build_with_signatory` so
+    /// that `Mint::stop` signals the loop to stop and awaits an in-flight
+    /// rotation. `None` when no rotation interval is configured.
+    rotation_shutdown: Option<(
+        tokio::sync::watch::Sender<bool>,
+        tokio::task::JoinHandle<()>,
+    )>,
     max_inputs: usize,
     max_outputs: usize,
     max_batch_size: Option<u64>,
@@ -115,6 +124,8 @@ impl MintBuilder {
             custom_paths: HashMap::new(),
             use_keyset_v2: None,
             keyset_rotations: Vec::new(),
+            keyset_rotation_interval: None,
+            rotation_shutdown: None,
             max_inputs: 1000,
             max_outputs: 1000,
             max_batch_size: None,
@@ -131,6 +142,23 @@ impl MintBuilder {
     /// Used to create inactive/expired keysets for testing.
     pub fn with_keyset_rotation(mut self, rotation: KeysetRotation) -> Self {
         self.keyset_rotations.push(rotation);
+        self
+    }
+
+    /// Automatically rotate active keysets once they reach `interval`.
+    ///
+    /// Only applies to the embedded signatory built through
+    /// [`MintBuilder::build_with_seed`]. A `None` value, or an interval of zero,
+    /// leaves auto-rotation disabled. A remote signatory manages its own
+    /// rotation schedule.
+    ///
+    /// The rotation task is spawned once, at build time, because it needs the
+    /// concrete embedded signatory (only reachable here, not through the
+    /// `Signatory` trait the mint holds). [`Mint::stop`] halts it, but a later
+    /// [`Mint::start`] does not respawn it; rebuild the mint to re-enable
+    /// rotation. This differs from the drain task, which resumes on restart.
+    pub fn with_keyset_rotation_interval(mut self, interval: Option<std::time::Duration>) -> Self {
+        self.keyset_rotation_interval = interval.filter(|i| !i.is_zero());
         self
     }
 
@@ -582,9 +610,13 @@ impl MintBuilder {
 
     /// Build the mint with the provided signatory
     pub async fn build_with_signatory(
-        #[allow(unused_mut)] mut self,
+        mut self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
+        // Taken now so the field is not caught in the piecemeal moves of `self`
+        // into the `Mint` constructors below.
+        let rotation_shutdown = self.rotation_shutdown.take();
+
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
 
@@ -687,7 +719,7 @@ impl MintBuilder {
             ));
         }
 
-        if let Some(auth_localstore) = self.auth_localstore {
+        let mint = if let Some(auth_localstore) = self.auth_localstore {
             let mut protected_endpoints = HashMap::new();
             for endpoint in self.clear_auth_endpoints {
                 protected_endpoints.insert(endpoint, AuthRequired::Clear);
@@ -702,7 +734,7 @@ impl MintBuilder {
                 tx.commit().await?;
             }
 
-            return Mint::new_with_auth(
+            Mint::new_with_auth(
                 self.mint_info,
                 signatory,
                 self.localstore,
@@ -711,36 +743,64 @@ impl MintBuilder {
                 self.max_inputs,
                 self.max_outputs,
             )
-            .await;
+            .await?
+        } else {
+            Mint::new(
+                self.mint_info,
+                signatory,
+                self.localstore,
+                self.payment_processors,
+                self.max_inputs,
+                self.max_outputs,
+            )
+            .await?
+        };
+
+        // Bind the embedded auto-rotation task to the mint so `stop()` halts it
+        // cooperatively.
+        if let Some((shutdown, handle)) = rotation_shutdown {
+            mint.set_rotation_shutdown(shutdown, handle).await;
         }
-        Mint::new(
-            self.mint_info,
-            signatory,
-            self.localstore,
-            self.payment_processors,
-            self.max_inputs,
-            self.max_outputs,
-        )
-        .await
+
+        Ok(mint)
     }
 
     /// Build the mint with the provided keystore and seed
     pub async fn build_with_seed(
-        self,
+        mut self,
         keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
     ) -> Result<Mint, Error> {
-        let in_memory_signatory = cdk_signatory::db_signatory::DbSignatory::new(
-            keystore,
-            seed,
-            self.supported_units.clone(),
-            self.custom_paths.clone(),
-        )
-        .await?;
+        let in_memory_signatory = Arc::new(
+            cdk_signatory::db_signatory::DbSignatory::new(
+                keystore,
+                seed,
+                self.supported_units.clone(),
+                self.custom_paths.clone(),
+            )
+            .await?,
+        );
 
-        let signatory = Arc::new(cdk_signatory::embedded::Service::new(Arc::new(
-            in_memory_signatory,
-        )));
+        let rotation_task = self.keyset_rotation_interval.map(|interval| {
+            tracing::info!(
+                "Enabling keyset auto-rotation every {}s",
+                interval.as_secs()
+            );
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            let handle = in_memory_signatory.spawn_auto_rotation(interval, shutdown_rx);
+            (shutdown_tx, handle)
+        });
+
+        let mut service = cdk_signatory::embedded::Service::new(in_memory_signatory);
+        if let Some((shutdown_tx, handle)) = rotation_task {
+            // `Mint::stop` signals `shutdown_tx` and awaits `handle` for a
+            // cooperative shutdown that lets an in-flight rotation finish. The
+            // service keeps an abort handle so a drop without `stop()` does not
+            // leave the task lingering.
+            service = service.with_background_task(handle.abort_handle());
+            self.rotation_shutdown = Some((shutdown_tx, handle));
+        }
+        let signatory = Arc::new(service);
 
         self.build_with_signatory(signatory).await
     }

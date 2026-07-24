@@ -13,6 +13,11 @@ mnemonic = ""
 # If unset (default), existing keysets are preserved, but new ones use V2.
 # use_keyset_v2 = true
 
+# Automatically rotate active keysets once they reach this age, in seconds.
+# Only applies to an embedded signatory; a remote signatory rotates on its own
+# schedule. Unset or 0 disables auto-rotation. Example: 7776000 = 90 days.
+# keyset_rotation_interval_seconds = 7776000
+
 [info.quote_ttl]
 # Prefer explicit fields over inline tables for readability and ease of overrides
 mint_ttl = 600

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use cdk_common::{BlindSignature, BlindedMessage, Error, Proof};
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
@@ -35,12 +35,21 @@ enum Request {
 pub struct Service {
     pipeline: mpsc::Sender<Request>,
     runner: Option<JoinHandle<()>>,
+    /// Abort handles for extra signatory-side background tasks (for example
+    /// keyset auto-rotation). They are aborted when the service is dropped, so
+    /// a drop without a cooperative shutdown does not leave them lingering.
+    /// Normal shutdown goes through `Mint::stop`, which owns the task's
+    /// `JoinHandle` and awaits it; this abort is only the drop-time fallback.
+    background_tasks: Vec<AbortHandle>,
 }
 
 impl Drop for Service {
     fn drop(&mut self) {
         if let Some(runner) = self.runner.take() {
             runner.abort();
+        }
+        for task in self.background_tasks.drain(..) {
+            task.abort();
         }
     }
 }
@@ -55,7 +64,18 @@ impl Service {
         Self {
             pipeline: tx,
             runner,
+            background_tasks: Vec::new(),
         }
+    }
+
+    /// Bind a background task's abort handle to this service. The task is
+    /// aborted when the service is dropped, so signatory-side work (such as
+    /// keyset auto-rotation) does not outlive the service when it is dropped
+    /// without a cooperative shutdown. The task's `JoinHandle` is owned
+    /// elsewhere (by `Mint::stop`) for the cooperative path.
+    pub fn with_background_task(mut self, handle: AbortHandle) -> Self {
+        self.background_tasks.push(handle);
+        self
     }
 
     #[tracing::instrument(skip_all)]
@@ -162,5 +182,64 @@ impl Signatory for Service {
             .map_err(|e| Error::SendError(e.to_string()))?;
 
         rx.await.map_err(|e| Error::RecvError(e.to_string()))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::db_signatory::DbSignatory;
+
+    #[tokio::test]
+    async fn drop_aborts_background_tasks() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = Arc::new(
+            DbSignatory::new(
+                store,
+                b"embedded-drop-test",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        // A task that parks forever while holding a strong Arc we can observe
+        // through a weak handle. When the task is aborted its future is dropped,
+        // releasing the Arc, so `upgrade()` starts returning `None`.
+        let sentinel = Arc::new(());
+        let weak = Arc::downgrade(&sentinel);
+        let handle = tokio::spawn(async move {
+            let _held = sentinel;
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        });
+
+        let service = Service::new(signatory).with_background_task(handle.abort_handle());
+        assert!(
+            weak.upgrade().is_some(),
+            "the task holds the sentinel while running"
+        );
+
+        drop(service);
+
+        // Give the runtime a chance to process the abort.
+        for _ in 0..50 {
+            if weak.upgrade().is_none() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "dropping the service must abort its background tasks"
+        );
     }
 }

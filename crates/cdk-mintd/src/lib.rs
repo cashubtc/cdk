@@ -882,6 +882,13 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
 
+    builder = builder.with_keyset_rotation_interval(
+        settings
+            .info
+            .keyset_rotation_interval_seconds
+            .map(std::time::Duration::from_secs),
+    );
+
     builder
 }
 /// Configures Lightning Network backend based on the specified backend type

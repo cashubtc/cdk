@@ -92,6 +92,10 @@ struct Cli {
     /// Supported units with the format of name,fee and max_order
     #[arg(long, short, default_value = "sat,0,32")]
     units: Vec<String>,
+    /// Automatically rotate active keysets once they reach this age, in seconds.
+    /// A value of 0 disables auto-rotation.
+    #[arg(long, default_value = "0")]
+    rotation_interval_secs: u64,
 }
 
 /// Main function for the signatory standalone binary
@@ -187,13 +191,29 @@ pub async fn cli_main() -> Result<()> {
     };
     let seed = mnemonic.to_seed_normalized("");
 
-    let signatory =
+    let signatory = Arc::new(
         db_signatory::DbSignatory::new(localstore, &seed, supported_units, Default::default())
-            .await?;
+            .await?,
+    );
+
+    // Hold the shutdown sender for the process lifetime so the rotation loop
+    // keeps running until the server exits; dropping it would stop rotation.
+    let _rotation_shutdown = if args.rotation_interval_secs > 0 {
+        let interval = std::time::Duration::from_secs(args.rotation_interval_secs);
+        tracing::info!(
+            "Enabling keyset auto-rotation every {}s",
+            args.rotation_interval_secs
+        );
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        signatory.spawn_auto_rotation(interval, shutdown_rx);
+        Some(shutdown_tx)
+    } else {
+        None
+    };
 
     let socket_addr = SocketAddr::from_str(&format!("{}:{}", args.listen_addr, args.listen_port))?;
 
-    start_grpc_server(Arc::new(signatory), socket_addr, certs).await?;
+    start_grpc_server(signatory, socket_addr, certs).await?;
 
     Ok(())
 }
