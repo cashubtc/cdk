@@ -196,14 +196,20 @@ pub async fn cli_main() -> Result<()> {
             .await?,
     );
 
-    if args.rotation_interval_secs > 0 {
+    // Hold the shutdown sender for the process lifetime so the rotation loop
+    // keeps running until the server exits; dropping it would stop rotation.
+    let _rotation_shutdown = if args.rotation_interval_secs > 0 {
         let interval = std::time::Duration::from_secs(args.rotation_interval_secs);
         tracing::info!(
             "Enabling keyset auto-rotation every {}s",
             args.rotation_interval_secs
         );
-        signatory.spawn_auto_rotation(interval);
-    }
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        signatory.spawn_auto_rotation(interval, shutdown_rx);
+        Some(shutdown_tx)
+    } else {
+        None
+    };
 
     let socket_addr = SocketAddr::from_str(&format!("{}:{}", args.listen_addr, args.listen_port))?;
 

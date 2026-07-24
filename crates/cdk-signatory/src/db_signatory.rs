@@ -217,23 +217,52 @@ impl DbSignatory {
     /// without a restart.
     ///
     /// The task holds a weak reference to the signatory, so it stops on its own
-    /// once the signatory is dropped. Aborting the returned handle also stops
-    /// it.
-    pub fn spawn_auto_rotation(self: &Arc<Self>, interval: Duration) -> JoinHandle<()> {
+    /// once the signatory is dropped. Sending `true` on `shutdown` stops it
+    /// cooperatively: a rotation already in flight runs to completion and the
+    /// loop then exits, so shutdown never interrupts a rotation mid-flight.
+    /// Aborting the returned handle also stops it, as a drop-time fallback.
+    pub fn spawn_auto_rotation(
+        self: &Arc<Self>,
+        interval: Duration,
+        shutdown: watch::Receiver<bool>,
+    ) -> JoinHandle<()> {
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
-            Self::auto_rotation_loop(weak, interval).await;
+            Self::auto_rotation_loop(weak, interval, shutdown).await;
         })
     }
 
-    async fn auto_rotation_loop(weak: Weak<Self>, interval: Duration) {
+    async fn auto_rotation_loop(
+        weak: Weak<Self>,
+        interval: Duration,
+        mut shutdown: watch::Receiver<bool>,
+    ) {
         // Check once per `interval`. The first tick fires immediately, so a
         // freshly built keyset (age 0) is only rotated once it has aged past
         // `interval` on a later tick.
         let mut ticker = tokio::time::interval(interval);
 
         loop {
-            ticker.tick().await;
+            // Wait for the next tick or a shutdown signal. Shutdown is only
+            // observed between rotations, so a rotation started below always
+            // runs to completion and never leaves the in-memory keysets
+            // mid-swap. `biased` checks shutdown first, so once it is signalled
+            // the loop exits promptly instead of running one more rotation. On
+            // the first iteration shutdown is still `false`, so the immediate
+            // first tick wins as before. `wait_for` re-checks the latched value
+            // on each call, so a signal sent while a rotation was in flight is
+            // not missed.
+            tokio::select! {
+                biased;
+                res = shutdown.wait_for(|stop| *stop) => {
+                    // `Ok` means shutdown was signalled; `Err` means the sender
+                    // was dropped (mint gone). Either way, stop rotating.
+                    let _ = res;
+                    break;
+                }
+                _ = ticker.tick() => {}
+            }
+
             let Some(signatory) = weak.upgrade() else {
                 break;
             };
@@ -533,8 +562,10 @@ mod test {
         let before = updates.borrow_and_update().keysets.len();
 
         // Sub-second interval so `as_secs()` is zero and the keyset is always
-        // due; the first real tick fires after one interval.
-        let _handle = signatory.spawn_auto_rotation(Duration::from_millis(50));
+        // due; the first real tick fires after one interval. Keep the shutdown
+        // sender alive so the loop is not asked to stop.
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let _handle = signatory.spawn_auto_rotation(Duration::from_millis(50), shutdown_rx);
 
         tokio::time::timeout(Duration::from_secs(5), updates.changed())
             .await
@@ -779,7 +810,10 @@ mod test {
     #[tokio::test]
     async fn spawn_auto_rotation_stops_when_signatory_dropped() {
         let sig = test_signatory(b"test-seed-drop").await;
-        let handle = sig.spawn_auto_rotation(Duration::from_millis(50));
+        // Keep the shutdown sender alive so the loop can only exit through the
+        // dropped-signatory path, not a shutdown signal.
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = sig.spawn_auto_rotation(Duration::from_millis(50), shutdown_rx);
 
         // Drop the only strong reference; the task's weak upgrade then fails and
         // the loop exits on its next tick.
@@ -788,6 +822,21 @@ mod test {
         tokio::time::timeout(Duration::from_secs(5), handle)
             .await
             .expect("auto rotation task should stop after the signatory is dropped")
+            .expect("task should not panic");
+    }
+
+    #[tokio::test]
+    async fn spawn_auto_rotation_stops_on_shutdown_signal() {
+        // The signatory stays alive; only the shutdown signal ends the loop.
+        let sig = test_signatory(b"test-seed-shutdown").await;
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let handle = sig.spawn_auto_rotation(Duration::from_millis(50), shutdown_rx);
+
+        shutdown_tx.send(true).expect("receiver alive");
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("auto rotation task should stop after shutdown is signalled")
             .expect("task should not panic");
     }
 

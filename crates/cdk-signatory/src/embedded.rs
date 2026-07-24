@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use cdk_common::{BlindSignature, BlindedMessage, Error, Proof};
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle};
 
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
@@ -35,11 +35,12 @@ enum Request {
 pub struct Service {
     pipeline: mpsc::Sender<Request>,
     runner: Option<JoinHandle<()>>,
-    /// Extra signatory-side background tasks (for example keyset
-    /// auto-rotation). Their lifetime is bound to this service and they are
-    /// aborted when it is dropped, so they shut down with the service instead of
-    /// lingering.
-    background_tasks: Vec<JoinHandle<()>>,
+    /// Abort handles for extra signatory-side background tasks (for example
+    /// keyset auto-rotation). They are aborted when the service is dropped, so
+    /// a drop without a cooperative shutdown does not leave them lingering.
+    /// Normal shutdown goes through `Mint::stop`, which owns the task's
+    /// `JoinHandle` and awaits it; this abort is only the drop-time fallback.
+    background_tasks: Vec<AbortHandle>,
 }
 
 impl Drop for Service {
@@ -67,10 +68,12 @@ impl Service {
         }
     }
 
-    /// Bind a background task's lifetime to this service. The task is aborted
-    /// when the service is dropped, so signatory-side work (such as keyset
-    /// auto-rotation) stops with the service rather than outliving it.
-    pub fn with_background_task(mut self, handle: JoinHandle<()>) -> Self {
+    /// Bind a background task's abort handle to this service. The task is
+    /// aborted when the service is dropped, so signatory-side work (such as
+    /// keyset auto-rotation) does not outlive the service when it is dropped
+    /// without a cooperative shutdown. The task's `JoinHandle` is owned
+    /// elsewhere (by `Mint::stop`) for the cooperative path.
+    pub fn with_background_task(mut self, handle: AbortHandle) -> Self {
         self.background_tasks.push(handle);
         self
     }
@@ -219,7 +222,7 @@ mod tests {
             }
         });
 
-        let service = Service::new(signatory).with_background_task(handle);
+        let service = Service::new(signatory).with_background_task(handle.abort_handle());
         assert!(
             weak.upgrade().is_some(),
             "the task holds the sentinel while running"

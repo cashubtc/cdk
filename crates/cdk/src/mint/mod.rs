@@ -18,7 +18,7 @@ use futures::StreamExt;
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
 use tokio::sync::{watch, Mutex, Notify};
-use tokio::task::{AbortHandle, JoinHandle, JoinSet};
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
 
 use crate::error::Error;
@@ -104,13 +104,15 @@ struct TaskState {
     /// Keyset subscription retained from construction, drained once by the first
     /// `start()`. `None` after it has been taken; a restart re-subscribes.
     keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
-    /// Abort handle for the embedded signatory's keyset auto-rotation task, if
-    /// one was spawned at build time. `stop()` aborts it so rotation halts with
-    /// the mint. Unlike the drain task it is not respawned by a later `start()`,
-    /// because spawning needs the concrete embedded signatory available only at
-    /// build time; the task's `JoinHandle` still aborts on `Service` drop as a
+    /// Cooperative shutdown for the embedded signatory's keyset auto-rotation
+    /// task, if one was spawned at build time: the `watch::Sender` signals the
+    /// loop to stop and the `JoinHandle` lets `stop()` await an in-flight
+    /// rotation to completion before returning, so rotation is never aborted
+    /// mid-flight. Unlike the drain task it is not respawned by a later
+    /// `start()`, because spawning needs the concrete embedded signatory
+    /// available only at build time; the `Service` keeps an abort handle as a
     /// fallback for a drop without `stop()`.
-    rotation_abort_handle: Option<AbortHandle>,
+    rotation_shutdown: Option<(watch::Sender<bool>, JoinHandle<()>)>,
 }
 
 impl Mint {
@@ -281,10 +283,15 @@ impl Mint {
     }
 
     /// Bind the embedded signatory's auto-rotation task to this mint so that
-    /// [`Mint::stop`] aborts it. Called once at build time when an embedded
-    /// signatory is configured with a rotation interval.
-    pub(crate) async fn set_rotation_abort_handle(&self, handle: AbortHandle) {
-        self.task_state.lock().await.rotation_abort_handle = Some(handle);
+    /// [`Mint::stop`] can stop it cooperatively: `shutdown` signals the loop and
+    /// `handle` lets `stop()` await an in-flight rotation. Called once at build
+    /// time when an embedded signatory is configured with a rotation interval.
+    pub(crate) async fn set_rotation_shutdown(
+        &self,
+        shutdown: watch::Sender<bool>,
+        handle: JoinHandle<()>,
+    ) {
+        self.task_state.lock().await.rotation_shutdown = Some((shutdown, handle));
     }
 
     /// Start the mint's background services and operations
@@ -476,17 +483,29 @@ impl Mint {
     pub async fn stop(&self) -> Result<(), Error> {
         let mut task_state = self.task_state.lock().await;
 
-        // Halt embedded keyset auto-rotation, if running. Done before the
-        // early-return below so rotation stops even when no other background
-        // services were started.
-        if let Some(handle) = task_state.rotation_abort_handle.take() {
-            handle.abort();
-        }
-
         // Take the handles out of the state
+        let rotation_shutdown = task_state.rotation_shutdown.take();
         let shutdown_notify = task_state.shutdown_notify.take();
         let supervisor_handle = task_state.supervisor_handle.take();
         let keyset_drain_handle = task_state.keyset_drain_handle.take();
+
+        // Drop the lock before awaiting any task.
+        drop(task_state);
+
+        // Halt embedded keyset auto-rotation cooperatively, if running. Signal
+        // the loop and await it so an in-flight rotation finishes rather than
+        // being aborted mid-rotation. Done before the early-return below so
+        // rotation stops even when no other background services were started.
+        if let Some((shutdown, handle)) = rotation_shutdown {
+            // A send error means the loop already exited (receiver dropped); the
+            // await then returns immediately.
+            let _ = shutdown.send(true);
+            if let Err(join_error) = handle.await {
+                if !join_error.is_cancelled() {
+                    tracing::error!("Auto-rotation task panicked: {:?}", join_error);
+                }
+            }
+        }
 
         // If nothing to stop, return early
         let (shutdown_notify, supervisor_handle) = match (shutdown_notify, supervisor_handle) {
@@ -497,9 +516,6 @@ impl Mint {
                 return self.stop_payment_processors().await;
             }
         };
-
-        // Drop the lock before waiting
-        drop(task_state);
 
         tracing::info!("Stopping mint background services...");
 

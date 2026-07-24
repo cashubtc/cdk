@@ -73,10 +73,14 @@ pub struct MintBuilder {
     use_keyset_v2: Option<bool>,
     keyset_rotations: Vec<KeysetRotation>,
     keyset_rotation_interval: Option<std::time::Duration>,
-    /// Abort handle for the embedded auto-rotation task, set in
+    /// Cooperative-shutdown handle for the embedded auto-rotation task, set in
     /// `build_with_seed` and handed to the `Mint` in `build_with_signatory` so
-    /// that `Mint::stop` halts rotation.
-    rotation_abort_handle: Option<tokio::task::AbortHandle>,
+    /// that `Mint::stop` signals the loop to stop and awaits an in-flight
+    /// rotation. `None` when no rotation interval is configured.
+    rotation_shutdown: Option<(
+        tokio::sync::watch::Sender<bool>,
+        tokio::task::JoinHandle<()>,
+    )>,
     max_inputs: usize,
     max_outputs: usize,
     max_batch_size: Option<u64>,
@@ -121,7 +125,7 @@ impl MintBuilder {
             use_keyset_v2: None,
             keyset_rotations: Vec::new(),
             keyset_rotation_interval: None,
-            rotation_abort_handle: None,
+            rotation_shutdown: None,
             max_inputs: 1000,
             max_outputs: 1000,
             max_batch_size: None,
@@ -611,7 +615,7 @@ impl MintBuilder {
     ) -> Result<Mint, Error> {
         // Taken now so the field is not caught in the piecemeal moves of `self`
         // into the `Mint` constructors below.
-        let rotation_abort_handle = self.rotation_abort_handle.take();
+        let rotation_shutdown = self.rotation_shutdown.take();
 
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
@@ -752,9 +756,10 @@ impl MintBuilder {
             .await?
         };
 
-        // Bind the embedded auto-rotation task to the mint so `stop()` halts it.
-        if let Some(handle) = rotation_abort_handle {
-            mint.set_rotation_abort_handle(handle).await;
+        // Bind the embedded auto-rotation task to the mint so `stop()` halts it
+        // cooperatively.
+        if let Some((shutdown, handle)) = rotation_shutdown {
+            mint.set_rotation_shutdown(shutdown, handle).await;
         }
 
         Ok(mint)
@@ -781,16 +786,19 @@ impl MintBuilder {
                 "Enabling keyset auto-rotation every {}s",
                 interval.as_secs()
             );
-            in_memory_signatory.spawn_auto_rotation(interval)
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+            let handle = in_memory_signatory.spawn_auto_rotation(interval, shutdown_rx);
+            (shutdown_tx, handle)
         });
 
         let mut service = cdk_signatory::embedded::Service::new(in_memory_signatory);
-        if let Some(handle) = rotation_task {
-            // `Mint::stop` aborts the task through this handle; the service
-            // aborts the owned `JoinHandle` on drop as the drop-without-stop
-            // fallback.
-            self.rotation_abort_handle = Some(handle.abort_handle());
-            service = service.with_background_task(handle);
+        if let Some((shutdown_tx, handle)) = rotation_task {
+            // `Mint::stop` signals `shutdown_tx` and awaits `handle` for a
+            // cooperative shutdown that lets an in-flight rotation finish. The
+            // service keeps an abort handle so a drop without `stop()` does not
+            // leave the task lingering.
+            service = service.with_background_task(handle.abort_handle());
+            self.rotation_shutdown = Some((shutdown_tx, handle));
         }
         let signatory = Arc::new(service);
 
