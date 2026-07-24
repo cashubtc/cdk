@@ -7,6 +7,7 @@ pub mod check_requests;
 pub mod create_request;
 pub mod decode_request;
 pub mod decode_token;
+pub mod finalize_receives;
 pub mod generate_public_key;
 pub mod get_public_keys;
 pub mod list_mint_proofs;

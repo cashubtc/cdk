@@ -26,6 +26,16 @@ impl Wallet {
         Ok(self.get_pending_proofs().await?.total_amount()?)
     }
 
+    /// Total pending-receive balance
+    ///
+    /// Returns the sum of proofs that have been verified offline (DLEQ) and
+    /// stored as [`State::PendingReceive`], but have not yet been swapped with
+    /// the mint. Call [`Wallet::finalize_pending_receives`] to settle them.
+    #[instrument(skip(self))]
+    pub async fn total_pending_receive_balance(&self) -> Result<Amount, Error> {
+        Ok(self.get_pending_receive_proofs().await?.total_amount()?)
+    }
+
     /// Total reserved balance
     #[instrument(skip(self))]
     pub async fn total_reserved_balance(&self) -> Result<Amount, Error> {
