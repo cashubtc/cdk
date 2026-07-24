@@ -17,7 +17,7 @@ wallet = ["cdk-common/wallet", "cdk-sql-common/wallet"]
 
 [dependencies]
 async-trait.workspace = true
-cdk-common = { workspace = true, features = ["test"] }
+cdk-common.workspace = true
 bitcoin.workspace = true
 cdk-sql-common = { workspace = true }
 thiserror.workspace = true
@@ -33,6 +33,9 @@ postgres-native-tls = "0.5.1"
 native-tls = "=0.2.14"
 once_cell.workspace = true
 paste.workspace = true
+
+[dev-dependencies]
+cdk-common = { workspace = true, features = ["test"] }
 
 [lints]
 workspace = true

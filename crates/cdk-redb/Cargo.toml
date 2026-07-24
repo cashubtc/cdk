@@ -17,7 +17,7 @@ wallet = ["cdk-common/wallet"]
 
 [dependencies]
 async-trait.workspace = true
-cdk-common = { workspace = true, features = ["test"] }
+cdk-common.workspace = true
 redb = "3.1.0"
 thiserror.workspace = true
 tracing.workspace = true
@@ -28,6 +28,7 @@ uuid.workspace = true
 paste.workspace = true
 
 [dev-dependencies]
+cdk-common = { workspace = true, features = ["test"] }
 tempfile = "3.17.1"
 tokio.workspace = true
 
