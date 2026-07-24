@@ -1,9 +1,10 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use cdk_common::error::Error;
 use cdk_common::grpc::{VersionInterceptor, VERSION_SIGNATORY_HEADER};
-use cdk_common::stream::{supervise_stream, BackoffPolicy};
+use cdk_common::stream::{BackoffPolicy, SupervisedStream};
 use cdk_common::{BlindSignature, BlindedMessage, Proof};
 use tokio::sync::watch;
 use tonic::codegen::InterceptedService;
@@ -90,44 +91,24 @@ impl SignatoryRpcClient {
         let initial = fetch_keysets(&mut client).await?;
         let (keyset_updates_tx, keyset_updates) = watch::channel(initial);
 
-        // Keep the keyset watch fresh in the background. supervise_stream owns
+        // Keep the keyset watch fresh in the background. `SupervisedStream` owns
         // the reconnect/backoff/shutdown machinery; the task stops once every
         // watch receiver is dropped, which `closed()` observes. On every
         // (re)connect the server sends the current snapshot first, so a dropped
         // connection re-injects the latest keysets.
+        //
+        // One `Arc` handle publishes from inside the subscription; a second
+        // drives the shutdown future. `Sender::closed` keys on receiver drop
+        // (senders do not matter), so both handles observe the same shutdown.
+        let keyset_updates_tx = Arc::new(keyset_updates_tx);
+        let shutdown_tx = Arc::clone(&keyset_updates_tx);
         let subscription_client = client.clone();
         tokio::spawn(async move {
-            let policy = BackoffPolicy {
-                initial: Duration::from_secs(1),
-                max: KEYSET_RECONNECT_MAX_BACKOFF,
+            let mut subscription = KeysetSubscription {
+                client: subscription_client,
+                keyset_updates_tx,
             };
-            supervise_stream(
-                policy,
-                keyset_updates_tx.closed(),
-                move || {
-                    let mut client = subscription_client.clone();
-                    async move {
-                        client
-                            .subscribe_keysets(tonic::Request::new(super::EmptyRequest {}))
-                            .await
-                            .map(tonic::Response::into_inner)
-                    }
-                },
-                |message| {
-                    // Decoding and publishing is synchronous; return a ready
-                    // future so the handler borrows nothing.
-                    match keys_response_into_keysets(message) {
-                        Ok(keysets) => {
-                            keyset_updates_tx.send_replace(keysets);
-                        }
-                        Err(err) => {
-                            tracing::warn!("Invalid keyset update from signatory: {err}");
-                        }
-                    }
-                    std::future::ready(())
-                },
-            )
-            .await;
+            subscription.supervise(shutdown_tx.closed()).await;
         });
 
         Ok(Self {
@@ -169,6 +150,49 @@ fn keys_response_into_keysets(
         .keysets
         .ok_or_else(|| Error::Custom("Internal error".to_owned()))?
         .try_into()
+}
+
+/// Background subscription that keeps the keyset watch fresh from the signatory.
+struct KeysetSubscription {
+    client: InnerClient,
+    keyset_updates_tx: Arc<watch::Sender<SignatoryKeysets>>,
+}
+
+#[async_trait::async_trait]
+impl SupervisedStream for KeysetSubscription {
+    type Item = super::KeysResponse;
+    type ConnectError = tonic::Status;
+    type StreamError = tonic::Status;
+    type Stream = tonic::Streaming<super::KeysResponse>;
+
+    fn name(&self) -> &str {
+        "signatory keysets"
+    }
+
+    fn backoff_policy(&self) -> BackoffPolicy {
+        BackoffPolicy {
+            initial: Duration::from_secs(1),
+            max: KEYSET_RECONNECT_MAX_BACKOFF,
+        }
+    }
+
+    async fn connect(&mut self) -> Result<Self::Stream, tonic::Status> {
+        self.client
+            .subscribe_keysets(tonic::Request::new(super::EmptyRequest {}))
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn on_message(&mut self, message: super::KeysResponse) {
+        match keys_response_into_keysets(message) {
+            Ok(keysets) => {
+                self.keyset_updates_tx.send_replace(keysets);
+            }
+            Err(err) => {
+                tracing::warn!("Invalid keyset update from signatory: {err}");
+            }
+        }
+    }
 }
 
 macro_rules! handle_error {

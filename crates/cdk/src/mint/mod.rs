@@ -1,6 +1,7 @@
 //! Cashu Mint
 
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,11 +12,11 @@ use cdk_common::database::{self, DynMintAuthDatabase, DynMintDatabase};
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id};
 use cdk_common::payment::{DynMintPayment, WaitPaymentResponse};
 pub use cdk_common::quote_id::QuoteId;
-use cdk_common::stream::{supervise_stream, BackoffPolicy};
+use cdk_common::stream::{BackoffPolicy, SupervisedStream};
 #[cfg(feature = "prometheus")]
 use cdk_prometheus::MintMetricGuard;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use nut21::ProtectedEndpoint;
 use subscription::PubSubManager;
 use tokio::sync::{watch, Mutex, Notify};
@@ -105,6 +106,113 @@ struct TaskState {
     /// Keyset subscription retained from construction, drained once by the first
     /// `start()`. `None` after it has been taken; a restart re-subscribes.
     keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
+}
+
+/// Supervised subscription to a single payment processor's event stream.
+///
+/// Holds the state the handlers need as fields, so `on_message` reads
+/// `&self.field` instead of the closure-based supervisor's per-item cloning.
+struct PaymentWaiter {
+    /// Identifies the processor in the supervisor's logs (unit and method).
+    name: String,
+    mint: Arc<Mint>,
+    processor: DynMintPayment,
+    localstore: DynMintDatabase,
+    pubsub_manager: Arc<PubSubManager>,
+}
+
+#[async_trait::async_trait]
+impl SupervisedStream for PaymentWaiter {
+    type Item = cdk_common::payment::Event;
+    // `DynMintPayment::wait_payment_event` fails with `Error`; its stream is
+    // already decoded and never yields a stream-level error, so wrap items in
+    // `Ok` with an `Infallible` error to satisfy the `Result` item contract.
+    type ConnectError = Error;
+    type StreamError = std::convert::Infallible;
+    type Stream = Pin<Box<dyn Stream<Item = Result<Self::Item, Self::StreamError>> + Send>>;
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn backoff_policy(&self) -> BackoffPolicy {
+        // Keep `initial` short so payment-detection latency stays low when a
+        // healthy backend cycles its stream (that fixed floor is the wait after
+        // every close); the cap only throttles a backend that keeps refusing
+        // connections. See `BackoffPolicy` for the full semantics.
+        BackoffPolicy {
+            initial: Duration::from_millis(250),
+            max: Duration::from_secs(30),
+        }
+    }
+
+    async fn connect(&mut self) -> Result<Self::Stream, Error> {
+        let stream = self.processor.wait_payment_event().await?;
+        Ok(Box::pin(stream.map(Ok::<_, std::convert::Infallible>)))
+    }
+
+    async fn on_message(&mut self, event: Self::Item) {
+        match event {
+            cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
+                if let Err(e) = Mint::handle_payment_notification(
+                    &self.localstore,
+                    &self.pubsub_manager,
+                    wait_payment_response,
+                )
+                .await
+                {
+                    tracing::warn!("Payment notification error: {:?}", e);
+                }
+            }
+            cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => {
+                tracing::info!(
+                    "Outgoing payment confirmed for quote {}: status {}",
+                    quote_id,
+                    details.status,
+                );
+
+                if let Err(e) = Mint::handle_successful_melt_payment_event(
+                    &self.mint,
+                    &self.localstore,
+                    &self.pubsub_manager,
+                    &quote_id,
+                    details,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "Failed to process successful payment event for quote {}: {}",
+                        quote_id,
+                        e
+                    );
+                }
+            }
+            cdk_common::payment::Event::PaymentFailed { quote_id, reason } => {
+                tracing::warn!("Outgoing payment failed for quote {}: {}", quote_id, reason,);
+
+                if let Err(e) = Mint::handle_failed_melt_payment_event(
+                    &self.mint,
+                    &self.localstore,
+                    &self.pubsub_manager,
+                    &quote_id,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "Failed to process failed payment event for quote {}: {}",
+                        quote_id,
+                        e
+                    );
+                }
+            }
+        }
+    }
+
+    async fn on_shutdown(&mut self) {
+        // The loop stopped because shutdown fired; run the teardown the old
+        // inner and outer shutdown arms performed.
+        self.processor.cancel_payment_event_stream();
+    }
 }
 
 impl Mint {
@@ -752,6 +860,7 @@ impl Mint {
             tracing::info!("Starting payment wait task for {:?}", key);
 
             // Clone for the spawned task
+            let name = format!("payment processor {:?} {:?}", key.method, key.unit);
             let mint = Arc::clone(&mint);
             let processor = Arc::clone(processor);
             let localstore = Arc::clone(&localstore);
@@ -760,6 +869,7 @@ impl Mint {
 
             join_set.spawn(async move {
                 let result = Self::wait_for_processor_payments(
+                    name,
                     mint,
                     processor,
                     localstore,
@@ -804,111 +914,23 @@ impl Mint {
     /// Handles payment waiting for a single processor
     #[instrument(skip_all)]
     async fn wait_for_processor_payments(
+        name: String,
         mint: Arc<Mint>,
         processor: DynMintPayment,
         localstore: DynMintDatabase,
         pubsub_manager: Arc<PubSubManager>,
         shutdown: Arc<Notify>,
     ) -> Result<(), Error> {
-        // The supervisor waits `initial` before every reconnect, including a
-        // clean close. This is a deliberate change from the old loop, which
-        // reconnected immediately after a clean close: the floor stops a backend
-        // that accepts, delivers, and instantly drops from spinning in a hot
-        // reconnect loop. Keep `initial` short so payment-detection latency stays
-        // low when a healthy backend cycles its stream, while the exponential
-        // backoff still protects against a backend that keeps failing.
-        let policy = BackoffPolicy {
-            initial: Duration::from_millis(250),
-            max: Duration::from_secs(30),
+        let mut waiter = PaymentWaiter {
+            name,
+            mint,
+            processor,
+            localstore,
+            pubsub_manager,
         };
-
-        // supervise_stream owns the reconnect/backoff/shutdown loop. The backend
-        // event stream is already decoded to `payment::Event` and never yields a
-        // stream-level error, so wrap each item in `Ok`.
-        let connect_processor = Arc::clone(&processor);
-        supervise_stream(
-            policy,
-            shutdown.notified(),
-            move || {
-                let processor = Arc::clone(&connect_processor);
-                async move {
-                    processor
-                        .wait_payment_event()
-                        .await
-                        .map(|stream| stream.map(Ok::<_, std::convert::Infallible>))
-                }
-            },
-            |event| {
-                let mint = Arc::clone(&mint);
-                let localstore = Arc::clone(&localstore);
-                let pubsub_manager = Arc::clone(&pubsub_manager);
-                async move {
-                    match event {
-                        cdk_common::payment::Event::PaymentReceived(wait_payment_response) => {
-                            if let Err(e) = Self::handle_payment_notification(
-                                &localstore,
-                                &pubsub_manager,
-                                wait_payment_response,
-                            )
-                            .await
-                            {
-                                tracing::warn!("Payment notification error: {:?}", e);
-                            }
-                        }
-                        cdk_common::payment::Event::PaymentSuccessful { quote_id, details } => {
-                            tracing::info!(
-                                "Outgoing payment confirmed for quote {}: status {}",
-                                quote_id,
-                                details.status,
-                            );
-
-                            if let Err(e) = Self::handle_successful_melt_payment_event(
-                                &mint,
-                                &localstore,
-                                &pubsub_manager,
-                                &quote_id,
-                                details,
-                            )
-                            .await
-                            {
-                                tracing::warn!(
-                                    "Failed to process successful payment event for quote {}: {}",
-                                    quote_id,
-                                    e
-                                );
-                            }
-                        }
-                        cdk_common::payment::Event::PaymentFailed { quote_id, reason } => {
-                            tracing::warn!(
-                                "Outgoing payment failed for quote {}: {}",
-                                quote_id,
-                                reason,
-                            );
-
-                            if let Err(e) = Self::handle_failed_melt_payment_event(
-                                &mint,
-                                &localstore,
-                                &pubsub_manager,
-                                &quote_id,
-                            )
-                            .await
-                            {
-                                tracing::warn!(
-                                    "Failed to process failed payment event for quote {}: {}",
-                                    quote_id,
-                                    e
-                                );
-                            }
-                        }
-                    }
-                }
-            },
-        )
-        .await;
-
-        // The loop stopped because shutdown fired; run the teardown the old
-        // inner and outer shutdown arms performed.
-        processor.cancel_payment_event_stream();
+        // `supervise` owns the reconnect/backoff/shutdown loop and runs
+        // `on_shutdown` (which cancels the backend stream) on the way out.
+        waiter.supervise(shutdown.notified()).await;
         Ok(())
     }
 
