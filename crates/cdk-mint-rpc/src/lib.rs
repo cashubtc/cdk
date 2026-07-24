@@ -16,3 +16,11 @@ pub type InterceptedCdkMintClient = cdk_mint_client::CdkMintClient<
         cdk_common::grpc::VersionInterceptor,
     >,
 >;
+
+/// Type alias for KeysetServiceClient with the version header interceptor over a Channel
+pub type InterceptedKeysetServiceClient = keyset::keyset_service_client::KeysetServiceClient<
+    tonic::codegen::InterceptedService<
+        tonic::transport::Channel,
+        cdk_common::grpc::VersionInterceptor,
+    >,
+>;
