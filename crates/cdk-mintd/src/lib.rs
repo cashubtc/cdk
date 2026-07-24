@@ -95,7 +95,30 @@ const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
 #[derive(Debug, Clone)]
 struct ConfigurationActivation {
     service: config_service::ConfigurationService,
-    expected_document: String,
+    expected_document: Option<String>,
+}
+
+#[cfg(feature = "management-rpc")]
+#[derive(Debug, Clone)]
+struct ConfigurationMutationGuard {
+    service: config_service::ConfigurationService,
+}
+
+#[cfg(feature = "management-rpc")]
+#[async_trait::async_trait]
+impl cdk_mint_rpc::MintMutationGuard for ConfigurationMutationGuard {
+    async fn check(&self) -> Result<(), cdk_mint_rpc::MintMutationGuardError> {
+        match self.service.has_pending_configuration().await {
+            Ok(true) => Err(cdk_mint_rpc::MintMutationGuardError::FailedPrecondition(
+                "A configuration apply is pending; restart cdk-mintd before making management RPC changes"
+                    .to_owned(),
+            )),
+            Ok(false) => Ok(()),
+            Err(error) => Err(cdk_mint_rpc::MintMutationGuardError::Internal(format!(
+                "Could not inspect the stored configuration state: {error}"
+            ))),
+        }
+    }
 }
 
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
@@ -1686,7 +1709,12 @@ async fn start_services_with_shutdown(
             if rpc_settings.enabled {
                 let addr = rpc_settings.address.unwrap_or("127.0.0.1".to_string());
                 let port = rpc_settings.port.unwrap_or(8086);
-                let mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
+                let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
+                if let Some(activation) = activation.as_ref() {
+                    mint_rpc = mint_rpc.with_mutation_guard(Arc::new(ConfigurationMutationGuard {
+                        service: activation.service.clone(),
+                    }));
+                }
 
                 let tls_dir = rpc_settings.tls_dir.unwrap_or(_work_dir.join("tls"));
 
@@ -1726,14 +1754,12 @@ async fn start_services_with_shutdown(
     .await?;
 
     if let Some(activation) = activation {
-        if !activation
-            .service
-            .mark_applied(&activation.expected_document)
-            .await?
-        {
-            tracing::info!(
-                "A newer configuration was stored during startup and remains unapplied for the next restart."
-            );
+        if let Some(expected_document) = activation.expected_document {
+            if !activation.service.mark_applied(&expected_document).await? {
+                tracing::info!(
+                    "A newer configuration was stored during startup and remains unapplied for the next restart."
+                );
+            }
         }
     }
 
@@ -2292,9 +2318,9 @@ pub async fn run_mintd_from_database(
     let service = configuration_service(kv.clone(), &bootstrap);
     let startup = service.startup().await?;
     let force_configuration = !startup.applied;
-    let activation = (!startup.applied).then(|| ConfigurationActivation {
+    let activation = Some(ConfigurationActivation {
         service,
-        expected_document: startup.resolved.document.clone(),
+        expected_document: (!startup.applied).then(|| startup.resolved.document.clone()),
     });
     let settings = startup.resolved.settings;
 
