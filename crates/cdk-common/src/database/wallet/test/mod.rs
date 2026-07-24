@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bitcoin::bip32::DerivationPath;
 use cashu::nut00::KnownMethod;
@@ -23,7 +23,7 @@ use crate::wallet::{
     TransactionDirection, WalletSaga, WalletSagaState,
 };
 
-static COUNTER: AtomicU64 = AtomicU64::new(0);
+static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Generate a unique test ID
 fn unique_id() -> String {

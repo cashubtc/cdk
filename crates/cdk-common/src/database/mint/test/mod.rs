@@ -4,7 +4,7 @@
 //! implementation
 #![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // For derivation path parsing
 use bitcoin::bip32::DerivationPath;
@@ -144,7 +144,7 @@ where
     }
 }
 
-static COUNTER: AtomicU64 = AtomicU64::new(0);
+static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Returns a unique, random-looking Base62 string (no external crates).
 /// Not cryptographically secure, but great for ids, keys, temp names, etc.
