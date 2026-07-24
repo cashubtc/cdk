@@ -79,6 +79,11 @@ command and is never reapplied by a normal `cdk-mintd` start. Operational
 environment variables likewise do not override persisted configuration during
 startup.
 
+> Upgrading an existing mint requires a one-time import and careful preservation
+> of RPC-managed values. Follow the
+> [v0.17 cdk-mintd migration guide](../../docs/migrations/v0.17.md) before
+> starting the new daemon.
+
 ### Setup Steps
 
 ```bash
