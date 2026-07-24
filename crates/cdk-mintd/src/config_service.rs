@@ -398,7 +398,7 @@ fn prune_inactive_configuration(settings: &mut Settings) {
 
 fn resolve_secrets(settings: &mut Settings) -> Result<(), ConfigurationServiceError> {
     resolve_optional_secret(&mut settings.info.seed, "info.seed")?;
-    resolve_optional_secret(&mut settings.info.mnemonic, "info.mnemonic")?;
+    resolve_optional_trimmed_secret(&mut settings.info.mnemonic, "info.mnemonic")?;
 
     if let Some(postgres) = settings.database.postgres.as_mut() {
         resolve_secret(&mut postgres.url, "database.postgres.url")?;
@@ -418,7 +418,7 @@ fn resolve_secrets(settings: &mut Settings) -> Result<(), ConfigurationServiceEr
     #[cfg(feature = "bdk")]
     if let Some(bdk) = settings.bdk.as_mut() {
         resolve_optional_secret(&mut bdk.bitcoind_rpc_password, "bdk.bitcoind_rpc_password")?;
-        resolve_optional_secret(&mut bdk.mnemonic, "bdk.mnemonic")?;
+        resolve_optional_trimmed_secret(&mut bdk.mnemonic, "bdk.mnemonic")?;
     }
     #[cfg(feature = "ldk-node")]
     if let Some(ldk_node) = settings.ldk_node.as_mut() {
@@ -426,7 +426,7 @@ fn resolve_secrets(settings: &mut Settings) -> Result<(), ConfigurationServiceEr
             &mut ldk_node.bitcoind_rpc_password,
             "ldk_node.bitcoind_rpc_password",
         )?;
-        resolve_optional_secret(
+        resolve_optional_trimmed_secret(
             &mut ldk_node.ldk_node_mnemonic,
             "ldk_node.ldk_node_mnemonic",
         )?;
@@ -456,9 +456,34 @@ fn resolve_optional_secret(
     Ok(())
 }
 
+fn resolve_optional_trimmed_secret(
+    value: &mut Option<String>,
+    field: &'static str,
+) -> Result<(), ConfigurationServiceError> {
+    if let Some(value) = value.as_mut() {
+        resolve_trimmed_secret(value, field)?;
+    }
+    Ok(())
+}
+
 fn resolve_secret(
     value: &mut String,
     field: &'static str,
+) -> Result<(), ConfigurationServiceError> {
+    resolve_secret_with(value, field, |resolved| resolved)
+}
+
+fn resolve_trimmed_secret(
+    value: &mut String,
+    field: &'static str,
+) -> Result<(), ConfigurationServiceError> {
+    resolve_secret_with(value, field, |resolved| resolved.trim().to_owned())
+}
+
+fn resolve_secret_with(
+    value: &mut String,
+    field: &'static str,
+    normalize: impl FnOnce(String) -> String,
 ) -> Result<(), ConfigurationServiceError> {
     if value.is_empty() {
         return Ok(());
@@ -484,7 +509,7 @@ fn resolve_secret(
     } else {
         return Err(ConfigurationServiceError::LiteralSecret { field });
     };
-    let resolved = resolved.trim().to_owned();
+    let resolved = normalize(resolved);
     if resolved.is_empty() {
         return Err(ConfigurationServiceError::EmptySecret { field });
     }
@@ -716,6 +741,70 @@ engine = "sqlite"
         );
 
         let _ = std::fs::remove_file(secret_path);
+    }
+
+    #[cfg(feature = "lnbits")]
+    #[test]
+    fn opaque_environment_and_file_secrets_preserve_whitespace() {
+        let _env_lock = crate::test_utils::env_lock();
+        const ADMIN_ENV: &str = "CDK_MINTD_TEST_WHITESPACE_ADMIN_SECRET";
+        let mnemonic_path = crate::test_utils::unique_temp_path("whitespace_secret_mnemonic");
+        let invoice_path = crate::test_utils::unique_temp_path("whitespace_secret_invoice");
+        std::fs::write(&mnemonic_path, TEST_MNEMONIC_ONE).expect("write signing secret");
+        std::fs::write(&invoice_path, "\tinvoice-secret\n").expect("write invoice secret");
+        std::env::set_var(ADMIN_ENV, " admin-secret ");
+        let document = format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[ln]
+ln_backend = "lnbits"
+
+[lnbits]
+admin_api_key = "env:{ADMIN_ENV}"
+invoice_api_key = "file:{}"
+lnbits_api = "https://lnbits.example.com"
+
+[database]
+engine = "sqlite"
+"#,
+            mnemonic_path.display(),
+            invoice_path.display()
+        );
+
+        let resolved = ConfigurationService::validate_document(&document)
+            .expect("opaque secrets containing whitespace should validate");
+        let lnbits = resolved
+            .settings
+            .lnbits
+            .expect("lnbits configuration should be present");
+        assert_eq!(lnbits.admin_api_key, " admin-secret ");
+        assert_eq!(lnbits.invoice_api_key, "\tinvoice-secret\n");
+
+        std::env::remove_var(ADMIN_ENV);
+        let _ = std::fs::remove_file(mnemonic_path);
+        let _ = std::fs::remove_file(invoice_path);
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn mnemonic_secret_trims_surrounding_whitespace() {
+        let mnemonic_path = crate::test_utils::unique_temp_path("trimmed_config_mnemonic");
+        std::fs::write(&mnemonic_path, format!("  {TEST_MNEMONIC_ONE}\n"))
+            .expect("write signing secret");
+
+        let resolved = ConfigurationService::validate_document(&document(
+            &format!("file:{}", mnemonic_path.display()),
+            "trimmed",
+        ))
+        .expect("mnemonic surrounding whitespace should be normalized");
+        assert_eq!(
+            resolved.settings.info.mnemonic.as_deref(),
+            Some(TEST_MNEMONIC_ONE)
+        );
+
+        let _ = std::fs::remove_file(mnemonic_path);
     }
 
     #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
