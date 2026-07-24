@@ -55,11 +55,38 @@ pub(crate) struct CdkAlephBftLatencyEvent {
     pub(crate) elapsed: Duration,
 }
 
+/// Test-only network-pump counters captured in the same scoped window.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CdkAlephBftNetworkProbeStats {
+    /// Outbound messages successfully queued by AlephBFT.
+    pub(crate) outbound_messages_enqueued: usize,
+    /// Outbound messages dropped because the bounded bridge was full.
+    pub(crate) outbound_messages_dropped: usize,
+    /// Largest observed outbound bridge depth.
+    pub(crate) max_outbound_queue_depth: usize,
+    /// Network-pump ticks that performed work.
+    pub(crate) pump_ticks: usize,
+    /// Fresh outbound messages drained by the pump.
+    pub(crate) messages_drained: usize,
+    /// Encoded bytes drained before per-peer fan-out.
+    pub(crate) encoded_bytes_drained: usize,
+    /// Retry messages drained by the pump.
+    pub(crate) retry_messages_drained: usize,
+    /// Largest retry queue observed after a pump tick.
+    pub(crate) max_retry_queue_depth: usize,
+    /// Retry deliveries evicted from the bounded retry queue.
+    pub(crate) retry_deliveries_dropped: usize,
+    /// Pump ticks that left fresh outbound messages queued.
+    pub(crate) backlogged_pump_ticks: usize,
+}
+
 #[cfg(test)]
 #[derive(Debug)]
 struct CdkAlephBftLatencyRecorderState {
     started_at: Instant,
     events: Vec<CdkAlephBftLatencyEvent>,
+    network: CdkAlephBftNetworkProbeStats,
     changed: Arc<tokio::sync::Notify>,
 }
 
@@ -100,6 +127,7 @@ impl CdkAlephBftLatencyRecorder {
         let inner = Arc::new(Mutex::new(CdkAlephBftLatencyRecorderState {
             started_at: Instant::now(),
             events: Vec::new(),
+            network: CdkAlephBftNetworkProbeStats::default(),
             changed: Arc::new(tokio::sync::Notify::new()),
         }));
         *ACTIVE_RECORDER
@@ -130,6 +158,14 @@ impl CdkAlephBftLatencyRecorder {
             .into_iter()
             .filter(|event| event.operation_ids.contains(&operation_id))
             .collect()
+    }
+
+    /// Return the network-pump counters captured in this recorder's window.
+    pub(crate) fn network_stats(&self) -> CdkAlephBftNetworkProbeStats {
+        self.inner
+            .lock()
+            .expect("AlephBFT latency recorder state mutex poisoned")
+            .network
     }
 
     /// Wait until a stage is recorded for an operation.
@@ -230,4 +266,79 @@ fn record_for_test(stage: CdkAlephBftLatencyStage, operation_ids: Vec<Federation
         elapsed,
     });
     state.changed.notify_waiters();
+}
+
+/// Record one successfully queued outbound AlephBFT message.
+#[cfg(test)]
+pub(crate) fn record_network_outbound_enqueued(queue_depth: usize) {
+    with_active_recorder(|state| {
+        state.network.outbound_messages_enqueued =
+            state.network.outbound_messages_enqueued.saturating_add(1);
+        state.network.max_outbound_queue_depth =
+            state.network.max_outbound_queue_depth.max(queue_depth);
+    });
+}
+
+/// Record one outbound AlephBFT message dropped by bounded backpressure.
+#[cfg(test)]
+pub(crate) fn record_network_outbound_dropped() {
+    with_active_recorder(|state| {
+        state.network.outbound_messages_dropped =
+            state.network.outbound_messages_dropped.saturating_add(1);
+    });
+}
+
+/// Record one completed network-pump tick.
+#[cfg(test)]
+pub(crate) fn record_network_pump_tick(
+    messages_drained: usize,
+    encoded_bytes: usize,
+    retry_messages_drained: usize,
+    retry_queue_depth: usize,
+    retry_deliveries_dropped: usize,
+    outbound_queue_depth: usize,
+) {
+    if messages_drained == 0 && retry_messages_drained == 0 {
+        return;
+    }
+    with_active_recorder(|state| {
+        state.network.pump_ticks = state.network.pump_ticks.saturating_add(1);
+        state.network.messages_drained = state
+            .network
+            .messages_drained
+            .saturating_add(messages_drained);
+        state.network.encoded_bytes_drained = state
+            .network
+            .encoded_bytes_drained
+            .saturating_add(encoded_bytes);
+        state.network.retry_messages_drained = state
+            .network
+            .retry_messages_drained
+            .saturating_add(retry_messages_drained);
+        state.network.max_retry_queue_depth =
+            state.network.max_retry_queue_depth.max(retry_queue_depth);
+        state.network.retry_deliveries_dropped = state
+            .network
+            .retry_deliveries_dropped
+            .saturating_add(retry_deliveries_dropped);
+        if outbound_queue_depth > 0 {
+            state.network.backlogged_pump_ticks =
+                state.network.backlogged_pump_ticks.saturating_add(1);
+        }
+    });
+}
+
+#[cfg(test)]
+fn with_active_recorder(update: impl FnOnce(&mut CdkAlephBftLatencyRecorderState)) {
+    let Some(inner) = ACTIVE_RECORDER
+        .lock()
+        .expect("AlephBFT latency recorder mutex poisoned")
+        .clone()
+    else {
+        return;
+    };
+    let mut state = inner
+        .lock()
+        .expect("AlephBFT latency recorder state mutex poisoned");
+    update(&mut state);
 }

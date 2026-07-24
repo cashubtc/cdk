@@ -238,6 +238,249 @@ fn spawn_healthy_federation_peer_sync_tasks(
         .collect()
 }
 
+fn aleph_bft_swap_benchmark_env(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .unwrap_or_else(|_| panic!("{name} must be a positive integer"))
+        })
+        .unwrap_or(default)
+}
+
+fn aleph_bft_swap_benchmark_options(
+    unit_interval_ms: u64,
+    pump_messages_per_tick: usize,
+) -> FederationAlephBftLiveSessionOptions {
+    let mut delay_config = default_delay_config();
+    let startup_delay = (delay_config.unit_creation_delay)(0);
+    delay_config.unit_creation_delay = Arc::new(move |round| {
+        if round == 0 {
+            startup_delay
+        } else {
+            Duration::from_millis(unit_interval_ms)
+        }
+    });
+
+    FederationAlephBftLiveSessionOptions::new(CdkAlephBftNetworkPumpConfig {
+        session_id: 0,
+        max_messages_per_tick: pump_messages_per_tick,
+        max_peer_deliveries_per_message: 64,
+    })
+    .with_delay_config(delay_config)
+}
+
+fn aleph_bft_swap_benchmark_percentile(sorted: &[f64], percentile: usize) -> f64 {
+    let rank = sorted.len().saturating_mul(percentile).div_ceil(100);
+    sorted[rank.saturating_sub(1)]
+}
+
+fn aleph_bft_swap_benchmark_contains_application_data(
+    request: &FederationSignedRequest<FederationAlephBftNetworkMessageRequest>,
+) -> bool {
+    request
+        .payload
+        .message_bytes()
+        .ok()
+        .and_then(|bytes| {
+            let mut input = &bytes[..];
+            CdkAlephBftNetworkData::decode(&mut input)
+                .ok()
+                .filter(|_| input.is_empty())
+        })
+        .is_some_and(|message| !message.included_data().is_empty())
+}
+
+#[tokio::test]
+#[ignore = "manual release-mode AlephBFT steady-state swap benchmark"]
+async fn benchmark_aleph_bft_serial_swaps() {
+    let member_count = aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_MEMBERS", 5);
+    let signature_threshold =
+        aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_SIGNATURE_THRESHOLD", 3);
+    let unit_interval_ms =
+        aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_UNIT_INTERVAL_MS", 500);
+    let pump_messages_per_tick =
+        aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_PUMP_MESSAGES_PER_TICK", 1);
+    let swap_count = aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_SWAPS", 10);
+    let network_rtt_ms =
+        aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_NETWORK_RTT_MS", 0);
+    let network_jitter_percent =
+        aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_NETWORK_JITTER_PERCENT", 20);
+    let network_jitter_seed =
+        aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_NETWORK_JITTER_SEED", 1);
+    assert!(member_count >= 4, "benchmark requires at least four members");
+    assert!(
+        signature_threshold > 0 && signature_threshold <= member_count,
+        "signature threshold must fit the member count"
+    );
+    assert!(unit_interval_ms > 0, "unit interval must be positive");
+    assert!(
+        pump_messages_per_tick > 0,
+        "pump messages per tick must be positive"
+    );
+    assert!(swap_count >= 10, "benchmark requires at least ten swaps");
+    assert!(
+        network_jitter_percent <= 100,
+        "network jitter percent must not exceed 100"
+    );
+
+    let latency_reservation = CdkAlephBftLatencyRecorder::reserve().await;
+    let startup_started = std::time::Instant::now();
+    let session = start_multi_member_aleph_bft_live_session(
+        u16::try_from(member_count).expect("member count fits u16"),
+        u16::try_from(signature_threshold).expect("signature threshold fits u16"),
+        aleph_bft_swap_benchmark_options(
+            u64::try_from(unit_interval_ms).expect("unit interval fits u64"),
+            pump_messages_per_tick,
+        ),
+    )
+    .await
+    .expect("start swap benchmark federation");
+    for state in &session.states {
+        state.restore_federation_startup_readiness().await;
+    }
+
+    let warmup_operation = submit_healthy_federation_swap_batch(&session, 0, 1, 1).await[0];
+    for state in &session.states {
+        wait_for_applied_operation_with_context(state, warmup_operation, "benchmark warmup").await;
+    }
+    let startup_ms = startup_started.elapsed().as_secs_f64() * 1_000.0;
+    session.transport.set_aleph_bft_network_latency_model(
+        Duration::from_millis(u64::try_from(network_rtt_ms).expect("network RTT fits u64")),
+        u8::try_from(network_jitter_percent).expect("network jitter percent fits u8"),
+        u64::try_from(network_jitter_seed).expect("network jitter seed fits u64"),
+    );
+
+    let request_start = session
+        .transport
+        .aleph_bft_network_message_requests()
+        .len();
+    let latency = latency_reservation.install();
+    let mut operation_ids = Vec::with_capacity(swap_count);
+    let mut operation_latencies_ms = Vec::with_capacity(swap_count);
+    let steady_started = std::time::Instant::now();
+    for index in 1..=swap_count {
+        let operation_id =
+            submit_healthy_federation_swap_batch(&session, index, 1, 1).await[0];
+        for state in &session.states {
+            wait_for_applied_operation_with_context(
+                state,
+                operation_id,
+                "serial swap benchmark",
+            )
+            .await;
+        }
+        let events = latency.events_for_operation(operation_id);
+        assert_latency_stage_order(&events, LATENCY_EXPECTED_STAGES);
+        let elapsed = latency_stage_delta(
+            &events,
+            CdkAlephBftLatencyStage::SubmitQueued,
+            CdkAlephBftLatencyStage::WaiterReturned,
+        )
+        .expect("serial swap submit-to-waiter latency");
+        operation_ids.push(operation_id);
+        operation_latencies_ms.push(elapsed.as_secs_f64() * 1_000.0);
+    }
+    let steady_state_ms = steady_started.elapsed().as_secs_f64() * 1_000.0;
+    let request_end = session
+        .transport
+        .aleph_bft_network_message_requests()
+        .len();
+    let network = latency.network_stats();
+    drop(latency);
+
+    let mut expected_operation_ids = Vec::with_capacity(operation_ids.len() + 1);
+    expected_operation_ids.push(warmup_operation);
+    expected_operation_ids.extend(operation_ids.iter().copied());
+    assert_multi_member_journal_and_state_converged(&session, &expected_operation_ids).await;
+    for state in &session.states {
+        assert_eq!(
+            state
+                .federation_sync_transition_stats()
+                .await
+                .expect("benchmark sync transition stats"),
+            crate::FederationSyncTransitionStats::default(),
+            "healthy benchmark member must not enter lagging or catch-up"
+        );
+    }
+
+    let requests = session.transport.aleph_bft_network_message_requests();
+    let measured_requests = &requests[request_start..request_end];
+    let application_messages = measured_requests
+        .iter()
+        .filter(|request| aleph_bft_swap_benchmark_contains_application_data(request))
+        .count();
+    let total_messages = measured_requests.len();
+    let helper_messages = total_messages.saturating_sub(application_messages);
+    let delivery_bytes = measured_requests
+        .iter()
+        .map(|request| {
+            request
+                .payload
+                .ensure_admissible_size()
+                .expect("benchmark network message size")
+        })
+        .sum::<usize>();
+    let request_body_bytes = measured_requests
+        .iter()
+        .map(|request| {
+            serde_json::to_vec(request)
+                .expect("serialize benchmark network request")
+                .len()
+        })
+        .sum::<usize>();
+    let steady_state_seconds = steady_state_ms / 1_000.0;
+    let request_body_kbit_per_second =
+        request_body_bytes as f64 * 8.0 / 1_000.0 / steady_state_seconds;
+
+    let mut sorted = operation_latencies_ms.clone();
+    sorted.sort_by(f64::total_cmp);
+    let median_ms = if sorted.len() % 2 == 0 {
+        let right = sorted.len() / 2;
+        (sorted[right - 1] + sorted[right]) / 2.0
+    } else {
+        sorted[sorted.len() / 2]
+    };
+    let result = serde_json::json!({
+        "members": member_count,
+        "signature_threshold": signature_threshold,
+        "unit_interval_ms": unit_interval_ms,
+        "pump_messages_per_tick": pump_messages_per_tick,
+        "network_rtt_ms": network_rtt_ms,
+        "network_jitter_percent": network_jitter_percent,
+        "network_jitter_seed": network_jitter_seed,
+        "swaps": swap_count,
+        "startup_ms": startup_ms,
+        "steady_state_ms": steady_state_ms,
+        "latencies_ms": operation_latencies_ms,
+        "min_ms": sorted[0],
+        "median_ms": median_ms,
+        "p95_ms": aleph_bft_swap_benchmark_percentile(&sorted, 95),
+        "max_ms": sorted[sorted.len() - 1],
+        "total_deliveries": total_messages,
+        "application_deliveries": application_messages,
+        "helper_deliveries": helper_messages,
+        "delivery_bytes": delivery_bytes,
+        "request_body_bytes": request_body_bytes,
+        "request_body_kbit_per_second": request_body_kbit_per_second,
+        "outbound_messages_enqueued": network.outbound_messages_enqueued,
+        "outbound_messages_dropped": network.outbound_messages_dropped,
+        "max_outbound_queue_depth": network.max_outbound_queue_depth,
+        "pump_ticks": network.pump_ticks,
+        "messages_drained": network.messages_drained,
+        "encoded_bytes_drained": network.encoded_bytes_drained,
+        "retry_messages_drained": network.retry_messages_drained,
+        "max_retry_queue_depth": network.max_retry_queue_depth,
+        "retry_deliveries_dropped": network.retry_deliveries_dropped,
+        "backlogged_pump_ticks": network.backlogged_pump_ticks,
+    });
+    println!(
+        "ALEPH_BFT_SWAP_BENCH {}",
+        serde_json::to_string(&result).expect("serialize swap benchmark result")
+    );
+}
+
 #[tokio::test]
 #[ignore = "process-level federation stress regression"]
 async fn aleph_bft_live_healthy_swaps_do_not_trigger_catch_up() {
@@ -726,4 +969,3 @@ async fn wait_for_aleph_bft_backup_bytes_longer_than(
     .await
     .expect("AlephBFT backup bytes did not grow")
 }
-

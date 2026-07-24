@@ -882,6 +882,15 @@ where
                 .await
                 {
                     Ok(outcome) => {
+                        #[cfg(test)]
+                        crate::federation::aleph_bft_latency::record_network_pump_tick(
+                            outcome.messages_drained,
+                            outcome.encoded_bytes,
+                            outcome.retry_messages_drained,
+                            outcome.retry_queue_len,
+                            outcome.retry_deliveries_dropped,
+                            network_handle.outbound_queue_len(),
+                        );
                         if outcome.messages_drained > 0 || outcome.retry_messages_drained > 0 {
                             let remote_failed_members = outcome.remote_failed_members.len();
                             let remote_requeued_members = outcome.remote_requeued_members.len();

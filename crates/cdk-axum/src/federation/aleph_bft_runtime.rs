@@ -248,6 +248,12 @@ impl<D> CdkAlephBftNetworkHandle<D> {
     pub(crate) fn try_next_outgoing(&mut self) -> Option<CdkAlephBftOutboundMessage<D>> {
         self.outgoing.try_recv().ok()
     }
+
+    /// Return the current outbound bridge depth for scoped test diagnostics.
+    #[cfg(test)]
+    pub(crate) fn outbound_queue_len(&self) -> usize {
+        self.outgoing.len()
+    }
 }
 
 #[async_trait::async_trait]
@@ -256,19 +262,27 @@ where
     D: Send + 'static,
 {
     fn send(&self, data: D, recipient: Recipient) {
-        if let Err(err) = self
+        match self
             .outgoing
             .try_send(CdkAlephBftOutboundMessage { data, recipient })
         {
-            match err {
-                mpsc::error::TrySendError::Full(_) => {
-                    tracing::debug!(
-                        "AlephBFT network outbound queue is full; dropping message, rebroadcast will cover"
-                    );
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    tracing::warn!("AlephBFT network outbound bridge is closed");
-                }
+            Ok(()) => {
+                #[cfg(test)]
+                crate::federation::aleph_bft_latency::record_network_outbound_enqueued(
+                    self.outgoing
+                        .max_capacity()
+                        .saturating_sub(self.outgoing.capacity()),
+                );
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                #[cfg(test)]
+                crate::federation::aleph_bft_latency::record_network_outbound_dropped();
+                tracing::debug!(
+                    "AlephBFT network outbound queue is full; dropping message, rebroadcast will cover"
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::warn!("AlephBFT network outbound bridge is closed");
             }
         }
     }

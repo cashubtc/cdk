@@ -922,11 +922,42 @@ struct RouterFederationTransportFaults {
     post_response_failures_after_delivery: BTreeMap<String, usize>,
     post_delays_before_delivery: BTreeMap<(String, MemberId), VecDeque<Duration>>,
     aleph_bft_network_message_delays: VecDeque<Duration>,
+    aleph_bft_network_latency_model: Option<AlephBftNetworkLatencyModel>,
     aleph_bft_network_message_duplicate_replays: usize,
     aleph_bft_network_message_reorder_once: bool,
     aleph_bft_network_message_reorders_completed: usize,
     held_aleph_bft_data_senders: BTreeSet<MemberId>,
     blocked_federation_links: BTreeSet<(MemberId, MemberId)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AlephBftNetworkLatencyModel {
+    nominal_round_trip: Duration,
+    jitter_percent: u8,
+    state: u64,
+}
+
+impl AlephBftNetworkLatencyModel {
+    fn next_delays(&mut self) -> (Duration, Duration) {
+        self.state = self
+            .state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let nominal_micros =
+            u64::try_from(self.nominal_round_trip.as_micros()).expect("test RTT fits u64");
+        let jitter_micros = nominal_micros
+            .saturating_mul(u64::from(self.jitter_percent))
+            / 100;
+        let sample_width = jitter_micros.saturating_mul(2).saturating_add(1);
+        let sampled_round_trip_micros = nominal_micros
+            .saturating_sub(jitter_micros)
+            .saturating_add(self.state % sample_width);
+        let outbound_micros = sampled_round_trip_micros / 2;
+        (
+            Duration::from_micros(outbound_micros),
+            Duration::from_micros(sampled_round_trip_micros - outbound_micros),
+        )
+    }
 }
 
 enum AlephBftNetworkMessageReorderDecision {
@@ -969,6 +1000,7 @@ impl std::fmt::Debug for RouterFederationTransportRegistry {
                             faults.post_response_failures_after_delivery.len(),
                             faults.post_delays_before_delivery.len(),
                             faults.aleph_bft_network_message_delays.len(),
+                            faults.aleph_bft_network_latency_model,
                             faults.aleph_bft_network_message_duplicate_replays,
                             faults.aleph_bft_network_message_reorder_once,
                             faults.aleph_bft_network_message_reorders_completed,
@@ -1087,6 +1119,30 @@ impl RouterFederationTransportRegistry {
             .aleph_bft_network_message_delays
             .extend(delays);
         self
+    }
+
+    fn set_aleph_bft_network_latency_model(
+        &self,
+        nominal_round_trip: Duration,
+        jitter_percent: u8,
+        seed: u64,
+    ) {
+        assert!(
+            jitter_percent <= 100,
+            "network jitter percent must not exceed 100"
+        );
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .aleph_bft_network_latency_model = if nominal_round_trip.is_zero() {
+            None
+        } else {
+            Some(AlephBftNetworkLatencyModel {
+                nominal_round_trip,
+                jitter_percent,
+                state: seed,
+            })
+        };
     }
 
     fn with_aleph_bft_network_message_duplicate_replays(self, count: usize) -> Self {
@@ -1264,6 +1320,16 @@ impl RouterFederationTransportRegistry {
             .expect("router transport faults lock")
             .aleph_bft_network_message_delays
             .pop_front()
+            .unwrap_or_default()
+    }
+
+    fn next_aleph_bft_network_round_trip_delays(&self) -> (Duration, Duration) {
+        self.faults
+            .lock()
+            .expect("router transport faults lock")
+            .aleph_bft_network_latency_model
+            .as_mut()
+            .map(AlephBftNetworkLatencyModel::next_delays)
             .unwrap_or_default()
     }
 
@@ -2062,12 +2128,20 @@ impl Transport for RouterFederationTransportRegistry {
                 signed_request.sender
             )));
         }
-        if is_aleph_bft_network_message {
+        let (_, response_network_delay) = if is_aleph_bft_network_message {
             let delay = self.pop_aleph_bft_network_message_delay();
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
             }
-        }
+            let (request_delay, response_delay) =
+                self.next_aleph_bft_network_round_trip_delays();
+            if !request_delay.is_zero() {
+                tokio::time::sleep(request_delay).await;
+            }
+            (request_delay, response_delay)
+        } else {
+            (Duration::ZERO, Duration::ZERO)
+        };
         let reorder_decision = if is_aleph_bft_network_message {
             self.aleph_bft_network_message_reorder_decision()
         } else {
@@ -2116,6 +2190,9 @@ impl Transport for RouterFederationTransportRegistry {
             }
         }
         let response_body = response_body_result?;
+        if !response_network_delay.is_zero() {
+            tokio::time::sleep(response_network_delay).await;
+        }
         if is_aleph_bft_network_message && self.take_aleph_bft_network_message_duplicate_replay() {
             let _ = router_transport_post_once_bytes(&router, &path, payload_bytes).await;
         }
