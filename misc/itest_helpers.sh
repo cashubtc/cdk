@@ -30,15 +30,22 @@ run_bin_bg() {
     fi
 }
 
-# Helper: run cdk-mintd from $PATH (Nix pre-built) or fall back to cargo run
-# with grpc-processor feature
+# Helper: explicitly initialize cdk-mintd from a file, then run it from $PATH
+# (Nix pre-built) or fall back to cargo run with the grpc-processor feature.
 run_mintd_bg() {
+    local work_dir="$1"
+    local config_file="$2"
+
     if command -v cdk-mintd &>/dev/null; then
         echo "Using pre-built binary: cdk-mintd"
-        cdk-mintd &
+        cdk-mintd --work-dir "$work_dir" config init --file "$config_file" || return 1
+        cdk-mintd --work-dir "$work_dir" &
     else
         echo "Pre-built cdk-mintd not found, falling back to cargo run"
-        cargo run --bin cdk-mintd --no-default-features --features grpc-processor &
+        cargo run --bin cdk-mintd --no-default-features --features grpc-processor,sqlite -- \
+            --work-dir "$work_dir" config init --file "$config_file" || return 1
+        cargo run --bin cdk-mintd --no-default-features --features grpc-processor,sqlite -- \
+            --work-dir "$work_dir" &
     fi
 }
 

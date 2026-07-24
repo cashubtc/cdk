@@ -166,6 +166,138 @@ export CDK_TEST_MINT_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
 export CDK_TEST_MINT_URL_2="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_1"
 export CDK_TEST_MINT_URL_3="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_2"
 
+MINTD_DATABASE_ENGINE=$(printf '%s' "$CDK_MINTD_DATABASE" | tr '[:upper:]' '[:lower:]')
+
+cat > "$CDK_ITESTS_DIR/cln_mint/config.toml" << EOF
+[info]
+url = "$CDK_TEST_MINT_URL"
+listen_host = "$CDK_ITESTS_MINT_ADDR"
+listen_port = $CDK_ITESTS_MINT_PORT_0
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[info.logging]
+output = "both"
+console_level = "debug"
+file_level = "debug"
+
+[database]
+engine = "$MINTD_DATABASE_ENGINE"
+
+[database.postgres]
+url = "env:CDK_MINTD_DATABASE_URL"
+
+[[ln]]
+ln_backend = "cln"
+unit = "sat"
+
+[cln]
+rpc_path = "$CDK_ITESTS_DIR/cln/one/regtest/lightning-rpc"
+
+[onchain]
+onchain_backend = "bdk"
+
+[bdk]
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+network = "regtest"
+chain_source_type = "bitcoinrpc"
+bitcoind_rpc_host = "127.0.0.1"
+bitcoind_rpc_port = 18443
+bitcoind_rpc_user = "testuser"
+bitcoind_rpc_password = "env:CDK_REGTEST_BITCOIND_RPC_PASSWORD"
+num_confs = 1
+EOF
+
+cat > "$CDK_ITESTS_DIR/lnd_mint/config.toml" << EOF
+[info]
+url = "$CDK_TEST_MINT_URL_2"
+listen_host = "$CDK_ITESTS_MINT_ADDR"
+listen_port = $CDK_ITESTS_MINT_PORT_1
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[info.logging]
+output = "both"
+console_level = "debug"
+file_level = "debug"
+
+[database]
+engine = "$MINTD_DATABASE_ENGINE"
+
+[database.postgres]
+url = "env:CDK_MINTD_DATABASE_URL"
+
+[[ln]]
+ln_backend = "lnd"
+unit = "sat"
+
+[lnd]
+address = "https://localhost:10010"
+cert_file = "$CDK_ITESTS_DIR/lnd/two/tls.cert"
+macaroon_file = "$CDK_ITESTS_DIR/lnd/two/data/chain/bitcoin/regtest/admin.macaroon"
+
+[onchain]
+onchain_backend = "bdk"
+
+[bdk]
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+network = "regtest"
+chain_source_type = "bitcoinrpc"
+bitcoind_rpc_host = "127.0.0.1"
+bitcoind_rpc_port = 18443
+bitcoind_rpc_user = "testuser"
+bitcoind_rpc_password = "env:CDK_REGTEST_BITCOIND_RPC_PASSWORD"
+num_confs = 1
+EOF
+
+cat > "$CDK_ITESTS_DIR/ldk_node_mint/config.toml" << EOF
+[info]
+url = "$CDK_TEST_MINT_URL_3"
+listen_host = "$CDK_ITESTS_MINT_ADDR"
+listen_port = $CDK_ITESTS_MINT_PORT_2
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[info.logging]
+output = "both"
+console_level = "debug"
+file_level = "debug"
+
+[database]
+engine = "$MINTD_DATABASE_ENGINE"
+
+[database.postgres]
+url = "env:CDK_MINTD_DATABASE_URL"
+
+[[ln]]
+ln_backend = "ldk-node"
+unit = "sat"
+
+[ldk_node]
+bitcoin_network = "regtest"
+chain_source_type = "bitcoinrpc"
+bitcoind_rpc_host = "127.0.0.1"
+bitcoind_rpc_port = 18443
+bitcoind_rpc_user = "testuser"
+bitcoind_rpc_password = "env:CDK_REGTEST_BITCOIND_RPC_PASSWORD"
+storage_dir_path = "$CDK_ITESTS_DIR/ldk_mint"
+ldk_node_host = "127.0.0.1"
+ldk_node_port = 8090
+gossip_source_type = "p2p"
+fee_percent = 0.02
+reserve_fee_min = 2
+
+[onchain]
+onchain_backend = "bdk"
+
+[bdk]
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+network = "regtest"
+chain_source_type = "bitcoinrpc"
+bitcoind_rpc_host = "127.0.0.1"
+bitcoind_rpc_port = 18443
+bitcoind_rpc_user = "testuser"
+bitcoind_rpc_password = "env:CDK_REGTEST_BITCOIND_RPC_PASSWORD"
+num_confs = 1
+EOF
+
 # Create state file for other terminal sessions
 ENV_FILE="/tmp/cdk_regtest_env"
 echo "export CDK_ITESTS_DIR=\"$CDK_ITESTS_DIR\"" > "$ENV_FILE"
@@ -173,6 +305,7 @@ echo "export CDK_TEST_MINT_URL=\"$CDK_TEST_MINT_URL\"" >> "$ENV_FILE"
 echo "export CDK_TEST_MINT_URL_2=\"$CDK_TEST_MINT_URL_2\"" >> "$ENV_FILE"
 echo "export CDK_TEST_MINT_URL_3=\"$CDK_TEST_MINT_URL_3\"" >> "$ENV_FILE"
 echo "export CDK_REGTEST_PID=\"$CDK_REGTEST_PID\"" >> "$ENV_FILE"
+echo "export CDK_MINTD_DATABASE=\"$CDK_MINTD_DATABASE\"" >> "$ENV_FILE"
 
 # Get the project root directory (where justfile is located)
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -180,125 +313,77 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Create environment setup scripts for mprocs to use
 cat > "$CDK_ITESTS_DIR/start_cln_mint.sh" << EOF
 #!/usr/bin/env bash
+set -e
+
 cd "$PROJECT_ROOT"
-export CDK_MINTD_CLN_RPC_PATH="$CDK_ITESTS_DIR/cln/one/regtest/lightning-rpc"
-export CDK_MINTD_URL="$CDK_TEST_MINT_URL"
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/cln_mint"
-export CDK_MINTD_LISTEN_HOST="$CDK_ITESTS_MINT_ADDR"
-export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_0
-export CDK_MINTD_LN_BACKEND="cln"
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
-export CDK_MINTD_LOGGING_OUTPUT="both"
-export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
-export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
 export RUST_BACKTRACE=1
 export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
-export CDK_MINTD_BDK_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal"
-export CDK_MINTD_ONCHAIN_BACKEND="bdk"
-export CDK_MINTD_BDK_BITCOIND_RPC_HOST="127.0.0.1"
-export CDK_MINTD_BDK_BITCOIND_RPC_PORT=18443
-export CDK_MINTD_BDK_BITCOIND_RPC_USER="testuser"
-export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
-export CDK_MINTD_BDK_NETWORK="regtest"
-export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
-export CDK_MINTD_BDK_NUM_CONFS=1
+export CDK_REGTEST_BITCOIND_RPC_PASSWORD="testpass"
 
 echo "Starting CLN Mint on port 8085..."
 echo "Project root: $PROJECT_ROOT"
 echo "Working directory: \$CDK_MINTD_WORK_DIR"
-echo "CLN RPC path: \$CDK_MINTD_CLN_RPC_PATH"
 echo "Database type: \$CDK_MINTD_DATABASE"
-echo "Logging: \$CDK_MINTD_LOGGING_OUTPUT (console: \$CDK_MINTD_LOGGING_CONSOLE_LEVEL, file: \$CDK_MINTD_LOGGING_FILE_LEVEL)"
 echo "---"
 
-exec cargo run --bin cdk-mintd
+if ! cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config show >/dev/null 2>&1; then
+    cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --file "\$CDK_MINTD_WORK_DIR/config.toml"
+fi
+
+exec cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR"
 EOF
 
 cat > "$CDK_ITESTS_DIR/start_lnd_mint.sh" << EOF
 #!/usr/bin/env bash
+set -e
+
 cd "$PROJECT_ROOT"
-export CDK_MINTD_LND_ADDRESS="https://localhost:10010"
-export CDK_MINTD_LND_CERT_FILE="$CDK_ITESTS_DIR/lnd/two/tls.cert"
-export CDK_MINTD_LND_MACAROON_FILE="$CDK_ITESTS_DIR/lnd/two/data/chain/bitcoin/regtest/admin.macaroon"
-export CDK_MINTD_URL="$CDK_TEST_MINT_URL_2"
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/lnd_mint"
-export CDK_MINTD_LISTEN_HOST="$CDK_ITESTS_MINT_ADDR"
-export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_1
-export CDK_MINTD_LN_BACKEND="lnd"
 export CDK_MINTD_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
-export CDK_MINTD_LOGGING_OUTPUT="both"
-export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
-export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
 export RUST_BACKTRACE=1
 export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
-export CDK_MINTD_BDK_MNEMONIC="cattle gold bind busy sound reduce tone addict baby spend february strategy"
-export CDK_MINTD_ONCHAIN_BACKEND="bdk"
-export CDK_MINTD_BDK_BITCOIND_RPC_HOST="127.0.0.1"
-export CDK_MINTD_BDK_BITCOIND_RPC_PORT=18443
-export CDK_MINTD_BDK_BITCOIND_RPC_USER="testuser"
-export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
-export CDK_MINTD_BDK_NETWORK="regtest"
-export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
-export CDK_MINTD_BDK_NUM_CONFS=1
+export CDK_REGTEST_BITCOIND_RPC_PASSWORD="testpass"
 
 echo "Starting LND Mint on port 8087..."
 echo "Project root: $PROJECT_ROOT"
 echo "Working directory: \$CDK_MINTD_WORK_DIR"
-echo "LND address: \$CDK_MINTD_LND_ADDRESS"
 echo "Database type: \$CDK_MINTD_DATABASE"
-echo "Logging: \$CDK_MINTD_LOGGING_OUTPUT (console: \$CDK_MINTD_LOGGING_CONSOLE_LEVEL, file: \$CDK_MINTD_LOGGING_FILE_LEVEL)"
 echo "---"
 
-exec cargo run --bin cdk-mintd
+if ! cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config show >/dev/null 2>&1; then
+    cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --file "\$CDK_MINTD_WORK_DIR/config.toml"
+fi
+
+exec cargo run --bin cdk-mintd -- --work-dir "\$CDK_MINTD_WORK_DIR"
 EOF
 
 cat > "$CDK_ITESTS_DIR/start_ldk_node_mint.sh" << EOF
 #!/usr/bin/env bash
+set -e
+
 cd "$PROJECT_ROOT"
-export CDK_MINTD_URL="$CDK_TEST_MINT_URL_2"
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR/ldk_node_mint"
-export CDK_MINTD_LISTEN_HOST="$CDK_ITESTS_MINT_ADDR"
-export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_2
-export CDK_MINTD_LN_BACKEND="ldk-node"
-export CDK_MINTD_LOGGING_CONSOLE_LEVEL="debug"
-export CDK_MINTD_LOGGING_FILE_LEVEL="debug"
 export CDK_MINTD_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 export RUST_BACKTRACE=1
 export CDK_MINTD_DATABASE="$CDK_MINTD_DATABASE"
-export CDK_MINTD_BDK_MNEMONIC="abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-export CDK_MINTD_ONCHAIN_BACKEND="bdk"
-export CDK_MINTD_BDK_BITCOIND_RPC_HOST="127.0.0.1"
-export CDK_MINTD_BDK_BITCOIND_RPC_PORT=18443
-export CDK_MINTD_BDK_BITCOIND_RPC_USER="testuser"
-export CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD="testpass"
-export CDK_MINTD_BDK_NETWORK="regtest"
-export CDK_MINTD_BDK_CHAIN_SOURCE_TYPE="bitcoinrpc"
-export CDK_MINTD_BDK_NUM_CONFS=1
-
-# LDK Node specific environment variables
-export CDK_MINTD_LDK_NODE_BITCOIN_NETWORK="regtest"
-export CDK_MINTD_LDK_NODE_CHAIN_SOURCE_TYPE="bitcoinrpc"
-export CDK_MINTD_LDK_NODE_BITCOIND_RPC_HOST="127.0.0.1"
-export CDK_MINTD_LDK_NODE_BITCOIND_RPC_PORT=18443
-export CDK_MINTD_LDK_NODE_BITCOIND_RPC_USER="testuser"
-export CDK_MINTD_LDK_NODE_BITCOIND_RPC_PASSWORD="testpass"
-export CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH="$CDK_ITESTS_DIR/ldk_mint"
-export CDK_MINTD_LDK_NODE_LDK_NODE_HOST="127.0.0.1"
-export CDK_MINTD_LDK_NODE_LDK_NODE_PORT=8090
-export CDK_MINTD_LDK_NODE_GOSSIP_SOURCE_TYPE="p2p"
-export CDK_MINTD_LDK_NODE_FEE_PERCENT=0.02
-export CDK_MINTD_LDK_NODE_RESERVE_FEE_MIN=2
+export CDK_REGTEST_BITCOIND_RPC_PASSWORD="testpass"
 
 echo "Starting LDK Node Mint on port 8089..."
 echo "Project root: $PROJECT_ROOT"
 echo "Working directory: \$CDK_MINTD_WORK_DIR"
 echo "Bitcoin RPC: 127.0.0.1:18443 (testuser/testpass)"
 echo "LDK Node listen: 127.0.0.1:8090"
-echo "Storage directory: \$CDK_MINTD_LDK_NODE_STORAGE_DIR_PATH"
+echo "Storage directory: $CDK_ITESTS_DIR/ldk_mint"
 echo "Database type: \$CDK_MINTD_DATABASE"
 echo "---"
 
-exec cargo run --bin cdk-mintd --features ldk-node
+if ! cargo run --bin cdk-mintd --features ldk-node -- --work-dir "\$CDK_MINTD_WORK_DIR" config show >/dev/null 2>&1; then
+    cargo run --bin cdk-mintd --features ldk-node -- --work-dir "\$CDK_MINTD_WORK_DIR" config init --file "\$CDK_MINTD_WORK_DIR/config.toml"
+fi
+
+exec cargo run --bin cdk-mintd --features ldk-node -- --work-dir "\$CDK_MINTD_WORK_DIR"
 EOF
 
 # Make scripts executable

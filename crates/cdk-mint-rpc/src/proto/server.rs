@@ -41,12 +41,31 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
+/// Failure returned when a management mutation is not currently allowed.
+#[derive(Debug, Error)]
+pub enum MintMutationGuardError {
+    /// The mutation conflicts with the mint's current lifecycle state.
+    #[error("{0}")]
+    FailedPrecondition(String),
+    /// The lifecycle state could not be checked.
+    #[error("{0}")]
+    Internal(String),
+}
+
+/// Checks whether management RPC mutations are currently allowed.
+#[tonic::async_trait]
+pub trait MintMutationGuard: Send + Sync {
+    /// Returns successfully when a mutation may proceed.
+    async fn check(&self) -> Result<(), MintMutationGuardError>;
+}
+
 /// CDK Mint RPC Server
 #[derive(Clone)]
 #[allow(missing_debug_implementations)]
 pub struct MintRPCServer {
     socket_addr: SocketAddr,
     mint: Arc<Mint>,
+    mutation_guard: Option<Arc<dyn MintMutationGuard>>,
     shutdown: Arc<Notify>,
     handle: Option<Arc<JoinHandle<Result<(), Error>>>>,
 }
@@ -62,8 +81,28 @@ impl MintRPCServer {
         Ok(Self {
             socket_addr: format!("{addr}:{port}").parse()?,
             mint,
+            mutation_guard: None,
             shutdown: Arc::new(Notify::new()),
             handle: None,
+        })
+    }
+
+    /// Adds a guard that runs before every mutating management RPC.
+    pub fn with_mutation_guard(mut self, guard: Arc<dyn MintMutationGuard>) -> Self {
+        self.mutation_guard = Some(guard);
+        self
+    }
+
+    async fn ensure_mutation_allowed(&self) -> Result<(), Status> {
+        let Some(guard) = &self.mutation_guard else {
+            return Ok(());
+        };
+
+        guard.check().await.map_err(|error| match error {
+            MintMutationGuardError::FailedPrecondition(message) => {
+                Status::failed_precondition(message)
+            }
+            MintMutationGuardError::Internal(message) => Status::internal(message),
         })
     }
 
@@ -258,6 +297,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateMotdRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let motd = request.into_inner().motd;
         let mut info = self
             .mint
@@ -279,6 +319,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateDescriptionRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let description = request.into_inner().description;
         let mut info = self
             .mint
@@ -300,6 +341,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateDescriptionRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let description = request.into_inner().description;
         let mut info = self
             .mint
@@ -321,6 +363,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNameRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let name = request.into_inner().name;
         let mut info = self
             .mint
@@ -342,6 +385,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateIconUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let icon_url = request.into_inner().icon_url;
 
         let mut info = self
@@ -364,6 +408,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateTosUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let tos_url = request.into_inner().tos_url;
 
         let mut info = self
@@ -386,6 +431,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let url = request.into_inner().url;
         let mut info = self
             .mint
@@ -409,6 +455,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let url = request.into_inner().url;
         let mut info = self
             .mint
@@ -436,6 +483,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateContactRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request_inner = request.into_inner();
         let mut info = self
             .mint
@@ -461,6 +509,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateContactRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request_inner = request.into_inner();
         let mut info = self
             .mint
@@ -486,6 +535,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut04Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let mut info = self
             .mint
             .mint_info()
@@ -563,6 +613,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut05Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let mut info = self
             .mint
             .mint_info()
@@ -638,6 +689,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateQuoteTtlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let current_ttl = self
             .mint
             .quote_ttl()
@@ -681,6 +733,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut04QuoteRequest>,
     ) -> Result<Response<UpdateNut04QuoteRequest>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request = request.into_inner();
         let quote_id = request
             .quote_id
@@ -797,6 +850,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<RotateNextKeysetRequest>,
     ) -> Result<Response<RotateNextKeysetResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request = request.into_inner();
 
         let unit = CurrencyUnit::from_str(&request.unit)
@@ -836,7 +890,7 @@ mod tests {
     use cdk::types::QuoteTTL;
     use cdk_common::nut00::KnownMethod;
     use cdk_fake_wallet::FakeWallet;
-    use tonic::Request;
+    use tonic::{Code, Request};
 
     use super::*;
     use crate::cdk_mint_server::CdkMint;
@@ -890,8 +944,21 @@ mod tests {
         MintRPCServer {
             socket_addr: "127.0.0.1:0".parse().unwrap(),
             mint: Arc::new(mint),
+            mutation_guard: None,
             shutdown: Arc::new(Notify::new()),
             handle: None,
+        }
+    }
+
+    #[derive(Debug)]
+    struct RejectingMutationGuard;
+
+    #[tonic::async_trait]
+    impl MintMutationGuard for RejectingMutationGuard {
+        async fn check(&self) -> Result<(), MintMutationGuardError> {
+            Err(MintMutationGuardError::FailedPrecondition(
+                "configuration restart pending".to_owned(),
+            ))
         }
     }
 
@@ -942,5 +1009,29 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.into_inner().tos_url.unwrap(), tos);
+    }
+
+    #[tokio::test]
+    async fn test_mutation_guard_rejects_updates_without_blocking_reads() {
+        let server = create_test_rpc_server()
+            .await
+            .with_mutation_guard(Arc::new(RejectingMutationGuard));
+
+        let error = server
+            .update_tos_url(Request::new(UpdateTosUrlRequest {
+                tos_url: "https://example.com/terms".to_owned(),
+            }))
+            .await
+            .expect_err("mutation should be rejected");
+
+        assert_eq!(error.code(), Code::FailedPrecondition);
+        assert_eq!(error.message(), "configuration restart pending");
+        assert!(server
+            .get_info(Request::new(GetInfoRequest {}))
+            .await
+            .expect("read should remain available")
+            .into_inner()
+            .tos_url
+            .is_none());
     }
 }

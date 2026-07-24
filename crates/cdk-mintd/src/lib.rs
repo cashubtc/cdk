@@ -58,8 +58,12 @@ use tracing_subscriber::EnvFilter;
 
 pub mod cli;
 pub mod config;
+mod config_service;
+mod config_store;
 pub mod env_vars;
 pub mod setup;
+
+pub use config_service::ApplyOutcome;
 
 #[cfg(test)]
 pub(crate) mod test_utils {
@@ -87,6 +91,52 @@ pub(crate) mod test_utils {
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
+
+type DynSignatory = Arc<dyn cdk_signatory::signatory::Signatory + Send + Sync>;
+
+#[derive(Clone)]
+struct ValidatedSigningSource {
+    expected_pubkey: cdk::nuts::PublicKey,
+    remote_signatory: Option<DynSignatory>,
+}
+
+impl std::fmt::Debug for ValidatedSigningSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValidatedSigningSource")
+            .field("expected_pubkey", &self.expected_pubkey)
+            .field("remote_signatory", &self.remote_signatory.is_some())
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ConfigurationActivation {
+    service: config_service::ConfigurationService,
+    expected_document: Option<String>,
+}
+
+#[cfg(feature = "management-rpc")]
+#[derive(Debug, Clone)]
+struct ConfigurationMutationGuard {
+    service: config_service::ConfigurationService,
+}
+
+#[cfg(feature = "management-rpc")]
+#[async_trait::async_trait]
+impl cdk_mint_rpc::MintMutationGuard for ConfigurationMutationGuard {
+    async fn check(&self) -> Result<(), cdk_mint_rpc::MintMutationGuardError> {
+        match self.service.has_pending_configuration().await {
+            Ok(true) => Err(cdk_mint_rpc::MintMutationGuardError::FailedPrecondition(
+                "A configuration apply is pending; restart cdk-mintd before making management RPC changes"
+                    .to_owned(),
+            )),
+            Ok(false) => Ok(()),
+            Err(error) => Err(cdk_mint_rpc::MintMutationGuardError::Internal(format!(
+                "Could not inspect the stored configuration state: {error}"
+            ))),
+        }
+    }
+}
 
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -294,7 +344,11 @@ fn load_settings_from_sources(
     settings.from_env()
 }
 
-fn validate_settings(settings: &config::Settings) -> Result<()> {
+pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
+    validate_payment_backends(settings)?;
+    settings
+        .validate_backend_pairing()
+        .map_err(anyhow::Error::msg)?;
     validate_listen_config(settings)?;
     validate_signing_config(settings)?;
     validate_lightning_config(settings)?;
@@ -303,6 +357,23 @@ fn validate_settings(settings: &config::Settings) -> Result<()> {
     validate_auth_config(settings)?;
     validate_management_rpc_config(settings)?;
     validate_prometheus_config(settings)?;
+
+    Ok(())
+}
+
+fn validate_payment_backends(settings: &config::Settings) -> Result<()> {
+    let has_lightning_backend = settings
+        .ln
+        .iter()
+        .any(|ln| ln.ln_backend != LnBackend::None);
+    let has_onchain_backend = settings
+        .onchain
+        .as_ref()
+        .is_some_and(|onchain| onchain.onchain_backend != config::OnchainBackend::None);
+
+    if !has_lightning_backend && !has_onchain_backend {
+        bail!("At least one payment backend (Lightning or On-chain) must be configured");
+    }
 
     Ok(())
 }
@@ -342,6 +413,23 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
     const MIN_SEED_BYTES: usize = 32;
 
     if let Some(signatory) = settings.enabled_signatory() {
+        let has_local_seed = settings
+            .info
+            .seed
+            .as_ref()
+            .is_some_and(|seed| !seed.is_empty());
+        let has_local_mnemonic = settings
+            .info
+            .mnemonic
+            .as_ref()
+            .is_some_and(|mnemonic| !mnemonic.is_empty());
+        if has_local_seed || has_local_mnemonic {
+            bail!(
+                "Remote signatory configuration cannot include [info].seed or [info].mnemonic; \
+                 keep private signing material on the signatory host"
+            );
+        }
+
         if signatory.tls_dir.is_none() && !signatory.allow_insecure {
             bail!(
                 "gRPC signatory TLS is not configured. Set [signatory].tls_dir or \
@@ -399,28 +487,18 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
             LnBackend::None => {}
             #[cfg(feature = "cln")]
             LnBackend::Cln => {
-                let default_cln;
-                let cln = match settings.cln.as_ref() {
-                    Some(c) => c,
-                    None => {
-                        default_cln = config::Cln::default();
-                        &default_cln
-                    }
-                };
+                let cln = settings.cln.as_ref().ok_or_else(|| {
+                    anyhow!("CLN backend selected but [cln] config section is missing")
+                })?;
                 if cln.rpc_path.as_os_str().is_empty() {
                     bail!("CLN rpc_path must be set via [cln].rpc_path or CDK_MINTD_CLN_RPC_PATH");
                 }
             }
             #[cfg(feature = "lnbits")]
             LnBackend::LNbits => {
-                let default_lnbits;
-                let lnbits = match settings.lnbits.as_ref() {
-                    Some(l) => l,
-                    None => {
-                        default_lnbits = config::LNbits::default();
-                        &default_lnbits
-                    }
-                };
+                let lnbits = settings.lnbits.as_ref().ok_or_else(|| {
+                    anyhow!("LNbits backend selected but [lnbits] config section is missing")
+                })?;
                 if lnbits.admin_api_key.is_empty() {
                     bail!("LNbits admin_api_key must be set via [lnbits].admin_api_key or CDK_MINTD_LNBITS_ADMIN_API_KEY");
                 }
@@ -435,14 +513,9 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
             }
             #[cfg(feature = "lnd")]
             LnBackend::Lnd => {
-                let default_lnd;
-                let lnd = match settings.lnd.as_ref() {
-                    Some(l) => l,
-                    None => {
-                        default_lnd = config::Lnd::default();
-                        &default_lnd
-                    }
-                };
+                let lnd = settings.lnd.as_ref().ok_or_else(|| {
+                    anyhow!("LND backend selected but [lnd] config section is missing")
+                })?;
                 if lnd.address.is_empty() {
                     bail!("LND address must be set via [lnd].address or CDK_MINTD_LND_ADDRESS");
                 }
@@ -457,14 +530,11 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
             }
             #[cfg(feature = "fakewallet")]
             LnBackend::FakeWallet => {
-                let default_fake_wallet;
-                let fake_wallet = match settings.fake_wallet.as_ref() {
-                    Some(f) => f,
-                    None => {
-                        default_fake_wallet = config::FakeWallet::default();
-                        &default_fake_wallet
-                    }
-                };
+                let fake_wallet = settings.fake_wallet.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "Fake wallet backend selected but [fake_wallet] config section is missing"
+                    )
+                })?;
                 if fake_wallet.supported_units.is_empty() {
                     bail!("Fake wallet supported_units must contain at least one unit via [fake_wallet].supported_units or CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS");
                 }
@@ -474,14 +544,11 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
             }
             #[cfg(feature = "grpc-processor")]
             LnBackend::GrpcProcessor => {
-                let default_grpc_processor;
-                let grpc_processor = match settings.grpc_processor.as_ref() {
-                    Some(g) => g,
-                    None => {
-                        default_grpc_processor = config::GrpcProcessor::default();
-                        &default_grpc_processor
-                    }
-                };
+                let grpc_processor = settings.grpc_processor.as_ref().ok_or_else(|| {
+                    anyhow!(
+                        "gRPC payment processor backend selected but [grpc_processor] config section is missing"
+                    )
+                })?;
                 if grpc_processor.supported_units.is_empty() {
                     bail!("gRPC payment processor supported_units must contain at least one unit via [grpc_processor].supported_units or CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS");
                 }
@@ -490,8 +557,11 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                 }
             }
             #[cfg(feature = "ldk-node")]
-            // LDK node has no required-field validation; defaults are usable.
-            LnBackend::LdkNode => {}
+            LnBackend::LdkNode => {
+                if settings.ldk_node.is_none() {
+                    bail!("LDK Node backend selected but [ldk_node] config section is missing");
+                }
+            }
         }
     }
 
@@ -508,6 +578,25 @@ fn validate_onchain_config(settings: &config::Settings) -> Result<()> {
     }
     if onchain.min_melt > onchain.max_melt {
         bail!("On-chain min_melt cannot be greater than max_melt");
+    }
+
+    match onchain.onchain_backend {
+        config::OnchainBackend::None => {}
+        #[cfg(feature = "bdk")]
+        config::OnchainBackend::Bdk => {
+            let bdk = settings.bdk.as_ref().ok_or_else(|| {
+                anyhow!("BDK onchain backend selected but [bdk] config section is missing")
+            })?;
+            bdk.validate().map_err(anyhow::Error::msg)?;
+        }
+        #[cfg(feature = "fakewallet")]
+        config::OnchainBackend::FakeWallet => {
+            if settings.fake_wallet.is_none() {
+                bail!(
+                    "Fake wallet onchain backend selected but [fake_wallet] config section is missing"
+                );
+            }
+        }
     }
 
     Ok(())
@@ -1532,6 +1621,7 @@ async fn build_mint(
     settings: &config::Settings,
     keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     mint_builder: MintBuilder,
+    validated_signing_source: Option<&ValidatedSigningSource>,
 ) -> Result<Mint> {
     if let Some(signatory) = settings.enabled_signatory() {
         let tls_dir = signatory.tls_dir.clone();
@@ -1550,20 +1640,41 @@ async fn build_mint(
             );
         }
 
-        tracing::info!(
-            "Connecting to remote signatory to {}:{} with TLS directory {:?}",
-            signatory.address,
-            signatory.port,
-            tls_dir.clone()
-        );
-
-        Ok(mint_builder
-            .build_with_signatory(Arc::new(
-                cdk_signatory::SignatoryRpcClient::new(&signatory.address, signatory.port, tls_dir)
+        let remote_signatory = match validated_signing_source
+            .and_then(|validated| validated.remote_signatory.clone())
+        {
+            Some(remote_signatory) => {
+                tracing::info!(
+                    "Using the remote signatory connection validated during configuration startup"
+                );
+                remote_signatory
+            }
+            None => {
+                tracing::info!(
+                    "Connecting to remote signatory at {}:{} with TLS directory {:?}",
+                    signatory.address,
+                    signatory.port,
+                    tls_dir
+                );
+                Arc::new(
+                    cdk_signatory::SignatoryRpcClient::new(
+                        &signatory.address,
+                        signatory.port,
+                        tls_dir,
+                    )
                     .await?,
-            ))
-            .await?)
+                )
+            }
+        };
+        if let Some(validated) = validated_signing_source {
+            ensure_signatory_identity(&remote_signatory, validated.expected_pubkey).await?;
+        }
+
+        Ok(mint_builder.build_with_signatory(remote_signatory).await?)
     } else if let Some(seed) = settings.info.seed.clone().filter(|seed| !seed.is_empty()) {
+        if validated_signing_source.is_some_and(|validated| validated.remote_signatory.is_some()) {
+            bail!("Validated remote signatory provided for local signing configuration");
+        }
         let seed_bytes: Vec<u8> = seed.into();
         Ok(mint_builder.build_with_seed(keystore, &seed_bytes).await?)
     } else if let Some(mnemonic) = settings
@@ -1581,6 +1692,59 @@ async fn build_mint(
     }
 }
 
+async fn ensure_signatory_identity(
+    signatory: &DynSignatory,
+    expected_pubkey: cdk::nuts::PublicKey,
+) -> Result<()> {
+    let actual_pubkey = signatory.keysets().await?.pubkey;
+    if actual_pubkey != expected_pubkey {
+        return Err(config_service::ConfigurationServiceError::SigningIdentityChange.into());
+    }
+    Ok(())
+}
+
+async fn reconcile_canonical_configuration(
+    mint: &Mint,
+    mut configured_mint_info: cdk::nuts::MintInfo,
+    configured_quote_ttl: QuoteTTL,
+    preserve_database_values: bool,
+) -> Result<()> {
+    if !preserve_database_values {
+        tracing::info!(
+            "Applying mint info and quote TTL from the database-backed configuration document."
+        );
+        if let Ok(stored_mint_info) = mint.mint_info().await {
+            if configured_mint_info.pubkey.is_none() {
+                configured_mint_info.pubkey = stored_mint_info.pubkey;
+            }
+        }
+        mint.set_mint_info(configured_mint_info).await?;
+        mint.set_quote_ttl(configured_quote_ttl).await?;
+        return Ok(());
+    }
+
+    if mint.mint_info().await.is_err() {
+        tracing::info!("Mint info not set on mint, setting.");
+        mint.set_mint_info(configured_mint_info).await?;
+        mint.set_quote_ttl(configured_quote_ttl).await?;
+        return Ok(());
+    }
+
+    if !mint.quote_ttl_is_persisted().await? {
+        mint.set_quote_ttl(configured_quote_ttl).await?;
+    }
+    let mint_version = MintVersion::new(
+        "cdk-mintd".to_string(),
+        CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
+    );
+    let mut stored_mint_info = mint.mint_info().await?;
+    stored_mint_info.version = Some(mint_version);
+    mint.set_mint_info(stored_mint_info).await?;
+    tracing::info!("Preserving RPC-managed mint info from the database.");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn start_services_with_shutdown(
     mint: Arc<cdk::mint::Mint>,
     settings: &config::Settings,
@@ -1589,6 +1753,8 @@ async fn start_services_with_shutdown(
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     routers: Vec<Router>,
     auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
+    force_configuration: bool,
+    activation: Option<ConfigurationActivation>,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
@@ -1601,6 +1767,8 @@ async fn start_services_with_shutdown(
 
     #[cfg(feature = "management-rpc")]
     let mut rpc_server: Option<cdk_mint_rpc::MintRPCServer> = None;
+    #[cfg(feature = "management-rpc")]
+    let mut rpc_to_start = None;
 
     #[cfg(feature = "management-rpc")]
     {
@@ -1609,6 +1777,11 @@ async fn start_services_with_shutdown(
                 let addr = rpc_settings.address.unwrap_or("127.0.0.1".to_string());
                 let port = rpc_settings.port.unwrap_or(8086);
                 let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
+                if let Some(activation) = activation.as_ref() {
+                    mint_rpc = mint_rpc.with_mutation_guard(Arc::new(ConfigurationMutationGuard {
+                        service: activation.service.clone(),
+                    }));
+                }
 
                 let tls_dir = rpc_settings.tls_dir.unwrap_or(_work_dir.join("tls"));
 
@@ -1630,10 +1803,7 @@ async fn start_services_with_shutdown(
                     );
                 };
 
-                mint_rpc.start(tls_dir).await?;
-
-                rpc_server = Some(mint_rpc);
-
+                rpc_to_start = Some((mint_rpc, tls_dir));
                 rpc_enabled = true;
             }
         }
@@ -1642,41 +1812,28 @@ async fn start_services_with_shutdown(
     // Determine the desired QuoteTTL from config/env or fall back to defaults
     let desired_quote_ttl: QuoteTTL = settings.info.quote_ttl.unwrap_or_default();
 
-    if rpc_enabled {
-        if mint.mint_info().await.is_err() {
-            tracing::info!("Mint info not set on mint, setting.");
-            // First boot with RPC enabled: seed from config
-            mint.set_mint_info(mint_builder_info).await?;
-            mint.set_quote_ttl(desired_quote_ttl).await?;
-        } else {
-            // If QuoteTTL has never been persisted, seed it now from config
-            if !mint.quote_ttl_is_persisted().await? {
-                mint.set_quote_ttl(desired_quote_ttl).await?;
-            }
-            // Add/refresh version information without altering stored mint_info fields
-            let mint_version = MintVersion::new(
-                "cdk-mintd".to_string(),
-                CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
-            );
-            let mut stored_mint_info = mint.mint_info().await?;
-            stored_mint_info.version = Some(mint_version);
-            mint.set_mint_info(stored_mint_info).await?;
+    reconcile_canonical_configuration(
+        mint.as_ref(),
+        mint_builder_info,
+        desired_quote_ttl,
+        rpc_enabled && !force_configuration,
+    )
+    .await?;
 
-            tracing::info!("Mint info already set, not using config file settings.");
-        }
-    } else {
-        // RPC disabled: config is source of truth on every boot
-        tracing::info!("RPC not enabled, using mint info and quote TTL from config.");
-        let mut mint_builder_info = mint_builder_info;
-
-        if let Ok(mint_info) = mint.mint_info().await {
-            if mint_builder_info.pubkey.is_none() {
-                mint_builder_info.pubkey = mint_info.pubkey;
+    if let Some(activation) = activation {
+        if let Some(expected_document) = activation.expected_document {
+            if !activation.service.mark_applied(&expected_document).await? {
+                tracing::info!(
+                    "A newer configuration was stored during startup and remains unapplied for the next restart."
+                );
             }
         }
+    }
 
-        mint.set_mint_info(mint_builder_info).await?;
-        mint.set_quote_ttl(desired_quote_ttl).await?;
+    #[cfg(feature = "management-rpc")]
+    if let Some((mut mint_rpc, tls_dir)) = rpc_to_start {
+        mint_rpc.start(tls_dir).await?;
+        rpc_server = Some(mint_rpc);
     }
 
     let mint_info = mint.mint_info().await?;
@@ -2055,6 +2212,38 @@ pub async fn run_mintd_with_shutdown(
 ) -> Result<()> {
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
+    run_mintd_with_database_and_shutdown(
+        work_dir,
+        settings,
+        localstore,
+        keystore,
+        kv,
+        shutdown_signal,
+        db_password,
+        runtime,
+        routers,
+        false,
+        None,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_mintd_with_database_and_shutdown(
+    work_dir: &Path,
+    settings: &config::Settings,
+    localstore: DynMintDatabase,
+    keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
+    force_configuration: bool,
+    activation: Option<ConfigurationActivation>,
+    validated_signing_source: Option<ValidatedSigningSource>,
+) -> Result<()> {
     let mint_builder = MintBuilder::new(localstore);
 
     // If RPC is enabled and DB contains mint_info already, initialize the builder from DB.
@@ -2062,7 +2251,9 @@ pub async fn run_mintd_with_shutdown(
     let maybe_mint_builder = {
         #[cfg(feature = "management-rpc")]
         {
-            if let Some(rpc_settings) = settings.mint_management_rpc.clone() {
+            if force_configuration {
+                mint_builder
+            } else if let Some(rpc_settings) = settings.mint_management_rpc.clone() {
                 if rpc_settings.enabled {
                     // Best-effort: pull DB state into builder if present
                     let mut tmp = mint_builder;
@@ -2090,7 +2281,13 @@ pub async fn run_mintd_with_shutdown(
 
     let config_mint_info = mint_builder.current_mint_info();
 
-    let mint = build_mint(settings, keystore, mint_builder).await?;
+    let mint = build_mint(
+        settings,
+        keystore,
+        mint_builder,
+        validated_signing_source.as_ref(),
+    )
+    .await?;
 
     tracing::debug!("Mint built from builder.");
 
@@ -2104,8 +2301,140 @@ pub async fn run_mintd_with_shutdown(
         shutdown_signal,
         routers,
         auth_localstore,
+        force_configuration,
+        activation,
     )
     .await
+}
+
+fn load_database_bootstrap_settings() -> Result<config::Settings> {
+    let mut settings = config::Settings::default();
+    if let Ok(database) = env::var(env_vars::DATABASE_ENV_VAR) {
+        settings.database.engine =
+            DatabaseEngine::from_str(&database).map_err(anyhow::Error::msg)?;
+    }
+    if settings.database.engine == DatabaseEngine::Postgres {
+        settings.database.postgres = Some(config::PostgresConfig::default().from_env());
+    } else {
+        settings.database.postgres = None;
+    }
+    validate_database_config(&settings)?;
+    Ok(settings)
+}
+
+fn configuration_service(
+    kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    settings: &config::Settings,
+) -> config_service::ConfigurationService {
+    config_service::ConfigurationService::new(
+        config_store::ConfigRepository::new(kv),
+        settings.database.clone(),
+    )
+}
+
+/// Validates a database-backed configuration document without writing it.
+pub async fn validate_configuration_document(document: &str) -> Result<()> {
+    config_service::ConfigurationService::validate_import(document).await?;
+    Ok(())
+}
+
+/// Initializes the authoritative configuration record in the selected database.
+pub async fn initialize_configuration(
+    work_dir: &Path,
+    document: &str,
+    db_password: Option<String>,
+) -> Result<()> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
+    let mut mint_builder = MintBuilder::new(localstore);
+    mint_builder.init_from_db_if_present().await?;
+    let database_pubkey = mint_builder.current_mint_info().pubkey;
+    configuration_service(kv, &bootstrap)
+        .initialize(document, database_pubkey)
+        .await?;
+    Ok(())
+}
+
+/// Validates and atomically replaces the authoritative configuration record.
+pub async fn apply_configuration(
+    work_dir: &Path,
+    document: &str,
+    validate_only: bool,
+    db_password: Option<String>,
+) -> Result<ApplyOutcome> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (_localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
+    Ok(configuration_service(kv, &bootstrap)
+        .apply(document, validate_only)
+        .await?)
+}
+
+/// Reads the unresolved authoritative configuration document.
+pub async fn stored_configuration_document(
+    work_dir: &Path,
+    db_password: Option<String>,
+) -> Result<String> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (_localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
+    Ok(configuration_service(kv, &bootstrap).document().await?)
+}
+
+/// Runs mintd using only the configuration stored in its primary database.
+pub async fn run_mintd_from_database(
+    work_dir: &Path,
+    db_password: Option<String>,
+    enable_logging: bool,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
+) -> Result<()> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (localstore, keystore, kv) =
+        initial_setup(work_dir, &bootstrap, db_password.clone()).await?;
+    let service = configuration_service(kv.clone(), &bootstrap);
+    let startup = service.startup().await?;
+    let force_configuration = !startup.applied;
+    let validated_signing_source = Some(ValidatedSigningSource {
+        expected_pubkey: startup.signing_identity.pubkey,
+        remote_signatory: startup
+            .remote_signatory
+            .map(|signatory| -> DynSignatory { signatory }),
+    });
+    let activation = Some(ConfigurationActivation {
+        service,
+        expected_document: (!startup.applied).then(|| startup.resolved.document.clone()),
+    });
+    let settings = startup.resolved.settings;
+
+    let guard = if enable_logging {
+        setup_tracing(work_dir, &settings.info.logging)?
+    } else {
+        None
+    };
+
+    let result = run_mintd_with_database_and_shutdown(
+        work_dir,
+        &settings,
+        localstore,
+        keystore,
+        kv,
+        shutdown_signal(),
+        db_password,
+        runtime,
+        routers,
+        force_configuration,
+        activation,
+        validated_signing_source,
+    )
+    .await;
+
+    if let Some(guard) = guard {
+        tracing::info!("Shutting down logging worker thread");
+        drop(guard);
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    tracing::info!("Mintd shutdown");
+    result
 }
 
 #[cfg(test)]
@@ -2121,6 +2450,310 @@ mod tests {
 
     fn temp_seed_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn validated_remote_signatory_identity_is_checked_at_mint_build_boundary() {
+        use cdk_signatory::db_signatory::DbSignatory;
+        use cdk_signatory::signatory::Signatory;
+        use cdk_sqlite::mint::memory;
+
+        let expected_store = Arc::new(memory::empty().await.expect("expected signatory database"));
+        let expected_signatory =
+            DbSignatory::new(expected_store, &[7; 32], HashMap::new(), Default::default())
+                .await
+                .expect("expected signatory");
+        let expected_pubkey = expected_signatory
+            .keysets()
+            .await
+            .expect("expected keysets")
+            .pubkey;
+
+        let actual_store = Arc::new(memory::empty().await.expect("actual signatory database"));
+        let actual_signatory: DynSignatory = Arc::new(
+            DbSignatory::new(actual_store, &[9; 32], HashMap::new(), Default::default())
+                .await
+                .expect("actual signatory"),
+        );
+        let actual_pubkey = actual_signatory
+            .keysets()
+            .await
+            .expect("actual keysets")
+            .pubkey;
+
+        ensure_signatory_identity(&actual_signatory, actual_pubkey)
+            .await
+            .expect("matching identity");
+        let error = ensure_signatory_identity(&actual_signatory, expected_pubkey)
+            .await
+            .expect_err("changed identity should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("signing identity does not match this mint database"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn unapplied_configuration_refreshes_canonical_values_once() {
+        use cdk_sqlite::mint::memory;
+
+        let database = Arc::new(memory::empty().await.expect("in-memory database"));
+        let mut builder = MintBuilder::new(database.clone());
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure unit");
+        let mint = builder
+            .build_with_seed(database.clone(), &[7; 32])
+            .await
+            .expect("build mint");
+
+        let stored_info = MintBuilder::new(database.clone())
+            .with_name("stored".to_owned())
+            .current_mint_info();
+        mint.set_mint_info(stored_info)
+            .await
+            .expect("set stored mint info");
+        mint.set_quote_ttl(QuoteTTL::new(10, 20))
+            .await
+            .expect("set stored quote ttl");
+
+        let imported_info = MintBuilder::new(database.clone())
+            .with_name("imported".to_owned())
+            .current_mint_info();
+        reconcile_canonical_configuration(&mint, imported_info, QuoteTTL::new(30, 40), false)
+            .await
+            .expect("apply imported canonical values");
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").name.as_deref(),
+            Some("imported")
+        );
+        assert_eq!(
+            mint.quote_ttl().await.expect("quote ttl"),
+            QuoteTTL::new(30, 40)
+        );
+
+        let mut rpc_info = mint.mint_info().await.expect("mint info");
+        rpc_info.name = Some("rpc-managed".to_owned());
+        mint.set_mint_info(rpc_info)
+            .await
+            .expect("set RPC-managed mint info");
+        mint.set_quote_ttl(QuoteTTL::new(50, 60))
+            .await
+            .expect("set RPC-managed quote ttl");
+
+        let later_document_info = MintBuilder::new(database)
+            .with_name("document".to_owned())
+            .current_mint_info();
+        reconcile_canonical_configuration(&mint, later_document_info, QuoteTTL::new(70, 80), true)
+            .await
+            .expect("preserve RPC-managed canonical values");
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").name.as_deref(),
+            Some("rpc-managed")
+        );
+        assert_eq!(
+            mint.quote_ttl().await.expect("quote ttl"),
+            QuoteTTL::new(50, 60)
+        );
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn preserve_mode_seeds_empty_mint_and_missing_quote_ttl() {
+        use cdk_sqlite::mint::memory;
+
+        let database = Arc::new(memory::empty().await.expect("in-memory database"));
+        let mut builder = MintBuilder::new(database.clone());
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure unit");
+        let mint = builder
+            .build_with_seed(database.clone(), &[9; 32])
+            .await
+            .expect("build mint");
+
+        // Fresh mint stores default mint info during build; clear preservation by exercising
+        // the branch where quote TTL has not been persisted yet.
+        let seeded_info = MintBuilder::new(database.clone())
+            .with_name("seeded".to_owned())
+            .current_mint_info();
+        // Force mint info missing path using a separate mint without set info if possible.
+        // If mint always has info after build, still cover missing-ttl path.
+        if mint.mint_info().await.is_ok() {
+            // Overwrite mint info without quote ttl persistence by using an empty info DB path:
+            // re-build mint and never call set_quote_ttl.
+            let database = Arc::new(memory::empty().await.expect("second database"));
+            let mut builder = MintBuilder::new(database.clone());
+            builder
+                .configure_unit(CurrencyUnit::Sat, Default::default())
+                .expect("configure unit");
+            let mint = builder
+                .build_with_seed(database.clone(), &[11; 32])
+                .await
+                .expect("build mint");
+            assert!(!mint
+                .quote_ttl_is_persisted()
+                .await
+                .expect("quote ttl persistence probe"));
+            let info = MintBuilder::new(database)
+                .with_name("preserve-ttl".to_owned())
+                .current_mint_info();
+            reconcile_canonical_configuration(&mint, info, QuoteTTL::new(1, 2), true)
+                .await
+                .expect("preserve with missing ttl");
+            assert!(mint
+                .quote_ttl_is_persisted()
+                .await
+                .expect("quote ttl should now be persisted"));
+            assert_eq!(
+                mint.quote_ttl().await.expect("quote ttl"),
+                QuoteTTL::new(1, 2)
+            );
+        } else {
+            reconcile_canonical_configuration(&mint, seeded_info, QuoteTTL::new(3, 4), true)
+                .await
+                .expect("seed mint info when missing");
+            assert_eq!(
+                mint.mint_info().await.expect("mint info").name.as_deref(),
+                Some("seeded")
+            );
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn unapplied_configuration_preserves_existing_mint_pubkey() {
+        use cdk::nuts::PublicKey;
+        use cdk_sqlite::mint::memory;
+
+        let database = Arc::new(memory::empty().await.expect("in-memory database"));
+        let mut builder = MintBuilder::new(database.clone());
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure unit");
+        let mint = builder
+            .build_with_seed(database.clone(), &[13; 32])
+            .await
+            .expect("build mint");
+
+        let pubkey = PublicKey::from_hex(
+            "02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619",
+        )
+        .expect("static pubkey");
+        let mut stored = MintBuilder::new(database.clone())
+            .with_name("stored".to_owned())
+            .current_mint_info();
+        stored.pubkey = Some(pubkey);
+        mint.set_mint_info(stored)
+            .await
+            .expect("set stored mint info");
+
+        let mut imported = MintBuilder::new(database)
+            .with_name("imported".to_owned())
+            .current_mint_info();
+        imported.pubkey = None;
+        reconcile_canonical_configuration(&mint, imported, QuoteTTL::new(7, 8), false)
+            .await
+            .expect("apply imported values");
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").pubkey,
+            Some(pubkey)
+        );
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").name.as_deref(),
+            Some("imported")
+        );
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
+    async fn database_configuration_public_api_round_trip() {
+        let work_dir = crate::test_utils::unique_temp_path("cdk_mintd_public_config_api");
+        fs::create_dir_all(&work_dir).expect("create work dir");
+        let secret_path = work_dir.join("mnemonic.secret");
+        fs::write(&secret_path, TEST_MNEMONIC).expect("write mnemonic secret");
+
+        #[cfg(feature = "sqlcipher")]
+        let password = Some("test-password".to_string());
+        #[cfg(not(feature = "sqlcipher"))]
+        let password: Option<String> = None;
+
+        let first = format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[mint_info]
+name = "first-public"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#,
+            secret_path.display()
+        );
+        let second = first.replace("first-public", "second-public");
+
+        validate_configuration_document(&first)
+            .await
+            .expect("validate first document");
+        initialize_configuration(&work_dir, &first, password.clone())
+            .await
+            .expect("initialize configuration");
+        assert_eq!(
+            stored_configuration_document(&work_dir, password.clone())
+                .await
+                .expect("read stored document"),
+            first
+        );
+
+        let validate_only = apply_configuration(&work_dir, &second, true, password.clone())
+            .await
+            .expect("validate-only apply");
+        assert!(!validate_only.restart_required);
+        assert_eq!(
+            stored_configuration_document(&work_dir, password.clone())
+                .await
+                .expect("document unchanged"),
+            first
+        );
+
+        let applied = apply_configuration(&work_dir, &second, false, password.clone())
+            .await
+            .expect("apply replacement");
+        assert!(applied.restart_required);
+        assert_eq!(
+            stored_configuration_document(&work_dir, password)
+                .await
+                .expect("replacement stored"),
+            second
+        );
+
+        let bootstrap = load_database_bootstrap_settings().expect("bootstrap settings");
+        assert_eq!(bootstrap.database.engine, DatabaseEngine::Sqlite);
+        assert!(bootstrap.database.postgres.is_none());
+
+        let _ = fs::remove_dir_all(&work_dir);
+    }
+
+    #[test]
+    fn load_database_bootstrap_settings_defaults_to_sqlite() {
+        let _env_lock = crate::test_utils::env_lock();
+        clear_mintd_env();
+        std::env::remove_var(env_vars::DATABASE_ENV_VAR);
+
+        let settings = load_database_bootstrap_settings().expect("default bootstrap");
+        assert_eq!(settings.database.engine, DatabaseEngine::Sqlite);
+        assert!(settings.database.postgres.is_none());
+        clear_mintd_env();
     }
 
     #[test]
@@ -2289,10 +2922,11 @@ ln_backend = "fakewallet"
         let args = CLIArgs {
             work_dir: None,
             #[cfg(feature = "sqlcipher")]
-            password: "test-password".to_string(),
+            password: Some("test-password".to_string()),
             config: Some(config_path),
             seed_file: Some(seed_file),
             enable_logging: false,
+            command: None,
         };
 
         let settings = load_settings_from_args(&temp_dir, &args)
@@ -3089,7 +3723,7 @@ engine = "sqlite"
 
     #[cfg(feature = "cln")]
     #[test]
-    fn test_load_settings_reports_missing_cln_rpc_path() {
+    fn test_load_settings_reports_missing_cln_config() {
         assert_load_settings_error(
             &format!(
                 r#"
@@ -3103,13 +3737,13 @@ engine = "sqlite"
 ln_backend = "cln"
 "#
             ),
-            "CLN rpc_path must be set",
+            "CLN backend selected but [cln] config section is missing",
         );
     }
 
     #[cfg(feature = "lnbits")]
     #[test]
-    fn test_load_settings_reports_missing_lnbits_credentials() {
+    fn test_load_settings_reports_missing_lnbits_config() {
         assert_load_settings_error(
             &format!(
                 r#"
@@ -3123,13 +3757,13 @@ engine = "sqlite"
 ln_backend = "lnbits"
 "#
             ),
-            "LNbits admin_api_key must be set",
+            "LNbits backend selected but [lnbits] config section is missing",
         );
     }
 
     #[cfg(feature = "lnd")]
     #[test]
-    fn test_load_settings_reports_missing_lnd_address() {
+    fn test_load_settings_reports_missing_lnd_config() {
         assert_load_settings_error(
             &format!(
                 r#"
@@ -3143,7 +3777,7 @@ engine = "sqlite"
 ln_backend = "lnd"
 "#
             ),
-            "LND address must be set",
+            "LND backend selected but [lnd] config section is missing",
         );
     }
 
@@ -3268,6 +3902,8 @@ engine = "sqlite"
 
 [onchain]
 onchain_backend = "fakewallet"
+
+[fake_wallet]
 "#
             ),
         )

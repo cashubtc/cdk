@@ -5,7 +5,7 @@ use cdk::nuts::{CurrencyUnit, PublicKey};
 use cdk::Amount;
 use cdk_axum::cache;
 use cdk_common::common::QuoteTTL;
-use config::{Config, ConfigError, File};
+use config::{Config, ConfigError, File, FileFormat};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
@@ -1172,6 +1172,16 @@ pub struct MintManagementRpc {
 }
 
 impl Settings {
+    /// Parses settings from an in-memory TOML import document.
+    pub fn try_from_toml(document: &str) -> Result<Self, ConfigError> {
+        let defaults = Self::default();
+        Config::builder()
+            .add_source(Config::try_from(&defaults)?)
+            .add_source(File::from_str(document, FileFormat::Toml))
+            .build()?
+            .try_deserialize()
+    }
+
     pub fn validate_backend_pairing(&self) -> Result<(), String> {
         #[cfg(feature = "fakewallet")]
         self.validate_fake_wallet_backend_pairing()?;
