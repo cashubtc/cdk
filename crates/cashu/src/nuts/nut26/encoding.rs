@@ -529,20 +529,16 @@ impl PaymentRequest {
                 // Collect all relays (from nprofile and from "relay" tags)
                 let mut all_relays = relays;
 
-                // Extract NIPs and other tags from the tags field
+                // Extract relays from the tags field
                 for tag in &transport.tags {
                     if tag.is_empty() {
                         continue;
                     }
-                    if tag[0] == "n" && tag.len() >= 2 {
-                        // Encode NIPs as tag tuples with key "n"
-                        let tag_bytes = Self::encode_tag_tuple(tag)?;
-                        writer.write_tlv(0x03, &tag_bytes)?;
-                    } else if tag[0] == "relay" && tag.len() >= 2 {
+                    if tag[0] == "relay" && tag.len() >= 2 {
                         // Collect relays from tags to encode as "r" tag tuples
                         all_relays.push(tag[1].clone());
                     } else {
-                        // Other tags as generic tag tuples
+                        // NIP and other tags are generic tag tuples
                         let tag_bytes = Self::encode_tag_tuple(tag)?;
                         writer.write_tlv(0x03, &tag_bytes)?;
                     }
@@ -2601,6 +2597,21 @@ mod tests {
             PaymentRequest::from_bech32_bytes(&writer.into_bytes()),
             Err(Error::InvalidStructure)
         ));
+    }
+
+    #[test]
+    fn test_decode_mint_preferred_values() {
+        for (value, expected) in [(0, false), (1, true)] {
+            let mut writer = TlvWriter::new();
+            writer
+                .write_tlv(0x09, &[value])
+                .expect("mint_preferred should fit in TLV length");
+
+            let decoded = PaymentRequest::from_bech32_bytes(&writer.into_bytes())
+                .expect("valid mint_preferred value should decode");
+
+            assert_eq!(decoded.mint_preferred, Some(expected));
+        }
     }
 
     #[test]
