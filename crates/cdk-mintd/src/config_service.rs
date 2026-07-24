@@ -223,6 +223,13 @@ impl ConfigurationService {
         Ok(self.repository.active().await?.toml)
     }
 
+    /// Reports whether the stored configuration still requires a restart.
+    pub(crate) async fn has_pending_configuration(
+        &self,
+    ) -> Result<bool, ConfigurationServiceError> {
+        Ok(!self.repository.active().await?.applied)
+    }
+
     /// Marks the current startup document applied if it has not been replaced.
     pub(crate) async fn mark_applied(
         &self,
@@ -1115,7 +1122,15 @@ engine = "sqlite"
             .initialize(&first, Some(identity.pubkey))
             .await
             .expect("initialize with matching mint pubkey");
+        assert!(service
+            .has_pending_configuration()
+            .await
+            .expect("initialized document is pending"));
         assert!(service.mark_applied(&first).await.expect("mark applied"));
+        assert!(!service
+            .has_pending_configuration()
+            .await
+            .expect("applied document is active"));
         assert!(service.startup().await.expect("startup").applied);
 
         let second = document(&format!("file:{}", secret_path.display()), "second");
@@ -1123,6 +1138,10 @@ engine = "sqlite"
             .apply(&second, false)
             .await
             .expect("replace document");
+        assert!(service
+            .has_pending_configuration()
+            .await
+            .expect("replacement requires restart"));
         assert!(!service
             .mark_applied(&first)
             .await
