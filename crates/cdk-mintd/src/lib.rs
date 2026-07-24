@@ -92,6 +92,23 @@ const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION")
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
 
+type DynSignatory = Arc<dyn cdk_signatory::signatory::Signatory + Send + Sync>;
+
+#[derive(Clone)]
+struct ValidatedSigningSource {
+    expected_pubkey: cdk::nuts::PublicKey,
+    remote_signatory: Option<DynSignatory>,
+}
+
+impl std::fmt::Debug for ValidatedSigningSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ValidatedSigningSource")
+            .field("expected_pubkey", &self.expected_pubkey)
+            .field("remote_signatory", &self.remote_signatory.is_some())
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ConfigurationActivation {
     service: config_service::ConfigurationService,
@@ -396,6 +413,23 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
     const MIN_SEED_BYTES: usize = 32;
 
     if let Some(signatory) = settings.enabled_signatory() {
+        let has_local_seed = settings
+            .info
+            .seed
+            .as_ref()
+            .is_some_and(|seed| !seed.is_empty());
+        let has_local_mnemonic = settings
+            .info
+            .mnemonic
+            .as_ref()
+            .is_some_and(|mnemonic| !mnemonic.is_empty());
+        if has_local_seed || has_local_mnemonic {
+            bail!(
+                "Remote signatory configuration cannot include [info].seed or [info].mnemonic; \
+                 keep private signing material on the signatory host"
+            );
+        }
+
         if signatory.tls_dir.is_none() && !signatory.allow_insecure {
             bail!(
                 "gRPC signatory TLS is not configured. Set [signatory].tls_dir or \
@@ -1587,6 +1621,7 @@ async fn build_mint(
     settings: &config::Settings,
     keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     mint_builder: MintBuilder,
+    validated_signing_source: Option<&ValidatedSigningSource>,
 ) -> Result<Mint> {
     if let Some(signatory) = settings.enabled_signatory() {
         let tls_dir = signatory.tls_dir.clone();
@@ -1605,20 +1640,41 @@ async fn build_mint(
             );
         }
 
-        tracing::info!(
-            "Connecting to remote signatory to {}:{} with TLS directory {:?}",
-            signatory.address,
-            signatory.port,
-            tls_dir.clone()
-        );
-
-        Ok(mint_builder
-            .build_with_signatory(Arc::new(
-                cdk_signatory::SignatoryRpcClient::new(&signatory.address, signatory.port, tls_dir)
+        let remote_signatory = match validated_signing_source
+            .and_then(|validated| validated.remote_signatory.clone())
+        {
+            Some(remote_signatory) => {
+                tracing::info!(
+                    "Using the remote signatory connection validated during configuration startup"
+                );
+                remote_signatory
+            }
+            None => {
+                tracing::info!(
+                    "Connecting to remote signatory at {}:{} with TLS directory {:?}",
+                    signatory.address,
+                    signatory.port,
+                    tls_dir
+                );
+                Arc::new(
+                    cdk_signatory::SignatoryRpcClient::new(
+                        &signatory.address,
+                        signatory.port,
+                        tls_dir,
+                    )
                     .await?,
-            ))
-            .await?)
+                )
+            }
+        };
+        if let Some(validated) = validated_signing_source {
+            ensure_signatory_identity(&remote_signatory, validated.expected_pubkey).await?;
+        }
+
+        Ok(mint_builder.build_with_signatory(remote_signatory).await?)
     } else if let Some(seed) = settings.info.seed.clone().filter(|seed| !seed.is_empty()) {
+        if validated_signing_source.is_some_and(|validated| validated.remote_signatory.is_some()) {
+            bail!("Validated remote signatory provided for local signing configuration");
+        }
         let seed_bytes: Vec<u8> = seed.into();
         Ok(mint_builder.build_with_seed(keystore, &seed_bytes).await?)
     } else if let Some(mnemonic) = settings
@@ -1634,6 +1690,17 @@ async fn build_mint(
     } else {
         bail!("No seed nor remote signatory set");
     }
+}
+
+async fn ensure_signatory_identity(
+    signatory: &DynSignatory,
+    expected_pubkey: cdk::nuts::PublicKey,
+) -> Result<()> {
+    let actual_pubkey = signatory.keysets().await?.pubkey;
+    if actual_pubkey != expected_pubkey {
+        return Err(config_service::ConfigurationServiceError::SigningIdentityChange.into());
+    }
+    Ok(())
 }
 
 async fn reconcile_canonical_configuration(
@@ -2157,6 +2224,7 @@ pub async fn run_mintd_with_shutdown(
         routers,
         false,
         None,
+        None,
     )
     .await
 }
@@ -2174,6 +2242,7 @@ async fn run_mintd_with_database_and_shutdown(
     routers: Vec<Router>,
     force_configuration: bool,
     activation: Option<ConfigurationActivation>,
+    validated_signing_source: Option<ValidatedSigningSource>,
 ) -> Result<()> {
     let mint_builder = MintBuilder::new(localstore);
 
@@ -2212,7 +2281,13 @@ async fn run_mintd_with_database_and_shutdown(
 
     let config_mint_info = mint_builder.current_mint_info();
 
-    let mint = build_mint(settings, keystore, mint_builder).await?;
+    let mint = build_mint(
+        settings,
+        keystore,
+        mint_builder,
+        validated_signing_source.as_ref(),
+    )
+    .await?;
 
     tracing::debug!("Mint built from builder.");
 
@@ -2318,6 +2393,12 @@ pub async fn run_mintd_from_database(
     let service = configuration_service(kv.clone(), &bootstrap);
     let startup = service.startup().await?;
     let force_configuration = !startup.applied;
+    let validated_signing_source = Some(ValidatedSigningSource {
+        expected_pubkey: startup.signing_identity.pubkey,
+        remote_signatory: startup
+            .remote_signatory
+            .map(|signatory| -> DynSignatory { signatory }),
+    });
     let activation = Some(ConfigurationActivation {
         service,
         expected_document: (!startup.applied).then(|| startup.resolved.document.clone()),
@@ -2342,6 +2423,7 @@ pub async fn run_mintd_from_database(
         routers,
         force_configuration,
         activation,
+        validated_signing_source,
     )
     .await;
 
@@ -2368,6 +2450,50 @@ mod tests {
 
     fn temp_seed_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn validated_remote_signatory_identity_is_checked_at_mint_build_boundary() {
+        use cdk_signatory::db_signatory::DbSignatory;
+        use cdk_signatory::signatory::Signatory;
+        use cdk_sqlite::mint::memory;
+
+        let expected_store = Arc::new(memory::empty().await.expect("expected signatory database"));
+        let expected_signatory =
+            DbSignatory::new(expected_store, &[7; 32], HashMap::new(), Default::default())
+                .await
+                .expect("expected signatory");
+        let expected_pubkey = expected_signatory
+            .keysets()
+            .await
+            .expect("expected keysets")
+            .pubkey;
+
+        let actual_store = Arc::new(memory::empty().await.expect("actual signatory database"));
+        let actual_signatory: DynSignatory = Arc::new(
+            DbSignatory::new(actual_store, &[9; 32], HashMap::new(), Default::default())
+                .await
+                .expect("actual signatory"),
+        );
+        let actual_pubkey = actual_signatory
+            .keysets()
+            .await
+            .expect("actual keysets")
+            .pubkey;
+
+        ensure_signatory_identity(&actual_signatory, actual_pubkey)
+            .await
+            .expect("matching identity");
+        let error = ensure_signatory_identity(&actual_signatory, expected_pubkey)
+            .await
+            .expect_err("changed identity should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("signing identity does not match this mint database"),
+            "unexpected error: {error}"
+        );
     }
 
     #[cfg(feature = "sqlite")]
