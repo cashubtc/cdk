@@ -46,10 +46,7 @@ pub fn create_custom_routers(state: MintState, custom_methods: Vec<String>) -> R
             "/mint/quote/{method}/check",
             post(post_batch_check_mint_quote),
         )
-        .route(
-            "/mint/quote/{method}/pubkey",
-            post(post_mint_quote_by_pubkey),
-        )
+        .route("/mint/quote/pubkey", post(post_mint_quote_by_pubkey))
         .route("/mint/{method}", post(cache_post_mint_custom))
         .route("/mint/{method}/batch", post(cache_post_batch_mint))
         .route("/melt/quote/{method}", post(post_melt_custom_quote))
