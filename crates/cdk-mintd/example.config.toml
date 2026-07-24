@@ -5,6 +5,8 @@ listen_host = "127.0.0.1"
 listen_port = 8085
 # Secrets are references, never literal values. Supported forms are
 # `env:VARIABLE` and `file:/absolute/path`.
+# This mnemonic configures the embedded signatory. Remove it when enabling the
+# remote [signatory] section below; the mint host must not receive remote keys.
 mnemonic = "env:CDK_MINTD_MNEMONIC"
 # input_fee_ppk = 0
 # enable_info_page = true
@@ -30,6 +32,8 @@ melt_ttl = 120
 # file_level = "debug"
 
 [signatory]
+# Remote and embedded signing are mutually exclusive. When this is true,
+# [info].seed and [info].mnemonic must be omitted.
 enabled = false
 # address = "127.0.0.1"
 # port = 15060

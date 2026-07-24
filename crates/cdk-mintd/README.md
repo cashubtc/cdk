@@ -161,6 +161,20 @@ and are loaded from the database during normal startup.
 Primary database settings are immutable through `config apply`: moving the
 authoritative database requires a separate data-migration procedure.
 
+### Signing Modes
+
+Configure exactly one signing mode:
+
+- For an embedded signatory, set `[info].seed` or `[info].mnemonic` to a secret
+  reference available on the mint host.
+- For a remote signatory, set `[signatory].enabled = true` and omit both local
+  fields. The private signing material remains on the signatory host.
+
+Mintd rejects a remote-signatory configuration that also contains a non-empty
+local seed or mnemonic. During database-backed startup it retains the validated
+remote connection and checks its public identity again immediately before mint
+construction and keyset operations.
+
 ### Secret References
 
 Secret fields must contain a reference, never a literal value:

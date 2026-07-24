@@ -3,6 +3,7 @@
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use bip39::Mnemonic;
 use bitcoin::bip32::Xpriv;
@@ -45,10 +46,28 @@ impl fmt::Debug for ResolvedConfiguration {
 }
 
 /// Configuration selected for daemon startup.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct StartupConfiguration {
     pub(crate) resolved: ResolvedConfiguration,
     pub(crate) applied: bool,
+    pub(crate) signing_identity: SigningIdentity,
+    pub(crate) remote_signatory: Option<Arc<cdk_signatory::SignatoryRpcClient>>,
+}
+
+impl fmt::Debug for StartupConfiguration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StartupConfiguration")
+            .field("resolved", &self.resolved)
+            .field("applied", &self.applied)
+            .field("signing_identity", &self.signing_identity)
+            .field("remote_signatory", &self.remote_signatory.is_some())
+            .finish()
+    }
+}
+
+struct SigningIdentityResolution {
+    identity: SigningIdentity,
+    remote_signatory: Option<Arc<cdk_signatory::SignatoryRpcClient>>,
 }
 
 /// Result of a configuration apply operation.
@@ -207,14 +226,16 @@ impl ConfigurationService {
         let envelope = self.repository.active().await?;
         let resolved = Self::validate_document(&envelope.toml)?;
         self.require_primary_database(&resolved.settings.database)?;
-        let signing_identity = discover_signing_identity_async(&resolved.settings).await?;
-        validate_authored_mint_pubkey(&resolved.settings, &signing_identity)?;
-        if envelope.signing_identity != signing_identity.fingerprint {
+        let signing_resolution = resolve_signing_identity_async(&resolved.settings).await?;
+        validate_authored_mint_pubkey(&resolved.settings, &signing_resolution.identity)?;
+        if envelope.signing_identity != signing_resolution.identity.fingerprint {
             return Err(ConfigurationServiceError::SigningIdentityChange);
         }
         Ok(StartupConfiguration {
             resolved,
             applied: envelope.applied,
+            signing_identity: signing_resolution.identity,
+            remote_signatory: signing_resolution.remote_signatory,
         })
     }
 
@@ -288,22 +309,36 @@ pub(crate) fn discover_signing_identity(
 pub(crate) async fn discover_signing_identity_async(
     settings: &Settings,
 ) -> Result<SigningIdentity, ConfigurationServiceError> {
+    Ok(resolve_signing_identity_async(settings).await?.identity)
+}
+
+async fn resolve_signing_identity_async(
+    settings: &Settings,
+) -> Result<SigningIdentityResolution, ConfigurationServiceError> {
     if let Some(signatory) = settings.enabled_signatory() {
-        let client = cdk_signatory::SignatoryRpcClient::new(
-            &signatory.address,
-            signatory.port,
-            signatory.tls_dir.clone(),
-        )
-        .await
-        .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?;
+        let client = Arc::new(
+            cdk_signatory::SignatoryRpcClient::new(
+                &signatory.address,
+                signatory.port,
+                signatory.tls_dir.clone(),
+            )
+            .await
+            .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?,
+        );
         let pubkey = client
             .keysets()
             .await
             .map_err(|error| ConfigurationServiceError::SigningIdentity(error.to_string()))?
             .pubkey;
-        Ok(signing_identity_from_pubkey(pubkey))
+        Ok(SigningIdentityResolution {
+            identity: signing_identity_from_pubkey(pubkey),
+            remote_signatory: Some(client),
+        })
     } else {
-        discover_signing_identity(settings)
+        Ok(SigningIdentityResolution {
+            identity: discover_signing_identity(settings)?,
+            remote_signatory: None,
+        })
     }
 }
 
@@ -404,8 +439,10 @@ fn prune_inactive_configuration(settings: &mut Settings) {
 }
 
 fn resolve_secrets(settings: &mut Settings) -> Result<(), ConfigurationServiceError> {
-    resolve_optional_secret(&mut settings.info.seed, "info.seed")?;
-    resolve_optional_trimmed_secret(&mut settings.info.mnemonic, "info.mnemonic")?;
+    if settings.enabled_signatory().is_none() {
+        resolve_optional_secret(&mut settings.info.seed, "info.seed")?;
+        resolve_optional_trimmed_secret(&mut settings.info.mnemonic, "info.mnemonic")?;
+    }
 
     if let Some(postgres) = settings.database.postgres.as_mut() {
         resolve_secret(&mut postgres.url, "database.postgres.url")?;
@@ -581,6 +618,65 @@ mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon aban
                 field: "info.mnemonic"
             }
         ));
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn remote_signatory_rejects_local_signing_material_without_resolving_it() {
+        let missing_secret =
+            crate::test_utils::unique_temp_path("remote_signatory_unused_local_secret");
+        let document = format!(
+            r#"
+[info]
+mnemonic = "file:{}"
+
+[signatory]
+enabled = true
+allow_insecure = true
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#,
+            missing_secret.display()
+        );
+        let error = ConfigurationService::validate_document(&document)
+            .expect_err("remote and local signing sources should conflict");
+        assert!(
+            matches!(
+                &error,
+                ConfigurationServiceError::Validation(message)
+                    if message.contains("Remote signatory configuration cannot include")
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn remote_signatory_configuration_does_not_require_local_signing_material() {
+        let resolved = ConfigurationService::validate_document(
+            r#"
+[signatory]
+enabled = true
+allow_insecure = true
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#,
+        )
+        .expect("remote signatory should be a complete signing source");
+        assert!(resolved.settings.info.seed.is_none());
+        assert!(resolved.settings.info.mnemonic.is_none());
     }
 
     #[cfg(feature = "fakewallet")]
@@ -1131,7 +1227,10 @@ engine = "sqlite"
             .has_pending_configuration()
             .await
             .expect("applied document is active"));
-        assert!(service.startup().await.expect("startup").applied);
+        let startup = service.startup().await.expect("startup");
+        assert!(startup.applied);
+        assert_eq!(startup.signing_identity.pubkey, identity.pubkey);
+        assert!(startup.remote_signatory.is_none());
 
         let second = document(&format!("file:{}", secret_path.display()), "second");
         service
