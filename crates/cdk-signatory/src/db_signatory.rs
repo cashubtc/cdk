@@ -39,6 +39,12 @@ pub struct DbSignatory {
     /// Latest keyset snapshot, published on every reload (initial load and each
     /// rotation).
     keyset_updates: watch::Sender<SignatoryKeysets>,
+    /// Serializes `reload_keys_from_db` so a reload that read an older DB
+    /// snapshot cannot swap/publish over a fresher one. Held across the DB
+    /// reads and the swap; the `keysets`/`active_keysets` write locks still
+    /// only wrap the synchronous swap, so signing is not blocked during the
+    /// read.
+    reload_lock: tokio::sync::Mutex<()>,
 }
 
 impl DbSignatory {
@@ -76,6 +82,7 @@ impl DbSignatory {
             secp_ctx,
             xpriv,
             keyset_updates,
+            reload_lock: Default::default(),
         };
         keys.reload_keys_from_db().await?;
 
@@ -89,7 +96,17 @@ impl DbSignatory {
     ///
     /// Any operation performed with keysets, are done through this trait and never to the database
     /// directly.
+    ///
+    /// The `reload_lock` serializes concurrent reloads. Without it, a reload
+    /// that read an older DB snapshot could take the `keysets` write lock last
+    /// and swap/publish over a fresher snapshot, dropping a just-committed
+    /// keyset from memory until the next reload. Holding the lock across the DB
+    /// reads and the swap means the reload that reads last also swaps last, and
+    /// since every rotation commits to the DB before reloading, that last read
+    /// always sees every committed keyset.
     async fn reload_keys_from_db(&self) -> Result<(), Error> {
+        let _reload = self.reload_lock.lock().await;
+
         // Build the replacement state before touching the live maps. Every
         // `await` (the DB reads) happens here, before any lock is held, so an
         // abort mid-reload (for example `stop()` aborting the rotation task)
@@ -883,6 +900,86 @@ mod test {
         assert!(
             after.keysets.len() > initial,
             "keyset count should grow after rotation"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_rotations_all_land_in_memory() {
+        // Consistency guard for the reload path: several rotations run
+        // concurrently on the raw signatory (as auto-rotation does, bypassing
+        // the serialized actor). Each commits its keyset to the DB before
+        // reloading. After all rotations settle, the in-memory map and the
+        // published watch snapshot must both equal the full DB set, with no
+        // keyset dropped by a reload that raced another. This asserts the
+        // invariant the `reload_lock` protects; it does not force the exact
+        // stale-swap interleaving (the in-memory store's uncontended write
+        // lock makes that ordering unreachable here).
+        let sig = test_signatory(b"test-seed-concurrent-reload").await;
+
+        // Distinct units so each rotation creates its own keyset without
+        // contending on a shared unit's derivation index.
+        let units: Vec<CurrencyUnit> = (0..12)
+            .map(|i| CurrencyUnit::Custom(format!("UNIT{i}")))
+            .collect();
+
+        let mut handles = Vec::new();
+        for unit in units.iter().cloned() {
+            let sig = Arc::clone(&sig);
+            handles.push(tokio::spawn(async move {
+                sig.rotate_keyset(RotateKeyArguments {
+                    unit,
+                    amounts: vec![1, 2, 4, 8],
+                    input_fee_ppk: 0,
+                    keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                    final_expiry: None,
+                })
+                .await
+                .expect("rotate_keyset");
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("rotation task should not panic");
+        }
+
+        let db_ids: HashSet<Id> = sig
+            .localstore
+            .get_keyset_infos()
+            .await
+            .expect("keyset infos")
+            .into_iter()
+            .map(|info| info.id)
+            .collect();
+        assert_eq!(
+            db_ids.len(),
+            units.len(),
+            "every rotation committed a keyset"
+        );
+
+        let memory_ids: HashSet<Id> = sig
+            .keysets()
+            .await
+            .expect("keysets")
+            .keysets
+            .into_iter()
+            .map(|k| k.id)
+            .collect();
+        assert_eq!(
+            memory_ids, db_ids,
+            "in-memory keysets must match the DB after concurrent reloads"
+        );
+
+        let watch_ids: HashSet<Id> = sig
+            .subscribe_keysets()
+            .await
+            .expect("subscribe")
+            .borrow()
+            .keysets
+            .iter()
+            .map(|k| k.id)
+            .collect();
+        assert_eq!(
+            watch_ids, db_ids,
+            "published keyset snapshot must match the DB after concurrent reloads"
         );
     }
 
