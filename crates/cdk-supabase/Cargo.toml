@@ -16,7 +16,7 @@ integration-tests = []
 
 [dependencies]
 async-trait.workspace = true
-cdk-common = { workspace = true, features = ["test"] }
+cdk-common.workspace = true
 bitcoin.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
@@ -34,6 +34,7 @@ scrypt = { version = "0.12.0", default-features = false }
 paste.workspace = true
 
 [dev-dependencies]
+cdk-common = { workspace = true, features = ["test"] }
 mockito = { version = "1", default-features = false }
 
 [lints]
