@@ -77,3 +77,14 @@ jobs:
       cdk_ref: ${{ inputs.cdk_ref }}
       prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
     secrets: inherit
+
+  nitro:
+    name: "Trigger Nitro bindings"
+    needs: detect-prerelease
+    uses: ./.github/workflows/nitro-publish.yml
+    with:
+      release_tag: ${{ inputs.release_tag }}
+      cdk_version: ${{ inputs.cdk_version }}
+      cdk_ref: ${{ inputs.cdk_ref }}
+      prerelease: ${{ needs.detect-prerelease.outputs.prerelease == 'true' }}
+    secrets: inherit

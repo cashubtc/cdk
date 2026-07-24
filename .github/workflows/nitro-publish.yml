@@ -1,0 +1,369 @@
+name: "FFI - Nitro Bindings"
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag to create for release (e.g. v0.17.0)"
+        required: true
+      cdk_version:
+        description: 'CDK dependency version (e.g. 0.17.0). Defaults to release_tag without the "v" prefix.'
+        required: false
+      cdk_ref:
+        description: 'CDK git ref to publish from. Defaults to release_tag.'
+        required: false
+      prerelease:
+        description: 'Mark the GitHub release as a pre-release'
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        required: true
+      cdk_version:
+        type: string
+        required: false
+      cdk_ref:
+        type: string
+        required: false
+      prerelease:
+        type: boolean
+        required: false
+        default: false
+env:
+  CARGO_TERM_COLOR: ${{ vars.CARGO_TERM_COLOR }}
+  TAG: ${{ inputs.release_tag }}
+  CDK_REF: ${{ inputs.cdk_ref || inputs.release_tag }}
+  RELEASE_BRANCH: release/${{ inputs.release_tag }}
+
+jobs:
+  nitro-sync-sources:
+    name: "nitro: Sync sources to cdk-nitro"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve variables
+        run: |
+          CDK_VER="${{ inputs.cdk_version }}"
+          echo "CDK_VER=${CDK_VER:-${TAG#v}}" >> "$GITHUB_ENV"
+          echo "RELEASE_VER=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Checkout monorepo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CDK_REF }}
+
+      - name: Clone cdk-nitro
+        run: |
+          git clone https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
+
+      - name: Copy bindings/react-native to cdk-nitro
+        run: |
+          rsync -av --delete \
+            --exclude='.github' \
+            --exclude='target' \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='lib' \
+            bindings/react-native/ cdk-nitro/
+
+      - name: Run Nitro codegen
+        working-directory: cdk-nitro
+        run: npx nitrogen
+
+      - name: Update versions and resolve workspace references
+        run: |
+          echo "Setting CDK version to ${CDK_VER}, release version to ${RELEASE_VER}"
+
+          # Helper: extract a value from [workspace.package] in root Cargo.toml
+          ws_pkg() {
+            sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+              | grep "^$1 " | head -1 | sed 's/.*= *"\(.*\)"/\1/'
+          }
+
+          # Read workspace values dynamically
+          WS_EDITION=$(ws_pkg edition)
+          WS_RUST_VERSION=$(ws_pkg rust-version)
+          WS_LICENSE=$(ws_pkg license)
+          WS_HOMEPAGE=$(ws_pkg homepage)
+          WS_REPOSITORY=$(ws_pkg repository)
+
+          echo "Workspace values: edition=${WS_EDITION} rust-version=${WS_RUST_VERSION}"
+
+          # Update package.json version
+          cd cdk-nitro
+          node -e "
+            const pkg = require('./package.json');
+            pkg.version = '${RELEASE_VER}';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+          # Resolve workspace references in rust/Cargo.toml
+          sed -i \
+            -e "s/^name = \"cdk-nitro\"/name = \"cdk-nitro\"/" \
+            -e "s/^version = .*/version = \"${CDK_VER}\"/" \
+            -e "s/^edition = .*/edition = \"${WS_EDITION}\"/" \
+            -e "s/^publish = false//" \
+            rust/Cargo.toml
+
+          # Resolve path dependencies to crates.io versions
+          sed -i \
+            -e "s|cashu = { path = \"../../../crates/cashu\" }|cashu = \"=${CDK_VER}\"|" \
+            -e "s|cdk = { path = \"../../../crates/cdk\", default-features = false }|cdk = { version = \"=${CDK_VER}\", default-features = false }|" \
+            rust/Cargo.toml
+
+          # Add release profile
+          printf '\n[profile.release]\nlto = true\nstrip = true\ncodegen-units = 1\n' >> rust/Cargo.toml
+
+          echo "--- package.json ---"
+          cat package.json
+          echo ""
+          echo "--- rust/Cargo.toml ---"
+          cat rust/Cargo.toml
+
+      - name: Push to cdk-nitro release branch
+        working-directory: cdk-nitro
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${RELEASE_BRANCH}"
+          git add -A
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "sync: update sources for ${TAG}"
+          git push origin "${RELEASE_BRANCH}"
+
+  nitro-build-native:
+    name: "nitro: Build ${{ matrix.target }}"
+    needs: [nitro-sync-sources]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Android
+          - target: aarch64-linux-android
+            runner: ubuntu-22.04
+            artifact: libcdk_nitro.so
+          - target: armv7-linux-androideabi
+            runner: ubuntu-22.04
+            artifact: libcdk_nitro.so
+          - target: x86_64-linux-android
+            runner: ubuntu-22.04
+            artifact: libcdk_nitro.so
+
+          # iOS
+          - target: aarch64-apple-ios
+            runner: macos-14
+            artifact: libcdk_nitro.a
+          - target: aarch64-apple-ios-sim
+            runner: macos-14
+            artifact: libcdk_nitro.a
+
+    steps:
+      - name: Clone cdk-nitro
+        shell: bash
+        run: |
+          git clone --branch "${RELEASE_BRANCH}" \
+            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
+
+      - name: Checkout CDK (for Nix flake)
+        uses: actions/checkout@v4
+        with:
+          path: cdk
+          ref: ${{ env.CDK_REF }}
+          fetch-depth: 1
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: cashudevkit
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+        continue-on-error: true
+
+      - name: Build (Nix)
+        working-directory: cdk-nitro/rust
+        run: |
+          # Remove rust-toolchain.toml so it doesn't override the Nix-provided toolchain
+          rm -f ../rust-toolchain.toml rust-toolchain.toml
+          if [[ "${{ matrix.target }}" == *apple-ios* ]]; then
+            XCODE_DEV_DIR=$(/usr/bin/xcrun xcode-select -p 2>/dev/null \
+              || echo "/Applications/Xcode.app/Contents/Developer")
+            nix develop -L ../../cdk#cross-build --command \
+              env -u MACOSX_DEPLOYMENT_TARGET -u SDKROOT \
+                DEVELOPER_DIR="$XCODE_DEV_DIR" \
+                CC_aarch64_apple_ios=/usr/bin/clang \
+                CARGO_TARGET_AARCH64_APPLE_IOS_LINKER=/usr/bin/clang \
+                CC_aarch64_apple_ios_sim=/usr/bin/clang \
+                CARGO_TARGET_AARCH64_APPLE_IOS_SIM_LINKER=/usr/bin/clang \
+                cargo build --release --target ${{ matrix.target }}
+          else
+            nix develop -L ../../cdk#cross-build --command \
+              cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: Strip debug symbols
+        working-directory: cdk-nitro/rust
+        shell: bash
+        run: |
+          FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          case "${{ matrix.target }}" in
+            *apple*)    strip -S "$FILE" ;;
+            *android*)  nix develop -L ../../cdk#cross-build --command \
+                          bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE" ;;
+            *)          strip --strip-all "$FILE" ;;
+          esac
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "cdk-nitro/rust/target/${{ matrix.target }}/release/${{ matrix.artifact }}" \
+             "dist/${{ matrix.target }}-${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nitro-native-${{ matrix.target }}
+          path: dist/
+
+  nitro-create-xcframework:
+    name: "nitro: Create XCFramework"
+    runs-on: macos-14
+    needs: [nitro-build-native]
+    steps:
+      - name: Checkout monorepo (for C header)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CDK_REF }}
+          sparse-checkout: bindings/react-native/cpp/cdk_nitro.h
+          sparse-checkout-cone-mode: false
+
+      - name: Download iOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: nitro-native-aarch64-apple-ios*
+          merge-multiple: true
+
+      - name: Create XCFramework
+        run: |
+          mkdir -p device/Headers simulator/Headers
+          cp artifacts/aarch64-apple-ios-libcdk_nitro.a device/libcdk_nitro.a
+          cp artifacts/aarch64-apple-ios-sim-libcdk_nitro.a simulator/libcdk_nitro.a
+          cp bindings/react-native/cpp/cdk_nitro.h device/Headers/
+          cp bindings/react-native/cpp/cdk_nitro.h simulator/Headers/
+
+          xcodebuild -create-xcframework \
+            -library device/libcdk_nitro.a \
+            -headers device/Headers \
+            -library simulator/libcdk_nitro.a \
+            -headers simulator/Headers \
+            -output CdkNitro.xcframework
+          echo "Created XCFramework"
+
+      - name: Upload XCFramework
+        uses: actions/upload-artifact@v4
+        with:
+          name: nitro-xcframework
+          path: CdkNitro.xcframework/
+
+  nitro-publish:
+    name: "nitro: Publish to cdk-nitro"
+    runs-on: ubuntu-latest
+    needs: [nitro-build-native, nitro-create-xcframework]
+    steps:
+      - name: Clone cdk-nitro
+        run: |
+          git clone --branch "${RELEASE_BRANCH}" \
+            https://x-access-token:${{ secrets.FFI_DEPLOY_KEY }}@github.com/${{ vars.CDK_NITRO_REPO }}.git cdk-nitro
+
+      - name: Download Android artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: nitro-native-*-linux-android*
+          merge-multiple: true
+
+      - name: Download XCFramework
+        uses: actions/download-artifact@v4
+        with:
+          name: nitro-xcframework
+          path: cdk-nitro/ios/Frameworks/CdkNitro.xcframework
+
+      - name: Distribute Android libraries
+        run: |
+          declare -A ANDROID_ABI=(
+            ["aarch64-linux-android"]="arm64-v8a"
+            ["armv7-linux-androideabi"]="armeabi-v7a"
+            ["x86_64-linux-android"]="x86_64"
+          )
+
+          for f in artifacts/*; do
+            filename=$(basename "$f")
+            if [[ "$filename" == *"-libcdk_nitro.so" ]]; then
+              rust_target="${filename%-libcdk_nitro.so}"
+              if [[ -n "${ANDROID_ABI[$rust_target]+x}" ]]; then
+                abi="${ANDROID_ABI[$rust_target]}"
+                dst="cdk-nitro/android/src/main/jniLibs/${abi}"
+                mkdir -p "$dst"
+                cp "$f" "$dst/libcdk_nitro.so"
+                echo "android: ${rust_target} → ${abi}"
+              fi
+            fi
+          done
+
+      - name: Commit to release branch
+        working-directory: cdk-nitro
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "release: ${TAG} — add prebuilt binaries"
+
+      - name: Push release branch
+        working-directory: cdk-nitro
+        run: git push origin "${RELEASE_BRANCH}"
+
+      - name: Publish to npm
+        working-directory: cdk-nitro
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "::warning::NPM_TOKEN secret is not set — skipping npm publish. The package is still available via git: npm install github:${{ vars.CDK_NITRO_REPO }}#${TAG}"
+            exit 0
+          fi
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
+          npm publish --access public
+          rm -f .npmrc
+
+      - name: Create release on cdk-nitro (creates tag and uploads asset atomically)
+        working-directory: cdk-nitro
+        env:
+          GH_TOKEN: ${{ secrets.FFI_DEPLOY_KEY }}
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          gh release create "${TAG}" \
+            --repo ${{ vars.CDK_NITRO_REPO }} \
+            --target "${COMMIT_SHA}" \
+            --title "Release ${TAG}" \
+            ${{ inputs.prerelease && '--prerelease' || '' }} \
+            --generate-notes
+
+      - name: Merge to default branch
+        working-directory: cdk-nitro
+        run: |
+          DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+          git checkout "${DEFAULT_BRANCH}"
+          git merge "${RELEASE_BRANCH}" --squash
+          git commit -m "release: ${TAG}"
+          git push origin "${DEFAULT_BRANCH}"
+
+      - name: Clean up release branch
+        working-directory: cdk-nitro
+        run: git push origin --delete "${RELEASE_BRANCH}"

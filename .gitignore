@@ -59,3 +59,10 @@ out/
 bindings/kotlin/cdk-jvm/src/main/kotlin/uniffi/
 bindings/kotlin/cdk-jvm/src/main/resources/*.so
 bindings/kotlin/cdk-jvm/src/main/resources/*.dylib
+
+# Node.js
+node_modules/
+
+# React Native Nitro codegen & build output
+bindings/react-native/nitrogen/generated/
+bindings/react-native/lib/
