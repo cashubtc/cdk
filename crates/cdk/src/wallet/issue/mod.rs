@@ -191,6 +191,23 @@ impl Wallet {
         description: Option<String>,
         extra: Option<String>,
     ) -> Result<MintQuote, Error> {
+        let quote = self
+            .request_mint_quote(method, amount, description, extra)
+            .await?;
+
+        self.localstore.add_mint_quote(quote.clone()).await?;
+
+        Ok(quote)
+    }
+
+    /// Request a mint quote without persisting it to the wallet database.
+    pub(crate) async fn request_mint_quote(
+        &self,
+        method: PaymentMethod,
+        amount: Option<Amount>,
+        description: Option<String>,
+        extra: Option<String>,
+    ) -> Result<MintQuote, Error> {
         let mint_info = self.load_mint_info().await?;
         let mint_url = self.mint_url.clone();
         let unit = self.unit.clone();
@@ -268,8 +285,6 @@ impl Wallet {
             Some(secret_key),
         );
         apply_mint_quote_response(&mut quote, &response);
-
-        self.localstore.add_mint_quote(quote.clone()).await?;
 
         Ok(quote)
     }
