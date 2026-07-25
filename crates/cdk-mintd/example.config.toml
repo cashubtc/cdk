@@ -109,6 +109,56 @@ max_connections = 20
 # Connection timeout in seconds (optional, defaults to 10)
 connection_timeout_seconds = 10
 
+# Cross-instance NUT-17 notifications.
+#
+# The transport follows the database engine, so there is nothing to select.
+# SQLite spans a single host and keeps notifications in-process. Postgres also
+# forwards them to the other instances sharing the database with LISTEN/NOTIFY,
+# so an event published on one instance (an invoice being paid, say) reaches
+# WebSocket subscribers on all of them. A single Postgres instance behaves the
+# same as before: it skips the copy Postgres echoes back to it.
+#
+# This assumes the mint has its database to itself. LISTEN and NOTIFY need no
+# privileges beyond connecting: pg_notify is executable by PUBLIC and neither
+# statement touches a table. Any role that can open a session to this database
+# can therefore read the channel (quote ids, invoices, amounts and payment
+# preimages) and publish on it, and what it publishes reaches wallets over
+# NUT-17 as if the mint had sent it. Give the mint its own role and keep other
+# principals off the database. Who can connect is the only control that holds,
+# because a bare NOTIFY statement needs no privileges at all. Revoking the
+# function from PUBLIC still closes one path, but it also takes the privilege
+# from the mint, which publishes with SELECT pg_notify(...), so grant it back.
+# A superuser runs both once on the mint's database:
+#
+#   REVOKE EXECUTE ON FUNCTION pg_notify(text, text) FROM PUBLIC;
+#   GRANT EXECUTE ON FUNCTION pg_notify(text, text) TO <mint_role>;
+#
+# On Postgres the bus holds two connections per instance, one listening and one
+# used only to publish. They are opened directly, not taken from the pool, so
+# size the server's max_connections with them in mind: they are over and above
+# this section's own max_connections.
+#
+# Set cross_instance = false on a database the mint shares with anything else,
+# and on Postgres reached through a transaction-pooling proxy such as PgBouncer,
+# which cannot hold the session LISTEN needs. Notifications then stay
+# in-process, and a subscriber sees only the events of the instance it is
+# connected to.
+#
+# A database the mint cannot reach is not fatal: it serves notifications
+# locally, logs a warning, and keeps retrying in the background.
+#
+# Either way the database stays the source of truth, and the bus is only a live
+# push on top of it. A subscriber picks state up from the database when its
+# subscription is created, so a wallet that subscribes (or reconnects) sees
+# current state. One whose subscription stayed open on another instance while
+# the bus was down misses the events of that window: nothing re-sends them, and
+# it sees the change when it next polls or reconnects.
+#
+# Can also be set via environment variable:
+#   CDK_MINTD_PUBSUB_CROSS_INSTANCE
+[database.pubsub]
+# cross_instance = true              # postgres only; false keeps events in-process
+
 # Auth database configuration (optional, only used when auth is enabled)
 [auth_database.postgres]
 # PostgreSQL connection URL for authentication database

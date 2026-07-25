@@ -962,6 +962,60 @@ impl std::str::FromStr for DatabaseEngine {
 pub struct Database {
     pub engine: DatabaseEngine,
     pub postgres: Option<PostgresConfig>,
+    pub pubsub: PubSubConfig,
+}
+
+/// Cross-instance NUT-17 notifications.
+///
+/// The transport follows the database engine: SQLite spans a single host and
+/// keeps notifications in-process, Postgres additionally forwards them to peer
+/// instances over `LISTEN`/`NOTIFY`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PubSubConfig {
+    /// Forward notifications to the other instances sharing this database.
+    ///
+    /// Postgres only, on by default. `LISTEN` needs a session-pinned
+    /// connection, so a mint reaching Postgres through a transaction-pooling
+    /// proxy sets this to false. It also assumes the mint has the database to
+    /// itself; see the trust model in the example config.
+    pub cross_instance: bool,
+    /// Removed: the transport now follows the database engine. Kept so a config
+    /// that still sets it fails at startup instead of silently changing
+    /// behaviour.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    /// Removed: the channel is internal to the mint. See `transport`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+}
+
+impl Default for PubSubConfig {
+    fn default() -> Self {
+        Self {
+            cross_instance: true,
+            transport: None,
+            channel: None,
+        }
+    }
+}
+
+impl PubSubConfig {
+    /// Reject a config still carrying the removed settings, naming what
+    /// replaced them.
+    pub fn validate(&self) -> Result<(), String> {
+        let removed = match (&self.transport, &self.channel) {
+            (Some(_), _) => "transport",
+            (_, Some(_)) => "channel",
+            _ => return Ok(()),
+        };
+
+        Err(format!(
+            "[database.pubsub] {removed} was removed: cross-instance notifications now follow \
+             the database engine, on a channel internal to the mint. Set cross_instance = false \
+             to keep notifications in-process"
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1427,6 +1481,7 @@ mod tests {
                 url: url.clone(),
                 ..Default::default()
             }),
+            pubsub: Default::default(),
         };
         let auth_database = AuthDatabase {
             postgres: Some(PostgresAuthConfig {
@@ -1550,6 +1605,38 @@ listen_por = 8085
         // tests. `std::env` is global, so config.rs and lib.rs tests must
         // serialize on the *same* mutex or they race over env vars.
         crate::test_utils::env_lock()
+    }
+
+    /// Cross-instance notifications follow the engine, so a Postgres mint gets
+    /// them without saying anything in its config.
+    #[test]
+    fn pubsub_defaults_to_cross_instance() {
+        assert!(PubSubConfig::default().cross_instance);
+        assert!(Database::default().pubsub.cross_instance);
+    }
+
+    /// A config carrying a removed setting is rejected with the replacement
+    /// named, so an operator who had turned the transport off does not silently
+    /// get it back on.
+    #[test]
+    fn pubsub_rejects_the_removed_settings() {
+        let with_transport = PubSubConfig {
+            transport: Some("in-memory".to_string()),
+            ..Default::default()
+        };
+        let with_channel = PubSubConfig {
+            channel: Some("cdk_mint_pubsub".to_string()),
+            ..Default::default()
+        };
+
+        for config in [with_transport, with_channel] {
+            let err = config
+                .validate()
+                .expect_err("removed setting must be rejected");
+            assert!(err.contains("cross_instance"), "unhelpful message: {err}");
+        }
+
+        assert!(PubSubConfig::default().validate().is_ok());
     }
 
     #[cfg(feature = "bdk")]
