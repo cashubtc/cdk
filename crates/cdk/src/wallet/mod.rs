@@ -22,15 +22,18 @@ use tracing::instrument;
 use zeroize::Zeroize;
 
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
+use crate::dhke::{construct_proofs, verify_bls_message};
 use crate::error::Error;
 use crate::fees::calculate_fee;
 use crate::mint_url::MintUrl;
 use crate::nuts::nut00::token::Token;
 use crate::nuts::nut17::Kind;
 use crate::nuts::{
-    nut10, CurrencyUnit, Id, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
+    nut10, CurrencyUnit, Id, KeySetVersion, Keys, MintInfo, MintQuoteState, PreMintSecrets, Proofs,
     RestoreRequest, SpendingConditions, State,
+};
+use crate::wallet::blind_signature::{
+    validate_mint_response_signatures, SignatureAmountValidation,
 };
 use crate::wallet::mint_metadata_cache::MintMetadataCache;
 use crate::wallet::p2pk::{P2PK_ACCOUNT, P2PK_PURPOSE};
@@ -671,13 +674,25 @@ impl Wallet {
                     )));
                 }
 
+                let matched_signatures = matched_secrets
+                    .iter()
+                    .map(|(_, _, sig)| sig.clone())
+                    .collect::<Vec<_>>();
+
+                validate_mint_response_signatures(
+                    self,
+                    &matched_signatures,
+                    matched_secrets
+                        .iter()
+                        .map(|(_, premint, _)| &premint.blinded_message),
+                    SignatureAmountValidation::AllowZeroAmountPlaceholder,
+                )
+                .await?;
+
                 // Extract signatures, rs, and secrets in matching order
                 // Each tuple (idx, premint, signature) ensures correct pairing
                 let proofs = construct_proofs(
-                    matched_secrets
-                        .iter()
-                        .map(|(_, _, sig)| sig.clone())
-                        .collect(),
+                    matched_signatures,
                     matched_secrets
                         .iter()
                         .map(|(_, p, _)| p.r.clone())
@@ -885,9 +900,11 @@ impl Wallet {
         Ok(())
     }
 
-    /// Verify all proofs in token have a valid DLEQ proof
+    /// Verify all proofs in token have a valid mint signature.
+    ///
+    /// This verifies DLEQ proofs for v1/v2 keysets and BLS pairings for v3 keysets.
     #[instrument(skip(self, token))]
-    pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
+    pub async fn verify_token_signatures(&self, token: &Token) -> Result<(), Error> {
         let token_mint_url = token.mint_url()?;
         if token_mint_url != self.mint_url {
             return Err(Error::IncorrectWallet(format!(
@@ -913,12 +930,28 @@ impl Wallet {
             }
             .ok_or(Error::AmountKey)?;
 
-            proof
-                .verify_dleq(mint_pubkey)
-                .map_err(|_| Error::CouldNotVerifyDleq)?;
+            match proof.keyset_id.get_version() {
+                KeySetVersion::Version00 | KeySetVersion::Version01 => proof
+                    .verify_dleq(mint_pubkey)
+                    .map_err(|_| Error::CouldNotVerifyDleq)?,
+                KeySetVersion::Version02 => {
+                    if proof.dleq.is_some() {
+                        return Err(Error::CouldNotVerifyDleq);
+                    }
+                    verify_bls_message(mint_pubkey, proof.c, proof.secret.as_bytes())
+                        .map_err(|_| Error::CouldNotVerifyDleq)?;
+                }
+            }
         }
 
         Ok(())
+    }
+
+    /// Verify all proofs in token have a valid DLEQ proof.
+    #[deprecated(note = "use verify_token_signatures instead")]
+    #[instrument(skip(self, token))]
+    pub async fn verify_token_dleq(&self, token: &Token) -> Result<(), Error> {
+        self.verify_token_signatures(token).await
     }
 
     /// Set the client (MintConnector) for this wallet

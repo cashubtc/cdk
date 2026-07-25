@@ -1,36 +1,37 @@
 use core::fmt;
-use core::ops::Deref;
 use core::str::FromStr;
 
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1;
 use bitcoin::secp256k1::rand::rngs::OsRng;
+use bitcoin::secp256k1::rand::RngCore;
 use bitcoin::secp256k1::schnorr::Signature;
-use bitcoin::secp256k1::{Keypair, Message, Scalar};
+use bitcoin::secp256k1::{Keypair, Message, Scalar, Secp256k1, XOnlyPublicKey};
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{Error, PublicKey};
+use super::{BlsSecretKey, Error, PublicKey};
 use crate::SECP256K1;
 
-/// SecretKey
+/// Protocol secret key/scalar.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SecretKey {
-    inner: secp256k1::SecretKey,
-}
-
-impl Deref for SecretKey {
-    type Target = secp256k1::SecretKey;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
+pub enum SecretKey {
+    /// Secp256k1 secret key.
+    Secp256k1(secp256k1::SecretKey),
+    /// BLS12-381 scalar.
+    Bls(BlsSecretKey),
 }
 
 impl From<secp256k1::SecretKey> for SecretKey {
     fn from(inner: secp256k1::SecretKey) -> Self {
-        Self { inner }
+        Self::Secp256k1(inner)
+    }
+}
+
+impl From<BlsSecretKey> for SecretKey {
+    fn from(inner: BlsSecretKey) -> Self {
+        Self::Bls(inner)
     }
 }
 
@@ -41,73 +42,171 @@ impl fmt::Display for SecretKey {
 }
 
 impl SecretKey {
-    /// Parse from `bytes`
+    /// Parse secp256k1 secret from `bytes`.
     pub fn from_slice(slice: &[u8]) -> Result<Self, Error> {
-        Ok(Self {
-            inner: secp256k1::SecretKey::from_slice(slice)?,
-        })
+        Ok(Self::Secp256k1(secp256k1::SecretKey::from_slice(slice)?))
     }
 
-    /// Parse from `hex` string
+    /// Parse secp256k1 secret from `hex` string.
     pub fn from_hex<S>(hex: S) -> Result<Self, Error>
     where
         S: AsRef<str>,
     {
-        Ok(Self {
-            inner: secp256k1::SecretKey::from_str(hex.as_ref())?,
-        })
+        Ok(Self::Secp256k1(secp256k1::SecretKey::from_str(
+            hex.as_ref(),
+        )?))
     }
 
-    /// Generate random secret key
+    /// Derive a BLS scalar by reducing 32-byte input.
+    pub fn bls_from_reduced_bytes(bytes: &[u8; 32]) -> Self {
+        Self::Bls(BlsSecretKey::from_reduced_bytes(bytes))
+    }
+
+    /// Parse BLS scalar from canonical bytes.
+    pub fn bls_from_slice(slice: &[u8]) -> Result<Self, Error> {
+        Ok(Self::Bls(BlsSecretKey::from_bytes(slice)?))
+    }
+
+    /// Generate random secp256k1 secret key.
     pub fn generate() -> Self {
         let (secret_key, _) = SECP256K1.generate_keypair(&mut OsRng);
-        Self { inner: secret_key }
+        Self::Secp256k1(secret_key)
     }
 
-    /// Get secret key as `hex` string
+    /// Generate random BLS scalar.
+    ///
+    /// Uses rejection sampling so the scalar is uniform over `Fr*`: a canonical
+    /// non-zero value strictly below the field order. Modular reduction of raw
+    /// bytes would bias the distribution and could yield the forbidden zero
+    /// blinding factor.
+    pub fn generate_bls() -> Self {
+        loop {
+            let mut bytes = [0u8; 32];
+            OsRng.fill_bytes(&mut bytes);
+            // `bls_from_slice` only succeeds when the value is canonical (< order);
+            // reject the all-zero scalar so `r` is always in `Fr*`.
+            if bytes != [0u8; 32] {
+                if let Ok(secret_key) = Self::bls_from_slice(&bytes) {
+                    return secret_key;
+                }
+            }
+        }
+    }
+
+    /// Get secret key as `hex` string.
     pub fn to_secret_hex(&self) -> String {
-        self.inner.display_secret().to_string()
+        crate::util::hex::encode(self.to_secret_bytes())
     }
 
-    /// Get secret key as `bytes`
-    pub fn as_secret_bytes(&self) -> &[u8] {
-        self.inner.as_ref()
+    /// Get secret key as `bytes`.
+    pub fn as_secret_bytes(&self) -> Vec<u8> {
+        self.to_secret_bytes().to_vec()
     }
 
-    /// Get secret key as `bytes`
+    /// Get secret key as `bytes`.
     pub fn to_secret_bytes(&self) -> [u8; 32] {
-        self.inner.secret_bytes()
+        match self {
+            Self::Secp256k1(inner) => inner.secret_bytes(),
+            Self::Bls(inner) => inner.to_bytes(),
+        }
     }
 
-    /// Schnorr Signature on Message
+    /// Alias for compatibility with `bitcoin::secp256k1::SecretKey`.
+    pub fn secret_bytes(&self) -> [u8; 32] {
+        self.to_secret_bytes()
+    }
+
+    /// Schnorr Signature on Message.
     pub fn sign(&self, msg: &[u8]) -> Result<Signature, Error> {
+        let Self::Secp256k1(inner) = self else {
+            return Err(Error::WrongKeyKind);
+        };
         let hash: Sha256Hash = Sha256Hash::hash(msg);
         let msg = Message::from_digest_slice(hash.as_ref())?;
-        Ok(SECP256K1.sign_schnorr(&msg, &Keypair::from_secret_key(&SECP256K1, &self.inner)))
+        Ok(SECP256K1.sign_schnorr(&msg, &Keypair::from_secret_key(&SECP256K1, inner)))
     }
 
-    /// Get public key
+    /// Get public key.
     pub fn public_key(&self) -> PublicKey {
-        self.inner.public_key(&SECP256K1).into()
+        match self {
+            Self::Secp256k1(inner) => inner.public_key(&SECP256K1).into(),
+            Self::Bls(inner) => inner.public_key_g2().into(),
+        }
     }
 
-    /// [`SecretKey`] to [`Scalar`]
+    /// Return secp256k1 x-only public key and parity.
+    pub fn x_only_public_key<C>(&self, secp: &Secp256k1<C>) -> (XOnlyPublicKey, secp256k1::Parity)
+    where
+        C: secp256k1::Signing,
+    {
+        match self {
+            Self::Secp256k1(inner) => inner.x_only_public_key(secp),
+            Self::Bls(_) => panic!("BLS scalar is not a secp256k1 key"),
+        }
+    }
+
+    /// [`SecretKey`] to secp256k1 [`Scalar`].
     #[inline]
     pub fn to_scalar(self) -> Scalar {
-        Scalar::from(self.inner)
+        match self {
+            Self::Secp256k1(inner) => Scalar::from(inner),
+            Self::Bls(_) => panic!("BLS scalar is not a secp256k1 scalar"),
+        }
     }
 
-    /// [`SecretKey`] as [`Scalar`]
+    /// [`SecretKey`] as secp256k1 [`Scalar`].
     #[inline]
     pub fn as_scalar(&self) -> Scalar {
-        Scalar::from(self.inner)
+        match self {
+            Self::Secp256k1(inner) => Scalar::from(*inner),
+            Self::Bls(_) => panic!("BLS scalar is not a secp256k1 scalar"),
+        }
+    }
+
+    /// Return the secp256k1 secret key.
+    pub fn as_secp256k1(&self) -> Result<&secp256k1::SecretKey, Error> {
+        match self {
+            Self::Secp256k1(inner) => Ok(inner),
+            Self::Bls(_) => Err(Error::WrongKeyKind),
+        }
+    }
+
+    /// Return the BLS scalar.
+    pub fn as_bls(&self) -> Result<&BlsSecretKey, Error> {
+        match self {
+            Self::Bls(inner) => Ok(inner),
+            Self::Secp256k1(_) => Err(Error::WrongKeyKind),
+        }
+    }
+
+    /// Tweak-multiply a secp256k1 secret key.
+    pub fn mul_tweak(&self, tweak: &Scalar) -> Result<Self, secp256k1::Error> {
+        match self {
+            Self::Secp256k1(inner) => Ok(inner.mul_tweak(tweak)?.into()),
+            Self::Bls(_) => Err(secp256k1::Error::InvalidSecretKey),
+        }
+    }
+
+    /// Tweak-add a secp256k1 secret key.
+    pub fn add_tweak(&self, tweak: &Scalar) -> Result<Self, secp256k1::Error> {
+        match self {
+            Self::Secp256k1(inner) => Ok(inner.add_tweak(tweak)?.into()),
+            Self::Bls(_) => Err(secp256k1::Error::InvalidSecretKey),
+        }
+    }
+
+    /// Negate a secp256k1 secret key.
+    pub fn negate(&self) -> Self {
+        match self {
+            Self::Secp256k1(inner) => inner.negate().into(),
+            Self::Bls(_) => panic!("cannot negate BLS scalar as a secp256k1 key"),
+        }
     }
 }
 
 impl FromStr for SecretKey {
     type Err = Error;
 
-    /// Try to parse [SecretKey] from `hex` or `bech32`
     fn from_str(secret_key: &str) -> Result<Self, Self::Err> {
         Self::from_hex(secret_key)
     }
@@ -116,10 +215,8 @@ impl FromStr for SecretKey {
 impl Serialize for SecretKey {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match serializer.is_human_readable() {
-            // For human-readable formats like JSON, serialize as hex string
             true => serializer.serialize_str(&self.to_secret_hex()),
-            // For binary formats like CBOR, use the bytes serialization
-            false => serializer.serialize_bytes(self.as_secret_bytes()),
+            false => serializer.serialize_bytes(&self.to_secret_bytes()),
         }
     }
 }
@@ -127,12 +224,10 @@ impl Serialize for SecretKey {
 impl<'de> Deserialize<'de> for SecretKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         match deserializer.is_human_readable() {
-            // For human-readable formats like JSON, deserialize from hex string
             true => {
                 let secret_key: String = String::deserialize(deserializer)?;
                 SecretKey::from_hex(secret_key).map_err(serde::de::Error::custom)
             }
-            // For binary formats like CBOR, use the bytes deserialization
             false => {
                 struct SecretKeyVisitor;
 
@@ -159,7 +254,9 @@ impl<'de> Deserialize<'de> for SecretKey {
 
 impl Drop for SecretKey {
     fn drop(&mut self) {
-        self.inner.non_secure_erase();
+        if let Self::Secp256k1(inner) = self {
+            inner.non_secure_erase();
+        }
         tracing::trace!("Secret Key dropped.");
     }
 }
@@ -167,6 +264,19 @@ impl Drop for SecretKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_generate_bls_is_canonical_and_non_zero() {
+        for _ in 0..256 {
+            let key = SecretKey::generate_bls();
+            let bytes = key.to_secret_bytes();
+            // Non-zero.
+            assert_ne!(bytes, [0u8; 32]);
+            // Canonical: re-parsing as a canonical BLS scalar must succeed and round-trip.
+            let reparsed = SecretKey::bls_from_slice(&bytes).expect("canonical scalar");
+            assert_eq!(reparsed.to_secret_bytes(), bytes);
+        }
+    }
 
     #[test]
     fn display_outputs_secret_hex() {

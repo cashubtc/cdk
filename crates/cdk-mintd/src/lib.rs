@@ -1088,7 +1088,7 @@ async fn configure_lightning_backend(
         let fake_wallet = settings.fake_wallet.as_ref().ok_or_else(|| {
             anyhow!("Fake wallet backend selected but [fake_wallet] config section is missing")
         })?;
-        mint_builder = configure_fake_wallet_keyset_rotations_once(mint_builder, fake_wallet);
+        mint_builder = configure_fake_wallet_keyset_rotations_once(mint_builder, fake_wallet)?;
     }
 
     Ok(mint_builder)
@@ -1098,9 +1098,10 @@ async fn configure_lightning_backend(
 fn configure_fake_wallet_keyset_rotations_once(
     mut mint_builder: MintBuilder,
     fake_wallet: &config::FakeWallet,
-) -> MintBuilder {
+) -> Result<MintBuilder> {
     for rotation_cfg in &fake_wallet.keyset_rotations {
         use cdk::mint::KeysetRotation;
+        use cdk_common::nut02::KeySetVersion;
 
         let amounts = cdk::mint::UnitConfig::default().amounts;
         let final_expiry = if rotation_cfg.expired {
@@ -1108,17 +1109,25 @@ fn configure_fake_wallet_keyset_rotations_once(
         } else {
             None
         };
+        let keyset_id_type = match rotation_cfg.version.as_str() {
+            "v1" => KeySetVersion::Version00,
+            "v2" => KeySetVersion::Version01,
+            "v3" => KeySetVersion::Version02,
+            version => {
+                bail!("Unsupported fake wallet keyset rotation version: {version}");
+            }
+        };
 
         mint_builder = mint_builder.with_keyset_rotation(KeysetRotation {
             unit: rotation_cfg.unit.clone(),
             amounts,
             input_fee_ppk: rotation_cfg.input_fee_ppk,
-            use_keyset_v2: rotation_cfg.version == "v2",
+            keyset_id_type,
             final_expiry,
         });
     }
 
-    mint_builder
+    Ok(mint_builder)
 }
 
 /// Configures Onchain backend based on the specified backend type

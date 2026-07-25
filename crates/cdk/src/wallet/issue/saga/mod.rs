@@ -45,9 +45,9 @@ use tracing::instrument;
 use self::compensation::{MintCompensation, ReleaseMintQuote};
 use self::state::{Finalized, Initial, Prepared, PreparedMintRequest};
 use crate::amount::SplitTarget;
-use crate::dhke::construct_proofs;
+use crate::dhke::{construct_proofs, verify_bls_message};
 use crate::nuts::nut00::ProofsMethods;
-use crate::nuts::{MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
+use crate::nuts::{KeySetVersion, MintRequest, PreMintSecrets, Proofs, SpendingConditions, State};
 use crate::util::unix_time;
 use crate::wallet::blind_signature::{
     validate_mint_response_signatures, SignatureAmountValidation,
@@ -782,7 +782,7 @@ impl<'a> MintSaga<'a, Initial> {
 impl<'a> MintSaga<'a, Prepared> {
     /// Execute the mint operation.
     ///
-    /// Posts mint request, verifies DLEQ proofs, constructs and stores proofs,
+    /// Posts mint request, verifies mint signatures, constructs and stores proofs,
     /// updates quote state, and records transaction. On success, compensations
     /// are cleared.
     #[instrument(skip_all)]
@@ -877,6 +877,14 @@ impl<'a> MintSaga<'a, Prepared> {
                 premint_secrets.secrets(),
                 &keys,
             )?;
+
+            for proof in &proofs {
+                if proof.keyset_id.get_version() == KeySetVersion::Version02 {
+                    let key = keys.amount_key(proof.amount).ok_or(Error::AmountKey)?;
+                    verify_bls_message(key, proof.c, proof.secret.as_bytes())
+                        .map_err(|_| Error::CouldNotVerifyDleq)?;
+                }
+            }
 
             let minted_amount = proofs.total_amount()?;
 

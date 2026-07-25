@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cdk::mint::{Mint, MintQuote};
 use cdk::nuts::nut04::MintMethodSettings;
 use cdk::nuts::nut05::MeltMethodSettings;
-use cdk::nuts::{CurrencyUnit, MintQuoteState, PaymentMethod};
+use cdk::nuts::{CurrencyUnit, KeySetVersion, MintQuoteState, PaymentMethod};
 use cdk::types::QuoteTTL;
 use cdk::Amount;
 use cdk_common::grpc::create_version_check_interceptor;
@@ -803,14 +803,29 @@ impl CdkMint for MintRPCServer {
             .map_err(|_| Status::invalid_argument("Invalid unit".to_string()))?;
 
         let amounts = request.amounts;
+        let keyset_version = match request.keyset_version.as_deref() {
+            Some("v1") | Some("00") => KeySetVersion::Version00,
+            Some("v2") | Some("01") => KeySetVersion::Version01,
+            Some("v3") | Some("02") => KeySetVersion::Version02,
+            Some(version) => {
+                return Err(Status::invalid_argument(format!(
+                    "Invalid keyset version: {version}"
+                )));
+            }
+            None => match request.use_keyset_v2 {
+                Some(true) => KeySetVersion::Version01,
+                Some(false) => KeySetVersion::Version00,
+                None => KeySetVersion::Version02,
+            },
+        };
 
         let keyset_info = self
             .mint
-            .rotate_keyset(
+            .rotate_keyset_by_version(
                 unit,
                 amounts,
                 request.input_fee_ppk.unwrap_or(0),
-                request.use_keyset_v2.unwrap_or(true),
+                keyset_version,
                 request.final_expiry,
             )
             .await

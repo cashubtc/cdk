@@ -15,10 +15,13 @@ use thiserror::Error;
 mod public_key;
 mod secret_key;
 
+pub use self::bls::{BlsG1PublicKey, BlsG2PublicKey, BlsSecretKey};
 pub use self::public_key::PublicKey;
 pub use self::secret_key::SecretKey;
 use super::nut02::KeySet;
 use crate::amount::Amount;
+
+pub(crate) mod bls;
 
 /// Nut01 Error
 #[derive(Debug, Error)]
@@ -29,6 +32,9 @@ pub enum Error {
     /// Json Error
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// Hex Error
+    #[error(transparent)]
+    Hex(#[from] crate::util::hex::Error),
     /// Invalid Pubkey size
     #[error("Invalid public key size: expected={expected}, found={found}")]
     InvalidPublicKeySize {
@@ -37,6 +43,23 @@ pub enum Error {
         /// Actual size
         found: usize,
     },
+    /// Invalid secret key size
+    #[error("Invalid secret key size: expected={expected}, found={found}")]
+    InvalidSecretKeySize {
+        /// Expected size
+        expected: usize,
+        /// Actual size
+        found: usize,
+    },
+    /// Invalid public key
+    #[error("Invalid public key")]
+    InvalidPublicKey,
+    /// Invalid secret key
+    #[error("Invalid secret key")]
+    InvalidSecretKey,
+    /// Wrong key kind for operation
+    #[error("Wrong key kind for operation")]
+    WrongKeyKind,
 }
 
 /// Mint public keys per amount.

@@ -383,8 +383,8 @@ pub enum Error {
     ///  Unknown error response
     #[error("Unknown error response: `{0}`")]
     UnknownErrorResponse(String),
-    /// Invalid DLEQ proof
-    #[error("Could not verify DLEQ proof")]
+    /// Invalid proof signature
+    #[error("Could not verify proof signature")]
     CouldNotVerifyDleq,
     /// Dleq Proof not provided for signature
     #[error("Dleq proof not provided for signature")]

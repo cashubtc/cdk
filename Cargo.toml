@@ -48,6 +48,7 @@ anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.8.1", features = ["ws"] }
 bitcoin = { version = "0.32.2", features = ["base64", "serde", "rand", "rand-std"] }
+bls12_381 = { version = "0.8", default-features = false, features = ["experimental", "pairings"] }
 bip39 = { version = "2.0", features = ["rand"] }
 jsonwebtoken = "9.2.0"
 cashu = { path = "./crates/cashu", default-features = false, version = "=0.17.0" }
@@ -80,11 +81,15 @@ cbor-diag = "0.1.12"
 config = { version = "0.15.11", features = ["toml"] }
 criterion = "0.6.0"
 futures = { version = "0.3.28", default-features = false, features = ["async-await"] }
+ff = { version = "0.13", default-features = false }
+group = { version = "0.13", default-features = false }
 lightning-invoice = { version = "0.34.0", features = ["serde", "std"] }
 lightning = { version = "0.2.0", default-features = false, features = ["std"]}
 ldk-node = "0.7.0"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+sha2 = { version = "0.10", default-features = false }
+sha2_09 = { package = "sha2", version = "0.9", default-features = false }
 thiserror = { version = "2" }
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "test-util", "sync", "time"] }
 tokio-util = { version = "0.7.11", default-features = false }

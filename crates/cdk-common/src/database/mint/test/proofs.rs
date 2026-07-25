@@ -2,10 +2,11 @@
 
 use std::str::FromStr;
 
+use cashu::nuts::nut01::BlsG1PublicKey;
 use cashu::secret::Secret;
-use cashu::{Amount, Id, SecretKey};
+use cashu::{Amount, Id, PublicKey, SecretKey, State};
 
-use crate::database::mint::test::setup_keyset;
+use crate::database::mint::test::{setup_bls_keyset, setup_keyset};
 use crate::database::mint::{Database, Error, KeysDatabase, Proof, QuoteId};
 use crate::mint::Operation;
 use crate::state::check_state_transition;
@@ -174,13 +175,54 @@ where
     );
 }
 
+/// Test that v3 proofs are indexed by BLS G1 Y and can be queried and spent.
+pub async fn bls_g1_proofs_can_be_stored_queried_and_spent<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    let keyset_id = setup_bls_keyset(&db).await;
+    let proof = Proof {
+        amount: Amount::from(100),
+        keyset_id,
+        secret: Secret::from_str("bls proof secret").unwrap(),
+        c: BlsG1PublicKey::hash_to_curve(b"bls proof signature").into(),
+        witness: None,
+        dleq: None,
+        p2pk_e: None,
+    };
+    let y = proof.y().unwrap();
+
+    assert!(matches!(y, PublicKey::BlsG1(_)));
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        vec![proof.clone()],
+        None,
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let retrieved = db.get_proofs_by_ys(&[y]).await.unwrap();
+    assert_eq!(retrieved, vec![Some(proof.clone())]);
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&[y]).await.unwrap();
+    tx.update_proofs_state(&mut acquired, State::Spent)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let states = db.get_proofs_states(&[y]).await.unwrap();
+    assert_eq!(states, vec![Some(State::Spent)]);
+}
+
 /// Test updating proofs states
 pub async fn update_proofs_states<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use cashu::State;
-
     let keyset_id = setup_keyset(&db).await;
     let quote_id = QuoteId::new();
 
