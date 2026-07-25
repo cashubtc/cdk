@@ -251,6 +251,17 @@ pub struct MeltQuote {
     pub version: u32,
 }
 
+/// Quotes and fee information for a maximum cross-mint Lightning transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossMintTransferQuote {
+    /// Quote used to receive the Lightning payment at the destination mint.
+    pub mint_quote: MintQuote,
+    /// Quote used to pay the destination invoice from the source mint.
+    pub melt_quote: MeltQuote,
+    /// Input fee for spending all currently unspent source proofs.
+    pub input_fee: Amount,
+}
+
 impl MintQuote {
     /// Create a new MintQuote
     #[allow(clippy::too_many_arguments)]
@@ -826,6 +837,8 @@ pub trait Wallet: Send + Sync {
     type MintQuote: Clone + Send + Sync;
     /// Melt quote type
     type MeltQuote: Clone + Send + Sync;
+    /// Cross-mint transfer quote type
+    type CrossMintTransferQuote: Clone + Send + Sync;
     /// Payment method type
     type PaymentMethod: Clone + Send + Sync;
     /// Melt options type
@@ -920,6 +933,13 @@ pub trait Wallet: Send + Sync {
         options: Option<Self::MeltOptions>,
         extra: Option<String>,
     ) -> Result<Self::MeltQuote, Self::Error>;
+
+    /// Create destination mint and source melt quotes for the maximum amount
+    /// allowed by the source balance and both mints' advertised limits.
+    async fn cross_mint_transfer_quote_max(
+        &self,
+        target_wallet: &Self,
+    ) -> Result<Self::CrossMintTransferQuote, Self::Error>;
 
     /// List transactions, optionally filtered by direction
     async fn list_transactions(

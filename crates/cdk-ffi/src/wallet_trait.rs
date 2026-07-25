@@ -26,6 +26,7 @@ impl WalletTraitDef for Wallet {
     type KeySetInfo = KeySet;
     type MintQuote = MintQuote;
     type MeltQuote = MeltQuote;
+    type CrossMintTransferQuote = CrossMintTransferQuote;
     type PaymentMethod = PaymentMethod;
     type MeltOptions = MeltOptions;
     type OperationId = String;
@@ -147,6 +148,18 @@ impl WalletTraitDef for Wallet {
             request,
             options.map(Into::into),
             extra,
+        )
+        .await?;
+        Ok(quote.into())
+    }
+
+    async fn cross_mint_transfer_quote_max(
+        &self,
+        target_wallet: &Self,
+    ) -> Result<Self::CrossMintTransferQuote, Self::Error> {
+        let quote = WalletTraitDef::cross_mint_transfer_quote_max(
+            self.inner().as_ref(),
+            target_wallet.inner().as_ref(),
         )
         .await?;
         Ok(quote.into())

@@ -102,7 +102,7 @@ pub use recovery::RecoveryReport;
 pub use send::PreparedSend;
 #[cfg(all(feature = "npubcash", not(target_arch = "wasm32")))]
 pub use streams::npubcash::NpubCashProofStream;
-pub use types::{MeltQuote, MintQuote, SendKind};
+pub use types::{CrossMintTransferQuote, MeltQuote, MintQuote, SendKind};
 pub use wallet_repository::{TokenData, WalletConfig, WalletRepository, WalletRepositoryBuilder};
 
 use crate::nuts::nut00::ProofsMethods;
