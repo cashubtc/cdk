@@ -9,7 +9,7 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltQuote, MintQuote};
 use cdk_common::nut17::NotificationId;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
+use cdk_common::pub_sub::{Bus, LocalDelivery, Pubsub, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
@@ -204,12 +204,18 @@ impl Spec for MintPubSubSpec {
     }
 }
 
+/// Builds the distribution bus for the mint's pub/sub from a local-delivery
+/// handle. Passed to [`PubSubManager::new_with_bus`] to send NUT-17
+/// notifications across mint instances instead of keeping them in-process.
+pub type MintPubSubBusBuilder =
+    Box<dyn FnOnce(LocalDelivery<MintPubSubSpec>) -> Arc<dyn Bus<MintPubSubSpec>> + Send>;
+
 /// PubsubManager
 #[allow(missing_debug_implementations)]
 pub struct PubSubManager(Pubsub<MintPubSubSpec>);
 
 impl PubSubManager {
-    /// Create a new instance
+    /// Create a new instance with the default in-process bus
     pub fn new(
         context: (
             DynMintDatabase,
@@ -217,6 +223,28 @@ impl PubSubManager {
         ),
     ) -> Arc<Self> {
         Arc::new(Self(Pubsub::new(MintPubSubSpec::new_instance(context))))
+    }
+
+    /// Create a new instance with a custom distribution bus
+    ///
+    /// Use this to run several mint instances that share notifications. The
+    /// default [`PubSubManager::new`] keeps events in-process, so a WebSocket
+    /// subscriber only receives events published by the instance it is
+    /// connected to. A distributed bus forwards events across instances.
+    pub fn new_with_bus<F>(
+        context: (
+            DynMintDatabase,
+            Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        ),
+        build_bus: F,
+    ) -> Arc<Self>
+    where
+        F: FnOnce(LocalDelivery<MintPubSubSpec>) -> Arc<dyn Bus<MintPubSubSpec>>,
+    {
+        Arc::new(Self(Pubsub::new_with_bus(
+            MintPubSubSpec::new_instance(context),
+            build_bus,
+        )))
     }
 
     /// Helper function to emit a ProofState status

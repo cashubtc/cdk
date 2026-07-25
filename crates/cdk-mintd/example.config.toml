@@ -91,6 +91,10 @@ tls_mode = "disable"
 max_connections = 20
 # Connection timeout in seconds (optional, defaults to 10)
 connection_timeout_seconds = 10
+# LISTEN/NOTIFY channel for the cross-instance pub/sub bus (optional, defaults to
+# "cdk_mint_pubsub"). Instances that should share NUT-17 notifications must use
+# the same channel. Can also be set via CDK_MINTD_POSTGRES_PUBSUB_CHANNEL.
+# pubsub_channel = "cdk_mint_pubsub"
 
 # Auth database configuration (optional, only used when auth is enabled)
 [auth_database.postgres]

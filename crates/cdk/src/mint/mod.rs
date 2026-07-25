@@ -18,7 +18,7 @@ use cdk_prometheus::MintMetricGuard;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
 use futures::{Stream, StreamExt};
 use nut21::ProtectedEndpoint;
-use subscription::PubSubManager;
+use subscription::{MintPubSubBusBuilder, PubSubManager};
 use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
@@ -233,6 +233,7 @@ impl Mint {
             payment_processors,
             max_inputs,
             max_outputs,
+            None,
         )
         .await
     }
@@ -255,12 +256,19 @@ impl Mint {
             payment_processors,
             max_inputs,
             max_outputs,
+            None,
         )
         .await
     }
 
     /// Internal function to create a new [`Mint`] with shared logic
+    ///
+    /// `pubsub_bus_builder` selects the pub/sub distribution backend. `None`
+    /// keeps notifications in-process (the default); `Some` installs a
+    /// cross-instance bus, such as the Postgres `LISTEN`/`NOTIFY` bus used when
+    /// several mints share a database.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     async fn new_internal(
         mint_info: MintInfo,
         signatory: Arc<dyn Signatory + Send + Sync>,
@@ -269,6 +277,7 @@ impl Mint {
         payment_processors: HashMap<PaymentProcessorKey, DynMintPayment>,
         max_inputs: usize,
         max_outputs: usize,
+        pubsub_bus_builder: Option<MintPubSubBusBuilder>,
     ) -> Result<Self, Error> {
         // Subscribe up front and bootstrap the in-memory snapshot from the same
         // receiver that keeps it fresh. `borrow_and_update` pins the receiver
@@ -363,9 +372,15 @@ impl Mint {
 
         let payment_processors = Arc::new(payment_processors);
 
+        let pubsub_context = (localstore.clone(), payment_processors.clone());
+        let pubsub_manager = match pubsub_bus_builder {
+            Some(build_bus) => PubSubManager::new_with_bus(pubsub_context, build_bus),
+            None => PubSubManager::new(pubsub_context),
+        };
+
         Ok(Self {
             signatory,
-            pubsub_manager: PubSubManager::new((localstore.clone(), payment_processors.clone())),
+            pubsub_manager,
             localstore,
             oidc_client: computed_info.nuts.nut21.as_ref().map(|nut21| {
                 OidcClient::new(

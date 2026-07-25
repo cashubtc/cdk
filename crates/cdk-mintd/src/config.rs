@@ -998,6 +998,10 @@ pub struct PostgresConfig {
     pub tls_mode: Option<String>,
     pub max_connections: Option<usize>,
     pub connection_timeout_seconds: Option<u64>,
+    /// `LISTEN`/`NOTIFY` channel for the cross-instance pub/sub bus. Instances
+    /// that should share notifications must use the same channel. When unset a
+    /// built-in default is used.
+    pub pubsub_channel: Option<String>,
 }
 
 impl Default for PostgresConfig {
@@ -1007,6 +1011,7 @@ impl Default for PostgresConfig {
             tls_mode: Some("disable".to_string()),
             max_connections: Some(20),
             connection_timeout_seconds: Some(10),
+            pubsub_channel: None,
         }
     }
 }

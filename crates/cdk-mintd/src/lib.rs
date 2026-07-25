@@ -39,7 +39,12 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
 #[cfg(feature = "postgres")]
-use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase, PgConfig};
+use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase, PgConfig, PostgresBusConnector};
+
+/// Default `LISTEN`/`NOTIFY` channel for the cross-instance pub/sub bus when the
+/// Postgres config does not set one.
+#[cfg(feature = "postgres")]
+const DEFAULT_PUBSUB_CHANNEL: &str = "cdk_mint_pubsub";
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
@@ -2056,6 +2061,30 @@ pub async fn run_mintd_with_shutdown(
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
+
+    // With Postgres, several mint instances can share one database. Install the
+    // LISTEN/NOTIFY bus so NUT-17 notifications reach subscribers on every
+    // instance. Other backends keep the default in-process bus.
+    #[cfg(feature = "postgres")]
+    let mint_builder = if settings.database.engine == DatabaseEngine::Postgres {
+        let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
+            anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
+        })?;
+        let bus_config = PgConfig::new(
+            pg_config.url.as_str(),
+            pg_config.tls_mode.as_deref(),
+            pg_config.max_connections,
+            pg_config.connection_timeout_seconds,
+        );
+        let channel = pg_config
+            .pubsub_channel
+            .as_deref()
+            .unwrap_or(DEFAULT_PUBSUB_CHANNEL);
+        let connector = PostgresBusConnector::connect(bus_config, channel).await?;
+        mint_builder.with_pubsub_bus(move |local| connector.build(local))
+    } else {
+        mint_builder
+    };
 
     // If RPC is enabled and DB contains mint_info already, initialize the builder from DB.
     // This ensures subsequent builder modifications (like version injection) can respect stored values.

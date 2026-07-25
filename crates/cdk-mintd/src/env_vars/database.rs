@@ -8,6 +8,7 @@ pub const ENV_POSTGRES_URL: &str = "CDK_MINTD_POSTGRES_URL";
 pub const ENV_POSTGRES_TLS_MODE: &str = "CDK_MINTD_POSTGRES_TLS_MODE";
 pub const ENV_POSTGRES_MAX_CONNECTIONS: &str = "CDK_MINTD_POSTGRES_MAX_CONNECTIONS";
 pub const ENV_POSTGRES_CONNECTION_TIMEOUT: &str = "CDK_MINTD_POSTGRES_CONNECTION_TIMEOUT_SECONDS";
+pub const ENV_POSTGRES_PUBSUB_CHANNEL: &str = "CDK_MINTD_POSTGRES_PUBSUB_CHANNEL";
 
 pub const ENV_AUTH_POSTGRES_URL: &str = "CDK_MINTD_AUTH_POSTGRES_URL";
 pub const ENV_AUTH_POSTGRES_TLS_MODE: &str = "CDK_MINTD_AUTH_POSTGRES_TLS_MODE";
@@ -39,6 +40,10 @@ impl PostgresConfig {
             if let Ok(parsed) = timeout.parse::<u64>() {
                 self.connection_timeout_seconds = Some(parsed);
             }
+        }
+
+        if let Ok(channel) = env::var(ENV_POSTGRES_PUBSUB_CHANNEL) {
+            self.pubsub_channel = Some(channel);
         }
 
         self
