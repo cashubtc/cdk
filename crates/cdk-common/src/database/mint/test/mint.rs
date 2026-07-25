@@ -7,11 +7,14 @@ use cashu::nut00::KnownMethod;
 use cashu::quote_id::QuoteId;
 use cashu::{Amount, BlindSignature, CurrencyUnit, Id, SecretKey};
 
-use crate::database::mint::test::unique_string;
 use crate::database::mint::{Database, Error, KeysDatabase};
 use crate::database::MintSignaturesDatabase;
 use crate::mint::{MeltPaymentRequest, MeltQuote, MintQuote, Operation};
 use crate::payment::PaymentIdentifier;
+
+fn unique_string() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
 
 /// Add a mint quote
 pub async fn add_mint_quote<DB>(db: DB)
@@ -892,8 +895,6 @@ pub async fn get_all_mint_quotes<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let quote1 = MintQuote::new(
         None,
         unique_string(),
@@ -1002,8 +1003,6 @@ pub async fn get_mint_quote_by_request<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let request = unique_string();
     let mint_quote = MintQuote::new(
         None,
@@ -1041,8 +1040,6 @@ pub async fn get_mint_quote_by_request_lookup_id<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let lookup_id = PaymentIdentifier::CustomId(unique_string());
     let mint_quote = MintQuote::new(
         None,
@@ -1158,8 +1155,6 @@ pub async fn increment_mint_quote_amount_paid<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let mint_quote = MintQuote::new(
         None,
         unique_string(),
@@ -1260,8 +1255,6 @@ pub async fn increment_mint_quote_amount_issued<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let mint_quote = MintQuote::new(
         None,
         unique_string(),
@@ -1346,8 +1339,6 @@ pub async fn get_mint_quote_in_transaction<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let mint_quote = MintQuote::new(
         None,
         unique_string(),
@@ -1423,8 +1414,6 @@ pub async fn get_mint_quote_by_request_in_transaction<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let request = unique_string();
     let mint_quote = MintQuote::new(
         None,
@@ -1464,8 +1453,6 @@ pub async fn get_mint_quote_by_request_lookup_id_in_transaction<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let lookup_id = PaymentIdentifier::CustomId(unique_string());
     let mint_quote = MintQuote::new(
         None,
@@ -1542,8 +1529,6 @@ pub async fn get_melt_quotes_by_request_lookup_id<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let lookup_id = PaymentIdentifier::CustomId(unique_string());
 
     let quote1 = MeltQuote::new(
@@ -1611,8 +1596,6 @@ pub async fn lock_melt_quote_and_related<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let lookup_id = PaymentIdentifier::CustomId(unique_string());
 
     let quote1 = MeltQuote::new(
@@ -1690,8 +1673,6 @@ pub async fn reject_duplicate_payment_ids<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let mint_quote = MintQuote::new(
         None,
         unique_string(),
@@ -1787,8 +1768,6 @@ pub async fn modify_mint_quote_after_loading_succeeds<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let mint_quote = MintQuote::new(
         None,
         unique_string(),
@@ -1849,8 +1828,6 @@ pub async fn get_mint_quotes_by_ids<DB>(db: DB)
 where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
-    use crate::database::mint::test::unique_string;
-
     let quote1 = MintQuote::new(
         None,
         unique_string(),

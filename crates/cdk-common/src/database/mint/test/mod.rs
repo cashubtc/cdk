@@ -4,12 +4,10 @@
 //! implementation
 #![allow(clippy::unwrap_used, clippy::missing_panics_doc)]
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 // For derivation path parsing
 use bitcoin::bip32::DerivationPath;
 use cashu::CurrencyUnit;
-use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::common::IssuerVersion;
@@ -142,45 +140,6 @@ where
         let keys = db.kv_list("test_namespace", "sub_namespace").await.unwrap();
         assert_eq!(keys, vec!["key1"]);
     }
-}
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Returns a unique, random-looking Base62 string (no external crates).
-/// Not cryptographically secure, but great for ids, keys, temp names, etc.
-fn unique_string() -> String {
-    // 1) high-res timestamp (nanos since epoch)
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-
-    // 2) per-process monotonic counter to avoid collisions in the same instant
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
-
-    // 3) process id to reduce collision chance across processes
-    let pid = std::process::id() as u128;
-
-    // Mix the components (simple XOR/shift mix; good enough for "random-looking")
-    let mixed = now ^ (pid << 64) ^ (n << 32);
-
-    base62_encode(mixed)
-}
-
-fn base62_encode(mut x: u128) -> String {
-    const ALPHABET: &[u8; 62] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    if x == 0 {
-        return "0".to_string();
-    }
-    let mut buf = [0u8; 26]; // enough for base62(u128)
-    let mut i = buf.len();
-    while x > 0 {
-        let rem = (x % 62) as usize;
-        x /= 62;
-        i -= 1;
-        buf[i] = ALPHABET[rem];
-    }
-    String::from_utf8_lossy(&buf[i..]).into_owned()
 }
 
 /// Unit test that is expected to be passed for a correct database implementation

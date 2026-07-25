@@ -7,13 +7,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use bitcoin::bip32::DerivationPath;
 use cashu::nut00::KnownMethod;
 use cashu::secret::Secret;
 use cashu::{Amount, CurrencyUnit, MeltQuoteState, MintQuoteState, SecretKey};
-use web_time::{SystemTime, UNIX_EPOCH};
 
 use super::*;
 use crate::mint_url::MintUrl;
@@ -23,16 +21,9 @@ use crate::wallet::{
     TransactionDirection, WalletSaga, WalletSagaState,
 };
 
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// Generate a unique test ID
 fn unique_id() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("test_{}_{}", now, n)
+    format!("test-{}", uuid::Uuid::now_v7())
 }
 
 /// Generate valid test keys and return both the keys and the matching keyset ID.
