@@ -9,7 +9,7 @@ use cdk_common::database::DynMintDatabase;
 use cdk_common::mint::{MeltQuote, MintQuote};
 use cdk_common::nut17::NotificationId;
 use cdk_common::payment::DynMintPayment;
-use cdk_common::pub_sub::{Pubsub, Spec, Subscriber};
+use cdk_common::pub_sub::{Bus, LocalBus, LocalDelivery, Pubsub, Spec, Subscriber};
 use cdk_common::subscription::SubId;
 use cdk_common::{
     Amount, BlindSignature, CurrencyUnit, MeltQuoteBolt11Response, MeltQuoteBolt12Response,
@@ -228,6 +228,10 @@ impl Spec for MintPubSubSpec {
         Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
     );
 
+    /// The trait signature cannot carry the owning manager, so the returned
+    /// spec has a dangling back-reference and payments discovered during
+    /// backfill are never published. [`PubSubManager`] builds the connected
+    /// spec itself; use it for anything but an isolated read-only test.
     fn new_instance(context: Self::Context) -> Arc<Self> {
         Arc::new(Self {
             db: context.0,
@@ -248,24 +252,52 @@ impl Spec for MintPubSubSpec {
     }
 }
 
+/// Builds the distribution bus for the mint's pub/sub from a local-delivery
+/// handle. Passed to `PubSubManager::new_with_bus` to send NUT-17
+/// notifications across mint instances instead of keeping them in-process.
+pub type MintPubSubBusBuilder =
+    Box<dyn FnOnce(LocalDelivery<MintPubSubSpec>) -> Arc<dyn Bus<MintPubSubSpec>> + Send>;
+
 /// PubsubManager
 #[allow(missing_debug_implementations)]
 pub struct PubSubManager(Pubsub<MintPubSubSpec>);
 
 impl PubSubManager {
-    /// Create a new instance
+    /// Create a new instance with the default in-process bus
     pub fn new(
         context: (
             DynMintDatabase,
             Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
         ),
     ) -> Arc<Self> {
+        Self::new_with_bus(context, |local| Arc::new(LocalBus::new(local)))
+    }
+
+    /// Create a new instance with a custom distribution bus
+    ///
+    /// Use this to run several mint instances that share notifications. The
+    /// default [`PubSubManager::new`] keeps events in-process, so a WebSocket
+    /// subscriber only receives events published by the instance it is
+    /// connected to. A distributed bus forwards events across instances.
+    pub fn new_with_bus<F>(
+        context: (
+            DynMintDatabase,
+            Arc<HashMap<PaymentProcessorKey, DynMintPayment>>,
+        ),
+        build_bus: F,
+    ) -> Arc<Self>
+    where
+        F: FnOnce(LocalDelivery<MintPubSubSpec>) -> Arc<dyn Bus<MintPubSubSpec>>,
+    {
         Arc::new_cyclic(|manager| {
-            Self(Pubsub::new(Arc::new(MintPubSubSpec {
-                db: context.0,
-                payment_processors: context.1,
-                pubsub_manager: manager.clone(),
-            })))
+            Self(Pubsub::new_with_bus(
+                Arc::new(MintPubSubSpec {
+                    db: context.0,
+                    payment_processors: context.1,
+                    pubsub_manager: manager.clone(),
+                }),
+                build_bus,
+            ))
         })
     }
 
@@ -784,88 +816,96 @@ mod tests {
         use cdk_common::nut17::Kind;
         use cdk_common::PaymentMethod;
 
-        for (method, kind) in [
-            (
-                PaymentMethod::Known(KnownMethod::Bolt11),
-                Kind::Bolt11MintQuote,
-            ),
-            (
-                PaymentMethod::Custom("test_method".to_owned()),
-                Kind::Custom("test_method_mint_quote".to_owned()),
-            ),
-        ] {
-            timeout(Duration::from_secs(5), async {
-                let db: DynMintDatabase =
-                    Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
-                let mut quote = bolt11_quote(QuoteId::new(), 21);
-                quote.payment_method = method.clone();
-                let mut tx = db.begin_transaction().await.expect("transaction");
-                tx.add_mint_quote(quote.clone())
-                    .await
-                    .expect("unpaid quote");
-                tx.commit().await.expect("commit");
+        fn with_local_bus(context: <MintPubSubSpec as Spec>::Context) -> Arc<PubSubManager> {
+            PubSubManager::new_with_bus(context, |local| Arc::new(LocalBus::new(local)))
+        }
 
-                let backend = Arc::new(BlockingPaymentBackend::default());
-                let processors = HashMap::from([(
-                    PaymentProcessorKey::new(CurrencyUnit::Sat, method),
-                    backend.clone() as DynMintPayment,
-                )]);
-                let manager = PubSubManager::new((db.clone(), Arc::new(processors)));
-                let params = Params {
-                    kind,
-                    filters: vec![quote.id.to_string()],
-                    id: Arc::new(SubId::from("first")),
-                };
-                let mut first = manager
-                    .subscribe(params.clone())
-                    .expect("first subscription");
-                backend.entered.notified().await;
+        let builders: [fn(_) -> _; 2] = [PubSubManager::new, with_local_bus];
 
-                let mut second = manager
-                    .subscribe(Params {
-                        id: Arc::new(SubId::from("second")),
-                        ..params
-                    })
-                    .expect("second subscription");
-                let initial = second.recv().await.expect("unpaid backfill");
-                match initial.inner() {
-                    NotificationPayload::MintQuoteBolt11Response(r) => {
-                        assert_eq!(r.state, MintQuoteState::Unpaid)
-                    }
-                    NotificationPayload::CustomMintQuoteResponse(_, r) => {
-                        assert_eq!(r.amount_paid, Amount::ZERO)
-                    }
-                    payload => panic!("unexpected payload: {payload:?}"),
-                }
-                assert_eq!(backend.checks.load(Ordering::Relaxed), 1);
+        for build_manager in builders {
+            for (method, kind) in [
+                (
+                    PaymentMethod::Known(KnownMethod::Bolt11),
+                    Kind::Bolt11MintQuote,
+                ),
+                (
+                    PaymentMethod::Custom("test_method".to_owned()),
+                    Kind::Custom("test_method_mint_quote".to_owned()),
+                ),
+            ] {
+                timeout(Duration::from_secs(5), async {
+                    let db: DynMintDatabase =
+                        Arc::new(cdk_sqlite::mint::memory::empty().await.expect("database"));
+                    let mut quote = bolt11_quote(QuoteId::new(), 21);
+                    quote.payment_method = method.clone();
+                    let mut tx = db.begin_transaction().await.expect("transaction");
+                    tx.add_mint_quote(quote.clone())
+                        .await
+                        .expect("unpaid quote");
+                    tx.commit().await.expect("commit");
 
-                backend.release.notify_one();
-                for subscriber in [&mut first, &mut second] {
-                    let event = subscriber.recv().await.expect("paid notification");
-                    match event.inner() {
+                    let backend = Arc::new(BlockingPaymentBackend::default());
+                    let processors = HashMap::from([(
+                        PaymentProcessorKey::new(CurrencyUnit::Sat, method),
+                        backend.clone() as DynMintPayment,
+                    )]);
+                    let manager = build_manager((db.clone(), Arc::new(processors)));
+                    let params = Params {
+                        kind,
+                        filters: vec![quote.id.to_string()],
+                        id: Arc::new(SubId::from("first")),
+                    };
+                    let mut first = manager
+                        .subscribe(params.clone())
+                        .expect("first subscription");
+                    backend.entered.notified().await;
+
+                    let mut second = manager
+                        .subscribe(Params {
+                            id: Arc::new(SubId::from("second")),
+                            ..params
+                        })
+                        .expect("second subscription");
+                    let initial = second.recv().await.expect("unpaid backfill");
+                    match initial.inner() {
                         NotificationPayload::MintQuoteBolt11Response(r) => {
-                            assert_eq!(r.quote, quote.id);
-                            assert_eq!(r.state, MintQuoteState::Paid);
+                            assert_eq!(r.state, MintQuoteState::Unpaid)
                         }
-                        NotificationPayload::CustomMintQuoteResponse(method, r) => {
-                            assert_eq!(method, "test_method");
-                            assert_eq!(r.quote, quote.id);
-                            assert_eq!(r.amount_paid, Amount::from(21));
-                            assert_eq!(r.amount_issued, Amount::ZERO);
+                        NotificationPayload::CustomMintQuoteResponse(_, r) => {
+                            assert_eq!(r.amount_paid, Amount::ZERO)
                         }
                         payload => panic!("unexpected payload: {payload:?}"),
                     }
-                    let stored = db
-                        .get_mint_quote(&quote.id)
-                        .await
-                        .expect("read quote")
-                        .expect("quote");
-                    assert_eq!(stored.amount_paid(), Amount::new(21, CurrencyUnit::Sat));
-                }
-                assert_eq!(backend.checks.load(Ordering::Relaxed), 1);
-            })
-            .await
-            .expect("both subscribers must observe the committed payment");
+                    assert_eq!(backend.checks.load(Ordering::Relaxed), 1);
+
+                    backend.release.notify_one();
+                    for subscriber in [&mut first, &mut second] {
+                        let event = subscriber.recv().await.expect("paid notification");
+                        match event.inner() {
+                            NotificationPayload::MintQuoteBolt11Response(r) => {
+                                assert_eq!(r.quote, quote.id);
+                                assert_eq!(r.state, MintQuoteState::Paid);
+                            }
+                            NotificationPayload::CustomMintQuoteResponse(method, r) => {
+                                assert_eq!(method, "test_method");
+                                assert_eq!(r.quote, quote.id);
+                                assert_eq!(r.amount_paid, Amount::from(21));
+                                assert_eq!(r.amount_issued, Amount::ZERO);
+                            }
+                            payload => panic!("unexpected payload: {payload:?}"),
+                        }
+                        let stored = db
+                            .get_mint_quote(&quote.id)
+                            .await
+                            .expect("read quote")
+                            .expect("quote");
+                        assert_eq!(stored.amount_paid(), Amount::new(21, CurrencyUnit::Sat));
+                    }
+                    assert_eq!(backend.checks.load(Ordering::Relaxed), 1);
+                })
+                .await
+                .expect("both subscribers must observe the committed payment");
+            }
         }
     }
 
