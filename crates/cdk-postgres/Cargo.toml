@@ -30,6 +30,7 @@ native-tls = "=0.2.18"
 cdk-common = { workspace = true, features = ["test"] }
 # Needed at macro-expansion sites of cdk-common's `*_db_test!` macros
 paste.workspace = true
+cdk-sql-common = { workspace = true, features = ["test"] }
 
 [lints]
 workspace = true

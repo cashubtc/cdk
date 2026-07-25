@@ -1685,6 +1685,7 @@ dependencies = [
  "cdk-postgres",
  "cdk-prometheus",
  "cdk-signatory",
+ "cdk-sql-common",
  "cdk-sqlite",
  "clap",
  "config",

@@ -105,6 +105,34 @@ max_connections = 20
 # Connection timeout in seconds (optional, defaults to 10)
 connection_timeout_seconds = 10
 
+# Cross-instance NUT-17 notifications.
+#
+# When several mint instances share one database behind a load balancer, an
+# event published on one instance (for example an invoice being paid) only
+# reaches WebSocket subscribers on that same instance unless a transport is
+# configured. A single-instance mint needs none of this; the default keeps
+# notifications in-process.
+#
+# transport options:
+#   "in-memory" (default)      Keep notifications in-process. Correct for a
+#                              single instance.
+#   "sql"                      Poll a shared outbox table. Works on any engine
+#                              (SQLite, Postgres) and through connection poolers
+#                              such as PgBouncer. Latency is bounded by the poll
+#                              interval. Reuses the mint's connection pool.
+#   "postgres-listen-notify"   Postgres LISTEN/NOTIFY. Lowest latency, Postgres
+#                              only, and needs a session-pinned connection (not
+#                              a transaction-pooling proxy).
+#
+# Every field can also be set via environment variables:
+#   CDK_MINTD_PUBSUB_TRANSPORT, CDK_MINTD_PUBSUB_CHANNEL,
+#   CDK_MINTD_PUBSUB_POLL_INTERVAL_MS, CDK_MINTD_PUBSUB_RETENTION_SECONDS
+[database.pubsub]
+# transport = "in-memory"
+# channel = "cdk_mint_pubsub"        # postgres-listen-notify only; all instances must match
+# poll_interval_ms = 200             # sql only
+# retention_seconds = 3600           # sql only: how long outbox rows are kept
+
 # Auth database configuration (optional, only used when auth is enabled)
 [auth_database.postgres]
 # PostgreSQL connection URL for authentication database
