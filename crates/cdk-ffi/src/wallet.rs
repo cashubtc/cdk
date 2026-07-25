@@ -497,6 +497,27 @@ impl Wallet {
         Ok(quote.into())
     }
 
+    /// Create quotes for transferring the maximum amount allowed by the source
+    /// balance and both mints' advertised BOLT11 limits.
+    ///
+    /// The returned input fee assumes all currently unspent source proofs are
+    /// used. Prepare the returned melt quote with those proofs and confirm it
+    /// with `skip_swap` to preserve that accounting.
+    ///
+    /// This search may create multiple quote pairs at the remote mints. Only the
+    /// returned pair is persisted locally; unused remote quotes cannot be
+    /// cancelled and remain until they expire.
+    pub async fn cross_mint_transfer_quote_max(
+        &self,
+        target_wallet: std::sync::Arc<Wallet>,
+    ) -> Result<CrossMintTransferQuote, FfiError> {
+        let quote = self
+            .inner
+            .cross_mint_transfer_quote_max(target_wallet.inner.as_ref())
+            .await?;
+        Ok(quote.into())
+    }
+
     /// Fetch available onchain melt quote options.
     ///
     /// Each returned quote represents one selectable confirmation target/fee reserve.
