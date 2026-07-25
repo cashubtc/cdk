@@ -245,6 +245,7 @@ impl ConfigurationService {
     }
 
     /// Reports whether the stored configuration still requires a restart.
+    #[cfg(any(feature = "management-rpc", test))]
     pub(crate) async fn has_pending_configuration(
         &self,
     ) -> Result<bool, ConfigurationServiceError> {
