@@ -21,6 +21,9 @@ use crate::pool::{DatabasePool, Pool, PooledResource};
 use crate::stmt::query;
 
 mod auth;
+pub mod bus;
+#[cfg(feature = "test")]
+pub mod bus_test;
 mod completed_operations;
 mod keys;
 mod keyvalue;
@@ -95,6 +98,14 @@ where
         };
 
         Ok(Box::new(tx))
+    }
+
+    /// Shared connection pool.
+    ///
+    /// Exposed so a cross-instance [`SqlBus`](bus::SqlBus) can reuse the mint's
+    /// database connections instead of opening its own.
+    pub fn pool(&self) -> Arc<Pool<RM>> {
+        self.pool.clone()
     }
 
     /// Migrate
