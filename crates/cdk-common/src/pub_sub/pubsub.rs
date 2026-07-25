@@ -8,6 +8,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use tokio::sync::mpsc;
 
+use super::bus::{Bus, LocalBus, LocalDelivery};
 use super::subscriber::{ActiveSubscription, SubscriptionRequest};
 use super::{Error, Event, Spec, Subscriber};
 use crate::task::spawn;
@@ -37,6 +38,7 @@ where
 {
     inner: Arc<S>,
     listeners_topics: TopicTree<S>,
+    bus: Arc<dyn Bus<S>>,
     unique_subscription_counter: AtomicUsize,
     active_subscribers: Arc<AtomicUsize>,
 }
@@ -45,11 +47,31 @@ impl<S> Pubsub<S>
 where
     S: Spec + 'static,
 {
-    /// Create a new instance
+    /// Create a new instance with the default in-process bus.
+    ///
+    /// Published events reach only subscribers connected to this process. Use
+    /// [`Pubsub::new_with_bus`] to distribute events across instances.
     pub fn new(inner: Arc<S>) -> Self {
+        Self::new_with_bus(inner, |local| Arc::new(LocalBus::new(local)))
+    }
+
+    /// Create a new instance with a custom distribution bus.
+    ///
+    /// `build_bus` receives a [`LocalDelivery`] handle bound to this instance's
+    /// subscriber index. The handle only exists once the index has been
+    /// created, so the bus is built through a closure rather than passed in
+    /// pre-constructed. A bus that talks to peers can also spawn its inbound
+    /// listener at this point, injecting peer events through the same handle.
+    pub fn new_with_bus<F>(inner: Arc<S>, build_bus: F) -> Self
+    where
+        F: FnOnce(LocalDelivery<S>) -> Arc<dyn Bus<S>>,
+    {
+        let listeners_topics: TopicTree<S> = Default::default();
+        let bus = build_bus(LocalDelivery::new(listeners_topics.clone()));
         Self {
             inner,
-            listeners_topics: Default::default(),
+            listeners_topics,
+            bus,
             unique_subscription_counter: 0.into(),
             active_subscribers: Arc::new(0.into()),
         }
@@ -63,7 +85,10 @@ where
 
     /// Publish an event to all listenrs
     #[inline(always)]
-    fn publish_internal(event: S::Event, listeners_index: &TopicTree<S>) -> Result<(), Error> {
+    pub(super) fn publish_internal(
+        event: S::Event,
+        listeners_index: &TopicTree<S>,
+    ) -> Result<(), Error> {
         let index_storage = listeners_index.read();
 
         let mut sent = HashSet::new();
@@ -86,23 +111,22 @@ where
     }
 
     /// Broadcast an event to all listeners
+    ///
+    /// The event is handed to the configured [`Bus`], which delivers it to local
+    /// subscribers and, depending on the bus, forwards it to peer instances.
     #[inline(always)]
     pub fn publish<E>(&self, event: E)
     where
         E: Into<S::Event>,
     {
-        let topics = self.listeners_topics.clone();
-        let event = event.into();
-
-        spawn(async move {
-            let _ = Self::publish_internal(event, &topics);
-        });
+        self.bus.publish(event.into());
     }
 
-    /// Broadcast an event to all listeners right away, blocking the current thread
+    /// Broadcast an event to local listeners right away, blocking the current thread
     ///
-    /// This function takes an Arc to the storage struct, the event_id, the kind
-    /// and the vent to broadcast
+    /// This delivers to in-process subscribers only and bypasses the bus, so it
+    /// does not forward to peer instances. It exists for synchronous delivery in
+    /// tests.
     #[inline(always)]
     pub fn publish_now<E>(&self, event: E) -> Result<(), Error>
     where
