@@ -79,6 +79,10 @@ impl Settings {
             );
         }
 
+        // Pub/sub transport applies to any engine (the SQL transport works on
+        // SQLite too), so parse it regardless of the database engine.
+        self.database.pubsub = self.database.pubsub.clone().from_env();
+
         // Parse auth database configuration from environment variables
         self.auth_database = Some(crate::config::AuthDatabase {
             postgres: Some(

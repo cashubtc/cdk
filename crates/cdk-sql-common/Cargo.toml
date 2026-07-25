@@ -16,6 +16,9 @@ default = ["mint", "wallet"]
 mint = ["cdk-common/mint"]
 wallet = ["cdk-common/wallet"]
 prometheus = ["cdk-prometheus"]
+# Exposes the shared bus test suite (see mint::bus_test + the `sql_bus_test!`
+# macro) so backend crates can run it. Enable only in dev-dependencies.
+test = ["mint", "cdk-common/test"]
 [dependencies]
 async-trait.workspace = true
 cdk-common.workspace = true
