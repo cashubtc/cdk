@@ -965,6 +965,52 @@ impl std::str::FromStr for DatabaseEngine {
 pub struct Database {
     pub engine: DatabaseEngine,
     pub postgres: Option<PostgresConfig>,
+    pub pubsub: PubSubConfig,
+}
+
+/// Cross-instance NUT-17 notifications.
+///
+/// The transport follows the database engine: SQLite spans a single host and
+/// keeps notifications in-process, Postgres can additionally forward them to
+/// peer instances over `LISTEN`/`NOTIFY` when `cross_instance` asks for it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PubSubConfig {
+    /// Forward notifications to the other instances sharing this database.
+    ///
+    /// Postgres only, off by default: a mint running more than one instance
+    /// sets this to true. Forwarding gives each instance two session-pinned
+    /// connections outside the pool, costs one `pg_notify` per event, cannot be
+    /// held through a transaction-pooling proxy, and assumes the mint has the
+    /// database to itself (see the trust model in the example config), so it is
+    /// accepted rather than inherited.
+    pub cross_instance: bool,
+    /// Removed: the transport now follows the database engine. Kept so a config
+    /// that still sets it fails at startup instead of silently changing
+    /// behaviour.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    /// Removed: the channel is internal to the mint. See `transport`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+}
+
+impl PubSubConfig {
+    /// Reject a config still carrying the removed settings, naming what
+    /// replaced them.
+    pub fn validate(&self) -> Result<(), String> {
+        let removed = match (&self.transport, &self.channel) {
+            (Some(_), _) => "transport",
+            (_, Some(_)) => "channel",
+            _ => return Ok(()),
+        };
+
+        Err(format!(
+            "[database.pubsub] {removed} was removed: cross-instance notifications now follow \
+             the database engine, on a channel internal to the mint, and stay in-process unless \
+             cross_instance = true forwards them between instances"
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1430,6 +1476,7 @@ mod tests {
                 url: url.clone(),
                 ..Default::default()
             }),
+            pubsub: Default::default(),
         };
         let auth_database = AuthDatabase {
             postgres: Some(PostgresAuthConfig {
@@ -1553,6 +1600,40 @@ listen_por = 8085
         // tests. `std::env` is global, so config.rs and lib.rs tests must
         // serialize on the *same* mutex or they race over env vars.
         crate::test_utils::env_lock()
+    }
+
+    /// A mint opts into forwarding rather than inheriting it: it costs two
+    /// connections per instance outside the pool and makes the database
+    /// single-tenant, so a config that says nothing keeps notifications
+    /// in-process, as every earlier release did.
+    #[test]
+    fn pubsub_defaults_to_in_process() {
+        assert!(!PubSubConfig::default().cross_instance);
+        assert!(!Database::default().pubsub.cross_instance);
+    }
+
+    /// A config carrying a removed setting is rejected with the replacement
+    /// named, so an operator who had selected a transport does not silently get
+    /// the opposite of what they chose.
+    #[test]
+    fn pubsub_rejects_the_removed_settings() {
+        let with_transport = PubSubConfig {
+            transport: Some("in-memory".to_string()),
+            ..Default::default()
+        };
+        let with_channel = PubSubConfig {
+            channel: Some("cdk_mint_pubsub".to_string()),
+            ..Default::default()
+        };
+
+        for config in [with_transport, with_channel] {
+            let err = config
+                .validate()
+                .expect_err("removed setting must be rejected");
+            assert!(err.contains("cross_instance"), "unhelpful message: {err}");
+        }
+
+        assert!(PubSubConfig::default().validate().is_ok());
     }
 
     #[cfg(feature = "bdk")]

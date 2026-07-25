@@ -1768,8 +1768,11 @@ dependencies = [
  "paste",
  "percent-encoding",
  "postgres-native-tls",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-postgres",
+ "tracing",
  "uuid",
 ]
 

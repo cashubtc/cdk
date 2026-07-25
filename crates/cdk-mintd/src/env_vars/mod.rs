@@ -93,6 +93,8 @@ impl Settings {
             );
         }
 
+        self.database.pubsub = self.database.pubsub.clone().from_env()?;
+
         // Parse auth database configuration from environment variables
         self.auth_database = Some(crate::config::AuthDatabase {
             postgres: Some(
