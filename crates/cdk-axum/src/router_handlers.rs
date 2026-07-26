@@ -15,6 +15,52 @@ use tracing::instrument;
 
 use crate::auth::AuthHeader;
 use crate::ws::main_websocket;
+
+/// Serve the proof-of-reserves attestation bundle (written by the payment processor to a file).
+/// Path from env `CDK_AUDIT_BUNDLE_PATH`, default `~/mint/audit/latest.json`. 404 if absent.
+/// CORS-open so wallets can fetch it from any origin.
+pub(crate) async fn get_audit_latest() -> Response {
+    let path = std::env::var("CDK_AUDIT_BUNDLE_PATH").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{home}/mint/audit/latest.json")
+    });
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header(axum::http::header::CACHE_CONTROL, "no-cache")
+            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(axum::body::Body::from(bytes))
+            .unwrap(),
+        Err(_) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(axum::body::Body::from("no attestation available"))
+            .unwrap(),
+    }
+}
+
+/// Serve the mint icon (PNG). Path from env `CDK_MINT_ICON_PATH`, default `~/mint/icon.png`.
+pub(crate) async fn get_mint_icon() -> Response {
+    let path = std::env::var("CDK_MINT_ICON_PATH").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        format!("{home}/mint/icon.png")
+    });
+    match std::fs::read(&path) {
+        Ok(bytes) => Response::builder()
+            .status(StatusCode::OK)
+            .header(axum::http::header::CONTENT_TYPE, "image/png")
+            .header(axum::http::header::CACHE_CONTROL, "public, max-age=86400")
+            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(axum::body::Body::from(bytes))
+            .unwrap(),
+        Err(_) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .body(axum::body::Body::from("no icon"))
+            .unwrap(),
+    }
+}
 use crate::MintState;
 
 /// Macro to add cache to endpoint
@@ -846,6 +892,49 @@ pub(crate) async fn get_index(
         supported_features.push((29, "Batched minting"));
     }
 
+    // Build experimental (non-NUT) features list — genuinely-added capabilities,
+    // detected from the mint's advertised on-chain methods. Kept separate from NUTs.
+    let has_onchain_mint = mint_methods.iter().any(|m| m == "onchain");
+    let has_onchain_melt = melt_methods.iter().any(|m| m == "onchain");
+    let mut experimental_features: Vec<(&str, &str)> = Vec::new();
+    if has_onchain_mint {
+        experimental_features.push((
+            "Payjoin Board",
+            "On-chain deposit into ecash via BIP77 payjoin.",
+        ));
+    }
+    if has_onchain_melt {
+        experimental_features.push((
+            "On-chain Send",
+            "Withdraw ecash directly to an on-chain Bitcoin address.",
+        ));
+    }
+    if has_onchain_mint {
+        experimental_features.push((
+            "Proof of Reserves",
+            "Reserve attestations via Bark, independently verifiable.",
+        ));
+    }
+
+    // Live Proof-of-Reserves attestation, read from the bundle the payment processor writes.
+    // (total_reserve_sat, as_of_block.height, reserve VTXO count)
+    let por_attestation: Option<(u64, u64, usize)> = {
+        let path = std::env::var("CDK_AUDIT_BUNDLE_PATH").unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            format!("{home}/mint/audit/latest.json")
+        });
+        std::fs::read(path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .map(|v| {
+                (
+                    v["total_reserve_sat"].as_u64().unwrap_or(0),
+                    v["as_of_block"]["height"].as_u64().unwrap_or(0),
+                    v["reserve"].as_array().map(|a| a.len()).unwrap_or(0),
+                )
+            })
+    };
+
     // Avatar fallback letter
     let avatar_letter = name
         .chars()
@@ -1013,6 +1102,44 @@ pub(crate) async fn get_index(
                                             span class="feature-name" { (feature_name) }
                                         }
                                     }
+                                }
+                            }
+                        }
+
+                        // Experimental features section (genuinely-added, non-NUT capabilities) — full width
+                        @if !experimental_features.is_empty() {
+                            div class="card-section-header has-rule" { "Experimental features" }
+                            div style="padding-top:12px" {
+                                @for (feat_name, feat_desc) in &experimental_features {
+                                    div class="feature" style="border-right:none" {
+                                        div class="feature-dot" style="background:var(--yellow-soft)" {
+                                            (maud::PreEscaped(r#"<svg viewBox="0 0 24 24" fill="none" stroke="var(--yellow)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v7l-4.5 8a2 2 0 0 0 1.8 3h9.4a2 2 0 0 0 1.8-3L14 10V3"/></svg>"#))
+                                        }
+                                        div {
+                                            span class="feature-name" { (feat_name) }
+                                            div style="font-size:11px;color:var(--text-muted);margin-top:3px;line-height:1.45" { (feat_desc) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Live Proof-of-Reserves attestation (rendered from the latest bundle)
+                        @if let Some((reserve, block, n)) = por_attestation {
+                            div class="card-section-header has-rule" { "Proof of Reserves" }
+                            div style="padding:14px 20px 18px" {
+                                div {
+                                    span style="font-size:28px;font-weight:700;color:var(--green)" { (reserve) }
+                                    span style="color:var(--text-muted);font-size:15px" { " sat" }
+                                }
+                                div style="color:var(--text-secondary);font-size:12px;margin-top:3px" {
+                                    "Lower bound across " (n) " live Bark VTXO(s) as of block " (block)
+                                }
+                                div style="margin-top:10px" {
+                                    a href="/audit/latest.json" style="color:var(--green);font-size:12px;text-decoration:none" { "↓ attestation bundle (JSON)" }
+                                }
+                                div style="color:var(--text-faint);font-size:11px;margin-top:8px;line-height:1.45" {
+                                    "Independently verifiable against the Ark server's cosign key. Proof of reserves — a lower bound on assets, not solvency."
                                 }
                             }
                         }
