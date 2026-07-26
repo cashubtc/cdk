@@ -377,12 +377,12 @@
         );
 
         # MSRV dependencies (separate cache due to different toolchain)
-        # Exclude cdk-redb (and its dependents) since redb requires a higher MSRV
+        # Exclude cdk-redb (and its dependents) and cdk-cli from MSRV coverage
         workspaceDepsMsrv = craneLibMsrv.buildDepsOnly (
           commonCraneArgsMsrv
           // {
             pname = "cdk-deps-msrv";
-            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-bindings-releaser";
+            cargoExtraArgs = "--workspace --exclude cdk-redb --exclude cdk-integration-tests --exclude cdk-ffi-dart --exclude cdk-ffi-swift --exclude cdk-ffi-kotlin --exclude cdk-cli";
           }
         );
 
@@ -840,9 +840,6 @@
           # Mintd with all backends, databases, and features
           "cdk-mintd-all" =
             "-p cdk-mintd --no-default-features --features \"cln,lnd,lnbits,fakewallet,ldk-node,grpc-processor,sqlite,postgres,redis,management-rpc\"";
-
-          # CLI - default features (excludes redb which breaks MSRV)
-          "cdk-cli" = "-p cdk-cli";
 
           # Minimal builds to ensure no-default-features works
           "cdk-wallet-only" = "-p cdk -p cdk-http-client --no-default-features --features cdk/wallet,cdk-http-client/bitreq";

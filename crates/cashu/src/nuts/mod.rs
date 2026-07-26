@@ -19,6 +19,7 @@ pub mod nut12;
 pub mod nut13;
 pub mod nut14;
 pub mod nut15;
+pub mod nut16;
 pub mod nut17;
 pub mod nut18;
 pub mod nut19;
@@ -71,6 +72,7 @@ pub use nut11::{P2PKWitness, SigFlag};
 pub use nut12::{BlindSignatureDleq, ProofDleq};
 pub use nut14::HTLCWitness;
 pub use nut15::{Mpp, MppMethodSettings, Settings as NUT15Settings};
+pub use nut16::{TokenUrDecoder, TokenUrEncoder};
 pub use nut17::NotificationPayload;
 pub use nut18::{
     Nut10SecretRequest, PaymentRequest, PaymentRequestBuilder, PaymentRequestPayload,
