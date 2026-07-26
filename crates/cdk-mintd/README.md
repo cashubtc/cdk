@@ -122,9 +122,12 @@ cdk-mintd config apply --file /path/to/config.toml
 # Print or export the stored document
 cdk-mintd config show
 cdk-mintd config export --file /path/to/exported-config.toml
+# Explicitly replace an existing export
+cdk-mintd config export --file /path/to/exported-config.toml --force
 ```
 
 `config apply`, `show`, and `export` access the authoritative database directly.
+Export refuses to overwrite an existing file unless `--force` is passed.
 Apply replaces one versioned record transactionally and sets it to unapplied. A
 running daemon keeps its current in-memory snapshot; the replacement is used on
 the next restart. If another apply wins while startup is consuming a document,

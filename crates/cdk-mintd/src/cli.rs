@@ -73,7 +73,7 @@ pub enum ConfigCommands {
     /// Print the stored configuration document.
     Show,
     /// Export the stored configuration document.
-    Export(ConfigFileArgs),
+    Export(ExportConfigArgs),
 }
 
 /// Arguments containing a configuration document path.
@@ -82,6 +82,17 @@ pub struct ConfigFileArgs {
     /// TOML document to read or write.
     #[arg(long)]
     pub file: PathBuf,
+}
+
+/// Arguments for exporting the stored configuration.
+#[derive(Debug, Args)]
+pub struct ExportConfigArgs {
+    /// TOML document to write.
+    #[arg(long)]
+    pub file: PathBuf,
+    /// Overwrite the destination if it already exists.
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// Arguments for replacing the stored configuration.
@@ -101,10 +112,36 @@ mod tests {
 
     #[test]
     fn parses_configuration_commands() {
-        for command in ["init", "validate", "export"] {
+        for command in ["init", "validate"] {
             CLIArgs::try_parse_from(["cdk-mintd", "config", command, "--file", "/tmp/mint.toml"])
                 .expect("configuration command should parse");
         }
+
+        let args =
+            CLIArgs::try_parse_from(["cdk-mintd", "config", "export", "--file", "/tmp/mint.toml"])
+                .expect("configuration export should parse");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Config(ConfigArgs {
+                command: ConfigCommands::Export(ExportConfigArgs { force: false, .. }),
+            }))
+        ));
+
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "export",
+            "--file",
+            "/tmp/mint.toml",
+            "--force",
+        ])
+        .expect("configuration export should parse");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Config(ConfigArgs {
+                command: ConfigCommands::Export(ExportConfigArgs { force: true, .. }),
+            }))
+        ));
 
         CLIArgs::try_parse_from([
             "cdk-mintd",

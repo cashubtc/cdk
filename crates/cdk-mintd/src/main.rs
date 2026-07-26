@@ -1,6 +1,6 @@
 //! CDK MINTD
 
-use std::sync::Arc;
+use std::{io::Write, sync::Arc};
 
 use anyhow::{bail, Context, Result};
 use cdk_mintd::cli::{CLIArgs, Commands, ConfigCommands};
@@ -87,9 +87,7 @@ fn main() -> Result<()> {
                         .expect("database commands have a work directory");
                     let document = cdk_mintd::stored_configuration_document(work_dir, password)
                         .await?;
-                    std::fs::write(&file.file, document).with_context(|| {
-                        format!("could not export configuration to {}", file.file.display())
-                    })?;
+                    export_document(&file.file, &document, file.force)?;
                     println!("Configuration exported to {}.", file.file.display());
                     Ok(())
                 }
@@ -114,4 +112,67 @@ fn main() -> Result<()> {
 fn read_document(path: &std::path::Path) -> Result<String> {
     std::fs::read_to_string(path)
         .with_context(|| format!("could not read configuration document {}", path.display()))
+}
+
+fn export_document(path: &std::path::Path, document: &str, force: bool) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if !force && error.kind() == std::io::ErrorKind::AlreadyExists => {
+            bail!(
+                "configuration export destination {} already exists; pass --force to overwrite it",
+                path.display()
+            );
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("could not export configuration to {}", path.display()));
+        }
+    };
+
+    file.write_all(document.as_bytes())
+        .with_context(|| format!("could not export configuration to {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    #[test]
+    fn export_requires_force_to_replace_existing_file() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should follow the Unix epoch")
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("cdk-mintd-export-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&directory).expect("create test directory");
+        let path = directory.join("config.toml");
+        std::fs::write(&path, "existing").expect("create existing export");
+
+        let error =
+            export_document(&path, "replacement", false).expect_err("existing file should fail");
+        assert!(error.to_string().contains("already exists"));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read unchanged export"),
+            "existing"
+        );
+
+        export_document(&path, "replacement", true).expect("forced export should replace file");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read replacement export"),
+            "replacement"
+        );
+
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
 }
