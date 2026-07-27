@@ -619,6 +619,7 @@ fn apply_released_v017_signatory(
         port,
         allow_insecure: tls_dir.is_none(),
         tls_dir,
+        ..Default::default()
     });
     // Released v0.17 selected the remote signatory before either local source.
     // Remove ignored local material so the new mutually-exclusive model keeps

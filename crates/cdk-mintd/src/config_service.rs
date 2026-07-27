@@ -1715,6 +1715,7 @@ engine = "sqlite"
                 port: 15060,
                 tls_dir: None,
                 allow_insecure: true,
+                ..Default::default()
             }),
             ..Default::default()
         };

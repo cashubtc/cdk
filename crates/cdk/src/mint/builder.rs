@@ -19,7 +19,7 @@ use super::verification::validate_custom_payment_method;
 use super::Nuts;
 use crate::amount::Amount;
 use crate::cdk_database;
-use crate::mint::Mint;
+use crate::mint::{Mint, RotationSpawner};
 use crate::nuts::{
     AuthRequired, ContactInfo, CurrencyUnit, MeltMethodSettings, MintInfo, MintMethodSettings,
     MintVersion, MppMethodSettings, PaymentMethod, ProtectedEndpoint,
@@ -73,6 +73,12 @@ pub struct MintBuilder {
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     use_keyset_v2: Option<bool>,
     keyset_rotations: Vec<KeysetRotation>,
+    keyset_rotation_interval: Option<std::time::Duration>,
+    /// Rotation spawner for the embedded auto-rotation loop, built in
+    /// `build_with_seed` and handed to the `Mint` in `build_with_signatory` so
+    /// that `Mint::start` can spawn (and re-spawn) it. `None` when no rotation
+    /// interval is configured.
+    rotation_spawner: Option<RotationSpawner>,
     max_inputs: usize,
     max_outputs: usize,
     max_batch_size: Option<u64>,
@@ -121,6 +127,8 @@ impl MintBuilder {
             custom_paths: HashMap::new(),
             use_keyset_v2: None,
             keyset_rotations: Vec::new(),
+            keyset_rotation_interval: None,
+            rotation_spawner: None,
             max_inputs: 1000,
             max_outputs: 1000,
             max_batch_size: None,
@@ -148,6 +156,21 @@ impl MintBuilder {
     /// Used to create inactive/expired keysets for testing.
     pub fn with_keyset_rotation(mut self, rotation: KeysetRotation) -> Self {
         self.keyset_rotations.push(rotation);
+        self
+    }
+
+    /// Automatically rotate active keysets once they reach `interval`.
+    ///
+    /// Only applies to the embedded signatory built through
+    /// [`MintBuilder::build_with_seed`]. A `None` value, or an interval of zero,
+    /// leaves auto-rotation disabled. A remote signatory manages its own
+    /// rotation schedule.
+    ///
+    /// The rotation loop is spawned by [`Mint::start`] and halted by
+    /// [`Mint::stop`], resuming on a later `start()` like the other background
+    /// services.
+    pub fn with_keyset_rotation_interval(mut self, interval: Option<std::time::Duration>) -> Self {
+        self.keyset_rotation_interval = interval.filter(|i| !i.is_zero());
         self
     }
 
@@ -603,9 +626,13 @@ impl MintBuilder {
 
     /// Build the mint with the provided signatory
     pub async fn build_with_signatory(
-        #[allow(unused_mut)] mut self,
+        mut self,
         signatory: Arc<dyn Signatory + Send + Sync>,
     ) -> Result<Mint, Error> {
+        // Taken now so the field is not caught in the piecemeal moves of `self`
+        // into the `Mint` constructors below.
+        let rotation_spawner = self.rotation_spawner.take();
+
         // Check active keysets and rotate if necessary
         let active_keysets = signatory.keysets().await?;
 
@@ -708,7 +735,7 @@ impl MintBuilder {
             ));
         }
 
-        if let Some(auth_localstore) = self.auth_localstore {
+        let mint = if let Some(auth_localstore) = self.auth_localstore {
             let mut protected_endpoints = HashMap::new();
             for endpoint in self.clear_auth_endpoints {
                 protected_endpoints.insert(endpoint, AuthRequired::Clear);
@@ -723,7 +750,7 @@ impl MintBuilder {
                 tx.commit().await?;
             }
 
-            return Mint::new_with_auth(
+            Mint::new_with_auth(
                 self.mint_info,
                 signatory,
                 self.localstore,
@@ -732,25 +759,36 @@ impl MintBuilder {
                 self.max_inputs,
                 self.max_outputs,
             )
-            .await;
+            .await?
+        } else {
+            Mint::new(
+                self.mint_info,
+                signatory,
+                self.localstore,
+                self.payment_processors,
+                self.max_inputs,
+                self.max_outputs,
+            )
+            .await?
+        };
+
+        // Bind the embedded auto-rotation spawner to the mint so `start()` runs
+        // it and `stop()` halts it cooperatively.
+        if let Some(spawner) = rotation_spawner {
+            mint.set_rotation_spawner(spawner).await;
         }
-        Mint::new(
-            self.mint_info,
-            signatory,
-            self.localstore,
-            self.payment_processors,
-            self.max_inputs,
-            self.max_outputs,
-        )
-        .await
+
+        Ok(mint)
     }
 
     /// Build the mint with the provided keystore and seed
     pub async fn build_with_seed(
-        self,
+        mut self,
         keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
     ) -> Result<Mint, Error> {
+        // Wrapped in an `Arc` so the auto-rotation spawner below can hold a weak
+        // handle without keeping the signatory alive.
         let in_memory_signatory = Arc::new(
             cdk_signatory::db_signatory::DbSignatory::new(
                 keystore,
@@ -766,6 +804,24 @@ impl MintBuilder {
         // multiple mints/signatories can run active/active, a rotation by any
         // instance is picked up on the next refresh without a restart.
         in_memory_signatory.spawn_keyset_refresh(self.keyset_refresh_interval);
+
+        if let Some(interval) = self.keyset_rotation_interval {
+            tracing::info!(
+                "Enabling keyset auto-rotation every {}s",
+                interval.as_secs()
+            );
+            // Capture a weak handle so the spawner does not keep the signatory
+            // alive; the embedded `Service` owns the only strong reference.
+            // `Mint::start` calls this to spawn the loop (and re-spawn it after a
+            // `stop()`); if the signatory has been dropped the loop has nothing
+            // to rotate, so spawn a no-op.
+            let weak = Arc::downgrade(&in_memory_signatory);
+            let spawner: RotationSpawner = Arc::new(move |shutdown_rx| match weak.upgrade() {
+                Some(signatory) => signatory.spawn_auto_rotation(interval, shutdown_rx),
+                None => tokio::spawn(async {}),
+            });
+            self.rotation_spawner = Some(spawner);
+        }
 
         let signatory = Arc::new(cdk_signatory::embedded::Service::new(in_memory_signatory));
 

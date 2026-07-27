@@ -59,6 +59,7 @@ async fn start_fake_mint(
             port: 15060,
             tls_dir: Some(temp_dir.to_path_buf()),
             allow_insecure: false,
+            keyset_rotation_interval_seconds: None,
         })
     } else {
         None

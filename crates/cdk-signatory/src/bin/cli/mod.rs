@@ -20,6 +20,7 @@ use {
     std::sync::Arc,
     std::time::Duration,
     std::{env, fs},
+    tokio::sync::watch,
     tracing_subscriber::EnvFilter,
 };
 
@@ -100,6 +101,11 @@ struct Cli {
     /// another's rotations without a restart.
     #[arg(long, default_value = "0")]
     keyset_refresh_interval_ms: u64,
+    /// Automatically rotate active keysets once they reach this age, in seconds.
+    /// Defaults to 7776000 (90 days), matching the embedded mint. A value of 0
+    /// disables auto-rotation.
+    #[arg(long, default_value = "7776000")]
+    rotation_interval_secs: u64,
 }
 
 /// Main function for the signatory standalone binary
@@ -206,6 +212,21 @@ pub async fn cli_main() -> Result<()> {
     let refresh_interval = (args.keyset_refresh_interval_ms != 0)
         .then(|| Duration::from_millis(args.keyset_refresh_interval_ms));
     signatory.spawn_keyset_refresh(refresh_interval);
+
+    // Hold the shutdown sender for the process lifetime so the rotation loop
+    // keeps running until the server exits; dropping it would stop rotation.
+    let _rotation_shutdown = if args.rotation_interval_secs > 0 {
+        let interval = Duration::from_secs(args.rotation_interval_secs);
+        tracing::info!(
+            "Enabling keyset auto-rotation every {}s",
+            args.rotation_interval_secs
+        );
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        signatory.spawn_auto_rotation(interval, shutdown_rx);
+        Some(shutdown_tx)
+    } else {
+        None
+    };
 
     let socket_addr = SocketAddr::from_str(&format!("{}:{}", args.listen_addr, args.listen_port))?;
 
