@@ -349,7 +349,7 @@ impl From<crate::signatory::RotateKeyArguments> for RotationRequest {
             amounts: value.amounts,
             input_fee_ppk: value.input_fee_ppk,
             keyset_id_type: value.keyset_id_type.to_proto_i32(),
-            final_expiry: value.final_expiry,
+            final_expiry: value.final_expiry.map(|expiry| expiry.to_u64()),
         }
     }
 }
@@ -365,7 +365,11 @@ impl TryInto<crate::signatory::RotateKeyArguments> for RotationRequest {
                 .try_into()?,
             amounts: self.amounts,
             input_fee_ppk: self.input_fee_ppk,
-            final_expiry: self.final_expiry,
+            final_expiry: self
+                .final_expiry
+                .map(crate::signatory::KeysetExpiry::new)
+                .transpose()
+                .map_err(|err| Status::invalid_argument(err.to_string()))?,
             keyset_id_type: KeySetVersion::from_proto_i32(self.keyset_id_type)
                 .map_err(|err| Status::invalid_argument(err.to_string()))?,
         })

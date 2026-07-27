@@ -251,7 +251,7 @@ impl Signatory for DbSignatory {
             args.unit.clone(),
             &amounts,
             args.input_fee_ppk,
-            args.final_expiry,
+            args.final_expiry.map(|expiry| expiry.to_u64()),
             args.keyset_id_type,
         );
 
@@ -276,11 +276,13 @@ mod test {
 
     use bitcoin::key::Secp256k1;
     use bitcoin::Network;
+    use cdk_common::database::MintKeysDatabase;
     use cdk_common::nuts::SecretKey;
     use cdk_common::util::{hex, unix_time};
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
+    use crate::signatory::KeysetExpiry;
 
     #[tokio::test]
     async fn blind_sign_rejects_expired_keyset() {
@@ -290,7 +292,7 @@ mod test {
                 .expect("in-memory db"),
         );
         let signatory = DbSignatory::new(
-            store,
+            store.clone(),
             b"test-seed-for-unit-tests",
             Default::default(),
             Default::default(),
@@ -304,10 +306,27 @@ mod test {
                 amounts: vec![1, 2, 4, 8],
                 input_fee_ppk: 0,
                 keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
-                final_expiry: Some(unix_time() - 1),
+                final_expiry: Some(KeysetExpiry::new(unix_time() + 60).expect("future expiry")),
             })
             .await
             .expect("rotate_keyset");
+
+        // Simulate a keyset that expired after it was created.
+        let mut keyset_info = store
+            .get_keyset_info(&expired_keyset.id)
+            .await
+            .expect("get keyset info")
+            .expect("stored keyset info");
+        keyset_info.final_expiry = Some(unix_time() - 1);
+        let mut tx = store.begin_transaction().await.expect("begin transaction");
+        tx.add_keyset_info(keyset_info)
+            .await
+            .expect("update keyset info");
+        tx.commit().await.expect("commit keyset update");
+        signatory
+            .reload_keys_from_db()
+            .await
+            .expect("reload keysets");
 
         // Expiry check runs before crypto, so an unsigned blinded secret is fine here.
         let blinded_secret = SecretKey::generate().public_key();
