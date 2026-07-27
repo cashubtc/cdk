@@ -5,10 +5,13 @@
 //! in-memory keysets and written only when rotating keys. Every other operation
 //! is served from and mutates in-memory state. See ADR-0003.
 //!
-//! Boot is resilient: `new` attempts the initial load once, and if the database
-//! is unavailable it returns anyway and keeps retrying in the background. Until
-//! that first load succeeds, every key-using operation returns
-//! [`Error::KeysetsNotLoaded`].
+//! Boot has two modes. The standalone server uses [`DbSignatory::new`], which
+//! attempts the initial load once and, if the database is unavailable, returns
+//! anyway and keeps retrying in the background; until that first load succeeds
+//! every key-using operation returns [`Error::KeysetsNotLoaded`]. The embedded
+//! mint uses [`DbSignatory::try_new`], which attempts the load once
+//! and bubbles up any error so the mint fails to boot instead of serving
+//! without keys.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -73,22 +76,17 @@ struct Inner {
 }
 
 impl DbSignatory {
-    /// Creates a new MemorySignatory instance
-    ///
-    /// The initial keyset load is attempted once. If the database is
-    /// unavailable, construction still succeeds and a background task keeps
-    /// retrying the load until it succeeds; operations return
-    /// [`Error::KeysetsNotLoaded`] until then.
+    /// Build the shared inner state without loading keys.
     ///
     /// # Panics
     ///
     /// Panics if the seed produces an invalid master key (should never happen with valid entropy).
-    pub async fn new(
+    fn build_inner(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],
         supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
-    ) -> Result<Self, Error> {
+    ) -> Arc<Inner> {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
 
@@ -98,7 +96,7 @@ impl DbSignatory {
             keysets: vec![],
         });
 
-        let inner = Arc::new(Inner {
+        Arc::new(Inner {
             keysets: Default::default(),
             active_keysets: Default::default(),
             rotation_lock: Default::default(),
@@ -110,16 +108,49 @@ impl DbSignatory {
             xpriv,
             keyset_updates,
             loaded: AtomicBool::new(false),
-        });
+        })
+    }
 
-        // Try once so a healthy database is loaded before returning (the mint
-        // then boots ready). If it fails, keep retrying in the background rather
-        // than taking the whole process down.
+    /// Creates a new signatory with resilient boot, for the standalone server.
+    ///
+    /// The initial keyset load is attempted once. If the database is
+    /// unavailable, construction still succeeds and a background task keeps
+    /// retrying the load until it succeeds; operations return
+    /// [`Error::KeysetsNotLoaded`] until then. This keeps a standalone signatory
+    /// process up across a transient database outage instead of exiting.
+    pub async fn new(
+        localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
+        seed: &[u8],
+        supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
+        custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    ) -> Result<Self, Error> {
+        let inner = Self::build_inner(localstore, seed, supported_units, custom_paths);
+
+        // Try once so a healthy database is loaded before returning. If it
+        // fails, keep retrying in the background rather than taking the whole
+        // process down.
         if let Err(err) = inner.boot_load().await {
             tracing::warn!("initial keyset load failed, retrying in background: {err}");
             Inner::spawn_boot_retry(Arc::downgrade(&inner));
         }
 
+        Ok(Self { inner })
+    }
+
+    /// Creates a new signatory with strict boot, for the embedded mint.
+    ///
+    /// The keyset load is attempted once and any error is bubbled up. There is
+    /// no background retry: an embedded signatory is part of the mint process,
+    /// so a failed load should fail the mint boot rather than leave it serving
+    /// [`Error::KeysetsNotLoaded`]. On success the returned signatory is loaded.
+    pub async fn try_new(
+        localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
+        seed: &[u8],
+        supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
+        custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    ) -> Result<Self, Error> {
+        let inner = Self::build_inner(localstore, seed, supported_units, custom_paths);
+        inner.boot_load().await?;
         Ok(Self { inner })
     }
 }

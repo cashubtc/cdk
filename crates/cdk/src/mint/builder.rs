@@ -730,7 +730,7 @@ impl MintBuilder {
         keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
         seed: &[u8],
     ) -> Result<Mint, Error> {
-        let in_memory_signatory = cdk_signatory::db_signatory::DbSignatory::new(
+        let in_memory_signatory = cdk_signatory::db_signatory::DbSignatory::try_new(
             keystore,
             seed,
             self.supported_units.clone(),
