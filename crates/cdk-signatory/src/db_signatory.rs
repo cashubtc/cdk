@@ -1,8 +1,18 @@
 //! Main Signatory implementation
 //!
-//! It is named db_signatory because it uses a database to maintain state.
+//! It is named db_signatory because it uses a database to persist state. The
+//! database is a persistence layer only: it is read once on boot to hydrate the
+//! in-memory keysets and written only when rotating keys. Every other operation
+//! is served from and mutates in-memory state. See ADR-0003.
+//!
+//! Boot is resilient: `new` attempts the initial load once, and if the database
+//! is unavailable it returns anyway and keeps retrying in the background. Until
+//! that first load succeeds, every key-using operation returns
+//! [`Error::KeysetsNotLoaded`].
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
@@ -18,6 +28,12 @@ use crate::common::{
 };
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
 
+/// Initial delay before retrying a failed boot load.
+const BOOT_RETRY_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Cap on the boot-load retry backoff.
+const BOOT_RETRY_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
 /// In-memory Signatory
 ///
 /// This is the default signatory implementation for the mint.
@@ -26,20 +42,38 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 /// is not accessible from the outside.
 #[allow(missing_debug_implementations)]
 pub struct DbSignatory {
+    inner: Arc<Inner>,
+}
+
+/// Shared state behind the signatory.
+///
+/// Held in an `Arc` so the background boot-load task can share it with the
+/// signatory without changing `new`'s public signature.
+struct Inner {
     keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
     active_keysets: RwLock<HashMap<CurrencyUnit, Id>>,
     localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     secp_ctx: Secp256k1<secp256k1::All>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
+    /// Units to initialize on boot, as `init_keysets` expects them.
+    supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
     xpriv: Xpriv,
     xpub: PublicKey,
     /// Latest keyset snapshot, published on every reload (initial load and each
     /// rotation).
     keyset_updates: watch::Sender<SignatoryKeysets>,
+    /// Set once the first successful load from the database completes. Operations
+    /// that need keys error until then.
+    loaded: AtomicBool,
 }
 
 impl DbSignatory {
     /// Creates a new MemorySignatory instance
+    ///
+    /// The initial keyset load is attempted once. If the database is
+    /// unavailable, construction still succeeds and a background task keeps
+    /// retrying the load until it succeeds; operations return
+    /// [`Error::KeysetsNotLoaded`] until then.
     ///
     /// # Panics
     ///
@@ -47,16 +81,11 @@ impl DbSignatory {
     pub async fn new(
         localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
         seed: &[u8],
-        mut supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
+        supported_units: HashMap<CurrencyUnit, (u64, Vec<u64>)>,
         custom_paths: HashMap<CurrencyUnit, DerivationPath>,
     ) -> Result<Self, Error> {
         let secp_ctx = Secp256k1::new();
         let xpriv = Xpriv::new_master(bitcoin::Network::Bitcoin, seed).expect("RNG busted");
-        init_keysets(xpriv, &secp_ctx, &localstore, &supported_units).await?;
-
-        supported_units
-            .entry(CurrencyUnit::Auth)
-            .or_insert((0, vec![1]));
 
         let xpub: PublicKey = xpriv.to_keypair(&secp_ctx).public_key().into();
         let (keyset_updates, _) = watch::channel(SignatoryKeysets {
@@ -64,29 +93,87 @@ impl DbSignatory {
             keysets: vec![],
         });
 
-        let keys = Self {
+        let inner = Arc::new(Inner {
             keysets: Default::default(),
             active_keysets: Default::default(),
             localstore,
             custom_paths,
+            supported_units,
             xpub,
             secp_ctx,
             xpriv,
             keyset_updates,
-        };
-        keys.reload_keys_from_db().await?;
+            loaded: AtomicBool::new(false),
+        });
 
-        Ok(keys)
+        // Try once so a healthy database is loaded before returning (the mint
+        // then boots ready). If it fails, keep retrying in the background rather
+        // than taking the whole process down.
+        if let Err(err) = inner.boot_load().await {
+            tracing::warn!("initial keyset load failed, retrying in background: {err}");
+            Inner::spawn_boot_retry(Arc::downgrade(&inner));
+        }
+
+        Ok(Self { inner })
+    }
+}
+
+impl Inner {
+    /// Load keysets from the database and mark the signatory ready.
+    ///
+    /// This runs the boot-time database reactivation (`init_keysets`) and then
+    /// hydrates memory from the database. On success the signatory is marked
+    /// loaded and operations start serving.
+    async fn boot_load(&self) -> Result<(), Error> {
+        init_keysets(self.xpriv, &self.secp_ctx, &self.localstore, &self.supported_units).await?;
+        self.load_keys_from_db().await?;
+        self.loaded.store(true, Ordering::Release);
+        Ok(())
     }
 
-    /// Load all the keysets from the database, even if they are not active.
+    /// Retry [`Inner::boot_load`] with exponential backoff until it succeeds.
     ///
-    /// Since the database is owned by this process, we can load all the keysets in memory, and use
-    /// it as the primary source, and the database as the persistence layer.
+    /// Holds a [`Weak`] so the loop ends once the signatory is dropped: the
+    /// strong reference is released before each sleep, so a dropped signatory
+    /// stops the task within one backoff interval.
+    fn spawn_boot_retry(weak: Weak<Inner>) {
+        tokio::spawn(async move {
+            let mut backoff = BOOT_RETRY_BACKOFF;
+            loop {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                match inner.boot_load().await {
+                    Ok(()) => {
+                        tracing::info!("keysets loaded from database");
+                        return;
+                    }
+                    Err(err) => tracing::warn!("keyset load retry failed: {err}"),
+                }
+                drop(inner);
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(BOOT_RETRY_MAX_BACKOFF);
+            }
+        });
+    }
+
+    /// Returns an error until the first successful load from the database.
+    fn ensure_loaded(&self) -> Result<(), Error> {
+        if self.loaded.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(Error::KeysetsNotLoaded)
+        }
+    }
+
+    /// Hydrate the in-memory keysets from the database.
     ///
-    /// Any operation performed with keysets, are done through this trait and never to the database
-    /// directly.
-    async fn reload_keys_from_db(&self) -> Result<(), Error> {
+    /// This is the only path that reads keysets from the database. Since the
+    /// database is owned by this process, all keysets are loaded into memory
+    /// and memory is the primary source afterwards; the database is only the
+    /// persistence layer. Any later operation reads from and mutates memory,
+    /// never the database directly.
+    async fn load_keys_from_db(&self) -> Result<(), Error> {
         let mut keysets = self.keysets.write().await;
         let mut active_keysets = self.active_keysets.write().await;
         keysets.clear();
@@ -104,15 +191,20 @@ impl DbSignatory {
             keysets.insert(id, (info, keyset));
         }
 
-        // Publish the new snapshot to any keyset subscribers. Sending while the
-        // locks are held keeps the published set consistent with in-memory
-        // state.
+        self.publish_snapshot(&keysets);
+
+        Ok(())
+    }
+
+    /// Publish the current keyset set to any subscribers of the watch channel.
+    ///
+    /// Callers hold the `keysets` write lock while calling this so the published
+    /// snapshot stays consistent with the in-memory state that produced it.
+    fn publish_snapshot(&self, keysets: &HashMap<Id, (MintKeySetInfo, MintKeySet)>) {
         self.keyset_updates.send_replace(SignatoryKeysets {
             pubkey: self.xpub,
             keysets: keysets.values().map(|k| k.into()).collect(),
         });
-
-        Ok(())
     }
 
     fn generate_keyset(&self, keyset_info: &MintKeySetInfo) -> MintKeySet {
@@ -127,6 +219,20 @@ impl DbSignatory {
             keyset_info.id.get_version(),
         )
     }
+
+    /// Snapshot the current keysets from memory.
+    async fn keysets_snapshot(&self) -> SignatoryKeysets {
+        SignatoryKeysets {
+            pubkey: self.xpub,
+            keysets: self
+                .keysets
+                .read()
+                .await
+                .values()
+                .map(|k| k.into())
+                .collect(),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -140,7 +246,8 @@ impl Signatory for DbSignatory {
         &self,
         blinded_messages: Vec<BlindedMessage>,
     ) -> Result<Vec<BlindSignature>, Error> {
-        let keysets = self.keysets.read().await;
+        self.inner.ensure_loaded()?;
+        let keysets = self.inner.keysets.read().await;
 
         blinded_messages
             .into_iter()
@@ -178,7 +285,8 @@ impl Signatory for DbSignatory {
 
     #[tracing::instrument(skip_all)]
     async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error> {
-        let keysets = self.keysets.read().await;
+        self.inner.ensure_loaded()?;
+        let keysets = self.inner.keysets.read().await;
 
         proofs.into_iter().try_for_each(|proof| {
             let (_, key) = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
@@ -190,45 +298,40 @@ impl Signatory for DbSignatory {
 
     #[tracing::instrument(skip_all)]
     async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
-        Ok(SignatoryKeysets {
-            pubkey: self.xpub,
-            keysets: self
-                .keysets
-                .read()
-                .await
-                .values()
-                .map(|k| k.into())
-                .collect::<Vec<_>>(),
-        })
+        self.inner.ensure_loaded()?;
+        Ok(self.inner.keysets_snapshot().await)
     }
 
     #[tracing::instrument(skip_all)]
     async fn subscribe_keysets(&self) -> Result<watch::Receiver<SignatoryKeysets>, Error> {
-        Ok(self.keyset_updates.subscribe())
+        Ok(self.inner.keyset_updates.subscribe())
     }
 
     /// Add current keyset to inactive keysets
     /// Generate new keyset
     #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
-        let (path_index, amounts) = if let Some(current_keyset_id) =
-            self.localstore.get_active_keyset_id(&args.unit).await?
-        {
-            let keyset_info = self
-                .localstore
-                .get_keyset_info(&current_keyset_id)
-                .await?
-                .ok_or(Error::UnknownKeySet)?;
+        self.inner.ensure_loaded()?;
 
-            (
-                keyset_info.derivation_path_index.unwrap_or(1) + 1,
-                keyset_info.amounts,
-            )
-        } else {
-            (1, vec![])
+        // Derive the next path index and default amounts from the in-memory
+        // active keyset rather than the database.
+        // Acquire keysets before active_keysets, the same order the write phase
+        // below uses, so two concurrent rotations can never deadlock.
+        let (path_index, amounts) = {
+            let keysets = self.inner.keysets.read().await;
+            let active_keysets = self.inner.active_keysets.read().await;
+            if let Some(current_keyset_id) = active_keysets.get(&args.unit) {
+                let (info, _) = keysets.get(current_keyset_id).ok_or(Error::UnknownKeySet)?;
+                (
+                    info.derivation_path_index.unwrap_or(1) + 1,
+                    info.amounts.clone(),
+                )
+            } else {
+                (1, vec![])
+            }
         };
 
-        let derivation_path = match self.custom_paths.get(&args.unit) {
+        let derivation_path = match self.inner.custom_paths.get(&args.unit) {
             Some(path) => path.clone(),
             None => derivation_path_from_unit(args.unit.clone(), path_index)
                 .ok_or(Error::UnsupportedUnit)?,
@@ -244,8 +347,8 @@ impl Signatory for DbSignatory {
         };
 
         let (keyset, info) = create_new_keyset(
-            &self.secp_ctx,
-            self.xpriv,
+            &self.inner.secp_ctx,
+            self.inner.xpriv,
             derivation_path,
             Some(path_index),
             args.unit.clone(),
@@ -255,18 +358,39 @@ impl Signatory for DbSignatory {
             args.keyset_id_type,
         );
 
-        let keysets = self.keysets().await?;
+        let keysets = self.inner.keysets_snapshot().await;
         check_unit_string_collision(keysets.keysets, &info)?;
 
         let id = info.id;
-        let mut tx = self.localstore.begin_transaction().await?;
+
+        // Persist the rotation. This is the only path that writes to the
+        // database.
+        let mut tx = self.inner.localstore.begin_transaction().await?;
         tx.add_keyset_info(info.clone()).await?;
-        tx.set_active_keyset(args.unit, id).await?;
+        tx.set_active_keyset(args.unit.clone(), id).await?;
         tx.commit().await?;
 
-        self.reload_keys_from_db().await?;
+        // Refresh the in-memory state to match what was just persisted, without
+        // reading the database back. This mirrors a fresh boot: the active
+        // pointer for the unit moves to the new keyset, so any previously active
+        // keyset for the unit becomes inactive.
+        let mut info = info;
+        info.active = true;
+        let signatory_keyset: SignatoryKeySet = (&(info.clone(), keyset.clone())).into();
 
-        Ok((&(info, keyset)).into())
+        let mut keysets = self.inner.keysets.write().await;
+        let mut active_keysets = self.inner.active_keysets.write().await;
+
+        if let Some(prev_id) = active_keysets.insert(args.unit, id) {
+            if let Some((prev_info, _)) = keysets.get_mut(&prev_id) {
+                prev_info.active = false;
+            }
+        }
+        keysets.insert(id, (info, keyset));
+
+        self.inner.publish_snapshot(&keysets);
+
+        Ok(signatory_keyset)
     }
 }
 
@@ -281,6 +405,104 @@ mod test {
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
+
+    /// Wraps a real store but returns a transient error for every read while
+    /// `fail` is set, to exercise the background boot-load retry.
+    struct FailingStore {
+        inner: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
+        fail: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl database::MintKeysDatabase for FailingStore {
+        type Err = database::Error;
+
+        async fn begin_transaction<'a>(
+            &'a self,
+        ) -> Result<
+            Box<dyn database::MintKeyDatabaseTransaction<'a, Self::Err> + Send + Sync + 'a>,
+            database::Error,
+        > {
+            self.inner.begin_transaction().await
+        }
+
+        async fn get_active_keyset_id(
+            &self,
+            unit: &CurrencyUnit,
+        ) -> Result<Option<Id>, Self::Err> {
+            if self.fail.load(Ordering::Acquire) {
+                return Err(database::Error::Locked);
+            }
+            self.inner.get_active_keyset_id(unit).await
+        }
+
+        async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
+            if self.fail.load(Ordering::Acquire) {
+                return Err(database::Error::Locked);
+            }
+            self.inner.get_active_keysets().await
+        }
+
+        async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
+            if self.fail.load(Ordering::Acquire) {
+                return Err(database::Error::Locked);
+            }
+            self.inner.get_keyset_info(id).await
+        }
+
+        async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
+            if self.fail.load(Ordering::Acquire) {
+                return Err(database::Error::Locked);
+            }
+            self.inner.get_keyset_infos().await
+        }
+    }
+
+    #[tokio::test]
+    async fn operations_error_until_background_load_succeeds() {
+        let sqlite = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let fail = Arc::new(AtomicBool::new(true));
+        let store = Arc::new(FailingStore {
+            inner: sqlite,
+            fail: fail.clone(),
+        });
+
+        // Construction succeeds even though the database is unavailable.
+        let signatory = DbSignatory::new(
+            store,
+            b"test-seed-background-load",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new returns while the db is unavailable");
+
+        // Until the first load, operations report the keysets are not loaded.
+        assert!(matches!(
+            signatory.keysets().await,
+            Err(Error::KeysetsNotLoaded)
+        ));
+
+        // Recover the database; the background retry loads and the signatory
+        // starts serving.
+        fail.store(false, Ordering::Release);
+
+        let loaded = tokio::time::timeout(Duration::from_secs(5), async {
+            while signatory.keysets().await.is_err() {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+
+        assert!(
+            loaded.is_ok(),
+            "signatory should load once the database recovers"
+        );
+    }
 
     #[tokio::test]
     async fn blind_sign_rejects_expired_keyset() {
