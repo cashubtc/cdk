@@ -8,3 +8,4 @@ than editing an old one.
 |-----|-------|--------|
 | [0001](0001-signatory-mint-key-segregation.md) | Signatory and mint key segregation | Accepted |
 | [0002](0002-signatory-keyset-subscription.md) | Signatory keyset subscription and push injection | Accepted |
+| [0003](0003-signatory-database-persistence-only.md) | Signatory database as persistence only | Accepted |

@@ -277,23 +277,27 @@ impl Mint {
         // return immediately instead of being silently skipped.
         let mut keyset_updates = signatory.subscribe_keysets().await?;
         let keysets = keyset_updates.borrow_and_update().clone();
-        if !keysets
+        let active_keys = keysets
             .keysets
             .iter()
-            .any(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
-        {
-            return Err(Error::NoActiveKeyset);
+            .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
+            .count();
+        // The signatory may not report an active keyset yet (for example a
+        // remote signatory that is still connecting). Start anyway and let the
+        // keyset drain task install keysets if they arrive over the
+        // subscription; endpoints return keyset errors until then.
+        if active_keys == 0 {
+            tracing::warn!(
+                "Signatory {} has no active keysets yet; starting without them",
+                signatory.name(),
+            );
+        } else {
+            tracing::info!(
+                "Using Signatory {} with {} active keys",
+                signatory.name(),
+                active_keys,
+            );
         }
-
-        tracing::info!(
-            "Using Signatory {} with {} active keys",
-            signatory.name(),
-            keysets
-                .keysets
-                .iter()
-                .filter(|keyset| keyset.active && keyset.unit != CurrencyUnit::Auth)
-                .count()
-        );
 
         // Persist missing pubkey early to avoid losing it on next boot and ensure stable identity across restarts
         let mut computed_info = mint_info;
