@@ -20,7 +20,7 @@ use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
 use cdk_common::{database, Error, PublicKey};
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 use tracing::instrument;
 
 use crate::common::{
@@ -52,6 +52,11 @@ pub struct DbSignatory {
 struct Inner {
     keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
     active_keysets: RwLock<HashMap<CurrencyUnit, Id>>,
+    /// Serializes keyset rotations. The standalone signatory gRPC server calls
+    /// rotate_keyset directly (no embedded single-runner), so two concurrent
+    /// rotations of the same unit could otherwise read the same path index and
+    /// derive duplicate keysets.
+    rotation_lock: Mutex<()>,
     localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     secp_ctx: Secp256k1<secp256k1::All>,
     custom_paths: HashMap<CurrencyUnit, DerivationPath>,
@@ -96,6 +101,7 @@ impl DbSignatory {
         let inner = Arc::new(Inner {
             keysets: Default::default(),
             active_keysets: Default::default(),
+            rotation_lock: Default::default(),
             localstore,
             custom_paths,
             supported_units,
@@ -125,7 +131,13 @@ impl Inner {
     /// hydrates memory from the database. On success the signatory is marked
     /// loaded and operations start serving.
     async fn boot_load(&self) -> Result<(), Error> {
-        init_keysets(self.xpriv, &self.secp_ctx, &self.localstore, &self.supported_units).await?;
+        init_keysets(
+            self.xpriv,
+            &self.secp_ctx,
+            &self.localstore,
+            &self.supported_units,
+        )
+        .await?;
         self.load_keys_from_db().await?;
         self.loaded.store(true, Ordering::Release);
         Ok(())
@@ -313,10 +325,17 @@ impl Signatory for DbSignatory {
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
         self.inner.ensure_loaded()?;
 
+        // Serialize rotations. The standalone signatory gRPC server invokes this
+        // directly (no embedded single-runner), so without this two concurrent
+        // rotations of the same unit could read the same path index below and
+        // derive duplicate keysets. Held for the whole method.
+        let _rotation = self.inner.rotation_lock.lock().await;
+
         // Derive the next path index and default amounts from the in-memory
-        // active keyset rather than the database.
+        // active keyset rather than the database. The rotation lock above keeps
+        // this read stable across the DB write and the in-memory update.
         // Acquire keysets before active_keysets, the same order the write phase
-        // below uses, so two concurrent rotations can never deadlock.
+        // below uses (and load_keys_from_db), keeping lock ordering consistent.
         let (path_index, amounts) = {
             let keysets = self.inner.keysets.read().await;
             let active_keysets = self.inner.active_keysets.read().await;
@@ -426,10 +445,7 @@ mod test {
             self.inner.begin_transaction().await
         }
 
-        async fn get_active_keyset_id(
-            &self,
-            unit: &CurrencyUnit,
-        ) -> Result<Option<Id>, Self::Err> {
+        async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
             if self.fail.load(Ordering::Acquire) {
                 return Err(database::Error::Locked);
             }
@@ -588,6 +604,61 @@ mod test {
             after.keysets.len() > initial,
             "keyset count should grow after rotation"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_rotations_do_not_collide() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = Arc::new(
+            DbSignatory::new(
+                store,
+                b"test-seed-concurrent-rotations",
+                Default::default(),
+                Default::default(),
+            )
+            .await
+            .expect("DbSignatory::new"),
+        );
+
+        // Fire several rotations of the same unit concurrently. Without the
+        // rotation lock they could read the same path index and derive
+        // duplicate keysets.
+        const ROTATIONS: usize = 8;
+        let mut handles = Vec::with_capacity(ROTATIONS);
+        for _ in 0..ROTATIONS {
+            let signatory = signatory.clone();
+            handles.push(tokio::spawn(async move {
+                signatory
+                    .rotate_keyset(RotateKeyArguments {
+                        unit: CurrencyUnit::Sat,
+                        amounts: vec![1, 2, 4, 8],
+                        input_fee_ppk: 0,
+                        keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                        final_expiry: None,
+                    })
+                    .await
+                    .expect("rotate_keyset")
+            }));
+        }
+
+        let mut ids = HashSet::new();
+        let mut versions = HashSet::new();
+        for handle in handles {
+            let keyset = handle.await.expect("join");
+            assert!(
+                ids.insert(keyset.id),
+                "duplicate keyset id from concurrent rotation"
+            );
+            assert!(
+                versions.insert(keyset.version),
+                "duplicate path index from concurrent rotation"
+            );
+        }
+        assert_eq!(ids.len(), ROTATIONS);
     }
 
     #[test]
