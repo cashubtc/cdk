@@ -127,13 +127,13 @@ pub fn derivation_path_from_unit(unit: CurrencyUnit, index: u32) -> Option<Deriv
 
 /// take all the keyset units and if te new keyset is a new unit we check
 pub fn check_unit_string_collision(
-    keysets: Vec<crate::signatory::SignatoryKeySet>,
+    keysets: &[crate::signatory::SignatoryKeySet],
     new_keyset: &MintKeySetInfo,
 ) -> Result<(), Error> {
     let mut unit_hash: HashSet<CurrencyUnit> = HashSet::new();
 
     for key in keysets {
-        unit_hash.insert(key.unit);
+        unit_hash.insert(key.unit.clone());
     }
 
     if unit_hash.contains(&new_keyset.unit) {

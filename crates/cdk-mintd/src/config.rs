@@ -135,6 +135,14 @@ pub struct Signatory {
     pub tls_dir: Option<PathBuf>,
     #[serde(default)]
     pub allow_insecure: bool,
+    /// Automatically rotate active keysets once they reach this age, in seconds.
+    ///
+    /// Applies to the embedded signatory the mint runs when `enabled` is false.
+    /// Defaults to 90 days; set to `0` to disable auto-rotation. A remote
+    /// signatory (`enabled = true`) manages its own rotation schedule and
+    /// ignores this value.
+    #[serde(default = "default_keyset_rotation_interval_seconds")]
+    pub keyset_rotation_interval_seconds: Option<u64>,
 }
 
 impl Default for Signatory {
@@ -145,12 +153,19 @@ impl Default for Signatory {
             port: default_signatory_port(),
             tls_dir: None,
             allow_insecure: false,
+            keyset_rotation_interval_seconds: default_keyset_rotation_interval_seconds(),
         }
     }
 }
 
 fn default_signatory_address() -> String {
     "127.0.0.1".to_string()
+}
+
+/// Default keyset auto-rotation interval: 90 days, matching common mint
+/// deployments. Set the config value to `0` to disable.
+fn default_keyset_rotation_interval_seconds() -> Option<u64> {
+    Some(90 * 24 * 60 * 60)
 }
 
 fn default_signatory_port() -> u16 {
