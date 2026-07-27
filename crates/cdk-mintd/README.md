@@ -477,6 +477,21 @@ cdk-mint-cli rotate-next-keyset --use-keyset-v2 true  # Rotate to V2
 cdk-mint-cli rotate-next-keyset --use-keyset-v2 false # Rotate to V1
 ```
 
+**Automatic Rotation:**
+An embedded signatory rotates active keysets automatically once they reach a
+given age. The replacement keeps the previous amounts, input fee and version.
+Meant for long periods (days); the default is 90 days.
+
+- **Default**: active keysets rotate once they are 90 days old (7776000
+  seconds).
+- `[signatory].keyset_rotation_interval_seconds = <seconds>` (or
+  `CDK_MINTD_SIGNATORY_KEYSET_ROTATION_INTERVAL_SECONDS=<seconds>`): override the
+  interval.
+- Set the value to `0` to disable auto-rotation.
+
+This applies only to an embedded signatory; a remote signatory manages its own
+rotation schedule.
+
 ## Production Examples
 
 ### With LDK Node (Recommended for Testing)

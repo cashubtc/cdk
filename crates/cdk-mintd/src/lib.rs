@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 // external crates
 use anyhow::{anyhow, bail, Context, Result};
@@ -1204,7 +1205,24 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
 
+    builder = builder.with_keyset_rotation_interval(keyset_rotation_interval(settings));
+
     builder
+}
+
+/// Embedded signatory keyset auto-rotation interval, or `None` when rotation is
+/// disabled.
+///
+/// A missing `[signatory]` section falls back to the default, so an embedded
+/// mint auto-rotates without explicit config; `0` is the documented off switch.
+fn keyset_rotation_interval(settings: &config::Settings) -> Option<Duration> {
+    settings
+        .signatory
+        .clone()
+        .unwrap_or_default()
+        .keyset_rotation_interval_seconds
+        .map(Duration::from_secs)
+        .filter(|interval| !interval.is_zero())
 }
 /// Configures payment backends based on the specified backend types
 async fn configure_payment_backends(
@@ -3384,6 +3402,67 @@ engine = "sqlite"
         clear_mintd_env();
     }
 
+    /// The default has to survive a config with no `[signatory]` section at
+    /// all, which is what most embedded deployments have.
+    #[test]
+    fn keyset_rotation_interval_defaults_without_a_signatory_section() {
+        let settings = config::Settings {
+            signatory: None,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            keyset_rotation_interval(&settings),
+            Some(Duration::from_secs(7776000)),
+            "an absent [signatory] section must still auto-rotate at the 90 day default"
+        );
+    }
+
+    /// `0` is the documented off switch, in the README, `example.config.toml`
+    /// and the signatory CLI. It has to actually disable rotation rather than
+    /// fall through to the default.
+    #[test]
+    fn keyset_rotation_interval_zero_disables_rotation() {
+        let settings = config::Settings {
+            signatory: Some(config::Signatory {
+                keyset_rotation_interval_seconds: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(keyset_rotation_interval(&settings), None);
+    }
+
+    #[test]
+    fn keyset_rotation_interval_none_disables_rotation() {
+        let settings = config::Settings {
+            signatory: Some(config::Signatory {
+                keyset_rotation_interval_seconds: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(keyset_rotation_interval(&settings), None);
+    }
+
+    #[test]
+    fn keyset_rotation_interval_uses_the_configured_value() {
+        let settings = config::Settings {
+            signatory: Some(config::Signatory {
+                keyset_rotation_interval_seconds: Some(3600),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            keyset_rotation_interval(&settings),
+            Some(Duration::from_secs(3600))
+        );
+    }
+
     #[test]
     fn apply_seed_file_sets_mint_mnemonic_from_trimmed_file_contents() {
         let seed_file = temp_seed_file("seed_file_sets_seed");
@@ -3400,6 +3479,7 @@ engine = "sqlite"
                 port: 15060,
                 tls_dir: Some("/tmp/certs".into()),
                 allow_insecure: false,
+                keyset_rotation_interval_seconds: None,
             }),
             ..Default::default()
         };

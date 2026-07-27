@@ -103,6 +103,25 @@ impl std::fmt::Debug for Mint {
     }
 }
 
+/// Factory that spawns the embedded signatory's keyset auto-rotation loop.
+///
+/// It captures a weak handle to the concrete embedded signatory plus the
+/// interval; each call spawns a fresh loop wired to the given shutdown receiver.
+/// The mint keeps it so `start()` can spawn the loop and re-spawn it after a
+/// `stop()`, keeping rotation symmetric with the other background services. The
+/// concrete signatory is only reachable at build time (not through the
+/// `Signatory` trait the mint holds), so the closure is what carries that reach
+/// into `start()`.
+pub(crate) type RotationSpawner =
+    Arc<dyn Fn(watch::Receiver<bool>) -> JoinHandle<()> + Send + Sync>;
+
+/// How long [`Mint::stop`] waits for the auto-rotation loop to finish an
+/// in-flight sweep before it stops waiting. A sweep can block on the
+/// cross-process keyset lock for an unbounded time, and shutdown must not
+/// inherit that wait. Giving up drops the `JoinHandle`, which detaches the task
+/// rather than aborting it, so the rotation still runs to its own conclusion.
+const ROTATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// State for managing background tasks
 #[derive(Default)]
 struct TaskState {
@@ -115,6 +134,16 @@ struct TaskState {
     /// Keyset subscription retained from construction, drained once by the first
     /// `start()`. `None` after it has been taken; a restart re-subscribes.
     keyset_updates: Option<watch::Receiver<SignatoryKeysets>>,
+    /// Factory to spawn the embedded auto-rotation loop, set once at build time
+    /// and kept across restarts so `start()` can (re)spawn it. `None` when no
+    /// embedded rotation interval is configured.
+    rotation_spawner: Option<RotationSpawner>,
+    /// The running auto-rotation task, if started: the `watch::Sender` signals
+    /// the loop to stop and the `JoinHandle` lets `stop()` await an in-flight
+    /// rotation to completion before returning, so rotation is never aborted
+    /// mid-flight. Cleared by `stop()` and re-created by the next `start()` from
+    /// `rotation_spawner`.
+    rotation_handle: Option<(watch::Sender<bool>, JoinHandle<()>)>,
 }
 
 /// Supervised subscription to a single payment processor's event stream.
@@ -410,6 +439,15 @@ impl Mint {
         })
     }
 
+    /// Bind the embedded signatory's rotation spawner to this mint. [`Mint::start`]
+    /// uses it to spawn the auto-rotation loop and to re-spawn it after a
+    /// [`Mint::stop`]; `stop()` halts the running loop cooperatively. Called once
+    /// at build time when an embedded signatory is configured with a rotation
+    /// interval.
+    pub(crate) async fn set_rotation_spawner(&self, spawner: RotationSpawner) {
+        self.task_state.lock().await.rotation_spawner = Some(spawner);
+    }
+
     /// Start the mint's background services and operations
     ///
     /// This function immediately starts background services and returns. The background
@@ -569,6 +607,18 @@ impl Mint {
             None
         };
 
+        // Spawn embedded keyset auto-rotation, if configured and not already
+        // running. A fresh shutdown channel each start means a later
+        // stop()/start() cycle resumes rotation, like the other background
+        // services.
+        if task_state.rotation_handle.is_none() {
+            if let Some(spawner) = task_state.rotation_spawner.clone() {
+                let (shutdown_tx, shutdown_rx) = watch::channel(false);
+                let handle = spawner(shutdown_rx);
+                task_state.rotation_handle = Some((shutdown_tx, handle));
+            }
+        }
+
         // Store the handles
         task_state.shutdown_notify = Some(shutdown_notify);
         task_state.supervisor_handle = Some(supervisor_handle);
@@ -586,6 +636,13 @@ impl Mint {
     /// This function signals all background tasks to shut down and waits for them
     /// to complete gracefully. It's safe to call multiple times.
     ///
+    /// Embedded keyset auto-rotation (configured via
+    /// [`MintBuilder::with_keyset_rotation_interval`]) is halted here
+    /// cooperatively, letting an in-flight rotation finish, and is resumed by a
+    /// later [`Mint::start`] like the other background services. A rotation
+    /// still running after `ROTATION_SHUTDOWN_TIMEOUT` is left to finish
+    /// detached rather than holding up shutdown.
+    ///
     /// # Returns
     ///
     /// Returns `Ok(())` when all background services have shut down cleanly, or an
@@ -593,10 +650,36 @@ impl Mint {
     pub async fn stop(&self) -> Result<(), Error> {
         let mut task_state = self.task_state.lock().await;
 
-        // Take the handles out of the state
+        // Take the handles out of the state. Leave `rotation_spawner` in place
+        // so the next `start()` can re-spawn rotation.
+        let rotation_handle = task_state.rotation_handle.take();
         let shutdown_notify = task_state.shutdown_notify.take();
         let supervisor_handle = task_state.supervisor_handle.take();
         let keyset_drain_handle = task_state.keyset_drain_handle.take();
+
+        // Drop the lock before awaiting any task.
+        drop(task_state);
+
+        // Halt embedded keyset auto-rotation cooperatively, if running. Signal
+        // the loop and await it so an in-flight rotation finishes rather than
+        // being aborted mid-rotation. Done before the early-return below so
+        // rotation stops even when no other background services were started.
+        if let Some((shutdown, handle)) = rotation_handle {
+            if shutdown.send(true).is_err() {
+                tracing::debug!("Auto-rotation loop had already exited before shutdown");
+            }
+            match tokio::time::timeout(ROTATION_SHUTDOWN_TIMEOUT, handle).await {
+                Ok(Ok(())) => {}
+                Ok(Err(join_error)) if join_error.is_cancelled() => {}
+                Ok(Err(join_error)) => {
+                    tracing::error!("Auto-rotation task panicked: {:?}", join_error);
+                }
+                Err(_) => tracing::warn!(
+                    "Auto-rotation did not stop within {}s, continuing shutdown without it",
+                    ROTATION_SHUTDOWN_TIMEOUT.as_secs()
+                ),
+            }
+        }
 
         // If nothing to stop, return early
         let (shutdown_notify, supervisor_handle) = match (shutdown_notify, supervisor_handle) {
@@ -607,9 +690,6 @@ impl Mint {
                 return self.stop_payment_processors().await;
             }
         };
-
-        // Drop the lock before waiting
-        drop(task_state);
 
         tracing::info!("Stopping mint background services...");
 
@@ -1652,6 +1732,270 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn stop_halts_embedded_auto_rotation() {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        let keystore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+
+        // One second interval: the loop polls every second (cadence is
+        // min(interval, MAX_TICK_INTERVAL)) and rotates the build-time keyset
+        // once it ages past one second. The 5s growth timeout below leaves
+        // margin for the second-granularity `valid_from`.
+        let mut builder = MintBuilder::new(localstore)
+            .with_keyset_rotation_interval(Some(Duration::from_secs(1)));
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+        let mint = builder
+            .build_with_seed(keystore, b"stop-halts-rotation-seed")
+            .await
+            .unwrap();
+
+        // Rotation is spawned by `start()`, like the other background services.
+        mint.start().await.expect("mint should start");
+        assert!(
+            mint.task_state.lock().await.rotation_handle.is_some(),
+            "start() should have spawned the rotation loop"
+        );
+
+        // Observe rotation through the signatory directly, not the mint's
+        // drained view, so we measure the producer rather than the consumer.
+        let initial = mint.signatory.keysets().await.unwrap().keysets.len();
+        let grew = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.signatory.keysets().await.unwrap().keysets.len() > initial {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            grew.is_ok(),
+            "auto-rotation should grow the keyset set before stop"
+        );
+
+        mint.stop().await.expect("mint should stop");
+
+        // `stop()` signals the loop and awaits its handle, so a cleared handle
+        // means the task ran to completion. That the loop honours the signal at
+        // all is proven without any wall clock by the signatory's own
+        // `spawn_auto_rotation_stops_on_shutdown_signal`, which awaits the
+        // `JoinHandle` directly; re-timing it here would only add flake.
+        assert!(
+            mint.task_state.lock().await.rotation_handle.is_none(),
+            "stop() must halt embedded auto-rotation"
+        );
+    }
+
+    /// A sweep blocked on the cross-process keyset lock never reaches the point
+    /// where it observes the shutdown signal, so `stop()` has to give up on it
+    /// rather than inherit an unbounded wait.
+    #[tokio::test(start_paused = true)]
+    async fn stop_gives_up_on_a_wedged_rotation() {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        let keystore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+
+        let mut builder = MintBuilder::new(localstore);
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+        let mint = builder
+            .build_with_seed(keystore, b"wedged-rotation-seed")
+            .await
+            .unwrap();
+
+        // Stands in for a sweep stuck on the database lock: it ignores the
+        // shutdown receiver and never completes.
+        let spawned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = Arc::clone(&spawned);
+        mint.set_rotation_spawner(Arc::new(move |_shutdown| {
+            let flag = Arc::clone(&flag);
+            tokio::spawn(async move {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::future::pending::<()>().await;
+            })
+        }))
+        .await;
+
+        mint.start().await.expect("mint should start");
+        tokio::task::yield_now().await;
+        assert!(
+            spawned.load(std::sync::atomic::Ordering::SeqCst),
+            "the wedged rotation task must actually be running, or this proves nothing"
+        );
+
+        // Generous relative to ROTATION_SHUTDOWN_TIMEOUT: the point is that
+        // stop() returns at all, not when. Time is paused, so this costs no
+        // wall clock.
+        tokio::time::timeout(Duration::from_secs(600), mint.stop())
+            .await
+            .expect("stop() must not block forever on a wedged rotation")
+            .expect("mint should stop");
+    }
+
+    /// Rotation is spawned by `start()`, so a `stop()` + `start()` cycle resumes
+    /// it like the other background services.
+    #[tokio::test]
+    async fn auto_rotation_resumes_after_restart() {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        let keystore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+
+        // One second interval so the loop polls every second and rotation is
+        // observable within the 5s growth timeout below.
+        let mut builder = MintBuilder::new(localstore)
+            .with_keyset_rotation_interval(Some(Duration::from_secs(1)));
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+        let mint = builder
+            .build_with_seed(keystore, b"rotation-restart-seed")
+            .await
+            .unwrap();
+
+        // Rotation is live before the restart. That it actually produces
+        // keysets is `stop_halts_embedded_auto_rotation`'s job; here the claim
+        // is only that a stop/start cycle gets back to this state.
+        mint.start().await.expect("mint should start");
+        assert!(
+            mint.task_state.lock().await.rotation_handle.is_some(),
+            "auto-rotation should be running before the restart"
+        );
+
+        mint.stop().await.expect("mint should stop");
+        assert!(
+            mint.task_state.lock().await.rotation_handle.is_none(),
+            "stop() should have cleared the rotation handle"
+        );
+
+        mint.start().await.expect("mint should restart");
+
+        // Rotation is respawned on restart, so the keyset set grows again from
+        // its post-restart baseline.
+        let after_restart = mint.signatory.keysets().await.unwrap().keysets.len();
+        let regrew = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint.signatory.keysets().await.unwrap().keysets.len() > after_restart {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        assert!(
+            regrew.is_ok(),
+            "auto-rotation should resume after stop() then start()"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
+    /// A zero interval is the documented off switch, in the mintd config, the
+    /// README and the signatory CLI. Asserting on the spawner rather than on
+    /// keyset counts proves the builder never created one, with no waiting.
+    #[tokio::test]
+    async fn zero_interval_disables_auto_rotation() {
+        let localstore = Arc::new(
+            new_with_state(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                MintInfo::default(),
+            )
+            .await
+            .unwrap(),
+        );
+        let keystore = Arc::new(cdk_sqlite::mint::memory::empty().await.unwrap());
+
+        let mut builder =
+            MintBuilder::new(localstore).with_keyset_rotation_interval(Some(Duration::ZERO));
+        builder
+            .configure_unit(
+                CurrencyUnit::Sat,
+                UnitConfig {
+                    amounts: vec![1, 2, 4, 8],
+                    input_fee_ppk: 0,
+                },
+            )
+            .unwrap();
+        let mint = builder
+            .build_with_seed(keystore, b"zero-interval-seed")
+            .await
+            .unwrap();
+
+        mint.start().await.expect("mint should start");
+
+        let task_state = mint.task_state.lock().await;
+        assert!(
+            task_state.rotation_spawner.is_none(),
+            "a zero interval must not build a rotation spawner"
+        );
+        assert!(
+            task_state.rotation_handle.is_none(),
+            "start() must not spawn rotation when it is disabled"
+        );
+        drop(task_state);
+
+        mint.stop().await.expect("mint should stop");
     }
 
     #[tokio::test]
