@@ -282,7 +282,9 @@ impl From<cdk_common::CurrencyUnit> for CurrencyUnit {
                 )),
             },
             cdk_common::CurrencyUnit::Custom(name) => CurrencyUnit {
-                currency_unit: Some(currency_unit::CurrencyUnit::CustomUnit(name)),
+                currency_unit: Some(currency_unit::CurrencyUnit::CustomUnit(
+                    cdk_common::CurrencyUnit::custom(name).to_string(),
+                )),
             },
             _ => unreachable!(),
         }
@@ -308,7 +310,7 @@ impl TryInto<cdk_common::CurrencyUnit> for CurrencyUnit {
                 }
             },
             Some(currency_unit::CurrencyUnit::CustomUnit(name)) => {
-                Ok(cdk_common::CurrencyUnit::Custom(name))
+                Ok(cdk_common::CurrencyUnit::custom(name))
             }
             None => Err(Status::invalid_argument("Currency unit not set")),
         }
@@ -400,5 +402,35 @@ impl TryInto<cdk_common::KeySetInfo> for KeySet {
             input_fee_ppk: self.input_fee_ppk,
             final_expiry: self.final_expiry,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_currency_unit_is_lowercase_across_proto_boundary() {
+        let proto: CurrencyUnit = cdk_common::CurrencyUnit::Custom("BADCOIN".to_string()).into();
+
+        assert_eq!(
+            proto.currency_unit,
+            Some(currency_unit::CurrencyUnit::CustomUnit(
+                "badcoin".to_string()
+            ))
+        );
+
+        let common: cdk_common::CurrencyUnit = CurrencyUnit {
+            currency_unit: Some(currency_unit::CurrencyUnit::CustomUnit(
+                "BADCOIN".to_string(),
+            )),
+        }
+        .try_into()
+        .unwrap();
+
+        assert_eq!(
+            common,
+            cdk_common::CurrencyUnit::Custom("badcoin".to_string())
+        );
     }
 }

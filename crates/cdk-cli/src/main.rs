@@ -226,7 +226,7 @@ async fn main() -> Result<()> {
     let currency_unit = match args.unit {
         Some(unit) => match unit.to_lowercase().as_str() {
             "" => bail!("Currency unit cannot be empty. Omit the flag to use the default 'sat'."),
-            _ => Some(CurrencyUnit::from_str(&unit).unwrap_or(CurrencyUnit::Custom(unit))),
+            _ => Some(CurrencyUnit::from_str(&unit)?),
         },
         None => None,
     };
