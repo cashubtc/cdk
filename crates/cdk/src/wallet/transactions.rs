@@ -57,12 +57,12 @@ impl Wallet {
         saga_id: uuid::Uuid,
         status: TransactionStatus,
     ) -> Result<bool, Error> {
+        let transaction_id = TransactionId::from_saga_id(saga_id);
         let transaction = self
             .localstore
-            .list_transactions(Some(self.mint_url.clone()), None, Some(self.unit.clone()))
+            .get_transaction(transaction_id)
             .await?
-            .into_iter()
-            .find(|transaction| transaction.saga_id == Some(saga_id));
+            .filter(|transaction| self.transaction_matches_wallet(transaction));
 
         let Some(mut transaction) = transaction else {
             return Ok(false);

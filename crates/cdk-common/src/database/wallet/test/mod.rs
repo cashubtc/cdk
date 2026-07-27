@@ -882,6 +882,44 @@ where
     assert_eq!(retrieved.status, TransactionStatus::Completed);
 }
 
+/// Test that separate saga operations using the same proofs remain distinct.
+pub async fn same_proofs_in_different_sagas<DB>(db: DB)
+where
+    DB: Database<crate::database::Error>,
+{
+    let mut outgoing = test_transaction(test_mint_url(), TransactionDirection::Outgoing);
+    outgoing.saga_id = Some(uuid::Uuid::new_v4());
+    outgoing.status = TransactionStatus::Pending;
+
+    let mut incoming = outgoing.clone();
+    incoming.direction = TransactionDirection::Incoming;
+    incoming.saga_id = Some(uuid::Uuid::new_v4());
+    incoming.status = TransactionStatus::Completed;
+
+    let outgoing_id = outgoing.id();
+    let incoming_id = incoming.id();
+    assert_ne!(outgoing_id, incoming_id);
+
+    db.add_transaction(outgoing).await.unwrap();
+    db.add_transaction(incoming).await.unwrap();
+
+    let outgoing = db
+        .get_transaction(outgoing_id)
+        .await
+        .unwrap()
+        .expect("outgoing transaction exists");
+    let incoming = db
+        .get_transaction(incoming_id)
+        .await
+        .unwrap()
+        .expect("incoming transaction exists");
+
+    assert_eq!(outgoing.direction, TransactionDirection::Outgoing);
+    assert_eq!(outgoing.status, TransactionStatus::Pending);
+    assert_eq!(incoming.direction, TransactionDirection::Incoming);
+    assert_eq!(incoming.status, TransactionStatus::Completed);
+}
+
 /// Test listing transactions
 pub async fn list_transactions<DB>(db: DB)
 where
@@ -1583,6 +1621,7 @@ macro_rules! wallet_db_test {
             keyset_counter_isolation,
             add_and_get_transaction,
             update_transaction_status,
+            same_proofs_in_different_sagas,
             list_transactions,
             filter_transactions_by_mint,
             remove_transaction,

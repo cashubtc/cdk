@@ -100,7 +100,7 @@ impl Wallet {
         }
 
         let proof_ys: Vec<_> = pending_proofs.iter().map(|proof| proof.y).collect();
-        let transaction_id = TransactionId::new(proof_ys.clone());
+        let transaction_id = TransactionId::from_saga_id(*saga_id);
         if self
             .localstore
             .get_transaction(transaction_id)

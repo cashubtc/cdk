@@ -100,7 +100,7 @@ impl Wallet {
             .as_ref()
             .filter(|proof_ys| !proof_ys.is_empty())
         {
-            let transaction_id = TransactionId::new(final_proof_ys.clone());
+            let transaction_id = TransactionId::from_saga_id(*saga_id);
             if self
                 .localstore
                 .get_transaction(transaction_id)
@@ -224,7 +224,7 @@ impl Wallet {
         }
 
         let proof_ys: Vec<_> = melt_input_proofs.iter().map(|p| p.y).collect();
-        let transaction_id = TransactionId::new(proof_ys.clone());
+        let transaction_id = TransactionId::from_saga_id(*saga_id);
         let status_payment_proof = quote_status.payment_proof();
         if let Some(existing_transaction) = self.localstore.get_transaction(transaction_id).await? {
             let is_recovered_melt = existing_transaction.direction
@@ -1075,7 +1075,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_recover_melt_paid_ignores_existing_incoming_transaction() {
+    async fn test_recover_melt_paid_preserves_existing_incoming_transaction() {
         let db = create_test_db().await;
         let mint_url = test_mint_url();
         let keyset_id = test_keyset_id();
@@ -1161,7 +1161,11 @@ mod tests {
             .list_transactions(Some(TransactionDirection::Incoming))
             .await
             .unwrap();
-        assert!(incoming_transactions.is_empty());
+        assert_eq!(incoming_transactions.len(), 1);
+        assert_eq!(
+            incoming_transactions[0].memo.as_deref(),
+            Some("original incoming")
+        );
 
         let outgoing_transactions = wallet
             .list_transactions(Some(TransactionDirection::Outgoing))

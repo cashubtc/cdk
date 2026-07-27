@@ -228,7 +228,7 @@ impl TransactionId {
         Ok(Self { hex })
     }
 
-    /// Create from proofs
+    /// Create a legacy proof-derived transaction ID.
     pub fn from_proofs(proofs: &Proofs) -> Result<Self, FfiError> {
         let cdk_proofs: Result<Vec<cdk::nuts::Proof>, _> =
             proofs.iter().map(|p| p.clone().try_into()).collect();
@@ -236,6 +236,15 @@ impl TransactionId {
         let id = cdk::wallet::types::TransactionId::from_proofs(cdk_proofs)?;
         Ok(Self {
             hex: id.to_string(),
+        })
+    }
+
+    /// Create a transaction ID from a wallet saga ID.
+    pub fn from_saga_id(saga_id: String) -> Result<Self, FfiError> {
+        let saga_id = Uuid::parse_str(&saga_id)
+            .map_err(|error| FfiError::internal(format!("Invalid saga ID: {error}")))?;
+        Ok(Self {
+            hex: cdk::wallet::types::TransactionId::from_saga_id(saga_id).to_string(),
         })
     }
 }

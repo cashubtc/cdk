@@ -206,7 +206,7 @@ impl Wallet {
 
         if self
             .localstore
-            .get_transaction(TransactionId::new(ys.clone()))
+            .get_transaction(TransactionId::from_saga_id(*saga_id))
             .await?
             .is_some()
         {
