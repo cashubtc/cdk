@@ -43,12 +43,31 @@ pub enum Error {
     Io(#[from] std::io::Error),
 }
 
+/// Failure returned when a management mutation is not currently allowed.
+#[derive(Debug, Error)]
+pub enum MintMutationGuardError {
+    /// The mutation conflicts with the mint's current lifecycle state.
+    #[error("{0}")]
+    FailedPrecondition(String),
+    /// The lifecycle state could not be checked.
+    #[error("{0}")]
+    Internal(String),
+}
+
+/// Checks whether management RPC mutations are currently allowed.
+#[tonic::async_trait]
+pub trait MintMutationGuard: Send + Sync {
+    /// Returns successfully when a mutation may proceed.
+    async fn check(&self) -> Result<(), MintMutationGuardError>;
+}
+
 /// CDK Mint RPC Server
 #[derive(Clone)]
 #[allow(missing_debug_implementations)]
 pub struct MintRPCServer {
     socket_addr: SocketAddr,
     mint: Arc<Mint>,
+    mutation_guard: Option<Arc<dyn MintMutationGuard>>,
     shutdown: Arc<Notify>,
     handle: Option<Arc<JoinHandle<Result<(), Error>>>>,
 }
@@ -64,8 +83,28 @@ impl MintRPCServer {
         Ok(Self {
             socket_addr: format!("{addr}:{port}").parse()?,
             mint,
+            mutation_guard: None,
             shutdown: Arc::new(Notify::new()),
             handle: None,
+        })
+    }
+
+    /// Adds a guard that runs before every mutating management RPC.
+    pub fn with_mutation_guard(mut self, guard: Arc<dyn MintMutationGuard>) -> Self {
+        self.mutation_guard = Some(guard);
+        self
+    }
+
+    async fn ensure_mutation_allowed(&self) -> Result<(), Status> {
+        let Some(guard) = &self.mutation_guard else {
+            return Ok(());
+        };
+
+        guard.check().await.map_err(|error| match error {
+            MintMutationGuardError::FailedPrecondition(message) => {
+                Status::failed_precondition(message)
+            }
+            MintMutationGuardError::Internal(message) => Status::internal(message),
         })
     }
 
@@ -230,6 +269,7 @@ impl MintRPCServer {
         use_keyset_v2: Option<bool>,
         final_expiry: Option<u64>,
     ) -> Result<MintKeySetInfo, Status> {
+        self.ensure_mutation_allowed().await?;
         self.mint
             .rotate_keyset(
                 unit,
@@ -417,6 +457,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateMotdRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let motd = request.into_inner().motd;
         let mut info = self
             .mint
@@ -438,6 +479,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateDescriptionRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let description = request.into_inner().description;
         let mut info = self
             .mint
@@ -459,6 +501,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateDescriptionRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let description = request.into_inner().description;
         let mut info = self
             .mint
@@ -480,6 +523,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNameRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let name = request.into_inner().name;
         let mut info = self
             .mint
@@ -501,6 +545,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateIconUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let icon_url = request.into_inner().icon_url;
 
         let mut info = self
@@ -523,6 +568,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateTosUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let tos_url = request.into_inner().tos_url;
 
         let mut info = self
@@ -545,6 +591,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let url = request.into_inner().url;
         let mut info = self
             .mint
@@ -568,6 +615,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateUrlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let url = request.into_inner().url;
         let mut info = self
             .mint
@@ -595,6 +643,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateContactRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request_inner = request.into_inner();
         let mut info = self
             .mint
@@ -620,6 +669,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateContactRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request_inner = request.into_inner();
         let mut info = self
             .mint
@@ -645,6 +695,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut04Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let mut info = self
             .mint
             .mint_info()
@@ -722,6 +773,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut05Request>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let mut info = self
             .mint
             .mint_info()
@@ -797,6 +849,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateQuoteTtlRequest>,
     ) -> Result<Response<UpdateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request = request.into_inner();
 
         self.set_quote_ttl(request.mint_ttl, request.melt_ttl)
@@ -823,6 +876,7 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<UpdateNut04QuoteRequest>,
     ) -> Result<Response<UpdateNut04QuoteRequest>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request = request.into_inner();
 
         let state = MintQuoteState::from_str(&request.state)
@@ -970,6 +1024,7 @@ impl QuoteService for MintRPCServer {
         &self,
         request: Request<crate::quote::UpdateQuoteTtlRequest>,
     ) -> Result<Response<crate::quote::UpdateQuoteTtlResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request = request.into_inner();
 
         let ttl = self
@@ -987,6 +1042,7 @@ impl QuoteService for MintRPCServer {
         &self,
         request: Request<crate::quote::UpdateMintQuoteStateRequest>,
     ) -> Result<Response<crate::quote::UpdateMintQuoteStateResponse>, Status> {
+        self.ensure_mutation_allowed().await?;
         let request = request.into_inner();
 
         match request.state() {
@@ -1040,7 +1096,7 @@ mod tests {
     use cdk_common::nut00::KnownMethod;
     use cdk_common::MintQuoteBolt11Request;
     use cdk_fake_wallet::FakeWallet;
-    use tonic::Request;
+    use tonic::{Code, Request};
 
     use super::*;
     use crate::cdk_mint_server::CdkMint;
@@ -1106,8 +1162,21 @@ mod tests {
         MintRPCServer {
             socket_addr: "127.0.0.1:0".parse().unwrap(),
             mint: Arc::new(mint),
+            mutation_guard: None,
             shutdown: Arc::new(Notify::new()),
             handle: None,
+        }
+    }
+
+    #[derive(Debug)]
+    struct RejectingMutationGuard;
+
+    #[tonic::async_trait]
+    impl MintMutationGuard for RejectingMutationGuard {
+        async fn check(&self) -> Result<(), MintMutationGuardError> {
+            Err(MintMutationGuardError::FailedPrecondition(
+                "configuration restart pending".to_owned(),
+            ))
         }
     }
 
@@ -1425,5 +1494,71 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.into_inner().tos_url.unwrap(), tos);
+    }
+
+    #[tokio::test]
+    async fn test_mutation_guard_rejects_updates_without_blocking_reads() {
+        let server = create_test_rpc_server()
+            .await
+            .with_mutation_guard(Arc::new(RejectingMutationGuard));
+
+        let error = server
+            .update_tos_url(Request::new(UpdateTosUrlRequest {
+                tos_url: "https://example.com/terms".to_owned(),
+            }))
+            .await
+            .expect_err("mutation should be rejected");
+
+        assert_eq!(error.code(), Code::FailedPrecondition);
+        assert_eq!(error.message(), "configuration restart pending");
+
+        let keyset_error = KeysetService::rotate_next_keyset(
+            &server,
+            Request::new(crate::keyset::RotateNextKeysetRequest {
+                unit: "sat".to_owned(),
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: Some(1),
+                use_keyset_v2: Some(true),
+                final_expiry: None,
+            }),
+        )
+        .await
+        .expect_err("keyset mutation should be rejected");
+
+        assert_eq!(keyset_error.code(), Code::FailedPrecondition);
+        assert_eq!(keyset_error.message(), "configuration restart pending");
+
+        let quote_ttl_error = QuoteService::update_quote_ttl(
+            &server,
+            Request::new(crate::quote::UpdateQuoteTtlRequest {
+                mint_ttl: Some(60),
+                melt_ttl: None,
+            }),
+        )
+        .await
+        .expect_err("quote TTL mutation should be rejected");
+
+        assert_eq!(quote_ttl_error.code(), Code::FailedPrecondition);
+        assert_eq!(quote_ttl_error.message(), "configuration restart pending");
+
+        let quote_state_error = QuoteService::update_mint_quote_state(
+            &server,
+            Request::new(crate::quote::UpdateMintQuoteStateRequest {
+                quote_id: UNKNOWN_QUOTE_ID.to_owned(),
+                state: crate::quote::MintQuoteState::Paid.into(),
+            }),
+        )
+        .await
+        .expect_err("quote-state mutation should be rejected");
+
+        assert_eq!(quote_state_error.code(), Code::FailedPrecondition);
+        assert_eq!(quote_state_error.message(), "configuration restart pending");
+        assert!(server
+            .get_info(Request::new(GetInfoRequest {}))
+            .await
+            .expect("read should remain available")
+            .into_inner()
+            .tos_url
+            .is_none());
     }
 }

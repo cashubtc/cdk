@@ -205,22 +205,39 @@ CDK_PAYMENT_PROCESSOR_PID=$!
 wait_for_payment_processor "$CDK_PAYMENT_PROCESSOR_LISTEN_HOST" "$CDK_PAYMENT_PROCESSOR_LISTEN_PORT" "$CDK_PAYMENT_PROCESSOR_PID"
 
 
-export CDK_MINTD_URL="http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0";
 export CDK_MINTD_WORK_DIR="$CDK_ITESTS_DIR";
-export CDK_MINTD_LISTEN_HOST=$CDK_ITESTS_MINT_ADDR;
-export CDK_MINTD_LISTEN_PORT=$CDK_ITESTS_MINT_PORT_0;
-export CDK_MINTD_LN_BACKEND="grpcprocessor";
-export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS="127.0.0.1";
-export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_PORT="8090";
-export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS="sat";
-export CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ALLOW_INSECURE=true;
 export CDK_MINTD_MNEMONIC="eye survey guilt napkin crystal cup whisper salt luggage manage unveil loyal";
- 
+
+MINTD_CONFIG_FILE="$CDK_ITESTS_DIR/mintd.toml"
+cat > "$MINTD_CONFIG_FILE" <<EOF
+[info]
+url = "http://$CDK_ITESTS_MINT_ADDR:$CDK_ITESTS_MINT_PORT_0"
+listen_host = "$CDK_ITESTS_MINT_ADDR"
+listen_port = $CDK_ITESTS_MINT_PORT_0
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[database]
+engine = "sqlite"
+
+[[ln]]
+ln_backend = "grpcprocessor"
+unit = "sat"
+
+[grpc_processor]
+address = "127.0.0.1"
+port = 8090
+supported_units = ["sat"]
+allow_insecure = true
+EOF
+
 if ! command -v cdk-mintd &>/dev/null; then
-    cargo build --bin cdk-mintd --no-default-features --features grpc-processor
+    cargo build --bin cdk-mintd --no-default-features --features grpc-processor,sqlite
 fi
 
-run_mintd_bg
+if ! run_mintd_bg "$CDK_MINTD_WORK_DIR" "$MINTD_CONFIG_FILE"; then
+    echo "Failed to initialize cdk-mintd configuration"
+    exit 1
+fi
 CDK_MINTD_PID=$!
 
 echo $CDK_ITESTS_DIR

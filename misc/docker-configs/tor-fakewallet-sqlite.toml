@@ -1,0 +1,27 @@
+[info]
+listen_host = "0.0.0.0"
+listen_port = 8085
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[info.http_cache]
+backend = "memory"
+ttl = 60
+tti = 60
+
+[mint_info]
+name = "CDK Tor fake wallet mint"
+description = "Fake wallet mint exposed through a Tor hidden service"
+
+[database]
+engine = "sqlite"
+
+[ln]
+ln_backend = "fakewallet"
+unit = "sat"
+
+[onchain]
+onchain_backend = "fakewallet"
+
+[fake_wallet]
+supported_units = ["sat"]
+custom_payment_methods = [{ method = "paypal", unit = "sat" }]

@@ -66,7 +66,7 @@ impl LnBackendSetup for config::Cln {
         // Validate required connection field
         if self.rpc_path.as_os_str().is_empty() {
             return Err(anyhow::anyhow!(
-                "CLN rpc_path must be set via config or CDK_MINTD_CLN_RPC_PATH env var"
+                "CLN rpc_path must be set in [cln].rpc_path"
             ));
         }
 
@@ -108,15 +108,13 @@ impl LnBackendSetup for config::Lnd {
         use anyhow::bail;
         // Validate required connection fields
         if self.address.is_empty() {
-            bail!("LND address must be set via config or CDK_MINTD_LND_ADDRESS env var");
+            bail!("LND address must be set in [lnd].address");
         }
         if self.cert_file.as_os_str().is_empty() {
-            bail!("LND cert_file must be set via config or CDK_MINTD_LND_CERT_FILE env var");
+            bail!("LND cert_file must be set in [lnd].cert_file");
         }
         if self.macaroon_file.as_os_str().is_empty() {
-            bail!(
-                "LND macaroon_file must be set via config or CDK_MINTD_LND_MACAROON_FILE env var"
-            );
+            bail!("LND macaroon_file must be set in [lnd].macaroon_file");
         }
 
         let address = &self.address;
@@ -441,10 +439,9 @@ impl LnBackendSetup for config::LdkNode {
         };
 
         // Parse network from config
-        let network_str = self
-            .bitcoin_network
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("LDK Node bitcoin_network must be set via config or CDK_MINTD_LDK_NODE_BITCOIN_NETWORK env var"))?;
+        let network_str = self.bitcoin_network.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("LDK Node bitcoin_network must be set in [ldk_node].bitcoin_network")
+        })?;
 
         let network = match network_str.to_lowercase().as_str() {
             "mainnet" | "bitcoin" => Network::Bitcoin,
@@ -755,9 +752,10 @@ impl OnchainBackendSetup for crate::config::Bdk {
             percent_fee_reserve: self.fee_percent,
         };
 
-        let network_str = self.network.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("BDK network must be set via config or CDK_MINTD_BDK_NETWORK env var")
-        })?;
+        let network_str = self
+            .network
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("BDK network must be set in [bdk].network"))?;
 
         let network = match network_str.to_lowercase().as_str() {
             "mainnet" | "bitcoin" => Network::Bitcoin,

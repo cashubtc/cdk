@@ -36,6 +36,14 @@ mod test {
     mint_db_test!(provide_db);
 
     #[tokio::test]
+    async fn kvstore_compare_and_swap() {
+        cdk_common::database::mint::test::kvstore_compare_and_swap(
+            provide_db("test_kvstore_compare_and_swap".to_owned()).await,
+        )
+        .await;
+    }
+
+    #[tokio::test]
     async fn bug_opening_relative_path() {
         let config: Config = "test.db".into();
 

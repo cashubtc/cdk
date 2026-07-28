@@ -1,0 +1,34 @@
+[info]
+url = "https://example.com"
+listen_host = "0.0.0.0"
+listen_port = 8085
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[info.http_cache]
+backend = "memory"
+ttl = 60
+tti = 60
+
+[mint_info]
+name = "CDK PostgreSQL fake wallet mint"
+description = "Fake wallet mint backed by PostgreSQL"
+
+[database]
+engine = "postgres"
+
+[database.postgres]
+url = "env:CDK_MINTD_POSTGRES_URL"
+tls_mode = "disable"
+max_connections = 20
+connection_timeout_seconds = 10
+
+[ln]
+ln_backend = "fakewallet"
+unit = "sat"
+
+[onchain]
+onchain_backend = "fakewallet"
+
+[fake_wallet]
+supported_units = ["sat"]
+custom_payment_methods = [{ method = "paypal", unit = "sat" }]

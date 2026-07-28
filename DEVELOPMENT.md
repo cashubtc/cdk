@@ -115,10 +115,23 @@ To build the CDK mint server:
 cargo build --bin cdk-mintd --release
 ```
 
-To run cdk-mintd directly without building:
+For a first local run, initialize the database-backed configuration explicitly,
+then start the daemon. The example file references the mnemonic through an
+environment variable; it is a secret input, not a startup-time configuration
+override.
+
 ```bash
+export CDK_MINTD_MNEMONIC="your stable BIP39 mnemonic"
+cargo run --bin cdk-mintd -- config validate --file crates/cdk-mintd/example.config.toml
+cargo run --bin cdk-mintd -- config init --file crates/cdk-mintd/example.config.toml
 cargo run --bin cdk-mintd
 ```
+
+On later edits, use `config apply --file ...`, then restart. A running daemon
+keeps its current configuration snapshot until that restart.
+See the
+[`cdk-mintd` configuration guide](crates/cdk-mintd/README.md#configuration) for
+the full workflow.
 
 Note: For cdk-mintd, you need to have the protobuf compiler installed as it's required for some dependencies.
 
