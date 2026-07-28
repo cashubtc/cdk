@@ -1,4 +1,5 @@
 use core::fmt;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use cdk::mint_url::MintUrl;
@@ -19,6 +20,17 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::WebSocketStream;
 
 use crate::error::{Error, Result};
+use crate::DEFAULT_OPERATION_TIMEOUT;
+
+fn map_enclavia_error(error: enclavia::Error) -> HttpError {
+    let retryable = error.is_retryable();
+    let message = error.to_string();
+
+    match retryable {
+        true => HttpError::Connection(message),
+        false => HttpError::Other(message),
+    }
+}
 
 fn map_enclavia_ws_error(error: enclavia::Error) -> cdk_http_client::ws::WsError {
     let not_supported = matches!(
@@ -149,12 +161,14 @@ pub struct EnclaviaTransport {
     target: MintTarget,
     client: Client,
     fallback: Async,
+    operation_timeout: Duration,
 }
 
 impl fmt::Debug for EnclaviaTransport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EnclaviaTransport")
             .field("mint_url", &self.target.base_url)
+            .field("operation_timeout", &self.operation_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -166,6 +180,7 @@ impl EnclaviaTransport {
             MintTarget::new(mint_url)?,
             client,
             Async::default(),
+            DEFAULT_OPERATION_TIMEOUT,
         ))
     }
 
@@ -175,14 +190,27 @@ impl EnclaviaTransport {
             MintTarget::new(mint_url)?,
             client,
             fallback,
+            DEFAULT_OPERATION_TIMEOUT,
         ))
     }
 
-    pub(crate) fn from_parts(target: MintTarget, client: Client, fallback: Async) -> Self {
+    /// Set the deadline for requests and replacement WebSocket stream setup.
+    pub fn with_operation_timeout(mut self, timeout: Duration) -> Self {
+        self.operation_timeout = timeout;
+        self
+    }
+
+    pub(crate) fn from_parts(
+        target: MintTarget,
+        client: Client,
+        fallback: Async,
+        operation_timeout: Duration,
+    ) -> Self {
         Self {
             target,
             client,
             fallback,
+            operation_timeout,
         }
     }
 
@@ -209,10 +237,10 @@ impl EnclaviaTransport {
             request = request.header("Content-Type", content_type).body(body);
         }
 
-        let response = request
-            .send()
+        let response = tokio::time::timeout(self.operation_timeout, request.send())
             .await
-            .map_err(|error| HttpError::Connection(error.to_string()))?;
+            .map_err(|_| HttpError::Timeout)?
+            .map_err(map_enclavia_error)?;
 
         Ok(RawResponse::new(response.status(), response.into_bytes()))
     }
@@ -245,11 +273,18 @@ impl Transport for EnclaviaTransport {
 
         let upgrade_headers = websocket_upgrade_headers(url, headers)?;
         let target = self.target.request_target(&parsed_url);
-        let stream = self
-            .client
-            .upgrade(Method::Get, &target, &upgrade_headers)
-            .await
-            .map_err(map_enclavia_ws_error)?;
+        let stream = tokio::time::timeout(
+            self.operation_timeout,
+            self.client.upgrade(Method::Get, &target, &upgrade_headers),
+        )
+        .await
+        .map_err(|_| {
+            cdk_http_client::ws::WsError::Transient(format!(
+                "timed out opening the attested WebSocket stream after {} ms",
+                self.operation_timeout.as_millis()
+            ))
+        })?
+        .map_err(map_enclavia_ws_error)?;
         let ws_stream = WebSocketStream::from_raw_socket(stream, Role::Client, None).await;
 
         Ok(cdk_http_client::ws::from_websocket_stream(ws_stream))
@@ -366,6 +401,17 @@ impl Transport for EnclaviaTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_enclavia_retry_classification() {
+        let retryable = map_enclavia_error(enclavia::Error::ConnectionClosed);
+        assert!(matches!(retryable, HttpError::Connection(_)));
+        assert!(retryable.is_replay_safe());
+
+        let terminal = map_enclavia_error(enclavia::Error::Attestation("PCR mismatch".to_string()));
+        assert!(matches!(terminal, HttpError::Other(_)));
+        assert!(!terminal.is_replay_safe());
+    }
 
     #[test]
     fn preserves_enclavia_websocket_retry_classification() {

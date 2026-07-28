@@ -10,6 +10,16 @@ retried over ordinary HTTP if the attested channel fails. Requests to unrelated
 services, such as LNURL callbacks or an external OIDC issuer, continue to use
 CDK's regular HTTP transport.
 
+Reconnect and re-attestation are enabled by default. Before a new request or
+stream is opened after a disconnect, Enclavia establishes a fresh WebSocket and
+Noise session and verifies attestation against the original policy. Enclavia
+never silently replays an in-flight request; CDK retries only transient failures
+for endpoints covered by the mint's NUT-19 cache, with bounded backoff inside
+the advertised replay window. Attestation and protocol failures are terminal.
+Connection, attestation, requests, and replacement stream setup have a
+30-second deadline by default; use
+`EnclaviaClientBuilder::with_operation_timeout` to tune it.
+
 ```rust,no_run
 use cdk::mint_url::MintUrl;
 use cdk::wallet::WalletBuilder;
@@ -43,6 +53,10 @@ On native targets, NUT-17 WebSocket subscriptions are carried through the same
 attested, encrypted Enclavia channel as wallet HTTP and auth operations. The
 transport rejects WebSocket URLs that do not match the configured mint origin,
 so a subscription is never opened outside the attested tunnel.
+
+An existing stream is not recreated after its connection drops. CDK falls back
+to polling while its subscription manager backs off, then opens a replacement
+stream through a freshly re-attested Enclavia session.
 
 ## Attestation CLI
 

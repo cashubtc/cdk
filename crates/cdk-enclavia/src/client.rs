@@ -1,4 +1,5 @@
 use core::fmt;
+use std::time::Duration;
 
 use cdk::mint_url::MintUrl;
 use cdk::wallet::{AuthWallet, BaseHttpClient};
@@ -7,7 +8,7 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::transport::{EnclaviaTransport, MintTarget};
-use crate::Pcrs;
+use crate::{Error, Pcrs, DEFAULT_OPERATION_TIMEOUT};
 
 /// A CDK mint client whose mint requests use an attested Enclavia channel.
 pub type EnclaviaClient = BaseHttpClient<EnclaviaTransport>;
@@ -24,6 +25,7 @@ pub struct EnclaviaClientBuilder {
     enclave_url: String,
     pcrs: Pcrs,
     debug_mode: bool,
+    operation_timeout: Duration,
     headers: Vec<(String, String)>,
     trust_upgrades: Option<TrustUpgrades>,
     auth_wallet: Option<AuthWallet>,
@@ -37,6 +39,7 @@ impl fmt::Debug for EnclaviaClientBuilder {
             .field("enclave_url", &self.enclave_url)
             .field("pcrs", &self.pcrs)
             .field("debug_mode", &self.debug_mode)
+            .field("operation_timeout", &self.operation_timeout)
             .field("header_count", &self.headers.len())
             .field("trust_upgrades", &self.trust_upgrades)
             .field("has_auth_wallet", &self.auth_wallet.is_some())
@@ -52,6 +55,7 @@ impl EnclaviaClientBuilder {
             enclave_url: enclave_url.into(),
             pcrs,
             debug_mode: false,
+            operation_timeout: DEFAULT_OPERATION_TIMEOUT,
             headers: Vec::new(),
             trust_upgrades: None,
             auth_wallet: None,
@@ -65,6 +69,16 @@ impl EnclaviaClientBuilder {
     /// for a production mint.
     pub fn debug_mode(mut self, enabled: bool) -> Self {
         self.debug_mode = enabled;
+        self
+    }
+
+    /// Set the deadline for Enclavia connection, attestation, and request
+    /// operations.
+    ///
+    /// The default is 30 seconds. This also bounds reconnect preflights before
+    /// HTTP requests and replacement WebSocket streams.
+    pub fn with_operation_timeout(mut self, timeout: Duration) -> Self {
+        self.operation_timeout = timeout;
         self
     }
 
@@ -104,7 +118,8 @@ impl EnclaviaClientBuilder {
 
         let mut builder = enclavia::Client::builder(&self.enclave_url)
             .pcrs(self.pcrs)
-            .debug_mode(self.debug_mode);
+            .debug_mode(self.debug_mode)
+            .auto_reconnect(true);
 
         for (name, value) in self.headers {
             builder = builder.header(name, value);
@@ -114,8 +129,17 @@ impl EnclaviaClientBuilder {
             builder = builder.trust_upgrades(trust_upgrades.backend_url, trust_upgrades.enclave_id);
         }
 
-        let enclavia_client = builder.build().await?;
-        let transport = EnclaviaTransport::from_parts(target, enclavia_client, self.fallback);
+        let enclavia_client = tokio::time::timeout(self.operation_timeout, builder.build())
+            .await
+            .map_err(|_| Error::ConnectionTimeout {
+                milliseconds: self.operation_timeout.as_millis(),
+            })??;
+        let transport = EnclaviaTransport::from_parts(
+            target,
+            enclavia_client,
+            self.fallback,
+            self.operation_timeout,
+        );
 
         Ok(BaseHttpClient::with_transport(
             self.mint_url,

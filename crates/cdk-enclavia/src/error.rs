@@ -21,6 +21,14 @@ pub enum Error {
     /// The mint URL contains credentials.
     #[error("mint URL must not contain credentials")]
     MintUrlCredentials,
+    /// Establishing and attesting the Enclavia connection timed out.
+    #[error(
+        "timed out establishing and attesting the Enclavia connection after {milliseconds} ms"
+    )]
+    ConnectionTimeout {
+        /// Configured timeout in milliseconds.
+        milliseconds: u128,
+    },
     /// Establishing or attesting the Enclavia connection failed.
     #[error("could not establish attested Enclavia connection: {0}")]
     Enclavia(#[source] Box<enclavia::Error>),
