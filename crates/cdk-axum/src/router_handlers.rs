@@ -10,7 +10,6 @@ use cdk::nuts::{
     RestoreRequest, RestoreResponse, SwapRequest, SwapResponse,
 };
 use cdk::util::unix_time;
-use paste::paste;
 use tracing::instrument;
 
 use crate::auth::AuthHeader;
@@ -84,8 +83,6 @@ macro_rules! post_cache_wrapper_with_prefer {
         }
     };
 }
-
-post_cache_wrapper!(post_swap, SwapRequest, SwapResponse);
 
 /// Get the public keys of the newest mint keyset
 ///
@@ -191,12 +188,32 @@ pub(crate) async fn get_mint_info(
 /// Requests a set of Proofs to be swapped for another set of BlindSignatures.
 ///
 /// This endpoint can be used by Alice to swap a set of proofs before making a payment to Carol. It can then used by Carol to redeem the tokens for new proofs.
+/// Authentication must happen before cache lookup so protected swap routes
+/// still require and consume auth for cached responses.
 #[instrument(skip_all, fields(inputs_count = ?payload.inputs().len()))]
-pub(crate) async fn post_swap(
+pub(crate) async fn cache_post_swap(
     auth: AuthHeader,
     State(state): State<MintState>,
     Json(payload): Json<SwapRequest>,
 ) -> Result<Json<SwapResponse>, Response> {
+    verify_swap_auth(auth, &state).await?;
+
+    let cache_key = match state.cache.calculate_key(&payload) {
+        Some(key) => key,
+        None => return Ok(Json(process_swap(&state, payload).await?)),
+    };
+
+    if let Some(cached_response) = state.cache.get::<SwapResponse>(&cache_key).await {
+        return Ok(Json(cached_response));
+    }
+
+    let swap_response = process_swap(&state, payload).await?;
+    state.cache.set(cache_key, &swap_response).await;
+
+    Ok(Json(swap_response))
+}
+
+async fn verify_swap_auth(auth: AuthHeader, state: &MintState) -> Result<(), Response> {
     state
         .mint
         .verify_auth(
@@ -204,18 +221,18 @@ pub(crate) async fn post_swap(
             &ProtectedEndpoint::new(Method::Post, RoutePath::Swap),
         )
         .await
-        .map_err(into_response)?;
+        .map_err(into_response)
+}
 
-    let swap_response = state
+async fn process_swap(state: &MintState, payload: SwapRequest) -> Result<SwapResponse, Response> {
+    state
         .mint
         .process_swap_request(payload)
         .await
         .map_err(|err| {
             tracing::error!("Could not process swap request: {}", err);
             into_response(err)
-        })?;
-
-    Ok(Json(swap_response))
+        })
 }
 
 /// Restores blind signature for a set of outputs.
@@ -1104,4 +1121,88 @@ where
     );
     // Per NUT-00 spec: "In case of an error, mints respond with the HTTP status code 400"
     (StatusCode::BAD_REQUEST, Json(err_response)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    use axum::extract::State;
+    use bip39::Mnemonic;
+    use cdk::mint::{MintBuilder, MintMeltLimits};
+    use cdk::nuts::nut00::KnownMethod;
+    use cdk::nuts::{CurrencyUnit, PaymentMethod};
+    use cdk::types::FeeReserve;
+    use cdk_fake_wallet::FakeWallet;
+
+    use super::*;
+    use crate::cache::HttpCache;
+
+    async fn create_swap_protected_state() -> MintState {
+        let db = Arc::new(cdk_sqlite::mint::memory::empty().await.expect("mint db"));
+        let auth_db = Arc::new(
+            cdk_sqlite::mint::MintSqliteAuthDatabase::new(":memory:")
+                .await
+                .expect("auth db"),
+        );
+
+        let mut builder = MintBuilder::new(db.clone());
+        let fake = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 1.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::default(),
+            HashSet::default(),
+            0,
+            CurrencyUnit::Sat,
+        );
+
+        builder
+            .add_payment_processor(
+                CurrencyUnit::Sat,
+                PaymentMethod::Known(KnownMethod::Bolt11),
+                MintMeltLimits::new(1, 10_000),
+                Arc::new(fake),
+            )
+            .await
+            .expect("payment processor");
+
+        let mnemonic = Mnemonic::generate(12).expect("mnemonic");
+        let mint = builder
+            .with_auth(
+                auth_db,
+                "https://example.com/.well-known/openid-configuration".to_string(),
+                "test-client".to_string(),
+                vec![ProtectedEndpoint::new(Method::Post, RoutePath::Swap)],
+            )
+            .build_with_seed(db, &mnemonic.to_seed_normalized(""))
+            .await
+            .expect("mint");
+
+        MintState {
+            mint: Arc::new(mint),
+            cache: Arc::new(HttpCache::default()),
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_post_swap_rejects_cached_response_without_required_auth() {
+        let state = create_swap_protected_state().await;
+        let payload = SwapRequest::new(vec![], vec![]);
+        let cache_key = state
+            .cache
+            .calculate_key(&payload)
+            .expect("cache key should serialize");
+
+        state.cache.set(cache_key, &SwapResponse::new(vec![])).await;
+
+        let result = cache_post_swap(AuthHeader::None, State(state), Json(payload)).await;
+
+        assert!(
+            result.is_err(),
+            "cached swap responses must still require route auth"
+        );
+    }
 }
