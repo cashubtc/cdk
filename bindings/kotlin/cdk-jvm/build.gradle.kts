@@ -1,7 +1,9 @@
+// Not published to Maven Central. This module stays in the repo so desktop JVM
+// users can build the bindings from source and so the desktop WalletTest can
+// run; the Android AAR is the only artifact shipped to Central.
 plugins {
     kotlin("jvm")
     `java-library`
-    `maven-publish`
 }
 
 java {
@@ -22,7 +24,6 @@ dependencies {
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
-    testRuntimeOnly(files("${rootProject.projectDir}/cdk-jvm-natives/src/main/resources"))
 }
 
 sourceSets {
@@ -48,15 +49,4 @@ tasks.processResources {
 
 tasks.named<Jar>("sourcesJar") {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-}
-
-publishing {
-    publications {
-        create<MavenPublication>("maven") {
-            groupId = project.property("GROUP") as String
-            artifactId = "cdk-jvm"
-            version = project.property("VERSION_NAME") as String
-            from(components["java"])
-        }
-    }
 }

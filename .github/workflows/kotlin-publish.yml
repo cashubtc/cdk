@@ -228,20 +228,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
-            artifact: libcdk_ffi_kotlin.so
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            artifact: libcdk_ffi_kotlin.so
-
-          # macOS
-          - target: aarch64-apple-darwin
-            runner: macos-14
-            artifact: libcdk_ffi_kotlin.dylib
-
-          # Android
+          # Android is the only published target; desktop JVM users build from
+          # source. See bindings/kotlin/README.md.
           - target: aarch64-linux-android
             runner: ubuntu-22.04
             artifact: libcdk_ffi_kotlin.so
@@ -294,15 +282,10 @@ jobs:
         shell: bash
         run: |
           FILE="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
-          case "${{ matrix.target }}" in
-            *apple*)    strip -S "$FILE" ;;
-            *android*)  nix develop -L ../../cdk#kotlin-build --command \
-                          bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE" ;;
-            *)          strip --strip-all "$FILE" ;;
-          esac
+          nix develop -L ../../cdk#kotlin-build --command \
+            bash -c '"$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-all '"$FILE"
 
       - name: Verify Android ELF 16 KB alignment
-        if: contains(matrix.target, 'android')
         working-directory: cdk-kotlin/rust
         shell: bash
         run: |
@@ -310,8 +293,11 @@ jobs:
           nix develop -L ../../cdk#kotlin-build --command \
             ../../cdk/.github/scripts/check-android-elf-alignment.sh "$FILE"
 
-      - name: Generate Kotlin bindings (darwin only)
-        if: matrix.target == 'aarch64-apple-darwin'
+      # uniffi 0.30 reads the component interface statically from the library
+      # (it does not load it), so the arm64 Android .so works as the source on
+      # this x86_64 host.
+      - name: Generate Kotlin bindings
+        if: matrix.target == 'aarch64-linux-android'
         working-directory: cdk-kotlin/rust
         run: |
           mkdir -p ../generated-bindings
@@ -324,7 +310,7 @@ jobs:
               --no-format
 
       - name: Upload generated bindings
-        if: matrix.target == 'aarch64-apple-darwin'
+        if: matrix.target == 'aarch64-linux-android'
         uses: actions/upload-artifact@v7
         with:
           name: kotlin-bindings-generated
@@ -392,49 +378,24 @@ jobs:
           pattern: kotlin-native-*
           merge-multiple: true
 
-      - name: Distribute native libraries to modules
+      - name: Distribute native libraries to Android jniLibs
         run: |
-          # Map Rust targets to JNA platform directories (cdk-jvm-natives)
-          declare -A JNA_MAP=(
-            ["x86_64-unknown-linux-gnu"]="linux-x86-64"
-            ["aarch64-unknown-linux-gnu"]="linux-aarch64"
-            ["aarch64-apple-darwin"]="darwin-aarch64"
-          )
-
-          # Map Rust targets to Android ABIs (cdk-android)
           declare -A ANDROID_ABI=(
             ["aarch64-linux-android"]="arm64-v8a"
             ["x86_64-linux-android"]="x86_64"
           )
 
+          suffix="libcdk_ffi_kotlin.so"
           for f in artifacts/*; do
             filename=$(basename "$f")
-            # Extract rust target from artifact filename (e.g. "aarch64-apple-darwin-libcdk_ffi_kotlin.dylib")
-            for suffix in libcdk_ffi_kotlin.so libcdk_ffi_kotlin.dylib; do
-              if [[ "$filename" == *"-${suffix}" ]]; then
-                rust_target="${filename%-${suffix}}"
-
-                # JVM natives
-                if [[ -n "${JNA_MAP[$rust_target]+x}" ]]; then
-                  jna="${JNA_MAP[$rust_target]}"
-                  dst="cdk-kotlin/cdk-jvm-natives/src/main/resources/${jna}"
-                  mkdir -p "$dst"
-                  cp "$f" "$dst/${suffix}"
-                  echo "jvm-natives: ${rust_target} → ${jna}"
-                fi
-
-                # Android
-                if [[ -n "${ANDROID_ABI[$rust_target]+x}" ]]; then
-                  abi="${ANDROID_ABI[$rust_target]}"
-                  dst="cdk-kotlin/cdk-android/src/main/jniLibs/${abi}"
-                  mkdir -p "$dst"
-                  cp "$f" "$dst/${suffix}"
-                  echo "android: ${rust_target} → ${abi}"
-                fi
-
-                break
-              fi
-            done
+            [[ "$filename" == *"-${suffix}" ]] || continue
+            rust_target="${filename%-${suffix}}"
+            abi="${ANDROID_ABI[$rust_target]+${ANDROID_ABI[$rust_target]}}"
+            [[ -n "$abi" ]] || { echo "no ABI mapping for ${rust_target}, skipping" >&2; continue; }
+            dst="cdk-kotlin/cdk-android/src/main/jniLibs/${abi}"
+            mkdir -p "$dst"
+            cp "$f" "$dst/${suffix}"
+            echo "android: ${rust_target} → ${abi}"
           done
 
       - name: Download generated bindings
