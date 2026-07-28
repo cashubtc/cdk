@@ -1,4 +1,4 @@
-use bdk_wallet::bitcoin::{OutPoint, Transaction};
+use bdk_wallet::bitcoin::{OutPoint, Transaction, Txid};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
@@ -84,6 +84,17 @@ pub(crate) struct BroadcastFailure {
     pub message: String,
 }
 
+/// A confirmed transaction spending one of the requested outpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConfirmedSpend {
+    /// Spending transaction id.
+    pub txid: Txid,
+    /// Height at which the spending transaction confirmed.
+    pub block_height: u32,
+    /// Current confirmation depth reported by the chain backend.
+    pub confirmations: u32,
+}
+
 impl BroadcastFailure {
     pub(crate) fn new(kind: BroadcastErrorKind, message: String) -> Self {
         Self { kind, message }
@@ -148,15 +159,16 @@ impl ChainSource {
     /// Dry-run whether a transaction would be accepted for broadcast.
     ///
     /// `Some(true/false)` via Bitcoin Core `testmempoolaccept`, or `None` when the
-    /// backend has no dry-run (Esplora) and the caller should rely on a min-fee
-    /// floor.
+    /// backend has no dry-run and the caller should rely on a min-fee floor.
     #[cfg_attr(not(feature = "bitcoin-rpc"), allow(unused_variables))]
     pub(crate) async fn accepts_broadcast(&self, tx: &Transaction) -> Result<Option<bool>, Error> {
         match self {
-            // Esplora has no `testmempoolaccept`; `None` tells the caller to fall
-            // back to the min-fee-rate floor (see `is_payjoin_input_seen`).
+            // Esplora and Electrum have no `testmempoolaccept`; `None` tells the
+            // caller to fall back to the min-fee-rate floor.
             #[cfg(feature = "esplora")]
             ChainSource::Esplora(_) => Ok(None),
+            #[cfg(feature = "electrum")]
+            ChainSource::Electrum(_) => Ok(None),
             #[cfg(feature = "bitcoin-rpc")]
             ChainSource::BitcoinRpc(config) => {
                 bitcoin_rpc::accepts_broadcast_bitcoin_rpc(config, tx)
@@ -187,19 +199,27 @@ impl ChainSource {
         }
     }
 
-    /// Return true when any provided outpoint is confirmed spent on chain.
+    /// Return the confirmed transaction spending any provided outpoint.
     ///
-    /// Mempool spends are intentionally ignored so cut-through recovery never
-    /// releases a reserved melt on an unconfirmed conflict.
-    pub(crate) async fn any_confirmed_spend(&self, outpoints: &[OutPoint]) -> Result<bool, Error> {
+    /// `min_height` bounds backends which must scan blocks to identify the
+    /// spender. Mempool spends are intentionally ignored.
+    pub(crate) async fn confirmed_spend(
+        &self,
+        outpoints: &[OutPoint],
+        _min_height: u32,
+    ) -> Result<Option<ConfirmedSpend>, Error> {
         match self {
             #[cfg(feature = "esplora")]
             ChainSource::Esplora(config) => {
-                esplora::any_confirmed_spend_esplora(config, outpoints).await
+                esplora::confirmed_spend_esplora(config, outpoints).await
+            }
+            #[cfg(feature = "electrum")]
+            ChainSource::Electrum(config) => {
+                electrum::confirmed_spend_electrum(config, outpoints, _min_height).await
             }
             #[cfg(feature = "bitcoin-rpc")]
             ChainSource::BitcoinRpc(config) => {
-                bitcoin_rpc::any_confirmed_spend_bitcoin_rpc(config, outpoints).await
+                bitcoin_rpc::confirmed_spend_bitcoin_rpc(config, outpoints, _min_height).await
             }
             #[allow(unreachable_patterns)]
             _ => unreachable!("ChainSource must have at least one feature enabled"),
@@ -208,7 +228,7 @@ impl ChainSource {
 }
 
 #[cfg(all(test, feature = "esplora"))]
-mod tests {
+mod esplora_tests {
     use bdk_wallet::bitcoin::absolute::LockTime;
     use bdk_wallet::bitcoin::transaction::Version;
 
@@ -233,8 +253,30 @@ mod tests {
 }
 
 #[cfg(all(test, feature = "electrum"))]
-mod tests {
+mod electrum_tests {
+    use bdk_wallet::bitcoin::absolute::LockTime;
+    use bdk_wallet::bitcoin::transaction::Version;
+
     use super::*;
+
+    #[tokio::test]
+    async fn electrum_has_no_test_broadcast_capability() {
+        let chain = ChainSource::Electrum(ElectrumConfig {
+            url: "ssl://example.invalid:50002".to_string(),
+            batch_size: 1,
+        });
+        let tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        };
+
+        assert_eq!(
+            chain.accepts_broadcast(&tx).await.expect("capability"),
+            None
+        );
+    }
 
     #[test]
     fn rejects_zero_electrum_batch_size() {

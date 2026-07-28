@@ -278,6 +278,7 @@ impl MintPayment for PaymentProcessorClient {
                     quote_id: opts.quote_id.to_string(),
                     fee_index: opts.fee_index,
                     metadata: opts.metadata.clone(),
+                    payjoin: opts.payjoin.clone().map(Into::into),
                 })
             }
             _ => None,
@@ -386,6 +387,7 @@ impl MintPayment for PaymentProcessorClient {
                             quote_id: opts.quote_id.to_string(),
                             fee_index: opts.fee_index,
                             metadata: opts.metadata.clone(),
+                            payjoin: opts.payjoin.clone().map(Into::into),
                         },
                     )),
                 }

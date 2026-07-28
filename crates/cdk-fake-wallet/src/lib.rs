@@ -616,6 +616,7 @@ impl MintPayment for FakeWallet {
                         .extra_json
                         .as_ref()
                         .and_then(|extra_json| serde_json::from_str(extra_json).ok()),
+                    payjoin: None,
                     estimated_blocks: None,
                     fee_options: None,
                 });
@@ -631,6 +632,7 @@ impl MintPayment for FakeWallet {
                     fee: fee.clone(),
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
+                    payjoin: None,
                     estimated_blocks: Some(DEFAULT_ONCHAIN_ESTIMATED_BLOCKS),
                     fee_options: Some(vec![MeltQuoteOnchainFeeOption {
                         fee_index: 0,
@@ -655,6 +657,7 @@ impl MintPayment for FakeWallet {
             amount,
             state: MeltQuoteState::Unpaid,
             extra_json: None,
+            payjoin: None,
             estimated_blocks: None,
             fee_options: None,
         })
@@ -1183,6 +1186,7 @@ mod tests {
             max_fee_amount: None,
             quote_id: quote_id.clone(),
             fee_index: None,
+            payjoin: None,
             metadata: None,
         }));
 

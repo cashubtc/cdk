@@ -18,7 +18,7 @@ use cdk::nuts::{
 };
 use cdk::wallet::{MeltOutcome, MintConnector, Wallet, WalletSubscription};
 #[cfg(feature = "payjoin-regtest")]
-use cdk_common::payjoin::{format_bip21_amount_from_sats, payjoin_v2_to_bip77_endpoint};
+use cdk_common::payjoin::build_bip21_payjoin_uri;
 use cdk_integration_tests::get_mint_url_from_env;
 #[cfg(feature = "payjoin-regtest")]
 use cdk_integration_tests::get_second_mint_url_from_env;
@@ -156,13 +156,7 @@ async fn send_payjoin_with_bitcoin_core(
     let ohttp_relay_url = std::env::var("CDK_MINTD_BDK_PAYJOIN_OHTTP_RELAY_URL")
         .or_else(|_| std::env::var("CDK_REGTEST_PAYJOIN_OHTTP_RELAY_URL"))?;
 
-    let bip21 = format!(
-        "bitcoin:{}?amount={}&pj={}",
-        quote.request,
-        format_bip21_amount_from_sats(amount_sat),
-        url::form_urlencoded::byte_serialize(payjoin_v2_to_bip77_endpoint(payjoin)?.as_bytes())
-            .collect::<String>()
-    );
+    let bip21 = build_bip21_payjoin_uri(&quote.request, Some(amount_sat), payjoin, None)?;
     let pj_uri = payjoin::Uri::try_from(bip21.as_str())
         .map_err(|err| anyhow::anyhow!("{err}"))?
         .assume_checked()

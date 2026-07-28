@@ -292,8 +292,8 @@ pub fn validate_fee_options(fee_options: &[PaymentTier]) -> Result<(), String> {
 
 /// Opaque key-value metadata attached to a send intent
 ///
-/// Stored for future extensions. In v1 no behavior is driven by metadata
-/// values. Future features like payjoin may consume this metadata.
+/// Stored for future extensions. No payment behavior is driven by these
+/// values; typed protocol extensions such as Payjoin use dedicated fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PaymentMetadata {
     /// Key-value pairs

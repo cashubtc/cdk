@@ -21,6 +21,9 @@ pub enum Error {
     /// Invalid currency unit
     #[error("Invalid currency unit: {0}")]
     InvalidCurrencyUnit(String),
+    /// Invalid Payjoin v2 parameters
+    #[error("Invalid Payjoin parameters: {0}")]
+    InvalidPayjoin(String),
     /// Missing amount field
     #[error("Missing amount field")]
     MissingAmount,
@@ -56,6 +59,9 @@ impl From<Error> for Status {
             Error::InvalidCurrencyUnit(unit) => {
                 Status::invalid_argument(format!("Invalid currency unit: {unit}"))
             }
+            Error::InvalidPayjoin(err) => {
+                Status::invalid_argument(format!("Invalid Payjoin parameters: {err}"))
+            }
             Error::MissingAmount => Status::invalid_argument("Missing amount field"),
             Error::Invoice(err) => Status::invalid_argument(format!("Invoice error: {err}")),
             Error::Hex(err) => Status::invalid_argument(format!("Hex decode error: {err}")),
@@ -78,6 +84,9 @@ impl From<Error> for cdk_common::payment::Error {
             Error::InvalidHash => Self::Custom("Invalid hash".to_string()),
             Error::InvalidCurrencyUnit(unit) => {
                 Self::Custom(format!("Invalid currency unit: {unit}"))
+            }
+            Error::InvalidPayjoin(err) => {
+                Self::Custom(format!("Invalid Payjoin parameters: {err}"))
             }
             Error::MissingAmount => Self::Custom("Missing amount field".to_string()),
             Error::Invoice(err) => Self::Custom(format!("Invoice error: {err}")),

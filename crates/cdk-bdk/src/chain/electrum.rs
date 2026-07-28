@@ -1,13 +1,16 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
 use bdk_electrum::electrum_client::{Client, ConfigBuilder, ElectrumApi};
 use bdk_electrum::BdkElectrumClient;
-use bdk_wallet::bitcoin::Transaction;
+use bdk_wallet::bitcoin::{OutPoint, Transaction};
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ElectrumConfig};
+use crate::chain::{
+    BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ConfirmedSpend, ElectrumConfig,
+};
 use crate::error::Error;
 use crate::CdkBdk;
 
@@ -323,6 +326,73 @@ pub(crate) async fn fetch_fee_rate_electrum(
     })
     .await
     .map_err(|error| Error::FeeEstimationFailed(error.to_string()))?
+}
+
+pub(crate) async fn confirmed_spend_electrum(
+    config: &ElectrumConfig,
+    outpoints: &[OutPoint],
+    min_height: u32,
+) -> Result<Option<ConfirmedSpend>, Error> {
+    let url = config.url.clone();
+    let outpoints = outpoints.to_vec();
+
+    tokio::task::spawn_blocking(move || {
+        let client =
+            new_electrum_client(&url).map_err(|error| Error::Electrum(error.to_string()))?;
+        let tip_height = u32::try_from(
+            client
+                .inner
+                .block_headers_subscribe()
+                .map_err(|error| Error::Electrum(error.to_string()))?
+                .height,
+        )
+        .map_err(|error| Error::Electrum(error.to_string()))?;
+        let mut inspected = HashSet::new();
+        let requested_outpoints = outpoints.iter().copied().collect::<HashSet<_>>();
+
+        for outpoint in &outpoints {
+            let funding_tx = client
+                .inner
+                .transaction_get(&outpoint.txid)
+                .map_err(|error| Error::Electrum(error.to_string()))?;
+            let Some(output) = funding_tx.output.get(outpoint.vout as usize) else {
+                continue;
+            };
+            let history = client
+                .inner
+                .script_get_history(output.script_pubkey.as_script())
+                .map_err(|error| Error::Electrum(error.to_string()))?;
+
+            for entry in history {
+                let Ok(block_height) = u32::try_from(entry.height) else {
+                    continue;
+                };
+                if block_height < min_height || !inspected.insert(entry.tx_hash) {
+                    continue;
+                }
+
+                let spending_tx = client
+                    .inner
+                    .transaction_get(&entry.tx_hash)
+                    .map_err(|error| Error::Electrum(error.to_string()))?;
+                if spending_tx
+                    .input
+                    .iter()
+                    .any(|input| requested_outpoints.contains(&input.previous_output))
+                {
+                    return Ok(Some(ConfirmedSpend {
+                        txid: entry.tx_hash,
+                        block_height,
+                        confirmations: tip_height.saturating_sub(block_height).saturating_add(1),
+                    }));
+                }
+            }
+        }
+
+        Ok(None)
+    })
+    .await
+    .map_err(|error| Error::Electrum(format!("Electrum spend lookup task failed: {error}")))?
 }
 
 #[cfg(test)]

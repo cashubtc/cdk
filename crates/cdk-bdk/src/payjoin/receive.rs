@@ -1,19 +1,6 @@
 use super::*;
 
 impl CdkBdk {
-    pub(crate) fn requested_payjoin(metadata: Option<&str>) -> Option<PayjoinV2> {
-        let value = metadata
-            .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())?;
-        value
-            .get("payjoin")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
-    }
-    pub(crate) fn accepted_payjoin_extra(payjoin: &PayjoinV2) -> serde_json::Value {
-        serde_json::json!({
-            "payjoin": payjoin,
-        })
-    }
     pub(crate) async fn create_payjoin_receive_extra(
         &self,
         quote_id: &cdk_common::QuoteId,
@@ -85,7 +72,7 @@ impl CdkBdk {
                     let sessions = self.storage.get_all_payjoin_receive_sessions().await?;
                     let active_count = sessions
                         .iter()
-                        .filter(|record| !record.closed && record.expires_at >= now)
+                        .filter(|record| !record.closed && !record.is_expired(now))
                         .count();
                     tracing::debug!(
                         session_count = sessions.len(),
@@ -541,8 +528,8 @@ impl CdkBdk {
         // The check runs before entering the (synchronous) payjoin closure so the
         // RPC round trip does not block the async runtime.
         let original_tx = payjoin_original_tx_from_events(&persister.events()?)?;
-        // Bitcoin Core: trust the testmempoolaccept verdict. Esplora has no
-        // dry-run (`None`) and relies on the enforced minimum fee rate.
+        // Bitcoin Core: trust the testmempoolaccept verdict. Esplora and
+        // Electrum have no dry-run (`None`) and rely on the minimum fee rate.
         let broadcastable = self
             .chain_source
             .accepts_broadcast(&original_tx)
@@ -593,6 +580,7 @@ impl CdkBdk {
             return Ok(cut_through);
         }
 
+        ensure_ordinary_payjoin_has_single_receiver_output(&persister.events()?)?;
         let receiver = receiver
             .commit_outputs()
             .save(persister)

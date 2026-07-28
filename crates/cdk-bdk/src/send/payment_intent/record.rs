@@ -50,8 +50,8 @@ pub enum SendIntentState {
         melt_outpoint: String,
         /// Mint incremental spend beyond melt principal.
         fee_contribution_sat: u64,
-        /// Wallet tip where an unknown confirmed spend was first observed.
-        conflict_observed_height: Option<u32>,
+        /// Wallet tip when the proposal exposure was persisted.
+        exposure_height: u32,
         /// When the intent was created (unix timestamp seconds)
         created_at: u64,
     },

@@ -262,9 +262,10 @@ impl BdkStorage {
     /// Intentionally **global** (keyed by outpoint only): probing spans many
     /// cheap sessions, so only cross-session memory catches input reuse —
     /// per-quote scoping would reset every probe and defeat anti-probing. The
-    /// tradeoff is a poisoning vector, gated on Bitcoin Core by `test_mempool_accept`
-    /// (see `ChainSource::accepts_broadcast`); on Esplora it stays poisonable but
-    /// only degrades gracefully (fallback, no fund loss).
+    /// tradeoff is a poisoning vector, gated on Bitcoin Core by
+    /// `testmempoolaccept` (see `ChainSource::accepts_broadcast`); on backends
+    /// without a dry-run it stays poisonable but only degrades gracefully
+    /// (fallback, no fund loss).
     pub async fn is_payjoin_input_seen(&self, outpoint: &str) -> Result<bool, Error> {
         let outpoint_key = outpoint_to_key(outpoint);
         self.kv_store
@@ -664,7 +665,7 @@ mod tests {
             receive_outpoint: "receive-outpoint".to_string(),
             melt_outpoint: "melt-outpoint".to_string(),
             fee_contribution_sat: 321,
-            conflict_observed_height: None,
+            exposure_height: 100,
             created_at: 1_700_000_000,
         };
 
@@ -746,7 +747,7 @@ mod tests {
                     receive_outpoint: "receive:0".to_string(),
                     melt_outpoint: "melt:0".to_string(),
                     fee_contribution_sat: 200,
-                    conflict_observed_height: None,
+                    exposure_height: 100,
                     created_at: 1_700_000_000,
                 },
             )

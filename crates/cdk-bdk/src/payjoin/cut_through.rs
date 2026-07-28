@@ -31,6 +31,10 @@ impl CdkBdk {
             } if reservation_id == cut_through.reservation_id => created_at,
             _ => return Err(Error::Payjoin("stale cut-through reservation".to_string())),
         };
+        let exposure_height = {
+            let wallet = self.wallet_with_db.lock().await;
+            wallet.wallet.latest_checkpoint().height()
+        };
         let exposed = crate::send::payment_intent::record::SendIntentState::CutThroughExposed {
             reservation_id: cut_through.reservation_id,
             receive_quote_id: record.quote_id.clone(),
@@ -40,7 +44,7 @@ impl CdkBdk {
             receive_outpoint: cut_through.receive_outpoint.clone(),
             melt_outpoint: cut_through.melt_outpoint.clone(),
             fee_contribution_sat: cut_through.fee_contribution_sat,
-            conflict_observed_height: None,
+            exposure_height,
             created_at,
         };
         self.storage
@@ -354,10 +358,6 @@ impl CdkBdk {
     }
 
     pub(super) async fn advance_cut_through_settlements_once(&self) -> Result<(), Error> {
-        let tip_height = {
-            let wallet = self.wallet_with_db.lock().await;
-            wallet.wallet.latest_checkpoint().height()
-        };
         for intent in self.storage.get_all_send_intents().await? {
             let crate::send::payment_intent::record::SendIntentState::CutThroughExposed {
                 reservation_id,
@@ -368,8 +368,8 @@ impl CdkBdk {
                 ref receive_outpoint,
                 ref melt_outpoint,
                 fee_contribution_sat,
-                conflict_observed_height,
-                created_at,
+                exposure_height,
+                ..
             } = intent.state
             else {
                 continue;
@@ -419,39 +419,33 @@ impl CdkBdk {
                 .iter()
                 .map(|input| input.previous_output)
                 .collect::<Vec<_>>();
-            let spent = self.chain_source.any_confirmed_spend(&outpoints).await?;
-            let (observed, conflict_mature) = advance_conflict_observation(
-                spent,
-                conflict_observed_height,
-                tip_height,
-                self.num_confs,
-            );
-            if conflict_mature {
-                self.abandon_exposed_cut_through(
-                    intent.intent_id,
-                    reservation_id,
-                    receive_quote_id,
-                    proposal_txid,
-                )
+            let spend = self
+                .chain_source
+                .confirmed_spend(&outpoints, exposure_height)
                 .await?;
-            } else if observed != conflict_observed_height {
-                self.storage
-                    .update_send_intent(
-                        &intent.intent_id,
-                        &crate::send::payment_intent::record::SendIntentState::CutThroughExposed {
-                            reservation_id,
-                            receive_quote_id: receive_quote_id.clone(),
-                            original_receive_amount_sat,
-                            original_tx_bytes: original_tx_bytes.clone(),
-                            proposal_txid: proposal_txid.clone(),
-                            receive_outpoint: receive_outpoint.clone(),
-                            melt_outpoint: melt_outpoint.clone(),
-                            fee_contribution_sat,
-                            conflict_observed_height: observed,
-                            created_at,
-                        },
+            match confirmed_spend_decision(spend.as_ref(), proposal_txid, self.num_confs) {
+                KnownTransactionDecision::Finalize => {
+                    self.finalize_confirmed_cut_through(
+                        &intent,
+                        reservation_id,
+                        receive_quote_id,
+                        original_receive_amount_sat,
+                        receive_outpoint,
+                        melt_outpoint,
+                        fee_contribution_sat,
                     )
                     .await?;
+                }
+                KnownTransactionDecision::Abandon => {
+                    self.abandon_exposed_cut_through(
+                        intent.intent_id,
+                        reservation_id,
+                        receive_quote_id,
+                        proposal_txid,
+                    )
+                    .await?;
+                }
+                KnownTransactionDecision::Wait | KnownTransactionDecision::CheckConflict => {}
             }
         }
         Ok(())
@@ -592,18 +586,19 @@ fn intent_amount_from_cut_through(
     }
 }
 
-fn advance_conflict_observation(
-    spent: bool,
-    observed_height: Option<u32>,
-    tip_height: u32,
+fn confirmed_spend_decision(
+    spend: Option<&crate::chain::ConfirmedSpend>,
+    proposal_txid: &str,
     num_confs: u32,
-) -> (Option<u32>, bool) {
-    if !spent {
-        return (None, false);
+) -> KnownTransactionDecision {
+    match spend {
+        None => KnownTransactionDecision::CheckConflict,
+        Some(spend) if spend.confirmations < num_confs => KnownTransactionDecision::Wait,
+        Some(spend) if spend.txid.to_string() == proposal_txid => {
+            KnownTransactionDecision::Finalize
+        }
+        Some(_) => KnownTransactionDecision::Abandon,
     }
-    let observed_height = observed_height.unwrap_or(tip_height);
-    let depth = tip_height.saturating_sub(observed_height).saturating_add(1);
-    (Some(observed_height), depth >= num_confs)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -634,9 +629,12 @@ fn known_transaction_decision(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        advance_conflict_observation, known_transaction_decision, KnownTransactionDecision,
-    };
+    use std::str::FromStr;
+
+    use bdk_wallet::bitcoin::Txid;
+
+    use super::{confirmed_spend_decision, known_transaction_decision, KnownTransactionDecision};
+    use crate::chain::ConfirmedSpend;
 
     #[test]
     fn known_transactions_respect_confirmation_depth_and_proposal_precedence() {
@@ -667,22 +665,53 @@ mod tests {
     }
 
     #[test]
-    fn unknown_spend_waits_for_configured_observation_depth() {
+    fn confirmed_proposal_is_finalized_even_when_wallet_has_not_seen_it() {
+        let proposal_txid =
+            Txid::from_str("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .expect("txid");
+        let spend = ConfirmedSpend {
+            txid: proposal_txid,
+            block_height: 100,
+            confirmations: 1,
+        };
+
         assert_eq!(
-            advance_conflict_observation(true, None, 100, 2),
-            (Some(100), false)
-        );
-        assert_eq!(
-            advance_conflict_observation(true, Some(100), 101, 2),
-            (Some(100), true)
+            confirmed_spend_decision(Some(&spend), &proposal_txid.to_string(), 1),
+            KnownTransactionDecision::Finalize
         );
     }
 
     #[test]
-    fn unknown_spend_reorg_clears_observation() {
+    fn confirmed_spend_waits_for_configured_depth() {
+        let spend = ConfirmedSpend {
+            txid: Txid::from_str(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            )
+            .expect("txid"),
+            block_height: 100,
+            confirmations: 1,
+        };
+
         assert_eq!(
-            advance_conflict_observation(false, Some(100), 101, 2),
-            (None, false)
+            confirmed_spend_decision(Some(&spend), "proposal", 2),
+            KnownTransactionDecision::Wait
+        );
+    }
+
+    #[test]
+    fn mature_conflicting_spend_is_abandoned() {
+        let spend = ConfirmedSpend {
+            txid: Txid::from_str(
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            )
+            .expect("txid"),
+            block_height: 100,
+            confirmations: 2,
+        };
+
+        assert_eq!(
+            confirmed_spend_decision(Some(&spend), "proposal", 2),
+            KnownTransactionDecision::Abandon
         );
     }
 }

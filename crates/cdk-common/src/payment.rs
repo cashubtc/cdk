@@ -17,8 +17,9 @@ use thiserror::Error;
 
 use crate::mint::{MeltPaymentRequest, MeltQuote};
 use crate::nuts::nut30::MeltQuoteOnchainFeeOption;
+use crate::nuts::nut31::PayjoinV2;
 use crate::nuts::{CurrencyUnit, MeltQuoteState};
-use crate::payjoin::{ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY, ONCHAIN_PAYJOIN_EXTRA_KEY};
+use crate::payjoin::ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY;
 use crate::{Amount, QuoteId};
 
 /// CDK Payment Error
@@ -339,6 +340,8 @@ pub struct OnchainOutgoingPaymentOptions {
     pub quote_id: QuoteId,
     /// Selected fee option index (mirrors the quote's chosen `fee_options[i].fee_index`)
     pub fee_index: Option<u32>,
+    /// Optional Payjoin v2 receiver parameters.
+    pub payjoin: Option<PayjoinV2>,
     /// Opaque metadata as a JSON string for future extensions
     pub metadata: Option<String>,
 }
@@ -413,18 +416,20 @@ impl OutgoingPaymentOptions {
                     max_fee_amount: Some(fee_reserve),
                     quote_id: melt_quote.id,
                     fee_index: melt_quote.selected_fee_index,
-                    metadata: onchain_melt_payment_metadata(melt_quote.extra_json),
+                    payjoin: onchain_melt_payjoin(melt_quote.extra_json.as_ref()),
+                    metadata: None,
                 }),
             )),
         }
     }
 }
 
-fn onchain_melt_payment_metadata(extra_json: Option<Value>) -> Option<String> {
+fn onchain_melt_payjoin(extra_json: Option<&Value>) -> Option<PayjoinV2> {
     let extra_json = extra_json?;
     extra_json
         .get(ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY)
-        .map(|payjoin| serde_json::json!({ ONCHAIN_PAYJOIN_EXTRA_KEY: payjoin }).to_string())
+        .cloned()
+        .and_then(|payjoin| serde_json::from_value(payjoin).ok())
 }
 
 /// Mint payment trait
@@ -606,6 +611,8 @@ pub struct PaymentQuoteResponse {
     pub state: MeltQuoteState,
     /// Extra payment-method-specific fields
     pub extra_json: Option<serde_json::Value>,
+    /// Optional Payjoin v2 receiver parameters accepted by an onchain backend.
+    pub payjoin: Option<PayjoinV2>,
     /// Estimated confirmation target in blocks for onchain quotes.
     ///
     /// Onchain backends must return explicit `fee_options`; this field remains
@@ -864,6 +871,7 @@ mod tests {
     use std::str::FromStr;
 
     use super::*;
+    use crate::payjoin::ONCHAIN_PAYJOIN_EXTRA_KEY;
     use crate::QuoteId;
 
     #[test]
@@ -928,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn onchain_melt_payment_metadata_uses_persisted_payjoin_destination() {
+    fn onchain_melt_options_use_persisted_payjoin_destination() {
         let destination = serde_json::json!({
             "endpoint": "https://payjoin.example/pj",
             "ohttp_keys": "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
@@ -968,26 +976,16 @@ mod tests {
             other => panic!("expected onchain payment options, got {other:?}"),
         };
 
-        let metadata = onchain_options
-            .metadata
-            .expect("payjoin metadata must be present");
-        let metadata: serde_json::Value =
-            serde_json::from_str(&metadata).expect("metadata must be valid JSON");
-
         assert_eq!(
-            metadata,
-            serde_json::json!({ ONCHAIN_PAYJOIN_EXTRA_KEY: destination })
+            serde_json::to_value(onchain_options.payjoin)
+                .expect("Payjoin parameters must serialize"),
+            destination
         );
-        assert!(
-            metadata
-                .get(ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY)
-                .is_none(),
-            "internal persistence key should not be passed through to the backend"
-        );
+        assert_eq!(onchain_options.metadata, None);
     }
 
     #[test]
-    fn onchain_melt_payment_metadata_ignores_non_payjoin_extra_json() {
+    fn onchain_melt_options_ignore_non_payjoin_extra_json() {
         let mut quote = MeltQuote::new_onchain(
             Some(QuoteId::new()),
             MeltPaymentRequest::Onchain {
@@ -1018,6 +1016,7 @@ mod tests {
             other => panic!("expected onchain payment options, got {other:?}"),
         };
 
+        assert_eq!(onchain_options.payjoin, None);
         assert_eq!(onchain_options.metadata, None);
     }
 }

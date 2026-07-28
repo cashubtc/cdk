@@ -65,8 +65,8 @@ pub(crate) struct BackgroundTasks {
     pub(crate) cancel: CancellationToken,
     pub(crate) sync: JoinHandle<()>,
     pub(crate) batch: JoinHandle<()>,
-    pub(crate) payjoin_receive: Option<JoinHandle<()>>,
-    pub(crate) payjoin_send: Option<JoinHandle<()>>,
+    pub(crate) payjoin_receive: JoinHandle<()>,
+    pub(crate) payjoin_send: JoinHandle<()>,
 }
 
 #[cfg(test)]
@@ -604,13 +604,12 @@ impl MintPayment for CdkBdk {
         // sessions/intents from a previously configured run still need to be
         // expired, pruned, or settled via fallback broadcast. Without work to
         // do a tick is a cheap empty listing.
-        let payjoin_receive_handle =
-            Some(spawn_supervised("payjoin receive poller", |me, cancel| {
-                Box::pin(async move { me.run_payjoin_receive_poller(cancel).await })
-            }));
-        let payjoin_send_handle = Some(spawn_supervised("payjoin send poller", |me, cancel| {
+        let payjoin_receive_handle = spawn_supervised("payjoin receive poller", |me, cancel| {
+            Box::pin(async move { me.run_payjoin_receive_poller(cancel).await })
+        });
+        let payjoin_send_handle = spawn_supervised("payjoin send poller", |me, cancel| {
             Box::pin(async move { me.run_payjoin_send_poller(cancel).await })
-        }));
+        });
 
         *tasks_lock = Some(BackgroundTasks {
             cancel,
@@ -636,31 +635,22 @@ impl MintPayment for CdkBdk {
 
             let sync_aborter = bg.sync.abort_handle();
             let batch_aborter = bg.batch.abort_handle();
-            let payjoin_receive_aborter =
-                bg.payjoin_receive.as_ref().map(|task| task.abort_handle());
-            let payjoin_send_aborter = bg.payjoin_send.as_ref().map(|task| task.abort_handle());
+            let payjoin_receive_aborter = bg.payjoin_receive.abort_handle();
+            let payjoin_send_aborter = bg.payjoin_send.abort_handle();
 
             let joined = tokio::time::timeout(self.shutdown_timeout, async move {
                 let _ = bg.sync.await;
                 let _ = bg.batch.await;
-                if let Some(task) = bg.payjoin_receive {
-                    let _ = task.await;
-                }
-                if let Some(task) = bg.payjoin_send {
-                    let _ = task.await;
-                }
+                let _ = bg.payjoin_receive.await;
+                let _ = bg.payjoin_send.await;
             })
             .await;
 
             if joined.is_err() {
                 sync_aborter.abort();
                 batch_aborter.abort();
-                if let Some(aborter) = payjoin_receive_aborter {
-                    aborter.abort();
-                }
-                if let Some(aborter) = payjoin_send_aborter {
-                    aborter.abort();
-                }
+                payjoin_receive_aborter.abort();
+                payjoin_send_aborter.abort();
                 tracing::error!(
                     "cdk-bdk background tasks did not exit within {:?}; forced abort",
                     self.shutdown_timeout
@@ -700,14 +690,13 @@ impl MintPayment for CdkBdk {
             onchain_options.amount.clone().to_u64(),
         )?;
         let amount_sat = onchain_options.amount.clone().to_u64();
-        let requested_payjoin = Self::requested_payjoin(onchain_options.metadata.as_deref());
-        let payjoin_extra = match requested_payjoin {
+        let accepted_payjoin = match onchain_options.payjoin.clone() {
             Some(payjoin) => {
                 if payjoin_v2_is_expired_at(&payjoin, crate::util::unix_now()) {
                     return Err(cdk_common::payment::Error::InvalidExpiry);
                 }
                 if self.payjoin_config().is_some() {
-                    Some(Self::accepted_payjoin_extra(&payjoin))
+                    Some(payjoin)
                 } else {
                     None
                 }
@@ -748,7 +737,8 @@ impl MintPayment for CdkBdk {
             amount: onchain_options.amount,
             fee: Amount::new(cheapest.fee_reserve.into(), CurrencyUnit::Sat),
             state: MeltQuoteState::Unpaid,
-            extra_json: payjoin_extra,
+            extra_json: None,
+            payjoin: accepted_payjoin,
             estimated_blocks: Some(cheapest.estimated_blocks),
             fee_options: Some(fee_options),
         })
@@ -767,7 +757,7 @@ impl MintPayment for CdkBdk {
         let address = onchain_options.address;
         let amount = onchain_options.amount;
         let quote_id = onchain_options.quote_id;
-        let requested_payjoin = Self::requested_payjoin(onchain_options.metadata.as_deref());
+        let requested_payjoin = onchain_options.payjoin;
         if requested_payjoin
             .as_ref()
             .is_some_and(|payjoin| payjoin_v2_is_expired_at(payjoin, crate::util::unix_now()))
@@ -2406,6 +2396,7 @@ mod tests {
             max_fee_amount: Some(Amount::new(1_000, CurrencyUnit::Sat)),
             quote_id,
             fee_index: None,
+            payjoin: None,
             metadata: None,
         }))
     }

@@ -2379,6 +2379,7 @@ impl MintPayment for CustomPaymentProcessor {
                         "redirect_url": "https://example.com/pay/custom-lookup-id",
                         "status": "pending"
                     })),
+                    payjoin: None,
                     fee_options: None,
                 })
             }

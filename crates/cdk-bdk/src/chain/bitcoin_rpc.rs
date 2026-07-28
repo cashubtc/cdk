@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -8,7 +9,9 @@ use tokio::sync::Mutex;
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use crate::chain::{BitcoinRpcConfig, BroadcastErrorKind, BroadcastFailure, BroadcastOutcome};
+use crate::chain::{
+    BitcoinRpcConfig, BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ConfirmedSpend,
+};
 use crate::error::Error;
 use crate::{CdkBdk, WalletWithDb};
 
@@ -364,31 +367,62 @@ pub(crate) async fn fetch_fee_rate_bitcoin_rpc(
     .map_err(|e| Error::FeeEstimationFailed(e.to_string()))?
 }
 
-pub(crate) async fn any_confirmed_spend_bitcoin_rpc(
+pub(crate) async fn confirmed_spend_bitcoin_rpc(
     config: &BitcoinRpcConfig,
     outpoints: &[OutPoint],
-) -> Result<bool, Error> {
+    min_height: u32,
+) -> Result<Option<ConfirmedSpend>, Error> {
     let config = config.clone();
-    let outpoints = outpoints.to_vec();
+    let outpoints = outpoints.iter().copied().collect::<HashSet<_>>();
 
     tokio::task::spawn_blocking(move || {
         let rpc_client = Client::new(
             &format!("http://{}:{}", config.host, config.port),
             Auth::UserPass(config.user, config.password),
         )?;
+        let tip_height = rpc_client.get_block_count()?;
 
-        for outpoint in outpoints {
-            // include_mempool=false means an unconfirmed spend still reports
-            // the output as unspent. Only confirmed spends return None.
+        let mut confirmed_spend_exists = false;
+        for outpoint in &outpoints {
+            // With mempool excluded, a mempool-only spend still leaves the
+            // output visible. Avoid scanning blocks until a confirmed spend
+            // makes at least one requested output disappear.
             if rpc_client
                 .get_tx_out(&outpoint.txid, outpoint.vout, Some(false))?
                 .is_none()
             {
-                return Ok(true);
+                confirmed_spend_exists = true;
+                break;
+            }
+        }
+        if !confirmed_spend_exists {
+            return Ok(None);
+        }
+
+        for block_height in u64::from(min_height)..=tip_height {
+            let block_hash = rpc_client.get_block_hash(block_height)?;
+            let block = rpc_client.get_block(&block_hash)?;
+            for transaction in block.txdata {
+                if transaction
+                    .input
+                    .iter()
+                    .any(|input| outpoints.contains(&input.previous_output))
+                {
+                    let confirmations = tip_height
+                        .saturating_sub(block_height)
+                        .saturating_add(1)
+                        .try_into()
+                        .unwrap_or(u32::MAX);
+                    return Ok(Some(ConfirmedSpend {
+                        txid: transaction.compute_txid(),
+                        block_height: block_height.try_into().unwrap_or(u32::MAX),
+                        confirmations,
+                    }));
+                }
             }
         }
 
-        Ok(false)
+        Ok(None)
     })
     .await
     .map_err(|e| Error::Wallet(e.to_string()))?

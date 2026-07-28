@@ -8,7 +8,7 @@ use cdk::nuts::nut00::KnownMethod;
 use cdk::nuts::{CurrencyUnit, MeltOptions, PayjoinV2, PaymentMethod};
 use cdk::wallet::WalletRepository;
 use cdk::Bolt11Invoice;
-use cdk_common::payjoin::{parse_bip21_amount_to_sats, payjoin_v2_from_bip77_endpoint};
+use cdk_common::payjoin::parse_bip21_payjoin_uri;
 use cdk_common::wallet::WalletKey;
 use clap::{Args, ValueEnum};
 use lightning::offers::offer::Offer;
@@ -186,61 +186,13 @@ fn parse_payjoin_arg(value: &str) -> Result<OnchainPaymentInput> {
 }
 
 fn parse_bitcoin_payjoin_uri(value: &str) -> Result<OnchainPaymentInput> {
-    let uri = url::Url::parse(value)?;
-    if uri.scheme() != "bitcoin" {
-        bail!("Expected a bitcoin: URI");
-    }
-
-    let address = normalize_onchain_address(uri.path());
-    if address.is_empty() {
-        bail!("bitcoin: URI is missing an onchain address");
-    }
-
-    let mut amount_sat = None;
-    let mut endpoint = None;
-
-    for (key, value) in uri.query_pairs() {
-        match key.as_ref() {
-            "amount" => amount_sat = Some(parse_bip21_amount_sat(&value)?),
-            "pj" => endpoint = Some(value.into_owned()),
-            "pjos" if !matches!(value.as_ref(), "0" | "1") => {
-                bail!("Invalid pjos value '{}', expected 0 or 1", value);
-            }
-            "pjos" => {}
-            _ => {}
-        }
-    }
-
-    let payjoin = match endpoint {
-        Some(endpoint) => Some(onchain_payjoin_from_endpoint(endpoint)?),
-        None => None,
-    };
+    let parsed = parse_bip21_payjoin_uri(value)?;
 
     Ok(OnchainPaymentInput {
-        address: Some(address),
-        amount_sat,
-        payjoin,
+        address: Some(parsed.address),
+        amount_sat: parsed.amount_sat,
+        payjoin: parsed.payjoin,
     })
-}
-
-fn normalize_onchain_address(address: &str) -> String {
-    let lowercase = address.to_ascii_lowercase();
-    if lowercase.starts_with("bc1")
-        || lowercase.starts_with("tb1")
-        || lowercase.starts_with("bcrt1")
-    {
-        lowercase
-    } else {
-        address.to_string()
-    }
-}
-
-fn parse_bip21_amount_sat(amount: &str) -> Result<u64> {
-    parse_bip21_amount_to_sats(amount).map_err(Into::into)
-}
-
-fn onchain_payjoin_from_endpoint(endpoint: String) -> Result<PayjoinV2> {
-    payjoin_v2_from_bip77_endpoint(&endpoint).map_err(Into::into)
 }
 
 fn parse_mpp_split(entry: &str) -> Result<(MintUrl, Amount)> {

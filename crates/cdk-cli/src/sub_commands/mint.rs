@@ -10,7 +10,7 @@ use cdk::nuts::{CurrencyUnit, PaymentMethod};
 use cdk::wallet::{Wallet, WalletRepository, WalletSubscription};
 use cdk::{Amount, StreamExt};
 use cdk_common::nut00::KnownMethod;
-use cdk_common::payjoin::{format_bip21_amount_from_sats, payjoin_v2_to_bip77_endpoint};
+use cdk_common::payjoin::build_bip21_payjoin_uri;
 use cdk_common::NotificationPayload;
 use clap::Args;
 use serde::{Deserialize, Serialize};
@@ -122,10 +122,9 @@ pub async fn mint(
                 println!("Quote: id={}, expiry={}", quote.id, quote.expiry);
                 println!("Send sats to: {}", quote.request);
                 if let Some(payjoin) = quote.payjoin.as_ref() {
-                    let endpoint = payjoin_v2_to_bip77_endpoint(payjoin)?;
                     println!(
                         "Payjoin: {}",
-                        build_payjoin_payment_uri(&quote.request, amount, &endpoint)
+                        build_bip21_payjoin_uri(&quote.request, amount, payjoin, Some(false))?
                     );
                 }
 
@@ -237,37 +236,6 @@ pub async fn mint(
     Ok(())
 }
 
-fn build_payjoin_payment_uri(
-    address: &str,
-    amount_sat: Option<u64>,
-    bip77_endpoint: &str,
-) -> String {
-    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    if let Some(amount_sat) = amount_sat {
-        serializer.append_pair("amount", &format_bip21_amount_from_sats(amount_sat));
-    }
-    serializer.append_pair("pjos", "0");
-    serializer.append_pair("pj", bip77_endpoint);
-
-    format!(
-        "BITCOIN:{}?{}",
-        uppercase_qr_address(address),
-        serializer.finish()
-    )
-}
-
-fn uppercase_qr_address(address: &str) -> String {
-    let lowercase = address.to_ascii_lowercase();
-    if lowercase.starts_with("bc1")
-        || lowercase.starts_with("tb1")
-        || lowercase.starts_with("bcrt1")
-    {
-        return address.to_ascii_uppercase();
-    }
-
-    address.to_string()
-}
-
 /// Spawns a background task that prints human-readable progress updates for
 /// the given mint quote. Returns `None` if the subscription could not be
 /// created (e.g. for unsupported payment methods); in that case the main flow
@@ -365,9 +333,10 @@ async fn spawn_progress_task(
 #[cfg(test)]
 mod tests {
     use cdk::nuts::nut31::PayjoinV2;
-    use cdk_common::payjoin::payjoin_v2_from_bip77_endpoint;
-
-    use super::*;
+    use cdk_common::payjoin::{
+        build_bip21_payjoin_uri, parse_bip21_payjoin_uri, payjoin_v2_from_bip77_endpoint,
+        payjoin_v2_to_bip77_endpoint,
+    };
 
     #[test]
     fn payjoin_payment_uri_includes_bip77_pj_endpoint() {
@@ -382,11 +351,13 @@ mod tests {
         let parsed = payjoin_v2_from_bip77_endpoint(&endpoint).expect("valid BIP77 endpoint");
         assert_eq!(parsed, payjoin);
 
-        let uri = build_payjoin_payment_uri(
+        let uri = build_bip21_payjoin_uri(
             "bcrt1q6d3a2w975yny0asuvd9a67ner4nks58ff0q8g4",
             Some(50_000),
-            &endpoint,
-        );
+            &payjoin,
+            Some(false),
+        )
+        .expect("build Payjoin URI");
 
         assert!(uri.starts_with("BITCOIN:BCRT1Q6D3A2W975YNY0ASUVD9A67NER4NKS58FF0Q8G4?"));
         let query = uri
@@ -408,15 +379,25 @@ mod tests {
 
     #[test]
     fn payjoin_payment_uri_allows_amountless_quote() {
-        let uri = build_payjoin_payment_uri(
+        let payjoin = PayjoinV2::new(
+            "https://example.com/".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "Q2JJNCP7QRUVGUM64VHNMWFHLHH9NNF0NC29HUJKCDH3WNLNZCSEZ",
+            1_720_547_781,
+        )
+        .expect("valid Payjoin keys");
+        let uri = build_bip21_payjoin_uri(
             "12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX",
             None,
-            "HTTPS://EXAMPLE.COM/#OH1QYP",
-        );
+            &payjoin,
+            Some(false),
+        )
+        .expect("build Payjoin URI");
 
-        assert_eq!(
-            uri,
-            "BITCOIN:12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX?pjos=0&pj=HTTPS%3A%2F%2FEXAMPLE.COM%2F%23OH1QYP"
-        );
+        let parsed = parse_bip21_payjoin_uri(&uri).expect("parse Payjoin URI");
+        assert_eq!(parsed.address, "12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX");
+        assert_eq!(parsed.amount_sat, None);
+        assert_eq!(parsed.payjoin, Some(payjoin));
+        assert_eq!(parsed.pjos, Some(false));
     }
 }

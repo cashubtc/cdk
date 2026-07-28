@@ -8,7 +8,9 @@ use bdk_wallet::bitcoin::{OutPoint, Transaction};
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, EsploraConfig};
+use crate::chain::{
+    BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ConfirmedSpend, EsploraConfig,
+};
 use crate::error::Error;
 use crate::CdkBdk;
 
@@ -301,11 +303,15 @@ pub(crate) async fn fetch_fee_rate_esplora(
     Err(Error::FeeEstimationUnavailable)
 }
 
-pub(crate) async fn any_confirmed_spend_esplora(
+pub(crate) async fn confirmed_spend_esplora(
     config: &EsploraConfig,
     outpoints: &[OutPoint],
-) -> Result<bool, Error> {
+) -> Result<Option<ConfirmedSpend>, Error> {
     let client = shared_esplora_client(&config.url)?;
+    let tip_height = client
+        .get_height()
+        .await
+        .map_err(|e| Error::Esplora(e.to_string()))?;
 
     for outpoint in outpoints {
         let Some(status) = client
@@ -316,12 +322,24 @@ pub(crate) async fn any_confirmed_spend_esplora(
             continue;
         };
 
-        if status.spent && status.status.is_some_and(|tx_status| tx_status.confirmed) {
-            return Ok(true);
-        }
+        let Some(txid) = status.txid else {
+            continue;
+        };
+        let Some(tx_status) = status.status.filter(|tx_status| tx_status.confirmed) else {
+            continue;
+        };
+        let Some(block_height) = tx_status.block_height else {
+            continue;
+        };
+
+        return Ok(Some(ConfirmedSpend {
+            txid,
+            block_height,
+            confirmations: tip_height.saturating_sub(block_height).saturating_add(1),
+        }));
     }
 
-    Ok(false)
+    Ok(None)
 }
 
 #[cfg(test)]

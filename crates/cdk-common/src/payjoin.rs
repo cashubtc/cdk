@@ -25,6 +25,42 @@ pub struct Bip21AmountError {
     source: bitcoin::amount::ParseAmountError,
 }
 
+/// Parsed BIP21 payment URI with optional Payjoin v2 parameters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bip21PayjoinUri {
+    /// Normalized onchain address.
+    pub address: String,
+    /// Optional BIP21 amount in satoshis.
+    pub amount_sat: Option<u64>,
+    /// Optional Payjoin v2 receiver parameters.
+    pub payjoin: Option<PayjoinV2>,
+    /// Optional BIP21 `pjos` output-substitution preference.
+    pub pjos: Option<bool>,
+}
+
+/// Errors while building or parsing a BIP21 Payjoin URI.
+#[derive(Debug, Error)]
+pub enum Bip21PayjoinUriError {
+    /// URI parsing failed.
+    #[error("invalid BIP21 URI: {0}")]
+    InvalidUri(#[from] url::ParseError),
+    /// URI scheme is not `bitcoin`.
+    #[error("expected bitcoin URI scheme, found '{0}'")]
+    InvalidScheme(String),
+    /// URI has no onchain address.
+    #[error("bitcoin URI is missing an onchain address")]
+    MissingAddress,
+    /// BIP21 amount is invalid.
+    #[error(transparent)]
+    InvalidAmount(#[from] Bip21AmountError),
+    /// BIP21 `pjos` is not `0` or `1`.
+    #[error("invalid pjos value '{0}', expected 0 or 1")]
+    InvalidPjos(String),
+    /// Payjoin v2 endpoint conversion failed.
+    #[error(transparent)]
+    InvalidPayjoin(#[from] PayjoinV2Error),
+}
+
 /// Errors for BIP77 Payjoin v2 parameter conversion.
 #[derive(Debug, Error)]
 pub enum PayjoinV2Error {
@@ -89,6 +125,98 @@ pub fn parse_bip21_amount_to_sats(amount: &str) -> Result<u64, Bip21AmountError>
         })
 }
 
+/// Build a BIP21 URI containing Payjoin v2 receiver parameters.
+pub fn build_bip21_payjoin_uri(
+    address: &str,
+    amount_sat: Option<u64>,
+    payjoin: &PayjoinV2,
+    pjos: Option<bool>,
+) -> Result<String, Bip21PayjoinUriError> {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    if let Some(amount_sat) = amount_sat {
+        serializer.append_pair("amount", &format_bip21_amount_from_sats(amount_sat));
+    }
+    if let Some(pjos) = pjos {
+        serializer.append_pair("pjos", if pjos { "1" } else { "0" });
+    }
+    serializer.append_pair("pj", &payjoin_v2_to_bip77_endpoint(payjoin)?);
+
+    Ok(format!(
+        "BITCOIN:{}?{}",
+        uppercase_bip21_address(address),
+        serializer.finish()
+    ))
+}
+
+/// Parse a BIP21 URI and its optional Payjoin v2 receiver parameters.
+pub fn parse_bip21_payjoin_uri(value: &str) -> Result<Bip21PayjoinUri, Bip21PayjoinUriError> {
+    let uri = url::Url::parse(value)?;
+    if !uri.scheme().eq_ignore_ascii_case("bitcoin") {
+        return Err(Bip21PayjoinUriError::InvalidScheme(
+            uri.scheme().to_string(),
+        ));
+    }
+
+    let address = normalize_bip21_address(uri.path());
+    if address.is_empty() {
+        return Err(Bip21PayjoinUriError::MissingAddress);
+    }
+
+    let mut amount_sat = None;
+    let mut endpoint = None;
+    let mut pjos = None;
+    for (key, value) in uri.query_pairs() {
+        match key.as_ref() {
+            "amount" => amount_sat = Some(parse_bip21_amount_to_sats(&value)?),
+            "pj" => endpoint = Some(value.into_owned()),
+            "pjos" => {
+                pjos = Some(match value.as_ref() {
+                    "0" => false,
+                    "1" => true,
+                    invalid => {
+                        return Err(Bip21PayjoinUriError::InvalidPjos(invalid.to_string()));
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+
+    let payjoin = endpoint
+        .as_deref()
+        .map(payjoin_v2_from_bip77_endpoint)
+        .transpose()?;
+
+    Ok(Bip21PayjoinUri {
+        address,
+        amount_sat,
+        payjoin,
+        pjos,
+    })
+}
+
+fn normalize_bip21_address(address: &str) -> String {
+    let lowercase = address.to_ascii_lowercase();
+    if is_bech32_address(&lowercase) {
+        lowercase
+    } else {
+        address.to_string()
+    }
+}
+
+fn uppercase_bip21_address(address: &str) -> String {
+    let lowercase = address.to_ascii_lowercase();
+    if is_bech32_address(&lowercase) {
+        address.to_ascii_uppercase()
+    } else {
+        address.to_string()
+    }
+}
+
+fn is_bech32_address(address: &str) -> bool {
+    address.starts_with("bc1") || address.starts_with("tb1") || address.starts_with("bcrt1")
+}
+
 /// Parse Cashu Payjoin v2 parameters from a BIP77 mailbox endpoint.
 ///
 /// BIP77 encodes expiry in the `EX1...` fragment. Cashu uses Unix timestamp;
@@ -129,7 +257,12 @@ pub fn payjoin_v2_to_bip77_endpoint(payjoin: &PayjoinV2) -> Result<String, Payjo
 
 /// Returns true when the Payjoin parameters are expired at `now`.
 pub fn payjoin_v2_is_expired_at(payjoin: &PayjoinV2, now: u64) -> bool {
-    now >= payjoin.expires_at
+    payjoin_expires_at_is_expired(payjoin.expires_at, now)
+}
+
+/// Returns true when a Payjoin expiry timestamp has been reached.
+pub fn payjoin_expires_at_is_expired(expires_at: u64, now: u64) -> bool {
+    now >= expires_at
 }
 
 /// Decode a BIP77 `EX1` expiry fragment parameter into a Unix timestamp.
@@ -190,9 +323,10 @@ fn strip_fragment_prefix<'a>(
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_bip77_expiry, encode_bip77_expiry, format_bip21_amount_from_sats,
-        parse_bip21_amount_to_sats, payjoin_v2_from_bip77_endpoint, payjoin_v2_from_extra_json,
-        payjoin_v2_is_expired_at, payjoin_v2_to_bip77_endpoint, ONCHAIN_PAYJOIN_EXTRA_KEY,
+        build_bip21_payjoin_uri, decode_bip77_expiry, encode_bip77_expiry,
+        format_bip21_amount_from_sats, parse_bip21_amount_to_sats, parse_bip21_payjoin_uri,
+        payjoin_v2_from_bip77_endpoint, payjoin_v2_from_extra_json, payjoin_v2_is_expired_at,
+        payjoin_v2_to_bip77_endpoint, Bip21PayjoinUriError, ONCHAIN_PAYJOIN_EXTRA_KEY,
     };
     use crate::nuts::nut31::PayjoinV2;
 
@@ -304,5 +438,53 @@ mod tests {
 
         assert!(!payjoin_v2_is_expired_at(&payjoin, 9));
         assert!(payjoin_v2_is_expired_at(&payjoin, 10));
+    }
+
+    #[test]
+    fn bip21_payjoin_uri_roundtrips() {
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            OHTTP_KEYS,
+            RECEIVER_KEY,
+            1_720_547_781,
+        )
+        .expect("valid Payjoin keys");
+        let uri = build_bip21_payjoin_uri(
+            "bcrt1q6d3a2w975yny0asuvd9a67ner4nks58ff0q8g4",
+            Some(50_000),
+            &payjoin,
+            Some(false),
+        )
+        .expect("build Payjoin URI");
+
+        assert!(uri.starts_with("BITCOIN:BCRT1Q6D3A2W975YNY0ASUVD9A67NER4NKS58FF0Q8G4?"));
+        assert_eq!(
+            parse_bip21_payjoin_uri(&uri).expect("parse Payjoin URI"),
+            super::Bip21PayjoinUri {
+                address: "bcrt1q6d3a2w975yny0asuvd9a67ner4nks58ff0q8g4".to_string(),
+                amount_sat: Some(50_000),
+                payjoin: Some(payjoin),
+                pjos: Some(false),
+            }
+        );
+    }
+
+    #[test]
+    fn bip21_uri_without_payjoin_is_supported() {
+        let parsed = parse_bip21_payjoin_uri("bitcoin:12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX?amount=1")
+            .expect("parse BIP21 URI");
+
+        assert_eq!(parsed.address, "12c6DSiU4Rq3P4ZxziKxzrL5LmMBrzjrJX");
+        assert_eq!(parsed.amount_sat, Some(100_000_000));
+        assert_eq!(parsed.payjoin, None);
+        assert_eq!(parsed.pjos, None);
+    }
+
+    #[test]
+    fn bip21_uri_rejects_invalid_pjos() {
+        let err = parse_bip21_payjoin_uri("bitcoin:bc1qexample?pjos=2")
+            .expect_err("invalid pjos must fail");
+
+        assert!(matches!(err, Bip21PayjoinUriError::InvalidPjos(value) if value == "2"));
     }
 }

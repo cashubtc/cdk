@@ -136,13 +136,8 @@ impl MintPayment for OnchainQuoteMock {
             FeeOptionsBehavior::Explicit(options) => (None, Some(options.clone())),
         };
 
-        let extra_json = if self.accept_payjoin {
-            onchain_options
-                .metadata
-                .as_ref()
-                .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
-                .and_then(|value| value.get(ONCHAIN_PAYJOIN_EXTRA_KEY).cloned())
-                .map(|payjoin| serde_json::json!({ ONCHAIN_PAYJOIN_EXTRA_KEY: payjoin }))
+        let payjoin = if self.accept_payjoin {
+            onchain_options.payjoin
         } else {
             None
         };
@@ -152,7 +147,8 @@ impl MintPayment for OnchainQuoteMock {
             amount: self.amount.clone(),
             fee: self.fee.clone(),
             state: MeltQuoteState::Unpaid,
-            extra_json,
+            extra_json: None,
+            payjoin,
             estimated_blocks,
             fee_options,
         })

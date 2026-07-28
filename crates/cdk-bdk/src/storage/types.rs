@@ -112,12 +112,15 @@ pub struct PayjoinReceiveSessionRecord {
 impl PayjoinReceiveSessionRecord {
     /// Whether an open session has expired.
     pub fn is_expired(&self, now: u64) -> bool {
-        self.expires_at < now
+        cdk_common::payjoin::payjoin_expires_at_is_expired(self.expires_at, now)
     }
 
-    /// Whether a closed session has aged past the retention window.
+    /// Whether a closed session has reached the end of its retention window.
     pub fn should_prune(&self, now: u64, retention_secs: u64) -> bool {
-        self.expires_at.saturating_add(retention_secs) < now
+        cdk_common::payjoin::payjoin_expires_at_is_expired(
+            self.expires_at.saturating_add(retention_secs),
+            now,
+        )
     }
 }
 
