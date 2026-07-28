@@ -58,11 +58,13 @@ use tracing_subscriber::EnvFilter;
 
 pub mod cli;
 pub mod config;
+mod config_migration;
 mod config_service;
 mod config_store;
 pub mod env_vars;
 pub mod setup;
 
+pub use config_migration::{migrate_legacy_configuration, MigrationOutcome};
 pub use config_service::ApplyOutcome;
 
 #[cfg(test)]
@@ -449,11 +451,11 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
 
     if let Some(seed) = seed {
         if seed.is_empty() {
-            bail!("Seed in [info].seed/CDK_MINTD_SEED must not be empty");
+            bail!("Seed in [info].seed must not be empty");
         }
         if seed.len() < MIN_SEED_BYTES {
             bail!(
-                "Seed in [info].seed/CDK_MINTD_SEED is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes",
+                "Seed in [info].seed is too short ({} bytes); require at least {MIN_SEED_BYTES} bytes",
                 seed.len()
             );
         }
@@ -461,20 +463,17 @@ fn validate_signing_config(settings: &config::Settings) -> Result<()> {
     }
 
     if let Some(mnemonic) = mnemonic {
-        Mnemonic::from_str(mnemonic).map_err(|err| {
-            anyhow!("Invalid mnemonic in [info].mnemonic/CDK_MINTD_MNEMONIC: {err}")
-        })?;
+        Mnemonic::from_str(mnemonic)
+            .map_err(|err| anyhow!("Invalid mnemonic in [info].mnemonic: {err}"))?;
         return Ok(());
     }
 
-    bail!("No signing source configured. Set one of [info].mnemonic/CDK_MINTD_MNEMONIC, [info].seed/CDK_MINTD_SEED, or [signatory] with enabled = true");
+    bail!("No signing source configured. Set [info].mnemonic or [info].seed to an env:/file: secret reference, or enable [signatory]");
 }
 
 fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
-    // No emptiness check here: `from_env` already guarantees at least one
-    // payment backend (Lightning *or* on-chain), so requiring `[[ln]]` here
-    // would wrongly reject valid on-chain-only configs. An empty `ln` simply
-    // skips the loop below.
+    // `validate_payment_backends` already permits valid on-chain-only configs,
+    // so an empty `ln` simply skips the Lightning-specific checks below.
     for ln in &settings.ln {
         if ln.min_mint > ln.max_mint {
             bail!("Lightning min_mint cannot be greater than max_mint");
@@ -491,7 +490,7 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                     anyhow!("CLN backend selected but [cln] config section is missing")
                 })?;
                 if cln.rpc_path.as_os_str().is_empty() {
-                    bail!("CLN rpc_path must be set via [cln].rpc_path or CDK_MINTD_CLN_RPC_PATH");
+                    bail!("CLN rpc_path must be set in [cln].rpc_path");
                 }
             }
             #[cfg(feature = "lnbits")]
@@ -500,15 +499,13 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                     anyhow!("LNbits backend selected but [lnbits] config section is missing")
                 })?;
                 if lnbits.admin_api_key.is_empty() {
-                    bail!("LNbits admin_api_key must be set via [lnbits].admin_api_key or CDK_MINTD_LNBITS_ADMIN_API_KEY");
+                    bail!("LNbits admin_api_key must be set in [lnbits].admin_api_key using an env: or file: secret reference");
                 }
                 if lnbits.invoice_api_key.is_empty() {
-                    bail!("LNbits invoice_api_key must be set via [lnbits].invoice_api_key or CDK_MINTD_LNBITS_INVOICE_API_KEY");
+                    bail!("LNbits invoice_api_key must be set in [lnbits].invoice_api_key using an env: or file: secret reference");
                 }
                 if lnbits.lnbits_api.is_empty() {
-                    bail!(
-                        "LNbits lnbits_api must be set via [lnbits].lnbits_api or CDK_MINTD_LNBITS_API"
-                    );
+                    bail!("LNbits lnbits_api must be set in [lnbits].lnbits_api");
                 }
             }
             #[cfg(feature = "lnd")]
@@ -517,15 +514,13 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                     anyhow!("LND backend selected but [lnd] config section is missing")
                 })?;
                 if lnd.address.is_empty() {
-                    bail!("LND address must be set via [lnd].address or CDK_MINTD_LND_ADDRESS");
+                    bail!("LND address must be set in [lnd].address");
                 }
                 if lnd.cert_file.as_os_str().is_empty() {
-                    bail!(
-                        "LND cert_file must be set via [lnd].cert_file or CDK_MINTD_LND_CERT_FILE"
-                    );
+                    bail!("LND cert_file must be set in [lnd].cert_file");
                 }
                 if lnd.macaroon_file.as_os_str().is_empty() {
-                    bail!("LND macaroon_file must be set via [lnd].macaroon_file or CDK_MINTD_LND_MACAROON_FILE");
+                    bail!("LND macaroon_file must be set in [lnd].macaroon_file");
                 }
             }
             #[cfg(feature = "fakewallet")]
@@ -536,7 +531,7 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                     )
                 })?;
                 if fake_wallet.supported_units.is_empty() {
-                    bail!("Fake wallet supported_units must contain at least one unit via [fake_wallet].supported_units or CDK_MINTD_FAKE_WALLET_SUPPORTED_UNITS");
+                    bail!("Fake wallet supported_units must contain at least one unit in [fake_wallet].supported_units");
                 }
                 if fake_wallet.min_delay_time > fake_wallet.max_delay_time {
                     bail!("Fake wallet min_delay_time cannot be greater than max_delay_time");
@@ -550,10 +545,10 @@ fn validate_lightning_config(settings: &config::Settings) -> Result<()> {
                     )
                 })?;
                 if grpc_processor.supported_units.is_empty() {
-                    bail!("gRPC payment processor supported_units must contain at least one unit via [grpc_processor].supported_units or CDK_MINTD_GRPC_PAYMENT_PROCESSOR_SUPPORTED_UNITS");
+                    bail!("gRPC payment processor supported_units must contain at least one unit in [grpc_processor].supported_units");
                 }
                 if grpc_processor.address.is_empty() {
-                    bail!("gRPC payment processor address must be set via [grpc_processor].address or CDK_MINTD_GRPC_PAYMENT_PROCESSOR_ADDRESS");
+                    bail!("gRPC payment processor address must be set in [grpc_processor].address");
                 }
             }
             #[cfg(feature = "ldk-node")]
@@ -608,21 +603,21 @@ fn validate_auth_config(settings: &config::Settings) -> Result<()> {
     };
 
     if auth.openid_discovery.is_empty() {
-        bail!("Auth openid_discovery must be set via [auth].openid_discovery or CDK_MINTD_AUTH_OPENID_DISCOVERY");
+        bail!("Auth openid_discovery must be set in [auth].openid_discovery");
     }
     if auth.openid_client_id.is_empty() {
-        bail!("Auth openid_client_id must be set via [auth].openid_client_id or CDK_MINTD_AUTH_OPENID_CLIENT_ID");
+        bail!("Auth openid_client_id must be set in [auth].openid_client_id");
     }
 
     if settings.database.engine == DatabaseEngine::Postgres {
         let auth_db_config = settings.auth_database.as_ref().ok_or_else(|| {
-            anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database] section or CDK_MINTD_AUTH_POSTGRES_URL")
+            anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database]")
         })?;
         let auth_pg_config = auth_db_config.postgres.as_ref().ok_or_else(|| {
-            anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres] section or CDK_MINTD_AUTH_POSTGRES_URL")
+            anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres]")
         })?;
         if auth_pg_config.url.is_empty() {
-            bail!("Auth database PostgreSQL URL is required. Set [auth_database.postgres].url or CDK_MINTD_AUTH_POSTGRES_URL");
+            bail!("Auth database PostgreSQL URL is required. Set [auth_database.postgres].url to an env: or file: secret reference");
         }
     }
 
@@ -1492,15 +1487,15 @@ async fn setup_authentication(
                 {
                     // Require dedicated auth database configuration - no fallback to main database
                     let auth_db_config = settings.auth_database.as_ref().ok_or_else(|| {
-                        anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database] section in config file or CDK_MINTD_AUTH_POSTGRES_URL environment variable")
+                        anyhow!("Auth database configuration is required when using PostgreSQL with authentication. Set [auth_database]")
                     })?;
 
                     let auth_pg_config = auth_db_config.postgres.as_ref().ok_or_else(|| {
-                        anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres] section in config file or CDK_MINTD_AUTH_POSTGRES_URL environment variable")
+                        anyhow!("PostgreSQL auth database configuration is required when using PostgreSQL with authentication. Set [auth_database.postgres]")
                     })?;
 
                     if auth_pg_config.url.is_empty() {
-                        bail!("Auth database PostgreSQL URL is required and cannot be empty. Set it in config file [auth_database.postgres] section or via CDK_MINTD_AUTH_POSTGRES_URL environment variable");
+                        bail!("Auth database PostgreSQL URL is required and cannot be empty. Set [auth_database.postgres].url to an env: or file: secret reference");
                     }
 
                     let auth_db_config = PgConfig::new(
@@ -3686,7 +3681,7 @@ engine = "sqlite"
 [ln]
 ln_backend = "fakewallet"
 "#,
-            "Seed in [info].seed/CDK_MINTD_SEED is too short",
+            "Seed in [info].seed is too short",
         );
     }
 
@@ -4090,7 +4085,7 @@ engine = "sqlite"
 ln_backend = "fakewallet"
 "#
             ),
-            "Seed in [info].seed/CDK_MINTD_SEED must not be empty",
+            "Seed in [info].seed must not be empty",
         );
     }
 

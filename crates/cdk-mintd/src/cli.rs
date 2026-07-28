@@ -31,7 +31,7 @@ pub struct CLIArgs {
     #[arg(
         long,
         global = true,
-        help = "Legacy startup flag; use a file: secret reference in persisted configuration",
+        help = "Legacy seed file; accepted only by `config migrate`",
         required = false
     )]
     pub seed_file: Option<PathBuf>,
@@ -64,6 +64,8 @@ pub struct ConfigArgs {
 /// Database-backed configuration operations.
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommands {
+    /// Convert a legacy TOML plus environment overrides into an import document.
+    Migrate(MigrateConfigArgs),
     /// Initialize an unconfigured database from a TOML document.
     Init(ConfigFileArgs),
     /// Validate a TOML document without changing the database.
@@ -74,6 +76,23 @@ pub enum ConfigCommands {
     Show,
     /// Export the stored configuration document.
     Export(ExportConfigArgs),
+}
+
+/// Arguments for migrating a legacy configuration.
+#[derive(Debug, Args)]
+pub struct MigrateConfigArgs {
+    /// Legacy TOML document to read.
+    #[arg(long)]
+    pub file: PathBuf,
+    /// Migrated TOML document to write.
+    #[arg(long)]
+    pub output: PathBuf,
+    /// Directory for literal secrets extracted from the legacy TOML.
+    #[arg(long)]
+    pub secrets_dir: Option<PathBuf>,
+    /// Overwrite generated output and secret files.
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// Arguments containing a configuration document path.
@@ -154,6 +173,39 @@ mod tests {
         .expect("configuration apply should parse");
         CLIArgs::try_parse_from(["cdk-mintd", "config", "show"])
             .expect("configuration show should parse");
+
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "config",
+            "migrate",
+            "--file",
+            "/tmp/legacy.toml",
+            "--output",
+            "/tmp/migrated.toml",
+            "--secrets-dir",
+            "/tmp/mint-secrets",
+        ])
+        .expect("configuration migration should parse");
+        assert!(matches!(
+            args.command,
+            Some(Commands::Config(ConfigArgs {
+                command: ConfigCommands::Migrate(MigrateConfigArgs { force: false, .. }),
+            }))
+        ));
+
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "--seed-file",
+            "/tmp/seed.txt",
+            "config",
+            "migrate",
+            "--file",
+            "/tmp/legacy.toml",
+            "--output",
+            "/tmp/migrated.toml",
+        ])
+        .expect("legacy seed-file migration should parse");
+        assert_eq!(args.seed_file, Some(PathBuf::from("/tmp/seed.txt")));
     }
 
     #[test]

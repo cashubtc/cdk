@@ -15,15 +15,23 @@ fn main() -> Result<()> {
 
     rt.block_on(async {
         let args = CLIArgs::parse();
-        if args.config.is_some() || args.seed_file.is_some() {
+        let is_migration = matches!(
+            &args.command,
+            Some(Commands::Config(config))
+                if matches!(&config.command, ConfigCommands::Migrate(_))
+        );
+        if args.config.is_some() || (args.seed_file.is_some() && !is_migration) {
             bail!(
-                "--config and --seed-file are no longer startup inputs; import a TOML document with `cdk-mintd config init --file <path>` or replace it with `cdk-mintd config apply --file <path>`"
+                "--config and --seed-file are no longer startup inputs; migrate a legacy document with `cdk-mintd config migrate --file <old> --output <new>`, import one with `cdk-mintd config init --file <path>`, or replace it with `cdk-mintd config apply --file <path>`"
             );
         }
         let work_dir = if matches!(
             &args.command,
             Some(Commands::Config(config))
-                if matches!(&config.command, ConfigCommands::Validate(_))
+                if matches!(
+                    &config.command,
+                    ConfigCommands::Validate(_) | ConfigCommands::Migrate(_)
+                )
         ) {
             None
         } else {
@@ -35,9 +43,35 @@ fn main() -> Result<()> {
 
         #[cfg(not(feature = "sqlcipher"))]
         let password = None;
+        let legacy_seed_file = args.seed_file.clone();
 
         match args.command {
             Some(Commands::Config(config)) => match config.command {
+                ConfigCommands::Migrate(migrate) => {
+                    let outcome = cdk_mintd::migrate_legacy_configuration(
+                        &migrate.file,
+                        &migrate.output,
+                        migrate.secrets_dir.as_deref(),
+                        legacy_seed_file.as_deref(),
+                        migrate.force,
+                    )?;
+                    println!(
+                        "Migrated configuration written to {}.",
+                        outcome.output.display()
+                    );
+                    if let Some(secrets_dir) = outcome.secrets_dir {
+                        println!(
+                            "Extracted {} literal secret(s) to {}.",
+                            outcome.secret_files_written,
+                            secrets_dir.display()
+                        );
+                    }
+                    println!(
+                        "Review it, then run `cdk-mintd config validate --file {}`.",
+                        outcome.output.display()
+                    );
+                    Ok(())
+                }
                 ConfigCommands::Init(file) => {
                     let work_dir = work_dir
                         .as_deref()

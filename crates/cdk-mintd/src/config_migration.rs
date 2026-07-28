@@ -1,0 +1,856 @@
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, bail, Context, Result};
+
+use crate::config::Settings;
+
+const ENV_SECRET_PREFIX: &str = "env:";
+const FILE_SECRET_PREFIX: &str = "file:";
+const DEFAULT_SECRETS_DIRECTORY: &str = "cdk-mintd-secrets";
+#[cfg(feature = "redis")]
+const ENV_CACHE_BACKEND: &str = "CDK_MINTD_CACHE_BACKEND";
+#[cfg(feature = "redis")]
+const ENV_CACHE_REDIS_URL: &str = "CDK_MINTD_CACHE_REDIS_URL";
+
+/// Result of converting a legacy mintd configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationOutcome {
+    /// Absolute path of the generated import document.
+    pub output: PathBuf,
+    /// Directory containing generated secret files, when any were needed.
+    pub secrets_dir: Option<PathBuf>,
+    /// Number of literal secrets copied into generated files.
+    pub secret_files_written: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SecretNormalization {
+    Opaque,
+    Trim,
+}
+
+#[derive(Debug)]
+struct SecretFile {
+    path: PathBuf,
+    value: String,
+}
+
+#[derive(Debug)]
+struct MigrationSecrets {
+    directory: PathBuf,
+    files: Vec<SecretFile>,
+}
+
+impl MigrationSecrets {
+    fn new(directory: PathBuf) -> Self {
+        Self {
+            directory,
+            files: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, name: &str, value: &str) -> String {
+        let path = self.directory.join(name);
+        self.files.push(SecretFile {
+            path: path.clone(),
+            value: value.to_owned(),
+        });
+        format!("{FILE_SECRET_PREFIX}{}", path.display())
+    }
+}
+
+/// Converts a legacy TOML document and its active `CDK_MINTD_*` overrides into
+/// one database-importable TOML document.
+///
+/// Environment-backed secrets remain `env:` references. Literal secrets are
+/// copied into owner-only files and replaced by absolute `file:` references.
+/// The source document is never overwritten.
+pub fn migrate_legacy_configuration(
+    source: &Path,
+    output: &Path,
+    secrets_dir: Option<&Path>,
+    legacy_seed_file: Option<&Path>,
+    force: bool,
+) -> Result<MigrationOutcome> {
+    let source = source.canonicalize().with_context(|| {
+        format!(
+            "could not resolve legacy configuration {}",
+            source.display()
+        )
+    })?;
+    let output = absolute_path(output)?;
+    ensure_distinct_paths(&source, &output)?;
+    ensure_replaceable(&output, force, "migration output")?;
+
+    let document = fs::read_to_string(&source)
+        .with_context(|| format!("could not read legacy configuration {}", source.display()))?;
+    let mut effective = Settings::try_from_toml(&document)
+        .with_context(|| format!("could not parse legacy configuration {}", source.display()))?;
+    effective = effective
+        .from_env()
+        .context("could not apply legacy environment overrides")?;
+
+    let seed_reference = match legacy_seed_file {
+        Some(seed_file) => {
+            let seed_file = existing_absolute_path(seed_file)?;
+            crate::apply_seed_file(&mut effective, &seed_file)?;
+            Some(format!("{FILE_SECRET_PREFIX}{}", seed_file.display()))
+        }
+        None => None,
+    };
+
+    crate::config_service::prune_inactive_configuration(&mut effective);
+    let mut migrated = effective.clone();
+    let mut resolved = effective;
+
+    let secrets_dir = secrets_dir
+        .map(absolute_path)
+        .transpose()?
+        .unwrap_or_else(|| {
+            output
+                .parent()
+                .unwrap_or(Path::new("/"))
+                .join(DEFAULT_SECRETS_DIRECTORY)
+        });
+    let source_dir = source.parent().unwrap_or(Path::new("/"));
+    let mut secrets = MigrationSecrets::new(secrets_dir);
+
+    externalize_optional_secret(
+        &mut migrated.info.seed,
+        &mut resolved.info.seed,
+        "mint-seed",
+        &[crate::env_vars::ENV_SEED],
+        None,
+        SecretNormalization::Opaque,
+        source_dir,
+        &mut secrets,
+    )?;
+    externalize_optional_secret(
+        &mut migrated.info.mnemonic,
+        &mut resolved.info.mnemonic,
+        "mint-mnemonic",
+        &[crate::env_vars::ENV_MNEMONIC],
+        seed_reference.as_deref(),
+        SecretNormalization::Trim,
+        source_dir,
+        &mut secrets,
+    )?;
+
+    if let (Some(migrated_postgres), Some(resolved_postgres)) = (
+        migrated.database.postgres.as_mut(),
+        resolved.database.postgres.as_mut(),
+    ) {
+        externalize_secret(
+            &mut migrated_postgres.url,
+            &mut resolved_postgres.url,
+            "postgres-url",
+            &[
+                crate::env_vars::ENV_POSTGRES_URL,
+                crate::env_vars::DATABASE_URL_ENV_VAR,
+            ],
+            None,
+            SecretNormalization::Opaque,
+            source_dir,
+            &mut secrets,
+        )?;
+    }
+
+    if let (Some(migrated_postgres), Some(resolved_postgres)) = (
+        migrated
+            .auth_database
+            .as_mut()
+            .and_then(|database| database.postgres.as_mut()),
+        resolved
+            .auth_database
+            .as_mut()
+            .and_then(|database| database.postgres.as_mut()),
+    ) {
+        externalize_secret(
+            &mut migrated_postgres.url,
+            &mut resolved_postgres.url,
+            "auth-postgres-url",
+            &[crate::env_vars::ENV_AUTH_POSTGRES_URL],
+            None,
+            SecretNormalization::Opaque,
+            source_dir,
+            &mut secrets,
+        )?;
+    }
+
+    #[cfg(feature = "lnbits")]
+    if let (Some(migrated_lnbits), Some(resolved_lnbits)) =
+        (migrated.lnbits.as_mut(), resolved.lnbits.as_mut())
+    {
+        externalize_secret(
+            &mut migrated_lnbits.admin_api_key,
+            &mut resolved_lnbits.admin_api_key,
+            "lnbits-admin-api-key",
+            &[crate::env_vars::ENV_LNBITS_ADMIN_API_KEY],
+            None,
+            SecretNormalization::Opaque,
+            source_dir,
+            &mut secrets,
+        )?;
+        externalize_secret(
+            &mut migrated_lnbits.invoice_api_key,
+            &mut resolved_lnbits.invoice_api_key,
+            "lnbits-invoice-api-key",
+            &[crate::env_vars::ENV_LNBITS_INVOICE_API_KEY],
+            None,
+            SecretNormalization::Opaque,
+            source_dir,
+            &mut secrets,
+        )?;
+    }
+
+    #[cfg(feature = "bdk")]
+    if let (Some(migrated_bdk), Some(resolved_bdk)) = (migrated.bdk.as_mut(), resolved.bdk.as_mut())
+    {
+        externalize_optional_secret(
+            &mut migrated_bdk.bitcoind_rpc_password,
+            &mut resolved_bdk.bitcoind_rpc_password,
+            "bdk-bitcoind-rpc-password",
+            &[crate::env_vars::BDK_BITCOIND_RPC_PASSWORD_ENV_VAR],
+            None,
+            SecretNormalization::Opaque,
+            source_dir,
+            &mut secrets,
+        )?;
+        externalize_optional_secret(
+            &mut migrated_bdk.mnemonic,
+            &mut resolved_bdk.mnemonic,
+            "bdk-mnemonic",
+            &[crate::env_vars::BDK_MNEMONIC_ENV_VAR],
+            seed_reference.as_deref(),
+            SecretNormalization::Trim,
+            source_dir,
+            &mut secrets,
+        )?;
+    }
+
+    #[cfg(feature = "ldk-node")]
+    if let (Some(migrated_ldk), Some(resolved_ldk)) =
+        (migrated.ldk_node.as_mut(), resolved.ldk_node.as_mut())
+    {
+        externalize_optional_secret(
+            &mut migrated_ldk.bitcoind_rpc_password,
+            &mut resolved_ldk.bitcoind_rpc_password,
+            "ldk-node-bitcoind-rpc-password",
+            &[crate::env_vars::LDK_NODE_BITCOIND_RPC_PASSWORD_ENV_VAR],
+            None,
+            SecretNormalization::Opaque,
+            source_dir,
+            &mut secrets,
+        )?;
+        externalize_optional_secret(
+            &mut migrated_ldk.ldk_node_mnemonic,
+            &mut resolved_ldk.ldk_node_mnemonic,
+            "ldk-node-mnemonic",
+            &[crate::env_vars::LDK_NODE_MNEMONIC_ENV_VAR],
+            seed_reference.as_deref(),
+            SecretNormalization::Trim,
+            source_dir,
+            &mut secrets,
+        )?;
+    }
+
+    #[cfg(feature = "redis")]
+    if let (
+        cdk_axum::cache::Backend::Redis(migrated_redis),
+        cdk_axum::cache::Backend::Redis(resolved_redis),
+    ) = (
+        &mut migrated.info.http_cache.backend,
+        &mut resolved.info.http_cache.backend,
+    ) {
+        let connection_env_names = std::env::var(ENV_CACHE_BACKEND)
+            .is_ok_and(|backend| backend.eq_ignore_ascii_case("redis"))
+            .then_some([ENV_CACHE_REDIS_URL]);
+        externalize_secret(
+            &mut migrated_redis.connection_string,
+            &mut resolved_redis.connection_string,
+            "redis-connection-string",
+            connection_env_names.as_ref().map_or(&[], |names| names),
+            None,
+            SecretNormalization::Opaque,
+            source_dir,
+            &mut secrets,
+        )?;
+        if let (Some(migrated_nodes), Some(resolved_nodes)) = (
+            migrated_redis.cluster_nodes.as_mut(),
+            resolved_redis.cluster_nodes.as_mut(),
+        ) {
+            for (index, (migrated_node, resolved_node)) in migrated_nodes
+                .iter_mut()
+                .zip(resolved_nodes.iter_mut())
+                .enumerate()
+            {
+                externalize_secret(
+                    migrated_node,
+                    resolved_node,
+                    &format!("redis-cluster-node-{}", index + 1),
+                    &[],
+                    None,
+                    SecretNormalization::Opaque,
+                    source_dir,
+                    &mut secrets,
+                )?;
+            }
+        }
+    }
+
+    crate::validate_settings(&resolved).context("legacy effective configuration is invalid")?;
+    let migrated_document =
+        toml::to_string_pretty(&migrated).context("could not serialize migrated configuration")?;
+    Settings::try_from_toml(&migrated_document)
+        .context("generated configuration did not round-trip through the TOML parser")?;
+
+    ensure_secret_destinations(&secrets, force)?;
+    write_secret_files(&secrets, force)?;
+    if let Err(error) = write_output(&output, &migrated_document, force) {
+        if !force {
+            remove_generated_secrets(&secrets);
+        }
+        return Err(error);
+    }
+
+    Ok(MigrationOutcome {
+        output,
+        secrets_dir: (!secrets.files.is_empty()).then_some(secrets.directory),
+        secret_files_written: secrets.files.len(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn externalize_optional_secret(
+    migrated: &mut Option<String>,
+    resolved: &mut Option<String>,
+    file_name: &str,
+    env_names: &[&str],
+    preferred_reference: Option<&str>,
+    normalization: SecretNormalization,
+    source_dir: &Path,
+    secrets: &mut MigrationSecrets,
+) -> Result<()> {
+    match (migrated.as_mut(), resolved.as_mut()) {
+        (Some(migrated), Some(resolved)) => externalize_secret(
+            migrated,
+            resolved,
+            file_name,
+            env_names,
+            preferred_reference,
+            normalization,
+            source_dir,
+            secrets,
+        ),
+        _ => Ok(()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn externalize_secret(
+    migrated: &mut String,
+    resolved: &mut String,
+    file_name: &str,
+    env_names: &[&str],
+    preferred_reference: Option<&str>,
+    normalization: SecretNormalization,
+    source_dir: &Path,
+    secrets: &mut MigrationSecrets,
+) -> Result<()> {
+    if let Some(reference) = preferred_reference {
+        *migrated = reference.to_owned();
+        normalize_secret(resolved, normalization);
+        return Ok(());
+    }
+
+    if let Some(name) = env_names.iter().find(|name| std::env::var(name).is_ok()) {
+        if resolved.is_empty() {
+            bail!("environment-backed secret {name} is empty");
+        }
+        *migrated = format!("{ENV_SECRET_PREFIX}{name}");
+        normalize_secret(resolved, normalization);
+        return Ok(());
+    }
+
+    if let Some(name) = migrated.strip_prefix(ENV_SECRET_PREFIX) {
+        if name.is_empty() {
+            bail!("empty environment secret reference for {file_name}");
+        }
+        *resolved = std::env::var(name)
+            .with_context(|| format!("could not resolve {file_name} from environment {name}"))?;
+        if resolved.is_empty() {
+            bail!("environment-backed secret {name} is empty");
+        }
+        normalize_secret(resolved, normalization);
+        return Ok(());
+    }
+
+    if let Some(path) = migrated.strip_prefix(FILE_SECRET_PREFIX) {
+        if path.is_empty() {
+            bail!("empty file secret reference for {file_name}");
+        }
+        let path = absolute_from(path, source_dir);
+        *resolved = fs::read_to_string(&path)
+            .with_context(|| format!("could not resolve {file_name} from {}", path.display()))?;
+        if resolved.is_empty() {
+            bail!("file-backed secret {} is empty", path.display());
+        }
+        *migrated = format!("{FILE_SECRET_PREFIX}{}", path.display());
+        normalize_secret(resolved, normalization);
+        return Ok(());
+    }
+
+    if migrated.is_empty() {
+        return Ok(());
+    }
+
+    normalize_secret(resolved, normalization);
+    *migrated = secrets.add(file_name, migrated);
+    Ok(())
+}
+
+fn normalize_secret(value: &mut String, normalization: SecretNormalization) {
+    if matches!(normalization, SecretNormalization::Trim) {
+        *value = value.trim().to_owned();
+    }
+}
+
+fn absolute_from(path: &str, base: &Path) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        base.join(path)
+    }
+}
+
+fn absolute_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_owned())
+    } else {
+        Ok(std::env::current_dir()
+            .context("could not determine current directory")?
+            .join(path))
+    }
+}
+
+fn existing_absolute_path(path: &Path) -> Result<PathBuf> {
+    path.canonicalize()
+        .with_context(|| format!("could not resolve {}", path.display()))
+}
+
+fn ensure_distinct_paths(source: &Path, output: &Path) -> Result<()> {
+    let comparable_output = if output.exists() {
+        output
+            .canonicalize()
+            .with_context(|| format!("could not resolve output {}", output.display()))?
+    } else {
+        output.to_owned()
+    };
+    if source == comparable_output || same_file(source, &comparable_output)? {
+        bail!("migration output must differ from the legacy source document");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn same_file(left: &Path, right: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    if !right.exists() {
+        return Ok(false);
+    }
+    let left = fs::metadata(left)
+        .with_context(|| format!("could not inspect source {}", left.display()))?;
+    let right = fs::metadata(right)
+        .with_context(|| format!("could not inspect output {}", right.display()))?;
+    Ok(left.dev() == right.dev() && left.ino() == right.ino())
+}
+
+#[cfg(not(unix))]
+fn same_file(_left: &Path, _right: &Path) -> Result<bool> {
+    Ok(false)
+}
+
+fn ensure_replaceable(path: &Path, force: bool, kind: &str) -> Result<()> {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if metadata.file_type().is_symlink() {
+            bail!("{kind} {} must not be a symbolic link", path.display());
+        }
+        if has_multiple_hard_links(&metadata) {
+            bail!(
+                "{kind} {} must not have multiple hard links",
+                path.display()
+            );
+        }
+        if !force {
+            bail!(
+                "{kind} {} already exists; pass --force to overwrite it",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn has_multiple_hard_links(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    metadata.nlink() > 1
+}
+
+#[cfg(not(unix))]
+fn has_multiple_hard_links(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
+fn ensure_secret_destinations(secrets: &MigrationSecrets, force: bool) -> Result<()> {
+    for secret in &secrets.files {
+        ensure_replaceable(&secret.path, force, "secret file")?;
+    }
+    Ok(())
+}
+
+fn write_secret_files(secrets: &MigrationSecrets, force: bool) -> Result<()> {
+    if secrets.files.is_empty() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&secrets.directory).with_context(|| {
+        format!(
+            "could not create secrets directory {}",
+            secrets.directory.display()
+        )
+    })?;
+    if fs::symlink_metadata(&secrets.directory)?
+        .file_type()
+        .is_symlink()
+    {
+        bail!(
+            "secrets directory {} must not be a symbolic link",
+            secrets.directory.display()
+        );
+    }
+    set_directory_permissions(&secrets.directory)?;
+
+    let mut written = Vec::new();
+    for secret in &secrets.files {
+        let result = write_secret_file(secret, force);
+        match result {
+            Ok(()) => written.push(secret.path.clone()),
+            Err(error) => {
+                if !force {
+                    let _ = fs::remove_file(&secret.path);
+                    for path in written {
+                        let _ = fs::remove_file(path);
+                    }
+                }
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_secret_file(secret: &SecretFile, force: bool) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    set_secret_creation_mode(&mut options);
+    let mut file = options
+        .open(&secret.path)
+        .with_context(|| format!("could not create secret file {}", secret.path.display()))?;
+    file.write_all(secret.value.as_bytes())
+        .with_context(|| format!("could not write secret file {}", secret.path.display()))?;
+    set_secret_file_permissions(&secret.path)
+}
+
+fn remove_generated_secrets(secrets: &MigrationSecrets) {
+    for secret in &secrets.files {
+        let _ = fs::remove_file(&secret.path);
+    }
+}
+
+fn write_output(path: &Path, document: &str, force: bool) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        anyhow!(
+            "migration output {} has no parent directory",
+            path.display()
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("could not create output directory {}", parent.display()))?;
+
+    let mut options = OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("could not create migration output {}", path.display()))?;
+    if let Err(error) = file
+        .write_all(document.as_bytes())
+        .with_context(|| format!("could not write migration output {}", path.display()))
+    {
+        if !force {
+            let _ = fs::remove_file(path);
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_secret_creation_mode(options: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    options.mode(0o600);
+}
+
+#[cfg(not(unix))]
+fn set_secret_creation_mode(_options: &mut OpenOptions) {}
+
+#[cfg(unix)]
+fn set_directory_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("could not secure secrets directory {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_directory_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_secret_file_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("could not secure secret file {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_secret_file_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::*;
+
+    const TEST_MNEMONIC: &str =
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    struct MintdEnvironment {
+        saved: Vec<(OsString, OsString)>,
+    }
+
+    impl MintdEnvironment {
+        fn cleared() -> Self {
+            let saved = std::env::vars_os()
+                .filter(|(name, _)| name.to_string_lossy().starts_with("CDK_MINTD_"))
+                .collect::<Vec<_>>();
+            for (name, _) in &saved {
+                std::env::remove_var(name);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for MintdEnvironment {
+        fn drop(&mut self) {
+            for (name, _) in std::env::vars_os()
+                .filter(|(name, _)| name.to_string_lossy().starts_with("CDK_MINTD_"))
+            {
+                std::env::remove_var(name);
+            }
+            for (name, value) in &self.saved {
+                std::env::set_var(name, value);
+            }
+        }
+    }
+
+    fn legacy_document(mnemonic: &str) -> String {
+        format!(
+            r#"
+[info]
+mnemonic = "{mnemonic}"
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#
+        )
+    }
+
+    fn migration_paths(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let directory = crate::test_utils::unique_temp_path(name);
+        fs::create_dir_all(&directory).expect("create migration test directory");
+        let source = directory.join("legacy.toml");
+        let output = directory.join("migrated.toml");
+        (directory, source, output)
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_materializes_operational_env_and_preserves_env_secrets() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_env_secret");
+        fs::write(&source, legacy_document(TEST_MNEMONIC)).expect("write legacy config");
+        std::env::set_var(crate::env_vars::ENV_LISTEN_PORT, "8123");
+        std::env::set_var(crate::env_vars::ENV_MNEMONIC, TEST_MNEMONIC);
+
+        let outcome = migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate legacy config");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+
+        assert_eq!(settings.info.listen_port, 8123);
+        assert_eq!(
+            settings.info.mnemonic.as_deref(),
+            Some("env:CDK_MINTD_MNEMONIC")
+        );
+        assert!(!migrated.contains(TEST_MNEMONIC));
+        crate::config_service::ConfigurationService::validate_document(&migrated)
+            .expect("validate migrated document");
+        assert_eq!(outcome.secret_files_written, 0);
+        assert!(outcome.secrets_dir.is_none());
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_extracts_literal_secrets_into_owner_only_files() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_literal_secret");
+        fs::write(&source, legacy_document(TEST_MNEMONIC)).expect("write legacy config");
+
+        let outcome = migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate legacy config");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let secret_path = directory
+            .join(DEFAULT_SECRETS_DIRECTORY)
+            .join("mint-mnemonic");
+
+        assert!(!migrated.contains(TEST_MNEMONIC));
+        assert!(migrated.contains(&format!("file:{}", secret_path.display())));
+        assert_eq!(
+            fs::read_to_string(&secret_path).expect("read extracted mnemonic"),
+            TEST_MNEMONIC
+        );
+        assert_eq!(outcome.secret_files_written, 1);
+        assert_eq!(outcome.secrets_dir.as_deref(), secret_path.parent());
+        crate::config_service::ConfigurationService::validate_document(&migrated)
+            .expect("validate migrated document");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(secret_path.parent().expect("secret parent"))
+                    .expect("secrets directory metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&secret_path)
+                    .expect("secret metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_preserves_legacy_seed_file_as_an_absolute_reference() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_seed_file");
+        let seed_file = directory.join("seed.txt");
+        fs::write(&source, legacy_document(TEST_MNEMONIC)).expect("write legacy config");
+        fs::write(&seed_file, TEST_MNEMONIC).expect("write legacy seed file");
+
+        let outcome = migrate_legacy_configuration(&source, &output, None, Some(&seed_file), false)
+            .expect("migrate legacy seed file");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+        let canonical_seed_file = seed_file.canonicalize().expect("canonical seed path");
+
+        let expected_reference = format!("file:{}", canonical_seed_file.display());
+        assert_eq!(
+            settings.info.mnemonic.as_deref(),
+            Some(expected_reference.as_str())
+        );
+        assert_eq!(outcome.secret_files_written, 0);
+        assert!(outcome.secrets_dir.is_none());
+        crate::config_service::ConfigurationService::validate_document(&migrated)
+            .expect("validate migrated document");
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_refuses_to_overwrite_source_or_output_by_default() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_no_overwrite");
+        let document = legacy_document(TEST_MNEMONIC);
+        fs::write(&source, &document).expect("write legacy config");
+        fs::write(&output, "existing").expect("write existing output");
+
+        let output_error = migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect_err("existing output should fail");
+        assert!(output_error.to_string().contains("already exists"));
+
+        let source_error = migrate_legacy_configuration(&source, &source, None, None, true)
+            .expect_err("source overwrite should fail");
+        assert!(source_error.to_string().contains("must differ"));
+
+        #[cfg(unix)]
+        {
+            let hard_link = directory.join("legacy-hard-link.toml");
+            fs::hard_link(&source, &hard_link).expect("create source hard link");
+            let hard_link_error =
+                migrate_legacy_configuration(&source, &hard_link, None, None, true)
+                    .expect_err("source hard-link overwrite should fail");
+            assert!(hard_link_error.to_string().contains("must differ"));
+        }
+
+        assert_eq!(
+            fs::read_to_string(&source).expect("read preserved source"),
+            document
+        );
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+}

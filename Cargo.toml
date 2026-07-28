@@ -86,6 +86,7 @@ ldk-node = "0.7.0"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 thiserror = { version = "2" }
+toml = { version = "0.8.23", default-features = false, features = ["display"] }
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "test-util", "sync", "time"] }
 tokio-util = { version = "0.7.11", default-features = false }
 tower = "0.5.2"

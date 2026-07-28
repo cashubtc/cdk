@@ -107,6 +107,11 @@ on the running mint or its next startup.
 ### Configuration Commands
 
 ```bash
+# Convert a legacy file plus its active CDK_MINTD_* overrides
+cdk-mintd config migrate \
+  --file /path/to/legacy-config.toml \
+  --output /path/to/migrated-config.toml
+
 # Validate locally; no database or RPC mutation
 cdk-mintd config validate --file /path/to/config.toml
 
@@ -125,6 +130,20 @@ cdk-mintd config export --file /path/to/exported-config.toml
 # Explicitly replace an existing export
 cdk-mintd config export --file /path/to/exported-config.toml --force
 ```
+
+`config migrate` reproduces the legacy file-plus-environment precedence once and
+writes a complete import document; it does not open the database or change the
+source file. Environment-backed secrets become explicit `env:VARIABLE`
+references. Literal secrets in the legacy TOML are copied into owner-only files
+under `cdk-mintd-secrets/` beside the output document and become absolute
+`file:` references. Use `--secrets-dir <path>` to choose another directory and
+`--force` to replace files created by an earlier migration attempt. If the old
+service used `--seed-file`, pass the same global option to `config migrate`; the
+generated document references that existing file directly.
+
+The migrated document is normalized and includes effective defaults, so comments
+and the original TOML layout are not preserved. Review it and run `config
+validate` before `config init`.
 
 `config apply`, `show`, and `export` access the authoritative database directly.
 Export refuses to overwrite an existing file unless `--force` is passed.

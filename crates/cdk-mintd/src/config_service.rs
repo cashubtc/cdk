@@ -391,7 +391,7 @@ fn same_primary_database(configured: &Database, bootstrap: &Database) -> bool {
     }
 }
 
-fn prune_inactive_configuration(settings: &mut Settings) {
+pub(crate) fn prune_inactive_configuration(settings: &mut Settings) {
     if settings.database.engine != DatabaseEngine::Postgres {
         settings.database.postgres = None;
     }
