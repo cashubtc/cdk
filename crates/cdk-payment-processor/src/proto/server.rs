@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -11,48 +10,21 @@ use cdk_common::payment::{DynMintPayment, IncomingPaymentOptions};
 use cdk_common::{CurrencyUnit, QuoteId};
 use futures::Stream;
 use lightning::offers::offer::Offer;
-use tokio::sync::Notify;
+use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, Instant};
+use tokio::time::timeout;
+use tokio_stream::wrappers::TcpListenerStream;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 use tonic::{async_trait, Request, Response, Status};
 use tracing::instrument;
 
 use super::cdk_payment_processor_server::{CdkPaymentProcessor, CdkPaymentProcessorServer};
-use crate::error::Error;
+use super::service::PaymentProcessorService;
+use crate::error::{payment_error_to_status, Error};
 use crate::proto::{TryFromProtoAmount, *};
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<PaymentEventResponse, Status>> + Send>>;
-
-#[derive(Clone)]
-pub(crate) struct PaymentProcessorService {
-    inner: DynMintPayment,
-}
-
-impl std::fmt::Debug for PaymentProcessorService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PaymentProcessorService")
-            .finish_non_exhaustive()
-    }
-}
-
-impl PaymentProcessorService {
-    pub(crate) fn new(inner: DynMintPayment) -> Self {
-        Self { inner }
-    }
-
-    pub(crate) async fn start(&self) -> Result<(), cdk_common::payment::Error> {
-        self.inner.start().await
-    }
-
-    pub(crate) async fn stop(&self) -> Result<(), cdk_common::payment::Error> {
-        self.inner.stop().await
-    }
-
-    pub(crate) fn cancel_payment_event_stream(&self) {
-        self.inner.cancel_payment_event_stream();
-    }
-}
 
 struct PaymentEventStream {
     inner: Pin<Box<dyn Stream<Item = cdk_common::payment::Event> + Send>>,
@@ -85,12 +57,12 @@ impl Drop for PaymentEventStream {
 }
 
 /// Payment Processor
-#[derive(Clone)]
 pub struct PaymentProcessorServer {
     service: PaymentProcessorService,
     socket_addr: SocketAddr,
-    shutdown: Arc<Notify>,
-    handle: Option<Arc<JoinHandle<anyhow::Result<()>>>>,
+    shutdown: Option<CancellationToken>,
+    handle: Option<JoinHandle<anyhow::Result<()>>>,
+    backend_started: bool,
 }
 
 impl std::fmt::Debug for PaymentProcessorServer {
@@ -108,13 +80,23 @@ impl PaymentProcessorServer {
         Ok(Self {
             service: PaymentProcessorService::new(payment_processor),
             socket_addr,
-            shutdown: Arc::new(Notify::new()),
+            shutdown: None,
             handle: None,
+            backend_started: false,
         })
+    }
+
+    /// Return the address on which the server is configured or currently listening.
+    pub fn local_addr(&self) -> SocketAddr {
+        self.socket_addr
     }
 
     /// Start the payment processor gRPC server.
     pub async fn start(&mut self, tls_dir: Option<PathBuf>) -> anyhow::Result<()> {
+        if self.handle.is_some() || self.backend_started {
+            anyhow::bail!("Payment processor server is already running");
+        }
+
         tracing::info!("Starting RPC server {}", self.socket_addr);
 
         let server = match tls_dir {
@@ -181,57 +163,65 @@ impl PaymentProcessorServer {
             }
         };
 
+        let listener = TcpListener::bind(self.socket_addr).await?;
+        self.socket_addr = listener.local_addr()?;
+        let incoming = TcpListenerStream::new(listener);
+
         self.service.start().await?;
+        self.backend_started = true;
 
-        let shutdown = self.shutdown.clone();
-        let addr = self.socket_addr;
-
-        self.handle = Some(Arc::new(tokio::spawn(async move {
-            let server = server.serve_with_shutdown(addr, async {
-                shutdown.notified().await;
-            });
-
-            server.await?;
+        let shutdown = CancellationToken::new();
+        let shutdown_future = shutdown.clone().cancelled_owned();
+        self.shutdown = Some(shutdown);
+        self.handle = Some(tokio::spawn(async move {
+            server
+                .serve_with_incoming_shutdown(incoming, shutdown_future)
+                .await?;
             Ok(())
-        })));
+        }));
 
         Ok(())
     }
 
     /// Stop the payment processor gRPC server.
-    pub async fn stop(&self) -> anyhow::Result<()> {
+    pub async fn stop(&mut self) -> anyhow::Result<()> {
         const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
         self.service.cancel_payment_event_stream();
 
-        if let Some(handle) = &self.handle {
+        if let Some(shutdown) = self.shutdown.take() {
             tracing::info!("Initiating server shutdown");
-            self.shutdown.notify_waiters();
+            shutdown.cancel();
+        }
 
-            let start = Instant::now();
-
-            while !handle.is_finished() {
-                if start.elapsed() >= SHUTDOWN_TIMEOUT {
+        let server_result = match self.handle.take() {
+            Some(mut handle) => match timeout(SHUTDOWN_TIMEOUT, &mut handle).await {
+                Ok(Ok(result)) => result,
+                Ok(Err(error)) => Err(error.into()),
+                Err(_) => {
                     tracing::error!(
                         "Server shutdown timed out after {} seconds, aborting handle",
                         SHUTDOWN_TIMEOUT.as_secs()
                     );
                     handle.abort();
-                    break;
+                    let _ = handle.await;
+                    Err(anyhow::anyhow!(
+                        "Payment processor server shutdown timed out"
+                    ))
                 }
-                sleep(Duration::from_millis(100)).await;
-            }
+            },
+            None => Ok(()),
+        };
 
-            if handle.is_finished() {
-                tracing::info!("Server shutdown completed successfully");
-            }
+        let backend_result = if self.backend_started {
+            self.backend_started = false;
+            self.service.stop().await.map_err(anyhow::Error::from)
         } else {
-            tracing::info!("No server handle found, nothing to stop");
-        }
+            Ok(())
+        };
 
-        self.service.stop().await?;
-
-        Ok(())
+        backend_result?;
+        server_result
     }
 }
 
@@ -239,7 +229,17 @@ impl Drop for PaymentProcessorServer {
     fn drop(&mut self) {
         tracing::debug!("Dropping payment processor server");
         self.service.cancel_payment_event_stream();
-        self.shutdown.notify_one();
+        if let Some(shutdown) = &self.shutdown {
+            shutdown.cancel();
+        }
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+        if self.backend_started {
+            tracing::warn!(
+                "Payment processor server dropped while running; backend stop was not awaited"
+            );
+        }
     }
 }
 
@@ -253,7 +253,7 @@ impl CdkPaymentProcessor for PaymentProcessorService {
             .inner
             .get_settings()
             .await
-            .map_err(|_| Status::internal("Could not get settings"))?;
+            .map_err(payment_error_to_status)?;
 
         Ok(Response::new(SettingsResponse {
             unit: settings.unit,
@@ -345,7 +345,7 @@ impl CdkPaymentProcessor for PaymentProcessorService {
             .inner
             .create_incoming_payment_request(proto_options)
             .await
-            .map_err(|_| Status::internal("Could not create invoice"))?;
+            .map_err(payment_error_to_status)?;
 
         Ok(Response::new(invoice_response.into()))
     }
@@ -453,7 +453,7 @@ impl CdkPaymentProcessor for PaymentProcessorService {
             .await
             .map_err(|err| {
                 tracing::error!("Could not get payment quote: {}", err);
-                Status::internal("Could not get quote")
+                payment_error_to_status(err)
             })?;
 
         Ok(Response::new(payment_quote.into()))
@@ -575,16 +575,7 @@ impl CdkPaymentProcessor for PaymentProcessorService {
             .await
             .map_err(|err| {
                 tracing::error!("Could not make payment: {}", err);
-
-                match err {
-                    cdk_common::payment::Error::InvoiceAlreadyPaid => {
-                        Status::already_exists("Payment request already paid")
-                    }
-                    cdk_common::payment::Error::InvoicePaymentPending => {
-                        Status::aborted("Payment request pending")
-                    }
-                    _ => Status::internal("Could not pay invoice"),
-                }
+                payment_error_to_status(err)
             })?;
 
         Ok(Response::new(pay_response.into()))
@@ -606,7 +597,7 @@ impl CdkPaymentProcessor for PaymentProcessorService {
             .inner
             .check_incoming_payment_status(&payment_identifier)
             .await
-            .map_err(|_| Status::internal("Could not check incoming payment status"))?;
+            .map_err(payment_error_to_status)?;
 
         Ok(Response::new(CheckIncomingPaymentResponse {
             payments: check_responses.into_iter().map(|r| r.into()).collect(),
@@ -629,7 +620,7 @@ impl CdkPaymentProcessor for PaymentProcessorService {
             .inner
             .check_outgoing_payment(&payment_identifier)
             .await
-            .map_err(|_| Status::internal("Could not check outgoing payment status"))?;
+            .map_err(payment_error_to_status)?;
 
         Ok(Response::new(check_response.into()))
     }
@@ -645,7 +636,7 @@ impl CdkPaymentProcessor for PaymentProcessorService {
         tracing::debug!("Server waiting for payment stream");
         let stream = self.inner.wait_payment_event().await.map_err(|err| {
             tracing::warn!("Could not get payment event stream: {}", err);
-            Status::internal("Could not get payment event stream")
+            payment_error_to_status(err)
         })?;
         let output_stream = PaymentEventStream {
             inner: stream,

@@ -45,7 +45,7 @@ serde_with.workspace = true
 tonic = { workspace = true, features = ["transport", "tls-ring", "codegen", "router"] }
 tonic-prost.workspace = true
 prost.workspace = true
-tokio-stream.workspace = true
+tokio-stream = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true, default-features = false }
 hex = "0.4"
 lightning = { workspace = true }

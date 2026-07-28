@@ -1,7 +1,10 @@
 //! Error for payment processor
 
 use thiserror::Error;
-use tonic::Status;
+use tonic::metadata::MetadataValue;
+use tonic::{Code, Status};
+
+const PAYMENT_ERROR_METADATA_KEY: &str = "cdk-payment-error";
 
 /// CDK Payment processor error
 #[derive(Debug, Error)]
@@ -66,7 +69,7 @@ impl From<Error> for Status {
             Error::Bolt12Parse => Status::invalid_argument("BOLT12 parse error"),
             Error::NUT00(err) => Status::internal(format!("NUT00 error: {err}")),
             Error::NUT05(err) => Status::internal(format!("NUT05 error: {err}")),
-            Error::Payment(err) => Status::internal(format!("Payment error: {err}")),
+            Error::Payment(err) => payment_error_to_status(err),
         }
     }
 }
@@ -92,5 +95,109 @@ impl From<Error> for cdk_common::payment::Error {
             Error::NUT05(err) => err.into(),
             Error::Payment(err) => err,
         }
+    }
+}
+
+pub(crate) fn payment_error_to_status(error: cdk_common::payment::Error) -> Status {
+    let (code, error_name) = match &error {
+        cdk_common::payment::Error::InvoiceAlreadyPaid => {
+            (Code::AlreadyExists, "invoice_already_paid")
+        }
+        cdk_common::payment::Error::InvoicePaymentPending => {
+            (Code::Aborted, "invoice_payment_pending")
+        }
+        cdk_common::payment::Error::UnsupportedUnit => (Code::InvalidArgument, "unsupported_unit"),
+        cdk_common::payment::Error::UnsupportedPaymentOption => {
+            (Code::Unimplemented, "unsupported_payment_option")
+        }
+        cdk_common::payment::Error::UnknownPaymentState => {
+            (Code::NotFound, "unknown_payment_state")
+        }
+        cdk_common::payment::Error::AmountMismatch => (Code::InvalidArgument, "amount_mismatch"),
+        cdk_common::payment::Error::InvalidExpiry => (Code::InvalidArgument, "invalid_expiry"),
+        cdk_common::payment::Error::InvalidHash => (Code::InvalidArgument, "invalid_hash"),
+        cdk_common::payment::Error::Serde(_)
+        | cdk_common::payment::Error::Parse(_)
+        | cdk_common::payment::Error::Amount(_)
+        | cdk_common::payment::Error::NUT04(_)
+        | cdk_common::payment::Error::NUT05(_)
+        | cdk_common::payment::Error::NUT23(_)
+        | cdk_common::payment::Error::Hex(_) => (Code::InvalidArgument, "invalid_backend_input"),
+        cdk_common::payment::Error::Lightning(_)
+        | cdk_common::payment::Error::Onchain(_)
+        | cdk_common::payment::Error::Anyhow(_) => (Code::Internal, "backend_error"),
+        cdk_common::payment::Error::Custom(_) => (Code::Internal, "custom"),
+    };
+
+    let mut status = Status::new(code, error.to_string());
+    status.metadata_mut().insert(
+        tonic::metadata::MetadataKey::from_static(PAYMENT_ERROR_METADATA_KEY),
+        MetadataValue::from_static(error_name),
+    );
+    status
+}
+
+pub(crate) fn payment_error_from_status(status: Status) -> cdk_common::payment::Error {
+    let error_name = status
+        .metadata()
+        .get(PAYMENT_ERROR_METADATA_KEY)
+        .and_then(|value| value.to_str().ok());
+
+    match error_name {
+        Some("invoice_already_paid") => cdk_common::payment::Error::InvoiceAlreadyPaid,
+        Some("invoice_payment_pending") => cdk_common::payment::Error::InvoicePaymentPending,
+        Some("unsupported_unit") => cdk_common::payment::Error::UnsupportedUnit,
+        Some("unsupported_payment_option") => cdk_common::payment::Error::UnsupportedPaymentOption,
+        Some("unknown_payment_state") => cdk_common::payment::Error::UnknownPaymentState,
+        Some("amount_mismatch") => cdk_common::payment::Error::AmountMismatch,
+        Some("invalid_expiry") => cdk_common::payment::Error::InvalidExpiry,
+        Some("invalid_hash") => cdk_common::payment::Error::InvalidHash,
+        Some("custom" | "invalid_backend_input" | "backend_error") => {
+            cdk_common::payment::Error::Custom(status.message().to_owned())
+        }
+        _ if status.code() == Code::AlreadyExists || status.message().contains("already paid") => {
+            cdk_common::payment::Error::InvoiceAlreadyPaid
+        }
+        _ if status.code() == Code::Aborted || status.message().contains("pending") => {
+            cdk_common::payment::Error::InvoicePaymentPending
+        }
+        _ => cdk_common::payment::Error::Custom(status.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cdk_common::payment::Error as PaymentError;
+
+    use super::{payment_error_from_status, payment_error_to_status};
+
+    #[test]
+    fn structured_payment_errors_roundtrip_through_status() {
+        let errors = [
+            PaymentError::InvoiceAlreadyPaid,
+            PaymentError::InvoicePaymentPending,
+            PaymentError::UnsupportedUnit,
+            PaymentError::UnsupportedPaymentOption,
+            PaymentError::UnknownPaymentState,
+            PaymentError::AmountMismatch,
+            PaymentError::InvalidExpiry,
+            PaymentError::InvalidHash,
+        ];
+
+        for error in errors {
+            let expected = error.to_string();
+            let roundtrip = payment_error_from_status(payment_error_to_status(error));
+            assert_eq!(roundtrip.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn legacy_payment_statuses_remain_supported() {
+        let already_paid =
+            payment_error_from_status(tonic::Status::already_exists("Payment already paid"));
+        assert!(matches!(already_paid, PaymentError::InvoiceAlreadyPaid));
+
+        let pending = payment_error_from_status(tonic::Status::aborted("Payment pending"));
+        assert!(matches!(pending, PaymentError::InvoicePaymentPending));
     }
 }

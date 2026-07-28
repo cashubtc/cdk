@@ -10,6 +10,7 @@ use cdk_common::{CurrencyUnit, MeltOptions as CdkMeltOptions};
 
 mod client;
 mod server;
+mod service;
 
 pub use client::PaymentProcessorClient;
 pub use server::PaymentProcessorServer;
