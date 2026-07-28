@@ -57,14 +57,14 @@ impl WsSender {
     pub async fn send(&mut self, text: String) -> Result<(), WsError> {
         self.ws
             .send_with_str(&text)
-            .map_err(|e| WsError::Send(format!("{:?}", e)))
+            .map_err(|e| WsError::Transient(format!("{:?}", e)))
     }
 
     /// Send a close frame
     pub async fn close(&mut self) -> Result<(), WsError> {
         self.ws
             .close()
-            .map_err(|e| WsError::Send(format!("{:?}", e)))
+            .map_err(|e| WsError::Transient(format!("{:?}", e)))
     }
 }
 
@@ -91,7 +91,7 @@ pub async fn connect(
         );
     }
 
-    let ws = WebSocket::new(url).map_err(|e| WsError::Connection(format!("{:?}", e)))?;
+    let ws = WebSocket::new(url).map_err(|e| WsError::Terminal(format!("{:?}", e)))?;
     ws.set_binary_type(BinaryType::Arraybuffer);
 
     let (msg_tx, msg_rx) = mpsc::unbounded::<Result<String, WsError>>();
@@ -123,11 +123,18 @@ pub async fn connect(
     let open_tx_err = Rc::clone(&open_tx);
     let msg_tx_err: mpsc::UnboundedSender<Result<String, WsError>> = msg_tx.clone();
     let onerror = Closure::<dyn FnMut(ErrorEvent)>::new(move |_e: ErrorEvent| {
-        let err = WsError::Connection("WebSocket error".to_string());
         if let Some(tx) = open_tx_err.borrow_mut().take() {
-            let _ = tx.send(Err(err));
+            // Browsers do not expose the HTTP status or handshake failure
+            // reason. Treat an initial failure as unsupported so a permanent
+            // 404 or authentication rejection falls back to polling instead
+            // of reconnecting forever.
+            let _ = tx.send(Err(WsError::NotSupported(
+                "the browser rejected the WebSocket connection".to_string(),
+            )));
         } else {
-            let _ = msg_tx_err.unbounded_send(Err(err));
+            let _ = msg_tx_err.unbounded_send(Err(WsError::Transient(
+                "WebSocket connection failed".to_string(),
+            )));
         }
     });
     ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
@@ -141,7 +148,7 @@ pub async fn connect(
     // Wait for the connection to open (or fail)
     open_rx
         .await
-        .map_err(|_| WsError::Connection("open channel dropped".to_string()))??;
+        .map_err(|_| WsError::Terminal("open channel dropped".to_string()))??;
 
     let ws_clone = ws.clone();
     Ok((

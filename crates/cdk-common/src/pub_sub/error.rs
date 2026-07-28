@@ -25,6 +25,10 @@ pub enum Error {
     #[error("Not supported")]
     NotSupported,
 
+    /// A terminal transport error that must not be retried
+    #[error("Terminal error {0}")]
+    Terminal(String),
+
     /// Channel is full
     #[error("Channel is full")]
     ChannelFull,

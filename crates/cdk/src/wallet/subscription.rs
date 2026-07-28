@@ -548,7 +548,7 @@ async fn stream_client(
         };
 
         sub_id_to_kind.insert(name, kind);
-        let _ = sender.send(req).await;
+        sender.send(req).await.map_err(map_ws_error)?;
     }
 
     loop {
@@ -563,7 +563,7 @@ async fn stream_client(
                             continue;
                         };
                         sub_id_to_kind.insert(msg.0, kind);
-                        let _ = sender.send(req).await;
+                        sender.send(req).await.map_err(map_ws_error)?;
                     }
                     StreamCtrl::Unsubscribe(msg) => {
                         sub_id_to_kind.remove(&msg);
@@ -572,29 +572,29 @@ async fn stream_client(
                         } else {
                             continue;
                         };
-                        let _ = sender.send(req).await;
+                        sender.send(req).await.map_err(map_ws_error)?;
                     }
                     StreamCtrl::Stop => {
                         if let Err(err) = sender.close().await {
                             tracing::error!("Closing error {err:?}");
                         }
-                        break;
+                        return Ok(());
                     }
                 };
             }
             msg = receiver.recv() => {
                 let msg = match msg {
                     Some(Ok(msg)) => msg,
-                    Some(Err(_)) => {
+                    Some(Err(err)) => {
                         if let Err(err) = sender.close().await {
                             tracing::error!("Closing error {err:?}");
                         }
-                        sub_id_to_kind.clear();
-                        break;
+                        return Err(map_ws_error(err));
                     }
                     None => {
-                        sub_id_to_kind.clear();
-                        break;
+                        return Err(PubsubError::InternalStr(
+                            "WebSocket stream closed unexpectedly".to_string(),
+                        ));
                     }
                 };
                 let msg = match serde_json::from_str::<RawWsMessageOrResponse<String>>(&msg) {
@@ -629,14 +629,13 @@ async fn stream_client(
             }
         }
     }
-
-    Ok(())
 }
 
 fn map_ws_error(err: WsError) -> PubsubError {
     match err {
-        WsError::Connection(_) => PubsubError::NotSupported,
-        other => PubsubError::InternalStr(other.to_string()),
+        WsError::Transient(message) => PubsubError::InternalStr(message),
+        WsError::NotSupported(_) => PubsubError::NotSupported,
+        WsError::Terminal(message) => PubsubError::Terminal(message),
     }
 }
 
@@ -645,6 +644,27 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn transient_websocket_failure_keeps_streaming_enabled() {
+        let error = map_ws_error(WsError::Transient("temporary disconnect".to_string()));
+
+        assert!(matches!(error, PubsubError::InternalStr(_)));
+    }
+
+    #[test]
+    fn unsupported_websocket_failure_disables_streaming() {
+        let error = map_ws_error(WsError::NotSupported("404".to_string()));
+
+        assert!(matches!(error, PubsubError::NotSupported));
+    }
+
+    #[test]
+    fn terminal_websocket_failure_disables_streaming() {
+        let error = map_ws_error(WsError::Terminal("attestation failed".to_string()));
+
+        assert!(matches!(error, PubsubError::Terminal(_)));
+    }
 
     #[test]
     fn decode_proof_state_notification() {
