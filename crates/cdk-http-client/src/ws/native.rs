@@ -41,7 +41,7 @@ impl WsSender {
         self.inner
             .send(Message::Text(text.into()))
             .await
-            .map_err(|e| WsError::Send(e.to_string()))
+            .map_err(WsError::from_tungstenite)
     }
 
     /// Send a close frame
@@ -49,7 +49,7 @@ impl WsSender {
         self.inner
             .send(Message::Close(None))
             .await
-            .map_err(|e| WsError::Send(e.to_string()))
+            .map_err(WsError::from_tungstenite)
     }
 }
 
@@ -62,7 +62,7 @@ impl WsReceiver {
                 Some(Ok(Message::Text(text))) => return Some(Ok(text.to_string())),
                 Some(Ok(Message::Close(_))) | None => return None,
                 Some(Ok(_)) => continue, // skip binary, ping, pong
-                Some(Err(e)) => return Some(Err(WsError::Receive(e.to_string()))),
+                Some(Err(e)) => return Some(Err(WsError::from_tungstenite(e))),
             }
         }
     }
@@ -102,20 +102,27 @@ pub async fn connect(
 ) -> Result<(WsSender, WsReceiver), WsError> {
     let mut request = url
         .into_client_request()
-        .map_err(|e| WsError::Connection(e.to_string()))?;
+        .map_err(|e| WsError::Terminal(e.to_string()))?;
 
     for &(name, value) in headers {
-        if let (Ok(header_name), Ok(header_value)) = (
-            name.parse::<tokio_tungstenite::tungstenite::http::header::HeaderName>(),
-            value.parse::<tokio_tungstenite::tungstenite::http::header::HeaderValue>(),
-        ) {
-            request.headers_mut().insert(header_name, header_value);
-        }
+        let header_name = name
+            .parse::<tokio_tungstenite::tungstenite::http::header::HeaderName>()
+            .map_err(|error| {
+                WsError::Terminal(format!("invalid WebSocket header name `{name}`: {error}"))
+            })?;
+        let header_value = value
+            .parse::<tokio_tungstenite::tungstenite::http::header::HeaderValue>()
+            .map_err(|error| {
+                WsError::Terminal(format!(
+                    "invalid value for WebSocket header `{name}`: {error}"
+                ))
+            })?;
+        request.headers_mut().insert(header_name, header_value);
     }
 
     let (ws_stream, _) = tokio_tungstenite::connect_async(request)
         .await
-        .map_err(|e| WsError::Connection(e.to_string()))?;
+        .map_err(WsError::from_tungstenite)?;
 
     Ok(from_websocket_stream(ws_stream))
 }
@@ -128,37 +135,44 @@ pub(crate) async fn connect_tor(
     headers: &[(&str, &str)],
 ) -> Result<(WsSender, WsReceiver), WsError> {
     let parsed_url =
-        url::Url::parse(url).map_err(|e| WsError::Connection(format!("Invalid URL: {e}")))?;
+        url::Url::parse(url).map_err(|e| WsError::Terminal(format!("Invalid URL: {e}")))?;
 
     let host = parsed_url
         .host_str()
-        .ok_or_else(|| WsError::Connection("WebSocket URL must include a host".to_string()))?;
+        .ok_or_else(|| WsError::Terminal("WebSocket URL must include a host".to_string()))?;
     let port = parsed_url
         .port_or_known_default()
-        .ok_or_else(|| WsError::Connection("WebSocket URL must include a port".to_string()))?;
+        .ok_or_else(|| WsError::Terminal("WebSocket URL must include a port".to_string()))?;
 
     let mut request = url
         .into_client_request()
-        .map_err(|e| WsError::Connection(e.to_string()))?;
+        .map_err(|e| WsError::Terminal(e.to_string()))?;
 
     for &(name, value) in headers {
-        if let (Ok(header_name), Ok(header_value)) = (
-            name.parse::<tokio_tungstenite::tungstenite::http::header::HeaderName>(),
-            value.parse::<tokio_tungstenite::tungstenite::http::header::HeaderValue>(),
-        ) {
-            request.headers_mut().insert(header_name, header_value);
-        }
+        let header_name = name
+            .parse::<tokio_tungstenite::tungstenite::http::header::HeaderName>()
+            .map_err(|error| {
+                WsError::Terminal(format!("invalid WebSocket header name `{name}`: {error}"))
+            })?;
+        let header_value = value
+            .parse::<tokio_tungstenite::tungstenite::http::header::HeaderValue>()
+            .map_err(|error| {
+                WsError::Terminal(format!(
+                    "invalid value for WebSocket header `{name}`: {error}"
+                ))
+            })?;
+        request.headers_mut().insert(header_name, header_value);
     }
 
     let stream = tor_client
         .connect((host, port))
         .await
-        .map_err(|e| WsError::Connection(e.to_string()))?;
+        .map_err(|e| WsError::Transient(e.to_string()))?;
 
     let (ws_stream, _) =
         tokio_tungstenite::client_async_tls_with_config(request, stream, None, None)
             .await
-            .map_err(|e| WsError::Connection(e.to_string()))?;
+            .map_err(WsError::from_tungstenite)?;
 
     Ok(from_websocket_stream(ws_stream))
 }
