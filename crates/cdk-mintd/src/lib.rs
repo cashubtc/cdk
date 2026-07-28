@@ -58,8 +58,12 @@ use tracing_subscriber::EnvFilter;
 
 pub mod cli;
 pub mod config;
+mod config_service;
+mod config_store;
 pub mod env_vars;
 pub mod setup;
+
+pub use config_service::ApplyOutcome;
 
 #[cfg(test)]
 pub(crate) mod test_utils {
@@ -87,6 +91,12 @@ pub(crate) mod test_utils {
 const CARGO_PKG_VERSION: Option<&'static str> = option_env!("CARGO_PKG_VERSION");
 const DEFAULT_BATCH_MINT_SIZE: u64 = 100;
 const REQUEST_BODY_LIMIT_BYTES: usize = 1_048_576;
+
+#[derive(Debug, Clone)]
+struct ConfigurationActivation {
+    service: config_service::ConfigurationService,
+    expected_document: String,
+}
 
 fn extract_supported_payment_methods(mint_info: &cdk::nuts::MintInfo) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -294,7 +304,7 @@ fn load_settings_from_sources(
     settings.from_env()
 }
 
-fn validate_settings(settings: &config::Settings) -> Result<()> {
+pub(crate) fn validate_settings(settings: &config::Settings) -> Result<()> {
     validate_listen_config(settings)?;
     validate_signing_config(settings)?;
     validate_lightning_config(settings)?;
@@ -1581,6 +1591,48 @@ async fn build_mint(
     }
 }
 
+async fn reconcile_canonical_configuration(
+    mint: &Mint,
+    mut configured_mint_info: cdk::nuts::MintInfo,
+    configured_quote_ttl: QuoteTTL,
+    preserve_database_values: bool,
+) -> Result<()> {
+    if !preserve_database_values {
+        tracing::info!(
+            "Applying mint info and quote TTL from the database-backed configuration document."
+        );
+        if let Ok(stored_mint_info) = mint.mint_info().await {
+            if configured_mint_info.pubkey.is_none() {
+                configured_mint_info.pubkey = stored_mint_info.pubkey;
+            }
+        }
+        mint.set_mint_info(configured_mint_info).await?;
+        mint.set_quote_ttl(configured_quote_ttl).await?;
+        return Ok(());
+    }
+
+    if mint.mint_info().await.is_err() {
+        tracing::info!("Mint info not set on mint, setting.");
+        mint.set_mint_info(configured_mint_info).await?;
+        mint.set_quote_ttl(configured_quote_ttl).await?;
+        return Ok(());
+    }
+
+    if !mint.quote_ttl_is_persisted().await? {
+        mint.set_quote_ttl(configured_quote_ttl).await?;
+    }
+    let mint_version = MintVersion::new(
+        "cdk-mintd".to_string(),
+        CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
+    );
+    let mut stored_mint_info = mint.mint_info().await?;
+    stored_mint_info.version = Some(mint_version);
+    mint.set_mint_info(stored_mint_info).await?;
+    tracing::info!("Preserving RPC-managed mint info from the database.");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn start_services_with_shutdown(
     mint: Arc<cdk::mint::Mint>,
     settings: &config::Settings,
@@ -1589,6 +1641,8 @@ async fn start_services_with_shutdown(
     shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
     routers: Vec<Router>,
     auth_localstore: Option<cdk_common::database::DynMintAuthDatabase>,
+    force_configuration: bool,
+    activation: Option<ConfigurationActivation>,
 ) -> Result<()> {
     let listen_addr = settings.info.listen_host.clone();
     let listen_port = settings.info.listen_port;
@@ -1601,6 +1655,8 @@ async fn start_services_with_shutdown(
 
     #[cfg(feature = "management-rpc")]
     let mut rpc_server: Option<cdk_mint_rpc::MintRPCServer> = None;
+    #[cfg(feature = "management-rpc")]
+    let mut rpc_to_start = None;
 
     #[cfg(feature = "management-rpc")]
     {
@@ -1608,7 +1664,7 @@ async fn start_services_with_shutdown(
             if rpc_settings.enabled {
                 let addr = rpc_settings.address.unwrap_or("127.0.0.1".to_string());
                 let port = rpc_settings.port.unwrap_or(8086);
-                let mut mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
+                let mint_rpc = cdk_mint_rpc::MintRPCServer::new(&addr, port, mint.clone())?;
 
                 let tls_dir = rpc_settings.tls_dir.unwrap_or(_work_dir.join("tls"));
 
@@ -1630,10 +1686,7 @@ async fn start_services_with_shutdown(
                     );
                 };
 
-                mint_rpc.start(tls_dir).await?;
-
-                rpc_server = Some(mint_rpc);
-
+                rpc_to_start = Some((mint_rpc, tls_dir));
                 rpc_enabled = true;
             }
         }
@@ -1642,41 +1695,30 @@ async fn start_services_with_shutdown(
     // Determine the desired QuoteTTL from config/env or fall back to defaults
     let desired_quote_ttl: QuoteTTL = settings.info.quote_ttl.unwrap_or_default();
 
-    if rpc_enabled {
-        if mint.mint_info().await.is_err() {
-            tracing::info!("Mint info not set on mint, setting.");
-            // First boot with RPC enabled: seed from config
-            mint.set_mint_info(mint_builder_info).await?;
-            mint.set_quote_ttl(desired_quote_ttl).await?;
-        } else {
-            // If QuoteTTL has never been persisted, seed it now from config
-            if !mint.quote_ttl_is_persisted().await? {
-                mint.set_quote_ttl(desired_quote_ttl).await?;
-            }
-            // Add/refresh version information without altering stored mint_info fields
-            let mint_version = MintVersion::new(
-                "cdk-mintd".to_string(),
-                CARGO_PKG_VERSION.unwrap_or("Unknown").to_string(),
+    reconcile_canonical_configuration(
+        mint.as_ref(),
+        mint_builder_info,
+        desired_quote_ttl,
+        rpc_enabled && !force_configuration,
+    )
+    .await?;
+
+    if let Some(activation) = activation {
+        if !activation
+            .service
+            .mark_applied(&activation.expected_document)
+            .await?
+        {
+            tracing::info!(
+                "A newer configuration was stored during startup and remains unapplied for the next restart."
             );
-            let mut stored_mint_info = mint.mint_info().await?;
-            stored_mint_info.version = Some(mint_version);
-            mint.set_mint_info(stored_mint_info).await?;
-
-            tracing::info!("Mint info already set, not using config file settings.");
         }
-    } else {
-        // RPC disabled: config is source of truth on every boot
-        tracing::info!("RPC not enabled, using mint info and quote TTL from config.");
-        let mut mint_builder_info = mint_builder_info;
+    }
 
-        if let Ok(mint_info) = mint.mint_info().await {
-            if mint_builder_info.pubkey.is_none() {
-                mint_builder_info.pubkey = mint_info.pubkey;
-            }
-        }
-
-        mint.set_mint_info(mint_builder_info).await?;
-        mint.set_quote_ttl(desired_quote_ttl).await?;
+    #[cfg(feature = "management-rpc")]
+    if let Some((mut mint_rpc, tls_dir)) = rpc_to_start {
+        mint_rpc.start(tls_dir).await?;
+        rpc_server = Some(mint_rpc);
     }
 
     let mint_info = mint.mint_info().await?;
@@ -2055,6 +2097,36 @@ pub async fn run_mintd_with_shutdown(
 ) -> Result<()> {
     let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
 
+    run_mintd_with_database_and_shutdown(
+        work_dir,
+        settings,
+        localstore,
+        keystore,
+        kv,
+        shutdown_signal,
+        db_password,
+        runtime,
+        routers,
+        false,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_mintd_with_database_and_shutdown(
+    work_dir: &Path,
+    settings: &config::Settings,
+    localstore: DynMintDatabase,
+    keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
+    kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    shutdown_signal: impl std::future::Future<Output = ()> + Send + 'static,
+    db_password: Option<String>,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
+    force_configuration: bool,
+    activation: Option<ConfigurationActivation>,
+) -> Result<()> {
     let mint_builder = MintBuilder::new(localstore);
 
     // If RPC is enabled and DB contains mint_info already, initialize the builder from DB.
@@ -2062,7 +2134,9 @@ pub async fn run_mintd_with_shutdown(
     let maybe_mint_builder = {
         #[cfg(feature = "management-rpc")]
         {
-            if let Some(rpc_settings) = settings.mint_management_rpc.clone() {
+            if force_configuration {
+                mint_builder
+            } else if let Some(rpc_settings) = settings.mint_management_rpc.clone() {
                 if rpc_settings.enabled {
                     // Best-effort: pull DB state into builder if present
                     let mut tmp = mint_builder;
@@ -2104,8 +2178,133 @@ pub async fn run_mintd_with_shutdown(
         shutdown_signal,
         routers,
         auth_localstore,
+        force_configuration,
+        activation,
     )
     .await
+}
+
+fn load_database_bootstrap_settings() -> Result<config::Settings> {
+    let mut settings = config::Settings::default();
+    if let Ok(database) = env::var(env_vars::DATABASE_ENV_VAR) {
+        settings.database.engine =
+            DatabaseEngine::from_str(&database).map_err(anyhow::Error::msg)?;
+    }
+    if settings.database.engine == DatabaseEngine::Postgres {
+        settings.database.postgres = Some(config::PostgresConfig::default().from_env());
+    } else {
+        settings.database.postgres = None;
+    }
+    validate_database_config(&settings)?;
+    Ok(settings)
+}
+
+fn configuration_service(
+    kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    settings: &config::Settings,
+) -> config_service::ConfigurationService {
+    config_service::ConfigurationService::new(
+        config_store::ConfigRepository::new(kv),
+        settings.database.clone(),
+    )
+}
+
+/// Validates a database-backed configuration document without writing it.
+pub async fn validate_configuration_document(document: &str) -> Result<()> {
+    config_service::ConfigurationService::validate_import(document).await?;
+    Ok(())
+}
+
+/// Initializes the authoritative configuration record in the selected database.
+pub async fn initialize_configuration(
+    work_dir: &Path,
+    document: &str,
+    db_password: Option<String>,
+) -> Result<()> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
+    let mut mint_builder = MintBuilder::new(localstore);
+    mint_builder.init_from_db_if_present().await?;
+    let database_pubkey = mint_builder.current_mint_info().pubkey;
+    configuration_service(kv, &bootstrap)
+        .initialize(document, database_pubkey)
+        .await?;
+    Ok(())
+}
+
+/// Validates and atomically replaces the authoritative configuration record.
+pub async fn apply_configuration(
+    work_dir: &Path,
+    document: &str,
+    validate_only: bool,
+    db_password: Option<String>,
+) -> Result<ApplyOutcome> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (_localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
+    Ok(configuration_service(kv, &bootstrap)
+        .apply(document, validate_only)
+        .await?)
+}
+
+/// Reads the unresolved authoritative configuration document.
+pub async fn stored_configuration_document(
+    work_dir: &Path,
+    db_password: Option<String>,
+) -> Result<String> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (_localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
+    Ok(configuration_service(kv, &bootstrap).document().await?)
+}
+
+/// Runs mintd using only the configuration stored in its primary database.
+pub async fn run_mintd_from_database(
+    work_dir: &Path,
+    db_password: Option<String>,
+    enable_logging: bool,
+    runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
+    routers: Vec<Router>,
+) -> Result<()> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (localstore, keystore, kv) =
+        initial_setup(work_dir, &bootstrap, db_password.clone()).await?;
+    let service = configuration_service(kv.clone(), &bootstrap);
+    let startup = service.startup().await?;
+    let force_configuration = !startup.applied;
+    let activation = (!startup.applied).then(|| ConfigurationActivation {
+        service,
+        expected_document: startup.resolved.document.clone(),
+    });
+    let settings = startup.resolved.settings;
+
+    let guard = if enable_logging {
+        setup_tracing(work_dir, &settings.info.logging)?
+    } else {
+        None
+    };
+
+    let result = run_mintd_with_database_and_shutdown(
+        work_dir,
+        &settings,
+        localstore,
+        keystore,
+        kv,
+        shutdown_signal(),
+        db_password,
+        runtime,
+        routers,
+        force_configuration,
+        activation,
+    )
+    .await;
+
+    if let Some(guard) = guard {
+        tracing::info!("Shutting down logging worker thread");
+        drop(guard);
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+
+    tracing::info!("Mintd shutdown");
+    result
 }
 
 #[cfg(test)]
@@ -2121,6 +2320,71 @@ mod tests {
 
     fn temp_seed_file(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("cdk_mintd_{name}_{}", std::process::id()))
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn unapplied_configuration_refreshes_canonical_values_once() {
+        use cdk_sqlite::mint::memory;
+
+        let database = Arc::new(memory::empty().await.expect("in-memory database"));
+        let mut builder = MintBuilder::new(database.clone());
+        builder
+            .configure_unit(CurrencyUnit::Sat, Default::default())
+            .expect("configure unit");
+        let mint = builder
+            .build_with_seed(database.clone(), &[7; 32])
+            .await
+            .expect("build mint");
+
+        let stored_info = MintBuilder::new(database.clone())
+            .with_name("stored".to_owned())
+            .current_mint_info();
+        mint.set_mint_info(stored_info)
+            .await
+            .expect("set stored mint info");
+        mint.set_quote_ttl(QuoteTTL::new(10, 20))
+            .await
+            .expect("set stored quote ttl");
+
+        let imported_info = MintBuilder::new(database.clone())
+            .with_name("imported".to_owned())
+            .current_mint_info();
+        reconcile_canonical_configuration(&mint, imported_info, QuoteTTL::new(30, 40), false)
+            .await
+            .expect("apply imported canonical values");
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").name.as_deref(),
+            Some("imported")
+        );
+        assert_eq!(
+            mint.quote_ttl().await.expect("quote ttl"),
+            QuoteTTL::new(30, 40)
+        );
+
+        let mut rpc_info = mint.mint_info().await.expect("mint info");
+        rpc_info.name = Some("rpc-managed".to_owned());
+        mint.set_mint_info(rpc_info)
+            .await
+            .expect("set RPC-managed mint info");
+        mint.set_quote_ttl(QuoteTTL::new(50, 60))
+            .await
+            .expect("set RPC-managed quote ttl");
+
+        let later_document_info = MintBuilder::new(database)
+            .with_name("document".to_owned())
+            .current_mint_info();
+        reconcile_canonical_configuration(&mint, later_document_info, QuoteTTL::new(70, 80), true)
+            .await
+            .expect("preserve RPC-managed canonical values");
+        assert_eq!(
+            mint.mint_info().await.expect("mint info").name.as_deref(),
+            Some("rpc-managed")
+        );
+        assert_eq!(
+            mint.quote_ttl().await.expect("quote ttl"),
+            QuoteTTL::new(50, 60)
+        );
     }
 
     #[test]
@@ -2289,10 +2553,11 @@ ln_backend = "fakewallet"
         let args = CLIArgs {
             work_dir: None,
             #[cfg(feature = "sqlcipher")]
-            password: "test-password".to_string(),
+            password: Some("test-password".to_string()),
             config: Some(config_path),
             seed_file: Some(seed_file),
             enable_logging: false,
+            command: None,
         };
 
         let settings = load_settings_from_args(&temp_dir, &args)
