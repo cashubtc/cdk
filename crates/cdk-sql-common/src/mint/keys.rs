@@ -11,7 +11,7 @@ use cdk_common::mint::MintKeySetInfo;
 use cdk_common::{CurrencyUnit, Id};
 
 use super::{SQLMintDatabase, SQLTransaction};
-use crate::database::ConnectionWithTransaction;
+use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{
@@ -110,6 +110,8 @@ where
         .execute(&self.inner)
         .await?;
 
+        self.bump_keyset_epoch().await?;
+
         Ok(())
     }
 
@@ -124,6 +126,109 @@ where
             .bind("id", id.to_string())
             .execute(&self.inner)
             .await?;
+
+        self.bump_keyset_epoch().await?;
+
+        Ok(())
+    }
+
+    async fn next_derivation_index(&mut self, unit: &CurrencyUnit) -> Result<u32, Error> {
+        // Take the per-unit advisory lock (if the backend needs one) so two
+        // rotations of the same unit serialize and cannot read the same MAX
+        // index below. Held until the transaction commits.
+        self.advisory_lock(unit).await?;
+
+        let next = match query(
+            r#"SELECT COALESCE(MAX(derivation_path_index), 0) + 1 FROM keyset WHERE unit = :unit"#,
+        )?
+        .bind("unit", unit.to_string())
+        .pluck(&self.inner)
+        .await?
+        {
+            Some(column) => column_as_number!(column),
+            None => 1,
+        };
+
+        Ok(next)
+    }
+
+    async fn get_keyset_infos_by_unit(
+        &mut self,
+        unit: &CurrencyUnit,
+    ) -> Result<Vec<MintKeySetInfo>, Error> {
+        // Same per-unit lock rotations take, held to commit, so a concurrent
+        // rotation cannot slip a higher keyset in between this read and the
+        // caller's active-pointer reassignment.
+        self.advisory_lock(unit).await?;
+
+        Ok(query(
+            r#"SELECT
+                id,
+                unit,
+                active,
+                valid_from,
+                valid_to,
+                derivation_path,
+                derivation_path_index,
+                amounts,
+                input_fee_ppk,
+                issuer_version
+            FROM
+                keyset
+                WHERE unit = :unit"#,
+        )?
+        .bind("unit", unit.to_string())
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(sql_row_to_keyset_info)
+        .collect::<Result<Vec<_>, _>>()?)
+    }
+}
+
+impl<RM> SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    /// Take a transaction-scoped advisory lock keyed by `key`, serializing
+    /// concurrent writers across processes and held until commit.
+    ///
+    /// No-op on backends that already serialize writers (SQLite's
+    /// `BEGIN IMMEDIATE`). Postgres runs at `START TRANSACTION` isolation, which
+    /// does not serialize concurrent reads, so it takes an explicit,
+    /// non-standard lock. Dispatched by driver name, the same way migrations
+    /// are.
+    async fn advisory_lock<T: ToString + Send>(&self, key: T) -> Result<(), Error> {
+        if RM::Connection::name() == "postgres" {
+            query(r#"SELECT pg_advisory_xact_lock(hashtext(:key))"#)?
+                .bind("key", key.to_string())
+                .execute(&self.inner)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Bump the persisted keyset epoch so any keyset change (insert or
+    /// active-pointer reassignment) is observable by peers, which reload when
+    /// the epoch they loaded no longer matches.
+    ///
+    /// Upsert rather than a bare `UPDATE`: a plain update would silently affect
+    /// zero rows if row 0 were ever absent, freezing the epoch at its fallback
+    /// and stalling every peer's reload. The insert path makes the row
+    /// self-healing.
+    async fn bump_keyset_epoch(&self) -> Result<(), Error> {
+        // Qualify the existing value with the table name: on Postgres a bare
+        // `epoch` in the update expression is ambiguous between the target row
+        // and `excluded`. Matches the upsert style used elsewhere in this crate.
+        query(
+            r#"
+            INSERT INTO keyset_epoch (id, epoch) VALUES (0, 1)
+            ON CONFLICT (id) DO UPDATE SET epoch = keyset_epoch.epoch + 1
+            "#,
+        )?
+        .execute(&self.inner)
+        .await?;
 
         Ok(())
     }
@@ -251,6 +356,26 @@ where
         .into_iter()
         .map(sql_row_to_keyset_info)
         .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn keysets_epoch(&self) -> Result<u64, Self::Err> {
+        // A single-row counter bumped inside every keyset-writing transaction,
+        // so it moves on any change (insert or active-pointer reassignment). One
+        // row to read, far cheaper than reading every keyset.
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        Ok(
+            match query(r#"SELECT epoch FROM keyset_epoch WHERE id = 0"#)?
+                .pluck(&*conn)
+                .await?
+            {
+                Some(column) => column_as_number!(column),
+                None => 0,
+            },
+        )
     }
 }
 

@@ -1714,6 +1714,57 @@ mod tests {
         mint.stop().await.expect("mint should stop");
     }
 
+    /// A mint may boot before any active keyset exists (for example a remote
+    /// signatory still connecting). Construction and `start()` must succeed
+    /// rather than failing with `NoActiveKeyset`, and keysets that arrive later
+    /// over the subscription must install without a restart.
+    #[tokio::test]
+    async fn mint_starts_without_active_keysets_then_installs_them() {
+        // A snapshot to install later; reuse its pubkey for the empty bootstrap
+        // snapshot so both carry the same signatory identity.
+        let snap = rotated_snapshots(1).await.remove(0);
+        let new_id = active_sat_id(&snap);
+
+        // Bootstrap from a snapshot with no keysets at all. This used to return
+        // Error::NoActiveKeyset from the constructor.
+        let mock = Arc::new(MockSignatory::new(SignatoryKeysets {
+            pubkey: snap.pubkey,
+            keysets: vec![],
+        }));
+        let mint = create_mint_with_signatory(mock.clone()).await;
+        mint.start()
+            .await
+            .expect("mint should start with no active keysets");
+
+        assert!(
+            mint.keysets.load().is_empty(),
+            "no keysets should be present before any arrive"
+        );
+
+        // Keysets arriving over the subscription install without a restart.
+        mock.push(snap);
+        let applied = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if mint
+                    .keysets
+                    .load()
+                    .iter()
+                    .any(|k| k.id == new_id && k.active)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            applied.is_ok(),
+            "keysets that arrive after an empty start should install"
+        );
+
+        mint.stop().await.expect("mint should stop");
+    }
+
     /// Regression test for the bootstrap/subscribe race: a rotation that lands
     /// between mint construction and `start()` must still reach the mint.
     ///

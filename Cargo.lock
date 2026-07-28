@@ -1525,7 +1525,9 @@ dependencies = [
  "cdk-lnd",
  "cdk-mintd",
  "cdk-nwc",
+ "cdk-postgres",
  "cdk-redb",
+ "cdk-signatory",
  "cdk-sqlite",
  "clap",
  "cln-rpc",
@@ -1824,6 +1826,7 @@ name = "cdk-signatory"
 version = "0.17.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "async-trait",
  "bip39",
  "bitcoin 0.32.102",

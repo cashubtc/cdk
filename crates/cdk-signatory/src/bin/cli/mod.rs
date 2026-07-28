@@ -18,6 +18,7 @@ use {
     std::net::SocketAddr,
     std::str::FromStr,
     std::sync::Arc,
+    std::time::Duration,
     std::{env, fs},
     tracing_subscriber::EnvFilter,
 };
@@ -92,6 +93,13 @@ struct Cli {
     /// Supported units with the format of name,fee and max_order
     #[arg(long, short, default_value = "sat,0,32")]
     units: Vec<String>,
+    /// How often, in milliseconds, to reload keysets from the shared database.
+    /// 0 (the default) disables it: a single signatory process owns its
+    /// database and needs no polling. Set a non-zero value to run several
+    /// signatory processes against one shared database, so each picks up
+    /// another's rotations without a restart.
+    #[arg(long, default_value = "0")]
+    keyset_refresh_interval_ms: u64,
 }
 
 /// Main function for the signatory standalone binary
@@ -187,13 +195,21 @@ pub async fn cli_main() -> Result<()> {
     };
     let seed = mnemonic.to_seed_normalized("");
 
-    let signatory =
+    let signatory = Arc::new(
         db_signatory::DbSignatory::new(localstore, &seed, supported_units, Default::default())
-            .await?;
+            .await?,
+    );
+
+    // Off by default. When enabled, periodically reload keysets from the shared
+    // database so multiple signatory processes can run active/active: a rotation
+    // by any instance is picked up on the next refresh without a restart.
+    let refresh_interval = (args.keyset_refresh_interval_ms != 0)
+        .then(|| Duration::from_millis(args.keyset_refresh_interval_ms));
+    signatory.spawn_keyset_refresh(refresh_interval);
 
     let socket_addr = SocketAddr::from_str(&format!("{}:{}", args.listen_addr, args.listen_port))?;
 
-    start_grpc_server(Arc::new(signatory), socket_addr, certs).await?;
+    start_grpc_server(signatory, socket_addr, certs).await?;
 
     Ok(())
 }
