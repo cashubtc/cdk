@@ -254,6 +254,7 @@ impl MintRPCServer {
         use_keyset_v2: Option<bool>,
         final_expiry: Option<u64>,
     ) -> Result<MintKeySetInfo, Status> {
+        self.ensure_mutation_allowed().await?;
         self.mint
             .rotate_keyset(
                 unit,
@@ -890,7 +891,6 @@ impl CdkMint for MintRPCServer {
         &self,
         request: Request<RotateNextKeysetRequest>,
     ) -> Result<Response<RotateNextKeysetResponse>, Status> {
-        self.ensure_mutation_allowed().await?;
         let request = request.into_inner();
 
         let unit = CurrencyUnit::from_str(&request.unit)
@@ -1117,6 +1117,22 @@ mod tests {
 
         assert_eq!(error.code(), Code::FailedPrecondition);
         assert_eq!(error.message(), "configuration restart pending");
+
+        let keyset_error = KeysetService::rotate_next_keyset(
+            &server,
+            Request::new(crate::keyset::RotateNextKeysetRequest {
+                unit: "sat".to_owned(),
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: Some(1),
+                use_keyset_v2: Some(true),
+                final_expiry: None,
+            }),
+        )
+        .await
+        .expect_err("keyset mutation should be rejected");
+
+        assert_eq!(keyset_error.code(), Code::FailedPrecondition);
+        assert_eq!(keyset_error.message(), "configuration restart pending");
         assert!(server
             .get_info(Request::new(GetInfoRequest {}))
             .await
