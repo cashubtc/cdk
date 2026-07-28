@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
 use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
+use cdk_common::nuts::nut31::PayjoinV2 as CdkPayjoinV2;
 use cdk_common::payment::{
     CreateIncomingPaymentResponse, MakePaymentResponse as CdkMakePaymentResponse,
     PaymentIdentifier as CdkPaymentIdentifier, PaymentQuoteResponse as CdkPaymentQuoteResponse,
@@ -15,6 +16,31 @@ pub use client::PaymentProcessorClient;
 pub use server::PaymentProcessorServer;
 
 tonic::include_proto!("cdk_payment_processor");
+
+impl From<CdkPayjoinV2> for PayjoinV2Message {
+    fn from(value: CdkPayjoinV2) -> Self {
+        Self {
+            endpoint: value.endpoint,
+            ohttp_keys: value.ohttp_keys.to_string(),
+            receiver_key: value.receiver_key.to_string(),
+            expires_at: value.expires_at,
+        }
+    }
+}
+
+impl TryFrom<PayjoinV2Message> for CdkPayjoinV2 {
+    type Error = crate::error::Error;
+
+    fn try_from(value: PayjoinV2Message) -> Result<Self, Self::Error> {
+        Self::new(
+            value.endpoint,
+            &value.ohttp_keys,
+            &value.receiver_key,
+            value.expires_at,
+        )
+        .map_err(|err| crate::error::Error::InvalidPayjoin(err.to_string()))
+    }
+}
 
 impl From<CdkPaymentIdentifier> for PaymentIdentifier {
     fn from(value: CdkPaymentIdentifier) -> Self {
@@ -218,6 +244,7 @@ impl From<CdkPaymentQuoteResponse> for PaymentQuoteResponse {
             fee: Some(value.fee.into()),
             state: QuoteState::from(value.state).into(),
             extra_json: value.extra_json.map(|value| value.to_string()),
+            payjoin: value.payjoin.map(Into::into),
             estimated_blocks: value.estimated_blocks,
             fee_options: value
                 .fee_options
@@ -270,6 +297,7 @@ impl TryFrom<PaymentQuoteResponse> for CdkPaymentQuoteResponse {
             extra_json: value
                 .extra_json
                 .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok()),
+            payjoin: value.payjoin.map(TryInto::try_into).transpose()?,
             estimated_blocks: value.estimated_blocks,
             fee_options: (!value.fee_options.is_empty()).then(|| {
                 value
@@ -450,6 +478,7 @@ mod tests {
     use std::str::FromStr;
 
     use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
+    use cdk_common::nuts::nut31::PayjoinV2;
     use cdk_common::payment::{
         Event, MakePaymentResponse, OnchainSettings, PaymentIdentifier,
         PaymentQuoteResponse as CdkPaymentQuoteResponse, WaitPaymentResponse,
@@ -462,6 +491,13 @@ mod tests {
 
     #[test]
     fn payment_quote_response_extra_json_roundtrip() {
+        let payjoin = PayjoinV2::new(
+            "https://payjoin.example/pj".to_string(),
+            "QYPFLM8XL59R0XV4VGPLS7FRDSSM4TUXL07TXCWC4S0GLVLNK2SE4NQ",
+            "QV6WSX0UQPAEA0RH54430D0UVZWS8CZ6FEGZF4RGFCDKJLPGMYEJG",
+            1_720_547_781,
+        )
+        .expect("valid Payjoin parameters");
         let response = CdkPaymentQuoteResponse {
             request_lookup_id: Some(PaymentIdentifier::CustomId("processor-quote".to_string())),
             amount: Amount::new(100, CurrencyUnit::Sat),
@@ -473,6 +509,7 @@ mod tests {
                 "redirect_url": "https://example.com/pay",
                 "nested": { "attempt": 1 }
             })),
+            payjoin: Some(payjoin),
             fee_options: Some(vec![MeltQuoteOnchainFeeOption {
                 fee_index: 0,
                 fee_reserve: Amount::from(2),
@@ -488,6 +525,7 @@ mod tests {
         assert_eq!(roundtrip.fee, response.fee);
         assert_eq!(roundtrip.state, response.state);
         assert_eq!(roundtrip.extra_json, response.extra_json);
+        assert_eq!(roundtrip.payjoin, response.payjoin);
         assert_eq!(roundtrip.fee_options, response.fee_options);
     }
 

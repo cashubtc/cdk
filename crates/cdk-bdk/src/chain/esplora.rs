@@ -1,12 +1,16 @@
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex as StdMutex};
 use std::time::Instant;
 
 use bdk_esplora::esplora_client::{AsyncClient, Builder};
 use bdk_esplora::EsploraAsyncExt;
-use bdk_wallet::bitcoin::Transaction;
+use bdk_wallet::bitcoin::{OutPoint, Transaction};
 use tokio::time::{interval, Duration};
 use tokio_util::sync::CancellationToken;
 
-use crate::chain::{BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, EsploraConfig};
+use crate::chain::{
+    BroadcastErrorKind, BroadcastFailure, BroadcastOutcome, ConfirmedSpend, EsploraConfig,
+};
 use crate::error::Error;
 use crate::CdkBdk;
 
@@ -17,6 +21,25 @@ fn next_esplora_backoff(backoff: &mut Duration) -> Duration {
     let current = *backoff;
     *backoff = (*backoff * 2).min(MAX_ESPLORA_BACKOFF);
     current
+}
+
+/// Shared Esplora clients keyed by URL so per-call helpers reuse one
+/// connection pool instead of building a fresh client each call.
+static SHARED_ESPLORA_CLIENTS: LazyLock<StdMutex<HashMap<String, AsyncClient>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+fn shared_esplora_client(url: &str) -> Result<AsyncClient, Error> {
+    let mut clients = SHARED_ESPLORA_CLIENTS
+        .lock()
+        .map_err(|err| Error::Esplora(format!("Esplora client lock poisoned: {err}")))?;
+    if let Some(client) = clients.get(url) {
+        return Ok(client.clone());
+    }
+    let client = Builder::new(url)
+        .build_async()
+        .map_err(|e| Error::Esplora(e.to_string()))?;
+    clients.insert(url.to_string(), client.clone());
+    Ok(client)
 }
 
 pub(crate) async fn sync_esplora(
@@ -215,8 +238,7 @@ pub(crate) async fn broadcast_esplora(
     config: &EsploraConfig,
     tx: Transaction,
 ) -> Result<BroadcastOutcome, BroadcastFailure> {
-    let client = Builder::new(&config.url)
-        .build_async()
+    let client = shared_esplora_client(&config.url)
         .map_err(|e| BroadcastFailure::new(BroadcastErrorKind::Transient, e.to_string()))?;
 
     tracing::info!(
@@ -247,9 +269,7 @@ pub(crate) async fn fetch_fee_rate_esplora(
     config: &EsploraConfig,
     target_blocks: u16,
 ) -> Result<f64, Error> {
-    let client = Builder::new(&config.url)
-        .build_async()
-        .map_err(|e| Error::Esplora(e.to_string()))?;
+    let client = shared_esplora_client(&config.url)?;
 
     let estimates = client
         .get_fee_estimates()
@@ -281,6 +301,45 @@ pub(crate) async fn fetch_fee_rate_esplora(
     }
 
     Err(Error::FeeEstimationUnavailable)
+}
+
+pub(crate) async fn confirmed_spend_esplora(
+    config: &EsploraConfig,
+    outpoints: &[OutPoint],
+) -> Result<Option<ConfirmedSpend>, Error> {
+    let client = shared_esplora_client(&config.url)?;
+    let tip_height = client
+        .get_height()
+        .await
+        .map_err(|e| Error::Esplora(e.to_string()))?;
+
+    for outpoint in outpoints {
+        let Some(status) = client
+            .get_output_status(&outpoint.txid, outpoint.vout.into())
+            .await
+            .map_err(|e| Error::Esplora(e.to_string()))?
+        else {
+            continue;
+        };
+
+        let Some(txid) = status.txid else {
+            continue;
+        };
+        let Some(tx_status) = status.status.filter(|tx_status| tx_status.confirmed) else {
+            continue;
+        };
+        let Some(block_height) = tx_status.block_height else {
+            continue;
+        };
+
+        return Ok(Some(ConfirmedSpend {
+            txid,
+            block_height,
+            confirmations: tip_height.saturating_sub(block_height).saturating_add(1),
+        }));
+    }
+
+    Ok(None)
 }
 
 #[cfg(test)]

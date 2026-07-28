@@ -376,6 +376,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         quote_id,
                         fee_index: opts.fee_index,
                         metadata: opts.metadata,
+                        payjoin: opts.payjoin.map(TryInto::try_into).transpose()?,
                     },
                 ))
             }
@@ -501,6 +502,7 @@ impl CdkPaymentProcessor for PaymentProcessorServer {
                         })?,
                         fee_index: opts.fee_index,
                         metadata: opts.metadata,
+                        payjoin: opts.payjoin.map(TryInto::try_into).transpose()?,
                     },
                 ))
             }

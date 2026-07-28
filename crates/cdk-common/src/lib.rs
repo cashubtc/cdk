@@ -31,6 +31,7 @@ pub mod melt;
 #[cfg(feature = "mint")]
 pub mod mint;
 pub mod mint_quote;
+pub mod payjoin;
 #[cfg(feature = "mint")]
 pub mod payment;
 pub mod pub_sub;

@@ -274,6 +274,7 @@ impl MintPayment for LNbits {
                     fee: Amount::new(fee, CurrencyUnit::Msat).convert_to(unit)?,
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
+                    payjoin: None,
                     estimated_blocks: None,
                     fee_options: None,
                 })

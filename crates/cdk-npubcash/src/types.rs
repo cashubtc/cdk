@@ -170,6 +170,7 @@ impl From<Quote> for MintQuote {
             },
             updated_at: quote.paid_at.unwrap_or_default(),
             estimated_blocks: None,
+            payjoin: None,
             used_by_operation: None,
             version: 0,
         }

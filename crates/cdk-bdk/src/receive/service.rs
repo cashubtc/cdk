@@ -136,6 +136,14 @@ impl CdkBdk {
                 continue;
             }
 
+            if self
+                .storage
+                .has_receive_intent_for_outpoint(&outpoint)
+                .await?
+            {
+                continue;
+            }
+
             match ReceiveIntent::new(
                 &self.storage,
                 address,

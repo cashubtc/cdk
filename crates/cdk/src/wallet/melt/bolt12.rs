@@ -71,8 +71,8 @@ impl Wallet {
             payment_proof: quote_res.payment_preimage,
             estimated_blocks: None,
             fee_index: None,
+            payjoin: None,
             payment_method: PaymentMethod::Known(KnownMethod::Bolt12),
-
             used_by_operation: None,
             version: 0,
         };

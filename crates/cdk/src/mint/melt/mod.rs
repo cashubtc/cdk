@@ -10,6 +10,10 @@ use cdk_common::mint::MeltPaymentRequest;
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut05::MeltMethodOptions;
 use cdk_common::nuts::nut17::{Kind, NotificationPayload};
+use cdk_common::payjoin::{
+    payjoin_v2_is_expired_at, payjoin_v2_to_bip77_endpoint, ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY,
+    ONCHAIN_PAYJOIN_EXTRA_KEY,
+};
 use cdk_common::payment::{
     Bolt11OutgoingPaymentOptions, Bolt12OutgoingPaymentOptions, CustomOutgoingPaymentOptions,
     OutgoingPaymentOptions, PaymentIdentifier,
@@ -40,6 +44,33 @@ pub(crate) mod shared;
 mod tests;
 
 use melt_saga::{MeltSaga, PaymentOutcome};
+
+fn onchain_melt_quote_extra_json(
+    payment_extra_json: Option<serde_json::Value>,
+    accepted_payjoin: Option<&cdk_common::nuts::nut31::PayjoinV2>,
+    destination_payjoin: Option<&cdk_common::nuts::nut31::PayjoinV2>,
+) -> Option<serde_json::Value> {
+    let mut object = match payment_extra_json {
+        Some(serde_json::Value::Object(object)) => object,
+        Some(other) if accepted_payjoin.is_none() => return Some(other),
+        Some(_) | None => serde_json::Map::new(),
+    };
+
+    if let Some(payjoin) = accepted_payjoin {
+        object.insert(
+            ONCHAIN_PAYJOIN_EXTRA_KEY.to_string(),
+            serde_json::to_value(payjoin).ok()?,
+        );
+        if let Some(destination) = destination_payjoin {
+            object.insert(
+                ONCHAIN_PAYJOIN_DESTINATION_EXTRA_KEY.to_string(),
+                serde_json::to_value(destination).ok()?,
+            );
+        }
+    }
+
+    (!object.is_empty()).then_some(serde_json::Value::Object(object))
+}
 
 fn pending_melt_wait_timeout() -> Duration {
     if cfg!(test) {
@@ -567,6 +598,14 @@ impl Mint {
             // no longer self-referential via the backend response.
             let quote_id = QuoteId::new();
 
+            if let Some(payjoin) = melt_request.payjoin.as_ref() {
+                if payjoin_v2_is_expired_at(payjoin, unix_time()) {
+                    return Err(Error::Custom("Payjoin parameters are expired".to_string()));
+                }
+                payjoin_v2_to_bip77_endpoint(payjoin)
+                    .map_err(|err| Error::Custom(format!("Invalid Payjoin parameters: {}", err)))?;
+            }
+
             let outgoing_payment_options = cdk_common::payment::OnchainOutgoingPaymentOptions {
                 address: melt_request.request.clone(),
                 amount: melt_request.amount.with_unit(unit.clone()),
@@ -576,6 +615,7 @@ impl Mint {
                 // available `fee_options` and the wallet picks one (echoed back
                 // as `fee_index`) when executing the melt.
                 fee_index: None,
+                payjoin: melt_request.payjoin.clone(),
                 metadata: None,
             };
 
@@ -639,6 +679,12 @@ impl Mint {
             // `MeltQuote::new_onchain` applies the NUT validation. Failures are
             // returned before the quote is persisted, so a backend that violates
             // the contract never leaves state behind in the mint.
+            let extra_json = onchain_melt_quote_extra_json(
+                payment_quote.extra_json,
+                payment_quote.payjoin.as_ref(),
+                melt_request.payjoin.as_ref(),
+            );
+
             let quote = MeltQuote::new_onchain(
                 Some(quote_id),
                 MeltPaymentRequest::Onchain {
@@ -648,7 +694,7 @@ impl Mint {
                 payment_quote.amount,
                 unix_time() + melt_ttl,
                 request_lookup_id,
-                payment_quote.extra_json,
+                extra_json,
                 fee_options,
             )?;
 

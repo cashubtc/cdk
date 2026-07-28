@@ -93,6 +93,14 @@ message OnchainOutgoingPaymentOptions {
   string quote_id = 4;
   optional uint32 fee_index = 5;
   optional string metadata = 6;
+  optional PayjoinV2Message payjoin = 7;
+}
+
+message PayjoinV2Message {
+  string endpoint = 1;
+  string ohttp_keys = 2;
+  string receiver_key = 3;
+  uint64 expires_at = 4;
 }
 
 message OutgoingPaymentVariant {
@@ -205,6 +213,7 @@ message PaymentQuoteResponse {
   // Extra payment-method-specific fields as JSON string
   // For custom payment methods, these fields are flattened into the response
   optional string extra_json = 5;
+  optional PayjoinV2Message payjoin = 8;
 }
 
 message OnchainFeeOption {

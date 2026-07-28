@@ -35,6 +35,8 @@ pub struct MintQuote {
     pub updated_at: u64,
     /// Estimated confirmation target in blocks for onchain quotes
     pub estimated_blocks: Option<u32>,
+    /// Optional onchain Payjoin instructions returned by the mint.
+    pub payjoin: Option<PayjoinV2>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Secret key (optional, hex-encoded)
@@ -60,6 +62,7 @@ impl From<cdk::wallet::MintQuote> for MintQuote {
             amount_paid: quote.amount_paid.into(),
             updated_at: quote.updated_at,
             estimated_blocks: quote.estimated_blocks,
+            payjoin: quote.payjoin.map(Into::into),
             payment_method: quote.payment_method.into(),
             secret_key: quote.secret_key.map(|sk| sk.to_secret_hex()),
             used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
@@ -90,6 +93,7 @@ impl TryFrom<MintQuote> for cdk::wallet::MintQuote {
             amount_paid: quote.amount_paid.into(),
             updated_at: quote.updated_at,
             estimated_blocks: quote.estimated_blocks,
+            payjoin: quote.payjoin.map(TryInto::try_into).transpose()?,
             payment_method: quote.payment_method.into(),
             secret_key,
             used_by_operation: quote.used_by_operation,
@@ -382,6 +386,45 @@ impl From<PaymentMethod> for cdk::nuts::PaymentMethod {
     }
 }
 
+/// FFI-compatible Payjoin v2 parameters.
+///
+/// Cashu uses Unix timestamp; BIP77 URI fragments use encoded `EX1`.
+#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
+pub struct PayjoinV2 {
+    /// Mailbox endpoint without BIP77 fragment parameters.
+    pub endpoint: String,
+    /// Encoded OHTTP key material.
+    pub ohttp_keys: String,
+    /// Encoded receiver session key.
+    pub receiver_key: String,
+    /// Unix timestamp until the Payjoin parameters are valid.
+    pub expires_at: u64,
+}
+
+impl From<cdk::nuts::PayjoinV2> for PayjoinV2 {
+    fn from(payjoin: cdk::nuts::PayjoinV2) -> Self {
+        Self {
+            endpoint: payjoin.endpoint,
+            ohttp_keys: payjoin.ohttp_keys.to_string(),
+            receiver_key: payjoin.receiver_key.to_string(),
+            expires_at: payjoin.expires_at,
+        }
+    }
+}
+
+impl TryFrom<PayjoinV2> for cdk::nuts::PayjoinV2 {
+    type Error = cdk::nuts::nut31::PayjoinV2KeyError;
+
+    fn try_from(payjoin: PayjoinV2) -> Result<Self, Self::Error> {
+        Self::new(
+            payjoin.endpoint,
+            payjoin.ohttp_keys,
+            payjoin.receiver_key,
+            payjoin.expires_at,
+        )
+    }
+}
+
 /// FFI-compatible MintQuoteOnchainResponse.
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
 pub struct MintQuoteOnchainResponse {
@@ -403,6 +446,8 @@ pub struct MintQuoteOnchainResponse {
     pub amount_issued: Amount,
     /// Last update timestamp
     pub updated_at: u64,
+    /// Optional Payjoin instructions.
+    pub payjoin: Option<PayjoinV2>,
 }
 
 impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainResponse {
@@ -417,6 +462,7 @@ impl From<cdk::nuts::MintQuoteOnchainResponse<String>> for MintQuoteOnchainRespo
             amount_paid: response.amount_paid.into(),
             amount_issued: response.amount_issued.into(),
             updated_at: response.updated_at,
+            payjoin: response.payjoin.map(Into::into),
         }
     }
 }
@@ -467,6 +513,8 @@ pub struct MeltQuoteOnchainResponse {
     pub outpoint: Option<String>,
     /// Change blind signatures as JSON, when the mint returns change
     pub change: Option<String>,
+    /// Optional Payjoin v2 acceptance for this quote.
+    pub payjoin: Option<PayjoinV2>,
 }
 
 impl From<cdk::nuts::MeltQuoteOnchainResponse<String>> for MeltQuoteOnchainResponse {
@@ -488,6 +536,7 @@ impl From<cdk::nuts::MeltQuoteOnchainResponse<String>> for MeltQuoteOnchainRespo
             selected_fee_index: response.selected_fee_index,
             outpoint: response.outpoint,
             change,
+            payjoin: response.payjoin.map(Into::into),
         }
     }
 }
@@ -517,6 +566,8 @@ pub struct MeltQuote {
     pub estimated_blocks: Option<u32>,
     /// Selected fee option index for onchain quotes
     pub fee_index: Option<u32>,
+    /// Optional onchain Payjoin acceptance returned by the mint.
+    pub payjoin: Option<PayjoinV2>,
     /// Payment method
     pub payment_method: PaymentMethod,
     /// Operation ID that reserved this quote
@@ -540,6 +591,7 @@ impl From<cdk::wallet::MeltQuote> for MeltQuote {
             payment_proof: quote.payment_proof.clone(),
             estimated_blocks: quote.estimated_blocks,
             fee_index: quote.fee_index,
+            payjoin: quote.payjoin.map(Into::into),
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation.map(|id| id.to_string()),
             version: quote.version,
@@ -563,6 +615,7 @@ impl TryFrom<MeltQuote> for cdk::wallet::MeltQuote {
             payment_proof: quote.payment_proof,
             estimated_blocks: quote.estimated_blocks,
             fee_index: quote.fee_index,
+            payjoin: quote.payjoin.map(TryInto::try_into).transpose()?,
             payment_method: quote.payment_method.into(),
             used_by_operation: quote.used_by_operation,
             version: quote.version,

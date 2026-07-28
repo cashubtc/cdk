@@ -426,6 +426,7 @@ impl MintPayment for Lnd {
                     fee: Amount::new(fee, unit.clone()),
                     state: MeltQuoteState::Unpaid,
                     extra_json: None,
+                    payjoin: None,
                     estimated_blocks: None,
                     fee_options: None,
                 })
