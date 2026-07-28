@@ -14,6 +14,36 @@ fn standard_keyset_amounts(max_order: u32) -> Vec<u64> {
     (0..max_order).map(|n| 2u64.pow(n)).collect()
 }
 
+/// Read the active keyset id for a unit through a transaction.
+///
+/// Keyset reads go through a transaction now that the autocommit key reads were
+/// removed from [`KeysDatabase`]; the transaction takes the global keyset lock.
+async fn active_keyset_id<DB>(db: &DB, unit: &CurrencyUnit) -> Option<Id>
+where
+    DB: KeysDatabase<Err = Error>,
+{
+    let mut tx = KeysDatabase::begin_transaction(db).await.unwrap();
+    let id = tx.get_active_keysets().await.unwrap().get(unit).copied();
+    tx.commit().await.unwrap();
+    id
+}
+
+/// Read a keyset info by id through a transaction. See [`active_keyset_id`].
+async fn find_keyset_info<DB>(db: &DB, id: &Id) -> Option<MintKeySetInfo>
+where
+    DB: KeysDatabase<Err = Error>,
+{
+    let mut tx = KeysDatabase::begin_transaction(db).await.unwrap();
+    let info = tx
+        .get_keyset_infos()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|k| k.id == *id);
+    tx.commit().await.unwrap();
+    info
+}
+
 /// Test adding and retrieving keyset info
 pub async fn add_and_get_keyset_info<DB>(db: DB)
 where
@@ -39,7 +69,7 @@ where
     tx.commit().await.unwrap();
 
     // Retrieve keyset info
-    let retrieved = db.get_keyset_info(&keyset_id).await.unwrap();
+    let retrieved = find_keyset_info(&db, &keyset_id).await;
     assert!(retrieved.is_some());
     let retrieved = retrieved.unwrap();
     assert_eq!(retrieved.id, keyset_info.id);
@@ -81,7 +111,7 @@ where
     tx.commit().await.unwrap();
 
     // Verify keyset still exists
-    let retrieved = db.get_keyset_info(&keyset_id).await.unwrap();
+    let retrieved = find_keyset_info(&db, &keyset_id).await;
     assert!(retrieved.is_some());
 }
 
@@ -125,7 +155,9 @@ where
     tx.commit().await.unwrap();
 
     // Get all keyset infos
-    let all_keysets = db.get_keyset_infos().await.unwrap();
+    let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
+    let all_keysets = tx.get_keyset_infos().await.unwrap();
+    tx.commit().await.unwrap();
     assert!(all_keysets.len() >= 2);
     assert!(all_keysets.iter().any(|k| k.id == keyset_id1));
     assert!(all_keysets.iter().any(|k| k.id == keyset_id2));
@@ -159,7 +191,7 @@ where
     tx.commit().await.unwrap();
 
     // Get active keyset
-    let active_id = db.get_active_keyset_id(&CurrencyUnit::Sat).await.unwrap();
+    let active_id = active_keyset_id(&db, &CurrencyUnit::Sat).await;
     assert!(active_id.is_some());
     assert_eq!(active_id.unwrap(), keyset_id);
 }
@@ -210,7 +242,9 @@ where
     tx.commit().await.unwrap();
 
     // Get all active keysets
-    let active_keysets = db.get_active_keysets().await.unwrap();
+    let mut tx = KeysDatabase::begin_transaction(&db).await.unwrap();
+    let active_keysets = tx.get_active_keysets().await.unwrap();
+    tx.commit().await.unwrap();
     assert!(active_keysets.len() >= 2);
     assert_eq!(active_keysets.get(&CurrencyUnit::Sat), Some(&keyset_id_sat));
     assert_eq!(active_keysets.get(&CurrencyUnit::Usd), Some(&keyset_id_usd));
@@ -259,7 +293,7 @@ where
     tx.commit().await.unwrap();
 
     // Verify first keyset is active
-    let active_id = db.get_active_keyset_id(&CurrencyUnit::Sat).await.unwrap();
+    let active_id = active_keyset_id(&db, &CurrencyUnit::Sat).await;
     assert_eq!(active_id, Some(keyset_id1));
 
     // Update to second keyset
@@ -270,7 +304,7 @@ where
     tx.commit().await.unwrap();
 
     // Verify second keyset is now active
-    let active_id = db.get_active_keyset_id(&CurrencyUnit::Sat).await.unwrap();
+    let active_id = active_keyset_id(&db, &CurrencyUnit::Sat).await;
     assert_eq!(active_id, Some(keyset_id2));
 }
 
@@ -282,7 +316,7 @@ where
     let keyset_id = Id::from_str("00916bbf7ef91a36").unwrap();
 
     // Try to get non-existent keyset
-    let retrieved = db.get_keyset_info(&keyset_id).await.unwrap();
+    let retrieved = find_keyset_info(&db, &keyset_id).await;
     assert!(retrieved.is_none());
 }
 
@@ -292,6 +326,6 @@ where
     DB: Database<Error> + KeysDatabase<Err = Error>,
 {
     // Try to get active keyset when none is set
-    let active_id = db.get_active_keyset_id(&CurrencyUnit::Sat).await.unwrap();
+    let active_id = active_keyset_id(&db, &CurrencyUnit::Sat).await;
     assert!(active_id.is_none());
 }

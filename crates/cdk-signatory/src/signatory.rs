@@ -14,32 +14,9 @@ use cdk_common::{
     BlindSignature, BlindedMessage, CurrencyUnit, Id, KeySet, Keys, MintKeySet, Proof, PublicKey,
 };
 
-#[derive(Debug)]
-/// Type alias to make the keyset info API more useful, queryable by unit and Id
-pub enum KeysetIdentifier {
-    /// Mint Keyset by unit
-    Unit(CurrencyUnit),
-    /// Mint Keyset by Id
-    Id(Id),
-}
-
-impl From<Id> for KeysetIdentifier {
-    fn from(id: Id) -> Self {
-        Self::Id(id)
-    }
-}
-
-impl From<CurrencyUnit> for KeysetIdentifier {
-    fn from(unit: CurrencyUnit) -> Self {
-        Self::Unit(unit)
-    }
-}
-
 /// RotateKeyArguments
 ///
 /// This struct is used to pass the arguments to the rotate_keyset function
-///
-/// TODO: Change argument to accept a vector of Amount instead of max_order.
 #[derive(Debug, Clone)]
 pub struct RotateKeyArguments {
     /// Unit

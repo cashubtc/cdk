@@ -11,7 +11,7 @@ use cdk_common::mint::MintKeySetInfo;
 use cdk_common::{CurrencyUnit, Id};
 
 use super::{SQLMintDatabase, SQLTransaction};
-use crate::database::ConnectionWithTransaction;
+use crate::database::{ConnectionWithTransaction, DatabaseExecutor};
 use crate::pool::DatabasePool;
 use crate::stmt::{query, Column};
 use crate::{
@@ -65,6 +65,72 @@ pub(crate) fn sql_row_to_keyset_info(row: Vec<Column>) -> Result<MintKeySetInfo,
     })
 }
 
+/// The keyset-info columns, in the order [`sql_row_to_keyset_info`] expects.
+const KEYSET_INFO_COLUMNS: &str = r#"
+    id,
+    unit,
+    active,
+    valid_from,
+    valid_to,
+    derivation_path,
+    derivation_path_index,
+    amounts,
+    input_fee_ppk,
+    issuer_version
+"#;
+
+/// Read the active keyset pointer for each unit, over any executor.
+///
+/// Shared by the autocommit [`MintKeysDatabase`] read and the transaction-scoped
+/// [`MintKeyDatabaseTransaction`] read so the SQL lives in one place.
+async fn read_active_keysets<C>(conn: &C) -> Result<HashMap<CurrencyUnit, Id>, Error>
+where
+    C: DatabaseExecutor,
+{
+    query(r#"SELECT id, unit FROM keyset WHERE active = :active"#)?
+        .bind("active", true)
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok((
+                column_as_string!(&row[1], CurrencyUnit::from_str),
+                column_as_string!(&row[0], Id::from_str, Id::from_bytes),
+            ))
+        })
+        .collect::<Result<HashMap<_, _>, Error>>()
+}
+
+/// Read every keyset info, over any executor. See [`read_active_keysets`].
+async fn read_keyset_infos<C>(conn: &C) -> Result<Vec<MintKeySetInfo>, Error>
+where
+    C: DatabaseExecutor,
+{
+    query(&format!("SELECT {KEYSET_INFO_COLUMNS} FROM keyset"))?
+        .fetch_all(conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_keyset_info)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+/// Read the single-row keyset epoch counter, over any executor. See
+/// [`read_active_keysets`].
+async fn read_keysets_epoch<C>(conn: &C) -> Result<u64, Error>
+where
+    C: DatabaseExecutor,
+{
+    Ok(
+        match query(r#"SELECT epoch FROM keyset_epoch WHERE id = 0"#)?
+            .pluck(conn)
+            .await?
+        {
+            Some(column) => column_as_number!(column),
+            None => 0,
+        },
+    )
+}
+
 #[async_trait]
 impl<RM> MintKeyDatabaseTransaction<'_, Error> for SQLTransaction<RM>
 where
@@ -110,6 +176,8 @@ where
         .execute(&self.inner)
         .await?;
 
+        self.bump_keyset_epoch().await?;
+
         Ok(())
     }
 
@@ -124,6 +192,118 @@ where
             .bind("id", id.to_string())
             .execute(&self.inner)
             .await?;
+
+        self.bump_keyset_epoch().await?;
+
+        Ok(())
+    }
+
+    async fn next_derivation_index(&mut self, unit: &CurrencyUnit) -> Result<u32, Error> {
+        // No lock here: the transaction already holds the global keyset advisory
+        // lock (taken in `begin_transaction`), so all keyset transactions
+        // serialize and two rotations cannot read the same MAX index below.
+        let next = match query(
+            r#"SELECT COALESCE(MAX(derivation_path_index), 0) + 1 FROM keyset WHERE unit = :unit"#,
+        )?
+        .bind("unit", unit.to_string())
+        .pluck(&self.inner)
+        .await?
+        {
+            Some(column) => column_as_number!(column),
+            None => 1,
+        };
+
+        Ok(next)
+    }
+
+    async fn get_keyset_infos_by_unit(
+        &mut self,
+        unit: &CurrencyUnit,
+    ) -> Result<Vec<MintKeySetInfo>, Error> {
+        // No lock here: the transaction already holds the global keyset advisory
+        // lock, so a concurrent rotation cannot slip a higher keyset in between
+        // this read and the caller's active-pointer reassignment.
+        Ok(query(
+            r#"SELECT
+                id,
+                unit,
+                active,
+                valid_from,
+                valid_to,
+                derivation_path,
+                derivation_path_index,
+                amounts,
+                input_fee_ppk,
+                issuer_version
+            FROM
+                keyset
+                WHERE unit = :unit"#,
+        )?
+        .bind("unit", unit.to_string())
+        .fetch_all(&self.inner)
+        .await?
+        .into_iter()
+        .map(sql_row_to_keyset_info)
+        .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    async fn get_active_keysets(&mut self) -> Result<HashMap<CurrencyUnit, Id>, Error> {
+        read_active_keysets(&self.inner).await
+    }
+
+    async fn get_keyset_infos(&mut self) -> Result<Vec<MintKeySetInfo>, Error> {
+        read_keyset_infos(&self.inner).await
+    }
+
+    async fn keysets_epoch(&mut self) -> Result<u64, Error> {
+        read_keysets_epoch(&self.inner).await
+    }
+}
+
+impl<RM> SQLTransaction<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    /// Take the global keyset advisory lock, held until the transaction commits,
+    /// so every keyset transaction (rotation, reload, boot reactivation)
+    /// serializes across processes. This removes torn reads and index races
+    /// without per-unit lock bookkeeping.
+    ///
+    /// No-op on backends that already serialize writers (SQLite's
+    /// `BEGIN IMMEDIATE`). Postgres runs at `START TRANSACTION` isolation, which
+    /// does not serialize concurrent reads, so it takes an explicit,
+    /// non-standard lock. Dispatched by driver name, the same way migrations
+    /// are.
+    async fn lock_keysets(&self) -> Result<(), Error> {
+        if RM::Connection::name() == "postgres" {
+            query(r#"SELECT pg_advisory_xact_lock(hashtext('cdk:keysets'))"#)?
+                .execute(&self.inner)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Bump the persisted keyset epoch so any keyset change (insert or
+    /// active-pointer reassignment) is observable by peers, which reload when
+    /// the epoch they loaded no longer matches.
+    ///
+    /// Upsert rather than a bare `UPDATE`: a plain update would silently affect
+    /// zero rows if row 0 were ever absent, freezing the epoch at its fallback
+    /// and stalling every peer's reload. The insert path makes the row
+    /// self-healing.
+    async fn bump_keyset_epoch(&self) -> Result<(), Error> {
+        // Qualify the existing value with the table name: on Postgres a bare
+        // `epoch` in the update expression is ambiguous between the target row
+        // and `excluded`. Matches the upsert style used elsewhere in this crate.
+        query(
+            r#"
+            INSERT INTO keyset_epoch (id, epoch) VALUES (0, 1)
+            ON CONFLICT (id) DO UPDATE SET epoch = keyset_epoch.epoch + 1
+            "#,
+        )?
+        .execute(&self.inner)
+        .await?;
 
         Ok(())
     }
@@ -149,108 +329,24 @@ where
             .await?,
         };
 
+        // Serialize every keyset transaction on one global advisory lock, held
+        // to commit. All keyset reads and writes then see a consistent snapshot
+        // without per-unit locking or torn-read retries.
+        tx.lock_keysets().await?;
+
         Ok(Box::new(tx))
     }
 
-    async fn get_active_keyset_id(&self, unit: &CurrencyUnit) -> Result<Option<Id>, Self::Err> {
+    async fn keysets_epoch(&self) -> Result<u64, Self::Err> {
+        // A single-row counter bumped inside every keyset-writing transaction,
+        // so it moves on any change (insert or active-pointer reassignment). One
+        // row to read, far cheaper than reading every keyset.
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(
-            query(r#" SELECT id FROM keyset WHERE active = :active AND unit = :unit"#)?
-                .bind("active", true)
-                .bind("unit", unit.to_string())
-                .pluck(&*conn)
-                .await?
-                .map(|id| match id {
-                    Column::Text(text) => Ok(Id::from_str(&text)?),
-                    Column::Blob(id) => Ok(Id::from_bytes(&id)?),
-                    _ => Err(Error::InvalidKeysetId),
-                })
-                .transpose()?,
-        )
-    }
-
-    async fn get_active_keysets(&self) -> Result<HashMap<CurrencyUnit, Id>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(
-            query(r#"SELECT id, unit FROM keyset WHERE active = :active"#)?
-                .bind("active", true)
-                .fetch_all(&*conn)
-                .await?
-                .into_iter()
-                .map(|row| {
-                    Ok((
-                        column_as_string!(&row[1], CurrencyUnit::from_str),
-                        column_as_string!(&row[0], Id::from_str, Id::from_bytes),
-                    ))
-                })
-                .collect::<Result<HashMap<_, _>, Error>>()?,
-        )
-    }
-
-    async fn get_keyset_info(&self, id: &Id) -> Result<Option<MintKeySetInfo>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"SELECT
-                id,
-                unit,
-                active,
-                valid_from,
-                valid_to,
-                derivation_path,
-                derivation_path_index,
-                amounts,
-                input_fee_ppk,
-                issuer_version
-            FROM
-                keyset
-                WHERE id=:id"#,
-        )?
-        .bind("id", id.to_string())
-        .fetch_one(&*conn)
-        .await?
-        .map(sql_row_to_keyset_info)
-        .transpose()?)
-    }
-
-    async fn get_keyset_infos(&self) -> Result<Vec<MintKeySetInfo>, Self::Err> {
-        let conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| Error::Database(Box::new(e)))?;
-        Ok(query(
-            r#"SELECT
-                id,
-                unit,
-                active,
-                valid_from,
-                valid_to,
-                derivation_path,
-                derivation_path_index,
-                amounts,
-                input_fee_ppk,
-                issuer_version
-            FROM
-                keyset
-            "#,
-        )?
-        .fetch_all(&*conn)
-        .await?
-        .into_iter()
-        .map(sql_row_to_keyset_info)
-        .collect::<Result<Vec<_>, _>>()?)
+        read_keysets_epoch(&*conn).await
     }
 }
 

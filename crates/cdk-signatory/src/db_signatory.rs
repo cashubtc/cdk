@@ -11,20 +11,40 @@
 //! loaded and serving.
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use arc_swap::ArcSwap;
 use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::{self, Secp256k1};
+use cdk_common::database::MintKeyDatabaseTransaction;
 use cdk_common::dhke::{sign_message, verify_message};
 use cdk_common::mint::MintKeySetInfo;
 use cdk_common::nuts::{BlindSignature, BlindedMessage, CurrencyUnit, Id, MintKeySet, Proof};
 use cdk_common::{database, Error, PublicKey};
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{watch, Mutex};
 use tracing::instrument;
 
 use crate::common::{
     check_unit_string_collision, create_new_keyset, derivation_path_from_unit, init_keysets,
 };
 use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, SignatoryKeysets};
+
+/// Immutable in-memory view of the keysets, swapped atomically on every change.
+///
+/// Readers load it lock-free; the periodic refresh and local rotations build a
+/// fresh one off to the side and store it in a single atomic swap, so signing
+/// never waits on a reload.
+#[derive(Default)]
+struct KeysetSnapshot {
+    /// All keysets keyed by id, with their derived keys.
+    by_id: HashMap<Id, (MintKeySetInfo, MintKeySet)>,
+    /// Active keyset id per unit.
+    active_by_unit: HashMap<CurrencyUnit, Id>,
+    /// Storage keyset epoch this snapshot was built from; `None` before the
+    /// first load. The refresh compares it against the storage token to decide
+    /// whether a reload is needed.
+    epoch: Option<u64>,
+}
 
 /// In-memory Signatory
 ///
@@ -34,12 +54,16 @@ use crate::signatory::{RotateKeyArguments, Signatory, SignatoryKeySet, Signatory
 /// is not accessible from the outside.
 #[allow(missing_debug_implementations)]
 pub struct DbSignatory {
-    keysets: RwLock<HashMap<Id, (MintKeySetInfo, MintKeySet)>>,
-    active_keysets: RwLock<HashMap<CurrencyUnit, Id>>,
-    /// Serializes keyset rotations. The standalone signatory gRPC server calls
-    /// rotate_keyset directly (no embedded single-runner), so two concurrent
-    /// rotations of the same unit could otherwise read the same path index and
-    /// derive duplicate keysets.
+    /// Lock-free in-memory keyset view. Reads load it without blocking;
+    /// reloads and rotations replace it wholesale. The database is the global
+    /// coordination point (advisory lock and epoch token); this only mirrors
+    /// it.
+    keysets: ArcSwap<KeysetSnapshot>,
+    /// Serializes local keyset rotations. The standalone signatory gRPC server
+    /// calls rotate_keyset directly (no embedded single-runner), so two
+    /// concurrent local rotations of the same unit could otherwise open nested
+    /// transactions on a single-connection backend. Cross-process
+    /// serialization is the database's job.
     rotation_lock: Mutex<()>,
     localstore: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync>,
     secp_ctx: Secp256k1<secp256k1::All>,
@@ -79,8 +103,7 @@ impl DbSignatory {
         });
 
         let signatory = Self {
-            keysets: Default::default(),
-            active_keysets: Default::default(),
+            keysets: ArcSwap::from_pointee(KeysetSnapshot::default()),
             rotation_lock: Default::default(),
             localstore,
             custom_paths,
@@ -94,6 +117,57 @@ impl DbSignatory {
         signatory.boot_load().await?;
 
         Ok(signatory)
+    }
+
+    /// Periodically reload keysets from the shared database, so a rotation
+    /// performed by any instance is picked up without a restart.
+    ///
+    /// This is off by default: a single signatory process owns its database and
+    /// needs no polling. Enabling it (passing an interval) is what lets several
+    /// signatory processes run against one shared database (active/active): each
+    /// process picks up peers' rotations within one interval. Rotation itself is
+    /// always safe to share, its derivation index is allocated authoritatively
+    /// in the database; this reload only closes the gap where a peer's change
+    /// would otherwise be invisible until the next boot.
+    ///
+    /// `interval` is `None` (or zero) to disable: no task is spawned and nothing
+    /// polls. A few seconds is a reasonable cadence. The refresh is aligned to a
+    /// shared wall-clock epoch (Unix time in
+    /// milliseconds floored to the interval) so every process reloads at about
+    /// the same moment, keeping the fleet's view close to consistent without any
+    /// inter-node messaging. The task holds a `Weak`, so it stops on its own once
+    /// the signatory is dropped.
+    pub fn spawn_keyset_refresh(self: &Arc<Self>, interval: Option<Duration>) {
+        let interval_ms = match interval.map(|d| d.as_millis() as u64) {
+            Some(ms) if ms > 0 => ms,
+            _ => return,
+        };
+
+        let weak = Arc::downgrade(self);
+
+        tokio::spawn(async move {
+            loop {
+                let now_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let next = (now_ms / interval_ms + 1) * interval_ms;
+                tokio::time::sleep(Duration::from_millis(next.saturating_sub(now_ms))).await;
+
+                let Some(signatory) = weak.upgrade() else {
+                    break;
+                };
+                // No rotation lock: the reload loads authoritative database
+                // state, and `load_keys_from_db` gates its swap on the database
+                // epoch, so it cannot publish out of order with a rotation's
+                // reload. It never blocks signing. It is also cheap when nothing
+                // changed (epoch gate, no row fetch, no key derivation), so a
+                // quiet refresh costs only a metadata read.
+                if let Err(err) = signatory.load_keys_from_db().await {
+                    tracing::warn!("periodic keyset reload from database failed: {err}");
+                }
+            }
+        });
     }
 
     /// Load keysets from the database into memory.
@@ -112,44 +186,125 @@ impl DbSignatory {
         Ok(())
     }
 
-    /// Hydrate the in-memory keysets from the database.
+    /// Hydrate the in-memory keysets from the database and swap them in.
     ///
-    /// This is the only path that reads keysets from the database. Since the
-    /// database is owned by this process, all keysets are loaded into memory
-    /// and memory is the primary source afterwards; the database is only the
-    /// persistence layer. Any later operation reads from and mutates memory,
-    /// never the database directly.
+    /// A cheap, lock-free epoch pre-check skips the whole reload when nothing
+    /// changed: one atomic read, no lock, no row fetch, no derivation. Only when
+    /// the epoch moved does it open a keyset transaction (which takes the global
+    /// keyset advisory lock) and reload a consistent snapshot through it, so a
+    /// quiet periodic tick stays a single query. The rebuild reuses the keys
+    /// already derived in the current snapshot, deriving only new keysets, and
+    /// swaps the result in atomically so readers never block.
     async fn load_keys_from_db(&self) -> Result<(), Error> {
-        let mut keysets = self.keysets.write().await;
-        let mut active_keysets = self.active_keysets.write().await;
-        keysets.clear();
-        active_keysets.clear();
-
-        let db_active_keysets = self.localstore.get_active_keysets().await?;
-
-        for mut info in self.localstore.get_keyset_infos().await? {
-            let id = info.id;
-            let keyset = self.generate_keyset(&info);
-            info.active = db_active_keysets.get(&info.unit) == Some(&info.id);
-            if info.active {
-                active_keysets.insert(info.unit.clone(), id);
-            }
-            keysets.insert(id, (info, keyset));
+        // Steady-state gate: a single atomic epoch read, lock-free (one
+        // statement is consistent on its own). Skip when it matches the loaded
+        // snapshot.
+        let epoch = self.localstore.keysets_epoch().await?;
+        if self.keysets.load().epoch == Some(epoch) {
+            return Ok(());
         }
 
-        self.publish_snapshot(&keysets);
-
+        // Something changed: reload under the global keyset lock so the
+        // multi-statement read is a consistent snapshot.
+        let mut tx = self.localstore.begin_transaction().await?;
+        self.reload_from_tx(&mut *tx).await?;
+        tx.commit().await?;
         Ok(())
     }
 
-    /// Publish the current keyset set to any subscribers of the watch channel.
+    /// Reload the in-memory keysets from committed state read through an open
+    /// keyset transaction.
     ///
-    /// Callers hold the `keysets` write lock while calling this so the published
-    /// snapshot stays consistent with the in-memory state that produced it.
-    fn publish_snapshot(&self, keysets: &HashMap<Id, (MintKeySetInfo, MintKeySet)>) {
-        self.keyset_updates.send_replace(SignatoryKeysets {
-            pubkey: self.xpub,
-            keysets: keysets.values().map(|k| k.into()).collect(),
+    /// The transaction holds the global keyset advisory lock (taken in
+    /// `begin_transaction`), so no other keyset transaction can commit between
+    /// the reads: they are a consistent snapshot and need no epoch bracketing.
+    /// `rotate_keyset` calls this on its own write transaction so the collision
+    /// check and default amounts see peers' committed rotations;
+    /// `load_keys_from_db` calls it on a dedicated read transaction.
+    async fn reload_from_tx(
+        &self,
+        tx: &mut (dyn MintKeyDatabaseTransaction<'_, database::Error> + Send + Sync),
+    ) -> Result<(), Error> {
+        let epoch = tx.keysets_epoch().await?;
+        if self.keysets.load().epoch == Some(epoch) {
+            return Ok(());
+        }
+
+        let db_active_keysets = tx.get_active_keysets().await?;
+        let db_infos = tx.get_keyset_infos().await?;
+
+        self.publish_snapshot(epoch, db_active_keysets, db_infos);
+        Ok(())
+    }
+
+    /// Build a keyset snapshot for `epoch` and publish it, reusing keys already
+    /// derived in the current snapshot (a memory copy, no crypto); only a
+    /// genuinely new keyset needs derivation.
+    ///
+    /// Publishing is conditional on the database epoch rather than a process
+    /// lock. `keysets_epoch` is a counter bumped in every keyset-writing
+    /// transaction, so it only ever increases and totally orders changes. Two
+    /// reloads can race here (a periodic refresh against a rotation's
+    /// post-commit reload, or an under-lock reload against the following
+    /// post-commit reload); the compare-and-swap lets the newer database view
+    /// win regardless of arrival order, so an older snapshot can never overwrite
+    /// a newer one. Signing only reads the pointer, so it stays lock-free.
+    fn publish_snapshot(
+        &self,
+        epoch: u64,
+        db_active_keysets: HashMap<CurrencyUnit, Id>,
+        db_infos: Vec<MintKeySetInfo>,
+    ) {
+        let current = self.keysets.load();
+        let mut by_id = HashMap::with_capacity(db_infos.len());
+        let mut active_by_unit = HashMap::new();
+        for mut info in db_infos {
+            let id = info.id;
+            info.active = db_active_keysets.get(&info.unit) == Some(&info.id);
+            if info.active {
+                active_by_unit.insert(info.unit.clone(), id);
+            }
+            let keyset = match current.by_id.get(&id) {
+                Some((_, keyset)) => keyset.clone(),
+                None => self.generate_keyset(&info),
+            };
+            by_id.insert(id, (info, keyset));
+        }
+
+        let snapshot = Arc::new(KeysetSnapshot {
+            by_id,
+            active_by_unit,
+            epoch: Some(epoch),
+        });
+
+        loop {
+            let current = self.keysets.load();
+            if current.epoch.is_some_and(|cur| epoch <= cur) {
+                // A concurrent reload already published an equal-or-newer view.
+                return;
+            }
+            let prev = self.keysets.compare_and_swap(&current, snapshot.clone());
+            if Arc::ptr_eq(&prev, &current) {
+                break;
+            }
+            // Lost the swap: another reload replaced the pointer between our load
+            // and CAS. Retry to re-check its epoch against ours.
+        }
+        self.publish_latest();
+    }
+
+    /// Publish the latest stored keyset snapshot to watch subscribers.
+    ///
+    /// Reads the current `ArcSwap` snapshot inside the watch send closure, which
+    /// holds the channel's send lock, so concurrent reloads publish in the
+    /// pointer's epoch order and the subscriber view never regresses. This
+    /// mirrors the compare-and-swap that orders the stored snapshot; without it
+    /// two swap winners could still send stale-then-fresh out of order.
+    fn publish_latest(&self) {
+        self.keyset_updates.send_modify(|out| {
+            let latest = self.keysets.load();
+            out.pubkey = self.xpub;
+            out.keysets = latest.by_id.values().map(|k| k.into()).collect();
         });
     }
 
@@ -166,14 +321,14 @@ impl DbSignatory {
         )
     }
 
-    /// Snapshot the current keysets from memory.
-    async fn keysets_snapshot(&self) -> SignatoryKeysets {
+    /// Snapshot the current keysets from memory (lock-free).
+    fn keysets_snapshot(&self) -> SignatoryKeysets {
         SignatoryKeysets {
             pubkey: self.xpub,
             keysets: self
                 .keysets
-                .read()
-                .await
+                .load()
+                .by_id
                 .values()
                 .map(|k| k.into())
                 .collect(),
@@ -192,7 +347,7 @@ impl Signatory for DbSignatory {
         &self,
         blinded_messages: Vec<BlindedMessage>,
     ) -> Result<Vec<BlindSignature>, Error> {
-        let keysets = self.keysets.read().await;
+        let keysets = self.keysets.load();
 
         blinded_messages
             .into_iter()
@@ -204,7 +359,7 @@ impl Signatory for DbSignatory {
                     ..
                 } = blinded_message;
 
-                let (info, key) = keysets.get(&keyset_id).ok_or(Error::UnknownKeySet)?;
+                let (info, key) = keysets.by_id.get(&keyset_id).ok_or(Error::UnknownKeySet)?;
                 if !info.active {
                     return Err(Error::InactiveKeyset);
                 }
@@ -230,10 +385,13 @@ impl Signatory for DbSignatory {
 
     #[tracing::instrument(skip_all)]
     async fn verify_proofs(&self, proofs: Vec<Proof>) -> Result<(), Error> {
-        let keysets = self.keysets.read().await;
+        let keysets = self.keysets.load();
 
         proofs.into_iter().try_for_each(|proof| {
-            let (_, key) = keysets.get(&proof.keyset_id).ok_or(Error::UnknownKeySet)?;
+            let (_, key) = keysets
+                .by_id
+                .get(&proof.keyset_id)
+                .ok_or(Error::UnknownKeySet)?;
             let key_pair = key.keys.get(&proof.amount).ok_or(Error::UnknownKeySet)?;
             verify_message(&key_pair.secret_key, proof.c, proof.secret.as_bytes())?;
             Ok(())
@@ -242,7 +400,7 @@ impl Signatory for DbSignatory {
 
     #[tracing::instrument(skip_all)]
     async fn keysets(&self) -> Result<SignatoryKeysets, Error> {
-        Ok(self.keysets_snapshot().await)
+        Ok(self.keysets_snapshot())
     }
 
     #[tracing::instrument(skip_all)]
@@ -254,29 +412,39 @@ impl Signatory for DbSignatory {
     /// Generate new keyset
     #[tracing::instrument(skip(self))]
     async fn rotate_keyset(&self, args: RotateKeyArguments) -> Result<SignatoryKeySet, Error> {
-        // Serialize rotations. The standalone signatory gRPC server invokes this
-        // directly (no embedded single-runner), so without this two concurrent
-        // rotations of the same unit could read the same path index below and
-        // derive duplicate keysets. Held for the whole method.
+        // Serialize local rotations. The standalone signatory gRPC server
+        // invokes this directly (no embedded single-runner), so without this two
+        // concurrent local rotations could open nested transactions on a
+        // single-connection backend. Held for the whole method. Cross-process
+        // rotations are serialized by the global keyset lock in the database.
         let _rotation = self.rotation_lock.lock().await;
 
-        // Derive the next path index and default amounts from the in-memory
-        // active keyset rather than the database. The rotation lock above keeps
-        // this read stable across the DB write and the in-memory update.
-        // Acquire keysets before active_keysets, the same order the write phase
-        // below uses (and load_keys_from_db), keeping lock ordering consistent.
-        let (path_index, amounts) = {
-            let keysets = self.keysets.read().await;
-            let active_keysets = self.active_keysets.read().await;
-            if let Some(current_keyset_id) = active_keysets.get(&args.unit) {
-                let (info, _) = keysets.get(current_keyset_id).ok_or(Error::UnknownKeySet)?;
-                (
-                    info.derivation_path_index.unwrap_or(1) + 1,
-                    info.amounts.clone(),
-                )
-            } else {
-                (1, vec![])
-            }
+        // Persist the rotation. This is the only path that writes to the
+        // database. Opening the transaction takes the global keyset advisory
+        // lock, held to commit, so all keyset transactions serialize across
+        // processes: index allocation is authoritative and two rotations cannot
+        // interleave.
+        let mut tx = self.localstore.begin_transaction().await?;
+        let path_index = tx.next_derivation_index(&args.unit).await?;
+
+        // Reload in-memory keysets from committed state through this
+        // transaction, under the global lock just taken. Both the default
+        // amounts below and the collision check further down then see peers'
+        // committed rotations rather than a possibly-stale in-memory snapshot.
+        self.reload_from_tx(&mut *tx).await?;
+
+        // Default amounts come from the in-memory active keyset and are only
+        // used when the caller does not specify any. The authoritative
+        // derivation index is allocated from the database above, not memory, so
+        // concurrent rotations across instances cannot pick the same index.
+        let default_amounts = {
+            let keysets = self.keysets.load();
+            keysets
+                .active_by_unit
+                .get(&args.unit)
+                .and_then(|id| keysets.by_id.get(id))
+                .map(|(info, _)| info.amounts.clone())
+                .unwrap_or_default()
         };
 
         let derivation_path = match self.custom_paths.get(&args.unit) {
@@ -286,10 +454,10 @@ impl Signatory for DbSignatory {
         };
 
         let amounts = if args.amounts.is_empty() {
-            if amounts.is_empty() {
+            if default_amounts.is_empty() {
                 return Err(Error::Custom("Amounts cannot be empty".to_string()));
             }
-            amounts
+            default_amounts
         } else {
             args.amounts
         };
@@ -306,37 +474,26 @@ impl Signatory for DbSignatory {
             args.keyset_id_type,
         );
 
-        let keysets = self.keysets_snapshot().await;
+        let keysets = self.keysets_snapshot();
         check_unit_string_collision(keysets.keysets, &info)?;
 
         let id = info.id;
 
-        // Persist the rotation. This is the only path that writes to the
-        // database.
-        let mut tx = self.localstore.begin_transaction().await?;
         tx.add_keyset_info(info.clone()).await?;
         tx.set_active_keyset(args.unit.clone(), id).await?;
         tx.commit().await?;
 
-        // Refresh the in-memory state to match what was just persisted, without
-        // reading the database back. This mirrors a fresh boot: the active
-        // pointer for the unit moves to the new keyset, so any previously active
-        // keyset for the unit becomes inactive.
         let mut info = info;
         info.active = true;
-        let signatory_keyset: SignatoryKeySet = (&(info.clone(), keyset.clone())).into();
+        let signatory_keyset: SignatoryKeySet = (&(info, keyset)).into();
 
-        let mut keysets = self.keysets.write().await;
-        let mut active_keysets = self.active_keysets.write().await;
-
-        if let Some(prev_id) = active_keysets.insert(args.unit, id) {
-            if let Some((prev_info, _)) = keysets.get_mut(&prev_id) {
-                prev_info.active = false;
-            }
-        }
-        keysets.insert(id, (info, keyset));
-
-        self.publish_snapshot(&keysets);
+        // Refresh from the full database state rather than patching memory by
+        // hand. This picks up any concurrent peer rotation too, and records the
+        // keyset epoch we loaded, so the periodic refresh does not reload
+        // again on its next tick. (Recording the epoch from a bare post-commit
+        // read would be unsafe: it could already include a peer change this
+        // instance has not loaded.)
+        self.load_keys_from_db().await?;
 
         Ok(signatory_keyset)
     }
@@ -348,11 +505,188 @@ mod test {
 
     use bitcoin::key::Secp256k1;
     use bitcoin::Network;
+    use cdk_common::database::MintKeysDatabase;
     use cdk_common::nuts::SecretKey;
     use cdk_common::util::{hex, unix_time};
     use cdk_common::{Amount, MintKeySet, PublicKey};
 
     use super::*;
+
+    #[tokio::test]
+    async fn keysets_epoch_moves_only_on_change() {
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let signatory = DbSignatory::new(
+            store.clone(),
+            b"test-seed-for-version",
+            Default::default(),
+            Default::default(),
+        )
+        .await
+        .expect("DbSignatory::new");
+
+        let rotate = |unit| RotateKeyArguments {
+            unit,
+            amounts: vec![1, 2, 4, 8],
+            input_fee_ppk: 0,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            final_expiry: None,
+        };
+
+        let before = store.keysets_epoch().await.expect("epoch");
+        assert_eq!(
+            before,
+            store.keysets_epoch().await.expect("epoch"),
+            "epoch is stable when nothing changed"
+        );
+
+        // First keyset (becomes active), then a second (the first goes inactive).
+        let first = signatory
+            .rotate_keyset(rotate(CurrencyUnit::Sat))
+            .await
+            .expect("rotate_keyset");
+        let after_insert = store.keysets_epoch().await.expect("epoch");
+        assert_ne!(
+            before, after_insert,
+            "epoch changes after a rotation adds a keyset"
+        );
+
+        signatory
+            .rotate_keyset(rotate(CurrencyUnit::Sat))
+            .await
+            .expect("rotate_keyset");
+        let two_keysets = store.keysets_epoch().await.expect("epoch");
+
+        // Reactivate the first keyset: a pure active-pointer change, no insert.
+        let mut tx = MintKeysDatabase::begin_transaction(&*store)
+            .await
+            .expect("begin tx");
+        tx.set_active_keyset(CurrencyUnit::Sat, first.id)
+            .await
+            .expect("set active");
+        tx.commit().await.expect("commit");
+
+        assert_ne!(
+            two_keysets,
+            store.keysets_epoch().await.expect("epoch"),
+            "epoch changes on an active-pointer reassignment with no insert"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotation_reloads_peer_keyset_under_lock() {
+        // Two signatories sharing one database, the shape ADR-0004 enables.
+        // Neither has the periodic refresh enabled, so the only way instance A
+        // learns of instance B's rotation before a restart is the under-lock
+        // reload inside its own rotate_keyset.
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let seed = b"test-seed-cross-instance-reload";
+        let instance_a =
+            DbSignatory::new(store.clone(), seed, Default::default(), Default::default())
+                .await
+                .expect("DbSignatory::new a");
+        let instance_b =
+            DbSignatory::new(store.clone(), seed, Default::default(), Default::default())
+                .await
+                .expect("DbSignatory::new b");
+
+        let rotate = |unit| RotateKeyArguments {
+            unit,
+            amounts: vec![1, 2, 4, 8],
+            input_fee_ppk: 0,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            final_expiry: None,
+        };
+
+        // B rotates Sat and commits. A's in-memory view is untouched.
+        let b_keyset = instance_b
+            .rotate_keyset(rotate(CurrencyUnit::Sat))
+            .await
+            .expect("rotate_keyset b");
+
+        let a_before = instance_a.keysets().await.expect("keysets a");
+        assert!(
+            !a_before.keysets.iter().any(|k| k.id == b_keyset.id),
+            "instance A should not see B's keyset before it reloads"
+        );
+
+        // A rotates a different, non-colliding unit. The under-lock reload must
+        // pull B's committed keyset into A's snapshot.
+        instance_a
+            .rotate_keyset(rotate(CurrencyUnit::Usd))
+            .await
+            .expect("rotate_keyset a");
+
+        let a_after = instance_a.keysets().await.expect("keysets a after");
+        assert!(
+            a_after.keysets.iter().any(|k| k.id == b_keyset.id),
+            "instance A's under-lock reload did not pick up B's committed keyset"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_amount_rotation_adopts_peer_denominations() {
+        // A rotation with empty amounts must reuse the currently active
+        // keyset's denomination set. In an active/active fleet that active
+        // keyset may have been rotated by a peer, so the amounts must come from
+        // committed state read under the global keyset lock, not from this
+        // instance's possibly-stale in-memory snapshot. Without the under-lock
+        // reload in rotate_keyset this test reuses A's older [1, 2, 4, 8].
+        let store = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("in-memory db"),
+        );
+        let seed = b"test-seed-empty-amount-peer-denoms";
+        let instance_a =
+            DbSignatory::new(store.clone(), seed, Default::default(), Default::default())
+                .await
+                .expect("DbSignatory::new a");
+        let instance_b =
+            DbSignatory::new(store.clone(), seed, Default::default(), Default::default())
+                .await
+                .expect("DbSignatory::new b");
+
+        let rotate = |amounts: Vec<u64>| RotateKeyArguments {
+            unit: CurrencyUnit::Sat,
+            amounts,
+            input_fee_ppk: 0,
+            keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+            final_expiry: None,
+        };
+
+        // A establishes an active Sat keyset, then B rotates it to a distinct
+        // denomination set. A never reloads (no periodic refresh), so its
+        // snapshot still shows the [1, 2, 4, 8] keyset as active.
+        instance_a
+            .rotate_keyset(rotate(vec![1, 2, 4, 8]))
+            .await
+            .expect("rotate_keyset a");
+        instance_b
+            .rotate_keyset(rotate(vec![1, 2, 4, 8, 16, 32]))
+            .await
+            .expect("rotate_keyset b");
+
+        // A rotates with empty amounts: it must adopt B's committed [1, 2, 4,
+        // 8, 16, 32], not its stale local [1, 2, 4, 8].
+        let rotated = instance_a
+            .rotate_keyset(rotate(vec![]))
+            .await
+            .expect("rotate_keyset a empty");
+
+        assert_eq!(
+            rotated.amounts,
+            vec![1, 2, 4, 8, 16, 32],
+            "empty-amount rotation must reuse the peer's committed denomination set"
+        );
+    }
 
     #[tokio::test]
     async fn blind_sign_rejects_expired_keyset() {
@@ -441,6 +775,66 @@ mod test {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn peer_rotation_is_reconciled_without_restart() {
+        // One shared store, two signatory instances with the same seed. A
+        // rotation on one must become visible on the other through the change
+        // subscription, not only after a restart.
+        let store: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync> =
+            Arc::new(
+                cdk_sqlite::mint::memory::empty()
+                    .await
+                    .expect("in-memory db"),
+            );
+
+        let seed = b"test-seed-for-multi-instance";
+        let instance_a = Arc::new(
+            DbSignatory::new(store.clone(), seed, Default::default(), Default::default())
+                .await
+                .expect("DbSignatory::new a"),
+        );
+        let instance_b = Arc::new(
+            DbSignatory::new(store.clone(), seed, Default::default(), Default::default())
+                .await
+                .expect("DbSignatory::new b"),
+        );
+
+        // Only B reloads from the database; A drives the rotation. A short
+        // interval keeps the test quick.
+        instance_b.spawn_keyset_refresh(Some(Duration::from_millis(500)));
+
+        let rotated = instance_a
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("rotate_keyset");
+
+        // B learns about it on its next periodic reload from the database.
+        let mut seen = false;
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let keysets = instance_b.keysets().await.expect("keysets");
+            if keysets
+                .keysets
+                .iter()
+                .any(|k| k.id == rotated.id && k.active)
+            {
+                seen = true;
+                break;
+            }
+        }
+
+        assert!(
+            seen,
+            "instance B should reconcile the peer rotation without a restart"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_rotations_do_not_collide() {
         let store = Arc::new(
             cdk_sqlite::mint::memory::empty()
@@ -493,6 +887,176 @@ mod test {
             );
         }
         assert_eq!(ids.len(), ROTATIONS);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_rotations_across_instances_do_not_collide() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use cdk_sqlite::mint::MintSqliteDatabase;
+
+        // Two independent instances, each with its own rotation_lock, sharing one
+        // on-disk SQLite file. The in-process lock cannot coordinate them; only
+        // the database can (BEGIN IMMEDIATE plus busy_timeout serialize the write
+        // transactions). A shared file is required because ":memory:" is always a
+        // private database per connection pool.
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "cdk-rot-{}-{}.sqlite",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let path_str = path.to_str().expect("utf-8 temp path");
+
+        let store_a = Arc::new(
+            MintSqliteDatabase::new(path_str)
+                .await
+                .expect("shared-file db a"),
+        );
+        let store_b = Arc::new(
+            MintSqliteDatabase::new(path_str)
+                .await
+                .expect("shared-file db b"),
+        );
+
+        let seed = b"test-seed-cross-instance-rotations";
+        let instance_a = Arc::new(
+            DbSignatory::new(store_a, seed, Default::default(), Default::default())
+                .await
+                .expect("DbSignatory::new a"),
+        );
+        let instance_b = Arc::new(
+            DbSignatory::new(store_b, seed, Default::default(), Default::default())
+                .await
+                .expect("DbSignatory::new b"),
+        );
+
+        // Alternate rotations between the two instances so no single rotation_lock
+        // serializes them all.
+        const ROTATIONS: usize = 8;
+        let mut handles = Vec::with_capacity(ROTATIONS);
+        for i in 0..ROTATIONS {
+            let signatory = if i % 2 == 0 {
+                instance_a.clone()
+            } else {
+                instance_b.clone()
+            };
+            handles.push(tokio::spawn(async move {
+                signatory
+                    .rotate_keyset(RotateKeyArguments {
+                        unit: CurrencyUnit::Sat,
+                        amounts: vec![1, 2, 4, 8],
+                        input_fee_ppk: 0,
+                        keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                        final_expiry: None,
+                    })
+                    .await
+                    .expect("rotate_keyset")
+            }));
+        }
+
+        let mut ids = HashSet::new();
+        let mut versions = HashSet::new();
+        for handle in handles {
+            let keyset = handle.await.expect("join");
+            assert!(
+                ids.insert(keyset.id),
+                "duplicate keyset id from concurrent cross-instance rotation"
+            );
+            assert!(
+                versions.insert(keyset.version),
+                "duplicate path index from concurrent cross-instance rotation"
+            );
+        }
+        assert_eq!(ids.len(), ROTATIONS);
+
+        // Best-effort cleanup of the file and its WAL sidecars.
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{path_str}-wal"));
+        let _ = std::fs::remove_file(format!("{path_str}-shm"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn boot_does_not_downgrade_active_below_highest_index() {
+        // Boot reactivation and a peer rotation race on a shared store. Boot
+        // selects the highest-index keyset and reassigns the active pointer; if
+        // that selection reads outside the global keyset lock, a rotation
+        // committing a higher keyset in the gap gets clobbered back to the older
+        // one. The active pointer must always end at the highest index present.
+        let store: Arc<dyn database::MintKeysDatabase<Err = database::Error> + Send + Sync> =
+            Arc::new(
+                cdk_sqlite::mint::memory::empty()
+                    .await
+                    .expect("in-memory db"),
+            );
+        let seed = b"test-seed-boot-no-downgrade";
+        let supported: HashMap<CurrencyUnit, (u64, Vec<u64>)> =
+            HashMap::from([(CurrencyUnit::Sat, (0u64, vec![1, 2, 4, 8]))]);
+
+        let seeder = Arc::new(
+            DbSignatory::new(store.clone(), seed, supported.clone(), Default::default())
+                .await
+                .expect("DbSignatory::new seeder"),
+        );
+        // Establish an initial active keyset so later rotations advance the index.
+        seeder
+            .rotate_keyset(RotateKeyArguments {
+                unit: CurrencyUnit::Sat,
+                amounts: vec![1, 2, 4, 8],
+                input_fee_ppk: 0,
+                keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                final_expiry: None,
+            })
+            .await
+            .expect("seed rotation");
+
+        for _ in 0..16 {
+            let rotate = {
+                let seeder = seeder.clone();
+                tokio::spawn(async move {
+                    seeder
+                        .rotate_keyset(RotateKeyArguments {
+                            unit: CurrencyUnit::Sat,
+                            amounts: vec![1, 2, 4, 8],
+                            input_fee_ppk: 0,
+                            keyset_id_type: cdk_common::nut02::KeySetVersion::Version00,
+                            final_expiry: None,
+                        })
+                        .await
+                        .expect("peer rotation")
+                })
+            };
+            let boot = {
+                let store = store.clone();
+                let supported = supported.clone();
+                tokio::spawn(async move {
+                    DbSignatory::new(store, seed, supported, Default::default())
+                        .await
+                        .expect("DbSignatory::new boot")
+                })
+            };
+            rotate.await.expect("join rotate");
+            boot.await.expect("join boot");
+
+            let mut tx = store.begin_transaction().await.expect("begin tx");
+            let infos = tx.get_keyset_infos().await.expect("keyset infos");
+            let active = tx
+                .get_active_keysets()
+                .await
+                .expect("active keysets")
+                .get(&CurrencyUnit::Sat)
+                .copied();
+            tx.commit().await.expect("commit");
+            let highest = infos
+                .iter()
+                .max_by_key(|k| k.derivation_path_index)
+                .expect("at least one keyset");
+            assert_eq!(
+                active,
+                Some(highest.id),
+                "boot must not reactivate a keyset below the highest index"
+            );
+        }
     }
 
     #[test]
