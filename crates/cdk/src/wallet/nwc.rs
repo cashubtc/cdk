@@ -227,7 +227,9 @@ fn transaction_to_nip47(
         TransactionStatus::Pending => (cdk_nwc::nip47::TransactionState::Pending, None),
         TransactionStatus::Completed => (
             cdk_nwc::nip47::TransactionState::Settled,
-            Some(Timestamp::from(tx.timestamp)),
+            tx.saga_id
+                .is_none()
+                .then_some(Timestamp::from(tx.timestamp)),
         ),
         TransactionStatus::Failed => (cdk_nwc::nip47::TransactionState::Failed, None),
     };
@@ -560,31 +562,13 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
         let until = request.until.map(|t| t.as_secs());
         let offset = request.offset.unwrap_or(0) as usize;
         let limit = request.limit.map(|l| l as usize);
+        let include_unpaid = request.unpaid.unwrap_or(false);
 
         let transactions = self
             .wallet
             .list_transactions(direction)
             .await
             .map_err(|e| nip47_err(ErrorCode::Internal, e.to_string()))?;
-
-        if !request.unpaid.unwrap_or(false) {
-            let filtered = transactions
-                .into_iter()
-                .filter(|tx| tx.status == TransactionStatus::Completed)
-                .filter(|tx| timestamp_matches(tx.timestamp, from, until));
-
-            let mut out = Vec::new();
-            for tx in filtered.skip(offset) {
-                if let Some(limit) = limit {
-                    if out.len() >= limit {
-                        break;
-                    }
-                }
-                out.push(transaction_to_nip47(&tx, unit)?);
-            }
-
-            return Ok(out);
-        }
 
         let pending_quote_ids = transactions
             .iter()
@@ -600,7 +584,7 @@ impl cdk_nwc::NwcRequestHandler for WalletNwcHandler {
             }
         }
 
-        if direction_matches(direction, TransactionDirection::Incoming) {
+        if include_unpaid && direction_matches(direction, TransactionDirection::Incoming) {
             let quotes = self
                 .wallet
                 .get_active_mint_quotes()
@@ -748,6 +732,20 @@ mod tests {
     }
 
     #[test]
+    fn saga_managed_transaction_does_not_guess_settlement_time() {
+        let mut tx = sample_transaction(1_700_000_000);
+        tx.saga_id = Some(uuid::Uuid::new_v4());
+
+        let mapped = transaction_to_nip47(&tx, &CurrencyUnit::Sat).expect("map tx");
+
+        assert_eq!(
+            mapped.state,
+            Some(cdk_nwc::nip47::TransactionState::Settled)
+        );
+        assert!(mapped.settled_at.is_none());
+    }
+
+    #[test]
     fn transaction_status_maps_to_nip47_state() {
         let mut tx = sample_transaction(1_700_000_000);
 
@@ -802,7 +800,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_transactions_filters_status_unless_unpaid_requested() {
+    async fn list_transactions_includes_stored_statuses_by_default() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
         let wallet = Wallet::new(
             "https://mint.example.com",
@@ -827,30 +825,20 @@ mod tests {
         }
 
         let handler = WalletNwcHandler::new(Arc::new(wallet), None);
-        let settled = cdk_nwc::NwcRequestHandler::list_transactions(&handler, Default::default())
-            .await
-            .expect("list settled transactions");
-        assert_eq!(settled.len(), 1);
-        assert_eq!(
-            settled[0].state,
-            Some(cdk_nwc::nip47::TransactionState::Settled)
-        );
-
-        let all = cdk_nwc::NwcRequestHandler::list_transactions(
-            &handler,
-            ListTransactionsRequest {
-                unpaid: Some(true),
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("list all transactions");
-        assert_eq!(all.len(), 3);
-        assert!(all.iter().any(
+        let transactions =
+            cdk_nwc::NwcRequestHandler::list_transactions(&handler, Default::default())
+                .await
+                .expect("list transactions");
+        assert_eq!(transactions.len(), 3);
+        assert!(transactions.iter().any(
+            |transaction| transaction.state == Some(cdk_nwc::nip47::TransactionState::Settled)
+        ));
+        assert!(transactions.iter().any(
             |transaction| transaction.state == Some(cdk_nwc::nip47::TransactionState::Pending)
         ));
         assert!(
-            all.iter()
+            transactions
+                .iter()
                 .any(|transaction| transaction.state
                     == Some(cdk_nwc::nip47::TransactionState::Failed))
         );
@@ -951,7 +939,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_transactions_includes_active_melt_quotes_for_outgoing_unpaid_requests() {
+    async fn list_transactions_includes_active_melt_quotes_without_unpaid_flag() {
         let localstore = Arc::new(cdk_sqlite::wallet::memory::empty().await.expect("db"));
         let mint_url = MintUrl::from_str("https://mint.example.com").expect("mint url");
         let wallet = Wallet::new(
@@ -989,7 +977,6 @@ mod tests {
         let transactions = cdk_nwc::NwcRequestHandler::list_transactions(
             &handler,
             ListTransactionsRequest {
-                unpaid: Some(true),
                 transaction_type: Some(TransactionType::Outgoing),
                 ..Default::default()
             },

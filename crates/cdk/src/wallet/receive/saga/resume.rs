@@ -184,8 +184,7 @@ impl Wallet {
                     "Receive saga {} - input proofs not spent, compensating",
                     saga_id
                 );
-                self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
-                    .await?;
+                self.mark_transaction_failed_best_effort(*saga_id).await;
                 self.compensate_receive(saga_id).await?;
                 Ok(RecoveryAction::Compensated)
             }
@@ -257,12 +256,13 @@ impl Wallet {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, ProofState, RestoreResponse, State};
     use cdk_common::wallet::{
-        OperationData, ReceiveOperationData, ReceiveSagaState, TransactionStatus, WalletSaga,
-        WalletSagaState,
+        OperationData, ReceiveOperationData, ReceiveSagaState, Transaction, TransactionDirection,
+        TransactionStatus, WalletSaga, WalletSagaState,
     };
     use cdk_common::Amount;
 
@@ -321,6 +321,61 @@ mod tests {
 
         // Saga should be deleted
         assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_receive_transaction_stays_failed_during_orphan_cleanup() {
+        let db = create_test_db().await;
+        let mint_url = test_mint_url();
+        let saga_id = uuid::Uuid::new_v4();
+
+        let saga = WalletSaga::new(
+            saga_id,
+            WalletSagaState::Receive(ReceiveSagaState::SwapRequested),
+            Amount::from(100),
+            mint_url.clone(),
+            CurrencyUnit::Sat,
+            OperationData::Receive(ReceiveOperationData {
+                token: Some("test_token".to_string()),
+                counter_start: Some(0),
+                counter_end: Some(1),
+                amount: Some(Amount::from(100)),
+                blinded_messages: Some(vec![]),
+            }),
+        );
+        db.add_saga(saga).await.unwrap();
+        db.add_transaction(Transaction {
+            mint_url,
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(100),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![],
+            timestamp: 0,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(saga_id),
+            status: TransactionStatus::Failed,
+        })
+        .await
+        .unwrap();
+
+        let wallet =
+            create_test_wallet_with_mock(db.clone(), Arc::new(MockMintConnector::new())).await;
+        let action = wallet
+            .resume_receive_saga(&db.get_saga(&saga_id).await.unwrap().unwrap())
+            .await
+            .expect("orphaned saga should be cleaned up");
+
+        assert_eq!(action, RecoveryAction::Recovered);
+        assert!(db.get_saga(&saga_id).await.unwrap().is_none());
+        let transactions = db.list_transactions(None, None, None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+        assert_eq!(transactions[0].status, TransactionStatus::Failed);
     }
 
     #[tokio::test]

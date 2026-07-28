@@ -68,9 +68,37 @@ impl Wallet {
             return Ok(false);
         };
 
+        if transaction.status == status {
+            return Ok(true);
+        }
+
+        if transaction.status != TransactionStatus::Pending {
+            tracing::warn!(
+                saga_id = %saga_id,
+                current_status = %transaction.status,
+                requested_status = %status,
+                "Ignoring transaction status change from terminal state"
+            );
+            return Ok(false);
+        }
+
         transaction.status = status;
         self.localstore.add_transaction(transaction).await?;
         Ok(true)
+    }
+
+    /// Mark a saga transaction as failed without blocking its compensation path.
+    pub(crate) async fn mark_transaction_failed_best_effort(&self, saga_id: uuid::Uuid) {
+        if let Err(error) = self
+            .update_transaction_status_by_saga_id(saga_id, TransactionStatus::Failed)
+            .await
+        {
+            tracing::warn!(
+                saga_id = %saga_id,
+                %error,
+                "Failed to mark transaction as failed; continuing compensation"
+            );
+        }
     }
 
     /// Get proofs for a transaction by transaction ID
@@ -163,7 +191,9 @@ mod tests {
 
     use cdk_common::mint_url::MintUrl;
     use cdk_common::nuts::{CurrencyUnit, State};
-    use cdk_common::wallet::{ProofInfo, Transaction, TransactionDirection, TransactionStatus};
+    use cdk_common::wallet::{
+        ProofInfo, Transaction, TransactionDirection, TransactionId, TransactionStatus,
+    };
     use cdk_common::Amount;
 
     use crate::wallet::test_utils::{
@@ -215,5 +245,49 @@ mod tests {
             "wallet returned proofs for another mint's transaction: {:?}",
             returned.map(|proofs| proofs.len())
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_transaction_status_cannot_be_overwritten() {
+        let db = create_test_db().await;
+        let wallet = create_test_wallet(db.clone()).await;
+        let saga_id = uuid::Uuid::new_v4();
+
+        let transaction = Transaction {
+            mint_url: wallet.mint_url.clone(),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(100_u64),
+            fee: Amount::ZERO,
+            unit: wallet.unit.clone(),
+            ys: vec![],
+            timestamp: 0,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(saga_id),
+            status: TransactionStatus::Pending,
+        };
+        db.add_transaction(transaction)
+            .await
+            .expect("transaction should be stored");
+
+        assert!(wallet
+            .update_transaction_status_by_saga_id(saga_id, TransactionStatus::Completed)
+            .await
+            .expect("pending status should update"));
+        assert!(!wallet
+            .update_transaction_status_by_saga_id(saga_id, TransactionStatus::Failed)
+            .await
+            .expect("terminal status update should be ignored"));
+
+        let transaction = db
+            .get_transaction(TransactionId::from_saga_id(saga_id))
+            .await
+            .expect("transaction lookup should succeed")
+            .expect("transaction should exist");
+        assert_eq!(transaction.status, TransactionStatus::Completed);
     }
 }

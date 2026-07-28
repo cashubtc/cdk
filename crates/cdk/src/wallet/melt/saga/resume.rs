@@ -421,8 +421,7 @@ impl Wallet {
 
     /// Compensate a melt saga by releasing proofs and the melt quote.
     async fn compensate_melt(&self, saga_id: &uuid::Uuid) -> Result<(), Error> {
-        self.update_transaction_status_by_saga_id(*saga_id, TransactionStatus::Failed)
-            .await?;
+        self.mark_transaction_failed_best_effort(*saga_id).await;
 
         // Release melt quote (best-effort, continue on error)
         if let Err(e) = (ReleaseMeltQuote {

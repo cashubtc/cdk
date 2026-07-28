@@ -1004,11 +1004,8 @@ impl<'a> MintSaga<'a, Prepared> {
                         e
                     );
                     wallet
-                        .update_transaction_status_by_saga_id(
-                            operation_id,
-                            TransactionStatus::Failed,
-                        )
-                        .await?;
+                        .mark_transaction_failed_best_effort(operation_id)
+                        .await;
                     if let Err(comp_err) = execute_compensations(&mut compensations).await {
                         tracing::error!("Compensation failed: {}", comp_err);
                     }
