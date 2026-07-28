@@ -203,10 +203,10 @@ impl TryFrom<CreatePaymentResponse> for CreateIncomingPaymentResponse {
             request_lookup_id: request_identifier.try_into()?,
             request: value.request,
             expiry: value.expiry,
-            extra_json: Some(
-                serde_json::from_str(value.extra_json.as_deref().unwrap_or("{}"))
-                    .unwrap_or_default(),
-            ),
+            extra_json: value
+                .extra_json
+                .map(|value| serde_json::from_str(&value))
+                .transpose()?,
         })
     }
 }
@@ -256,8 +256,7 @@ impl TryFrom<PaymentQuoteResponse> for CdkPaymentQuoteResponse {
         let request_identifier = value.request_identifier;
 
         Ok(Self {
-            request_lookup_id: request_identifier
-                .map(|i| i.try_into().expect("valid request identifier")),
+            request_lookup_id: request_identifier.map(TryInto::try_into).transpose()?,
             amount: value
                 .amount
                 .ok_or(crate::error::Error::MissingAmount)?
@@ -269,7 +268,8 @@ impl TryFrom<PaymentQuoteResponse> for CdkPaymentQuoteResponse {
             state: state_val.into(),
             extra_json: value
                 .extra_json
-                .and_then(|value| serde_json::from_str::<serde_json::Value>(&value).ok()),
+                .map(|value| serde_json::from_str::<serde_json::Value>(&value))
+                .transpose()?,
             estimated_blocks: value.estimated_blocks,
             fee_options: (!value.fee_options.is_empty()).then(|| {
                 value

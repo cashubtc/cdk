@@ -16,20 +16,183 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tonic::codegen::InterceptedService;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity};
-use tonic::{async_trait, Request};
+use tonic::{async_trait, Code, Request, Status};
 use tracing::instrument;
 
+use super::cdk_payment_processor_server::CdkPaymentProcessor;
+use super::server::PaymentProcessorService;
 use crate::proto::cdk_payment_processor_client::CdkPaymentProcessorClient;
 use crate::proto::{
-    CheckIncomingPaymentRequest, CheckOutgoingPaymentRequest, CreatePaymentRequest, EmptyRequest,
-    IncomingPaymentOptions, IntoProtoAmount, MakePaymentRequest, OutgoingPaymentRequestType,
-    PaymentQuoteRequest,
+    CheckIncomingPaymentRequest, CheckIncomingPaymentResponse, CheckOutgoingPaymentRequest,
+    CreatePaymentRequest, CreatePaymentResponse, EmptyRequest, IncomingPaymentOptions,
+    IntoProtoAmount, MakePaymentRequest, MakePaymentResponse, OutgoingPaymentRequestType,
+    PaymentEventResponse, PaymentQuoteRequest, PaymentQuoteResponse, SettingsResponse,
 };
+
+type RemotePaymentProcessorClient =
+    CdkPaymentProcessorClient<InterceptedService<Channel, VersionInterceptor>>;
+type RpcPaymentEventStream =
+    Pin<Box<dyn Stream<Item = Result<PaymentEventResponse, Status>> + Send>>;
+
+#[derive(Clone)]
+enum PaymentProcessorTransport {
+    Remote(Arc<RemotePaymentProcessorClient>),
+    Local(PaymentProcessorService),
+}
+
+impl PaymentProcessorTransport {
+    async fn start(&self) -> Result<(), cdk_common::payment::Error> {
+        match self {
+            Self::Remote(_) => Ok(()),
+            Self::Local(service) => service.start().await,
+        }
+    }
+
+    async fn stop(&self) -> Result<(), cdk_common::payment::Error> {
+        match self {
+            Self::Remote(_) => Ok(()),
+            Self::Local(service) => service.stop().await,
+        }
+    }
+
+    fn cancel_payment_event_stream(&self) {
+        if let Self::Local(service) = self {
+            service.cancel_payment_event_stream();
+        }
+    }
+
+    async fn get_settings(&self, request: EmptyRequest) -> Result<SettingsResponse, Status> {
+        match self {
+            Self::Remote(client) => client
+                .as_ref()
+                .clone()
+                .get_settings(Request::new(request))
+                .await
+                .map(tonic::Response::into_inner),
+            Self::Local(service) => {
+                CdkPaymentProcessor::get_settings(service, Request::new(request))
+                    .await
+                    .map(tonic::Response::into_inner)
+            }
+        }
+    }
+
+    async fn create_payment(
+        &self,
+        request: CreatePaymentRequest,
+    ) -> Result<CreatePaymentResponse, Status> {
+        match self {
+            Self::Remote(client) => client
+                .as_ref()
+                .clone()
+                .create_payment(Request::new(request))
+                .await
+                .map(tonic::Response::into_inner),
+            Self::Local(service) => {
+                CdkPaymentProcessor::create_payment(service, Request::new(request))
+                    .await
+                    .map(tonic::Response::into_inner)
+            }
+        }
+    }
+
+    async fn get_payment_quote(
+        &self,
+        request: PaymentQuoteRequest,
+    ) -> Result<PaymentQuoteResponse, Status> {
+        match self {
+            Self::Remote(client) => client
+                .as_ref()
+                .clone()
+                .get_payment_quote(Request::new(request))
+                .await
+                .map(tonic::Response::into_inner),
+            Self::Local(service) => {
+                CdkPaymentProcessor::get_payment_quote(service, Request::new(request))
+                    .await
+                    .map(tonic::Response::into_inner)
+            }
+        }
+    }
+
+    async fn make_payment(
+        &self,
+        request: MakePaymentRequest,
+    ) -> Result<MakePaymentResponse, Status> {
+        match self {
+            Self::Remote(client) => client
+                .as_ref()
+                .clone()
+                .make_payment(Request::new(request))
+                .await
+                .map(tonic::Response::into_inner),
+            Self::Local(service) => {
+                CdkPaymentProcessor::make_payment(service, Request::new(request))
+                    .await
+                    .map(tonic::Response::into_inner)
+            }
+        }
+    }
+
+    async fn wait_payment_event(&self) -> Result<RpcPaymentEventStream, Status> {
+        match self {
+            Self::Remote(client) => client
+                .as_ref()
+                .clone()
+                .wait_payment_event(Request::new(EmptyRequest {}))
+                .await
+                .map(|response| Box::pin(response.into_inner()) as RpcPaymentEventStream),
+            Self::Local(service) => {
+                CdkPaymentProcessor::wait_payment_event(service, Request::new(EmptyRequest {}))
+                    .await
+                    .map(tonic::Response::into_inner)
+            }
+        }
+    }
+
+    async fn check_incoming_payment(
+        &self,
+        request: CheckIncomingPaymentRequest,
+    ) -> Result<CheckIncomingPaymentResponse, Status> {
+        match self {
+            Self::Remote(client) => client
+                .as_ref()
+                .clone()
+                .check_incoming_payment(Request::new(request))
+                .await
+                .map(tonic::Response::into_inner),
+            Self::Local(service) => {
+                CdkPaymentProcessor::check_incoming_payment(service, Request::new(request))
+                    .await
+                    .map(tonic::Response::into_inner)
+            }
+        }
+    }
+
+    async fn check_outgoing_payment(
+        &self,
+        request: CheckOutgoingPaymentRequest,
+    ) -> Result<MakePaymentResponse, Status> {
+        match self {
+            Self::Remote(client) => client
+                .as_ref()
+                .clone()
+                .check_outgoing_payment(Request::new(request))
+                .await
+                .map(tonic::Response::into_inner),
+            Self::Local(service) => {
+                CdkPaymentProcessor::check_outgoing_payment(service, Request::new(request))
+                    .await
+                    .map(tonic::Response::into_inner)
+            }
+        }
+    }
+}
 
 /// Payment Processor
 #[derive(Clone)]
 pub struct PaymentProcessorClient {
-    inner: CdkPaymentProcessorClient<InterceptedService<Channel, VersionInterceptor>>,
+    transport: PaymentProcessorTransport,
     payment_event_stream_is_active: Arc<AtomicBool>,
     cancel_payment_event_stream: Arc<Mutex<CancellationToken>>,
 }
@@ -123,10 +286,21 @@ impl PaymentProcessorClient {
         let client = CdkPaymentProcessorClient::with_interceptor(channel, interceptor);
 
         Ok(Self {
-            inner: client,
+            transport: PaymentProcessorTransport::Remote(Arc::new(client)),
             payment_event_stream_is_active: Arc::new(AtomicBool::new(false)),
             cancel_payment_event_stream: Arc::new(Mutex::new(CancellationToken::new())),
         })
+    }
+
+    /// Create an in-process client for an embedded payment processor.
+    pub fn from_backend(payment_processor: cdk_common::payment::DynMintPayment) -> Self {
+        Self {
+            transport: PaymentProcessorTransport::Local(PaymentProcessorService::new(
+                payment_processor,
+            )),
+            payment_event_stream_is_active: Arc::new(AtomicBool::new(false)),
+            cancel_payment_event_stream: Arc::new(Mutex::new(CancellationToken::new())),
+        }
     }
 }
 
@@ -134,17 +308,23 @@ impl PaymentProcessorClient {
 impl MintPayment for PaymentProcessorClient {
     type Err = cdk_common::payment::Error;
 
+    async fn start(&self) -> Result<(), Self::Err> {
+        self.transport.start().await
+    }
+
+    async fn stop(&self) -> Result<(), Self::Err> {
+        self.transport.stop().await
+    }
+
     async fn get_settings(&self) -> Result<cdk_common::payment::SettingsResponse, Self::Err> {
-        let mut inner = self.inner.clone();
-        let response = inner
-            .get_settings(Request::new(EmptyRequest {}))
+        let settings = self
+            .transport
+            .get_settings(EmptyRequest {})
             .await
             .map_err(|err| {
                 tracing::error!("Could not get settings: {}", err);
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
-
-        let settings = response.into_inner();
 
         Ok(cdk_common::payment::SettingsResponse {
             unit: settings.unit,
@@ -176,8 +356,6 @@ impl MintPayment for PaymentProcessorClient {
         &self,
         options: CdkIncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        let mut inner = self.inner.clone();
-
         let proto_options = match options {
             CdkIncomingPaymentOptions::Custom(opts) => IncomingPaymentOptions {
                 options: Some(super::incoming_payment_options::Options::Custom(
@@ -186,6 +364,7 @@ impl MintPayment for PaymentProcessorClient {
                         amount: opts.amount.map(Into::into),
                         unix_expiry: opts.unix_expiry,
                         extra_json: opts.extra_json.clone(),
+                        method: Some(opts.method.clone()),
                     },
                 )),
             },
@@ -216,17 +395,16 @@ impl MintPayment for PaymentProcessorClient {
             },
         };
 
-        let response = inner
-            .create_payment(Request::new(CreatePaymentRequest {
+        let response = self
+            .transport
+            .create_payment(CreatePaymentRequest {
                 options: Some(proto_options),
-            }))
+            })
             .await
             .map_err(|err| {
                 tracing::error!("Could not create payment request: {}", err);
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
-
-        let response = response.into_inner();
 
         Ok(response.try_into().map_err(|_| {
             cdk_common::payment::Error::Anyhow(anyhow!("Could not create create payment response"))
@@ -238,8 +416,6 @@ impl MintPayment for PaymentProcessorClient {
         unit: &cdk_common::CurrencyUnit,
         options: cdk_common::payment::OutgoingPaymentOptions,
     ) -> Result<CdkPaymentQuoteResponse, Self::Err> {
-        let mut inner = self.inner.clone();
-
         let request_type = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(_) => {
                 OutgoingPaymentRequestType::Custom
@@ -288,6 +464,11 @@ impl MintPayment for PaymentProcessorClient {
             _ => None,
         };
 
+        let custom_method = match &options {
+            cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => Some(opts.method.clone()),
+            _ => None,
+        };
+
         let amount = match &options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => {
                 opts.amount.clone().into_proto()
@@ -302,8 +483,9 @@ impl MintPayment for PaymentProcessorClient {
             cdk_common::payment::OutgoingPaymentOptions::Onchain(opts) => opts.quote_id.to_string(),
         };
 
-        let response = inner
-            .get_payment_quote(Request::new(PaymentQuoteRequest {
+        let response = self
+            .transport
+            .get_payment_quote(PaymentQuoteRequest {
                 request: proto_request,
                 unit: unit.to_string(),
                 options: proto_options.map(Into::into),
@@ -312,14 +494,13 @@ impl MintPayment for PaymentProcessorClient {
                 quote_id,
                 onchain_options,
                 amount,
-            }))
+                custom_method,
+            })
             .await
             .map_err(|err| {
                 tracing::error!("Could not get payment quote: {}", err);
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
-
-        let response = response.into_inner();
 
         Ok(response.try_into().map_err(|_| {
             cdk_common::payment::Error::Custom(
@@ -333,7 +514,6 @@ impl MintPayment for PaymentProcessorClient {
         unit: &cdk_common::CurrencyUnit,
         options: cdk_common::payment::OutgoingPaymentOptions,
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
-        let mut inner = self.inner.clone();
         let payment_options = match options {
             cdk_common::payment::OutgoingPaymentOptions::Custom(opts) => {
                 super::OutgoingPaymentVariant {
@@ -346,6 +526,7 @@ impl MintPayment for PaymentProcessorClient {
                             melt_options: opts.melt_options.map(Into::into),
                             extra_json: opts.extra_json.clone(),
                             quote_id: opts.quote_id.to_string(),
+                            method: Some(opts.method.clone()),
                         },
                     )),
                 }
@@ -392,27 +573,26 @@ impl MintPayment for PaymentProcessorClient {
             }
         };
 
-        let response = inner
-            .make_payment(Request::new(MakePaymentRequest {
+        let response = self
+            .transport
+            .make_payment(MakePaymentRequest {
                 payment_options: Some(payment_options),
                 partial_amount: None,
                 max_fee_amount: None,
                 unit: unit.to_string(),
-            }))
+            })
             .await
             .map_err(|err| {
                 tracing::error!("Could not pay payment request: {}", err);
 
-                if err.message().contains("already paid") {
+                if err.code() == Code::AlreadyExists || err.message().contains("already paid") {
                     cdk_common::payment::Error::InvoiceAlreadyPaid
-                } else if err.message().contains("pending") {
+                } else if err.code() == Code::Aborted || err.message().contains("pending") {
                     cdk_common::payment::Error::InvoicePaymentPending
                 } else {
                     cdk_common::payment::Error::Custom(err.to_string())
                 }
             })?;
-
-        let response = response.into_inner();
 
         Ok(response.try_into().map_err(|_err| {
             cdk_common::payment::Error::Anyhow(anyhow!("could not make payment"))
@@ -424,17 +604,12 @@ impl MintPayment for PaymentProcessorClient {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = cdk_common::payment::Event> + Send>>, Self::Err> {
         tracing::debug!("Client waiting for payment");
-        let mut inner = self.inner.clone();
-        let stream = inner
-            .wait_payment_event(Request::new(EmptyRequest {}))
-            .await
-            .map_err(|err| {
-                self.payment_event_stream_is_active
-                    .store(false, Ordering::SeqCst);
-                tracing::error!("Could not open payment event stream: {}", err);
-                cdk_common::payment::Error::Custom(err.to_string())
-            })?
-            .into_inner();
+        let stream = self.transport.wait_payment_event().await.map_err(|err| {
+            self.payment_event_stream_is_active
+                .store(false, Ordering::SeqCst);
+            tracing::error!("Could not open payment event stream: {}", err);
+            cdk_common::payment::Error::Custom(err.to_string())
+        })?;
 
         self.payment_event_stream_is_active
             .store(true, Ordering::SeqCst);
@@ -472,6 +647,7 @@ impl MintPayment for PaymentProcessorClient {
 
     /// Cancel payment event stream
     fn cancel_payment_event_stream(&self) {
+        self.transport.cancel_payment_event_stream();
         let cancel_payment_event_stream = Arc::clone(&self.cancel_payment_event_stream);
 
         tokio::spawn(async move {
@@ -485,18 +661,17 @@ impl MintPayment for PaymentProcessorClient {
         &self,
         payment_identifier: &cdk_common::payment::PaymentIdentifier,
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
-        let mut inner = self.inner.clone();
-        let response = inner
-            .check_incoming_payment(Request::new(CheckIncomingPaymentRequest {
+        let check_incoming = self
+            .transport
+            .check_incoming_payment(CheckIncomingPaymentRequest {
                 request_identifier: Some(payment_identifier.clone().into()),
-            }))
+            })
             .await
             .map_err(|err| {
                 tracing::error!("Could not check incoming payment: {}", err);
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
 
-        let check_incoming = response.into_inner();
         check_incoming
             .payments
             .into_iter()
@@ -508,21 +683,195 @@ impl MintPayment for PaymentProcessorClient {
         &self,
         payment_identifier: &cdk_common::payment::PaymentIdentifier,
     ) -> Result<CdkMakePaymentResponse, Self::Err> {
-        let mut inner = self.inner.clone();
-        let response = inner
-            .check_outgoing_payment(Request::new(CheckOutgoingPaymentRequest {
+        let check_outgoing = self
+            .transport
+            .check_outgoing_payment(CheckOutgoingPaymentRequest {
                 request_identifier: Some(payment_identifier.clone().into()),
-            }))
+            })
             .await
             .map_err(|err| {
                 tracing::error!("Could not check outgoing payment: {}", err);
                 cdk_common::payment::Error::Custom(err.to_string())
             })?;
 
-        let check_outgoing = response.into_inner();
-
         Ok(check_outgoing
             .try_into()
             .map_err(|_| cdk_common::payment::Error::UnknownPaymentState)?)
+    }
+}
+
+#[cfg(all(test, feature = "fake"))]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::atomic::AtomicUsize;
+
+    use cdk_common::common::FeeReserve;
+    use cdk_common::payment::{
+        CustomIncomingPaymentOptions, CustomOutgoingPaymentOptions, DynMintPayment, Event,
+        IncomingPaymentOptions, OutgoingPaymentOptions, PaymentIdentifier,
+    };
+    use cdk_common::{Amount, CurrencyUnit, QuoteId};
+    use cdk_fake_wallet::FakeWallet;
+
+    use super::*;
+
+    struct RecordingBackend {
+        inner: FakeWallet,
+        starts: Arc<AtomicUsize>,
+        stops: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl MintPayment for RecordingBackend {
+        type Err = cdk_common::payment::Error;
+
+        async fn start(&self) -> Result<(), Self::Err> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn stop(&self) -> Result<(), Self::Err> {
+            self.stops.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn get_settings(&self) -> Result<cdk_common::payment::SettingsResponse, Self::Err> {
+            self.inner.get_settings().await
+        }
+
+        async fn create_incoming_payment_request(
+            &self,
+            options: IncomingPaymentOptions,
+        ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+            self.inner.create_incoming_payment_request(options).await
+        }
+
+        async fn get_payment_quote(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<CdkPaymentQuoteResponse, Self::Err> {
+            self.inner.get_payment_quote(unit, options).await
+        }
+
+        async fn make_payment(
+            &self,
+            unit: &CurrencyUnit,
+            options: OutgoingPaymentOptions,
+        ) -> Result<CdkMakePaymentResponse, Self::Err> {
+            self.inner.make_payment(unit, options).await
+        }
+
+        async fn wait_payment_event(
+            &self,
+        ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
+            self.inner.wait_payment_event().await
+        }
+
+        fn is_payment_event_stream_active(&self) -> bool {
+            self.inner.is_payment_event_stream_active()
+        }
+
+        fn cancel_payment_event_stream(&self) {
+            self.inner.cancel_payment_event_stream();
+        }
+
+        async fn check_incoming_payment_status(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
+            self.inner
+                .check_incoming_payment_status(payment_identifier)
+                .await
+        }
+
+        async fn check_outgoing_payment(
+            &self,
+            payment_identifier: &PaymentIdentifier,
+        ) -> Result<CdkMakePaymentResponse, Self::Err> {
+            self.inner.check_outgoing_payment(payment_identifier).await
+        }
+    }
+
+    #[tokio::test]
+    async fn local_transport_preserves_custom_method_and_lifecycle() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let stops = Arc::new(AtomicUsize::new(0));
+        let wallet = FakeWallet::new(
+            FeeReserve {
+                min_fee_reserve: 0.into(),
+                percent_fee_reserve: 0.0,
+            },
+            HashMap::new(),
+            HashSet::new(),
+            0,
+            CurrencyUnit::Sat,
+        )
+        .with_custom_payment_methods(HashMap::from([("venmo".to_string(), "{}".to_string())]));
+        let backend: DynMintPayment = Arc::new(RecordingBackend {
+            inner: wallet,
+            starts: starts.clone(),
+            stops: stops.clone(),
+        });
+        let client = PaymentProcessorClient::from_backend(backend);
+
+        client.start().await.expect("local backend should start");
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+
+        let settings = client
+            .get_settings()
+            .await
+            .expect("settings should pass through the local RPC contract");
+        assert!(settings.custom.contains_key("venmo"));
+
+        let incoming = client
+            .create_incoming_payment_request(IncomingPaymentOptions::Custom(Box::new(
+                CustomIncomingPaymentOptions {
+                    method: "venmo".to_string(),
+                    description: None,
+                    amount: Some(Amount::new(20, CurrencyUnit::Sat)),
+                    unix_expiry: None,
+                    extra_json: None,
+                },
+            )))
+            .await
+            .expect("custom incoming method should survive the RPC conversion");
+        assert!(incoming.request.starts_with("venmo:"));
+        assert_eq!(incoming.extra_json, None);
+
+        let custom_options = || {
+            OutgoingPaymentOptions::Custom(Box::new(CustomOutgoingPaymentOptions {
+                method: "venmo".to_string(),
+                request: "venmo-payment-request".to_string(),
+                amount: Some(Amount::new(20, CurrencyUnit::Sat)),
+                max_fee_amount: None,
+                timeout_secs: None,
+                melt_options: None,
+                extra_json: Some(r#"{"recipient":"alice"}"#.to_string()),
+                quote_id: QuoteId::new(),
+            }))
+        };
+
+        let quote = client
+            .get_payment_quote(&CurrencyUnit::Sat, custom_options())
+            .await
+            .expect("custom quote method should survive the RPC conversion");
+        assert_eq!(quote.amount, Amount::new(20, CurrencyUnit::Sat));
+        assert_eq!(
+            quote.extra_json,
+            Some(serde_json::json!({ "recipient": "alice" }))
+        );
+
+        let payment = client
+            .make_payment(&CurrencyUnit::Sat, custom_options())
+            .await
+            .expect("custom payment method should survive the RPC conversion");
+        assert_eq!(
+            payment.payment_proof,
+            Some("venmo-payment-request".to_string())
+        );
+
+        client.stop().await.expect("local backend should stop");
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
     }
 }

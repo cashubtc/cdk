@@ -23,7 +23,7 @@ lnbits = ["dep:cdk-lnbits"]
 fakewallet = ["dep:cdk-fake-wallet"]
 ldk-node = ["dep:cdk-ldk-node"]
 bdk = ["dep:cdk-bdk", "cdk-bdk/bitcoin-rpc", "cdk-bdk/electrum", "cdk-bdk/esplora"]
-grpc-processor = ["dep:cdk-payment-processor", "cdk-signatory/grpc"]
+grpc-processor = ["cdk-signatory/grpc"]
 sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 redis = ["cdk-axum/redis"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
@@ -51,7 +51,7 @@ cdk-bdk = { workspace = true, optional = true }
 cdk-axum.workspace = true
 cdk-signatory.workspace = true
 cdk-mint-rpc = { workspace = true, optional = true }
-cdk-payment-processor = { workspace = true, optional = true }
+cdk-payment-processor = { workspace = true, default-features = false }
 config.workspace = true
 cdk-prometheus = { workspace = true, optional = true , features = ["system-metrics"]}
 clap.workspace = true

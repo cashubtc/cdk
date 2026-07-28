@@ -61,7 +61,7 @@ cdk-ldk-node = { path = "./crates/cdk-ldk-node", version = "=0.17.0" }
 cdk-fake-wallet = { path = "./crates/cdk-fake-wallet", default-features = false, version = "=0.17.0" }
 cdk-ffi = { path = "./crates/cdk-ffi", default-features = false, version = "=0.17.0" }
 cdk-http-client = { path = "./crates/cdk-http-client", default-features = false, version = "=0.17.0" }
-cdk-payment-processor = { path = "./crates/cdk-payment-processor", default-features = true, version = "=0.17.0" }
+cdk-payment-processor = { path = "./crates/cdk-payment-processor", default-features = false, version = "=0.17.0" }
 cdk-mint-rpc = { path = "./crates/cdk-mint-rpc", version = "=0.17.0" }
 cdk-redb = { path = "./crates/cdk-redb", default-features = true, version = "=0.17.0" }
 cdk-sql-common = { path = "./crates/cdk-sql-common", default-features = true, version = "=0.17.0" }
