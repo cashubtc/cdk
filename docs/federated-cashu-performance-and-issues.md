@@ -2,6 +2,16 @@
 
 Date: 2026-07-15
 
+> **Historical investigation ledger — current disposition 2026-07-29:** Keep
+> completed measurements and resolved incident evidence below, but do not use
+> its `Pending` or `Unconfirmed` labels as the current work queue. Milestone 18
+> of [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md) reran the current 200/1
+> cadence across modeled 0–200 ms RTT and a matched local CPU screen. It retained
+> that default while deferring sustained high-load CPU/p99, asymmetric latency,
+> loss, bandwidth, real TLS, multi-process, and real-payment measurements. The
+> release/documentation campaign below remains open only to the extent it maps
+> to those explicit external gates and the main implementation plan.
+
 ## Relationship to the federation implementation plan
 
 This document is the investigation, remediation, and verification plan for the

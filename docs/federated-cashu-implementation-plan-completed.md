@@ -2,7 +2,15 @@
 
 > Historical implementation record. References to catch-up certificates
 > describe the superseded experimental design. The current cut-through recovery
-> design is `docs/federated-cdk-checkpoint-implementation-plan.md`.
+> design is
+> [`federated-cdk-checkpoint-implementation-plan.md`](federated-cdk-checkpoint-implementation-plan.md).
+> The current normative plan is
+> [`federated-cashu-implementation-plan.md`](federated-cashu-implementation-plan.md),
+> and the 2026-07-29 finding dispositions and proof are in
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). Unchecked payment-evidence
+> and real-backend release items in this historical copy remain open; the
+> document's fakewallet-scope completion statement is not a production
+> readiness claim.
 
 This is a working checklist for adding federated Cashu mint support to CDK while keeping the public Cashu wallet-to-mint protocol as close as possible to today's NUT endpoints. The plan assumes BLS blind signatures are the federation signing scheme, with locally generated key shares first and real DKG later.
 

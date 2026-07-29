@@ -9,6 +9,10 @@
 > separate project and is not mitigated by the cleanup. The release limitations
 > below remain authoritative even where older dated trackers contain unchecked
 > or completed-looking checkboxes.
+> The existing five-member Nocean testing federation was upgraded in place to
+> cleanup commit `a7df24ebb` on 2026-07-29 with its DKG, journal, and wallet
+> state preserved. This is an upgrade-compatibility smoke, not the multi-host or
+> production release validation required below.
 
 This is a living design, status, and development contract for federated Cashu support in CDK. Treat its safety and architecture rules as constraints, not suggestions. If a requested change conflicts with them, explain the conflict instead of implementing a workaround.
 

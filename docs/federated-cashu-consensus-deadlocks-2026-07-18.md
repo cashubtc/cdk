@@ -1,13 +1,26 @@
 # Federated Cashu unresolved consensus deadlocks — 2026-07-18
 
+> **Archived remediation snapshot — current disposition 2026-07-29:** The
+> ranked table below records the state when this ledger was opened. Its
+> `Not started` labels are not current status. Later cleanup dispositions are
+> authoritative in
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md): P7's staged melt proof was
+> kept in Milestone 13; DB-004 melt-change recovery was fixed in Milestone 2;
+> P6 bounded pending-quote discovery was fixed in Milestone 10; DB-003 was
+> already resolved by quorum-backed field adoption; R3, A2, and DB-006 remain
+> deferred under Milestone 9; DB-002 and DB-005 remain deferred under Milestone
+> 11; and W3/shared worker supervision remains deferred under Milestone 12.
+> Other findings completed later in this ledger remain historical evidence.
+> Use the cleanup ledger and the main implementation plan for the current
+> release queue.
+
 ## Audit scope and terminology
 
-This is the remediation ledger for federation failures that can stop a live
+This was the remediation ledger for federation failures that could stop a live
 AlephBFT session, keep an accepted value operation pending indefinitely,
 prevent a member from recovering, or starve required federation work. It keeps
-completed milestone evidence alongside open findings and combines previously
-reported incidents with a source review of the current federation, wallet,
-FROST/BDK, payment-observation, recovery, and worker code.
+completed milestone evidence alongside the findings that were open at the time
+and combines previously reported incidents with that revision's source review.
 
 In this document, **deadlock** includes:
 

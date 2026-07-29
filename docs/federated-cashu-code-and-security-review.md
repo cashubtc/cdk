@@ -2,6 +2,25 @@
 
 Date: 2026-07-12
 
+> **Archived review snapshot — current disposition 2026-07-29:** This document
+> preserves the original comparison and evidence; its `Open` labels and
+> unchecked TODOs are not the current work queue. The authoritative
+> reassessment is
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md):
+>
+> | Original finding | Later disposition |
+> |---|---|
+> | P4 — Aleph retry starvation/restart recovery | Confirmed and deferred in cleanup Milestone 9. A safe change needs an explicit independently bounded retry/fairness design. |
+> | P5 — staged apply replay proof | Addressed by the staged melt crash-boundary matrix retained and proven in Milestone 13. |
+> | P11 — catch-up certificate soft-skip | Superseded by the cut-through checkpoint architecture; catch-up certificates are not a supported compatibility path. |
+> | P13 — payment-observation readiness | Confirmed and deferred in Milestone 9 pending an explicit observation-origin/readiness contract. |
+> | P18 — architecture enforcement | The signing-authority defect was closed by Milestone 5. Narrow cleanup was retained in Milestones 14–17; broad type/module rewrites without a reproduced bypass were rejected. |
+> | Findings already marked resolved or complete below | Preserved as historical evidence and revalidated by cleanup Milestone 20's full federation and workspace suites. |
+>
+> The remaining deferred payment-evidence/recovery-identity work is owned by
+> cleanup Milestone 11, and worker supervision by Milestone 12. Do not mark
+> either production-ready on the strength of this historical review.
+
 Checkpoint cut-through note: findings that mention catch-up certificates record
 the superseded experimental recovery protocol. Current recovery and startup
 requirements are tracked in
@@ -9,11 +28,11 @@ requirements are tracked in
 compatibility path remains.
 
 This document records actionable findings from a committed-code comparison of
-`bls-federation-cleanup` against `bls-federation`. It is a work queue for
-correctness, restart-safety, and operational-hardening fixes. Findings should
-remain open until their implementation and focused regression tests have been
-verified. Re-check nearby lifecycle paths while addressing each item so related
-variants are not overlooked.
+`bls-federation-cleanup` against `bls-federation`. It was the original work
+queue for correctness, restart-safety, and operational-hardening fixes.
+Historical findings remain open in the body until their implementation and
+focused regression tests had been verified; the later disposition table above
+now governs their current meaning.
 
 ## Implementation Principles
 

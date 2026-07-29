@@ -2,6 +2,16 @@
 
 Status: Milestones 0, 0A, 1, 3, 4, 4A, 5, 6, 6A, 6B, 6C, 8, 9, 10, 10A, 10B, 11, 11A, 11B, 13, 17A, 19, 20, 21, 22, and 23 complete; Milestones 2, 7, 7A, 14, 15, 16, 17, and 18 rejected; Milestone 12 deferred; Milestone 15A skipped
 
+> **Later release context — 2026-07-29:** The optimization decisions above
+> remain the terminal outcomes for this component plan. The repository cleanup
+> and coordinated Nocean update at commit `a7df24ebb` did not close deferred
+> Milestone 12 or the independent Bark/FROST release gate. Current generic
+> lifecycle, payment-evidence, fairness, and external validation prerequisites
+> are ordered in Milestones 9, 11, 12, 18, and 19 of
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). The successful testing
+> deployment is evidence of upgrade compatibility, not a production-readiness
+> claim.
+
 First recorded: 2026-07-20
 
 Plan contract established: 2026-07-21

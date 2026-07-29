@@ -1,6 +1,22 @@
 # Federated Cashu DKG implementation plan
 
-This document is a standalone plan for replacing the federated Cashu trusted-dealer key setup with a production distributed key generation ceremony. It is intentionally scoped to DKG, DKG output validation, config integration, and later key rotation. The main federated mint implementation should continue using trusted-dealer shares until minting, swapping, melting, consensus, catch-up, and wallet share aggregation are working end to end.
+> **Historical pre-implementation plan — 2026-07-29:** Fixed-roster,
+> dealer-free BLS DKG, authenticated setup routes, durable restartable ceremony
+> state, transcript signatures, activation, startup reconciliation, and
+> consensus-controlled keyset rotation are implemented and tested. The
+> unchecked milestone boxes below preserve the original design sequence and
+> are not current status. Production threshold validation and later DKG
+> boundary cleanup are recorded in Milestones 3, 14, 16, 17, and 20 of
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). Multi-host ceremony drills,
+> backup/recovery operations, and independent release review remain open under
+> the main
+> [`federated-cashu-implementation-plan.md`](federated-cashu-implementation-plan.md).
+
+This document was the standalone plan for replacing the federated Cashu
+trusted-dealer key setup with a distributed key generation ceremony. It is
+intentionally scoped to DKG, DKG output validation, config integration, and
+later key rotation. Its prerequisite sequence and unchecked boxes describe the
+pre-implementation state retained for design history.
 
 ## Goal
 

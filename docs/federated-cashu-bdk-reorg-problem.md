@@ -1,7 +1,8 @@
 # Federated BDK: pre-liability reorg leaves spendable deposits stuck
 
-**Status:** Implemented; coordinated deployment pending (observed 2026-07-17,
-positive disconnection proof completed 2026-07-29)
+**Status:** Implemented and deployed to the coordinated testing federation
+(observed 2026-07-17, positive disconnection proof and in-place deployment
+completed 2026-07-29)
 
 **Related:** [`federated-bdk-operations.md`](federated-bdk-operations.md),
 [`federated-cashu-bdk-frost-implementation-plan.md`](federated-cashu-bdk-frost-implementation-plan.md)

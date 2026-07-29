@@ -20,6 +20,9 @@ release gate remains in Milestone 18.
 > SQLite/PostgreSQL parity, full adversarial/workspace, paid Signet, or
 > independent cryptographic and state-review gates. This backend must not be
 > presented as production-ready until the definition of done below is proven.
+> A coordinated in-place Nocean update to cleanup commit `a7df24ebb` completed
+> on 2026-07-29 with preserved DKG/database state and strict five-member
+> convergence. That testing deployment does not close Milestone 18.
 
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 

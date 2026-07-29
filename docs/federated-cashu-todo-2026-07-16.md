@@ -1,5 +1,17 @@
 # TODO (2026-07-16): Restore standard quote creation
 
+**Status:** Implemented and verified
+
+> **Disposition update — 2026-07-29:** Federation wallets now use ordinary
+> mint-generated quote IDs and the standard quote request shapes. The removed
+> `post_mint_quote_with_id`, `post_melt_quote_with_id`, and
+> `federation_quote_id` surfaces are absent from production code.
+> `FederationWalletConnector` performs sequential first-healthy quote creation
+> and threshold visibility validation using the returned ID. Current mint and
+> Axum federation suites cover standard quote creation, consensus
+> materialization, and rejection before readiness. The checklist below is kept
+> as the implementation record rather than an open TODO.
+
 ## Goal
 
 Restore the standard Cashu wallet API for mint-quote and melt-quote creation by

@@ -1,9 +1,24 @@
 # Federated CDK BDK-FROST on-chain wallet implementation plan
 
-This document is the working implementation checklist for adding a Bitcoin
-on-chain wallet jointly controlled by a CDK mint federation. It is intentionally
-separate from the general federated Cashu implementation plan: the Cashu BLS
-keysets secure e-cash issuance, while this plan introduces an independent
+> **Implementation record and open release gate — 2026-07-29:** The fixed-roster
+> FROST root/application design, federated BDK state machine, authorization,
+> signing, persistence, recovery, and operator commands described here are
+> implemented. The unchecked independent cryptographic review, database parity,
+> sustained capacity, multi-host operations, backup/restore, rotation drill,
+> and real-backend release requirements remain open. The current release
+> ordering is in
+> [`federated-cashu-implementation-plan.md`](federated-cashu-implementation-plan.md)
+> and [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md); the Bark-specific gate is
+> in
+> [`federated-cashu-bark-frost-implementation-plan.md`](federated-cashu-bark-frost-implementation-plan.md).
+> The coordinated Nocean update on 2026-07-29 preserved the finalized DKG and
+> wallet state, but one testing host does not satisfy the remaining release
+> criteria.
+
+This document is the implementation and release record for a Bitcoin on-chain
+wallet jointly controlled by a CDK mint federation. It is intentionally separate
+from the general federated Cashu implementation plan: the Cashu BLS keysets
+secure e-cash issuance, while this plan introduces an independent
 secp256k1 FROST root key hierarchy whose first application is receiving and
 spending Bitcoin through the federated CDK BDK backend. The DKG result is
 application-neutral so the same threshold shares can later be used, through

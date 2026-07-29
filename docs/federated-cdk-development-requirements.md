@@ -1,5 +1,14 @@
 # Federated CDK Development Requirements
 
+> **Current contract clarification — 2026-07-29:** This remains a normative
+> engineering contract. References below to an `undeployed` federation mean
+> that no supported production federation format/release has been declared;
+> they do not mean no test deployment exists. The existing Nocean testing
+> federation was upgraded in place to cleanup commit `a7df24ebb` on 2026-07-29.
+> That operational smoke does not change the cut-through development policy or
+> close the production gates in
+> [`federated-cashu-implementation-plan.md`](federated-cashu-implementation-plan.md).
+
 This is the compact engineering contract for federated CDK. Apply it to code,
 configuration, protocol shapes, migrations, tests, tooling, and documentation.
 Federation is an explicit opt-in feature; existing standalone CDK behavior is a

@@ -1,5 +1,16 @@
 # Federated Cashu Code Improvement Opportunities
 
+> **Archived design review — 2026-07-29:** This document explains the original
+> refactor proposals; it is no longer a live implementation queue. Milestones
+> 14–17 of [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md) reassessed every
+> material proposal against the later code. Exact duplicate helpers,
+> policy-neutral wallet cleanup, mint invariants, and one typed SQLite retry
+> boundary were kept and proven. Broad module moves, facade decomposition,
+> replacement service objects, and abstraction rewrites without a reproduced
+> defect were rejected or found superseded. Shared worker supervision remains a
+> separate deferred lifecycle project in Milestone 12. The `Open` labels below
+> therefore preserve design history and must not be treated as current status.
+
 This document is the detailed design and review reference for simplifying the
 federated mint code outside the checkpoint and catch-up subsystem. The separate
 execution checklist is
@@ -11,10 +22,10 @@ small enough to review. The desired result is not a generic federation
 framework. It is a set of concrete components with narrow responsibilities and
 explicit security boundaries.
 
-This is a living document. Before implementing an item, verify its premise
-against the current branch and record material design changes in the changelog.
-The TODO document records execution status; this document explains why the
-work exists and what the finished architecture should look like.
+This was maintained as a living design document during the original cleanup.
+Before reusing an item, verify its premise against the current branch and the
+later cleanup disposition. The TODO document preserves the historical execution
+status; this document explains why the proposed work existed.
 
 Related context:
 

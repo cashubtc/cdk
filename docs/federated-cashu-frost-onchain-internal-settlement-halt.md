@@ -5,6 +5,12 @@
 **Investigated:** 2026-07-18  
 **Related TODO:** [federation cleanup item 49](federation-cleanup-todo.md#49-route-terminal-frost-on-chain-internal-melts-around-pending-batching)
 
+> **Follow-up — 2026-07-29:** This incident remains resolved. The cleanup
+> crash-boundary matrix in
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md) Milestone 13 retained the
+> internal-settlement and restart regressions, and the coordinated Nocean update
+> preserved a ready, converged federation without reproducing the halt.
+
 ## Executive summary
 
 The federation did not halt because transaction batching started too quickly or

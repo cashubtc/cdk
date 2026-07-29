@@ -1,5 +1,25 @@
 # Federated CDK Security Review
 
+> **Historical review with current dispositions — 2026-07-29:** This document
+> preserves the 2026-07-09/13 review evidence; it is no longer an independent
+> work queue. The authoritative finding-by-finding reassessment, proof, and
+> rollback record is
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). Read the original findings
+> under the following later disposition:
+>
+> | Original finding group | Current disposition |
+> |---|---|
+> | Architecture/raw-signing boundaries | The accepted-entry signing capability was kept and proven in cleanup Milestone 5. Narrow invariant and typed-boundary cleanup was kept in Milestones 14–17; broad service/module rewrites without a demonstrated defect were rejected. |
+> | Member validation, stale member caches, quote status, and mint-info decisions | Bounded threshold-correct collection and centralized wallet policies were kept in Milestones 7 and 15. The original broad wallet decomposition is not a current requirement. |
+> | Unsafe threshold profiles | Fixed and proven in Milestone 3; production modes reject profiles that cannot preserve the configured fault model. |
+> | Swap and melt proof conflict keys | Confirmed but deferred in Milestone 4 because changing durable conflict keys requires a versioned journal/envelope and SQL migration. |
+> | Melt-change share validation after restart | Fixed and proven in Milestone 2 using durable blinded outputs and verified aggregation. |
+> | Findings already under `Resolved Findings` | Preserved as historical evidence and covered by the final repository verification in Milestone 20. |
+>
+> Unchecked recommendations or severity text below must not override those
+> dispositions. In particular, the cleanup does not establish production
+> readiness or solve the separately excluded bearer-proof client-intent issue.
+
 ## Implementation Guardrails
 
 Keep remediation changes lean and reuse established code paths, abstractions,
@@ -18,7 +38,8 @@ Current-branch assessment updated: 2026-07-13
 
 This note records timing-sensitive issues found during a read-only review of
 federation-mode minting, wallet behavior, swap handling, and melt handling. It
-is intended as a work queue for follow-up fixes and tests.
+was originally intended as a work queue for follow-up fixes and tests. Its
+current role is historical evidence under the disposition table above.
 
 ## Scope
 

@@ -2,7 +2,20 @@
 
 ## Status
 
-Open consistency and consensus-validation issue. This document describes the problem and an implementation plan; it does not indicate that the fix has been implemented.
+Resolved and verified.
+
+The mint path now requires a matching earlier applied `MintQuote` journal
+operation before accepting either its payment observation or issuance.
+`require_prior_applied_mint_quote` and
+`require_prior_applied_mint_quotes` enforce the single and batch boundaries.
+The regressions
+`apply_federation_mint_rejects_materialized_quote_without_prior_quote_operation`,
+`mint_payment_observation_without_prior_quote_is_rejected_without_mutation`,
+and
+`apply_federation_batch_mint_rejects_any_quote_without_prior_quote_operation`
+prove that locally materialized quote state cannot substitute for consensus
+provenance. The complete federation suite was revalidated in
+[`cleanup-2026-07-29.md`](cleanup-2026-07-29.md) Milestone 20.
 
 ## Summary
 

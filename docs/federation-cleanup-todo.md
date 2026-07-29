@@ -1,10 +1,19 @@
 # Federated CDK Cleanup TODO
 
-This is a living list of cleanup work needed to make federated CDK lean,
-understandable, and production-ready. Add one section per specific cleanup task,
-covering unnecessary complexity, code smells, hard-coded development baggage,
-obsolete compatibility, unclear ownership, or other avoidable machinery, with
-references to the affected code and documentation.
+> **Historical cleanup ledger — reconciled 2026-07-29:** The per-item outcomes
+> below remain useful evidence, but this is no longer the current work queue.
+> Later security, wallet, liveness, refactor, and release findings were
+> reassessed in
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). That ledger records the
+> retained fixes, superseded work, rejected broad refactors, deferred protocol
+> and operational prerequisites, and final verification. Unchecked prose or
+> old deployment notes below must not override it.
+
+This was the living cleanup list used to make federated CDK lean and
+understandable. It preserves one section per specific cleanup task, covering
+unnecessary complexity, code smells, hard-coded development baggage, obsolete
+compatibility, unclear ownership, or other avoidable machinery, with references
+to the affected code and documentation.
 
 Treat every entry as a starting point, not an exhaustive inventory. Before
 implementing one, inspect adjacent paths, call sites, tests, configuration,
@@ -2995,7 +3004,8 @@ pending/restart recovery.
 
 ## 48. Allow pre-liability recovery from federated BDK reorg stickiness
 
-**Status:** Implemented; coordinated deployment pending (observed 2026-07-17)
+**Status:** Implemented; coordinated testing deployment verified (updated
+2026-07-29)
 
 **Detailed write-up:**
 [`docs/federated-cashu-bdk-reorg-problem.md`](federated-cashu-bdk-reorg-problem.md)
