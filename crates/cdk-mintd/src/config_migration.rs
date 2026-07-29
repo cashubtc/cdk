@@ -133,8 +133,7 @@ pub fn migrate_legacy_configuration(
     let document = fs::read_to_string(&source)
         .with_context(|| format!("could not read legacy configuration {}", source.display()))?;
     let parse_context = format!("could not parse legacy configuration {}", source.display());
-    let released_v017 = released_v017_document(&document)
-        .with_context(|| parse_context.clone())?;
+    let released_v017 = released_v017_document(&document).with_context(|| parse_context.clone())?;
     let mut effective = Settings::try_from_toml_allowing(&document, RELEASED_V017_UNKNOWN_FIELDS)
         .with_context(|| parse_context)?;
     effective = effective
