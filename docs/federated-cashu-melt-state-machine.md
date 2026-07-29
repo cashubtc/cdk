@@ -66,6 +66,28 @@ reserve/execution request, not terminal payment finality.
 - Restart replay must preserve pending melt state and later converge from
   accepted paid or failed observations.
 
+## Crash-boundary matrix
+
+This matrix documents the intentional durable boundaries. It does not imply
+that one database transaction spans consensus, external payment I/O, and
+finalization.
+
+| Boundary | Durable state before the next effect | Recovery guarantee | Test evidence |
+|---|---|---|---|
+| Accepted `Melt` before any payment probe | Quote `Pending`, proofs `Pending`, deterministic saga in `SetupComplete`, journal entry `Applied` | A non-author or restarted member can retain the reservation without paying | `accepted_federation_melt_persists_reserve_before_payment_attempt` |
+| Payment claim before backend call | Saga advances to `PaymentAttempted`; caller-supplied recovery identity is stored where the method supports it | A crash cannot make startup treat an attempted payment as an unattempted reservation | `federation_lookup_id_is_durable_before_external_payment` |
+| Backend success before observation finality | Payment is recoverable under the same method identity; inputs remain pending | Lease takeover checks/continues the same payment and emits matching evidence instead of paying a distinct request | `lease_takeover_after_author_backend_success_keeps_matching_paid_evidence` |
+| Accepted observation before quorum | Immutable, member-bound observation row; quote and saga remain pending below threshold | Replay/catch-up retains evidence without premature spend or rollback | `real_policy_melt_payment_observations_finalize_from_stored_quorum`, `real_policy_failed_melt_observations_rollback_from_stored_quorum` |
+| Paid quorum: settlement transaction before cleanup transaction | Quote `Paid`, proofs `Spent`, saga `Finalizing`; no change signature or completed-operation row yet | Restart skips the already-committed settlement, deterministically signs change, and performs cleanup without another payment | `paid_federation_melt_replays_finalizing_cleanup_without_second_payment` |
+| Change-share/signature staging before cleanup commit | Change shares, aggregate signatures, completed operation, melt-request deletion, and saga deletion share the cleanup transaction | Injected failure rolls the whole cleanup transaction back; restart recreates one share/signature set and commits once | `paid_federation_melt_replays_finalizing_cleanup_without_second_payment` |
+| Failed quorum before rollback commit | Observation evidence is durable; quote/proofs/saga remain in their pending state while rollback transaction is uncommitted | Replay atomically returns the quote to `Unpaid`, releases proofs, deletes request/saga state, and does not call payment again | `failed_federation_melt_rolls_back_atomically_and_replays` |
+| Terminal state followed by stale observation or another restart | Paid or rolled-back quote, terminal proof states, no saga | Late pending evidence and repeated journal replay cannot resurrect or duplicate the melt | `stale_pending_melt_observation_after_paid_settlement_is_idempotent`, `stale_pending_melt_observation_after_failed_rollback_is_idempotent`, and the repeated-restart tail of the paid-finalization test |
+| Offline member restart/catch-up | Ordered journal plus durable SQLite materialization | Memory and SQLite members replay pending state, then converge on later paid or failed evidence | `restart_replay_preserves_pending_melt_then_catches_up_paid_observation`, `restart_replay_preserves_pending_melt_then_catches_up_failed_observation`, `sqlite_restart_replays_pending_melt_then_catches_up_paid_observation`, `sqlite_restart_replays_pending_melt_then_catches_up_failed_observation` |
+
+The recovery-identity contract is still payment-method-specific. This matrix
+proves the staged saga and application behavior; it does not upgrade an
+unsupported backend into a crash-recoverable payment backend.
+
 ## Test Evidence
 
 Focused tests that cover this decision include:

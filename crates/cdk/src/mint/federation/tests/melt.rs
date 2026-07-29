@@ -2245,10 +2245,14 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
         FederationOperationStatus::Accepted
     );
 
+    drop(mint);
+    let restarted =
+        restart_federated_test_mint(runtime_config.clone(), Arc::clone(&localstore)).await;
     assert_eq!(
-        mint.apply_federation_journal_entries(std::slice::from_ref(&payment_entry))
+        restarted
+            .apply_federation_journal_entries(std::slice::from_ref(&payment_entry))
             .await
-            .expect("replay paid finalizing melt"),
+            .expect("restart replay paid finalizing melt"),
         vec![payment_entry.operation_id]
     );
     assert_eq!(
@@ -2291,6 +2295,36 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
             .expect("melt journal entry after replay")
             .status(),
         FederationOperationStatus::Applied
+    );
+
+    drop(restarted);
+    let restarted_again = restart_federated_test_mint(runtime_config, Arc::clone(&localstore)).await;
+    assert!(
+        restarted_again
+            .apply_federation_journal_entries(std::slice::from_ref(&payment_entry))
+            .await
+            .expect("second restart replay of completed melt")
+            .is_empty(),
+        "an already-applied payment observation must remain terminal after repeated restart"
+    );
+    let quote_after_second_restart = localstore
+        .get_melt_quote(&quote)
+        .await
+        .expect("quote lookup after second restart")
+        .expect("paid quote after second restart");
+    assert_eq!(quote_after_second_restart.state, MeltQuoteState::Paid);
+    assert!(localstore
+        .get_melt_saga_by_quote_id(&quote)
+        .await
+        .expect("saga lookup after second restart")
+        .is_none());
+    assert_eq!(
+        localstore
+            .get_federation_signature_shares_for_output(melt_entry.operation_id, 0)
+            .await
+            .expect("change share after second restart")
+            .len(),
+        1
     );
 }
 
