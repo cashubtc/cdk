@@ -298,10 +298,21 @@ async fn benchmark_aleph_bft_serial_swaps() {
     let member_count = aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_MEMBERS", 5);
     let signature_threshold =
         aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_SIGNATURE_THRESHOLD", 3);
-    let unit_interval_ms =
-        aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_UNIT_INTERVAL_MS", 500);
-    let pump_messages_per_tick =
-        aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_PUMP_MESSAGES_PER_TICK", 1);
+    let default_sync_config = FederationPeerSyncConfig::default();
+    let default_unit_interval_ms = usize::try_from(
+        default_sync_config
+            .aleph_bft_active_unit_interval
+            .as_millis(),
+    )
+    .expect("default active unit interval fits usize milliseconds");
+    let unit_interval_ms = aleph_bft_swap_benchmark_env(
+        "CDK_ALEPH_BFT_BENCH_UNIT_INTERVAL_MS",
+        default_unit_interval_ms,
+    );
+    let pump_messages_per_tick = aleph_bft_swap_benchmark_env(
+        "CDK_ALEPH_BFT_BENCH_PUMP_MESSAGES_PER_TICK",
+        default_sync_config.aleph_bft_network_pump_max_messages_per_tick,
+    );
     let swap_count = aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_SWAPS", 10);
     let network_rtt_ms =
         aleph_bft_swap_benchmark_env("CDK_ALEPH_BFT_BENCH_NETWORK_RTT_MS", 0);

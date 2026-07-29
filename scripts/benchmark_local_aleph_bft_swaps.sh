@@ -8,7 +8,7 @@ MEMBERS="${MEMBERS:-5}"
 SIGNATURE_THRESHOLD="${SIGNATURE_THRESHOLD:-$((MEMBERS / 2 + 1))}"
 SWAPS="${SWAPS:-10}"
 REPEATS="${REPEATS:-3}"
-MATRIX="${MATRIX:-500:1 250:1 100:1 250:2 100:1 100:2 100:8 50:1 50:8}"
+MATRIX="${MATRIX:-500:1 200:1 250:1 100:1 250:2 100:1 100:2 100:8 50:1 50:8}"
 NETWORK_RTT_MS_VALUES="${NETWORK_RTT_MS_VALUES:-0}"
 NETWORK_JITTER_PERCENT="${NETWORK_JITTER_PERCENT:-20}"
 BUILD="${BUILD:-1}"
@@ -34,9 +34,10 @@ Environment overrides:
   BUILD                 Compile the release benchmark before running: 0 or 1
   RUN_DIR               Private output directory below target/
 
-The default matrix intentionally contains the requested duplicate 100:1 row.
-Duplicate settings are run once with REPEATS fresh repetitions, so the default
-performs 8 configurations x 3 runs x 10 measured swaps.
+The default matrix includes the current production 200:1 profile and
+intentionally contains the requested duplicate 100:1 row. Duplicate settings
+are run once with REPEATS fresh repetitions, so the default performs 9
+configurations x 3 runs x 10 measured swaps.
 
 Each run creates a fresh in-process federation using the production AlephBFT
 adapter, private Axum routes, and SQLite application path. One warm-up swap
