@@ -33,6 +33,12 @@ impl Signatory {
             }
         }
 
+        if let Ok(interval_str) = env::var(ENV_SIGNATORY_KEYSET_ROTATION_INTERVAL_SECONDS) {
+            if let Ok(interval) = interval_str.parse() {
+                self.keyset_rotation_interval_seconds = Some(interval);
+            }
+        }
+
         self
     }
 }
@@ -43,25 +49,20 @@ mod tests {
 
     use super::*;
 
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-        ENV_LOCK
-            .lock()
-            .expect("signatory env test lock should not be poisoned")
-    }
-
     fn clear_env_vars() {
         env::remove_var(ENV_SIGNATORY_ENABLED);
         env::remove_var(ENV_SIGNATORY_ADDRESS);
         env::remove_var(ENV_SIGNATORY_PORT);
         env::remove_var(ENV_SIGNATORY_TLS_DIR);
         env::remove_var(ENV_SIGNATORY_ALLOW_INSECURE);
+        env::remove_var(ENV_SIGNATORY_KEYSET_ROTATION_INTERVAL_SECONDS);
     }
 
     #[test]
     fn signatory_from_env_reads_enabled_and_connection_fields() {
-        let _guard = env_lock();
+        // Share the process-wide env lock so this test does not race other
+        // tests that manipulate environment variables.
+        let _guard = crate::test_utils::env_lock();
         clear_env_vars();
 
         env::set_var(ENV_SIGNATORY_ENABLED, "true");
@@ -69,6 +70,7 @@ mod tests {
         env::set_var(ENV_SIGNATORY_PORT, "15061");
         env::set_var(ENV_SIGNATORY_TLS_DIR, "/var/lib/cdk/signatory-tls");
         env::set_var(ENV_SIGNATORY_ALLOW_INSECURE, "true");
+        env::set_var(ENV_SIGNATORY_KEYSET_ROTATION_INTERVAL_SECONDS, "7776000");
 
         let signatory = Signatory::default().from_env();
 
@@ -80,6 +82,7 @@ mod tests {
             Some(PathBuf::from("/var/lib/cdk/signatory-tls"))
         );
         assert!(signatory.allow_insecure);
+        assert_eq!(signatory.keyset_rotation_interval_seconds, Some(7776000));
 
         clear_env_vars();
     }

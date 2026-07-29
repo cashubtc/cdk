@@ -882,6 +882,19 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
 
     builder = builder.with_keyset_v2(settings.info.use_keyset_v2);
 
+    // Fall back to the default interval when no `[signatory]` section is
+    // present, so an embedded mint auto-rotates without explicit config.
+    builder = builder.with_keyset_rotation_interval(
+        settings
+            .signatory
+            .as_ref()
+            .map_or_else(
+                || crate::config::Signatory::default().keyset_rotation_interval_seconds,
+                |signatory| signatory.keyset_rotation_interval_seconds,
+            )
+            .map(std::time::Duration::from_secs),
+    );
+
     builder
 }
 /// Configures Lightning Network backend based on the specified backend type
@@ -2139,6 +2152,7 @@ mod tests {
                 port: 15060,
                 tls_dir: Some("/tmp/certs".into()),
                 allow_insecure: false,
+                keyset_rotation_interval_seconds: None,
             }),
             ..Default::default()
         };

@@ -425,6 +425,9 @@ pub enum Error {
     /// No active keyset
     #[error("No active keyset")]
     NoActiveKeyset,
+    /// Keysets have not finished loading from the database yet
+    #[error("Keysets are still loading from the database")]
+    KeysetsNotLoaded,
     /// Incorrect quote amount
     #[error("Incorrect quote amount")]
     IncorrectQuoteAmount,
@@ -742,6 +745,7 @@ impl Error {
 
             // Ambiguous Errors (Unsafe to revert)
             Self::Timeout
+            | Self::KeysetsNotLoaded
             | Self::Internal
             | Self::UnknownPaymentState
             | Self::PendingQuote
