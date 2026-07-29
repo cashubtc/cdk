@@ -5223,16 +5223,18 @@ async fn federated_mint_connector_accepts_melt_quote_status_expiry_skew() {
 }
 
 #[tokio::test]
-async fn federated_mint_connector_aggregates_melt_quote_status_change_shares() {
+async fn rebuilt_federated_connector_omits_unverified_melt_status_change_shares() {
     let bundle = threshold_bundle();
     let advertised = advertised_keyset(&bundle);
-    let change_outputs = blinded_change_outputs(&bundle);
+    let keyset = &bundle.public_config.keysets[0];
+    let wrong_change_outputs =
+        blinded_change_outputs_for_keyset(keyset, b"wrong restarted melt change outputs");
     let connectors = [member_id(1), member_id(2), member_id(3)]
         .into_iter()
         .map(|member_id| {
             let connector = MockMintConnector::new();
             connector.set_active_keyset(advertised.clone());
-            let status = match melt_response(&bundle, member_id, &change_outputs) {
+            let status = match melt_response(&bundle, member_id, &wrong_change_outputs) {
                 MeltQuoteResponse::Bolt11(response) => response,
                 _ => panic!("expected bolt11 melt response"),
             };
@@ -5251,12 +5253,10 @@ async fn federated_mint_connector_aggregates_melt_quote_status_change_shares() {
         .await
         .expect("melt quote status");
 
-    let change = response.change().cloned().expect("change signatures");
     assert_eq!(response.state(), MeltQuoteState::Paid);
-    assert_aggregate_response_valid(
-        &bundle,
-        &signed_change_outputs(&change_outputs),
-        &MintResponse { signatures: change },
+    assert!(
+        response.change().is_none(),
+        "a rebuilt connector must not return shares it cannot bind to the original outputs"
     );
 }
 

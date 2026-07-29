@@ -1796,7 +1796,6 @@ impl FederatedMintConnector {
                     )));
                 }
             }
-            self.melt_change_outputs.write().await.remove(quote_id);
             return Ok(first_response.clone());
         };
 
@@ -1812,7 +1811,6 @@ impl FederatedMintConnector {
                     }
                 }
             }
-            self.melt_change_outputs.write().await.remove(quote_id);
             return Ok(first_response.clone());
         }
 
@@ -1847,85 +1845,17 @@ impl FederatedMintConnector {
             return Ok(response);
         }
 
-        // Fallback when the original change outputs are unavailable (for
-        // example a rebuilt connector): interpolate tolerantly, skipping
-        // shares that cannot be parsed, never dropping below the threshold.
-        let mut aggregate_change = Vec::with_capacity(first_change.len());
-        for (index, first_signature) in first_change.iter().enumerate() {
-            let mut shares = Vec::with_capacity(matching_responses.len());
-
-            for (member_id, response) in &matching_responses {
-                let change = response.change().ok_or_else(|| {
-                    Error::InvalidMintResponse(format!(
-                        "member {} did not return melt status change signatures",
-                        member_id
-                    ))
-                })?;
-                let signature = change.get(index).ok_or_else(|| {
-                    Error::InvalidMintResponse(format!(
-                        "member {} returned too few melt status change signatures",
-                        member_id
-                    ))
-                })?;
-                if signature.amount != first_signature.amount
-                    || signature.keyset_id != first_signature.keyset_id
-                    || signature.dleq.is_some()
-                {
-                    return Err(Error::InvalidMintResponse(format!(
-                        "member {} returned mismatched melt status change metadata",
-                        member_id
-                    )));
-                }
-
-                match signature.c.as_bls_g1() {
-                    Ok(c) => {
-                        shares.push(BlsBlindSignatureShare::new(member_id.to_bls_signer_id(), c))
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            member_id = %member_id,
-                            "ignoring unparseable federation melt status change share"
-                        );
-                    }
-                }
-            }
-
-            if shares.len() < threshold {
-                return Err(Error::InvalidMintResponse(format!(
-                    "insufficient parseable federation melt status change shares: required {}, parseable {}",
-                    threshold,
-                    shares.len()
-                )));
-            }
-
-            let aggregate_signature = aggregate_blind_signature_shares(threshold, &shares)?;
-            aggregate_change.push(BlindSignature {
-                amount: first_signature.amount,
-                keyset_id: first_signature.keyset_id,
-                c: aggregate_signature.into(),
-                dleq: None,
-            });
-        }
-
-        for (member_id, response) in &matching_responses {
-            let change = response.change().ok_or_else(|| {
-                Error::InvalidMintResponse(format!(
-                    "member {} did not return melt status change signatures",
-                    member_id
-                ))
-            })?;
-            if change.len() != first_change.len() {
-                return Err(Error::InvalidMintResponse(format!(
-                    "member {} returned {} melt status change signatures for {} expected signatures",
-                    member_id,
-                    change.len(),
-                    first_change.len()
-                )));
-            }
-        }
-
+        // A rebuilt connector does not possess the original blinded outputs,
+        // so it cannot authenticate member shares. Preserve the threshold-paid
+        // status but omit unverified change. Wallet saga recovery persists the
+        // exact blinded messages before submission and restores them through
+        // the output-bound restore path.
+        tracing::warn!(
+            quote_id,
+            "omitting unverified federation melt status change; recover it from persisted outputs"
+        );
         let mut response = first_response.clone();
-        set_melt_response_change(&mut response, Some(aggregate_change));
+        set_melt_response_change(&mut response, None);
 
         Ok(response)
     }
