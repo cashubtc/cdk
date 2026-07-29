@@ -1,5 +1,13 @@
 # Federation Mint Security Audit — 2026-07-17
 
+> **Disposition update — 2026-07-29:** This audit remains the historical
+> finding record. Current implementation evidence and retained/deferred
+> decisions are in
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). In particular,
+> `SEC-2026-07-17-01` remains open and is explicitly outside that cleanup; the
+> federation must not claim Byzantine client-fund safety or production
+> readiness on the strength of the other completed milestones.
+
 ## Verdict
 
 **CHANGES REQUESTED**

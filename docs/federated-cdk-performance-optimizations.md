@@ -1,7 +1,17 @@
 # Federated CDK Performance Optimizations
 
-Status: Milestone 5 in progress; Milestone 8 static-cadence sweep rejected
+Status: Historical optimization ledger; current cadence reassessed 2026-07-29
 First recorded: 2026-07-17
+
+> **Current disposition — 2026-07-29:** Production defaults now use a 200 ms
+> active AlephBFT interval and a network-pump width of one. Milestone 18 of
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md) records the current-revision
+> 0–200 ms RTT correctness matrix and matched 500/1 versus 200/1 local CPU
+> screen. That evidence supports retaining 200/1, but does not establish
+> production capacity. Sustained high-load CPU/p99, asymmetric RTT, packet
+> loss, bandwidth, real TLS, multi-process, and Bark/Ark payment measurements
+> remain external release gates. The older measurements and rejected candidates
+> below remain historical evidence and must not be read as the current default.
 
 ## Purpose
 

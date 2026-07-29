@@ -2,6 +2,14 @@
 
 Date: 2026-07-24
 
+> **Follow-up — 2026-07-29:** This benchmark is historical evidence rather
+> than the current default decision. Milestone 18 of
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md) tested the current 200/1
+> profile across 0–200 ms modeled RTT and ran a matched local CPU screen against
+> 500/1. The current default remains 200/1. The external CPU/p99, loss,
+> asymmetry, bandwidth, real TLS, multi-process, and real-payment gates remain
+> open; no production-capacity claim follows from either in-process benchmark.
+
 ## Scope and method
 
 This benchmark measures the steady-state finality latency of an ordinary

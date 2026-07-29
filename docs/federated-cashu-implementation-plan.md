@@ -1,5 +1,15 @@
 # Federated Cashu with CDK: implementation plan
 
+> **Current status — 2026-07-29:** The fakewallet development scope is
+> implemented and its cleanup milestones are reconciled in
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). The federation is **not
+> production-ready**. In particular, bearer proofs still do not authenticate
+> client intent against a Byzantine receiving member
+> (`SEC-2026-07-17-01`); that protocol issue is explicitly deferred to a
+> separate project and is not mitigated by the cleanup. The release limitations
+> below remain authoritative even where older dated trackers contain unchecked
+> or completed-looking checkboxes.
+
 This is a living design, status, and development contract for federated Cashu support in CDK. Treat its safety and architecture rules as constraints, not suggestions. If a requested change conflicts with them, explain the conflict instead of implementing a workaround.
 
 Sandbox test note: run localhost-listener and real-network tests with network permission enabled from the first attempt (an escalated `cargo test ...` invocation in Codex), because `127.0.0.1:0` bind failures without it are environmental rather than regressions.
@@ -46,7 +56,37 @@ Every safety-critical operation must be ordered, durably journaled, replayable, 
 
 ## Remaining release work
 
-The implementation checklist is complete for the fakewallet federation scope. Release readiness still requires independent security and protocol review, real payment-backend validation, multi-host deployment and upgrade drills, sustained fault/partition and performance testing, and production operator documentation for DKG, recovery, rotation, backup, and incident procedures.
+The implementation checklist is complete for the fakewallet federation scope.
+That is a development-feature statement, not a real-money deployment claim.
+The current disposition and proof for repository-local cleanup work is in
+[`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). Production readiness remains
+blocked by:
+
+- a separately authorized protocol design for proof-bound client intent
+  (`SEC-2026-07-17-01`);
+- a versioned journal/envelope and SQL migration before proof-`Y` conflict keys
+  can be added safely;
+- explicit payment-observation origin/readiness policy, independently
+  verifiable backend evidence or a deliberately narrowed trust model, and
+  uniform backend recovery identity;
+- retry scheduling and per-member ingress fairness that preserve progress under
+  sustained hostile traffic;
+- service-owned supervision, cancellation, deadlines, and bounded concurrency
+  for the transaction broadcaster and remaining background workers;
+- a decision on synchronous federation keyset API semantics versus the durable
+  asynchronous effective-keyset view;
+- completion of the Bark/FROST release gate, including dependency availability,
+  deterministic mint-and-melt regtest, SQLite/PostgreSQL parity, opt-in paid
+  Signet coverage, and independent cryptographic/state review;
+- multi-host deployment, upgrade, backup/restore, rotation, and incident drills;
+  and
+- sustained high-load CPU and p99 measurement plus asymmetric latency, loss,
+  bandwidth, real TLS, multi-process, and real payment-backend performance
+  validation.
+
+The 2026-07-29 local screen retained an active AlephBFT cadence of 200 ms and a
+network-pump width of one. It proved deterministic in-process correctness and a
+matched local CPU screen only; it does not close the external performance gate.
 
 ## Cut-through compatibility policy
 

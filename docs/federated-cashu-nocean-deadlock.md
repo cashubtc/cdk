@@ -422,7 +422,7 @@ four consensus-backed confirmation observations. External chain confirmation
 alone does not mutate consensus state.
 
 Finally, `probe_federation_melt_quote_payment` in
-[`crates/cdk/src/mint/federation.rs`](../crates/cdk/src/mint/federation.rs),
+[`crates/cdk/src/mint/federation/application.rs`](../crates/cdk/src/mint/federation/application.rs),
 currently around lines 1227-1273, returns an on-chain paid observation only
 after `completed_payment_for_quote` yields a terminal receipt. That receipt is
 available only after the accepted transaction reaches `Confirmed` state.
@@ -626,8 +626,8 @@ The existing tests miss or normalize the bug in three ways:
   finalized evidence for a two-item unit, even though the client must reject
   that response as unreplayable.
 
-These cases are in the deployed version of
-[`crates/cdk-axum/src/federation/tests.rs`](../crates/cdk-axum/src/federation/tests.rs),
+These cases are in the deployed version of the test suite, now split under
+[`crates/cdk-axum/src/federation/tests/status.rs`](../crates/cdk-axum/src/federation/tests/status.rs),
 at lines 9199-9364, 9367-9470, and 23482-23549 respectively; the critical
 assertions and invalid offset construction are at lines 9261-9262, 9418-9433,
 and 23512-23527.
@@ -847,8 +847,8 @@ unless a separate invariant and regression suite justify the change.
 
 ### Deterministic deadlock regressions
 
-The existing materialized-digest cache test in
-[`crates/cdk-axum/src/federation/tests.rs`](../crates/cdk-axum/src/federation/tests.rs),
+The existing materialized-digest cache test in the suite now split under
+[`crates/cdk-axum/src/federation/tests/status.rs`](../crates/cdk-axum/src/federation/tests/status.rs),
 lines 5195-5252 in the deployed build, exercises sequential cache reuse and invalidation
 only. It cannot detect inverse lock ordering, duplicate concurrent computation,
 or stale publication.

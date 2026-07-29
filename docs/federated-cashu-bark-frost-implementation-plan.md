@@ -13,6 +13,14 @@ the complete receive, send, revocation, refresh, and exit lifecycles before a
 member is ready for more side effects. Operations tooling is complete; the
 release gate remains in Milestone 18.
 
+> **Current release status — 2026-07-29:** Milestone 18 remains open. The
+> repository cleanup and local AlephBFT cadence screen in
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md) do not replace Bark's
+> dependency-publication, deterministic mint-and-melt regtest,
+> SQLite/PostgreSQL parity, full adversarial/workspace, paid Signet, or
+> independent cryptographic and state-review gates. This backend must not be
+> presented as production-ready until the definition of done below is proven.
+
 Reviewed Bark baseline: `frost-wallet` at `ff0c04457137fe7506ffcf361214ea0fb25d3999`
 
 Related documents:

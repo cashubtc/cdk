@@ -1,5 +1,13 @@
 # Federation cleanup & refactor implementation plan (2026-07-23)
 
+> **Archived planning input — 2026-07-29:** This document preserves the
+> original proposed refactor sequence; its unchecked boxes are not the current
+> work queue. Each proposal was reassessed against the live code in Milestones
+> 14–17 of [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). Exact semantic
+> duplication and typed-boundary fixes were retained and proven; broad moves,
+> module splits, and abstraction rewrites without a demonstrated defect were
+> rejected. Use that cleanup ledger for current dispositions.
+
 This plan sequences the cleanup of the federation branch (`bls-federation`, forked
 from `bls`) so the diff becomes smaller, follows standalone CDK conventions, and is
 easier to review. It was produced from a five-way code review of `git diff

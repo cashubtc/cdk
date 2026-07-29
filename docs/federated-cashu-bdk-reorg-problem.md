@@ -3,9 +3,10 @@
 **Status:** Implemented; coordinated deployment pending (observed 2026-07-17,
 positive disconnection proof completed 2026-07-29)
 
-**Related:** `docs/federated-bdk-operations.md`,  
-`docs/federated-cashu-bdk-frost-implementation-plan.md` (Milestone 9),  
-`docs/federation-cleanup-todo.md` item 48
+**Related:** [`federated-bdk-operations.md`](federated-bdk-operations.md),
+[`federated-cashu-bdk-frost-implementation-plan.md`](federated-cashu-bdk-frost-implementation-plan.md)
+(Milestone 9), [`federation-cleanup-todo.md`](federation-cleanup-todo.md) item
+48, and [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md) Milestone 12.
 
 > **Update 2026-07-18:** the follow-up "require a reorg observation quorum"
 > is now implemented. Reorg transitions, the post-liability alarm, and the
@@ -23,8 +24,9 @@ positive disconnection proof completed 2026-07-29)
 > the stored anchor height. A missing output, an unconfirmed position, a
 > checkpoint gap, or a tip below the anchor remains `Unknown` and produces no
 > reorg evidence. Focused BDK restart and Axum observer-policy tests cover the
-> distinction. The liar-first field-establishment case (`DB-003`) remains a
-> separate open follow-up.
+> distinction. The earlier liar-first field-establishment case (`DB-003`) is
+> already resolved by quorum-backed field adoption; the retained
+> `first_lying_observer_cannot_brick_deposit_fields` regression still passes.
 
 ## Summary
 

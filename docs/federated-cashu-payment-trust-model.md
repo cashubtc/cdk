@@ -1,5 +1,12 @@
 # Federated Cashu Payment Trust Model
 
+> **Current limitation — 2026-07-29:** `member_quorum` proves matching
+> authenticated member assertions; it does not prove independent external
+> settlement evidence. Uniform backend recovery identity and explicit
+> observation-origin/readiness policy also remain deferred in Milestones 9 and
+> 11 of [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). This model is
+> therefore not, by itself, a production payment-backend safety claim.
+
 This document records the payment-observation policy for federated Cashu before
 real funds are enabled. It is part of Milestone 19 in the federation plan.
 
@@ -151,3 +158,10 @@ invoices, local paths, private keys, or proof secrets.
 
 - Add tests proving stale pending quotes remain visible without blocking
   consensus across live process restart and catch-up scenarios.
+- Define and enforce which members may originate observations in each
+  readiness state.
+- Require independently verifiable settlement evidence, deploy only within a
+  deliberately documented shared-backend trust model, or keep the real backend
+  disabled.
+- Give every production backend a durable, caller-controlled recovery identity
+  before allowing externally visible payment side effects.

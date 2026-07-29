@@ -169,7 +169,8 @@ The commit occurs before control returns to the federation journal apply path.
 
 ### 2. The caller discards the terminal-vs-pending outcome
 
-[`apply_federation_melt`](../crates/cdk/src/mint/federation.rs) accepts every
+[`apply_federation_melt`](../crates/cdk/src/mint/federation/application.rs)
+accepts every
 successful response through `Ok(_)`, losing the fact that internal settlement
 returned a terminal result. It then always opens another transaction, reloads
 the quote, and calls `persist_pending_onchain_intent`.

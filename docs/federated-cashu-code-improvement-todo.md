@@ -1,5 +1,13 @@
 # Federated Cashu Code Improvement TODO
 
+> **Archived execution tracker — 2026-07-29:** The checkboxes below are a
+> historical queue and do not reflect all work that landed later. The current
+> finding-by-finding disposition is
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md). Its explicit exclusion of
+> `SEC-2026-07-17-01` leaves that protocol issue open; completed cleanup
+> milestones must not be interpreted as Byzantine client-intent protection or
+> production readiness.
+
 This is the execution tracker for
 [`docs/federated-cashu-code-improvement-opportunities.md`](federated-cashu-code-improvement-opportunities.md).
 Read that document before changing code: it defines the intended ownership,

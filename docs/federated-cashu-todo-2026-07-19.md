@@ -1,5 +1,14 @@
 # Federated Cashu open bugs and follow-ups — 2026-07-19
 
+> **Archived review snapshot — 2026-07-29:** Counts and statuses in this
+> document describe the 2026-07-19 review and are not the current work queue.
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md) reassesses the live findings:
+> some are fixed and proven, while payment evidence/recovery identity,
+> readiness, retry fairness, per-member ingress fairness, broadcaster
+> supervision, and external release validation remain deferred. The liar-first
+> deposit-field case is fixed and retains focused regression coverage. Use the
+> cleanup ledger for the current release impact.
+
 ## Scope
 
 This document records federation bugs and incomplete safety/liveness work that

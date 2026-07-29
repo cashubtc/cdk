@@ -1,5 +1,12 @@
 # Federated Cashu cleanup todo — 2026-07-19
 
+> **Archived review snapshot — 2026-07-29:** This checklist records the branch
+> as reviewed on 2026-07-19. Its unchecked boxes are not current status.
+> Milestones 14–17 of
+> [`cleanup-2026-07-29.md`](cleanup-2026-07-29.md) reassess the proposed cleanup
+> against the live code and record which narrow changes were kept, which work
+> was already complete, and which broad refactors were rejected.
+
 ## Purpose
 
 This document records the cleanup review of the current federation branch against
