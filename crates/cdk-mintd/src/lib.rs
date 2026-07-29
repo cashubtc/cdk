@@ -14,7 +14,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use bip39::Mnemonic;
-use cdk::cdk_database::{self, KVStore, MintDatabase, MintKeysDatabase};
+use cdk::cdk_database::{self, KVStore, KVStoreCompareAndSwap, MintDatabase, MintKeysDatabase};
 use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
 use cdk::nuts::nut00::KnownMethod;
 #[cfg(any(
@@ -114,7 +114,7 @@ impl std::fmt::Debug for ValidatedSigningSource {
 #[derive(Debug, Clone)]
 struct ConfigurationActivation {
     service: config_service::ConfigurationService,
-    expected_document: Option<String>,
+    expected_revision: Option<u64>,
 }
 
 #[cfg(feature = "management-rpc")]
@@ -176,11 +176,13 @@ async fn initial_setup(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
 )> {
     tracing::info!("Initializing database...");
-    let (localstore, keystore, kv) = setup_database(settings, work_dir, db_password).await?;
+    let (localstore, keystore, kv, configuration_store) =
+        setup_database(settings, work_dir, db_password).await?;
     tracing::info!("Database initialized successfully");
-    Ok((localstore, keystore, kv))
+    Ok((localstore, keystore, kv, configuration_store))
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
@@ -733,6 +735,7 @@ async fn setup_database(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
 )> {
     tracing::info!("Using database engine: {:?}", settings.database.engine);
     match settings.database.engine {
@@ -741,8 +744,11 @@ async fn setup_database(
             let db = setup_sqlite_database(_work_dir, _db_password).await?;
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
+            let configuration_store: Arc<
+                dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync,
+            > = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
-            Ok((localstore, keystore, kv))
+            Ok((localstore, keystore, kv, configuration_store))
         }
         #[cfg(feature = "postgres")]
         DatabaseEngine::Postgres => {
@@ -771,11 +777,15 @@ async fn setup_database(
             #[cfg(feature = "postgres")]
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = pg_db.clone();
             #[cfg(feature = "postgres")]
+            let configuration_store: Arc<
+                dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync,
+            > = pg_db.clone();
+            #[cfg(feature = "postgres")]
             let keystore: Arc<
                 dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync,
             > = pg_db;
             #[cfg(feature = "postgres")]
-            return Ok((localstore, keystore, kv));
+            return Ok((localstore, keystore, kv, configuration_store));
 
             #[cfg(not(feature = "postgres"))]
             bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
@@ -1816,8 +1826,8 @@ async fn start_services_with_shutdown(
     .await?;
 
     if let Some(activation) = activation {
-        if let Some(expected_document) = activation.expected_document {
-            if !activation.service.mark_applied(&expected_document).await? {
+        if let Some(expected_revision) = activation.expected_revision {
+            if !activation.service.mark_applied(expected_revision).await? {
                 tracing::info!(
                     "A newer configuration was stored during startup and remains unapplied for the next restart."
                 );
@@ -2205,7 +2215,8 @@ pub async fn run_mintd_with_shutdown(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
-    let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
+    let (localstore, keystore, kv, _configuration_store) =
+        initial_setup(work_dir, settings, db_password.clone()).await?;
 
     run_mintd_with_database_and_shutdown(
         work_dir,
@@ -2318,11 +2329,11 @@ fn load_database_bootstrap_settings() -> Result<config::Settings> {
 }
 
 fn configuration_service(
-    kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    store: Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
     settings: &config::Settings,
 ) -> config_service::ConfigurationService {
     config_service::ConfigurationService::new(
-        config_store::ConfigRepository::new(kv),
+        config_store::ConfigRepository::new(store),
         settings.database.clone(),
     )
 }
@@ -2340,11 +2351,12 @@ pub async fn initialize_configuration(
     db_password: Option<String>,
 ) -> Result<()> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
+    let (localstore, _keystore, _kv, configuration_store) =
+        initial_setup(work_dir, &bootstrap, db_password).await?;
     let mut mint_builder = MintBuilder::new(localstore);
     mint_builder.init_from_db_if_present().await?;
     let database_pubkey = mint_builder.current_mint_info().pubkey;
-    configuration_service(kv, &bootstrap)
+    configuration_service(configuration_store, &bootstrap)
         .initialize(document, database_pubkey)
         .await?;
     Ok(())
@@ -2358,8 +2370,9 @@ pub async fn apply_configuration(
     db_password: Option<String>,
 ) -> Result<ApplyOutcome> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (_localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
-    Ok(configuration_service(kv, &bootstrap)
+    let (_localstore, _keystore, _kv, configuration_store) =
+        initial_setup(work_dir, &bootstrap, db_password).await?;
+    Ok(configuration_service(configuration_store, &bootstrap)
         .apply(document, validate_only)
         .await?)
 }
@@ -2370,8 +2383,11 @@ pub async fn stored_configuration_document(
     db_password: Option<String>,
 ) -> Result<String> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (_localstore, _keystore, kv) = initial_setup(work_dir, &bootstrap, db_password).await?;
-    Ok(configuration_service(kv, &bootstrap).document().await?)
+    let (_localstore, _keystore, _kv, configuration_store) =
+        initial_setup(work_dir, &bootstrap, db_password).await?;
+    Ok(configuration_service(configuration_store, &bootstrap)
+        .document()
+        .await?)
 }
 
 /// Runs mintd using only the configuration stored in its primary database.
@@ -2383,9 +2399,9 @@ pub async fn run_mintd_from_database(
     routers: Vec<Router>,
 ) -> Result<()> {
     let bootstrap = load_database_bootstrap_settings()?;
-    let (localstore, keystore, kv) =
+    let (localstore, keystore, kv, configuration_store) =
         initial_setup(work_dir, &bootstrap, db_password.clone()).await?;
-    let service = configuration_service(kv.clone(), &bootstrap);
+    let service = configuration_service(configuration_store, &bootstrap);
     let startup = service.startup().await?;
     let force_configuration = !startup.applied;
     let validated_signing_source = Some(ValidatedSigningSource {
@@ -2396,7 +2412,7 @@ pub async fn run_mintd_from_database(
     });
     let activation = Some(ConfigurationActivation {
         service,
-        expected_document: (!startup.applied).then(|| startup.resolved.document.clone()),
+        expected_revision: (!startup.applied).then_some(startup.revision),
     });
     let settings = startup.resolved.settings;
 

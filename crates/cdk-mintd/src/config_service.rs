@@ -50,6 +50,7 @@ impl fmt::Debug for ResolvedConfiguration {
 pub(crate) struct StartupConfiguration {
     pub(crate) resolved: ResolvedConfiguration,
     pub(crate) applied: bool,
+    pub(crate) revision: u64,
     pub(crate) signing_identity: SigningIdentity,
     pub(crate) remote_signatory: Option<Arc<cdk_signatory::SignatoryRpcClient>>,
 }
@@ -59,6 +60,7 @@ impl fmt::Debug for StartupConfiguration {
         f.debug_struct("StartupConfiguration")
             .field("resolved", &self.resolved)
             .field("applied", &self.applied)
+            .field("revision", &self.revision)
             .field("signing_identity", &self.signing_identity)
             .field("remote_signatory", &self.remote_signatory.is_some())
             .finish()
@@ -162,6 +164,7 @@ impl ConfigurationService {
         document: &str,
     ) -> Result<ResolvedConfiguration, ConfigurationServiceError> {
         let mut settings = Settings::try_from_toml(document)?;
+        validate_secret_references(&settings)?;
         prune_inactive_configuration(&mut settings);
         resolve_secrets(&mut settings)?;
         crate::validate_settings(&settings)
@@ -234,6 +237,7 @@ impl ConfigurationService {
         Ok(StartupConfiguration {
             resolved,
             applied: envelope.applied,
+            revision: envelope.revision,
             signing_identity: signing_resolution.identity,
             remote_signatory: signing_resolution.remote_signatory,
         })
@@ -255,9 +259,9 @@ impl ConfigurationService {
     /// Marks the current startup document applied if it has not been replaced.
     pub(crate) async fn mark_applied(
         &self,
-        expected_toml: &str,
+        expected_revision: u64,
     ) -> Result<bool, ConfigurationServiceError> {
-        Ok(self.repository.mark_applied(expected_toml).await?)
+        Ok(self.repository.mark_applied(expected_revision).await?)
     }
 
     fn require_primary_database(
@@ -439,6 +443,86 @@ pub(crate) fn prune_inactive_configuration(settings: &mut Settings) {
     }
 }
 
+fn validate_secret_references(settings: &Settings) -> Result<(), ConfigurationServiceError> {
+    validate_optional_secret_reference(settings.info.seed.as_deref(), "info.seed")?;
+    validate_optional_secret_reference(settings.info.mnemonic.as_deref(), "info.mnemonic")?;
+
+    if let Some(postgres) = settings.database.postgres.as_ref() {
+        validate_secret_reference(&postgres.url, "database.postgres.url")?;
+    }
+    if let Some(postgres) = settings
+        .auth_database
+        .as_ref()
+        .and_then(|database| database.postgres.as_ref())
+    {
+        validate_secret_reference(&postgres.url, "auth_database.postgres.url")?;
+    }
+    #[cfg(feature = "lnbits")]
+    if let Some(lnbits) = settings.lnbits.as_ref() {
+        validate_secret_reference(&lnbits.admin_api_key, "lnbits.admin_api_key")?;
+        validate_secret_reference(&lnbits.invoice_api_key, "lnbits.invoice_api_key")?;
+    }
+    #[cfg(feature = "bdk")]
+    if let Some(bdk) = settings.bdk.as_ref() {
+        validate_optional_secret_reference(
+            bdk.bitcoind_rpc_password.as_deref(),
+            "bdk.bitcoind_rpc_password",
+        )?;
+        validate_optional_secret_reference(bdk.mnemonic.as_deref(), "bdk.mnemonic")?;
+    }
+    #[cfg(feature = "ldk-node")]
+    if let Some(ldk_node) = settings.ldk_node.as_ref() {
+        validate_optional_secret_reference(
+            ldk_node.bitcoind_rpc_password.as_deref(),
+            "ldk_node.bitcoind_rpc_password",
+        )?;
+        validate_optional_secret_reference(
+            ldk_node.ldk_node_mnemonic.as_deref(),
+            "ldk_node.ldk_node_mnemonic",
+        )?;
+    }
+    #[cfg(feature = "redis")]
+    if let cdk_axum::cache::Backend::Redis(redis) = &settings.info.http_cache.backend {
+        validate_secret_reference(
+            &redis.connection_string,
+            "info.http_cache.connection_string",
+        )?;
+        if let Some(cluster_nodes) = redis.cluster_nodes.as_ref() {
+            for node in cluster_nodes {
+                validate_secret_reference(node, "info.http_cache.cluster_nodes")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_secret_reference(
+    value: Option<&str>,
+    field: &'static str,
+) -> Result<(), ConfigurationServiceError> {
+    if let Some(value) = value {
+        validate_secret_reference(value, field)?;
+    }
+    Ok(())
+}
+
+fn validate_secret_reference(
+    value: &str,
+    field: &'static str,
+) -> Result<(), ConfigurationServiceError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    match value.strip_prefix(ENV_SECRET_PREFIX) {
+        Some("") => Err(ConfigurationServiceError::EmptySecret { field }),
+        Some(_) => Ok(()),
+        None => match value.strip_prefix(FILE_SECRET_PREFIX) {
+            Some(path) if Path::new(path).is_absolute() => Ok(()),
+            _ => Err(ConfigurationServiceError::LiteralSecret { field }),
+        },
+    }
+}
+
 fn resolve_secrets(settings: &mut Settings) -> Result<(), ConfigurationServiceError> {
     if settings.enabled_signatory().is_none() {
         resolve_optional_secret(&mut settings.info.seed, "info.seed")?;
@@ -530,6 +614,7 @@ fn resolve_secret_with(
     field: &'static str,
     normalize: impl FnOnce(String) -> String,
 ) -> Result<(), ConfigurationServiceError> {
+    validate_secret_reference(value, field)?;
     if value.is_empty() {
         return Ok(());
     }
@@ -594,6 +679,30 @@ ln_backend = "fakewallet"
 
 [database]
 engine = "sqlite"
+"#
+        )
+    }
+
+    #[cfg(feature = "fakewallet")]
+    fn remote_signatory_document(info_fields: &str, extra_sections: &str) -> String {
+        format!(
+            r#"
+[info]
+{info_fields}
+
+[signatory]
+enabled = true
+allow_insecure = true
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+
+{extra_sections}
 "#
         )
     }
@@ -678,6 +787,154 @@ engine = "sqlite"
         .expect("remote signatory should be a complete signing source");
         assert!(resolved.settings.info.seed.is_none());
         assert!(resolved.settings.info.mnemonic.is_none());
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn literal_secrets_in_inactive_or_skipped_sections_are_rejected() {
+        let assert_rejected = |document: String, expected_field| {
+            let error = ConfigurationService::validate_document(&document)
+                .expect_err("literal secret should be rejected before pruning");
+            assert!(
+                matches!(
+                    error,
+                    ConfigurationServiceError::LiteralSecret { field }
+                        if field == expected_field
+                ),
+                "unexpected error for {expected_field}: {error}"
+            );
+        };
+
+        assert_rejected(
+            remote_signatory_document(r#"seed = "plaintext-secret""#, ""),
+            "info.seed",
+        );
+        assert_rejected(
+            remote_signatory_document(
+                "",
+                r#"
+[database.postgres]
+url = "postgresql://operator:plaintext-secret@localhost/cdk"
+"#,
+            ),
+            "database.postgres.url",
+        );
+        assert_rejected(
+            remote_signatory_document(
+                "",
+                r#"
+[auth_database.postgres]
+url = "postgresql://operator:plaintext-secret@localhost/cdk"
+"#,
+            ),
+            "auth_database.postgres.url",
+        );
+
+        #[cfg(feature = "lnbits")]
+        assert_rejected(
+            remote_signatory_document(
+                "",
+                r#"
+[lnbits]
+admin_api_key = "plaintext-secret"
+invoice_api_key = ""
+"#,
+            ),
+            "lnbits.admin_api_key",
+        );
+        #[cfg(feature = "bdk")]
+        assert_rejected(
+            remote_signatory_document(
+                "",
+                r#"
+[bdk]
+mnemonic = "plaintext-secret"
+"#,
+            ),
+            "bdk.mnemonic",
+        );
+        #[cfg(feature = "ldk-node")]
+        assert_rejected(
+            remote_signatory_document(
+                "",
+                r#"
+[ldk_node]
+ldk_node_mnemonic = "plaintext-secret"
+"#,
+            ),
+            "ldk_node.ldk_node_mnemonic",
+        );
+        #[cfg(feature = "redis")]
+        assert_rejected(
+            remote_signatory_document(
+                "",
+                r#"
+[info.http_cache]
+backend = "redis"
+connection_string = "redis://operator:plaintext-secret@localhost"
+"#,
+            ),
+            "info.http_cache.connection_string",
+        );
+        #[cfg(feature = "redis")]
+        assert_rejected(
+            remote_signatory_document(
+                "",
+                r#"
+[info.http_cache]
+backend = "redis"
+connection_string = ""
+cluster_nodes = ["redis://operator:plaintext-secret@localhost"]
+"#,
+            ),
+            "info.http_cache.cluster_nodes",
+        );
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn inactive_secret_references_are_validated_but_not_resolved() {
+        let _env_lock = crate::test_utils::env_lock();
+        const MISSING: &str = "CDK_MINTD_TEST_MISSING_INACTIVE_POSTGRES_SECRET";
+        std::env::remove_var(MISSING);
+        let document = remote_signatory_document(
+            "",
+            &format!(
+                r#"
+[database.postgres]
+url = "env:{MISSING}"
+"#
+            ),
+        );
+
+        ConfigurationService::validate_document(&document)
+            .expect("inactive valid reference should not be resolved");
+    }
+
+    #[cfg(all(feature = "sqlite", feature = "fakewallet"))]
+    #[tokio::test]
+    async fn rejected_inactive_literal_secret_is_not_persisted() {
+        let service = service().await;
+        let document = remote_signatory_document(
+            "",
+            r#"
+[database.postgres]
+url = "postgresql://operator:plaintext-secret@localhost/cdk"
+"#,
+        );
+
+        assert!(matches!(
+            service.initialize(&document, None).await,
+            Err(ConfigurationServiceError::LiteralSecret {
+                field: "database.postgres.url"
+            })
+        ));
+        assert!(matches!(
+            service.document().await,
+            Err(ConfigurationServiceError::Store(
+                ConfigStoreError::NotInitialized
+            ))
+        ));
     }
 
     #[cfg(feature = "fakewallet")]
@@ -1223,7 +1480,11 @@ engine = "sqlite"
             .has_pending_configuration()
             .await
             .expect("initialized document is pending"));
-        assert!(service.mark_applied(&first).await.expect("mark applied"));
+        let initial_revision = service.startup().await.expect("initial startup").revision;
+        assert!(service
+            .mark_applied(initial_revision)
+            .await
+            .expect("mark applied"));
         assert!(!service
             .has_pending_configuration()
             .await
@@ -1243,7 +1504,7 @@ engine = "sqlite"
             .await
             .expect("replacement requires restart"));
         assert!(!service
-            .mark_applied(&first)
+            .mark_applied(initial_revision)
             .await
             .expect("stale document remains unapplied"));
 

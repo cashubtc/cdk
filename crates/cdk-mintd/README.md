@@ -220,8 +220,10 @@ only the references. Resolved secret contents are never written to the
 configuration store.
 
 The same rule applies to mint seeds and mnemonics, PostgreSQL URLs, LNbits API
-keys, BDK/LDK RPC passwords and mnemonics, and Redis connection values when
-those sections are active.
+keys, BDK/LDK RPC passwords and mnemonics, and Redis connection values. Every
+secret field present in the document must use a reference, including fields in
+inactive sections. References in inactive sections are validated but not
+resolved.
 
 At initialization, mintd binds the database to a fingerprint of the signer's
 actual root public key. Applying a document or starting after an `env:`/`file:`

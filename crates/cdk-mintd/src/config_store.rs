@@ -3,13 +3,14 @@
 use std::fmt;
 use std::sync::Arc;
 
-use cdk::cdk_database::{self, KVStore};
+use cdk::cdk_database::{self, KVStoreCompareAndSwap};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 const PRIMARY_NAMESPACE: &str = "cdk_mintd";
 const SECONDARY_NAMESPACE: &str = "config";
 const ACTIVE_KEY: &str = "active";
+const MAX_CAS_ATTEMPTS: usize = 8;
 
 /// Serialization version for [`ConfigEnvelope`].
 pub(crate) const CONFIG_FORMAT_VERSION: u32 = 1;
@@ -19,6 +20,8 @@ pub(crate) const CONFIG_FORMAT_VERSION: u32 = 1;
 #[serde(deny_unknown_fields)]
 pub(crate) struct ConfigEnvelope {
     pub(crate) format_version: u32,
+    #[serde(default)]
+    pub(crate) revision: u64,
     pub(crate) toml: String,
     pub(crate) signing_identity: String,
     pub(crate) applied: bool,
@@ -28,6 +31,7 @@ impl ConfigEnvelope {
     pub(crate) fn new(toml: String, signing_identity: String) -> Self {
         Self {
             format_version: CONFIG_FORMAT_VERSION,
+            revision: 1,
             toml,
             signing_identity,
             applied: false,
@@ -66,6 +70,14 @@ pub enum ConfigStoreError {
     #[error("configured signing identity does not match this mint database")]
     SigningIdentityMismatch,
 
+    /// Too many concurrent writers prevented a configuration update.
+    #[error("mintd configuration changed concurrently; retry the operation")]
+    ConcurrentModification,
+
+    /// The persisted configuration revision cannot be incremented.
+    #[error("mintd configuration revision overflow")]
+    RevisionOverflow,
+
     /// The stored envelope uses an unsupported serialization version.
     #[error(
         "unsupported mintd configuration format version {found}; supported version is {supported}"
@@ -101,7 +113,7 @@ pub enum ConfigStoreError {
 /// Repository for the single active configuration envelope.
 #[derive(Clone)]
 pub(crate) struct ConfigRepository {
-    store: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    store: Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
 }
 
 impl fmt::Debug for ConfigRepository {
@@ -111,18 +123,25 @@ impl fmt::Debug for ConfigRepository {
 }
 
 impl ConfigRepository {
-    pub(crate) fn new(store: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>) -> Self {
+    pub(crate) fn new(
+        store: Arc<dyn KVStoreCompareAndSwap<Err = cdk_database::Error> + Send + Sync>,
+    ) -> Self {
         Self { store }
     }
 
     /// Reads the authoritative configuration envelope.
     pub(crate) async fn active(&self) -> Result<ConfigEnvelope, ConfigStoreError> {
+        Ok(self.active_record().await?.1)
+    }
+
+    async fn active_record(&self) -> Result<(Vec<u8>, ConfigEnvelope), ConfigStoreError> {
         let bytes = self
             .store
             .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY)
             .await?
             .ok_or(ConfigStoreError::NotInitialized)?;
-        ConfigEnvelope::decode(&bytes)
+        let envelope = ConfigEnvelope::decode(&bytes)?;
+        Ok((bytes, envelope))
     }
 
     /// Creates the authoritative record without replacing an existing one.
@@ -131,19 +150,19 @@ impl ConfigRepository {
         envelope: ConfigEnvelope,
     ) -> Result<(), ConfigStoreError> {
         let bytes = envelope.encode()?;
-        let mut transaction = self.store.begin_transaction().await?;
-        if transaction
-            .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY)
+        if !self
+            .store
+            .kv_compare_and_swap(
+                PRIMARY_NAMESPACE,
+                SECONDARY_NAMESPACE,
+                ACTIVE_KEY,
+                None,
+                &bytes,
+            )
             .await?
-            .is_some()
         {
-            transaction.rollback().await?;
             return Err(ConfigStoreError::AlreadyInitialized);
         }
-        transaction
-            .kv_write(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY, &bytes)
-            .await?;
-        transaction.commit().await?;
         Ok(())
     }
 
@@ -153,54 +172,72 @@ impl ConfigRepository {
         toml: String,
         signing_identity: &str,
     ) -> Result<(), ConfigStoreError> {
-        let mut transaction = self.store.begin_transaction().await?;
-        let bytes = transaction
-            .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY)
-            .await?
-            .ok_or(ConfigStoreError::NotInitialized)?;
-        let current = ConfigEnvelope::decode(&bytes)?;
-        if current.signing_identity != signing_identity {
-            transaction.rollback().await?;
-            return Err(ConfigStoreError::SigningIdentityMismatch);
+        for _ in 0..MAX_CAS_ATTEMPTS {
+            let (current_bytes, current) = self.active_record().await?;
+            if current.signing_identity != signing_identity {
+                return Err(ConfigStoreError::SigningIdentityMismatch);
+            }
+            let revision = current
+                .revision
+                .checked_add(1)
+                .ok_or(ConfigStoreError::RevisionOverflow)?;
+            let replacement = ConfigEnvelope {
+                format_version: CONFIG_FORMAT_VERSION,
+                revision,
+                toml: toml.clone(),
+                signing_identity: current.signing_identity,
+                applied: false,
+            }
+            .encode()?;
+            if self
+                .store
+                .kv_compare_and_swap(
+                    PRIMARY_NAMESPACE,
+                    SECONDARY_NAMESPACE,
+                    ACTIVE_KEY,
+                    Some(&current_bytes),
+                    &replacement,
+                )
+                .await?
+            {
+                return Ok(());
+            }
         }
-        let replacement = ConfigEnvelope::new(toml, current.signing_identity).encode()?;
-        transaction
-            .kv_write(
-                PRIMARY_NAMESPACE,
-                SECONDARY_NAMESPACE,
-                ACTIVE_KEY,
-                &replacement,
-            )
-            .await?;
-        transaction.commit().await?;
-        Ok(())
+        Err(ConfigStoreError::ConcurrentModification)
     }
 
-    /// Marks `expected_toml` applied if it is still the current document.
+    /// Marks `expected_revision` applied if it is still the current revision.
     ///
     /// Returns `false` when another apply replaced the document during startup.
-    pub(crate) async fn mark_applied(&self, expected_toml: &str) -> Result<bool, ConfigStoreError> {
-        let mut transaction = self.store.begin_transaction().await?;
-        let bytes = transaction
-            .kv_read(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY)
-            .await?
-            .ok_or(ConfigStoreError::NotInitialized)?;
-        let mut current = ConfigEnvelope::decode(&bytes)?;
-        if current.toml != expected_toml {
-            transaction.commit().await?;
-            return Ok(false);
+    pub(crate) async fn mark_applied(
+        &self,
+        expected_revision: u64,
+    ) -> Result<bool, ConfigStoreError> {
+        for _ in 0..MAX_CAS_ATTEMPTS {
+            let (current_bytes, mut current) = self.active_record().await?;
+            if current.revision != expected_revision {
+                return Ok(false);
+            }
+            if current.applied {
+                return Ok(true);
+            }
+            current.applied = true;
+            let replacement = current.encode()?;
+            if self
+                .store
+                .kv_compare_and_swap(
+                    PRIMARY_NAMESPACE,
+                    SECONDARY_NAMESPACE,
+                    ACTIVE_KEY,
+                    Some(&current_bytes),
+                    &replacement,
+                )
+                .await?
+            {
+                return Ok(true);
+            }
         }
-        if current.applied {
-            transaction.commit().await?;
-            return Ok(true);
-        }
-        current.applied = true;
-        let bytes = current.encode()?;
-        transaction
-            .kv_write(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY, &bytes)
-            .await?;
-        transaction.commit().await?;
-        Ok(true)
+        Err(ConfigStoreError::ConcurrentModification)
     }
 }
 
@@ -216,16 +253,17 @@ mod tests {
     }
 
     async fn write_raw(repository: &ConfigRepository, bytes: &[u8]) {
-        let mut transaction = repository
+        assert!(repository
             .store
-            .begin_transaction()
+            .kv_compare_and_swap(
+                PRIMARY_NAMESPACE,
+                SECONDARY_NAMESPACE,
+                ACTIVE_KEY,
+                None,
+                bytes,
+            )
             .await
-            .expect("begin transaction");
-        transaction
-            .kv_write(PRIMARY_NAMESPACE, SECONDARY_NAMESPACE, ACTIVE_KEY, bytes)
-            .await
-            .expect("write raw record");
-        transaction.commit().await.expect("commit transaction");
+            .expect("write raw record"));
     }
 
     #[tokio::test]
@@ -249,6 +287,7 @@ mod tests {
         let active = repository.active().await.expect("read configuration");
         assert_eq!(active.toml, "second");
         assert!(!active.applied);
+        assert_eq!(active.revision, 2);
     }
 
     #[tokio::test]
@@ -258,13 +297,23 @@ mod tests {
             .initialize(ConfigEnvelope::new("first".to_owned(), "signer".to_owned()))
             .await
             .expect("initialize configuration");
+        let first_revision = repository
+            .active()
+            .await
+            .expect("read first revision")
+            .revision;
         repository
             .replace("second".to_owned(), "signer")
             .await
             .expect("replace configuration");
+        let second_revision = repository
+            .active()
+            .await
+            .expect("read second revision")
+            .revision;
 
         assert!(!repository
-            .mark_applied("first")
+            .mark_applied(first_revision)
             .await
             .expect("compare configuration"));
         assert!(
@@ -275,7 +324,7 @@ mod tests {
                 .applied
         );
         assert!(repository
-            .mark_applied("second")
+            .mark_applied(second_revision)
             .await
             .expect("mark current configuration"));
         assert!(
@@ -303,6 +352,7 @@ mod tests {
         let repository = repository().await;
         let unsupported = serde_json::to_vec(&ConfigEnvelope {
             format_version: CONFIG_FORMAT_VERSION + 1,
+            revision: 1,
             toml: "document".to_owned(),
             signing_identity: "signer".to_owned(),
             applied: false,
@@ -328,7 +378,7 @@ mod tests {
             Err(ConfigStoreError::NotInitialized)
         ));
         assert!(matches!(
-            repository.mark_applied("next").await,
+            repository.mark_applied(1).await,
             Err(ConfigStoreError::NotInitialized)
         ));
 
@@ -355,9 +405,14 @@ mod tests {
             .initialize(ConfigEnvelope::new("doc".to_owned(), "signer".to_owned()))
             .await
             .expect("initialize configuration");
+        let revision = repository
+            .active()
+            .await
+            .expect("read configuration")
+            .revision;
 
         assert!(repository
-            .mark_applied("doc")
+            .mark_applied(revision)
             .await
             .expect("mark applied once"));
         assert!(
@@ -368,7 +423,7 @@ mod tests {
                 .applied
         );
         assert!(repository
-            .mark_applied("doc")
+            .mark_applied(revision)
             .await
             .expect("mark applied twice"));
         assert!(
@@ -382,5 +437,109 @@ mod tests {
         let debug = format!("{repository:?}");
         assert!(debug.contains("ConfigRepository"));
         assert!(!debug.contains("store:"));
+    }
+
+    #[tokio::test]
+    async fn reapplying_same_document_advances_revision_and_stays_pending() {
+        let repository = repository().await;
+        repository
+            .initialize(ConfigEnvelope::new("doc".to_owned(), "signer".to_owned()))
+            .await
+            .expect("initialize configuration");
+        let startup_revision = repository
+            .active()
+            .await
+            .expect("read startup configuration")
+            .revision;
+
+        repository
+            .replace("doc".to_owned(), "signer")
+            .await
+            .expect("reapply configuration");
+
+        assert!(!repository
+            .mark_applied(startup_revision)
+            .await
+            .expect("compare revisions"));
+        let active = repository.active().await.expect("read replacement");
+        assert_eq!(active.toml, "doc");
+        assert_eq!(active.revision, startup_revision + 1);
+        assert!(!active.applied);
+    }
+
+    #[tokio::test]
+    async fn concurrent_initialization_has_one_winner() {
+        let repository = repository().await;
+        let left =
+            repository.initialize(ConfigEnvelope::new("left".to_owned(), "signer".to_owned()));
+        let right =
+            repository.initialize(ConfigEnvelope::new("right".to_owned(), "signer".to_owned()));
+        let (left, right) = tokio::join!(left, right);
+
+        assert_ne!(left.is_ok(), right.is_ok());
+        let loser = if left.is_err() { left } else { right };
+        assert!(matches!(loser, Err(ConfigStoreError::AlreadyInitialized)));
+    }
+
+    #[tokio::test]
+    async fn concurrent_applies_both_succeed_with_monotonic_revisions() {
+        let repository = repository().await;
+        repository
+            .initialize(ConfigEnvelope::new("first".to_owned(), "signer".to_owned()))
+            .await
+            .expect("initialize configuration");
+
+        let left = repository.replace("left".to_owned(), "signer");
+        let right = repository.replace("right".to_owned(), "signer");
+        let (left, right) = tokio::join!(left, right);
+        left.expect("apply left configuration");
+        right.expect("apply right configuration");
+
+        let active = repository.active().await.expect("read final configuration");
+        assert!(matches!(active.toml.as_str(), "left" | "right"));
+        assert_eq!(active.revision, 3);
+        assert!(!active.applied);
+    }
+
+    #[tokio::test]
+    async fn concurrent_apply_and_startup_mark_leave_replacement_pending() {
+        let repository = repository().await;
+        repository
+            .initialize(ConfigEnvelope::new("first".to_owned(), "signer".to_owned()))
+            .await
+            .expect("initialize configuration");
+        let startup_revision = repository
+            .active()
+            .await
+            .expect("read startup configuration")
+            .revision;
+
+        let apply = repository.replace("second".to_owned(), "signer");
+        let mark = repository.mark_applied(startup_revision);
+        let (apply, mark) = tokio::join!(apply, mark);
+        apply.expect("apply replacement");
+        mark.expect("mark startup revision");
+
+        let active = repository.active().await.expect("read replacement");
+        assert_eq!(active.toml, "second");
+        assert_eq!(active.revision, startup_revision + 1);
+        assert!(!active.applied);
+    }
+
+    #[tokio::test]
+    async fn legacy_envelope_without_revision_defaults_to_zero() {
+        let repository = repository().await;
+        write_raw(
+            &repository,
+            br#"{"format_version":1,"toml":"legacy","signing_identity":"signer","applied":false}"#,
+        )
+        .await;
+
+        let active = repository.active().await.expect("decode legacy record");
+        assert_eq!(active.revision, 0);
+        assert!(repository
+            .mark_applied(0)
+            .await
+            .expect("mark legacy revision"));
     }
 }

@@ -11,7 +11,7 @@ use cashu::CurrencyUnit;
 
 use super::*;
 use crate::common::IssuerVersion;
-use crate::database::KVStoreDatabase;
+use crate::database::{KVStoreCompareAndSwap, KVStoreDatabase};
 use crate::mint::MintKeySetInfo;
 
 mod keys;
@@ -140,6 +140,48 @@ where
         let keys = db.kv_list("test_namespace", "sub_namespace").await.unwrap();
         assert_eq!(keys, vec!["key1"]);
     }
+}
+
+/// Test atomic compare-and-swap behavior, including concurrent contenders.
+pub async fn kvstore_compare_and_swap<DB>(db: DB)
+where
+    DB: KVStoreCompareAndSwap<Err = crate::database::Error> + Sync,
+{
+    const PRIMARY: &str = "cas_test";
+    const SECONDARY: &str = "config";
+    const KEY: &str = "active";
+
+    assert!(db
+        .kv_compare_and_swap(PRIMARY, SECONDARY, KEY, None, b"first")
+        .await
+        .unwrap());
+    assert!(!db
+        .kv_compare_and_swap(PRIMARY, SECONDARY, KEY, None, b"unexpected")
+        .await
+        .unwrap());
+    assert!(!db
+        .kv_compare_and_swap(PRIMARY, SECONDARY, KEY, Some(b"wrong"), b"unexpected")
+        .await
+        .unwrap());
+    assert!(db
+        .kv_compare_and_swap(PRIMARY, SECONDARY, KEY, Some(b"first"), b"second")
+        .await
+        .unwrap());
+
+    let left = db.kv_compare_and_swap(PRIMARY, SECONDARY, KEY, Some(b"second"), b"left");
+    let right = db.kv_compare_and_swap(PRIMARY, SECONDARY, KEY, Some(b"second"), b"right");
+    let (left, right) = tokio::join!(left, right);
+    let left = left.unwrap();
+    let right = right.unwrap();
+    assert_ne!(left, right);
+
+    let stored = db.kv_read(PRIMARY, SECONDARY, KEY).await.unwrap().unwrap();
+    let expected = if left {
+        b"left".as_slice()
+    } else {
+        b"right".as_slice()
+    };
+    assert_eq!(stored, expected);
 }
 
 /// Unit test that is expected to be passed for a correct database implementation
