@@ -362,7 +362,9 @@ pub(crate) fn valid_signatures(
         for signature in signatures {
             if pubkey.verify(msg, signature).is_ok() {
                 // Insert the x-only coordinate to prevent double counting
-                let x_only = pubkey.x_only_public_key();
+                let x_only = pubkey
+                    .x_only_public_key()
+                    .map_err(|_| Error::NonSecp256k1Pubkey)?;
                 // If the pubkey's x-coordinate is already verified, return a duplicate signature error
                 if !verified_pubkeys.insert(x_only) {
                     return Err(Error::DuplicateSignature);
@@ -410,7 +412,9 @@ impl BlindedMessage {
                     let sig = Signature::from_str(signature)?;
 
                     if v.verify(msg, &sig).is_ok() {
-                        let x_only = v.x_only_public_key();
+                        let x_only = v
+                            .x_only_public_key()
+                            .map_err(|_| Error::NonSecp256k1Pubkey)?;
                         if !verified_pubkeys.insert(x_only) {
                             return Err(Error::DuplicateSignature);
                         }

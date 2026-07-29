@@ -80,18 +80,18 @@ pub fn hash_to_curve_for_version(
 }
 
 /// Convert iterator of [`PublicKey`] to byte array
-pub fn hash_e<I>(public_keys: I) -> [u8; 32]
+pub fn hash_e<I>(public_keys: I) -> Result<[u8; 32], Error>
 where
     I: IntoIterator<Item = PublicKey>,
 {
     let mut e: String = String::new();
 
     for public_key in public_keys.into_iter() {
-        let uncompressed: [u8; 65] = public_key.to_uncompressed_bytes();
+        let uncompressed: [u8; 65] = public_key.to_uncompressed_bytes()?;
         e.push_str(&hex::encode(uncompressed));
     }
 
-    Sha256Hash::hash(e.as_bytes()).to_byte_array()
+    Ok(Sha256Hash::hash(e.as_bytes()).to_byte_array())
 }
 
 /// Blind Message
@@ -143,7 +143,7 @@ pub fn unblind_message(
     let a = mint_pubkey.mul_tweak(&SECP256K1, &r)?;
 
     // C_ - a
-    let a = a.negate(&SECP256K1);
+    let a = a.negate(&SECP256K1)?;
     Ok(blinded_key.combine(&a)?) // C_ + (-a)
 }
 
@@ -409,7 +409,7 @@ mod tests {
         )
         .unwrap();
 
-        let e = hash_e(vec![r1, r2, k, c]);
+        let e = hash_e(vec![r1, r2, k, c]).expect("secp keys");
         let e_hex = hex::encode(e);
 
         assert_eq!(

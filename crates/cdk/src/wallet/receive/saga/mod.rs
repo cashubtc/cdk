@@ -137,8 +137,11 @@ impl<'a> ReceiveSaga<'a, Initial> {
         let mut p2pk_signing_keys: HashMap<XOnlyPublicKey, SecretKey> = opts
             .p2pk_signing_keys
             .iter()
-            .map(|s| (s.x_only_public_key(&SECP256K1).0, s.clone()))
-            .collect();
+            .map(|s| {
+                s.x_only_public_key(&SECP256K1)
+                    .map(|(x_only, _)| (x_only, s.clone()))
+            })
+            .collect::<Result<_, _>>()?;
         let mut bls_mint_pubkeys = Vec::new();
         let mut bls_signatures = Vec::new();
 
@@ -214,7 +217,7 @@ impl<'a> ReceiveSaga<'a, Initial> {
                             Kind::P2PK => i as u8,
                             _ => (i + 1) as u8, // HTLC skips slot 0 since it's a hash, not a pubkey
                         };
-                        let x_only_pubkey = pubkey.x_only_public_key();
+                        let x_only_pubkey = pubkey.x_only_public_key()?;
 
                         if let std::collections::hash_map::Entry::Vacant(entry) =
                             p2pk_signing_keys.entry(x_only_pubkey)

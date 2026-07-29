@@ -99,10 +99,10 @@ pub fn ecdh_kdf(
 
     // Compute shared point Z = secret_key * pubkey
     // Use SharedSecret if available (produces 32 bytes typically equal to x-coordinate)
-    let shared = pubkey.mul_tweak(&SECP, &secret_key.as_scalar())?;
+    let shared = pubkey.mul_tweak(&SECP, &secret_key.as_scalar()?)?;
 
     // SharedSecret exposes 32 bytes (x-coordinate)
-    let z_x: [u8; 32] = shared.x_only_public_key().serialize();
+    let z_x: [u8; 32] = shared.x_only_public_key()?.serialize();
 
     // Build KDF input per NUT-28 spec: domain tag || x-only(Z) || canonical_slot (1 byte)
     let mut engine = Sha256::engine();
@@ -171,15 +171,15 @@ pub fn derive_signing_key_bip340(
 ) -> Result<SecretKey, Error> {
     // Unblind the public key
     let r_pubkey = r.public_key();
-    let r_pubkey_neg = r_pubkey.negate(&SECP);
+    let r_pubkey_neg = r_pubkey.negate(&SECP)?;
     let unblinded_pubkey = blinded_pubkey.combine(&r_pubkey_neg)?;
 
     // Get the public key from privkey
     let privkey_pubkey = privkey.public_key();
 
     // Verify the x-coordinates match
-    let (unblinded_x_only, unblinded_parity) = unblinded_pubkey.x_only_public_key_with_parity();
-    let privkey_x_only = privkey_pubkey.x_only_public_key();
+    let (unblinded_x_only, unblinded_parity) = unblinded_pubkey.x_only_public_key_with_parity()?;
+    let privkey_x_only = privkey_pubkey.x_only_public_key()?;
 
     // Compute parity from the compressed public key bytes
     // First byte is 02 (even) or 03 (odd)
@@ -194,8 +194,8 @@ pub fn derive_signing_key_bip340(
     }
 
     match privkey_pubkey_parity == unblinded_parity_is_even {
-        true => Ok(privkey.add_tweak(&r.as_scalar())?),
-        false => Ok(privkey.negate().add_tweak(&r.as_scalar())?),
+        true => Ok(privkey.add_tweak(&r.as_scalar()?)?),
+        false => Ok(privkey.negate()?.add_tweak(&r.as_scalar()?)?),
     }
 }
 

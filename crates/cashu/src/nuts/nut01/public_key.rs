@@ -101,40 +101,36 @@ impl PublicKey {
 
     /// Return uncompressed secp256k1 bytes.
     ///
-    /// # Panics
-    ///
-    /// Panics when this is a BLS public key.
+    /// Returns [`Error::WrongKeyKind`] for BLS public keys.
     #[inline]
-    pub fn to_uncompressed_bytes(&self) -> [u8; 65] {
+    pub fn to_uncompressed_bytes(&self) -> Result<[u8; 65], Error> {
         match self {
-            Self::Secp256k1(inner) => inner.serialize_uncompressed(),
-            Self::BlsG1(_) | Self::BlsG2(_) => panic!("BLS keys do not have secp bytes"),
+            Self::Secp256k1(inner) => Ok(inner.serialize_uncompressed()),
+            Self::BlsG1(_) | Self::BlsG2(_) => Err(Error::WrongKeyKind),
         }
     }
 
     /// Return secp256k1 x-only public key.
     ///
-    /// # Panics
-    ///
-    /// Panics when this is a BLS public key.
+    /// Returns [`Error::WrongKeyKind`] for BLS public keys.
     #[inline]
-    pub fn x_only_public_key(&self) -> XOnlyPublicKey {
+    pub fn x_only_public_key(&self) -> Result<XOnlyPublicKey, Error> {
         match self {
-            Self::Secp256k1(inner) => inner.x_only_public_key().0,
-            Self::BlsG1(_) | Self::BlsG2(_) => panic!("BLS keys do not have x-only form"),
+            Self::Secp256k1(inner) => Ok(inner.x_only_public_key().0),
+            Self::BlsG1(_) | Self::BlsG2(_) => Err(Error::WrongKeyKind),
         }
     }
 
     /// Return secp256k1 x-only public key and parity.
     ///
-    /// # Panics
-    ///
-    /// Panics when this is a BLS public key.
+    /// Returns [`Error::WrongKeyKind`] for BLS public keys.
     #[inline]
-    pub fn x_only_public_key_with_parity(&self) -> (XOnlyPublicKey, secp256k1::Parity) {
+    pub fn x_only_public_key_with_parity(
+        &self,
+    ) -> Result<(XOnlyPublicKey, secp256k1::Parity), Error> {
         match self {
-            Self::Secp256k1(inner) => inner.x_only_public_key(),
-            Self::BlsG1(_) | Self::BlsG2(_) => panic!("BLS keys do not have x-only form"),
+            Self::Secp256k1(inner) => Ok(inner.x_only_public_key()),
+            Self::BlsG1(_) | Self::BlsG2(_) => Err(Error::WrongKeyKind),
         }
     }
 
@@ -180,16 +176,14 @@ impl PublicKey {
 
     /// Negate a secp256k1 public key.
     ///
-    /// # Panics
-    ///
-    /// Panics when this is a BLS public key.
-    pub fn negate<C>(&self, secp: &Secp256k1<C>) -> Self
+    /// Returns [`Error::WrongKeyKind`] for BLS public keys.
+    pub fn negate<C>(&self, secp: &Secp256k1<C>) -> Result<Self, Error>
     where
         C: secp256k1::Verification,
     {
         match self {
-            Self::Secp256k1(inner) => inner.negate(secp).into(),
-            Self::BlsG1(_) | Self::BlsG2(_) => panic!("cannot negate BLS point with secp context"),
+            Self::Secp256k1(inner) => Ok(inner.negate(secp).into()),
+            Self::BlsG1(_) | Self::BlsG2(_) => Err(Error::WrongKeyKind),
         }
     }
 
@@ -246,6 +240,7 @@ impl<'de> Deserialize<'de> for PublicKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nuts::nut01::BlsSecretKey;
 
     #[test]
     fn test_public_key_from_hex() {
@@ -275,6 +270,39 @@ mod tests {
                 found: 34
             })
         ));
+    }
+
+    #[test]
+    fn secp_only_operations_reject_bls_public_keys() {
+        let bls = PublicKey::from(BlsG1PublicKey::hash_to_curve(b"wrong secp key kind"));
+
+        assert!(matches!(
+            bls.to_uncompressed_bytes(),
+            Err(Error::WrongKeyKind)
+        ));
+        assert!(matches!(bls.x_only_public_key(), Err(Error::WrongKeyKind)));
+        assert!(matches!(
+            bls.x_only_public_key_with_parity(),
+            Err(Error::WrongKeyKind)
+        ));
+        assert!(matches!(bls.negate(&SECP256K1), Err(Error::WrongKeyKind)));
+    }
+
+    #[test]
+    fn secp_and_bls_public_key_json_round_trip() {
+        let secp = PublicKey::from_hex(
+            "02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104",
+        )
+        .expect("secp key");
+        let bls_g1 = PublicKey::from(BlsG1PublicKey::hash_to_curve(b"serde bls g1"));
+        let bls_g2 = PublicKey::from(BlsSecretKey::from_reduced_bytes(&[7; 32]).public_key_g2());
+
+        for key in [secp, bls_g1, bls_g2] {
+            let encoded = serde_json::to_string(&key).expect("serialize public key");
+            let decoded: PublicKey =
+                serde_json::from_str(&encoded).expect("deserialize public key");
+            assert_eq!(decoded, key);
+        }
     }
 }
 

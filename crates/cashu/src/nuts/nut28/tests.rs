@@ -85,8 +85,12 @@ fn test_signing_key_derivation() {
     // Verify that the BIP340 signing key's public key matches the blinded pubkey
     let signing_pubkey_bip340 = signing_key_bip340.public_key();
     assert_eq!(
-        signing_pubkey_bip340.x_only_public_key(),
-        blinded_pubkey.x_only_public_key()
+        signing_pubkey_bip340
+            .x_only_public_key()
+            .expect("secp signing key"),
+        blinded_pubkey
+            .x_only_public_key()
+            .expect("secp blinded key")
     );
 }
 

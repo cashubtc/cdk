@@ -143,42 +143,39 @@ impl SecretKey {
 
     /// Return secp256k1 x-only public key and parity.
     ///
-    /// # Panics
-    ///
-    /// Panics when this is a BLS secret key.
-    pub fn x_only_public_key<C>(&self, secp: &Secp256k1<C>) -> (XOnlyPublicKey, secp256k1::Parity)
+    /// Returns [`Error::WrongKeyKind`] for BLS secret keys.
+    pub fn x_only_public_key<C>(
+        &self,
+        secp: &Secp256k1<C>,
+    ) -> Result<(XOnlyPublicKey, secp256k1::Parity), Error>
     where
         C: secp256k1::Signing,
     {
         match self {
-            Self::Secp256k1(inner) => inner.x_only_public_key(secp),
-            Self::Bls(_) => panic!("BLS scalar is not a secp256k1 key"),
+            Self::Secp256k1(inner) => Ok(inner.x_only_public_key(secp)),
+            Self::Bls(_) => Err(Error::WrongKeyKind),
         }
     }
 
     /// [`SecretKey`] to secp256k1 [`Scalar`].
     ///
-    /// # Panics
-    ///
-    /// Panics when this is a BLS secret key.
+    /// Returns [`Error::WrongKeyKind`] for BLS secret keys.
     #[inline]
-    pub fn to_scalar(self) -> Scalar {
+    pub fn to_scalar(self) -> Result<Scalar, Error> {
         match self {
-            Self::Secp256k1(inner) => Scalar::from(inner),
-            Self::Bls(_) => panic!("BLS scalar is not a secp256k1 scalar"),
+            Self::Secp256k1(inner) => Ok(Scalar::from(inner)),
+            Self::Bls(_) => Err(Error::WrongKeyKind),
         }
     }
 
     /// [`SecretKey`] as secp256k1 [`Scalar`].
     ///
-    /// # Panics
-    ///
-    /// Panics when this is a BLS secret key.
+    /// Returns [`Error::WrongKeyKind`] for BLS secret keys.
     #[inline]
-    pub fn as_scalar(&self) -> Scalar {
+    pub fn as_scalar(&self) -> Result<Scalar, Error> {
         match self {
-            Self::Secp256k1(inner) => Scalar::from(*inner),
-            Self::Bls(_) => panic!("BLS scalar is not a secp256k1 scalar"),
+            Self::Secp256k1(inner) => Ok(Scalar::from(*inner)),
+            Self::Bls(_) => Err(Error::WrongKeyKind),
         }
     }
 
@@ -216,13 +213,11 @@ impl SecretKey {
 
     /// Negate a secp256k1 secret key.
     ///
-    /// # Panics
-    ///
-    /// Panics when this is a BLS secret key.
-    pub fn negate(&self) -> Self {
+    /// Returns [`Error::WrongKeyKind`] for BLS secret keys.
+    pub fn negate(&self) -> Result<Self, Error> {
         match self {
-            Self::Secp256k1(inner) => inner.negate().into(),
-            Self::Bls(_) => panic!("cannot negate BLS scalar as a secp256k1 key"),
+            Self::Secp256k1(inner) => Ok(inner.negate().into()),
+            Self::Bls(_) => Err(Error::WrongKeyKind),
         }
     }
 }
@@ -238,8 +233,19 @@ impl FromStr for SecretKey {
 impl Serialize for SecretKey {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match serializer.is_human_readable() {
-            true => serializer.serialize_str(&self.to_secret_hex()),
-            false => serializer.serialize_bytes(&self.to_secret_bytes()),
+            true => match self {
+                Self::Secp256k1(_) => serializer.serialize_str(&self.to_secret_hex()),
+                Self::Bls(_) => serializer.serialize_str(&format!("bls:{}", self.to_secret_hex())),
+            },
+            false => match self {
+                Self::Secp256k1(_) => serializer.serialize_bytes(&self.to_secret_bytes()),
+                Self::Bls(_) => {
+                    let mut tagged = [0_u8; 33];
+                    tagged[0] = 1;
+                    tagged[1..].copy_from_slice(&self.to_secret_bytes());
+                    serializer.serialize_bytes(&tagged)
+                }
+            },
         }
     }
 }
@@ -249,7 +255,14 @@ impl<'de> Deserialize<'de> for SecretKey {
         match deserializer.is_human_readable() {
             true => {
                 let secret_key: String = String::deserialize(deserializer)?;
-                SecretKey::from_hex(secret_key).map_err(serde::de::Error::custom)
+                match secret_key.strip_prefix("bls:") {
+                    Some(secret_key) => {
+                        let bytes = crate::util::hex::decode(secret_key)
+                            .map_err(serde::de::Error::custom)?;
+                        SecretKey::bls_from_slice(&bytes).map_err(serde::de::Error::custom)
+                    }
+                    None => SecretKey::from_hex(secret_key).map_err(serde::de::Error::custom),
+                }
             }
             false => {
                 struct SecretKeyVisitor;
@@ -265,7 +278,12 @@ impl<'de> Deserialize<'de> for SecretKey {
                     where
                         E: serde::de::Error,
                     {
-                        SecretKey::from_slice(value).map_err(serde::de::Error::custom)
+                        match value {
+                            [1, secret_key @ ..] if secret_key.len() == 32 => {
+                                SecretKey::bls_from_slice(secret_key).map_err(E::custom)
+                            }
+                            _ => SecretKey::from_slice(value).map_err(E::custom),
+                        }
                     }
                 }
 
@@ -307,5 +325,46 @@ mod tests {
         let secret_key = SecretKey::from_hex(hex).unwrap();
 
         assert_eq!(secret_key.to_secret_hex(), hex);
+    }
+
+    #[test]
+    fn secp_only_operations_reject_bls_secret_keys() {
+        let bls = SecretKey::bls_from_reduced_bytes(&[9; 32]);
+
+        assert!(matches!(
+            bls.x_only_public_key(&SECP256K1),
+            Err(Error::WrongKeyKind)
+        ));
+        assert!(matches!(bls.clone().to_scalar(), Err(Error::WrongKeyKind)));
+        assert!(matches!(bls.as_scalar(), Err(Error::WrongKeyKind)));
+        assert!(matches!(bls.negate(), Err(Error::WrongKeyKind)));
+    }
+
+    #[test]
+    fn secp_and_bls_secret_key_serialization_round_trip() {
+        let secp_hex = "50d7fd7aa2b2fe4607f41f4ce6f8794fc184dd47b8cdfbe4b3d1249aa02d35aa";
+        let secp = SecretKey::from_hex(secp_hex).expect("secp key");
+        let secp_json = serde_json::to_string(&secp).expect("serialize secp key");
+        assert_eq!(secp_json, format!("\"{secp_hex}\""));
+        assert_eq!(
+            serde_json::from_str::<SecretKey>(&secp_json).expect("deserialize secp key"),
+            secp
+        );
+
+        let bls = SecretKey::bls_from_reduced_bytes(&[11; 32]);
+        let bls_json = serde_json::to_string(&bls).expect("serialize BLS key");
+        assert!(bls_json.starts_with("\"bls:"));
+        assert_eq!(
+            serde_json::from_str::<SecretKey>(&bls_json).expect("deserialize BLS key"),
+            bls
+        );
+
+        for key in [secp, bls] {
+            let mut encoded = Vec::new();
+            ciborium::into_writer(&key, &mut encoded).expect("serialize binary key");
+            let decoded: SecretKey =
+                ciborium::from_reader(encoded.as_slice()).expect("deserialize binary key");
+            assert_eq!(decoded, key);
+        }
     }
 }

@@ -198,7 +198,7 @@ async fn nostr_receive(
 ) -> Result<HashSet<String>> {
     let verifying_key = nostr_signing_key.public_key();
 
-    let x_only_pubkey = verifying_key.x_only_public_key();
+    let x_only_pubkey = verifying_key.x_only_public_key()?;
 
     let nostr_pubkey = nostr_sdk::PublicKey::from_hex(&x_only_pubkey.to_string())?;
 
