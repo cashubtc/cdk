@@ -70,7 +70,9 @@ fn to_sqlite_error(err: SqliteError) -> Error {
         _,
     ) = err
     {
-        if code == ErrorCode::ConstraintViolation
+        if matches!(code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) {
+            Error::Locked
+        } else if code == ErrorCode::ConstraintViolation
             && (extended_code == ffi::SQLITE_CONSTRAINT_PRIMARYKEY
                 || extended_code == ffi::SQLITE_CONSTRAINT_UNIQUE)
         {
@@ -80,6 +82,25 @@ fn to_sqlite_error(err: SqliteError) -> Error {
         }
     } else {
         Error::Database(Box::new(err))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_contention_errors_are_typed_as_locked() {
+        for code in [ffi::SQLITE_BUSY, ffi::SQLITE_LOCKED] {
+            let error = SqliteError::SqliteFailure(ffi::Error::new(code), None);
+            assert!(matches!(to_sqlite_error(error), Error::Locked));
+        }
+    }
+
+    #[test]
+    fn sqlite_non_contention_error_remains_database_error() {
+        let error = SqliteError::SqliteFailure(ffi::Error::new(ffi::SQLITE_IOERR), None);
+        assert!(matches!(to_sqlite_error(error), Error::Database(_)));
     }
 }
 

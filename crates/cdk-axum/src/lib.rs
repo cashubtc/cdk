@@ -2228,18 +2228,10 @@ pub(crate) fn is_retryable_federation_apply_error(err: &cdk::Error) -> bool {
 
 #[cfg(feature = "federation")]
 pub(crate) fn is_retryable_federation_database_error(err: &cdk::cdk_database::Error) -> bool {
-    match err {
-        cdk::cdk_database::Error::ConcurrentUpdate | cdk::cdk_database::Error::Locked => true,
-        cdk::cdk_database::Error::Database(source) => {
-            let detail = source.to_string().to_ascii_lowercase();
-            detail.contains("database is locked")
-                || detail.contains("database locked")
-                || detail.contains("database is busy")
-                || detail.contains("database busy")
-                || detail.contains("databasebusy")
-        }
-        _ => false,
-    }
+    matches!(
+        err,
+        cdk::cdk_database::Error::ConcurrentUpdate | cdk::cdk_database::Error::Locked
+    )
 }
 
 #[cfg(feature = "federation")]

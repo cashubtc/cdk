@@ -2119,21 +2119,12 @@ mod tests {
 
     #[test]
     fn finalized_unit_apply_retry_predicate_accepts_transient_storage_contention() {
-        let sqlite_locked = cdk::Error::Database(cdk::cdk_database::Error::Database(Box::new(
-            io::Error::new(io::ErrorKind::Other, "database is locked"),
-        )));
-        let sqlite_busy = cdk::Error::Database(cdk::cdk_database::Error::Database(Box::new(
-            io::Error::new(io::ErrorKind::Other, "DatabaseBusy"),
-        )));
-
         assert!(is_retryable_federation_apply_error(
             &cdk::Error::ConcurrentUpdate
         ));
         assert!(is_retryable_federation_apply_error(&cdk::Error::Database(
             cdk::cdk_database::Error::Locked
         )));
-        assert!(is_retryable_federation_apply_error(&sqlite_locked));
-        assert!(is_retryable_federation_apply_error(&sqlite_busy));
     }
 
     #[test]
@@ -2146,6 +2137,9 @@ mod tests {
         )));
         assert!(!is_retryable_federation_apply_error(&cdk::Error::Database(
             cdk::cdk_database::Error::InvalidDbResponse
+        )));
+        assert!(!is_retryable_federation_apply_error(&cdk::Error::Database(
+            cdk::cdk_database::Error::Database(Box::new(io::Error::other("database is locked"),))
         )));
     }
 

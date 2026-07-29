@@ -2616,21 +2616,14 @@ mod tests {
 
     #[test]
     fn cdk_aleph_bft_db_backup_writer_retries_transient_storage_contention() {
-        let sqlite_locked = cdk_common::database::Error::Database(Box::new(std::io::Error::other(
-            "database is locked",
-        )));
-        let sqlite_busy =
-            cdk_common::database::Error::Database(Box::new(std::io::Error::other("DatabaseBusy")));
-
         assert!(crate::is_retryable_federation_database_error(
             &cdk_common::database::Error::Locked
         ));
-        assert!(crate::is_retryable_federation_database_error(
-            &sqlite_locked
-        ));
-        assert!(crate::is_retryable_federation_database_error(&sqlite_busy));
         assert!(!crate::is_retryable_federation_database_error(
             &cdk_common::database::Error::InvalidDbResponse
+        ));
+        assert!(!crate::is_retryable_federation_database_error(
+            &cdk_common::database::Error::Database(Box::new(std::io::Error::other("DatabaseBusy")))
         ));
     }
 
