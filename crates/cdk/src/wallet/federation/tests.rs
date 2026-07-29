@@ -2217,6 +2217,176 @@ async fn federated_mint_connector_gets_keyset_after_threshold_member_advertiseme
 }
 
 #[tokio::test]
+async fn federated_mint_connector_ignores_malformed_keyset_member() {
+    let bundle = threshold_bundle();
+    let keyset_id = bundle.public_config.keysets[0].id;
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    let malformed_member = MockMintConnector::new();
+    malformed_member.set_active_keyset(advertised.clone());
+    malformed_member
+        .set_mint_info_response(Ok(mismatched_federation_mint_info(&bundle, member_id(1))));
+    connectors.insert(
+        member_id(1),
+        Arc::new(malformed_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    for member_id in [member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, advertised.clone());
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let response = connector
+        .get_mint_keyset(keyset_id)
+        .await
+        .expect("honest threshold should survive one malformed member");
+
+    assert_eq!(response, advertised);
+}
+
+#[tokio::test(start_paused = true)]
+async fn federated_mint_connector_bounds_and_times_out_keyset_fanout() {
+    let bundle = threshold_bundle();
+    let keyset_id = bundle.public_config.keysets[0].id;
+    let advertised = advertised_keyset(&bundle);
+    let request_timeout = Duration::from_secs(2);
+    let mut connectors = BTreeMap::new();
+
+    let stalled_member = Arc::new(MockMintConnector::new());
+    set_member_advertisement_with_keyset(
+        &stalled_member,
+        &bundle,
+        member_id(1),
+        advertised.clone(),
+    );
+    stalled_member.set_mint_keys_barrier(Arc::new(tokio::sync::Barrier::new(2)));
+    connectors.insert(
+        member_id(1),
+        stalled_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let second_member = Arc::new(MockMintConnector::new());
+    set_member_advertisement_with_keyset(&second_member, &bundle, member_id(2), advertised.clone());
+    connectors.insert(
+        member_id(2),
+        second_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let third_member = Arc::new(MockMintConnector::new());
+    set_member_advertisement_with_keyset(&third_member, &bundle, member_id(3), advertised.clone());
+    connectors.insert(
+        member_id(3),
+        third_member.clone() as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    let connector = FederatedMintConnector::new_with_config(
+        bundle.public_config.clone(),
+        connectors,
+        FederatedMintConnectorConfig {
+            member_request_timeout: request_timeout,
+            fanout_concurrency: 1,
+            ..FederatedMintConnectorConfig::default()
+        },
+    )
+    .expect("federated mint connector");
+    let lookup = tokio::spawn(async move { connector.get_mint_keyset(keyset_id).await });
+
+    tokio::task::yield_now().await;
+    assert_eq!(stalled_member.mint_keyset_call_count(), 1);
+    assert_eq!(second_member.mint_keyset_call_count(), 0);
+    assert_eq!(third_member.mint_keyset_call_count(), 0);
+
+    tokio::time::advance(request_timeout).await;
+    let response = lookup
+        .await
+        .expect("keyset lookup task")
+        .expect("honest threshold after member timeout");
+
+    assert_eq!(response, advertised);
+    assert_eq!(second_member.mint_keyset_call_count(), 1);
+    assert_eq!(third_member.mint_keyset_call_count(), 1);
+}
+
+#[tokio::test]
+async fn federated_mint_connector_reports_below_threshold_keyset_quorum() {
+    let bundle = threshold_bundle();
+    let keyset_id = bundle.public_config.keysets[0].id;
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    let honest_member = MockMintConnector::new();
+    set_member_advertisement_with_keyset(&honest_member, &bundle, member_id(1), advertised.clone());
+    connectors.insert(
+        member_id(1),
+        Arc::new(honest_member) as Arc<dyn MintConnector + Send + Sync>,
+    );
+
+    for member_id in [member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        connector.set_active_keyset(advertised.clone());
+        connector.set_mint_info_response(Ok(mismatched_federation_mint_info(&bundle, member_id)));
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let error = connector
+        .get_mint_keyset(keyset_id)
+        .await
+        .expect_err("one valid member cannot satisfy a two-member threshold");
+    let detail = error.to_string();
+
+    assert!(detail.contains("required 2, received 1"), "{detail}");
+    assert!(detail.contains("member 2"), "{detail}");
+    assert!(detail.contains("member 3"), "{detail}");
+}
+
+#[tokio::test]
+async fn federated_mint_connector_rejects_conflicting_keyset_advertisements_deterministically() {
+    let bundle = threshold_bundle();
+    let keyset_id = bundle.public_config.keysets[0].id;
+    let advertised = advertised_keyset(&bundle);
+    let mut connectors = BTreeMap::new();
+
+    for member_id in [member_id(1), member_id(2), member_id(3)] {
+        let connector = MockMintConnector::new();
+        let mut conflicting = advertised.clone();
+        conflicting.input_fee_ppk = u64::from(member_id.get());
+        set_member_advertisement_with_keyset(&connector, &bundle, member_id, conflicting);
+        connectors.insert(
+            member_id,
+            Arc::new(connector) as Arc<dyn MintConnector + Send + Sync>,
+        );
+    }
+
+    let connector = FederatedMintConnector::new(bundle.public_config.clone(), connectors)
+        .expect("federated mint connector");
+    let first = connector
+        .get_mint_keyset(keyset_id)
+        .await
+        .expect_err("conflicting member advertisements must fail")
+        .to_string();
+    let second = connector
+        .get_mint_keyset(keyset_id)
+        .await
+        .expect_err("repeated conflict must fail identically")
+        .to_string();
+
+    assert_eq!(first, second);
+    assert!(first.contains("required 2, received 0"), "{first}");
+}
+
+#[tokio::test]
 async fn federated_mint_connector_fans_out_mint_members_concurrently() {
     let bundle = threshold_bundle();
     let outputs = blinded_outputs(&bundle);

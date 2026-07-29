@@ -2036,49 +2036,38 @@ impl MintConnector for FederatedMintConnector {
             return self.aggregate_keyset(keyset_id);
         }
 
-        let mut valid_members = 0usize;
-        let mut failures = Vec::new();
-
-        let mut pending = FuturesUnordered::new();
-        for (member_id, connector) in &self.member_connectors {
-            let member_id = *member_id;
-            let connector = connector.clone();
-            pending.push(async move {
-                let result = async {
-                    let mint_info = connector.get_mint_info().await?;
-                    let keyset = connector.get_mint_keyset(keyset_id).await?;
-                    Ok::<_, Error>((mint_info, keyset))
-                }
-                .await;
-                (member_id, result)
-            });
-        }
-
-        while let Some((member_id, result)) = pending.next().await {
-            match result {
-                Ok((mint_info, advertised)) => {
-                    FederationWalletConnector::validate_member_mint_info_with_config_digest(
-                        &self.public_config,
-                        member_id,
-                        &mint_info,
-                        self.config_digest,
-                    )?;
-                    validate_member_advertised_keyset(&self.public_config, member_id, &advertised)?;
-                    valid_members = valid_members.saturating_add(1);
-                    if valid_members >= threshold {
-                        return self.aggregate_keyset(keyset_id);
+        let public_config = self.public_config.clone();
+        let config_digest = self.config_digest;
+        let results = self
+            .collect_member_results(
+                move |member_id, connector| {
+                    let public_config = public_config.clone();
+                    async move {
+                        let mint_info = connector.get_mint_info().await?;
+                        let advertised = connector.get_mint_keyset(keyset_id).await?;
+                        FederationWalletConnector::validate_member_mint_info_with_config_digest(
+                            &public_config,
+                            member_id,
+                            &mint_info,
+                            config_digest,
+                        )?;
+                        validate_member_advertised_keyset(&public_config, member_id, &advertised)?;
+                        Ok(advertised)
                     }
-                }
-                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
-            }
-        }
+                },
+                Some(self.config.member_request_timeout),
+                self.config.member_request_max_retries,
+                "keyset request",
+                |responses, _failures| responses.len() >= threshold,
+            )
+            .await;
 
-        if valid_members < threshold {
+        if results.responses.len() < threshold {
             return Err(Error::InvalidMintResponse(format!(
                 "insufficient federation keyset advertisements: required {}, received {}, failures: {}",
                 threshold,
-                valid_members,
-                failures.join("; ")
+                results.responses.len(),
+                results.failure_summary()
             )));
         }
 

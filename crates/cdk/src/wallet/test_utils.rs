@@ -505,6 +505,8 @@ pub struct MockMintConnector {
     pub mint_keys_error: Mutex<Option<String>>,
     /// Optional barrier used by tests to assert concurrent key discovery.
     pub mint_keys_barrier: Mutex<Option<Arc<Barrier>>>,
+    /// Number of single-keyset discovery calls.
+    pub mint_keyset_calls: Mutex<usize>,
     /// Mock mint info state
     pub mint_info: Mutex<MintInfo>,
     /// Optional mock mint info error.
@@ -645,6 +647,7 @@ impl MockMintConnector {
             keysets: Mutex::new(vec![keyset]),
             mint_keys_error: Mutex::new(None),
             mint_keys_barrier: Mutex::new(None),
+            mint_keyset_calls: Mutex::new(0),
             mint_info: Mutex::new(mint_info),
             mint_info_error: Mutex::new(None),
             mint_info_barrier: Mutex::new(None),
@@ -718,6 +721,10 @@ impl MockMintConnector {
 
     pub fn set_mint_keys_barrier(&self, barrier: Arc<Barrier>) {
         *self.mint_keys_barrier.lock().unwrap() = Some(barrier);
+    }
+
+    pub fn mint_keyset_call_count(&self) -> usize {
+        *self.mint_keyset_calls.lock().unwrap()
     }
 
     pub fn set_check_state_barrier(&self, barrier: Arc<Barrier>) {
@@ -1127,6 +1134,7 @@ impl MintConnector for MockMintConnector {
     }
 
     async fn get_mint_keyset(&self, keyset_id: Id) -> Result<crate::nuts::KeySet, Error> {
+        *self.mint_keyset_calls.lock().unwrap() += 1;
         let barrier = self.mint_keys_barrier.lock().unwrap().clone();
         if let Some(barrier) = barrier {
             barrier.wait().await;
