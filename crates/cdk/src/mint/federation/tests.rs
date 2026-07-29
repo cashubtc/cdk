@@ -73,7 +73,9 @@ use super::{
     FederationRuntimeConfig,
 };
 
-fn runtime_configs() -> Vec<FederationRuntimeConfig> {
+fn runtime_configs_with_signature_threshold(
+    signature_threshold: u16,
+) -> Vec<FederationRuntimeConfig> {
     let members = (1..=2)
         .map(|id| {
             TrustedDealerMember::new(
@@ -93,11 +95,20 @@ fn runtime_configs() -> Vec<FederationRuntimeConfig> {
         None,
         BTreeMap::from([(
             Amount::from(1),
-            vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
+            (0..signature_threshold)
+                .map(|offset| {
+                    BlsSecretKey::from_reduced_bytes(&[
+                        u8::try_from(offset)
+                            .expect("test signature threshold fits u8")
+                            .saturating_add(2);
+                        32
+                    ])
+                })
+                .collect(),
         )]),
     );
     let bundle = generate_trusted_dealer_configs(
-        ThresholdParams::with_bft_consensus(2, 1).expect("params"),
+        ThresholdParams::with_bft_consensus(2, signature_threshold).expect("params"),
         members,
         vec![keyset],
     )
@@ -111,6 +122,10 @@ fn runtime_configs() -> Vec<FederationRuntimeConfig> {
                 .expect("runtime config")
         })
         .collect()
+}
+
+fn runtime_configs() -> Vec<FederationRuntimeConfig> {
+    runtime_configs_with_signature_threshold(1)
 }
 
 fn runtime_config() -> FederationRuntimeConfig {

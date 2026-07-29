@@ -10,7 +10,44 @@ use super::*;
 pub(super) fn attach_address_application(
     runtime: &mut FederationRuntimeConfig,
 ) -> FederationFrostApplicationId {
-    let application_id = FederationFrostApplicationId::from_bytes([7; 32]).expect("application");
+    let verification_share = [
+        2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11, 7, 2, 155,
+        252, 219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
+    ];
+    let participant_mapping = runtime
+        .public_config
+        .members
+        .keys()
+        .map(|member| (*member, member.get()))
+        .collect::<BTreeMap<_, _>>();
+    let verification_shares = runtime
+        .public_config
+        .members
+        .keys()
+        .map(|member| (*member, verification_share))
+        .collect::<BTreeMap<_, _>>();
+    let mut canonical_public_package = b"CDKFRT01".to_vec();
+    canonical_public_package.extend_from_slice(&1u64.to_be_bytes());
+    canonical_public_package.extend_from_slice(&1u16.to_be_bytes());
+    canonical_public_package.extend_from_slice(&1u16.to_be_bytes());
+    canonical_public_package.extend_from_slice(
+        &runtime
+            .public_config
+            .threshold_params
+            .signature_threshold
+            .to_be_bytes(),
+    );
+    canonical_public_package.extend_from_slice(
+        &u16::try_from(verification_shares.len())
+            .expect("test FROST roster fits u16")
+            .to_be_bytes(),
+    );
+    for (member, share) in &verification_shares {
+        canonical_public_package.extend_from_slice(&member.get().to_be_bytes());
+        canonical_public_package.extend_from_slice(share);
+    }
+    canonical_public_package.extend_from_slice(&verification_share);
+    canonical_public_package.extend_from_slice(&[5; 32]);
     let root = FederationFrostRootPublicConfig {
         version: 1,
         federation_id: runtime.public_config.federation_id,
@@ -18,53 +55,30 @@ pub(super) fn attach_address_application(
         root_key_epoch: 1,
         dkg_protocol_version: 1,
         ciphersuite_version: 1,
-        threshold: 1,
-        participant_mapping: BTreeMap::new(),
-        verification_shares: BTreeMap::new(),
-        untweaked_group_key: [2; 33],
+        threshold: runtime
+            .public_config
+            .threshold_params
+            .signature_threshold,
+        participant_mapping,
+        verification_shares,
+        untweaked_group_key: verification_share,
         transcript_binding: [5; 32],
-        canonical_public_package: Vec::new(),
+        canonical_public_package,
     };
+    let application = FederationFrostApplicationConfig::new_cdk_onchain(
+        &runtime.public_config,
+        &root,
+        3,
+        cdk_common::bitcoin::Network::Regtest,
+        FederationOnchainConfirmationPolicy::new(2).expect("confirmation policy"),
+        1,
+    )
+    .expect("valid test CDK on-chain application");
+    let application_id = application.application_id;
     runtime.public_config.frost_wallet = Some(FederationFrostWalletConfig {
         version: 1,
         root,
-        cdk_onchain_application: FederationFrostApplicationConfig {
-            version: 1,
-            application_id,
-            application_key_epoch: 3,
-            root_key_epoch: 1,
-            derivation_version: 1,
-            authorization_policy: [8; 32],
-            threshold: 1,
-            verification_shares: BTreeMap::from([
-                (
-                    MemberId::new(1).expect("member"),
-                    [
-                        2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11,
-                        7, 2, 155, 252, 219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
-                    ],
-                ),
-                (
-                    MemberId::new(2).expect("member"),
-                    [
-                        2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11,
-                        7, 2, 155, 252, 219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
-                    ],
-                ),
-            ]),
-            derived_group_key: [
-                2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206, 135, 11, 7, 2,
-                155, 252, 219, 45, 206, 40, 217, 89, 242, 129, 91, 22, 248, 23, 152,
-            ],
-            chain_code: [9; 32],
-            external_descriptor: "test-external".to_string(),
-            internal_descriptor: "test-internal".to_string(),
-            descriptor_commitment: [10; 32],
-            network: cdk_common::bitcoin::Network::Regtest,
-            confirmation_policy: FederationOnchainConfirmationPolicy::new(2)
-                .expect("confirmation policy"),
-            fee_policy_version: 1,
-        },
+        cdk_onchain_application: application,
         bark_application: None,
     });
     application_id
@@ -72,47 +86,13 @@ pub(super) fn attach_address_application(
 
 pub(super) fn runtime_with_address_application(
 ) -> (FederationRuntimeConfig, FederationFrostApplicationId) {
-    let mut runtime = runtime_config();
+    let mut runtime = runtime_configs_with_signature_threshold(2).remove(0);
     let application_id = attach_address_application(&mut runtime);
     (runtime, application_id)
 }
 
 pub(super) fn second_member_runtime_with_address_application() -> FederationRuntimeConfig {
-    let members = (1..=2)
-        .map(|id| {
-            TrustedDealerMember::new(
-                MemberId::new(id).expect("member id"),
-                MintUrl::from_str(&format!("https://mint{id}.example.com"))
-                    .expect("public mint url"),
-                MintUrl::from_str(&format!("https://fed{id}.example.com"))
-                    .expect("federation api url"),
-                SecretKey::from_slice(&[id as u8; 32]).expect("identity secret"),
-            )
-        })
-        .collect();
-    let keyset = TrustedDealerKeysetSpec::new(
-        CurrencyUnit::Sat,
-        true,
-        0,
-        None,
-        BTreeMap::from([(
-            Amount::from(1),
-            vec![BlsSecretKey::from_reduced_bytes(&[2; 32])],
-        )]),
-    );
-    let bundle = generate_trusted_dealer_configs(
-        ThresholdParams::with_bft_consensus(2, 1).expect("params"),
-        members,
-        vec![keyset],
-    )
-    .expect("trusted dealer bundle");
-    let private = bundle
-        .private_configs
-        .get(&MemberId::new(2).expect("member id"))
-        .expect("member two private config")
-        .clone();
-    let mut runtime =
-        FederationRuntimeConfig::new(bundle.public_config, private).expect("runtime config");
+    let mut runtime = runtime_configs_with_signature_threshold(2).remove(1);
     attach_address_application(&mut runtime);
     runtime
 }

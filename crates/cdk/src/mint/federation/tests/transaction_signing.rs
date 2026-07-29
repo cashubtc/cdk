@@ -28,10 +28,12 @@ use super::super::transaction_state::{
 use super::address_allocation::runtime_with_address_application;
 use super::*;
 
-fn signed_fixture() -> (FederationTransactionState, FederationSignedTransaction) {
+fn signed_fixture(
+    application_id: FederationFrostApplicationId,
+) -> (FederationTransactionState, FederationSignedTransaction) {
     let scope = FederationTransactionScope {
         root_key_epoch: 1,
-        application_id: FederationFrostApplicationId::from_bytes([7; 32]).expect("application id"),
+        application_id,
         application_key_epoch: 3,
         network: Network::Regtest,
         policy_version: 1,
@@ -172,7 +174,7 @@ pub(super) fn signed_fixture_for_intent(
             MemberId::new(1).expect("first member"),
             MemberId::new(2).expect("second member"),
         ],
-        1,
+        2,
     )
     .expect("wallet liveness schedule")
     .signing_plan(1)
@@ -224,8 +226,8 @@ pub(super) async fn persist_transaction_state(
 
 #[tokio::test]
 async fn signed_operation_converges_exact_bytes_and_rejects_conflicting_replay() {
-    let (runtime, _) = runtime_with_address_application();
-    let (initial_state, signed) = signed_fixture();
+    let (runtime, application_id) = runtime_with_address_application();
+    let (initial_state, signed) = signed_fixture(application_id);
     let envelope = runtime.transaction_signed_operation(signed.clone());
     let entry = accepted_entry_without_journal(20, envelope);
     let (first, first_store) = federated_test_mint(runtime.clone()).await;
@@ -287,8 +289,8 @@ async fn signed_operation_converges_exact_bytes_and_rejects_conflicting_replay()
 
 #[tokio::test]
 async fn broadcast_operations_persist_intent_before_results_and_resume_after_restart() {
-    let (runtime, _) = runtime_with_address_application();
-    let (initial_state, signed) = signed_fixture();
+    let (runtime, application_id) = runtime_with_address_application();
+    let (initial_state, signed) = signed_fixture(application_id);
     let scope = initial_state
         .accepted_transaction(signed.proposal_id)
         .expect("accepted transaction")

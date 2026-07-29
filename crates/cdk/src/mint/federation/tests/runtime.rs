@@ -383,7 +383,7 @@ fn runtime_config_construction_still_rejects_malformed_public_config() {
     assert!(matches!(
         FederationRuntimeConfig::new(missing_transcript_signature, private_config),
         Err(Error::Federation(
-            FederationError::DkgTranscriptMismatch { .. }
+            FederationError::MissingDkgTranscriptSignature { .. }
         ))
     ));
 }

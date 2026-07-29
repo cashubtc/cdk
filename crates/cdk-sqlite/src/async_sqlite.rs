@@ -85,25 +85,6 @@ fn to_sqlite_error(err: SqliteError) -> Error {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sqlite_contention_errors_are_typed_as_locked() {
-        for code in [ffi::SQLITE_BUSY, ffi::SQLITE_LOCKED] {
-            let error = SqliteError::SqliteFailure(ffi::Error::new(code), None);
-            assert!(matches!(to_sqlite_error(error), Error::Locked));
-        }
-    }
-
-    #[test]
-    fn sqlite_non_contention_error_remains_database_error() {
-        let error = SqliteError::SqliteFailure(ffi::Error::new(ffi::SQLITE_IOERR), None);
-        assert!(matches!(to_sqlite_error(error), Error::Database(_)));
-    }
-}
-
 /// SQLite trasanction handler
 #[allow(missing_debug_implementations)]
 pub struct SQLiteTransactionHandler;
@@ -273,5 +254,24 @@ impl DatabaseExecutor for AsyncSqlite {
         let conn = self.inner.lock().await;
 
         run_db_operation_sync(&sql, || conn.execute_batch(&sql), to_sqlite_error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_contention_errors_are_typed_as_locked() {
+        for code in [ffi::SQLITE_BUSY, ffi::SQLITE_LOCKED] {
+            let error = SqliteError::SqliteFailure(ffi::Error::new(code), None);
+            assert!(matches!(to_sqlite_error(error), Error::Locked));
+        }
+    }
+
+    #[test]
+    fn sqlite_non_contention_error_remains_database_error() {
+        let error = SqliteError::SqliteFailure(ffi::Error::new(ffi::SQLITE_IOERR), None);
+        assert!(matches!(to_sqlite_error(error), Error::Database(_)));
     }
 }
