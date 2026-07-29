@@ -79,6 +79,13 @@ pub struct ApplyOutcome {
     pub restart_required: bool,
 }
 
+/// Result of a configuration rollback operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RollbackOutcome {
+    /// The restored document requires a daemon restart before it is active.
+    pub restart_required: bool,
+}
+
 /// Database-backed configuration failures.
 #[derive(Debug, Error)]
 pub enum ConfigurationServiceError {
@@ -262,6 +269,13 @@ impl ConfigurationService {
         expected_revision: u64,
     ) -> Result<bool, ConfigurationServiceError> {
         Ok(self.repository.mark_applied(expected_revision).await?)
+    }
+
+    /// Restores the last configuration known to have reached applied state.
+    pub(crate) async fn rollback(&self) -> Result<RollbackOutcome, ConfigurationServiceError> {
+        Ok(RollbackOutcome {
+            restart_required: self.repository.rollback().await?,
+        })
     }
 
     fn require_primary_database(
@@ -994,6 +1008,10 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
         assert_eq!(service.document().await.expect("stored document"), first);
 
         let running_snapshot = service.startup().await.expect("running snapshot");
+        assert!(service
+            .mark_applied(running_snapshot.revision)
+            .await
+            .expect("mark first document applied"));
         let outcome = service
             .apply(&second, false)
             .await
@@ -1004,6 +1022,14 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
         let next_startup = service.startup().await.expect("startup document");
         assert_eq!(next_startup.resolved.settings.mint_info.name, "second");
         assert!(!next_startup.applied);
+
+        let rollback = service.rollback().await.expect("rollback pending document");
+        assert!(!rollback.restart_required);
+        assert_eq!(service.document().await.expect("restored document"), first);
+        assert!(!service
+            .has_pending_configuration()
+            .await
+            .expect("restored document remains active"));
 
         let _ = std::fs::remove_file(secret_path);
     }

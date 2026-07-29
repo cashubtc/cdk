@@ -12,6 +12,12 @@ const FILE_SECRET_PREFIX: &str = "file:";
 const DEFAULT_SECRETS_DIRECTORY: &str = "cdk-mintd-secrets";
 const RELEASED_V017_SIGNATORY_URL_ENV_VAR: &str = "CDK_MINTD_SIGNATORY_URL";
 const RELEASED_V017_SIGNATORY_CERTS_ENV_VAR: &str = "CDK_MINTD_SIGNATORY_CERTS";
+const RELEASED_V017_UNKNOWN_FIELDS: &[&str] = &[
+    "info.signatory_certs",
+    "info.signatory_url",
+    #[cfg(feature = "management-rpc")]
+    "mint_management_rpc.tls_dir_path",
+];
 #[cfg(feature = "management-rpc")]
 const RELEASED_V017_MANAGEMENT_TLS_DIR_ENV_VAR: &str = "CDK_MINTD_MANAGEMENT_TLS_DIR_PATH";
 #[cfg(feature = "redis")]
@@ -126,10 +132,11 @@ pub fn migrate_legacy_configuration(
 
     let document = fs::read_to_string(&source)
         .with_context(|| format!("could not read legacy configuration {}", source.display()))?;
+    let parse_context = format!("could not parse legacy configuration {}", source.display());
     let released_v017 = released_v017_document(&document)
-        .with_context(|| format!("could not parse legacy configuration {}", source.display()))?;
-    let mut effective = Settings::try_from_toml(&document)
-        .with_context(|| format!("could not parse legacy configuration {}", source.display()))?;
+        .with_context(|| parse_context.clone())?;
+    let mut effective = Settings::try_from_toml_allowing(&document, RELEASED_V017_UNKNOWN_FIELDS)
+        .with_context(|| parse_context)?;
     effective = effective
         .from_env()
         .context("could not apply legacy environment overrides")?;
@@ -1055,6 +1062,28 @@ engine = "sqlite"
         let source = directory.join("legacy.toml");
         let output = directory.join("migrated.toml");
         (directory, source, output)
+    }
+
+    #[test]
+    fn migration_rejects_unknown_fields_outside_released_allowlist() {
+        let (directory, source, output) = migration_paths("migrate_reject_unknown");
+        fs::write(
+            &source,
+            r#"
+[info]
+listen_por = 8085
+signatory_url = "http://127.0.0.1:10009"
+"#,
+        )
+        .expect("write misspelled legacy config");
+
+        let error = migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect_err("migration must reject unknown fields");
+        let message = format!("{error:#}");
+        assert!(message.contains("info.listen_por"));
+        assert!(!output.exists());
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
     }
 
     #[cfg(feature = "fakewallet")]

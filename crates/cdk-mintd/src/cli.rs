@@ -72,6 +72,8 @@ pub enum ConfigCommands {
     Validate(ConfigFileArgs),
     /// Replace the configuration used by the next mintd start.
     Apply(ApplyConfigArgs),
+    /// Restore the last configuration known to have been applied.
+    Rollback,
     /// Print the stored configuration document.
     Show,
     /// Export the stored configuration document.
@@ -173,6 +175,8 @@ mod tests {
         .expect("configuration apply should parse");
         CLIArgs::try_parse_from(["cdk-mintd", "config", "show"])
             .expect("configuration show should parse");
+        CLIArgs::try_parse_from(["cdk-mintd", "config", "rollback"])
+            .expect("configuration rollback should parse");
 
         let args = CLIArgs::try_parse_from([
             "cdk-mintd",

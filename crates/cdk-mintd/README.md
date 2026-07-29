@@ -81,7 +81,7 @@ startup.
 
 > Upgrading an existing mint requires a one-time import and careful preservation
 > of RPC-managed values. Follow the
-> [v0.17 cdk-mintd migration guide](../../docs/migrations/v0.17.md) before
+> [v0.18 cdk-mintd migration guide](../../docs/migrations/v0.18.md) before
 > starting the new daemon.
 
 ### Setup Steps
@@ -124,6 +124,9 @@ cdk-mintd config apply --file /path/to/config.toml --validate-only
 # Atomically replace the document used by the next start
 cdk-mintd config apply --file /path/to/config.toml
 
+# Discard a pending document or restore the previous applied document
+cdk-mintd config rollback
+
 # Print or export the stored document
 cdk-mintd config show
 cdk-mintd config export --file /path/to/exported-config.toml
@@ -147,10 +150,14 @@ validate` before `config init`.
 
 `config apply`, `show`, and `export` access the authoritative database directly.
 Export refuses to overwrite an existing file unless `--force` is passed.
-Apply replaces one versioned record transactionally and sets it to unapplied. A
-running daemon keeps its current in-memory snapshot; the replacement is used on
-the next restart. If another apply wins while startup is consuming a document,
-the newer document remains unapplied for the following restart.
+Apply updates one versioned record transactionally, retains the last applied
+document, and sets the replacement to unapplied. A running daemon keeps its
+current in-memory snapshot; the replacement is used on the next restart. If
+another apply wins while startup is consuming a document, the newer document
+remains unapplied for the following restart. `config rollback` immediately
+discards a pending replacement. If the current document was already applied,
+rollback stages the previous applied document and requires another restart.
+Only one previous applied document is retained.
 
 `cdk-mintd` is not an RPC client. Immediate field-level mint management
 (`get-info`, `update-motd`, `rotate-next-keyset`, and related commands) is
@@ -172,7 +179,8 @@ competing operational configuration:
   `--password <password>`; `config validate` does not open the database.
 
 `config validate` parses the supplied document, resolves its secret references,
-and verifies its signer without opening the primary database. `config apply
+rejects unknown fields, and verifies its signer without opening the primary
+database. `config apply
 --validate-only` additionally checks the stored database and signer constraints.
 
 `config init` opens the database selected by the same bootstrap settings as

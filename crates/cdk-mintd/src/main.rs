@@ -102,7 +102,23 @@ fn main() -> Result<()> {
                     if apply.validate_only {
                         println!("Configuration is valid and was not changed.");
                     } else {
-                        println!("Configuration replaced. Restart cdk-mintd to apply it.");
+                        println!("Configuration staged. Restart cdk-mintd to apply it.");
+                    }
+                    Ok(())
+                }
+                ConfigCommands::Rollback => {
+                    let work_dir = work_dir
+                        .as_deref()
+                        .expect("database commands have a work directory");
+                    let outcome = cdk_mintd::rollback_configuration(work_dir, password).await?;
+                    if outcome.restart_required {
+                        println!(
+                            "Previous applied configuration restored. Restart cdk-mintd to activate it."
+                        );
+                    } else {
+                        println!(
+                            "Pending configuration discarded. The last applied configuration remains active."
+                        );
                     }
                     Ok(())
                 }

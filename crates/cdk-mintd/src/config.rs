@@ -1174,12 +1174,44 @@ pub struct MintManagementRpc {
 impl Settings {
     /// Parses settings from an in-memory TOML import document.
     pub fn try_from_toml(document: &str) -> Result<Self, ConfigError> {
+        Self::try_from_toml_allowing(document, &[])
+    }
+
+    /// Parses settings while allowing a narrow set of fields owned by the
+    /// legacy migration layer.
+    pub(crate) fn try_from_toml_allowing(
+        document: &str,
+        allowed_unknown_fields: &[&str],
+    ) -> Result<Self, ConfigError> {
         let defaults = Self::default();
-        Config::builder()
+        let configuration = Config::builder()
             .add_source(Config::try_from(&defaults)?)
             .add_source(File::from_str(document, FileFormat::Toml))
-            .build()?
-            .try_deserialize()
+            .build()?;
+        Self::deserialize_configuration(configuration, allowed_unknown_fields)
+    }
+
+    fn deserialize_configuration(
+        configuration: Config,
+        allowed_unknown_fields: &[&str],
+    ) -> Result<Self, ConfigError> {
+        let mut unknown_fields = Vec::new();
+        let settings = serde_ignored::deserialize(configuration, |path| {
+            let path = path.to_string().replace(".?.", ".");
+            if !allowed_unknown_fields.contains(&path.as_str()) {
+                unknown_fields.push(path);
+            }
+        })?;
+        unknown_fields.sort();
+        unknown_fields.dedup();
+        if unknown_fields.is_empty() {
+            Ok(settings)
+        } else {
+            Err(ConfigError::Message(format!(
+                "unknown configuration field(s): {}",
+                unknown_fields.join(", ")
+            )))
+        }
     }
 
     pub fn validate_backend_pairing(&self) -> Result<(), String> {
@@ -1285,7 +1317,7 @@ impl Settings {
             // override with file contents
             .add_source(File::with_name(&config))
             .build()?;
-        config.try_deserialize()
+        Self::deserialize_configuration(config, &[])
     }
 
     pub(crate) fn enabled_signatory(&self) -> Option<&Signatory> {
@@ -1299,6 +1331,39 @@ impl Settings {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn toml_parser_rejects_unknown_fields_with_full_paths() {
+        let error = Settings::try_from_toml(
+            r#"
+[info]
+listen_por = 8085
+
+[database]
+engin = "sqlite"
+"#,
+        )
+        .expect_err("misspelled fields must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("database.engin"));
+        assert!(message.contains("info.listen_por"));
+    }
+
+    #[test]
+    fn legacy_parser_allowlist_does_not_hide_unrelated_typos() {
+        let error = Settings::try_from_toml_allowing(
+            r#"
+[info]
+signatory_url = "http://127.0.0.1:10009"
+listen_por = 8085
+"#,
+            &["info.signatory_url"],
+        )
+        .expect_err("only exact legacy fields may be ignored");
+        let message = error.to_string();
+        assert!(message.contains("info.listen_por"));
+        assert!(!message.contains("info.signatory_url"));
+    }
 
     fn config_env_lock() -> std::sync::MutexGuard<'static, ()> {
         // Share the single process-wide env lock with the rest of the crate's

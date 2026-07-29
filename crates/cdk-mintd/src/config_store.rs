@@ -23,6 +23,8 @@ pub(crate) struct ConfigEnvelope {
     #[serde(default)]
     pub(crate) revision: u64,
     pub(crate) toml: String,
+    #[serde(default)]
+    pub(crate) previous_applied_toml: Option<String>,
     pub(crate) signing_identity: String,
     pub(crate) applied: bool,
 }
@@ -33,6 +35,7 @@ impl ConfigEnvelope {
             format_version: CONFIG_FORMAT_VERSION,
             revision: 1,
             toml,
+            previous_applied_toml: None,
             signing_identity,
             applied: false,
         }
@@ -77,6 +80,10 @@ pub enum ConfigStoreError {
     /// The persisted configuration revision cannot be incremented.
     #[error("mintd configuration revision overflow")]
     RevisionOverflow,
+
+    /// No previously applied document is available.
+    #[error("no previously applied mintd configuration is available to roll back to")]
+    NoRollbackConfiguration,
 
     /// The stored envelope uses an unsupported serialization version.
     #[error(
@@ -181,10 +188,16 @@ impl ConfigRepository {
                 .revision
                 .checked_add(1)
                 .ok_or(ConfigStoreError::RevisionOverflow)?;
+            let previous_applied_toml = if current.applied {
+                Some(current.toml)
+            } else {
+                current.previous_applied_toml
+            };
             let replacement = ConfigEnvelope {
                 format_version: CONFIG_FORMAT_VERSION,
                 revision,
                 toml: toml.clone(),
+                previous_applied_toml,
                 signing_identity: current.signing_identity,
                 applied: false,
             }
@@ -201,6 +214,48 @@ impl ConfigRepository {
                 .await?
             {
                 return Ok(());
+            }
+        }
+        Err(ConfigStoreError::ConcurrentModification)
+    }
+
+    /// Restores the last applied document.
+    ///
+    /// Returns `true` when the restored document must be activated by a
+    /// restart. A pending document can be discarded immediately because the
+    /// daemon is still running the last applied configuration.
+    pub(crate) async fn rollback(&self) -> Result<bool, ConfigStoreError> {
+        for _ in 0..MAX_CAS_ATTEMPTS {
+            let (current_bytes, mut current) = self.active_record().await?;
+            let previous = current
+                .previous_applied_toml
+                .take()
+                .ok_or(ConfigStoreError::NoRollbackConfiguration)?;
+            let restart_required = current.applied;
+            current.revision = current
+                .revision
+                .checked_add(1)
+                .ok_or(ConfigStoreError::RevisionOverflow)?;
+            if restart_required {
+                current.previous_applied_toml = Some(current.toml);
+                current.applied = false;
+            } else {
+                current.applied = true;
+            }
+            current.toml = previous;
+            let replacement = current.encode()?;
+            if self
+                .store
+                .kv_compare_and_swap(
+                    PRIMARY_NAMESPACE,
+                    SECONDARY_NAMESPACE,
+                    ACTIVE_KEY,
+                    Some(&current_bytes),
+                    &replacement,
+                )
+                .await?
+            {
+                return Ok(restart_required);
             }
         }
         Err(ConfigStoreError::ConcurrentModification)
@@ -354,6 +409,7 @@ mod tests {
             format_version: CONFIG_FORMAT_VERSION + 1,
             revision: 1,
             toml: "document".to_owned(),
+            previous_applied_toml: None,
             signing_identity: "signer".to_owned(),
             applied: false,
         })
@@ -437,6 +493,81 @@ mod tests {
         let debug = format!("{repository:?}");
         assert!(debug.contains("ConfigRepository"));
         assert!(!debug.contains("store:"));
+    }
+
+    #[tokio::test]
+    async fn rollback_discards_pending_document_and_restores_applied_document() {
+        let repository = repository().await;
+        repository
+            .initialize(ConfigEnvelope::new("first".to_owned(), "signer".to_owned()))
+            .await
+            .expect("initialize configuration");
+        assert!(repository
+            .mark_applied(1)
+            .await
+            .expect("mark first document applied"));
+        repository
+            .replace("second".to_owned(), "signer")
+            .await
+            .expect("stage second document");
+
+        let pending = repository.active().await.expect("read pending document");
+        assert_eq!(pending.previous_applied_toml.as_deref(), Some("first"));
+        assert!(!repository
+            .rollback()
+            .await
+            .expect("discard pending document"));
+
+        let restored = repository.active().await.expect("read restored document");
+        assert_eq!(restored.toml, "first");
+        assert!(restored.applied);
+        assert_eq!(restored.revision, 3);
+        assert!(restored.previous_applied_toml.is_none());
+    }
+
+    #[tokio::test]
+    async fn rollback_of_applied_document_stages_previous_applied_document() {
+        let repository = repository().await;
+        repository
+            .initialize(ConfigEnvelope::new("first".to_owned(), "signer".to_owned()))
+            .await
+            .expect("initialize configuration");
+        assert!(repository
+            .mark_applied(1)
+            .await
+            .expect("mark first document applied"));
+        repository
+            .replace("second".to_owned(), "signer")
+            .await
+            .expect("stage second document");
+        assert!(repository
+            .mark_applied(2)
+            .await
+            .expect("mark second document applied"));
+
+        assert!(repository
+            .rollback()
+            .await
+            .expect("stage previous applied document"));
+        let restored = repository.active().await.expect("read rollback document");
+        assert_eq!(restored.toml, "first");
+        assert!(!restored.applied);
+        assert_eq!(restored.revision, 3);
+        assert_eq!(restored.previous_applied_toml.as_deref(), Some("second"));
+    }
+
+    #[tokio::test]
+    async fn rollback_requires_a_previous_applied_document() {
+        let repository = repository().await;
+        repository
+            .initialize(ConfigEnvelope::new("first".to_owned(), "signer".to_owned()))
+            .await
+            .expect("initialize configuration");
+
+        assert!(matches!(
+            repository.rollback().await,
+            Err(ConfigStoreError::NoRollbackConfiguration)
+        ));
     }
 
     #[tokio::test]
@@ -537,6 +668,7 @@ mod tests {
 
         let active = repository.active().await.expect("decode legacy record");
         assert_eq!(active.revision, 0);
+        assert!(active.previous_applied_toml.is_none());
         assert!(repository
             .mark_applied(0)
             .await

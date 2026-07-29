@@ -65,7 +65,7 @@ pub mod env_vars;
 pub mod setup;
 
 pub use config_migration::{migrate_legacy_configuration, MigrationOutcome};
-pub use config_service::ApplyOutcome;
+pub use config_service::{ApplyOutcome, RollbackOutcome};
 
 #[cfg(test)]
 pub(crate) mod test_utils {
@@ -2374,6 +2374,19 @@ pub async fn apply_configuration(
         initial_setup(work_dir, &bootstrap, db_password).await?;
     Ok(configuration_service(configuration_store, &bootstrap)
         .apply(document, validate_only)
+        .await?)
+}
+
+/// Restores the last configuration known to have been applied successfully.
+pub async fn rollback_configuration(
+    work_dir: &Path,
+    db_password: Option<String>,
+) -> Result<RollbackOutcome> {
+    let bootstrap = load_database_bootstrap_settings()?;
+    let (_localstore, _keystore, _kv, configuration_store) =
+        initial_setup(work_dir, &bootstrap, db_password).await?;
+    Ok(configuration_service(configuration_store, &bootstrap)
+        .rollback()
         .await?)
 }
 
