@@ -10,6 +10,7 @@ pub const BDK_BITCOIND_RPC_HOST_ENV_VAR: &str = "CDK_MINTD_BDK_BITCOIND_RPC_HOST
 pub const BDK_BITCOIND_RPC_PORT_ENV_VAR: &str = "CDK_MINTD_BDK_BITCOIND_RPC_PORT";
 pub const BDK_BITCOIND_RPC_USER_ENV_VAR: &str = "CDK_MINTD_BDK_BITCOIND_RPC_USER";
 pub const BDK_BITCOIND_RPC_PASSWORD_ENV_VAR: &str = "CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD";
+pub const BDK_WALLET_RESCAN_FROM_HEIGHT_ENV_VAR: &str = "CDK_MINTD_BDK_WALLET_RESCAN_FROM_HEIGHT";
 pub const BDK_CHAIN_SOURCE_TYPE_ENV_VAR: &str = "CDK_MINTD_BDK_CHAIN_SOURCE_TYPE";
 pub const BDK_ESPLORA_URL_ENV_VAR: &str = "CDK_MINTD_BDK_ESPLORA_URL";
 pub const BDK_ESPLORA_PARALLEL_REQUESTS_ENV_VAR: &str = "CDK_MINTD_BDK_ESPLORA_PARALLEL_REQUESTS";
@@ -61,6 +62,12 @@ impl Bdk {
 
         if let Ok(bitcoind_rpc_password) = env::var(BDK_BITCOIND_RPC_PASSWORD_ENV_VAR) {
             self.bitcoind_rpc_password = Some(bitcoind_rpc_password);
+        }
+
+        if let Ok(wallet_rescan_from_height) = env::var(BDK_WALLET_RESCAN_FROM_HEIGHT_ENV_VAR) {
+            if let Ok(wallet_rescan_from_height) = wallet_rescan_from_height.parse::<u32>() {
+                self.wallet_rescan_from_height = Some(wallet_rescan_from_height);
+            }
         }
 
         if let Ok(chain_source_type) = env::var(BDK_CHAIN_SOURCE_TYPE_ENV_VAR) {

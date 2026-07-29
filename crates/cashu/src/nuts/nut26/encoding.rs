@@ -33,7 +33,7 @@ impl From<CurrencyUnit> for TlvUnit {
             CurrencyUnit::Msat => TlvUnit::Custom("msat".to_string()),
             CurrencyUnit::Usd => TlvUnit::Custom("usd".to_string()),
             CurrencyUnit::Eur => TlvUnit::Custom("eur".to_string()),
-            CurrencyUnit::Custom(c) => TlvUnit::Custom(c),
+            CurrencyUnit::Custom(c) => TlvUnit::Custom(CurrencyUnit::custom(c).to_string()),
             CurrencyUnit::Auth => TlvUnit::Custom("auth".to_string()),
         }
     }
@@ -48,7 +48,7 @@ impl From<TlvUnit> for CurrencyUnit {
                 "usd" => CurrencyUnit::Usd,
                 "eur" => CurrencyUnit::Eur,
                 "auth" => CurrencyUnit::Auth,
-                _ => CurrencyUnit::Custom(s), // preserve unknown units
+                _ => CurrencyUnit::custom(s),
             },
         }
     }
@@ -881,6 +881,14 @@ mod tests {
         assert_eq!(
             CurrencyUnit::from(TlvUnit::from(CurrencyUnit::Auth)),
             CurrencyUnit::Auth
+        );
+        assert_eq!(
+            TlvUnit::from(CurrencyUnit::Custom("BADCOIN".to_string())),
+            TlvUnit::Custom("badcoin".to_string())
+        );
+        assert_eq!(
+            CurrencyUnit::from(TlvUnit::Custom("BADCOIN".to_string())),
+            CurrencyUnit::Custom("badcoin".to_string())
         );
     }
 

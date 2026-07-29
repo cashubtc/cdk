@@ -36,6 +36,7 @@ pub mod payment;
 pub mod pub_sub;
 #[cfg(feature = "mint")]
 pub mod state;
+pub mod stream;
 pub mod subscription;
 #[cfg(feature = "wallet")]
 pub mod wallet;

@@ -428,7 +428,7 @@ impl Amount<CurrencyUnit> {
     /// ```
     /// # use cashu::{Amount, nuts::CurrencyUnit};
     /// let sat_amount = Amount::new(1000, CurrencyUnit::Sat);
-    /// let custom = Amount::new(50, CurrencyUnit::Custom("BTC".into()));
+    /// let custom = Amount::new(50, CurrencyUnit::custom("BTC"));
     /// ```
     pub fn new(value: u64, unit: CurrencyUnit) -> Self {
         Self { value, unit }

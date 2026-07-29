@@ -163,7 +163,10 @@ onchain_backend = "fakewallet"
 # # bitcoind_rpc_host = "127.0.0.1"
 # # bitcoind_rpc_port = 18443
 # # bitcoind_rpc_user = "user"
-# # bitcoind_rpc_password = "env:CDK_MINTD_BDK_BITCOIND_RPC_PASSWORD"
+
+# # Fresh wallets start at the current tip by default. When restoring a
+# # mnemonic, set its known birthday height to scan historical blocks.
+# # wallet_rescan_from_height = 850000
 #
 # # Esplora configuration (when chain_source_type = "esplora")
 # # esplora_url = "https://mutinynet.com/api"

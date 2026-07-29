@@ -1,4 +1,5 @@
 use bdk_wallet::bitcoin::Transaction;
+use bdk_wallet::chain::BlockId;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
@@ -21,6 +22,12 @@ pub struct BitcoinRpcConfig {
     pub user: String,
     /// Password for Bitcoin RPC authentication
     pub password: String,
+    /// Optional wallet birthday height used when creating a fresh wallet.
+    ///
+    /// If unset, a fresh wallet starts at the current Bitcoin Core tip. Set
+    /// this when restoring a wallet from seed to scan from a known birthday
+    /// height. Existing wallets are never rewound.
+    pub wallet_rescan_from_height: Option<u32>,
 }
 
 /// Configuration for connecting to Esplora
@@ -104,6 +111,15 @@ impl ChainSource {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn initial_checkpoint(&self) -> Result<Option<BlockId>, Error> {
+        match self {
+            #[cfg(feature = "bitcoin-rpc")]
+            Self::BitcoinRpc(config) => bitcoin_rpc::initial_checkpoint(config).map(Some),
+            #[allow(unreachable_patterns)]
+            _ => Ok(None),
+        }
     }
 
     pub async fn sync_wallet(

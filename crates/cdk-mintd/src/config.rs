@@ -382,6 +382,12 @@ pub struct Bdk {
     pub bitcoind_rpc_user: Option<String>,
     /// Bitcoin RPC password
     pub bitcoind_rpc_password: Option<String>,
+    /// Optional birthday height used when creating a fresh Bitcoin RPC wallet.
+    ///
+    /// If unset, the wallet starts at the current chain tip. Set this when
+    /// restoring from a mnemonic to rescan from a known height. Existing
+    /// wallets are not rewound.
+    pub wallet_rescan_from_height: Option<u32>,
     /// BIP-39 mnemonic for the BDK wallet
     pub mnemonic: Option<String>,
     /// Batch processor configuration
@@ -422,6 +428,7 @@ impl Default for Bdk {
             bitcoind_rpc_port: None,
             bitcoind_rpc_user: None,
             bitcoind_rpc_password: None,
+            wallet_rescan_from_height: None,
             mnemonic: None,
             batch_config: BatchConfig::default(),
             num_confs: default_bdk_num_confs(),
@@ -1315,6 +1322,7 @@ mod tests {
         std::env::remove_var(crate::env_vars::BDK_ESPLORA_URL_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_ELECTRUM_URL_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_ELECTRUM_BATCH_SIZE_ENV_VAR);
+        std::env::remove_var(crate::env_vars::BDK_WALLET_RESCAN_FROM_HEIGHT_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_MIN_SEND_AMOUNT_SAT_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_TARGET_BLOCK_TIME_SECS_ENV_VAR);
         std::env::remove_var(crate::env_vars::BDK_FEE_OPTIONS_ENV_VAR);
@@ -1455,6 +1463,33 @@ min_send_amount_sat = 1200
                 .expect("bdk config should be present")
                 .min_send_amount_sat,
             777
+        );
+
+        clear_bdk_env_vars();
+    }
+
+    #[cfg(feature = "bdk")]
+    #[test]
+    fn test_bdk_env_wallet_rescan_height_override() {
+        let _guard = config_env_lock();
+        clear_bdk_env_vars();
+        std::env::set_var(crate::env_vars::ENV_ONCHAIN_BACKEND, "bdk");
+        std::env::set_var(crate::env_vars::BDK_NETWORK_ENV_VAR, "regtest");
+        std::env::set_var(
+            crate::env_vars::BDK_WALLET_RESCAN_FROM_HEIGHT_ENV_VAR,
+            "850000",
+        );
+
+        let mut settings = Settings::default();
+        settings.from_env().expect("Failed to apply env vars");
+
+        assert_eq!(
+            settings
+                .bdk
+                .as_ref()
+                .expect("bdk config should be present")
+                .wallet_rescan_from_height,
+            Some(850000)
         );
 
         clear_bdk_env_vars();
