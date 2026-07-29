@@ -1291,7 +1291,9 @@ impl Mint {
         if saga.federation_operation_id.as_deref() != Some(operation_id.as_str()) {
             return Err(Error::Internal);
         }
-        if saga.operation_id != melt_saga::federation_operation_uuid(federation_operation_id) {
+        if saga.operation_id
+            != super::federation::federation_operation_uuid(federation_operation_id)
+        {
             return Err(Error::Internal);
         }
         if saga.state
@@ -1404,7 +1406,7 @@ impl Mint {
             }
 
             let completed_operation_id =
-                melt_saga::federation_operation_uuid(federation_operation_id);
+                super::federation::federation_operation_uuid(federation_operation_id);
             let completed_operation = self
                 .localstore
                 .get_completed_operation(&completed_operation_id)

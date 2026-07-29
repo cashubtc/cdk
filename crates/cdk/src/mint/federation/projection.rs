@@ -27,6 +27,8 @@ use uuid::Uuid;
 
 use crate::mint::{Mint, QuoteId};
 
+use super::federation_operation_uuid;
+
 const MATERIALIZED_STATE_QUERY_BATCH_SIZE: usize = 500;
 
 impl Mint {
@@ -2743,13 +2745,6 @@ async fn append_blind_signature_rows(
         snapshot.push(row);
     }
     Ok(())
-}
-
-fn federation_operation_uuid(operation_id: FederationOperationId) -> Uuid {
-    let bytes = operation_id.to_bytes();
-    let mut uuid = [0_u8; 16];
-    uuid.copy_from_slice(&bytes[..16]);
-    Uuid::from_bytes(uuid)
 }
 
 fn completed_operation_materialized_row(

@@ -9,6 +9,7 @@ use cdk::federation::{
     FederationFrostDkgRound2Request, FederationRestMessageKind, FederationSignedRequest,
 };
 use cdk_frost::rand_core::OsRng;
+use serde::Serialize;
 use tracing::instrument;
 
 use crate::MintState;
@@ -70,20 +71,38 @@ fn dkg_finalized_config_not_ready_response() -> Response {
         .into_response()
 }
 
+struct DkgRequestAdmission {
+    _rest_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    _member_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+    verified: super::VerifiedFederationRequest,
+}
+
+async fn admit_dkg_request<T>(
+    state: &MintState,
+    payload: &FederationSignedRequest<T>,
+    kind: FederationRestMessageKind,
+) -> Result<DkgRequestAdmission, Response>
+where
+    T: Serialize,
+{
+    let rest_permit = acquire_private_rest_admission(state, kind)?;
+    let verified = verify_federation_request(state, payload, kind).await?;
+    let member_permit = acquire_private_dkg_member_admission(state, verified.sender, kind)?;
+    Ok(DkgRequestAdmission {
+        _rest_permit: rest_permit,
+        _member_permit: member_permit,
+        verified,
+    })
+}
+
 #[instrument(skip_all)]
 pub(super) async fn post_dkg_readiness(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgReadinessRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
-    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgReadiness)?;
-    let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgReadiness)
-            .await?;
-    let _member_permit = acquire_private_dkg_member_admission(
-        &state,
-        verified.sender,
-        FederationRestMessageKind::DkgReadiness,
-    )?;
+    let admission =
+        admit_dkg_request(&state, &payload, FederationRestMessageKind::DkgReadiness).await?;
+    let verified = admission.verified;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
@@ -115,15 +134,9 @@ pub(super) async fn post_dkg_commitment(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgCommitmentRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
-    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgCommitment)?;
-    let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgCommitment)
-            .await?;
-    let _member_permit = acquire_private_dkg_member_admission(
-        &state,
-        verified.sender,
-        FederationRestMessageKind::DkgCommitment,
-    )?;
+    let admission =
+        admit_dkg_request(&state, &payload, FederationRestMessageKind::DkgCommitment).await?;
+    let verified = admission.verified;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
@@ -158,14 +171,9 @@ pub(super) async fn post_dkg_reveal(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgRevealRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
-    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgReveal)?;
-    let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgReveal).await?;
-    let _member_permit = acquire_private_dkg_member_admission(
-        &state,
-        verified.sender,
-        FederationRestMessageKind::DkgReveal,
-    )?;
+    let admission =
+        admit_dkg_request(&state, &payload, FederationRestMessageKind::DkgReveal).await?;
+    let verified = admission.verified;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
@@ -197,16 +205,9 @@ pub(super) async fn post_dkg_secret_share(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgSecretShareRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
-    let _permit =
-        acquire_private_rest_admission(&state, FederationRestMessageKind::DkgSecretShare)?;
-    let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgSecretShare)
-            .await?;
-    let _member_permit = acquire_private_dkg_member_admission(
-        &state,
-        verified.sender,
-        FederationRestMessageKind::DkgSecretShare,
-    )?;
+    let admission =
+        admit_dkg_request(&state, &payload, FederationRestMessageKind::DkgSecretShare).await?;
+    let verified = admission.verified;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
@@ -244,9 +245,8 @@ pub(super) async fn post_frost_dkg_round1(
     Json(payload): Json<FederationSignedRequest<FederationFrostDkgRound1Request>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
     let kind = FederationRestMessageKind::FrostDkgRound1;
-    let _permit = acquire_private_rest_admission(&state, kind)?;
-    let verified = verify_federation_request(&state, &payload, kind).await?;
-    let _member_permit = acquire_private_dkg_member_admission(&state, verified.sender, kind)?;
+    let admission = admit_dkg_request(&state, &payload, kind).await?;
+    let verified = admission.verified;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     if payload.payload.context.ceremony_id != dkg_config.ceremony_id
@@ -280,9 +280,8 @@ pub(super) async fn post_frost_dkg_round2(
     Json(payload): Json<FederationSignedRequest<FederationFrostDkgRound2Request>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
     let kind = FederationRestMessageKind::FrostDkgRound2;
-    let _permit = acquire_private_rest_admission(&state, kind)?;
-    let verified = verify_federation_request(&state, &payload, kind).await?;
-    let _member_permit = acquire_private_dkg_member_admission(&state, verified.sender, kind)?;
+    let admission = admit_dkg_request(&state, &payload, kind).await?;
+    let verified = admission.verified;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     if payload.payload.context.ceremony_id != dkg_config.ceremony_id
@@ -366,9 +365,8 @@ pub(super) async fn post_frost_dkg_confirmation(
     Json(payload): Json<FederationSignedRequest<FederationFrostDkgConfirmationRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
     let kind = FederationRestMessageKind::FrostDkgConfirmation;
-    let _permit = acquire_private_rest_admission(&state, kind)?;
-    let verified = verify_federation_request(&state, &payload, kind).await?;
-    let _member_permit = acquire_private_dkg_member_admission(&state, verified.sender, kind)?;
+    let admission = admit_dkg_request(&state, &payload, kind).await?;
+    let verified = admission.verified;
     let dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     if payload.payload.context.ceremony_id != dkg_config.ceremony_id
@@ -428,19 +426,13 @@ pub(super) async fn post_dkg_transcript_signature(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgTranscriptSignatureRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
-    let _permit =
-        acquire_private_rest_admission(&state, FederationRestMessageKind::DkgTranscriptSignature)?;
-    let verified = verify_federation_request(
+    let admission = admit_dkg_request(
         &state,
         &payload,
         FederationRestMessageKind::DkgTranscriptSignature,
     )
     .await?;
-    let _member_permit = acquire_private_dkg_member_admission(
-        &state,
-        verified.sender,
-        FederationRestMessageKind::DkgTranscriptSignature,
-    )?;
+    let verified = admission.verified;
     let _dkg_config = active_dkg_config(&state)?;
     let runtime_config = federation_runtime_config(&state)?;
     payload
@@ -471,15 +463,9 @@ pub(super) async fn post_dkg_activation(
     State(state): State<MintState>,
     Json(payload): Json<FederationSignedRequest<FederationDkgActivationRequest>>,
 ) -> Result<Json<FederationDkgSetupResponse>, Response> {
-    let _permit = acquire_private_rest_admission(&state, FederationRestMessageKind::DkgActivation)?;
-    let verified =
-        verify_federation_request(&state, &payload, FederationRestMessageKind::DkgActivation)
-            .await?;
-    let _member_permit = acquire_private_dkg_member_admission(
-        &state,
-        verified.sender,
-        FederationRestMessageKind::DkgActivation,
-    )?;
+    let admission =
+        admit_dkg_request(&state, &payload, FederationRestMessageKind::DkgActivation).await?;
+    let verified = admission.verified;
     let dkg_config = active_dkg_config(&state)?;
     if payload.payload.ceremony_id != dkg_config.ceremony_id {
         return Err(federation_error_response(

@@ -51,11 +51,6 @@ const BARK_CUSTODY_PROJECTION_POLL_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(20);
 
 #[cfg(feature = "federation-bark")]
-fn usize_to_u64_saturating(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
-}
-
-#[cfg(feature = "federation-bark")]
 const fn bark_action_authorizes_output_locator(kind: FederationBarkActionKind) -> bool {
     // A refresh is the only accepted action whose newly allocated output key
     // participates in custody before the result transition exists.
@@ -554,14 +549,14 @@ impl FederationFrostSigningRuntime {
         let manager = self.manager(root_epoch)?;
         let manager = manager.lock().await;
         let ordinary_frost_nonterminal =
-            usize_to_u64_saturating(manager.nonce_store().nonterminal_records()?.len());
-        let virtual_musig2_nonterminal = usize_to_u64_saturating(
+            super::usize_to_u64_saturating(manager.nonce_store().nonterminal_records()?.len());
+        let virtual_musig2_nonterminal = super::usize_to_u64_saturating(
             manager
                 .protocol_store()
                 .nonterminal_virtual_musig_records()?
                 .len(),
         );
-        let threshold_dh_nonterminal = usize_to_u64_saturating(
+        let threshold_dh_nonterminal = super::usize_to_u64_saturating(
             manager
                 .protocol_store()
                 .nonterminal_threshold_dh_records()?
@@ -569,7 +564,7 @@ impl FederationFrostSigningRuntime {
         );
         drop(manager);
         let aggregate_results_cached =
-            usize_to_u64_saturating(self.aggregate_results.lock().await.len());
+            super::usize_to_u64_saturating(self.aggregate_results.lock().await.len());
         Ok(FederationBarkProtocolStatus {
             ordinary_frost_nonterminal,
             virtual_musig2_nonterminal,

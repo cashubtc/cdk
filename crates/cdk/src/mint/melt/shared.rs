@@ -747,11 +747,12 @@ async fn prepare_federation_melt_change(
     let change_sigs = share_set
         .shares
         .into_iter()
-        .map(|share| BlindSignature {
-            amount: share.amount,
-            keyset_id: share.keyset_id,
-            c: PublicKey::from(share.share.signature()),
-            dleq: None,
+        .map(|share| {
+            super::super::federation_blind_signature_from_share(
+                share.amount,
+                share.keyset_id,
+                &share.share,
+            )
         })
         .collect::<Vec<_>>();
     let blinded_secrets = blinded_messages_to_sign

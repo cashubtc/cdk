@@ -22,6 +22,8 @@ use tracing::instrument;
 use self::compensation::{CompensatingAction, RemoveMeltSetup};
 use self::state::{Initial, PaymentConfirmed, SettlementDecision, SetupComplete};
 use crate::cdk_payment::MakePaymentResponse;
+#[cfg(feature = "federation")]
+use crate::mint::federation::federation_operation_uuid;
 use crate::mint::melt::shared;
 use crate::mint::subscription::PubSubManager;
 use crate::mint::verification::Verification;
@@ -487,14 +489,6 @@ impl MeltSaga<Initial> {
             },
         })
     }
-}
-
-#[cfg(feature = "federation")]
-pub(super) fn federation_operation_uuid(operation_id: FederationOperationId) -> uuid::Uuid {
-    let bytes = operation_id.to_bytes();
-    let mut uuid = [0_u8; 16];
-    uuid.copy_from_slice(&bytes[..16]);
-    uuid::Uuid::from_bytes(uuid)
 }
 
 impl MeltSaga<SetupComplete> {

@@ -645,6 +645,10 @@ pub(super) struct VerifiedFederationRequest {
     pub(super) sequence: u64,
 }
 
+fn usize_to_u64_saturating(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
 #[cfg(feature = "prometheus")]
 fn u64_to_i64_saturating(value: u64) -> i64 {
     match i64::try_from(value) {

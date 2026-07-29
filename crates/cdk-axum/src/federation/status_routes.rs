@@ -105,9 +105,9 @@ pub(super) async fn post_local_status(
         checkpoint,
         payment_observation_reports,
         materialized_state_rows,
-        usize_to_u64_saturating(pending_mempool_items),
-        usize_to_u64_saturating(notification_stats.pending_response_waiters),
-        usize_to_u64_saturating(notification_stats.response_cache_items),
+        super::usize_to_u64_saturating(pending_mempool_items),
+        super::usize_to_u64_saturating(notification_stats.pending_response_waiters),
+        super::usize_to_u64_saturating(notification_stats.response_cache_items),
         notification_stats.response_cache_lookups,
         notification_stats.response_cache_hits,
         notification_stats.duplicate_submissions,
@@ -531,10 +531,6 @@ fn record_federation_local_status_metrics(response: &FederationLocalStatusRespon
             );
         }
     }
-}
-
-fn usize_to_u64_saturating(value: usize) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

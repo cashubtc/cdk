@@ -83,15 +83,24 @@ fn federation_restore_share_matches_output(
 }
 
 #[cfg(feature = "federation")]
+fn federation_blind_signature_from_share(
+    amount: Amount,
+    keyset_id: Id,
+    share: &cdk_common::nuts::nut01::BlsBlindSignatureShare,
+) -> BlindSignature {
+    BlindSignature {
+        amount,
+        keyset_id,
+        c: cdk_common::PublicKey::from(share.signature()),
+        dleq: None,
+    }
+}
+
+#[cfg(feature = "federation")]
 fn federation_signature_share_to_blind_signature(
     share: FederationSignatureShareRecord,
 ) -> BlindSignature {
-    BlindSignature {
-        amount: share.amount,
-        keyset_id: share.keyset_id,
-        c: cdk_common::PublicKey::from(share.share.signature()),
-        dleq: None,
-    }
+    federation_blind_signature_from_share(share.amount, share.keyset_id, &share.share)
 }
 
 /// Cashu Mint
