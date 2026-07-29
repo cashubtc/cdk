@@ -27,6 +27,7 @@ const FEDERATION_PAYMENT_REPAIR_INTERVAL: std::time::Duration = std::time::Durat
 const FEDERATION_PAYMENT_IDLE_DEADLINE: std::time::Duration =
     std::time::Duration::from_secs(24 * 60 * 60);
 const FEDERATION_PAYMENT_MAX_ADVANCEMENTS_PER_WAKE: usize = 8;
+const FEDERATION_PAYMENT_SCAN_LIMIT_PER_KIND: usize = 4;
 const FEDERATION_PAYMENT_WAKE_CAPACITY: usize = 256;
 /// Per-quote backend probe deadline.
 ///
@@ -687,32 +688,81 @@ impl FederationPaymentObserver {
             .ensure_federation_ready_for_authoritative_read()
             .await?;
 
-        let mut quotes = state
-            .mint
-            .localstore()
-            .get_mint_quotes()
-            .await?
-            .into_iter()
-            .filter(|quote| !matches!(quote.state(), MintQuoteState::Paid | MintQuoteState::Issued))
-            .map(|quote| FederationPaymentQuote::mint(quote.id))
-            .collect::<Vec<_>>();
-        quotes.extend(
-            state
-                .mint
-                .localstore()
-                .get_melt_quotes()
-                .await?
-                .into_iter()
-                .filter(|quote| quote.state == MeltQuoteState::Pending)
-                .map(|quote| FederationPaymentQuote::melt(quote.id)),
-        );
+        let db = state.mint.localstore();
+        let mint_cursor = self
+            .schedule
+            .scan_cursor(&db, FederationPaymentQuoteKind::Mint)
+            .await?;
+        let melt_cursor = self
+            .schedule
+            .scan_cursor(&db, FederationPaymentQuoteKind::Melt)
+            .await?;
+        let mint_ids = db
+            .get_federation_mint_quote_ids_for_payment_observation(
+                mint_cursor.as_ref(),
+                FEDERATION_PAYMENT_SCAN_LIMIT_PER_KIND,
+            )
+            .await?;
+        let melt_ids = db
+            .get_federation_melt_quote_ids_for_payment_observation(
+                melt_cursor.as_ref(),
+                FEDERATION_PAYMENT_SCAN_LIMIT_PER_KIND,
+            )
+            .await?;
+        let mint_reaches_end = mint_ids.len() < FEDERATION_PAYMENT_SCAN_LIMIT_PER_KIND;
+        let melt_reaches_end = melt_ids.len() < FEDERATION_PAYMENT_SCAN_LIMIT_PER_KIND;
+        if mint_ids.is_empty() && mint_cursor.is_some() {
+            self.schedule
+                .set_scan_cursor(&db, FederationPaymentQuoteKind::Mint, None)
+                .await?;
+        }
+        if melt_ids.is_empty() && melt_cursor.is_some() {
+            self.schedule
+                .set_scan_cursor(&db, FederationPaymentQuoteKind::Melt, None)
+                .await?;
+        }
 
-        self.drive_quotes(
-            state,
-            &quotes,
-            FederationPaymentObservationTrigger::Scheduled,
-        )
-        .await
+        let mut submitted = 0usize;
+        let batch_len = mint_ids.len().max(melt_ids.len());
+        for index in 0..batch_len {
+            for (kind, ids, reaches_end) in [
+                (
+                    FederationPaymentQuoteKind::Mint,
+                    &mint_ids,
+                    mint_reaches_end,
+                ),
+                (
+                    FederationPaymentQuoteKind::Melt,
+                    &melt_ids,
+                    melt_reaches_end,
+                ),
+            ] {
+                let Some(id) = ids.get(index) else {
+                    continue;
+                };
+                let quote = match kind {
+                    FederationPaymentQuoteKind::Mint => FederationPaymentQuote::mint(id.clone()),
+                    FederationPaymentQuoteKind::Melt => FederationPaymentQuote::melt(id.clone()),
+                };
+                submitted = submitted.saturating_add(
+                    self.drive_quotes(
+                        state,
+                        &[quote],
+                        FederationPaymentObservationTrigger::Scheduled,
+                    )
+                    .await?,
+                );
+                let next_cursor = match reaches_end && index.saturating_add(1) == ids.len() {
+                    true => None,
+                    false => Some(id.clone()),
+                };
+                self.schedule
+                    .set_scan_cursor(&db, kind, next_cursor)
+                    .await?;
+            }
+        }
+
+        Ok(submitted)
     }
 
     pub(crate) async fn run_round(&self, state: &MintState) -> Result<usize, cdk::Error> {

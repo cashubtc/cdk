@@ -47,6 +47,7 @@ mod test {
                 FROM sqlite_master
                 WHERE tbl_name = 'melt_quote'
                   AND sql IS NOT NULL
+                  AND name != 'idx_melt_quote_federation_payment_observation'
                 ORDER BY type, name
                 "#,
             )
@@ -59,6 +60,149 @@ mod test {
     }
 
     mint_db_test!(provide_db);
+
+    #[cfg(all(feature = "federation", not(feature = "sqlcipher")))]
+    #[tokio::test]
+    async fn federation_payment_observation_quote_queries_are_bounded_and_indexed() {
+        use cdk_common::database::MintQuotesDatabase;
+        use cdk_common::QuoteId;
+
+        let path = std::env::temp_dir().to_path_buf().join(format!(
+            "cdk-test-payment-observation-pages-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = MintSqliteDatabase::new(path.clone())
+            .await
+            .expect("fresh sqlite database");
+        let active_ids = (1..=5)
+            .map(|value| QuoteId::from(uuid::Uuid::from_u128(value)))
+            .collect::<Vec<_>>();
+        let terminal_id = QuoteId::from(uuid::Uuid::from_u128(6));
+
+        {
+            let conn = rusqlite::Connection::open(&path).expect("open sqlite fixture");
+            for (index, id) in active_ids.iter().enumerate() {
+                conn.execute(
+                    r#"
+                    INSERT INTO mint_quote (
+                        id, amount, unit, request, expiry, request_lookup_id,
+                        created_time, amount_paid, amount_issued, updated_at,
+                        payment_method, request_lookup_id_kind
+                    ) VALUES (?1, 1, 'sat', ?2, 0, ?3, 0, 0, 0, 0, 'bolt11', 'custom')
+                    "#,
+                    rusqlite::params![
+                        id.to_string(),
+                        format!("mint-request-{index}"),
+                        format!("mint-lookup-{index}")
+                    ],
+                )
+                .expect("insert unpaid mint quote");
+                conn.execute(
+                    r#"
+                    INSERT INTO melt_quote (
+                        id, unit, amount, request, fee_reserve, expiry, state,
+                        request_lookup_id, created_time, payment_method,
+                        request_lookup_id_kind
+                    ) VALUES (?1, 'sat', 1, ?2, 0, 0, 'PENDING', ?3, 0, 'bolt11', 'custom')
+                    "#,
+                    rusqlite::params![
+                        id.to_string(),
+                        format!("melt-request-{index}"),
+                        format!("melt-lookup-{index}")
+                    ],
+                )
+                .expect("insert pending melt quote");
+            }
+            conn.execute(
+                r#"
+                INSERT INTO mint_quote (
+                    id, amount, unit, request, expiry, request_lookup_id,
+                    created_time, amount_paid, amount_issued, updated_at,
+                    payment_method, request_lookup_id_kind
+                ) VALUES (?1, 1, 'sat', 'terminal-mint', 0, 'terminal-mint-lookup',
+                          0, 1, 1, 0, 'bolt11', 'custom')
+                "#,
+                [terminal_id.to_string()],
+            )
+            .expect("insert issued mint quote");
+            conn.execute(
+                r#"
+                INSERT INTO melt_quote (
+                    id, unit, amount, request, fee_reserve, expiry, state,
+                    request_lookup_id, created_time, payment_method,
+                    request_lookup_id_kind
+                ) VALUES (?1, 'sat', 1, 'terminal-melt', 0, 0, 'PAID',
+                          'terminal-melt-lookup', 0, 'bolt11', 'custom')
+                "#,
+                [terminal_id.to_string()],
+            )
+            .expect("insert paid melt quote");
+        }
+
+        let first_mint = db
+            .get_federation_mint_quote_ids_for_payment_observation(None, 2)
+            .await
+            .expect("first mint page");
+        let second_mint = db
+            .get_federation_mint_quote_ids_for_payment_observation(first_mint.last(), 2)
+            .await
+            .expect("second mint page");
+        let third_mint = db
+            .get_federation_mint_quote_ids_for_payment_observation(second_mint.last(), 2)
+            .await
+            .expect("third mint page");
+        assert_eq!(first_mint, active_ids[0..2]);
+        assert_eq!(second_mint, active_ids[2..4]);
+        assert_eq!(third_mint, active_ids[4..5]);
+
+        let first_melt = db
+            .get_federation_melt_quote_ids_for_payment_observation(None, 3)
+            .await
+            .expect("first melt page");
+        let second_melt = db
+            .get_federation_melt_quote_ids_for_payment_observation(first_melt.last(), 3)
+            .await
+            .expect("second melt page");
+        assert_eq!(first_melt, active_ids[0..3]);
+        assert_eq!(second_melt, active_ids[3..5]);
+        assert!(db
+            .get_federation_mint_quote_ids_for_payment_observation(None, 0)
+            .await
+            .expect("zero-sized page")
+            .is_empty());
+
+        drop(db);
+        let conn = rusqlite::Connection::open(&path).expect("open sqlite query planner");
+        let mint_plan = conn
+            .query_row(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT id FROM mint_quote
+                WHERE amount_paid = 0 AND amount_issued = 0
+                ORDER BY id LIMIT 4
+                "#,
+                [],
+                |row| row.get::<_, String>(3),
+            )
+            .expect("mint query plan");
+        let melt_plan = conn
+            .query_row(
+                r#"
+                EXPLAIN QUERY PLAN
+                SELECT id FROM melt_quote
+                WHERE state = 'PENDING'
+                ORDER BY id LIMIT 4
+                "#,
+                [],
+                |row| row.get::<_, String>(3),
+            )
+            .expect("melt query plan");
+        assert!(mint_plan.contains("idx_mint_quote_federation_payment_observation"));
+        assert!(melt_plan.contains("idx_melt_quote_federation_payment_observation"));
+
+        drop(conn);
+        let _ = remove_file(path);
+    }
 
     #[cfg(not(feature = "sqlcipher"))]
     #[tokio::test]
@@ -886,6 +1030,7 @@ mod test {
                 "20260713000000_allow_federation_payment_observation_revisions.sql".to_owned(),
                 "20260714000000_chunk_federation_aleph_bft_backups.sql".to_owned(),
                 "20260719000000_create_federation_bark_projection.sql".to_owned(),
+                "20260729000000_index_federation_payment_observation_quotes.sql".to_owned(),
             ]
         );
 

@@ -494,6 +494,16 @@ pub trait QuotesDatabase {
     ) -> Result<Option<MintMintQuote>, Self::Err>;
     /// Get Mint Quotes
     async fn get_mint_quotes(&self) -> Result<Vec<MintMintQuote>, Self::Err>;
+    #[cfg(feature = "federation")]
+    /// Get a bounded page of unpaid mint quote IDs for federation payment observation.
+    ///
+    /// Results are ordered by quote ID and start strictly after `start_after`.
+    /// A zero `limit` returns an empty page.
+    async fn get_federation_mint_quote_ids_for_payment_observation(
+        &self,
+        start_after: Option<&QuoteId>,
+        limit: usize,
+    ) -> Result<Vec<QuoteId>, Self::Err>;
     /// Get [`mint::MeltQuote`]
     async fn get_melt_quote(
         &self,
@@ -501,6 +511,16 @@ pub trait QuotesDatabase {
     ) -> Result<Option<mint::MeltQuote>, Self::Err>;
     /// Get all [`mint::MeltQuote`]s
     async fn get_melt_quotes(&self) -> Result<Vec<mint::MeltQuote>, Self::Err>;
+    #[cfg(feature = "federation")]
+    /// Get a bounded page of pending melt quote IDs for federation payment observation.
+    ///
+    /// Results are ordered by quote ID and start strictly after `start_after`.
+    /// A zero `limit` returns an empty page.
+    async fn get_federation_melt_quote_ids_for_payment_observation(
+        &self,
+        start_after: Option<&QuoteId>,
+        limit: usize,
+    ) -> Result<Vec<QuoteId>, Self::Err>;
 }
 
 /// Mint Proof Transaction trait

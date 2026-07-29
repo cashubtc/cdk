@@ -11,7 +11,7 @@ const PRIMARY_NAMESPACE: &str = "cdk_federation";
 const SECONDARY_NAMESPACE: &str = "payment_observer";
 const SCHEDULE_KEY: &str = "payment_quote_backoff_v2";
 const LEGACY_MINT_SCHEDULE_KEY: &str = "mint_quote_backoff_v1";
-const SCHEDULE_VERSION: u8 = 3;
+const SCHEDULE_VERSION: u8 = 4;
 
 const BASE_DELAY_MS: u64 = 5_000;
 const MAX_DELAY_MS: u64 = 5 * 60 * 1_000;
@@ -140,6 +140,37 @@ impl FederationPaymentObservationSchedule {
             })
             .cloned()
             .collect())
+    }
+
+    pub(super) async fn scan_cursor(
+        &self,
+        db: &DynMintDatabase,
+        kind: FederationPaymentQuoteKind,
+    ) -> Result<Option<QuoteId>, cdk::Error> {
+        let schedules = load_schedules(db).await?;
+        Ok(match kind {
+            FederationPaymentQuoteKind::Mint => schedules.mint_scan_after,
+            FederationPaymentQuoteKind::Melt => schedules.melt_scan_after,
+        })
+    }
+
+    pub(super) async fn set_scan_cursor(
+        &self,
+        db: &DynMintDatabase,
+        kind: FederationPaymentQuoteKind,
+        cursor: Option<QuoteId>,
+    ) -> Result<(), cdk::Error> {
+        let _guard = self.mutation_lock.lock().await;
+        let mut schedules = load_schedules(db).await?;
+        let stored = match kind {
+            FederationPaymentQuoteKind::Mint => &mut schedules.mint_scan_after,
+            FederationPaymentQuoteKind::Melt => &mut schedules.melt_scan_after,
+        };
+        if *stored != cursor {
+            *stored = cursor;
+            store_schedules(db, &schedules).await?;
+        }
+        Ok(())
     }
 
     pub(super) async fn claim(
@@ -319,6 +350,10 @@ impl FederationPaymentObservationSchedule {
 struct PersistedPaymentSchedules {
     version: u8,
     quotes: BTreeMap<String, PersistedPaymentSchedule>,
+    #[serde(default)]
+    mint_scan_after: Option<QuoteId>,
+    #[serde(default)]
+    melt_scan_after: Option<QuoteId>,
 }
 
 impl Default for PersistedPaymentSchedules {
@@ -326,6 +361,8 @@ impl Default for PersistedPaymentSchedules {
         Self {
             version: SCHEDULE_VERSION,
             quotes: BTreeMap::new(),
+            mint_scan_after: None,
+            melt_scan_after: None,
         }
     }
 }
@@ -391,7 +428,7 @@ async fn load_schedules(db: &DynMintDatabase) -> Result<PersistedPaymentSchedule
     {
         return match serde_json::from_slice::<PersistedPaymentSchedules>(&bytes) {
             Ok(schedules) if schedules.version == SCHEDULE_VERSION => Ok(schedules),
-            Ok(mut schedules) if schedules.version == 2 => {
+            Ok(mut schedules) if matches!(schedules.version, 2 | 3) => {
                 schedules.version = SCHEDULE_VERSION;
                 Ok(schedules)
             }
@@ -433,6 +470,8 @@ async fn load_schedules(db: &DynMintDatabase) -> Result<PersistedPaymentSchedule
             .into_iter()
             .map(|(quote, schedule)| (format!("mint:{quote}"), schedule))
             .collect(),
+        mint_scan_after: None,
+        melt_scan_after: None,
     })
 }
 
@@ -696,6 +735,69 @@ mod tests {
                 .expect("requested candidates")
                 .len(),
             2
+        );
+    }
+
+    #[tokio::test]
+    async fn payment_scan_cursors_survive_restart_and_remain_independent() {
+        let db: DynMintDatabase = Arc::new(
+            cdk_sqlite::mint::memory::empty()
+                .await
+                .expect("sqlite database"),
+        );
+        let mint_cursor = QuoteId::from(uuid::Uuid::from_u128(10));
+        let melt_cursor = QuoteId::from(uuid::Uuid::from_u128(20));
+        let first = FederationPaymentObservationSchedule::default();
+        first
+            .set_scan_cursor(
+                &db,
+                FederationPaymentQuoteKind::Mint,
+                Some(mint_cursor.clone()),
+            )
+            .await
+            .expect("persist mint cursor");
+        first
+            .set_scan_cursor(
+                &db,
+                FederationPaymentQuoteKind::Melt,
+                Some(melt_cursor.clone()),
+            )
+            .await
+            .expect("persist melt cursor");
+
+        let restarted = FederationPaymentObservationSchedule::default();
+        assert_eq!(
+            restarted
+                .scan_cursor(&db, FederationPaymentQuoteKind::Mint)
+                .await
+                .expect("load mint cursor"),
+            Some(mint_cursor)
+        );
+        assert_eq!(
+            restarted
+                .scan_cursor(&db, FederationPaymentQuoteKind::Melt)
+                .await
+                .expect("load melt cursor"),
+            Some(melt_cursor.clone())
+        );
+
+        restarted
+            .set_scan_cursor(&db, FederationPaymentQuoteKind::Mint, None)
+            .await
+            .expect("wrap mint cursor");
+        assert_eq!(
+            restarted
+                .scan_cursor(&db, FederationPaymentQuoteKind::Mint)
+                .await
+                .expect("load wrapped mint cursor"),
+            None
+        );
+        assert_eq!(
+            restarted
+                .scan_cursor(&db, FederationPaymentQuoteKind::Melt)
+                .await
+                .expect("load retained melt cursor"),
+            Some(melt_cursor)
         );
     }
 

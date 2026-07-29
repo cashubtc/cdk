@@ -1478,6 +1478,56 @@ where
         Ok(mint_quotes)
     }
 
+    #[cfg(feature = "federation")]
+    async fn get_federation_mint_quote_ids_for_payment_observation(
+        &self,
+        start_after: Option<&QuoteId>,
+        limit: usize,
+    ) -> Result<Vec<QuoteId>, Self::Err> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let query_str = match start_after {
+            Some(_) => {
+                r#"
+                SELECT id
+                FROM mint_quote
+                WHERE amount_paid = 0
+                  AND amount_issued = 0
+                  AND id > :start_after
+                ORDER BY id
+                LIMIT :limit
+                "#
+            }
+            None => {
+                r#"
+                SELECT id
+                FROM mint_quote
+                WHERE amount_paid = 0
+                  AND amount_issued = 0
+                ORDER BY id
+                LIMIT :limit
+                "#
+            }
+        };
+        let mut query = query(query_str)?.bind("limit", limit as i64);
+        if let Some(start_after) = start_after {
+            query = query.bind("start_after", start_after.to_string());
+        }
+        query
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(|row| QuoteId::from_str(&column_as_string!(&row[0])).map_err(Error::from))
+            .collect()
+    }
+
     async fn get_melt_quote(
         &self,
         quote_id: &QuoteId,
@@ -1539,5 +1589,53 @@ where
         .into_iter()
         .map(sql_row_to_melt_quote)
         .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    #[cfg(feature = "federation")]
+    async fn get_federation_melt_quote_ids_for_payment_observation(
+        &self,
+        start_after: Option<&QuoteId>,
+        limit: usize,
+    ) -> Result<Vec<QuoteId>, Self::Err> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        let query_str = match start_after {
+            Some(_) => {
+                r#"
+                SELECT id
+                FROM melt_quote
+                WHERE state = 'PENDING'
+                  AND id > :start_after
+                ORDER BY id
+                LIMIT :limit
+                "#
+            }
+            None => {
+                r#"
+                SELECT id
+                FROM melt_quote
+                WHERE state = 'PENDING'
+                ORDER BY id
+                LIMIT :limit
+                "#
+            }
+        };
+        let mut query = query(query_str)?.bind("limit", limit as i64);
+        if let Some(start_after) = start_after {
+            query = query.bind("start_after", start_after.to_string());
+        }
+        query
+            .fetch_all(&*conn)
+            .await?
+            .into_iter()
+            .map(|row| QuoteId::from_str(&column_as_string!(&row[0])).map_err(Error::from))
+            .collect()
     }
 }
