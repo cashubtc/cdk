@@ -308,6 +308,53 @@ async fn effective_federation_keyset_responses_use_rotated_config() {
 }
 
 #[tokio::test]
+async fn effective_federation_keyset_responses_survive_restart() {
+    let runtime_config = runtime_config_with_inactive_rotation_keyset();
+    let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
+    let mut journal = InMemoryFederationJournal::new();
+    let mut next_keyset = runtime_config
+        .public_config()
+        .keysets
+        .iter()
+        .find(|keyset| !keyset.active)
+        .expect("inactive rotation keyset")
+        .clone();
+    next_keyset.active = true;
+    let rotation_entry = appended_entry(
+        &mut journal,
+        runtime_config.operation_envelope(FederationOperation::KeysetRotation(
+            FederationKeysetRotationOperation {
+                keyset: next_keyset.clone(),
+            },
+        )),
+    );
+    persist_and_apply_entry(&mint, &rotation_entry).await;
+
+    let before_restart = mint
+        .effective_federation_keysets()
+        .await
+        .expect("effective keysets before restart")
+        .expect("federation keysets");
+    drop(mint);
+
+    let restarted = restart_federated_test_mint(runtime_config, localstore).await;
+    let after_restart = restarted
+        .effective_federation_keysets()
+        .await
+        .expect("effective keysets after restart")
+        .expect("federation keysets");
+    let active_after_restart = restarted
+        .effective_federation_pubkeys()
+        .await
+        .expect("effective pubkeys after restart")
+        .expect("federation pubkeys");
+
+    assert_eq!(after_restart, before_restart);
+    assert_eq!(active_after_restart.keysets.len(), 1);
+    assert_eq!(active_after_restart.keysets[0].id, next_keyset.id);
+}
+
+#[tokio::test]
 async fn restore_returns_old_keyset_signature_after_rotation() {
     let runtime_config = runtime_config_with_inactive_rotation_keyset();
     let (mint, localstore) = federated_test_mint(runtime_config.clone()).await;
