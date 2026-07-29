@@ -30,7 +30,7 @@ use cdk_fake_wallet::{create_fake_invoice, FakeWallet};
 
 use super::{
     FederatedMintConnector, FederatedMintConnectorConfig, FederationWalletConnector,
-    FederationWalletPerformanceStage, FEDERATION_CATCH_UP_MAX_RETRIES,
+    FEDERATION_CATCH_UP_MAX_RETRIES,
 };
 use crate::dhke::verify_bls_blind_signature;
 use crate::mint::{FederationRuntimeConfig, Mint, MintBuilder, MintInput, MintMeltLimits};
@@ -54,16 +54,6 @@ fn identity_secret(member_id: MemberId) -> SecretKey {
     let mut bytes = [0u8; 32];
     bytes[31] = member_id.get() as u8;
     SecretKey::from_slice(&bytes).expect("secret key")
-}
-
-#[test]
-fn wallet_performance_stages_have_unique_fixed_labels() {
-    let labels = FederationWalletPerformanceStage::ALL
-        .into_iter()
-        .map(FederationWalletPerformanceStage::as_str)
-        .collect::<HashSet<_>>();
-
-    assert_eq!(labels.len(), FederationWalletPerformanceStage::ALL.len());
 }
 
 fn member(member_id: MemberId) -> TrustedDealerMember {

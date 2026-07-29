@@ -20,6 +20,7 @@ use futures::future::join_all;
 use futures::stream::{FuturesUnordered, StreamExt};
 use futures::FutureExt;
 
+use super::performance::{record_wallet_performance_stage, WalletPerformanceStage};
 use super::{AuthWallet, HttpClient, MintConnector};
 use crate::nuts::nut01::{
     aggregate_blind_signature_shares, batch_verify_blind_signature_shares,
@@ -151,52 +152,6 @@ enum ShareAmountValidation {
     Exact,
     AllowZeroAmountPlaceholder,
     Restore,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum FederationWalletPerformanceStage {
-    MemberShareBatchVerification,
-    MemberShareScalarFallback,
-    ShareAggregation,
-    FinalBlindSignatureVerification,
-    FinalProofVerification,
-}
-
-impl FederationWalletPerformanceStage {
-    #[cfg(test)]
-    const ALL: [Self; 5] = [
-        Self::MemberShareBatchVerification,
-        Self::MemberShareScalarFallback,
-        Self::ShareAggregation,
-        Self::FinalBlindSignatureVerification,
-        Self::FinalProofVerification,
-    ];
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::MemberShareBatchVerification => "member_share_batch_verification",
-            Self::MemberShareScalarFallback => "member_share_scalar_fallback",
-            Self::ShareAggregation => "share_aggregation",
-            Self::FinalBlindSignatureVerification => "final_blind_signature_verification",
-            Self::FinalProofVerification => "final_proof_verification",
-        }
-    }
-}
-
-pub(crate) fn record_wallet_performance_stage(
-    stage: FederationWalletPerformanceStage,
-    started_at: Instant,
-    work_items: usize,
-    success: bool,
-) {
-    tracing::debug!(
-        target: "cdk::wallet::federation_performance",
-        stage = stage.as_str(),
-        work_items,
-        duration_seconds = started_at.elapsed().as_secs_f64(),
-        success,
-        "Federation wallet performance stage completed"
-    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -768,6 +723,49 @@ impl FederatedMintConnector {
             .0)
     }
 
+    fn record_member_active_keyset_result(
+        &self,
+        member_id: MemberId,
+        result: Result<(MintInfo, Vec<KeySet>), Error>,
+        valid_member_connectors: &mut BTreeMap<MemberId, Arc<dyn MintConnector + Send + Sync>>,
+        first_valid_mint_info: &mut Option<MintInfo>,
+        failures: &mut Vec<String>,
+    ) -> bool {
+        match result {
+            Ok((mint_info, advertised)) => {
+                let validation =
+                    FederationWalletConnector::validate_member_mint_info_with_config_digest(
+                        &self.public_config,
+                        member_id,
+                        &mint_info,
+                        self.config_digest,
+                    )
+                    .and_then(|_| {
+                        validate_member_active_keysets(&self.public_config, member_id, &advertised)
+                    });
+                match validation {
+                    Ok(()) => {
+                        if let Some(connector) = self.member_connectors.get(&member_id) {
+                            valid_member_connectors.insert(member_id, connector.clone());
+                        }
+                        if first_valid_mint_info.is_none() {
+                            *first_valid_mint_info = Some(mint_info);
+                        }
+                        true
+                    }
+                    Err(err) => {
+                        failures.push(format!("member {}: {}", member_id, err));
+                        false
+                    }
+                }
+            }
+            Err(err) => {
+                failures.push(format!("member {}: {}", member_id, err));
+                false
+            }
+        }
+    }
+
     async fn validate_member_active_keysets_with_mint_info(
         &self,
     ) -> Result<
@@ -828,66 +826,25 @@ impl FederatedMintConnector {
         }
 
         while let Some((member_id, result)) = pending.next().await {
-            match result {
-                Ok((mint_info, advertised)) => {
-                    match FederationWalletConnector::validate_member_mint_info_with_config_digest(
-                        &self.public_config,
-                        member_id,
-                        &mint_info,
-                        self.config_digest,
-                    )
-                    .and_then(|_| {
-                        validate_member_active_keysets(&self.public_config, member_id, &advertised)
-                    }) {
-                        Ok(()) => {
-                            if let Some(connector) = self.member_connectors.get(&member_id) {
-                                valid_member_connectors.insert(member_id, connector.clone());
-                            }
-                            if first_valid_mint_info.is_none() {
-                                first_valid_mint_info = Some(mint_info);
-                            }
-                            valid_members = valid_members.saturating_add(1);
-                        }
-                        Err(err) => failures.push(format!("member {}: {}", member_id, err)),
-                    }
-                }
-                Err(err) => failures.push(format!("member {}: {}", member_id, err)),
+            if self.record_member_active_keyset_result(
+                member_id,
+                result,
+                &mut valid_member_connectors,
+                &mut first_valid_mint_info,
+                &mut failures,
+            ) {
+                valid_members = valid_members.saturating_add(1);
             }
 
             if valid_members >= threshold {
                 while let Some((member_id, result)) = pending.next().now_or_never().flatten() {
-                    match result {
-                        Ok((mint_info, advertised)) => {
-                            match FederationWalletConnector::validate_member_mint_info_with_config_digest(
-                                &self.public_config,
-                                member_id,
-                                &mint_info,
-                                self.config_digest,
-                            )
-                            .and_then(|_| {
-                                validate_member_active_keysets(
-                                    &self.public_config,
-                                    member_id,
-                                    &advertised,
-                                )
-                            }) {
-                                Ok(()) => {
-                                    if let Some(connector) = self.member_connectors.get(&member_id)
-                                    {
-                                        valid_member_connectors
-                                            .insert(member_id, connector.clone());
-                                    }
-                                    if first_valid_mint_info.is_none() {
-                                        first_valid_mint_info = Some(mint_info);
-                                    }
-                                }
-                                Err(err) => {
-                                    failures.push(format!("member {}: {}", member_id, err));
-                                }
-                            }
-                        }
-                        Err(err) => failures.push(format!("member {}: {}", member_id, err)),
-                    }
+                    self.record_member_active_keyset_result(
+                        member_id,
+                        result,
+                        &mut valid_member_connectors,
+                        &mut first_valid_mint_info,
+                        &mut failures,
+                    );
                 }
                 *self.valid_member_connectors_cache.write().await =
                     Some(valid_member_connectors.clone());
@@ -1196,13 +1153,18 @@ impl FederatedMintConnector {
         )))
     }
 
-    async fn verify_mint_quote_visible_to_threshold(
+    async fn verify_quote_visible_to_threshold<F, Fut>(
         &self,
-        response: &MintQuoteResponse<String>,
-    ) -> Result<(), Error> {
+        quote_kind: &'static str,
+        mut visibility_check: F,
+    ) -> Result<(), Error>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = Result<(), Error>>,
+    {
         let mut last_error = None;
         for attempt in 1..=self.config.mint_quote_visibility_attempts {
-            match self.mint_quote_visibility_check(response).await {
+            match visibility_check().await {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     last_error = Some(err);
@@ -1214,12 +1176,23 @@ impl FederatedMintConnector {
         }
 
         Err(Error::InvalidMintResponse(format!(
-            "federation mint quote was not threshold-visible after {} attempts: {}",
+            "federation {} quote was not threshold-visible after {} attempts: {}",
+            quote_kind,
             self.config.mint_quote_visibility_attempts,
             last_error
                 .map(|err| err.to_string())
                 .unwrap_or_else(|| "no status response".to_string())
         )))
+    }
+
+    async fn verify_mint_quote_visible_to_threshold(
+        &self,
+        response: &MintQuoteResponse<String>,
+    ) -> Result<(), Error> {
+        self.verify_quote_visible_to_threshold("mint", || {
+            self.mint_quote_visibility_check(response)
+        })
+        .await
     }
 
     async fn create_mint_quote(
@@ -1341,26 +1314,10 @@ impl FederatedMintConnector {
         &self,
         response: &MeltQuoteCreateResponse<String>,
     ) -> Result<(), Error> {
-        let mut last_error = None;
-        for attempt in 1..=self.config.mint_quote_visibility_attempts {
-            match self.melt_quote_visibility_check(response).await {
-                Ok(()) => return Ok(()),
-                Err(err) => {
-                    last_error = Some(err);
-                    if attempt < self.config.mint_quote_visibility_attempts {
-                        tokio::time::sleep(self.config.mint_quote_visibility_retry_delay).await;
-                    }
-                }
-            }
-        }
-
-        Err(Error::InvalidMintResponse(format!(
-            "federation melt quote was not threshold-visible after {} attempts: {}",
-            self.config.mint_quote_visibility_attempts,
-            last_error
-                .map(|err| err.to_string())
-                .unwrap_or_else(|| "no status response".to_string())
-        )))
+        self.verify_quote_visible_to_threshold("melt", || {
+            self.melt_quote_visibility_check(response)
+        })
+        .await
     }
 
     async fn melt_quote_visibility_check(
@@ -1481,7 +1438,7 @@ impl FederatedMintConnector {
             })
             .collect::<Result<Vec<_>, Error>>();
         record_wallet_performance_stage(
-            FederationWalletPerformanceStage::ShareAggregation,
+            WalletPerformanceStage::ShareAggregation,
             aggregation_started_at,
             outputs.len(),
             aggregate_signatures.is_ok(),
@@ -1555,7 +1512,7 @@ impl FederatedMintConnector {
         let batch_verification =
             batch_verify_blind_signature_shares(&shares, &blinded_messages, &public_shares);
         record_wallet_performance_stage(
-            FederationWalletPerformanceStage::MemberShareBatchVerification,
+            WalletPerformanceStage::MemberShareBatchVerification,
             batch_started_at,
             shares.len(),
             batch_verification.as_ref().is_ok_and(|verified| *verified),
@@ -1579,7 +1536,7 @@ impl FederatedMintConnector {
                 Ok(())
             })();
             record_wallet_performance_stage(
-                FederationWalletPerformanceStage::MemberShareScalarFallback,
+                WalletPerformanceStage::MemberShareScalarFallback,
                 scalar_started_at,
                 shares.len(),
                 scalar_verification.is_ok(),
