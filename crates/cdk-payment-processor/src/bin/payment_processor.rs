@@ -162,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-        let mut server = cdk_payment_processor::PaymentProcessorServer::new(
+        let server = cdk_payment_processor::PaymentProcessorServer::new(
             ln_backed,
             &listen_addr,
             listen_port,

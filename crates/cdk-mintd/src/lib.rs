@@ -900,15 +900,6 @@ where
     }
 }
 
-fn wrap_embedded_payment_processor<T>(payment_processor: T) -> DynMintPayment
-where
-    T: MintPayment<Err = cdk_common::payment::Error> + Send + Sync + 'static,
-{
-    wrap_payment_processor(cdk_payment_processor::PaymentProcessorClient::from_backend(
-        Arc::new(payment_processor),
-    ))
-}
-
 /// Configures Lightning Network backend based on the specified backend type
 async fn configure_lightning_backend(
     settings: &config::Settings,
@@ -954,7 +945,7 @@ async fn configure_lightning_backend(
                         _kv_store.clone(),
                     )
                     .await?;
-                let cln = wrap_embedded_payment_processor(cln);
+                let cln = wrap_payment_processor(cln);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -973,7 +964,7 @@ async fn configure_lightning_backend(
                 let lnbits = lnbits_settings
                     .setup(settings, ln_entry.unit.clone(), None, work_dir, None)
                     .await?;
-                let lnbits = wrap_embedded_payment_processor(lnbits);
+                let lnbits = wrap_payment_processor(lnbits);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -998,7 +989,7 @@ async fn configure_lightning_backend(
                         _kv_store.clone(),
                     )
                     .await?;
-                let lnd = wrap_embedded_payment_processor(lnd);
+                let lnd = wrap_payment_processor(lnd);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -1027,7 +1018,7 @@ async fn configure_lightning_backend(
                         _kv_store.clone(),
                     )
                     .await?;
-                let fake = wrap_embedded_payment_processor(fake);
+                let fake = wrap_payment_processor(fake);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -1084,7 +1075,7 @@ async fn configure_lightning_backend(
                         None,
                     )
                     .await?;
-                let ldk_node = wrap_embedded_payment_processor(ldk_node);
+                let ldk_node = wrap_payment_processor(ldk_node);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -1177,7 +1168,7 @@ async fn configure_onchain_backend(
                         _kv_store,
                     )
                     .await?;
-                let bdk = wrap_embedded_payment_processor(bdk);
+                let bdk = wrap_payment_processor(bdk);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -1216,7 +1207,7 @@ async fn configure_onchain_backend(
                         let fake = fake_wallet
                             .setup(settings, unit.clone(), None, _work_dir, _kv_store.clone())
                             .await?;
-                        let fake = wrap_embedded_payment_processor(fake);
+                        let fake = wrap_payment_processor(fake);
 
                         mint_builder = configure_backend_for_methods(
                             settings,

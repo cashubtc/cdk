@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::str::FromStr;
+use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -11,6 +12,7 @@ use cdk_common::{CurrencyUnit, QuoteId};
 use futures::Stream;
 use lightning::offers::offer::Offer;
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -56,19 +58,51 @@ impl Drop for PaymentEventStream {
     }
 }
 
-/// Payment Processor
-pub struct PaymentProcessorServer {
-    service: PaymentProcessorService,
-    socket_addr: SocketAddr,
+struct PaymentProcessorServerState {
     shutdown: Option<CancellationToken>,
     handle: Option<JoinHandle<anyhow::Result<()>>>,
     backend_started: bool,
 }
 
+struct PaymentProcessorServerInner {
+    service: PaymentProcessorService,
+    socket_addr: RwLock<SocketAddr>,
+    state: Mutex<PaymentProcessorServerState>,
+}
+
+impl Drop for PaymentProcessorServerInner {
+    fn drop(&mut self) {
+        tracing::debug!("Dropping payment processor server");
+        self.service.cancel_payment_event_stream();
+
+        let state = self.state.get_mut();
+        if let Some(shutdown) = &state.shutdown {
+            shutdown.cancel();
+        }
+        if let Some(handle) = &state.handle {
+            handle.abort();
+        }
+        if state.backend_started {
+            tracing::warn!(
+                "Payment processor server dropped while running; backend stop was not awaited"
+            );
+        }
+    }
+}
+
+/// Clonable handle to a payment processor gRPC server.
+///
+/// Clones share the same listener address, server task, shutdown state, and
+/// backend lifecycle.
+#[derive(Clone)]
+pub struct PaymentProcessorServer {
+    inner: Arc<PaymentProcessorServerInner>,
+}
+
 impl std::fmt::Debug for PaymentProcessorServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PaymentProcessorServer")
-            .field("socket_addr", &self.socket_addr)
+            .field("socket_addr", &self.local_addr())
             .finish_non_exhaustive()
     }
 }
@@ -78,26 +112,36 @@ impl PaymentProcessorServer {
     pub fn new(payment_processor: DynMintPayment, addr: &str, port: u16) -> anyhow::Result<Self> {
         let socket_addr = SocketAddr::new(addr.parse()?, port);
         Ok(Self {
-            service: PaymentProcessorService::new(payment_processor),
-            socket_addr,
-            shutdown: None,
-            handle: None,
-            backend_started: false,
+            inner: Arc::new(PaymentProcessorServerInner {
+                service: PaymentProcessorService::new(payment_processor),
+                socket_addr: RwLock::new(socket_addr),
+                state: Mutex::new(PaymentProcessorServerState {
+                    shutdown: None,
+                    handle: None,
+                    backend_started: false,
+                }),
+            }),
         })
     }
 
     /// Return the address on which the server is configured or currently listening.
     pub fn local_addr(&self) -> SocketAddr {
-        self.socket_addr
+        *self
+            .inner
+            .socket_addr
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     /// Start the payment processor gRPC server.
-    pub async fn start(&mut self, tls_dir: Option<PathBuf>) -> anyhow::Result<()> {
-        if self.handle.is_some() || self.backend_started {
+    pub async fn start(&self, tls_dir: Option<PathBuf>) -> anyhow::Result<()> {
+        let mut state = self.inner.state.lock().await;
+
+        if state.handle.is_some() || state.backend_started {
             anyhow::bail!("Payment processor server is already running");
         }
 
-        tracing::info!("Starting RPC server {}", self.socket_addr);
+        tracing::info!("Starting RPC server {}", self.local_addr());
 
         let server = match tls_dir {
             Some(tls_dir) => {
@@ -143,7 +187,7 @@ impl PaymentProcessorServer {
 
                 Server::builder().tls_config(tls_config)?.add_service(
                     CdkPaymentProcessorServer::with_interceptor(
-                        self.service.clone(),
+                        self.inner.service.clone(),
                         create_version_check_interceptor(
                             cdk_common::grpc::VERSION_HEADER,
                             cdk_common::PAYMENT_PROCESSOR_PROTOCOL_VERSION,
@@ -154,7 +198,7 @@ impl PaymentProcessorServer {
             None => {
                 tracing::warn!("No valid TLS configuration found, starting insecure server");
                 Server::builder().add_service(CdkPaymentProcessorServer::with_interceptor(
-                    self.service.clone(),
+                    self.inner.service.clone(),
                     create_version_check_interceptor(
                         cdk_common::grpc::VERSION_HEADER,
                         cdk_common::PAYMENT_PROCESSOR_PROTOCOL_VERSION,
@@ -163,17 +207,21 @@ impl PaymentProcessorServer {
             }
         };
 
-        let listener = TcpListener::bind(self.socket_addr).await?;
-        self.socket_addr = listener.local_addr()?;
+        let listener = TcpListener::bind(self.local_addr()).await?;
+        *self
+            .inner
+            .socket_addr
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = listener.local_addr()?;
         let incoming = TcpListenerStream::new(listener);
 
-        self.service.start().await?;
-        self.backend_started = true;
+        self.inner.service.start().await?;
+        state.backend_started = true;
 
         let shutdown = CancellationToken::new();
         let shutdown_future = shutdown.clone().cancelled_owned();
-        self.shutdown = Some(shutdown);
-        self.handle = Some(tokio::spawn(async move {
+        state.shutdown = Some(shutdown);
+        state.handle = Some(tokio::spawn(async move {
             server
                 .serve_with_incoming_shutdown(incoming, shutdown_future)
                 .await?;
@@ -184,17 +232,19 @@ impl PaymentProcessorServer {
     }
 
     /// Stop the payment processor gRPC server.
-    pub async fn stop(&mut self) -> anyhow::Result<()> {
+    pub async fn stop(&self) -> anyhow::Result<()> {
         const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
-        self.service.cancel_payment_event_stream();
+        let mut state = self.inner.state.lock().await;
 
-        if let Some(shutdown) = self.shutdown.take() {
+        self.inner.service.cancel_payment_event_stream();
+
+        if let Some(shutdown) = state.shutdown.take() {
             tracing::info!("Initiating server shutdown");
             shutdown.cancel();
         }
 
-        let server_result = match self.handle.take() {
+        let server_result = match state.handle.take() {
             Some(mut handle) => match timeout(SHUTDOWN_TIMEOUT, &mut handle).await {
                 Ok(Ok(result)) => result,
                 Ok(Err(error)) => Err(error.into()),
@@ -213,33 +263,15 @@ impl PaymentProcessorServer {
             None => Ok(()),
         };
 
-        let backend_result = if self.backend_started {
-            self.backend_started = false;
-            self.service.stop().await.map_err(anyhow::Error::from)
+        let backend_result = if state.backend_started {
+            state.backend_started = false;
+            self.inner.service.stop().await.map_err(anyhow::Error::from)
         } else {
             Ok(())
         };
 
         backend_result?;
         server_result
-    }
-}
-
-impl Drop for PaymentProcessorServer {
-    fn drop(&mut self) {
-        tracing::debug!("Dropping payment processor server");
-        self.service.cancel_payment_event_stream();
-        if let Some(shutdown) = &self.shutdown {
-            shutdown.cancel();
-        }
-        if let Some(handle) = &self.handle {
-            handle.abort();
-        }
-        if self.backend_started {
-            tracing::warn!(
-                "Payment processor server dropped while running; backend stop was not awaited"
-            );
-        }
     }
 }
 
