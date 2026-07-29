@@ -74,6 +74,13 @@ fn confirmation_matches_known_anchor(
     }
 }
 
+fn reorg_disconnection_is_proven(
+    still_confirmed_in_block: bool,
+    membership: cdk_bdk::FederatedBlockMembership,
+) -> bool {
+    !still_confirmed_in_block && membership == cdk_bdk::FederatedBlockMembership::Disconnected
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FederationPaymentObserver {
     schedule: FederationPaymentObservationSchedule,
@@ -267,6 +274,10 @@ impl FederationPaymentObserver {
                             && confirmation.block_height == block_height
                     });
                 if still_confirmed_in_block {
+                    continue;
+                }
+                let membership = wallet.block_membership(block_hash, block_height).await;
+                if !reorg_disconnection_is_proven(still_confirmed_in_block, membership) {
                     continue;
                 }
                 state
@@ -1169,6 +1180,27 @@ mod tests {
         assert!(!confirmation_matches_known_anchor(
             Some(original_block),
             Some(different_block)
+        ));
+    }
+
+    #[test]
+    fn reorg_requires_positive_local_chain_disconnection_evidence() {
+        for membership in [
+            cdk_bdk::FederatedBlockMembership::Connected,
+            cdk_bdk::FederatedBlockMembership::Unknown,
+        ] {
+            assert!(
+                !reorg_disconnection_is_proven(false, membership),
+                "missing or unconfirmed output evidence must remain pending"
+            );
+        }
+        assert!(reorg_disconnection_is_proven(
+            false,
+            cdk_bdk::FederatedBlockMembership::Disconnected
+        ));
+        assert!(!reorg_disconnection_is_proven(
+            true,
+            cdk_bdk::FederatedBlockMembership::Disconnected
         ));
     }
 

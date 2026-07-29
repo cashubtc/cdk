@@ -251,7 +251,7 @@ an honest member from reserving and delivering messages.
 
 ### BDK-REORG-1 — Local absence/unconfirmed state can produce false reorg observations
 
-**Status:** Open residual detection gap.
+**Status:** Resolved 2026-07-29.
 
 Reorg observations now require quorum and conservative state transitions, so
 one member can no longer unilaterally reorg or permanently quarantine accepted
@@ -268,10 +268,13 @@ the block was disconnected from the active chain.
   `crates/cdk-bdk/src/federation.rs:544`
 - Open follow-up: `docs/federated-cashu-bdk-reorg-problem.md:18`
 
-**Required correction:** Emit reorg evidence only after proving that the
-recorded block is disconnected from the active chain, with explicit handling
-for unknown/incomplete local observations. Test transient absence,
-unconfirmation, stale scans, and a real disconnected block.
+**Resolution:** `FederatedBdkWallet::block_membership` now distinguishes an
+exact persisted checkpoint, a different known checkpoint at the same height,
+and an unknown height. The Axum observer submits reorg evidence only for the
+second case. Missing outputs, unconfirmed positions, stale/incomplete scans,
+and checkpoint gaps remain pending. The BDK membership test includes restart
+persistence; the Axum policy test covers connected, unknown, disconnected, and
+still-confirmed cases.
 
 ### U1 / Issue 13 — Federated quote age mixes logical and Unix timestamps
 

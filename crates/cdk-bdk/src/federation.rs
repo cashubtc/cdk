@@ -287,6 +287,17 @@ pub struct FederatedWalletOutputConfirmation {
     pub confirmation_depth: u32,
 }
 
+/// Local persisted-chain evidence for one exact block anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FederatedBlockMembership {
+    /// The local chain contains the exact block below its current tip.
+    Connected,
+    /// The local chain contains a different block at the same height.
+    Disconnected,
+    /// The local checkpoint graph cannot determine membership at this height.
+    Unknown,
+}
+
 /// Confirmed location of one exact federated wallet transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FederatedTransactionConfirmation {
@@ -557,6 +568,29 @@ impl FederatedBdkWallet {
             .collect()
     }
 
+    /// Determine whether an exact block belongs to the locally persisted chain.
+    ///
+    /// Missing checkpoints remain [`FederatedBlockMembership::Unknown`].
+    /// Callers must not treat that lack of evidence as a disconnection.
+    pub async fn block_membership(
+        &self,
+        block_hash: BlockHash,
+        block_height: u32,
+    ) -> FederatedBlockMembership {
+        let wallet = self.engine.wallet_with_db.lock().await;
+        match wallet
+            .wallet
+            .checkpoints()
+            .find(|checkpoint| checkpoint.height() == block_height)
+        {
+            Some(checkpoint) if checkpoint.hash() == block_hash => {
+                FederatedBlockMembership::Connected
+            }
+            Some(_) => FederatedBlockMembership::Disconnected,
+            None => FederatedBlockMembership::Unknown,
+        }
+    }
+
     /// Return local confirmed-chain evidence for an exact transaction.
     pub async fn transaction_confirmation(
         &self,
@@ -589,13 +623,16 @@ mod tests {
     use std::str::FromStr;
 
     use bdk_wallet::bitcoin::bip32::{Xpriv, Xpub};
+    use bdk_wallet::bitcoin::hashes::Hash as _;
     use bdk_wallet::bitcoin::secp256k1::Secp256k1;
     use bdk_wallet::bitcoin::{
         absolute, transaction, Amount, Network, OutPoint, Sequence, Transaction, TxIn, TxOut,
         Witness,
     };
+    use bdk_wallet::chain::BlockId;
     use bdk_wallet::rusqlite::Connection;
     use bdk_wallet::template::Bip84;
+    use bdk_wallet::Update;
 
     use super::*;
     use crate::{BitcoinRpcConfig, EsploraConfig};
@@ -635,6 +672,60 @@ mod tests {
             password: "private-password".to_string(),
             request_timeout_secs: 1,
         })
+    }
+
+    #[tokio::test]
+    async fn block_membership_requires_an_exact_persisted_checkpoint() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let wallet = FederatedBdkWallet::open(config(9), esplora_source(), root.path())
+            .expect("member wallet");
+        let known_hash = BlockHash::from_byte_array([3; 32]);
+        let other_hash = BlockHash::from_byte_array([4; 32]);
+
+        assert_eq!(
+            wallet.block_membership(known_hash, 1).await,
+            FederatedBlockMembership::Unknown
+        );
+        {
+            let mut wallet_with_db = wallet.engine.wallet_with_db.lock().await;
+            let checkpoint = wallet_with_db
+                .wallet
+                .latest_checkpoint()
+                .push(BlockId {
+                    height: 1,
+                    hash: known_hash,
+                })
+                .expect("higher checkpoint");
+            wallet_with_db
+                .wallet
+                .apply_update(Update {
+                    chain: Some(checkpoint),
+                    ..Update::default()
+                })
+                .expect("connected checkpoint");
+            wallet_with_db.persist().expect("persist checkpoint");
+        }
+
+        assert_eq!(
+            wallet.block_membership(known_hash, 1).await,
+            FederatedBlockMembership::Connected
+        );
+        assert_eq!(
+            wallet.block_membership(other_hash, 1).await,
+            FederatedBlockMembership::Disconnected
+        );
+        assert_eq!(
+            wallet.block_membership(known_hash, 2).await,
+            FederatedBlockMembership::Unknown
+        );
+
+        drop(wallet);
+        let restarted = FederatedBdkWallet::open(config(9), esplora_source(), root.path())
+            .expect("restarted member wallet");
+        assert_eq!(
+            restarted.block_membership(known_hash, 1).await,
+            FederatedBlockMembership::Connected
+        );
     }
 
     #[tokio::test]

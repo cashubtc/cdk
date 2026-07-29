@@ -43,11 +43,11 @@ pub use crate::chain::{
 };
 pub use crate::error::Error;
 pub use crate::federation::{
-    FederatedBdkLocalConfig, FederatedBdkWallet, FederatedChainSourceDescriptor,
-    FederatedChainSourceScope, FederatedTransactionConfirmation, FederatedWalletConfig,
-    FederatedWalletKeychain, FederatedWalletOutput, FederatedWalletOutputConfirmation,
-    FederatedWalletReadiness, FederatedWalletScope, FederatedWalletSyncHealth,
-    FederatedWalletSyncStatus,
+    FederatedBdkLocalConfig, FederatedBdkWallet, FederatedBlockMembership,
+    FederatedChainSourceDescriptor, FederatedChainSourceScope, FederatedTransactionConfirmation,
+    FederatedWalletConfig, FederatedWalletKeychain, FederatedWalletOutput,
+    FederatedWalletOutputConfirmation, FederatedWalletReadiness, FederatedWalletScope,
+    FederatedWalletSyncHealth, FederatedWalletSyncStatus,
 };
 pub use crate::storage::{BdkStorage, FinalizedReceiveIntentRecord, FinalizedSendIntentRecord};
 pub use crate::types::{

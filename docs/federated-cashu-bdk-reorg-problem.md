@@ -1,6 +1,7 @@
 # Federated BDK: pre-liability reorg leaves spendable deposits stuck
 
-**Status:** Implemented; coordinated deployment pending (observed 2026-07-17)
+**Status:** Implemented; coordinated deployment pending (observed 2026-07-17,
+positive disconnection proof completed 2026-07-29)
 
 **Related:** `docs/federated-bdk-operations.md`,  
 `docs/federated-cashu-bdk-frost-implementation-plan.md` (Milestone 9),  
@@ -15,9 +16,15 @@
 > red-before-green regressions in
 > `crates/cdk-common/src/federation/chain_observation.rs`). A single false
 > emission like the one journal'd below can no longer reorg, alarm, block
-> credit, or permanently quarantine. Emitting reorg only on proven
-> disconnect and the liar-first field-establishment case (`DB-003`) remain
-> open follow-ups.
+> credit, or permanently quarantine.
+>
+> **Update 2026-07-29:** the observer now emits `Reorg` only when the
+> member-local persisted BDK checkpoint graph contains a different block at
+> the stored anchor height. A missing output, an unconfirmed position, a
+> checkpoint gap, or a tip below the anchor remains `Unknown` and produces no
+> reorg evidence. Focused BDK restart and Axum observer-policy tests cover the
+> distinction. The liar-first field-establishment case (`DB-003`) remains a
+> separate open follow-up.
 
 ## Summary
 
@@ -269,8 +276,6 @@ allows the same observer to report a later real reorg in a newer epoch.
 ### Follow-ups (not minimal; optional later)
 
 - Require a reorg observation quorum.
-- Emit Reorg only when the stored confirmation block is proven off the local
-  tip ancestry, not on momentary `Unconfirmed` / missing BDK rows.
 - Support pre-liability re-inclusion of the same transaction in a different
   block through a separate anchor-generation design.
 - Operator metrics distinguishing pre-liability reorg vs liability alarm.
