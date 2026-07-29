@@ -278,11 +278,8 @@ impl MintBuilder {
             Ok(finalized) => {
                 match finalized.validate_activation_records(&setup_public_config, &activations) {
                     Ok(()) => {}
-                    Err(FederationError::DkgTranscriptMismatch { reason })
-                        if reason.contains("missing DKG activation") =>
-                    {
+                    Err(FederationError::MissingDkgActivation { .. }) => {
                         tracing::info!(
-                            %reason,
                             "Federation DKG startup activation waiting for all-member confirmation"
                         );
                         return Ok(());
@@ -303,11 +300,8 @@ impl MintBuilder {
                 );
                 Ok(())
             }
-            Err(FederationError::DkgTranscriptMismatch { reason })
-                if reason.contains("missing transcript signature") =>
-            {
+            Err(FederationError::MissingDkgTranscriptSignature { .. }) => {
                 tracing::info!(
-                    %reason,
                     "Federation DKG startup activation waiting for complete transcript signatures"
                 );
                 Ok(())
@@ -1553,6 +1547,40 @@ mod tests {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn builder_rejects_inconsistent_federation_mode_and_config() {
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let member_without_config = builder
+            .with_federation_mode(FederationMode::Member)
+            .build_with_seed(localstore, &seed())
+            .await
+            .expect_err("member mode without a runtime config must fail");
+        assert!(matches!(
+            member_without_config,
+            Error::Federation(FederationError::RuntimeModeConfigMismatch {
+                member_mode: true,
+                has_config: false,
+            })
+        ));
+
+        let (builder, localstore) = builder_with_bolt11_processor().await;
+        let fixture = dkg_completion_fixture(member_id(2));
+        let standalone_with_config = builder
+            .with_federation_config(fixture.setup_runtime_config)
+            .with_federation_mode(FederationMode::Standalone)
+            .build_with_seed(localstore, &seed())
+            .await
+            .expect_err("standalone mode with a runtime config must fail");
+        assert!(matches!(
+            standalone_with_config,
+            Error::Federation(FederationError::RuntimeModeConfigMismatch {
+                member_mode: false,
+                has_config: true,
+            })
+        ));
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn dkg_completion_records_activate_federation_config_on_build() {
         let (builder, localstore) = builder_with_bolt11_processor().await;
         let fixture = dkg_completion_fixture(member_id(2));
@@ -1713,8 +1741,7 @@ mod tests {
             .expect_err("finalized config without durable activation evidence must fail");
         assert!(matches!(
             err,
-            Error::Federation(FederationError::DkgTranscriptMismatch { reason })
-                if reason.contains("missing DKG activation")
+            Error::Federation(FederationError::MissingDkgActivation { .. })
         ));
     }
 

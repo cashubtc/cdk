@@ -1557,6 +1557,34 @@ pub enum FederationError {
         /// Human-readable mismatch reason.
         reason: String,
     },
+    /// A finalized DKG transcript is still missing one configured member's signature.
+    #[error(
+        "Federation DKG transcript mismatch: missing transcript signature for member {member_id}"
+    )]
+    MissingDkgTranscriptSignature {
+        /// Configured member whose transcript signature is not durable yet.
+        member_id: MemberId,
+    },
+    /// A finalized DKG ceremony is still missing one configured member's activation.
+    #[error(
+        "Federation DKG transcript mismatch: missing DKG activation for member {member_id} ceremony {ceremony_id}"
+    )]
+    MissingDkgActivation {
+        /// Configured member whose activation is not durable yet.
+        member_id: MemberId,
+        /// Ceremony awaiting that member's activation.
+        ceremony_id: FederationDkgCeremonyId,
+    },
+    /// Mint federation mode and runtime configuration disagree.
+    #[error(
+        "Federation runtime mode/config mismatch: member_mode={member_mode}, has_config={has_config}"
+    )]
+    RuntimeModeConfigMismatch {
+        /// Whether member mode was selected.
+        member_mode: bool,
+        /// Whether a federation runtime config was supplied.
+        has_config: bool,
+    },
     /// A federation DKG transcript had an invalid member identity signature.
     #[error("Federation DKG transcript signature verification failed for member {member_id}")]
     DkgTranscriptSignatureVerificationFailed {
@@ -3356,8 +3384,8 @@ mod tests {
                 &[keyset_share],
                 &transcript_signatures,
             ),
-            Err(FederationError::DkgTranscriptMismatch { reason })
-                if reason.contains("missing transcript signature for member 3")
+            Err(FederationError::MissingDkgTranscriptSignature { member_id: missing })
+                if missing == member_id(3)
         ));
     }
 

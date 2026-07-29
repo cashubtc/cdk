@@ -40,7 +40,7 @@ use cdk_common::{
 use uuid::Uuid;
 
 use super::melt::ensure_melt_quote_matches_request;
-use super::verification::{Verification, MAX_PROOF_CONTENT_LEN};
+use super::verification::{validate_proof_content_bounds, Verification};
 use super::Mint;
 use super::MintInput;
 
@@ -792,38 +792,7 @@ impl FederationRuntimeConfig {
 
     /// Validate proof secret and witness content before consensus admission.
     pub fn validate_proof_content_bounds(proofs: &Proofs) -> Result<(), Error> {
-        for proof in proofs {
-            let secret_len = proof.secret.len();
-            if secret_len > MAX_PROOF_CONTENT_LEN {
-                tracing::warn!(
-                    "Proof secret exceeds max content length: {} > {}",
-                    secret_len,
-                    MAX_PROOF_CONTENT_LEN
-                );
-                return Err(Error::ProofContentTooLarge {
-                    actual: secret_len,
-                    max: MAX_PROOF_CONTENT_LEN,
-                });
-            }
-
-            if let Some(witness) = &proof.witness {
-                let witness_str = serde_json::to_string(witness)?;
-                let witness_len = witness_str.len();
-                if witness_len > MAX_PROOF_CONTENT_LEN {
-                    tracing::warn!(
-                        "Proof witness exceeds max content length: {} > {}",
-                        witness_len,
-                        MAX_PROOF_CONTENT_LEN
-                    );
-                    return Err(Error::ProofContentTooLarge {
-                        actual: witness_len,
-                        max: MAX_PROOF_CONTENT_LEN,
-                    });
-                }
-            }
-        }
-
-        Ok(())
+        validate_proof_content_bounds(proofs)
     }
 
     /// Verify spent proofs against the federation aggregate BLS keysets.

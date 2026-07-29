@@ -2184,12 +2184,11 @@ impl FederationDkgTranscript {
                     .ok_or(FederationError::MissingMember {
                         member_id: *member_id,
                     })?;
-            let signature =
-                self.signatures
-                    .get(member_id)
-                    .ok_or(FederationError::DkgTranscriptMismatch {
-                        reason: format!("missing transcript signature for member {member_id}"),
-                    })?;
+            let signature = self.signatures.get(member_id).ok_or(
+                FederationError::MissingDkgTranscriptSignature {
+                    member_id: *member_id,
+                },
+            )?;
             signature.verify(self.transcript_hash, member)?;
         }
         for member_id in self.signatures.keys() {
@@ -2493,10 +2492,9 @@ impl FederationDkgFinalizedMemberConfig {
         for ceremony_id in ceremony_ids {
             for member_id in self.public_config.members.keys() {
                 if !confirmations.contains_key(&(ceremony_id, *member_id)) {
-                    return Err(FederationError::DkgTranscriptMismatch {
-                        reason: format!(
-                            "missing DKG activation for member {member_id} ceremony {ceremony_id}"
-                        ),
+                    return Err(FederationError::MissingDkgActivation {
+                        member_id: *member_id,
+                        ceremony_id,
                     });
                 }
             }

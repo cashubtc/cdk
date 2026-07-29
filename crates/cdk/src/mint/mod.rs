@@ -370,6 +370,17 @@ impl Mint {
         #[cfg(feature = "federation")] federation_mode: FederationMode,
         #[cfg(feature = "federation")] federation_config: Option<FederationRuntimeConfig>,
     ) -> Result<Self, Error> {
+        #[cfg(feature = "federation")]
+        if federation_mode.is_member() != federation_config.is_some() {
+            return Err(
+                cdk_common::federation::FederationError::RuntimeModeConfigMismatch {
+                    member_mode: federation_mode.is_member(),
+                    has_config: federation_config.is_some(),
+                }
+                .into(),
+            );
+        }
+
         // Subscribe up front and bootstrap the in-memory snapshot from the same
         // receiver that keeps it fresh. `borrow_and_update` pins the receiver
         // cursor to this snapshot, so any signatory rotation that lands before
