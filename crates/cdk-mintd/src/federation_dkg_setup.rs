@@ -78,6 +78,9 @@ pub(crate) fn run_dkg_roster_command(args: &FederationDkgRosterArgs) -> Result<(
     }
     let threshold_params = ThresholdParams::with_bft_consensus(member_count, args.threshold)
         .context("invalid federation threshold parameters")?;
+    threshold_params
+        .validate_bft_safety()
+        .context("unsafe production federation threshold profile")?;
     let mut public_config = FederationConfig::new(threshold_params, members, Vec::new())
         .context("invalid setup-only federation roster")?;
     if let Some(payment_threshold) = args.payment_observation_threshold {

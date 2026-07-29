@@ -5,7 +5,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use cdk::mint_url::MintUrl;
 use cdk::nuts::{CurrencyUnit, MintInfo};
 use cdk::wallet::{
@@ -219,6 +219,10 @@ impl StoredFederationWallet {
     /// Validate this imported federation wallet config.
     pub fn validate(&self) -> Result<()> {
         self.public_config.validate_wallet_runtime_metadata()?;
+        self.public_config
+            .threshold_params
+            .validate_bft_safety()
+            .context("wallet refuses an unsafe federation threshold profile")?;
         self.connector_policy.connector_config().validate()?;
         if let Some(quote_coordinator_member_id) = self.connector_policy.quote_coordinator_member_id
         {
@@ -574,7 +578,10 @@ mod tests {
     }
 
     fn valid_public_config() -> FederationConfig {
-        let params = ThresholdParams::with_bft_consensus(3, 2).expect("params");
+        public_config_with_thresholds(ThresholdParams::with_bft_consensus(3, 2).expect("params"))
+    }
+
+    fn public_config_with_thresholds(params: ThresholdParams) -> FederationConfig {
         generate_trusted_dealer_configs(
             params,
             vec![
@@ -935,6 +942,27 @@ mod tests {
             .expect_err("mismatched roster metadata rejected");
 
         assert!(err.to_string().contains("member count mismatch"));
+    }
+
+    #[test]
+    fn registry_rejects_unsafe_production_threshold_profile() {
+        let public_config = public_config_with_thresholds(
+            ThresholdParams::new(3, 2, 2).expect("structurally valid thresholds"),
+        );
+        let local_mint_url = default_member_mint_url(&public_config).expect("default member url");
+        let mut registry = FederationWalletRegistry::default();
+
+        let err = registry
+            .upsert(
+                public_config,
+                local_mint_url,
+                StoredFederationConnectorPolicy::default(),
+            )
+            .expect_err("unsafe threshold profile rejected");
+
+        assert!(err
+            .to_string()
+            .contains("unsafe federation threshold profile"));
     }
 
     #[test]

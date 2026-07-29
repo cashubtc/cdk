@@ -385,8 +385,8 @@ max_delay_time = 3
 # enabled = false
 # Federation consensus always uses AlephBFT.
 # Keep false for production. Set true only for local smoke/regtest configs
-# whose public federation config uses development_single_observation finality,
-# for example generated local development smoke tests.
+# whose public federation config uses development_single_observation finality
+# or a threshold profile below the production BFT safety bounds.
 # allow_development_payment_observation_policy = false
 # public_config_path = "/path/to/federation-public.json"
 # private_config_path = "/path/to/member-private.json"

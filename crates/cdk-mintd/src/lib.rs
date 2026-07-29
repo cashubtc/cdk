@@ -1326,6 +1326,10 @@ fn configure_federation(
     })?;
 
     let public_config = read_public_federation_config(public_config_path)?;
+    validate_federation_threshold_startup_policy(
+        &public_config,
+        federation.allow_development_payment_observation_policy,
+    )?;
     validate_federated_bdk_startup(settings, &public_config)?;
     #[cfg(feature = "federation-bark")]
     validate_federated_bark_startup(settings, &public_config)?;
@@ -1634,6 +1638,26 @@ fn validate_federation_payment_observation_startup_policy(
     }
 
     Ok(())
+}
+
+#[cfg(feature = "federation")]
+fn validate_federation_threshold_startup_policy(
+    public_config: &FederationConfig,
+    allow_development_policy: bool,
+) -> Result<()> {
+    match public_config.threshold_params.validate_bft_safety() {
+        Ok(()) => Ok(()),
+        Err(error) if allow_development_policy => {
+            tracing::warn!(
+                "Allowing development-only unsafe federation threshold profile: {}",
+                error
+            );
+            Ok(())
+        }
+        Err(error) => Err(error).context(
+            "unsafe production federation threshold profile; set federation.allow_development_payment_observation_policy=true only for a local development or regtest configuration",
+        ),
+    }
 }
 
 #[cfg(feature = "federation")]
@@ -2006,6 +2030,10 @@ async fn reconcile_federation_dkg_ceremony(
         anyhow!("federation.private_config_path must be set when federation is enabled")
     })?;
     let public_config = read_public_federation_config(public_config_path)?;
+    validate_federation_threshold_startup_policy(
+        &public_config,
+        federation.allow_development_payment_observation_policy,
+    )?;
     let private_config: MemberConfigPrivate =
         read_federation_json(private_config_path, "private federation config")?;
     let runtime_config = FederationRuntimeConfig::new(public_config, private_config)
@@ -4876,6 +4904,22 @@ engine = "sqlite"
 
         let _ = fs::remove_file(public_config_path);
         let _ = fs::remove_file(private_config_path);
+    }
+
+    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[test]
+    fn threshold_startup_policy_requires_explicit_development_override() {
+        use cdk_common::federation::ThresholdParams;
+
+        let (mut bundle, _) = two_member_trusted_dealer_bundle();
+        bundle.public_config.threshold_params =
+            ThresholdParams::new(2, 1, 1).expect("structurally valid thresholds");
+
+        let error = validate_federation_threshold_startup_policy(&bundle.public_config, false)
+            .expect_err("unsafe production profile rejected");
+        assert!(error.to_string().contains("unsafe production"));
+        validate_federation_threshold_startup_policy(&bundle.public_config, true)
+            .expect("explicit development override accepted");
     }
 
     #[cfg(feature = "federation")]

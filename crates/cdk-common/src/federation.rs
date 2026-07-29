@@ -724,6 +724,24 @@ pub enum FederationError {
         /// Configured consensus threshold.
         consensus_threshold: u16,
     },
+    /// A structurally valid threshold tuple does not satisfy the production BFT profile.
+    #[error(
+        "Unsafe federation threshold profile: members={members}, signature_threshold={signature_threshold}, consensus_threshold={consensus_threshold}, max_faulty={max_faulty}; production requires signature_threshold>={minimum_signature_threshold} and consensus_threshold>={minimum_consensus_threshold}"
+    )]
+    UnsafeThresholdProfile {
+        /// Configured federation member count.
+        members: u16,
+        /// Configured BLS signature threshold.
+        signature_threshold: u16,
+        /// Configured consensus threshold.
+        consensus_threshold: u16,
+        /// Maximum Byzantine members in the advertised BFT model.
+        max_faulty: u16,
+        /// Minimum safe BLS signature threshold.
+        minimum_signature_threshold: u16,
+        /// Minimum quorum-intersecting consensus threshold.
+        minimum_consensus_threshold: u16,
+    },
     /// A real payment observation policy must require a safe member quorum.
     #[error(
         "Invalid federation payment observation quorum for {context}: required={required}, members={members}, consensus_threshold={consensus_threshold}"
@@ -2160,6 +2178,7 @@ mod tests {
     fn threshold_params_validate_bft_defaults() {
         let params = ThresholdParams::with_bft_consensus(5, 3).expect("params");
         assert_eq!(params.consensus_threshold, 4);
+        params.validate_bft_safety().expect("safe BFT profile");
         assert!(matches!(
             ThresholdParams::with_bft_consensus(1, 1),
             Err(FederationError::InsufficientMembers {
@@ -2175,6 +2194,40 @@ mod tests {
                 consensus_threshold: 3
             })
         ));
+    }
+
+    #[test]
+    fn threshold_params_reject_byzantine_unsafe_production_profiles() {
+        for (members, signature_threshold, consensus_threshold) in
+            [(4, 1, 3), (4, 2, 2), (5, 1, 4), (7, 2, 5)]
+        {
+            let params = ThresholdParams::new(members, signature_threshold, consensus_threshold)
+                .expect("structurally valid threshold profile");
+            assert!(matches!(
+                params.validate_bft_safety(),
+                Err(FederationError::UnsafeThresholdProfile { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn accepted_bft_profiles_have_honest_quorum_intersection() {
+        for members in FEDERATION_MIN_MEMBERS..=64 {
+            let max_faulty = members.saturating_sub(1) / 3;
+            let consensus_threshold = members.saturating_sub(max_faulty);
+            let params =
+                ThresholdParams::new(members, max_faulty.saturating_add(1), consensus_threshold)
+                    .expect("structurally valid threshold profile");
+            params.validate_bft_safety().expect("safe BFT profile");
+
+            let minimum_quorum_intersection = consensus_threshold
+                .saturating_mul(2)
+                .saturating_sub(members);
+            assert!(
+                minimum_quorum_intersection > max_faulty,
+                "n={members} q={consensus_threshold} f={max_faulty}"
+            );
+        }
     }
 
     #[test]

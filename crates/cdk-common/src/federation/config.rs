@@ -325,6 +325,39 @@ impl ThresholdParams {
         Self::new(member_count, signature_threshold, consensus_threshold)
     }
 
+    /// Return the maximum Byzantine members in the production BFT model.
+    pub fn max_faulty_members(&self) -> u16 {
+        self.member_count.saturating_sub(1) / 3
+    }
+
+    /// Validate the production BFT safety profile.
+    ///
+    /// Structural validation deliberately remains separate so deterministic
+    /// test runtimes and specialist deployments can represent weaker quorums
+    /// explicitly. Production members and wallet imports must call this check
+    /// in addition to [`Self::validate`].
+    pub fn validate_bft_safety(&self) -> Result<()> {
+        self.validate()?;
+
+        let max_faulty = self.max_faulty_members();
+        let minimum_signature_threshold = max_faulty.saturating_add(1);
+        let minimum_consensus_threshold = self.member_count.saturating_sub(max_faulty);
+        if self.signature_threshold < minimum_signature_threshold
+            || self.consensus_threshold < minimum_consensus_threshold
+        {
+            return Err(FederationError::UnsafeThresholdProfile {
+                members: self.member_count,
+                signature_threshold: self.signature_threshold,
+                consensus_threshold: self.consensus_threshold,
+                max_faulty,
+                minimum_signature_threshold,
+                minimum_consensus_threshold,
+            });
+        }
+
+        Ok(())
+    }
+
     /// Validate threshold parameters.
     pub fn validate(&self) -> Result<()> {
         if self.member_count < FEDERATION_MIN_MEMBERS {

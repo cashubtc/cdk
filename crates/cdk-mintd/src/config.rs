@@ -1224,8 +1224,10 @@ pub struct Federation {
     /// Enable federation member mode for this mint.
     #[serde(default)]
     pub enabled: bool,
-    /// Permit development-only payment observation policies such as
-    /// `development_single_observation` for local smoke/regtest setups.
+    /// Permit development-only federation safety policies for local smoke/regtest setups.
+    ///
+    /// This includes `development_single_observation` payment finality and
+    /// threshold profiles below the production BFT safety bounds.
     #[serde(default)]
     pub allow_development_payment_observation_policy: bool,
     /// Path to the shared public federation config JSON file.
