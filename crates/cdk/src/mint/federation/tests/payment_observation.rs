@@ -283,6 +283,7 @@ fn bark_result_records_materialize_only_after_distinct_inner_quorum() {
             state: MeltQuoteState::Paid,
             amount: Amount::from(50),
             fee_reserve: Amount::from(2),
+            total_spent: Some(Amount::from(52)),
             payment_id: Some(PaymentIdentifier::PaymentHash(payment_hash.to_bytes())),
             payment_proof: Some("proof".to_string()),
         },

@@ -907,6 +907,15 @@ fn melt_payment_observation_envelope(
             state: fixture.state,
             amount: fixture.amount,
             fee_reserve: fixture.fee_reserve,
+            total_spent: match fixture.state {
+                MeltQuoteState::Paid => Some(
+                    fixture
+                        .amount
+                        .checked_add(fixture.fee_reserve)
+                        .expect("fixture amount plus fee reserve"),
+                ),
+                _ => None,
+            },
             payment_id: fixture.payment_id,
             payment_proof: fixture.payment_proof.map(str::to_string),
         },

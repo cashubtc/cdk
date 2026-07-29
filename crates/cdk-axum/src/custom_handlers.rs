@@ -2887,6 +2887,7 @@ mod tests {
                         state: observed_payment.state,
                         amount: observed_payment.amount,
                         fee_reserve: observed_payment.fee_reserve,
+                        total_spent: observed_payment.total_spent,
                         payment_id: observed_payment.payment_id.clone(),
                         payment_proof: observed_payment.payment_proof.clone(),
                     },

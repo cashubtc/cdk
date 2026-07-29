@@ -658,6 +658,13 @@ pub struct FederationMeltQuotePaymentObservation {
     pub amount: Amount,
     /// Fee reserve associated with the quote.
     pub fee_reserve: Amount,
+    /// Exact amount spent by a paid backend, including its final fee.
+    ///
+    /// This is omitted for non-terminal observations. The optional encoding
+    /// preserves decoding of historical journal entries, while admission of
+    /// new paid observations requires an exact value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_spent: Option<Amount>,
     /// Optional stable backend payment identifier observed by this member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payment_id: Option<PaymentIdentifier>,
@@ -675,8 +682,41 @@ impl FederationMeltQuotePaymentObservation {
             && self.state == other.state
             && self.amount == other.amount
             && self.fee_reserve == other.fee_reserve
+            && self.total_spent == other.total_spent
             && self.payment_id == other.payment_id
             && self.payment_proof == other.payment_proof
+    }
+
+    /// Validate the exact settlement amount carried by this observation.
+    ///
+    /// Paid observations must report a spend between the requested amount and
+    /// the maximum authorized amount (requested amount plus fee reserve).
+    /// Non-paid observations must not claim a settlement amount.
+    pub fn validate_settlement(&self) -> Result<()> {
+        let maximum_spent = self.amount.checked_add(self.fee_reserve).ok_or(
+            FederationError::BalanceAuditAmountOverflow {
+                operation_kind: FederationOperationKind::MeltQuotePayment,
+            },
+        )?;
+
+        match (self.state, self.total_spent) {
+            (MeltQuoteState::Paid, Some(total_spent))
+                if total_spent >= self.amount && total_spent <= maximum_spent =>
+            {
+                Ok(())
+            }
+            (MeltQuoteState::Paid, Some(_)) => Err(FederationError::OperationStateInvalid {
+                reason: "paid melt observation total_spent is outside the authorized quote range"
+                    .to_string(),
+            }),
+            (MeltQuoteState::Paid, None) => Err(FederationError::OperationStateInvalid {
+                reason: "paid melt observation is missing exact total_spent".to_string(),
+            }),
+            (_, None) => Ok(()),
+            (_, Some(_)) => Err(FederationError::OperationStateInvalid {
+                reason: "non-paid melt observation must not claim total_spent".to_string(),
+            }),
+        }
     }
 
     /// Count matching and conflicting observations from distinct members.
@@ -1661,11 +1701,14 @@ impl FederationOperation {
                 remainder: Amount::ZERO,
             }),
             Self::MeltQuote(_) => Ok(FederationOperationBalanceAudit::unchecked(operation_kind)),
-            Self::MeltQuotePayment(observation) => Ok(FederationOperationBalanceAudit::external(
-                operation_kind,
-                observation.amount,
-                observation.fee_reserve,
-            )),
+            Self::MeltQuotePayment(observation) => {
+                observation.validate_settlement()?;
+                Ok(FederationOperationBalanceAudit::external(
+                    operation_kind,
+                    observation.amount,
+                    observation.fee_reserve,
+                ))
+            }
             Self::Melt(operation) => FederationOperationBalanceAudit::checked(
                 operation_kind,
                 operation
@@ -2627,6 +2670,7 @@ mod tests {
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(1),
                 fee_reserve: Amount::from(1),
+                total_spent: Some(Amount::from(2)),
                 payment_id: None,
                 payment_proof: Some("preimage".to_string()),
             },
@@ -2649,6 +2693,78 @@ mod tests {
         let encoded = serde_json::to_vec(&value).expect("operation bytes");
         FederationOperationEnvelope::from_json_slice(&encoded)
             .expect_err("unknown envelope fields must fail closed");
+    }
+
+    #[test]
+    fn legacy_paid_melt_observation_decodes_but_cannot_be_admitted_without_exact_spend() {
+        let legacy = envelope(FederationOperation::MeltQuotePayment(
+            FederationMeltQuotePaymentObservation {
+                quote: "legacy-melt".to_string(),
+                observer: member_id(1),
+                method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+                state: MeltQuoteState::Paid,
+                amount: Amount::from(10),
+                fee_reserve: Amount::from(5),
+                total_spent: None,
+                payment_id: None,
+                payment_proof: Some("preimage".to_string()),
+            },
+        ));
+        let bytes = legacy.canonical_bytes().expect("legacy-compatible bytes");
+        let encoded = std::str::from_utf8(&bytes).expect("legacy-compatible utf8");
+        assert!(!encoded.contains("total_spent"));
+
+        let decoded =
+            FederationOperationEnvelope::from_json_slice(&bytes).expect("legacy observation");
+        let FederationOperation::MeltQuotePayment(observation) = &decoded.operation else {
+            panic!("expected melt observation");
+        };
+        assert_eq!(observation.total_spent, None);
+        assert!(decoded.operation.balance_audit().is_err());
+    }
+
+    #[test]
+    fn paid_melt_observation_requires_exact_spend_inside_quote_bound() {
+        let observation = |state, total_spent| FederationMeltQuotePaymentObservation {
+            quote: "bounded-melt".to_string(),
+            observer: member_id(1),
+            method: PaymentMethod::Known(crate::nuts::nut00::KnownMethod::Bolt11),
+            state,
+            amount: Amount::from(10),
+            fee_reserve: Amount::from(5),
+            total_spent,
+            payment_id: None,
+            payment_proof: None,
+        };
+
+        assert!(observation(MeltQuoteState::Paid, Some(Amount::from(10)))
+            .validate_settlement()
+            .is_ok());
+        assert!(observation(MeltQuoteState::Paid, Some(Amount::from(13)))
+            .validate_settlement()
+            .is_ok());
+        assert!(observation(MeltQuoteState::Paid, Some(Amount::from(15)))
+            .validate_settlement()
+            .is_ok());
+        assert!(observation(MeltQuoteState::Paid, None)
+            .validate_settlement()
+            .is_err());
+        assert!(observation(MeltQuoteState::Paid, Some(Amount::from(9)))
+            .validate_settlement()
+            .is_err());
+        assert!(observation(MeltQuoteState::Paid, Some(Amount::from(16)))
+            .validate_settlement()
+            .is_err());
+        assert!(observation(MeltQuoteState::Failed, Some(Amount::from(10)))
+            .validate_settlement()
+            .is_err());
+        assert!(observation(MeltQuoteState::Failed, None)
+            .validate_settlement()
+            .is_ok());
+
+        let exact = observation(MeltQuoteState::Paid, Some(Amount::from(13)));
+        let conflicting_total = observation(MeltQuoteState::Paid, Some(Amount::from(14)));
+        assert!(!exact.matches_payment_evidence(&conflicting_total));
     }
 
     #[test]
@@ -3062,6 +3178,7 @@ mod tests {
                 state: MeltQuoteState::Pending,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                total_spent: None,
                 payment_id: None,
                 payment_proof: None,
             },
@@ -3074,6 +3191,7 @@ mod tests {
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                total_spent: Some(Amount::from(11)),
                 payment_id: None,
                 payment_proof: Some("preimage".to_string()),
             },
@@ -3086,6 +3204,7 @@ mod tests {
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                total_spent: Some(Amount::from(11)),
                 payment_id: None,
                 payment_proof: Some("different-preimage".to_string()),
             },
@@ -3245,6 +3364,7 @@ mod tests {
             state: MeltQuoteState::Paid,
             amount: Amount::from(10),
             fee_reserve: Amount::from(1),
+            total_spent: Some(Amount::from(11)),
             payment_id: Some(PaymentIdentifier::CustomId("payment-b".to_string())),
             payment_proof: Some("preimage".to_string()),
         };
@@ -3546,6 +3666,7 @@ mod tests {
                 state: MeltQuoteState::Pending,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                total_spent: None,
                 payment_id: None,
                 payment_proof: None,
             }),
@@ -3559,6 +3680,7 @@ mod tests {
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                total_spent: Some(Amount::from(11)),
                 payment_id: None,
                 payment_proof: Some("preimage".to_string()),
             }),
@@ -3572,6 +3694,7 @@ mod tests {
                 state: MeltQuoteState::Failed,
                 amount: Amount::from(10),
                 fee_reserve: Amount::from(1),
+                total_spent: None,
                 payment_id: None,
                 payment_proof: None,
             }),
@@ -3760,6 +3883,7 @@ mod tests {
                 state: MeltQuoteState::Paid,
                 amount: Amount::from(7),
                 fee_reserve: Amount::from(1),
+                total_spent: Some(Amount::from(8)),
                 payment_id: None,
                 payment_proof: Some("preimage".to_string()),
             });

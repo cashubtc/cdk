@@ -982,6 +982,15 @@ async fn submit_terminal_melt_payment_observation(
         quote.amount,
         quote.fee_reserve,
         match terminal_state {
+            MeltQuoteState::Paid => Some(
+                quote
+                    .amount
+                    .checked_add(quote.fee_reserve)
+                    .context("smoke melt amount plus fee reserve overflow")?,
+            ),
+            _ => None,
+        },
+        match terminal_state {
             MeltQuoteState::Paid => Some(format!("federation-smoke-paid-{}", quote.id)),
             _ => None,
         },

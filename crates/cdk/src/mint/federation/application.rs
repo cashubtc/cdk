@@ -580,6 +580,14 @@ impl Mint {
                 state,
                 amount: quote.amount().into(),
                 fee_reserve: quote.fee_reserve().into(),
+                total_spent: match state {
+                    cdk_common::MeltQuoteState::Paid => Some(
+                        plan.external_amount
+                            .checked_add(plan.fee_amount)
+                            .ok_or(Error::AmountOverflow)?,
+                    ),
+                    _ => None,
+                },
                 payment_id: Some(PaymentIdentifier::PaymentHash(payment_hash.to_bytes())),
                 payment_proof,
             },
@@ -730,6 +738,12 @@ impl Mint {
                 return Ok(None);
             };
             validate_federation_onchain_melt_receipt(&quote, operation_id, &receipt)?;
+            let total_spent = Amount::from(
+                receipt
+                    .amount_sat
+                    .checked_add(receipt.fee_sat)
+                    .ok_or(Error::AmountOverflow)?,
+            );
             return Ok(Some(FederationMeltQuotePaymentObservation {
                 quote: quote.id.to_string(),
                 observer: config.member_id(),
@@ -737,6 +751,7 @@ impl Mint {
                 state: cdk_common::MeltQuoteState::Paid,
                 amount: quote.amount().into(),
                 fee_reserve: quote.fee_reserve().into(),
+                total_spent: Some(total_spent),
                 payment_id: Some(PaymentIdentifier::QuoteId(quote.id.clone())),
                 payment_proof: Some(receipt.outpoint.to_string()),
             }));
@@ -797,6 +812,16 @@ impl Mint {
             state: payment.status,
             amount: quote.amount().into(),
             fee_reserve: quote.fee_reserve().into(),
+            total_spent: match payment.status {
+                cdk_common::MeltQuoteState::Paid => Some(
+                    crate::mint::melt::shared::total_spent_for_quote_unit(
+                        &payment.total_spent,
+                        &quote.unit,
+                    )?
+                    .into(),
+                ),
+                _ => None,
+            },
             payment_id: Some(payment.payment_lookup_id),
             payment_proof: payment.payment_proof,
         }))
@@ -2373,6 +2398,23 @@ impl Mint {
             }
         };
         validate_federation_onchain_melt_receipt(quote, melt_operation_id, &receipt)?;
+        let expected_total_spent = Amount::from(
+            receipt
+                .amount_sat
+                .checked_add(receipt.fee_sat)
+                .ok_or(Error::AmountOverflow)?,
+        );
+        if observation
+            .total_spent
+            .is_some_and(|total_spent| total_spent != expected_total_spent)
+        {
+            return Err(FederationError::OperationStateInvalid {
+                reason:
+                    "federation on-chain melt observation total_spent does not match the receipt"
+                        .to_string(),
+            }
+            .into());
+        }
         let expected_proof = receipt.outpoint.to_string();
         if observation.payment_proof.as_deref() != Some(expected_proof.as_str()) {
             return Err(FederationError::OperationStateInvalid {

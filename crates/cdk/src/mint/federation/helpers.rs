@@ -286,13 +286,23 @@ fn melt_quote_payment_response(
                 .ok_or(Error::AmountOverflow)?,
             quote.unit.clone(),
         ),
-        None => {
-            let amount = observation.amount.with_unit(quote.unit.clone());
-            let fee_reserve = observation.fee_reserve.with_unit(quote.unit.clone());
-            amount
-                .checked_add(&fee_reserve)
-                .map_err(|_| Error::AmountOverflow)?
-        }
+        None if observation.state == cdk_common::MeltQuoteState::Paid => match observation
+            .total_spent
+        {
+            Some(total_spent) => total_spent.with_unit(quote.unit.clone()),
+            None => {
+                // Historical accepted observations predate exact settlement
+                // accounting. Pure admission rejects this shape for all new
+                // operations, but replay must preserve the old deterministic
+                // full-reserve result.
+                let amount = observation.amount.with_unit(quote.unit.clone());
+                let fee_reserve = observation.fee_reserve.with_unit(quote.unit.clone());
+                amount
+                    .checked_add(&fee_reserve)
+                    .map_err(|_| Error::AmountOverflow)?
+            }
+        },
+        None => Amount::ZERO.with_unit(quote.unit.clone()),
     };
 
     Ok(MakePaymentResponse {

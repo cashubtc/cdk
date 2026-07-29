@@ -997,6 +997,7 @@ async fn submit_observation(
                 observation.state,
                 observation.amount,
                 observation.fee_reserve,
+                observation.total_spent,
                 observation.payment_proof,
                 observation.payment_id,
             ),

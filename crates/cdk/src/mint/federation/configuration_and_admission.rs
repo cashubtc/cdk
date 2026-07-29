@@ -582,6 +582,7 @@ impl FederationRuntimeConfig {
         state: cdk_common::MeltQuoteState,
         amount: Amount,
         fee_reserve: Amount,
+        total_spent: Option<Amount>,
         payment_proof: Option<String>,
     ) -> FederationOperationEnvelope
     where
@@ -593,6 +594,7 @@ impl FederationRuntimeConfig {
             state,
             amount,
             fee_reserve,
+            total_spent,
             payment_proof,
             None,
         )
@@ -609,6 +611,7 @@ impl FederationRuntimeConfig {
         state: cdk_common::MeltQuoteState,
         amount: Amount,
         fee_reserve: Amount,
+        total_spent: Option<Amount>,
         payment_proof: Option<String>,
         payment_id: Option<PaymentIdentifier>,
     ) -> FederationOperationEnvelope
@@ -623,6 +626,7 @@ impl FederationRuntimeConfig {
                 state,
                 amount,
                 fee_reserve,
+                total_spent,
                 payment_id,
                 payment_proof,
             },

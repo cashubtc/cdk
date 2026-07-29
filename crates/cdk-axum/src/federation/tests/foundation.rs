@@ -4502,6 +4502,10 @@ fn melt_payment_observation_envelope(
         state_observed,
         Amount::from(1),
         Amount::from(1),
+        match state_observed {
+            MeltQuoteState::Paid => Some(Amount::from(2)),
+            _ => None,
+        },
         payment_proof,
     )
 }
@@ -4561,6 +4565,7 @@ fn matching_melt_payment_observation_envelope(
             evidence.state,
             evidence.amount.clone(),
             evidence.fee_reserve.clone(),
+            evidence.total_spent,
             evidence.payment_proof.clone(),
             evidence.payment_id.clone(),
         )

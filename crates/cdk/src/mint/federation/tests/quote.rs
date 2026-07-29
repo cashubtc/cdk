@@ -136,6 +136,7 @@ fn runtime_config_admission_validates_quote_and_payment_observation_submissions(
         state: MeltQuoteState::Paid,
         amount: Amount::from(9),
         fee_reserve: Amount::from(1),
+        total_spent: Some(Amount::from(10)),
         payment_id: None,
         payment_proof: Some("preimage".to_string()),
     };

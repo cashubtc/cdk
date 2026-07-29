@@ -119,6 +119,7 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
         state: MeltQuoteState::Paid,
         amount: Amount::from(1),
         fee_reserve: Amount::from(1),
+        total_spent: Some(Amount::from(1)),
         payment_id: Some(PaymentIdentifier::QuoteId(quote.clone())),
         payment_proof: Some(OutPoint::new(premature_txid, 0).to_string()),
     };
@@ -258,6 +259,7 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
         state: MeltQuoteState::Paid,
         amount: Amount::from(1),
         fee_reserve: Amount::from(1),
+        total_spent: Some(Amount::from(1)),
         payment_id: Some(PaymentIdentifier::QuoteId(quote.clone())),
         payment_proof: Some(receipt.outpoint.to_string()),
     };
@@ -275,6 +277,19 @@ async fn accepted_frost_onchain_melt_materializes_one_pending_payment_intent() {
     assert_eq!(response.payment_proof, Some(receipt.outpoint.to_string()));
     assert_eq!(response.status, MeltQuoteState::Paid);
     assert_eq!(response.total_spent, Amount::new(1, CurrencyUnit::Sat));
+
+    let exact_offchain_response = super::super::melt_quote_payment_response(
+        FederationOperationId::from_bytes([35; 32]),
+        &stored_quote,
+        &observation,
+        None,
+    )
+    .expect("exact off-chain response");
+    assert_eq!(
+        exact_offchain_response.total_spent,
+        Amount::new(1, CurrencyUnit::Sat),
+        "unused fee reserve must remain available as melt change"
+    );
 }
 
 #[tokio::test]
@@ -2154,6 +2169,7 @@ async fn paid_federation_melt_replays_finalizing_cleanup_without_second_payment(
             payment_observation.state,
             payment_observation.amount,
             payment_observation.fee_reserve,
+            payment_observation.total_spent,
             payment_observation.payment_proof,
             payment_observation.payment_id,
         ),
