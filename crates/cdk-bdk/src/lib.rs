@@ -18,7 +18,7 @@ use bdk_wallet::keys::bip39::Mnemonic;
 use bdk_wallet::keys::{DerivableKey, ExtendedKey};
 use bdk_wallet::rusqlite::Connection;
 use bdk_wallet::template::Bip84;
-use bdk_wallet::{KeychainKind, PersistedWallet, Wallet};
+use bdk_wallet::{KeychainKind, PersistedWallet, Update, Wallet};
 use cdk_common::common::FeeReserve;
 use cdk_common::database::KVStore;
 use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
@@ -269,12 +269,36 @@ impl CdkBdk {
             .load_wallet(&mut db)
             .map_err(|e| Error::Wallet(e.to_string()))?;
 
+        // A fresh Bitcoin Core wallet should start at the current tip rather
+        // than scanning from genesis. An explicit rescan height overrides the
+        // tip for seed recovery. Fetch this before creating the wallet so an
+        // unreachable or misconfigured node cannot persist a genesis-pinned
+        // wallet by accident.
+        let initial_checkpoint = match wallet_opt.is_none() {
+            true => chain_source.initial_checkpoint()?,
+            false => None,
+        };
+
         let mut wallet = match wallet_opt {
             Some(wallet) => wallet,
-            None => Wallet::create(descriptor, change_descriptor)
-                .network(network)
-                .create_wallet(&mut db)
-                .map_err(|e| Error::Wallet(e.to_string()))?,
+            None => {
+                let mut wallet = Wallet::create(descriptor, change_descriptor)
+                    .network(network)
+                    .create_wallet(&mut db)
+                    .map_err(|e| Error::Wallet(e.to_string()))?;
+
+                if let Some(block_id) = initial_checkpoint {
+                    let checkpoint = wallet.latest_checkpoint().insert(block_id);
+                    wallet
+                        .apply_update(Update {
+                            chain: Some(checkpoint),
+                            ..Default::default()
+                        })
+                        .map_err(|e| Error::Wallet(e.to_string()))?;
+                }
+
+                wallet
+            }
         };
 
         wallet.persist(&mut db)?;

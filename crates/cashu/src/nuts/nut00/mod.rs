@@ -611,6 +611,13 @@ pub enum CurrencyUnit {
     Custom(String),
 }
 
+impl CurrencyUnit {
+    /// Construct a custom unit, normalizing to lowercase and trimming whitespace.
+    pub fn custom<S: AsRef<str>>(value: S) -> Self {
+        Self::Custom(normalize_custom_unit(value.as_ref()))
+    }
+}
+
 #[cfg(feature = "mint")]
 impl CurrencyUnit {
     /// Derivation index mint will use for unit
@@ -629,11 +636,6 @@ impl CurrencyUnit {
         }
     }
 
-    /// Construct a custom unit, normalizing to uppercase and trimming whitespace.
-    pub fn custom<S: AsRef<str>>(value: S) -> Self {
-        Self::Custom(normalize_custom_unit(value.as_ref()).to_uppercase())
-    }
-
     ///  Big endian encoded integer of the first 4 bytes of the sha256 hash of the unit string.
     pub fn hashed_derivation_index(&self) -> u32 {
         use bitcoin::hashes::sha256;
@@ -649,7 +651,11 @@ impl CurrencyUnit {
 
 fn normalize_custom_unit(value: &str) -> String {
     let trimmed = value.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n'));
-    trimmed.nfc().collect::<String>()
+    trimmed
+        .chars()
+        .flat_map(char::to_lowercase)
+        .nfc()
+        .collect::<String>()
 }
 
 impl FromStr for CurrencyUnit {
@@ -662,14 +668,13 @@ impl FromStr for CurrencyUnit {
             "USD" => Ok(Self::Usd),
             "EUR" => Ok(Self::Eur),
             "AUTH" => Ok(Self::Auth),
-            _ => Ok(Self::Custom(normalize_custom_unit(value))),
+            _ => Ok(Self::custom(value)),
         }
     }
 }
 
 impl fmt::Display for CurrencyUnit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // let binding = normalize_custom_unit(&self).clone();
         let s = match self {
             CurrencyUnit::Sat => "SAT",
             CurrencyUnit::Msat => "MSAT",
@@ -680,14 +685,9 @@ impl fmt::Display for CurrencyUnit {
         };
 
         if let Some(width) = f.width() {
-            write!(
-                f,
-                "{:width$}",
-                normalize_custom_unit(s).to_lowercase(),
-                width = width
-            )
+            write!(f, "{:width$}", normalize_custom_unit(s), width = width)
         } else {
-            write!(f, "{}", normalize_custom_unit(s).to_lowercase())
+            write!(f, "{}", normalize_custom_unit(s))
         }
     }
 }
@@ -697,7 +697,7 @@ impl Serialize for CurrencyUnit {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string().to_lowercase())
+        serializer.serialize_str(&self.to_string())
     }
 }
 
@@ -1411,18 +1411,25 @@ mod tests {
 
     #[test]
     fn custom_unit_ser_der() {
-        let unit = CurrencyUnit::Custom(String::from("test"));
+        let unit = CurrencyUnit::from_str("BADCOIN").unwrap();
         let serialized = serde_json::to_string(&unit).unwrap();
         let deserialized: CurrencyUnit = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(unit, deserialized)
+        let deserialized_uppercase: CurrencyUnit = serde_json::from_str(r#""BADCOIN""#).unwrap();
+
+        assert_eq!(unit, CurrencyUnit::Custom("badcoin".to_string()));
+        assert_eq!(unit, CurrencyUnit::from_str("badcoin").unwrap());
+        assert_eq!(unit, CurrencyUnit::custom("BADCOIN"));
+        assert_eq!(unit.to_string(), "badcoin");
+        assert_eq!(serialized, r#""badcoin""#);
+        assert_eq!(unit, deserialized);
+        assert_eq!(unit, deserialized_uppercase);
     }
 
     #[test]
-    #[cfg(feature = "mint")]
     fn test_currency_unit_custom_normalizes_and_stays_custom() {
         let unit = CurrencyUnit::custom(" usd\n");
 
-        assert_eq!(unit, CurrencyUnit::Custom("USD".to_string()));
+        assert_eq!(unit, CurrencyUnit::Custom("usd".to_string()));
         assert_ne!(unit, CurrencyUnit::default());
         assert_eq!(unit.to_string(), "usd");
     }
@@ -1443,6 +1450,10 @@ mod tests {
         // Custom
         assert_eq!(
             CurrencyUnit::from_str("custom").unwrap(),
+            CurrencyUnit::Custom("custom".to_string())
+        );
+        assert_eq!(
+            CurrencyUnit::from_str("CuStOm").unwrap(),
             CurrencyUnit::Custom("custom".to_string())
         );
     }

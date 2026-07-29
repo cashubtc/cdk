@@ -667,6 +667,7 @@ impl crate::config::Bdk {
                         port,
                         user,
                         password,
+                        wallet_rescan_from_height: self.wallet_rescan_from_height,
                     },
                 ))
             }
@@ -678,6 +679,25 @@ impl crate::config::Bdk {
 #[cfg(all(test, feature = "bdk"))]
 mod bdk_tests {
     use super::*;
+
+    #[test]
+    fn forwards_bitcoin_rpc_wallet_rescan_height() {
+        let config = config::Bdk {
+            chain_source_type: Some("bitcoinrpc".to_string()),
+            wallet_rescan_from_height: Some(850000),
+            ..Default::default()
+        };
+
+        match config
+            .chain_source()
+            .expect("Bitcoin RPC config should parse")
+        {
+            cdk_bdk::ChainSource::BitcoinRpc(config) => {
+                assert_eq!(config.wallet_rescan_from_height, Some(850000));
+            }
+            _ => panic!("expected a Bitcoin RPC chain source"),
+        }
+    }
 
     #[test]
     fn parses_electrum_chain_source() {

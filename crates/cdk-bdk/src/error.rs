@@ -55,6 +55,24 @@ pub enum Error {
     #[error("Bitcoin RPC error: {0}")]
     BitcoinRpc(#[from] bdk_bitcoind_rpc::bitcoincore_rpc::Error),
 
+    /// The Bitcoin Core chain tip could not be determined for a fresh wallet.
+    #[cfg(feature = "bitcoin-rpc")]
+    #[error("Failed to determine the Bitcoin Core chain tip for a fresh wallet: {source}")]
+    ChainTipFetchFailed {
+        /// Underlying Bitcoin Core RPC error.
+        #[source]
+        source: bdk_bitcoind_rpc::bitcoincore_rpc::Error,
+    },
+
+    /// The configured fresh-wallet rescan height is above the current chain tip.
+    #[error("Wallet rescan height {requested} is above the current chain tip {tip}")]
+    WalletRescanHeightTooHigh {
+        /// Configured rescan height.
+        requested: u32,
+        /// Current Bitcoin Core chain tip.
+        tip: u32,
+    },
+
     /// Esplora error
     #[error("Esplora error: {0}")]
     Esplora(String),
