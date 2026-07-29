@@ -3,16 +3,48 @@ use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
+use serde::Deserialize;
 
-use crate::config::Settings;
+use crate::config::{Settings, Signatory};
 
 const ENV_SECRET_PREFIX: &str = "env:";
 const FILE_SECRET_PREFIX: &str = "file:";
 const DEFAULT_SECRETS_DIRECTORY: &str = "cdk-mintd-secrets";
+const RELEASED_V017_SIGNATORY_URL_ENV_VAR: &str = "CDK_MINTD_SIGNATORY_URL";
+const RELEASED_V017_SIGNATORY_CERTS_ENV_VAR: &str = "CDK_MINTD_SIGNATORY_CERTS";
+#[cfg(feature = "management-rpc")]
+const RELEASED_V017_MANAGEMENT_TLS_DIR_ENV_VAR: &str = "CDK_MINTD_MANAGEMENT_TLS_DIR_PATH";
 #[cfg(feature = "redis")]
 const ENV_CACHE_BACKEND: &str = "CDK_MINTD_CACHE_BACKEND";
 #[cfg(feature = "redis")]
 const ENV_CACHE_REDIS_URL: &str = "CDK_MINTD_CACHE_REDIS_URL";
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ReleasedV017Document {
+    info: ReleasedV017Info,
+    signatory: Option<CanonicalSignatoryTable>,
+    mint_management_rpc: Option<ReleasedV017ManagementRpc>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ReleasedV017Info {
+    signatory_url: Option<String>,
+    signatory_certs: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct CanonicalSignatoryTable {}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ReleasedV017ManagementRpc {
+    tls_dir_path: Option<PathBuf>,
+    tls_dir: Option<PathBuf>,
+    allow_insecure: Option<bool>,
+}
 
 /// Result of converting a legacy mintd configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +126,8 @@ pub fn migrate_legacy_configuration(
 
     let document = fs::read_to_string(&source)
         .with_context(|| format!("could not read legacy configuration {}", source.display()))?;
+    let released_v017 = released_v017_document(&document)
+        .with_context(|| format!("could not parse legacy configuration {}", source.display()))?;
     let mut effective = Settings::try_from_toml(&document)
         .with_context(|| format!("could not parse legacy configuration {}", source.display()))?;
     effective = effective
@@ -112,6 +146,7 @@ pub fn migrate_legacy_configuration(
         .as_ref()
         .map(|seed_file| format!("{FILE_SECRET_PREFIX}{}", seed_file.display()));
 
+    apply_released_v017_compatibility(&mut effective, &released_v017)?;
     crate::config_service::prune_inactive_configuration(&mut effective);
     let mut migrated = effective.clone();
     let mut resolved = effective;
@@ -336,6 +371,153 @@ pub fn migrate_legacy_configuration(
         secrets_dir: (!secrets.files.is_empty()).then_some(secrets.directory),
         secret_files_written: secrets.files.len(),
     })
+}
+
+fn released_v017_document(document: &str) -> Result<ReleasedV017Document> {
+    Ok(config::Config::builder()
+        .add_source(config::File::from_str(document, config::FileFormat::Toml))
+        .build()?
+        .try_deserialize()?)
+}
+
+fn apply_released_v017_compatibility(
+    settings: &mut Settings,
+    released: &ReleasedV017Document,
+) -> Result<()> {
+    apply_released_v017_signatory(settings, released)?;
+    #[cfg(feature = "management-rpc")]
+    apply_released_v017_management_rpc(settings, released);
+    Ok(())
+}
+
+fn apply_released_v017_signatory(
+    settings: &mut Settings,
+    released: &ReleasedV017Document,
+) -> Result<()> {
+    let canonical_environment = [
+        crate::env_vars::ENV_SIGNATORY_ENABLED,
+        crate::env_vars::ENV_SIGNATORY_ADDRESS,
+        crate::env_vars::ENV_SIGNATORY_PORT,
+        crate::env_vars::ENV_SIGNATORY_TLS_DIR,
+        crate::env_vars::ENV_SIGNATORY_ALLOW_INSECURE,
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_some());
+    if released.signatory.is_some() || canonical_environment {
+        return Ok(());
+    }
+
+    let signatory_url = std::env::var(RELEASED_V017_SIGNATORY_URL_ENV_VAR)
+        .ok()
+        .or_else(|| released.info.signatory_url.clone());
+    let Some(signatory_url) = signatory_url else {
+        return Ok(());
+    };
+    let (address, port) = parse_released_v017_signatory_url(&signatory_url)?;
+    let tls_dir = std::env::var(RELEASED_V017_SIGNATORY_CERTS_ENV_VAR)
+        .ok()
+        .or_else(|| released.info.signatory_certs.clone())
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+
+    settings.signatory = Some(Signatory {
+        enabled: true,
+        address,
+        port,
+        allow_insecure: tls_dir.is_none(),
+        tls_dir,
+    });
+    // Released v0.17 selected the remote signatory before either local source.
+    // Remove ignored local material so the new mutually-exclusive model keeps
+    // the same effective signer.
+    settings.info.seed = None;
+    settings.info.mnemonic = None;
+    Ok(())
+}
+
+fn parse_released_v017_signatory_url(url: &str) -> Result<(String, u16)> {
+    let (scheme, authority) = url.split_once("://").ok_or_else(|| {
+        anyhow!("released v0.17 signatory URL {url:?} must include an http:// or https:// scheme")
+    })?;
+    let default_port = match scheme {
+        "http" => 80,
+        "https" => 443,
+        _ => bail!("released v0.17 signatory URL {url:?} uses unsupported scheme {scheme:?}"),
+    };
+    if authority.is_empty()
+        || authority.contains(['/', '?', '#', '@'])
+        || authority.chars().any(char::is_whitespace)
+    {
+        bail!("released v0.17 signatory URL {url:?} is not a supported authority URL");
+    }
+
+    if let Some(ipv6) = authority.strip_prefix('[') {
+        let end = ipv6.find(']').ok_or_else(|| {
+            anyhow!("released v0.17 signatory URL {url:?} has an invalid IPv6 address")
+        })?;
+        let host = &ipv6[..end];
+        if host.is_empty() {
+            bail!("released v0.17 signatory URL {url:?} has an empty host");
+        }
+        let suffix = &ipv6[end + 1..];
+        let port = match suffix.strip_prefix(':') {
+            Some(port) => parse_released_v017_signatory_port(url, port)?,
+            None if suffix.is_empty() => default_port,
+            None => bail!("released v0.17 signatory URL {url:?} has an invalid authority"),
+        };
+        return Ok((format!("[{host}]"), port));
+    }
+
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, parse_released_v017_signatory_port(url, port)?),
+        None => (authority, default_port),
+    };
+    if host.is_empty() || host.contains(':') {
+        bail!("released v0.17 signatory URL {url:?} has an invalid host");
+    }
+    Ok((host.to_owned(), port))
+}
+
+fn parse_released_v017_signatory_port(url: &str, port: &str) -> Result<u16> {
+    port.parse::<u16>()
+        .with_context(|| format!("released v0.17 signatory URL {url:?} has an invalid port"))
+}
+
+#[cfg(feature = "management-rpc")]
+fn apply_released_v017_management_rpc(settings: &mut Settings, released: &ReleasedV017Document) {
+    let Some(management_rpc) = settings.mint_management_rpc.as_mut() else {
+        return;
+    };
+    let released_management = released.mint_management_rpc.as_ref();
+    let canonical_tls_authored = released_management
+        .and_then(|rpc| rpc.tls_dir.as_ref())
+        .is_some()
+        || std::env::var_os(crate::env_vars::ENV_MINT_MANAGEMENT_TLS_DIR).is_some();
+    if !canonical_tls_authored {
+        management_rpc.tls_dir = std::env::var(RELEASED_V017_MANAGEMENT_TLS_DIR_ENV_VAR)
+            .ok()
+            .map(PathBuf::from)
+            .or_else(|| released_management.and_then(|rpc| rpc.tls_dir_path.clone()));
+    }
+
+    let canonical_security_authored = released_management
+        .and_then(|rpc| rpc.allow_insecure)
+        .is_some()
+        || std::env::var_os(crate::env_vars::ENV_MINT_MANAGEMENT_ALLOW_INSECURE).is_some();
+    let released_environment_enabled =
+        std::env::var_os(crate::env_vars::ENV_MINT_MANAGEMENT_ENABLED).is_some()
+            || std::env::var_os(crate::env_vars::ENV_MINT_MANAGEMENT_ENABLED_LEGACY).is_some();
+    let released_table = released_management
+        .is_some_and(|rpc| rpc.tls_dir.is_none() && rpc.allow_insecure.is_none());
+    if management_rpc.enabled
+        && management_rpc.tls_dir.is_none()
+        && !canonical_security_authored
+        && (released_table || released_environment_enabled)
+    {
+        // Released v0.17 fell back to plaintext when the TLS directory did not
+        // exist. Preserve that behavior explicitly in the migrated document.
+        management_rpc.allow_insecure = true;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -846,6 +1028,27 @@ engine = "sqlite"
         )
     }
 
+    fn released_v017_remote_signatory_document(url: &str, certs: Option<&str>) -> String {
+        let certs = certs
+            .map(|certs| format!("signatory_certs = \"{certs}\""))
+            .unwrap_or_default();
+        format!(
+            r#"
+[info]
+signatory_url = "{url}"
+{certs}
+
+[ln]
+ln_backend = "fakewallet"
+
+[fake_wallet]
+
+[database]
+engine = "sqlite"
+"#
+        )
+    }
+
     fn migration_paths(name: &str) -> (PathBuf, PathBuf, PathBuf) {
         let directory = crate::test_utils::unique_temp_path(name);
         fs::create_dir_all(&directory).expect("create migration test directory");
@@ -879,6 +1082,175 @@ engine = "sqlite"
             .expect("validate migrated document");
         assert_eq!(outcome.secret_files_written, 0);
         assert!(outcome.secrets_dir.is_none());
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_maps_released_v017_remote_signatory_fields() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_released_v017_remote_signatory");
+        let seed_file = directory.join("legacy-seed");
+        fs::write(
+            &source,
+            released_v017_remote_signatory_document(
+                "https://signatory.example:15061",
+                Some("/run/cdk/signatory-tls"),
+            ),
+        )
+        .expect("write released v0.17 config");
+        fs::write(&seed_file, TEST_MNEMONIC).expect("write released v0.17 seed file");
+
+        migrate_legacy_configuration(&source, &output, None, Some(&seed_file), false)
+            .expect("migrate released v0.17 remote signatory with ignored seed file");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+        let signatory = settings.signatory.expect("migrated signatory");
+
+        assert!(signatory.enabled);
+        assert_eq!(signatory.address, "signatory.example");
+        assert_eq!(signatory.port, 15061);
+        assert_eq!(
+            signatory.tls_dir,
+            Some(PathBuf::from("/run/cdk/signatory-tls"))
+        );
+        assert!(!signatory.allow_insecure);
+        assert!(settings.info.seed.is_none());
+        assert!(settings.info.mnemonic.is_none());
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn migration_maps_released_v017_remote_signatory_environment() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) =
+            migration_paths("migrate_released_v017_remote_signatory_env");
+        fs::write(&source, legacy_document(TEST_MNEMONIC)).expect("write released v0.17 config");
+        std::env::set_var(
+            RELEASED_V017_SIGNATORY_URL_ENV_VAR,
+            "http://127.0.0.1:15062",
+        );
+
+        migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate released v0.17 signatory environment");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+        let signatory = settings.signatory.expect("migrated signatory");
+
+        assert!(signatory.enabled);
+        assert_eq!(signatory.address, "127.0.0.1");
+        assert_eq!(signatory.port, 15062);
+        assert!(signatory.tls_dir.is_none());
+        assert!(signatory.allow_insecure);
+        assert!(settings.info.mnemonic.is_none());
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "management-rpc"))]
+    #[test]
+    fn migration_maps_released_v017_management_rpc_tls() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_released_v017_management_tls");
+        let document = format!(
+            r#"
+{}
+
+[mint_management_rpc]
+enabled = true
+address = "127.0.0.1"
+port = 18086
+tls_dir_path = "/run/cdk/management-tls"
+"#,
+            legacy_document(TEST_MNEMONIC)
+        );
+        fs::write(&source, document).expect("write released v0.17 config");
+
+        migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate released v0.17 management RPC");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+        let management = settings
+            .mint_management_rpc
+            .expect("migrated management RPC");
+
+        assert!(management.enabled);
+        assert_eq!(
+            management.tls_dir,
+            Some(PathBuf::from("/run/cdk/management-tls"))
+        );
+        assert!(!management.allow_insecure);
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "management-rpc"))]
+    #[test]
+    fn migration_preserves_released_v017_management_rpc_insecure_fallback() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) =
+            migration_paths("migrate_released_v017_management_insecure");
+        let document = format!(
+            r#"
+{}
+
+[mint_management_rpc]
+enabled = true
+"#,
+            legacy_document(TEST_MNEMONIC)
+        );
+        fs::write(&source, document).expect("write released v0.17 config");
+
+        migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate released v0.17 insecure management RPC");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+        let management = settings
+            .mint_management_rpc
+            .expect("migrated management RPC");
+
+        assert!(management.enabled);
+        assert!(management.tls_dir.is_none());
+        assert!(management.allow_insecure);
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(all(feature = "fakewallet", feature = "management-rpc"))]
+    #[test]
+    fn migration_maps_released_v017_management_rpc_tls_environment() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) =
+            migration_paths("migrate_released_v017_management_tls_env");
+        fs::write(&source, legacy_document(TEST_MNEMONIC)).expect("write released v0.17 config");
+        std::env::set_var(crate::env_vars::ENV_MINT_MANAGEMENT_ENABLED, "true");
+        std::env::set_var(
+            RELEASED_V017_MANAGEMENT_TLS_DIR_ENV_VAR,
+            "/run/cdk/management-tls-from-env",
+        );
+
+        migrate_legacy_configuration(&source, &output, None, None, false)
+            .expect("migrate released v0.17 management RPC environment");
+        let migrated = fs::read_to_string(&output).expect("read migrated config");
+        let settings = Settings::try_from_toml(&migrated).expect("parse migrated config");
+        let management = settings
+            .mint_management_rpc
+            .expect("migrated management RPC");
+
+        assert!(management.enabled);
+        assert_eq!(
+            management.tls_dir,
+            Some(PathBuf::from("/run/cdk/management-tls-from-env"))
+        );
+        assert!(!management.allow_insecure);
 
         fs::remove_dir_all(directory).expect("remove migration test directory");
     }

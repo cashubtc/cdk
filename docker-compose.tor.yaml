@@ -1,3 +1,4 @@
+# Before starting, export CDK_MINTD_MNEMONIC with a stable BIP39 mnemonic.
 services:
   mint:
     image: cashubtc/mintd:latest
@@ -8,16 +9,13 @@ services:
     ports:
       - "8085:8085"
     environment:
-      - CDK_MINTD_LISTEN_HOST=0.0.0.0
-      - CDK_MINTD_LISTEN_PORT=8085
-      - CDK_MINTD_MNEMONIC=
-      - CDK_MINTD_LN_BACKEND=fakewallet
-      # Fake wallet custom payment methods. Use method:unit to scope a method to one unit.
-      - CDK_MINTD_FAKE_WALLET_CUSTOM_PAYMENT_METHODS=paypal:sat
-      - CDK_MINTD_DATABASE=sqlite
-      - CDK_MINTD_CACHE_BACKEND=memory
-      - CDK_MINTD_PROMETHEUS_ENABLED=false
-    command: ["cdk-mintd"]
+      CDK_MINTD_DATABASE: sqlite
+      CDK_MINTD_MNEMONIC: "${CDK_MINTD_MNEMONIC:?Set CDK_MINTD_MNEMONIC to a stable BIP39 mnemonic}"
+    volumes:
+      - ./misc/docker-configs/tor-fakewallet-sqlite.toml:/etc/cdk-mintd/config.toml:ro
+      - ./misc/docker-mintd-entrypoint.sh:/usr/local/bin/docker-mintd-entrypoint.sh:ro
+      - mintd_data:/var/lib/cdk-mintd
+    command: ["/bin/sh", "/usr/local/bin/docker-mintd-entrypoint.sh"]
     networks:
       - cdk
   tor:
@@ -34,3 +32,6 @@ services:
 networks:
   cdk:
     driver: bridge
+volumes:
+  mintd_data:
+    driver: local

@@ -421,16 +421,15 @@ CDK Mintd provides ready-to-use Docker images with multiple Lightning backend op
 
 #### Standard mint with fakewallet backend (testing only):
 ```bash
-docker-compose up
+export CDK_MINTD_MNEMONIC="your stable BIP39 mnemonic"
+docker compose up
 ```
 
 #### Mint with LDK Node backend:
 ```bash
-# Option 1: Use dedicated ldk-node compose file
-docker-compose -f docker-compose.ldk-node.yaml up
-
-# Option 2: Use main compose file with profile
-docker-compose --profile ldk-node up
+export CDK_MINTD_MNEMONIC="your stable mint BIP39 mnemonic"
+export CDK_MINTD_LDK_NODE_MNEMONIC="your distinct stable LDK Node BIP39 mnemonic"
+docker compose -f docker-compose.ldk-node.yaml up
 ```
 
 ### Available Images
@@ -457,6 +456,10 @@ volumes:
 Run `cdk-mintd config init --file /config/mint.toml` once with the same
 persistent volume before starting `cdk-mintd`. Later file changes are activated
 only by an explicit `config apply` followed by a restart.
+
+The repository Compose files automate only that idempotent first initialization
+using the documents under `misc/docker-configs/`. They never apply later edits
+automatically.
 
 ### Monitoring
 
