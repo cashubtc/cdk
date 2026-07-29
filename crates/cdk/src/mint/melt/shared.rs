@@ -11,7 +11,8 @@ use cdk_common::database::mint::Acquired;
 use cdk_common::database::{self, DynMintDatabase, DynMintTransaction};
 #[cfg(feature = "federation")]
 use cdk_common::federation::{
-    FederationJournalConsensusEvidence, FederationOperationId, FederationSignatureShareRecord,
+    FederationAcceptedSigningRequest, FederationJournalEntry, FederationOperationId,
+    FederationSignatureShareRecord,
 };
 use cdk_common::mint::{self as mint_types};
 #[cfg(feature = "federation")]
@@ -605,25 +606,15 @@ struct PreparedFederationMeltChange {
 }
 
 #[cfg(feature = "federation")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct FederationSignatureShareProvenance {
-    operation_id: FederationOperationId,
-    accepted_operation_index: u64,
-    consensus_evidence: Option<FederationJournalConsensusEvidence>,
+    entry: FederationJournalEntry,
 }
 
 #[cfg(feature = "federation")]
 impl FederationSignatureShareProvenance {
-    pub(crate) fn new(
-        operation_id: FederationOperationId,
-        accepted_operation_index: u64,
-        consensus_evidence: Option<FederationJournalConsensusEvidence>,
-    ) -> Self {
-        Self {
-            operation_id,
-            accepted_operation_index,
-            consensus_evidence,
-        }
+    pub(crate) fn new(entry: FederationJournalEntry) -> Self {
+        Self { entry }
     }
 }
 
@@ -642,11 +633,7 @@ async fn federation_signature_share_provenance_for_operation(
             )
         })?;
 
-    Ok(FederationSignatureShareProvenance::new(
-        federation_operation_id,
-        entry.index,
-        entry.consensus_evidence,
-    ))
+    Ok(FederationSignatureShareProvenance::new(entry))
 }
 
 #[cfg(feature = "federation")]
@@ -681,6 +668,16 @@ async fn prepare_federation_melt_change(
     inputs_fee: Amount<CurrencyUnit>,
     change_outputs: Vec<BlindedMessage>,
 ) -> Result<PreparedFederationMeltChange, Error> {
+    if signature_share_provenance.entry.operation_id != federation_operation_id {
+        return Err(
+            cdk_common::federation::FederationError::SignatureShareOperationMismatch {
+                expected: federation_operation_id,
+                found: signature_share_provenance.entry.operation_id,
+            }
+            .into(),
+        );
+    }
+
     let change_target: Amount = match inputs_amount
         .checked_sub(&total_spent)
         .ok()
@@ -728,11 +725,14 @@ async fn prepare_federation_melt_change(
 
     #[cfg(feature = "prometheus")]
     let started = std::time::Instant::now();
-    let share_set = config.private_config().sign_blinded_messages(
+    let signing_request = FederationAcceptedSigningRequest::from_journal_entry(
         config.public_config(),
-        federation_operation_id,
+        &signature_share_provenance.entry,
         &blinded_messages_to_sign,
-    );
+    )?;
+    let share_set = config
+        .private_config()
+        .sign_accepted_blinded_messages(config.public_config(), &signing_request);
     #[cfg(feature = "prometheus")]
     METRICS.record_federation_signing_share_latency(
         &config.member_id().to_string(),
@@ -740,11 +740,9 @@ async fn prepare_federation_melt_change(
         started.elapsed().as_secs_f64(),
     );
     let share_set = share_set?;
-    let signature_share_records = FederationSignatureShareRecord::from_accepted_operation(
+    let signature_share_records = FederationSignatureShareRecord::from_accepted_journal_entry(
         &share_set,
-        signature_share_provenance.operation_id,
-        signature_share_provenance.accepted_operation_index,
-        signature_share_provenance.consensus_evidence,
+        &signature_share_provenance.entry,
     )?;
     let change_sigs = share_set
         .shares
@@ -1514,7 +1512,7 @@ async fn finalize_melt_quote_inner(
     #[cfg(feature = "federation")]
     // Preserve standalone completion time when this is not a federation melt.
     // An accepted federation operation provides order but no wall-clock time.
-    let federation_completed_at = signature_share_provenance.map(|_| 0);
+    let federation_completed_at = signature_share_provenance.as_ref().map(|_| 0);
 
     // Process change (if needed) - opens new transaction.
     #[cfg(feature = "federation")]

@@ -215,7 +215,8 @@ pub use self::recovery::{
     FederationWalletRecoveryStatus,
 };
 pub use self::signing::{
-    FederationBlindSignatureShare, FederationBlindSignatureShareSet, FederationSignatureShareRecord,
+    FederationAcceptedSigningRequest, FederationBlindSignatureShare,
+    FederationBlindSignatureShareSet, FederationSignatureShareRecord,
 };
 pub use self::suffix_verifier::{FederationSuffixVerifier, VerifiedFederationSuffix};
 pub use self::transaction_proposal::{
@@ -1265,6 +1266,32 @@ pub enum FederationError {
         expected: FederationOperationId,
         /// Operation ID embedded in the signature share set.
         found: FederationOperationId,
+    },
+    /// Signature creation requires a non-rejected consensus journal entry.
+    #[error("Federation signing requires an accepted journal entry; status={status}")]
+    SigningRequiresAcceptedEntry {
+        /// Local application status carried by the entry.
+        status: FederationOperationStatus,
+    },
+    /// The accepted operation does not authorize blinded-output signing.
+    #[error("Federation operation {operation_kind} does not authorize blinded-output signing")]
+    SigningOperationUnsupported {
+        /// Accepted operation kind.
+        operation_kind: FederationOperationKind,
+    },
+    /// Candidate signing outputs do not match the accepted operation.
+    #[error("Federation signing outputs do not match accepted {operation_kind} operation")]
+    SigningOutputsMismatch {
+        /// Accepted operation kind.
+        operation_kind: FederationOperationKind,
+    },
+    /// The effective federation config changed after signing was authorized.
+    #[error("Federation signing config changed: expected={expected}, found={found}")]
+    SigningConfigChanged {
+        /// Config digest bound when the accepted request was validated.
+        expected: FederationConfigDigest,
+        /// Config digest presented to the signing primitive.
+        found: FederationConfigDigest,
     },
     /// An operation conflicts with an existing quote-scoped operation.
     #[error(

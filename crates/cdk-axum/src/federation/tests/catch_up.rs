@@ -1128,20 +1128,20 @@ async fn catch_up_applies_swap_operation_to_local_store() {
         .get_blind_signatures(&[output.blinded_secret])
         .await
         .expect("signature lookup");
-    let expected_response = config
-        .swap_share_response(operation_id, &request)
-        .expect("expected share response");
-    assert_eq!(
-        signatures,
-        vec![Some(expected_response.signatures[0].clone())]
-    );
-
     let persisted = state
         .mint
         .localstore()
         .get_federation_journal_entries()
         .await
         .expect("journal lookup");
+    let expected_response = config
+        .swap_share_response(&persisted[0], &request)
+        .expect("expected share response");
+    assert_eq!(
+        signatures,
+        vec![Some(expected_response.signatures[0].clone())]
+    );
+
     assert_eq!(persisted.len(), 1);
     assert_eq!(persisted[0].status(), FederationOperationStatus::Applied);
     assert_eq!(
@@ -1224,11 +1224,25 @@ async fn catch_up_marks_conflicting_swap_rejected_and_continues_replay() {
         vec![Some(cdk::nuts::State::Spent), Some(cdk::nuts::State::Spent)]
     );
 
+    let persisted = state
+        .mint
+        .localstore()
+        .get_federation_journal_entries()
+        .await
+        .expect("journal lookup");
+    let first_entry = persisted
+        .iter()
+        .find(|entry| entry.operation_id == first_operation_id)
+        .expect("first accepted entry");
+    let later_entry = persisted
+        .iter()
+        .find(|entry| entry.operation_id == later_operation_id)
+        .expect("later accepted entry");
     let first_response = config
-        .swap_share_response(first_operation_id, &first_request)
+        .swap_share_response(first_entry, &first_request)
         .expect("first expected share response");
     let later_response = config
-        .swap_share_response(later_operation_id, &later_request)
+        .swap_share_response(later_entry, &later_request)
         .expect("later expected share response");
     assert_eq!(
         state
@@ -3061,4 +3075,3 @@ async fn federation_runtime_startup_persists_public_config_snapshot() {
         snapshot.config.config_digest().expect("config digest")
     );
 }
-

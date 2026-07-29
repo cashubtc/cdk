@@ -707,23 +707,20 @@ async fn process_federation_melt_change_signs_rotated_keyset() {
     let quote = QuoteId::new();
     let change_output = output_for_keyset(&next_keyset, b"rotated melt change");
     let change_secret = change_output.blinded_secret;
-    let operation_id = effective
+    let envelope = effective
         .melt_operation(MeltRequest::new(
             quote.clone(),
             Vec::new(),
             Some(vec![change_output.clone()]),
         ))
-        .expect("melt operation")
-        .operation_id()
-        .expect("operation id");
+        .expect("melt operation");
+    let mut entry = accepted_entry_without_journal(23, envelope);
+    let operation_id = entry.operation_id;
     let consensus_evidence =
         FederationJournalConsensusEvidence::new(7, 11, 13, effective.member_id(), 17);
+    entry.consensus_evidence = Some(consensus_evidence);
     let signature_share_provenance =
-        super::super::super::melt::shared::FederationSignatureShareProvenance::new(
-            operation_id,
-            23,
-            Some(consensus_evidence),
-        );
+        super::super::super::melt::shared::FederationSignatureShareProvenance::new(entry);
 
     let db = mint.localstore();
     let (change_sigs, tx) = super::super::super::melt::shared::process_federation_melt_change(

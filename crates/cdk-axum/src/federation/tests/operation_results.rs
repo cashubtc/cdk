@@ -1195,25 +1195,22 @@ async fn submit_mint_operation_applies_issuance_and_persists_share() {
         .await
         .expect("signature lookup");
     let persisted_signature = signatures[0].clone().expect("signature persisted");
-    let expected_response = config
-        .mint_share_response(operation_id, &input)
-        .expect("expected share response");
-    assert_eq!(persisted_signature, expected_response.signatures[0]);
-
     let persisted = state
         .mint
         .localstore()
         .get_federation_journal_entries()
         .await
         .expect("journal lookup");
-    assert_eq!(
-        persisted
-            .iter()
-            .find(|entry| entry.operation_id == operation_id)
-            .expect("mint entry")
-            .status(),
-        FederationOperationStatus::Applied
-    );
+    let mint_entry = persisted
+        .iter()
+        .find(|entry| entry.operation_id == operation_id)
+        .expect("mint entry");
+    let expected_response = config
+        .mint_share_response(mint_entry, &input)
+        .expect("expected share response");
+    assert_eq!(persisted_signature, expected_response.signatures[0]);
+
+    assert_eq!(mint_entry.status(), FederationOperationStatus::Applied);
 }
 
 #[tokio::test]

@@ -20,8 +20,9 @@ use cdk::{
     MintQuoteResponse,
 };
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederationOperationId, MemberId, ThresholdParams,
-    TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
+    generate_trusted_dealer_configs, FederationAcceptedSigningRequest, FederationOperation,
+    FederationOperationEnvelope, FederationSwapOperation, InMemoryFederationJournal, MemberId,
+    ThresholdParams, TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::SecretKey;
 
@@ -164,12 +165,25 @@ impl MintConnector for ScriptedFederationMember {
             .private_configs
             .get(&signer_id)
             .expect("member private config");
+        let envelope = FederationOperationEnvelope::new(
+            test_bundle().public_config.federation_id,
+            FederationOperation::Swap(FederationSwapOperation {
+                request: request.clone(),
+            }),
+        );
+        let entry = InMemoryFederationJournal::new()
+            .append(envelope)
+            .expect("accepted swap")
+            .entry()
+            .clone();
+        let signing_request = FederationAcceptedSigningRequest::from_journal_entry(
+            &test_bundle().public_config,
+            &entry,
+            request.outputs(),
+        )
+        .expect("accepted signing request");
         let shares = private_config
-            .sign_blinded_messages(
-                &test_bundle().public_config,
-                FederationOperationId::from_bytes([42; 32]),
-                request.outputs(),
-            )
+            .sign_accepted_blinded_messages(&test_bundle().public_config, &signing_request)
             .expect("member signature shares");
         Ok(SwapResponse {
             signatures: shares

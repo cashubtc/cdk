@@ -314,6 +314,10 @@ impl MintConnector for LocalFederatedMemberConnector {
         let config = self.effective_federation_config().await?;
         let envelope = config.mint_operation(input.clone())?;
         let operation_id = envelope.operation_id()?;
+        let fallback_entry = InMemoryFederationJournal::new()
+            .append(envelope.clone())?
+            .entry()
+            .clone();
         if self
             .append_and_apply_to_federation(envelope)
             .await?
@@ -325,7 +329,7 @@ impl MintConnector for LocalFederatedMemberConnector {
                 .await;
         }
 
-        config.mint_share_response(operation_id, &input)
+        config.mint_share_response(&fallback_entry, &input)
     }
 
     async fn post_batch_check_mint_quote_status(
@@ -374,6 +378,10 @@ impl MintConnector for LocalFederatedMemberConnector {
         let config = self.effective_federation_config().await?;
         let envelope = config.mint_operation(input.clone())?;
         let operation_id = envelope.operation_id()?;
+        let fallback_entry = InMemoryFederationJournal::new()
+            .append(envelope.clone())?
+            .entry()
+            .clone();
         if self
             .append_and_apply_to_federation(envelope)
             .await?
@@ -385,7 +393,7 @@ impl MintConnector for LocalFederatedMemberConnector {
                 .await;
         }
 
-        config.mint_share_response(operation_id, &input)
+        config.mint_share_response(&fallback_entry, &input)
     }
 
     async fn post_melt_quote(
@@ -485,6 +493,10 @@ impl MintConnector for LocalFederatedMemberConnector {
         let config = self.effective_federation_config().await?;
         let envelope = config.swap_operation(request.clone())?;
         let operation_id = envelope.operation_id()?;
+        let fallback_entry = InMemoryFederationJournal::new()
+            .append(envelope.clone())?
+            .entry()
+            .clone();
         if self
             .append_and_apply_to_federation(envelope)
             .await?
@@ -496,7 +508,7 @@ impl MintConnector for LocalFederatedMemberConnector {
                 .await;
         }
 
-        config.swap_share_response(operation_id, &request)
+        config.swap_share_response(&fallback_entry, &request)
     }
 
     async fn get_mint_info(&self) -> Result<MintInfo, crate::Error> {

@@ -1958,7 +1958,7 @@ impl Mint {
                 )
             };
 
-            let share_set = config.mint_signature_shares(operation_id, &input)?;
+            let share_set = config.mint_signature_shares(entry, &input)?;
             let signature_share_records =
                 FederationSignatureShareRecord::from_accepted_journal_entry(&share_set, entry)?;
             tx.add_federation_signature_shares(&signature_share_records)
@@ -2108,8 +2108,7 @@ impl Mint {
                         && signatures_present > 0
                         && completed_swap =>
                 {
-                    let share_set =
-                        config.swap_signature_shares(operation_id, &operation.request)?;
+                    let share_set = config.swap_signature_shares(entry, &operation.request)?;
                     let signature_share_records =
                         FederationSignatureShareRecord::from_accepted_journal_entry(
                             &share_set, entry,
@@ -2129,7 +2128,7 @@ impl Mint {
             Mint::update_proofs_state(&mut tx, &mut proofs, State::Spent).await?;
 
             if signatures_present == 0 {
-                let share_set = config.swap_signature_shares(operation_id, &operation.request)?;
+                let share_set = config.swap_signature_shares(entry, &operation.request)?;
                 let signature_share_records =
                     FederationSignatureShareRecord::from_accepted_journal_entry(&share_set, entry)?;
                 let signatures = federation_share_signatures(share_set);

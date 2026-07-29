@@ -8,11 +8,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bip39::Mnemonic;
 use cdk_common::federation::{
-    generate_trusted_dealer_configs, FederatedKeyset, FederationConfig, FederationError,
-    FederationId, FederationInvite, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMeltQuoteMetadata, FederationOperation, FederationOperationEnvelope,
-    FederationOperationId, InMemoryFederationJournal, MemberId, ThresholdParams,
-    TrustedDealerConfigBundle, TrustedDealerKeysetSpec, TrustedDealerMember,
+    generate_trusted_dealer_configs, FederatedKeyset, FederationAcceptedSigningRequest,
+    FederationConfig, FederationError, FederationId, FederationInvite, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMeltQuoteMetadata, FederationMintOperation,
+    FederationMintRequest, FederationOperation, FederationOperationEnvelope, FederationOperationId,
+    InMemoryFederationJournal, MemberId, ThresholdParams, TrustedDealerConfigBundle,
+    TrustedDealerKeysetSpec, TrustedDealerMember,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::{trusted_dealer_keygen, BlsG1PublicKey, BlsSecretKey};
@@ -487,12 +488,29 @@ fn share_response(
         .private_configs
         .get(&member_id)
         .expect("member private config");
+    let envelope = FederationOperationEnvelope::new(
+        bundle.public_config.federation_id,
+        FederationOperation::Mint(FederationMintOperation {
+            request: FederationMintRequest::Single(MintRequest {
+                quote: "accepted-test-quote".to_string(),
+                outputs: outputs.to_vec(),
+                signature: None,
+            }),
+        }),
+    );
+    let entry = InMemoryFederationJournal::new()
+        .append(envelope)
+        .expect("accepted mint")
+        .entry()
+        .clone();
+    let signing_request = FederationAcceptedSigningRequest::from_journal_entry(
+        &bundle.public_config,
+        &entry,
+        outputs,
+    )
+    .expect("accepted signing request");
     let share_set = private
-        .sign_blinded_messages(
-            &bundle.public_config,
-            FederationOperationId::from_bytes([9; 32]),
-            outputs,
-        )
+        .sign_accepted_blinded_messages(&bundle.public_config, &signing_request)
         .expect("signature shares");
 
     MintResponse {

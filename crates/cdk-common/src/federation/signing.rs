@@ -6,8 +6,9 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    FederationConfig, FederationError, FederationJournalConsensusEvidence, FederationJournalEntry,
-    FederationOperationId, MemberConfigPrivate, MemberId, Result,
+    FederationConfig, FederationConfigDigest, FederationError, FederationJournalConsensusEvidence,
+    FederationJournalEntry, FederationOperation, FederationOperationId, FederationOperationStatus,
+    MemberConfigPrivate, MemberId, Result,
 };
 use crate::nuts::nut01::{verify_blind_signature_share, BlsBlindSignatureShare};
 use crate::{Amount, BlindedMessage, Id, PublicKey};
@@ -38,6 +39,117 @@ pub struct FederationBlindSignatureShareSet {
     pub member_id: MemberId,
     /// Shares in the same order as the signed outputs.
     pub shares: Vec<FederationBlindSignatureShare>,
+}
+
+/// Blinded outputs authorized by one accepted federation journal entry.
+///
+/// The fields are private so callers cannot combine an arbitrary operation ID
+/// with unrelated outputs. Construction validates the journal status,
+/// operation ID, operation kind, and exact output binding before signing.
+#[derive(Debug, Clone)]
+pub struct FederationAcceptedSigningRequest {
+    operation_id: FederationOperationId,
+    accepted_operation_index: u64,
+    consensus_evidence: Option<FederationJournalConsensusEvidence>,
+    config_digest: FederationConfigDigest,
+    outputs: Vec<BlindedMessage>,
+}
+
+impl FederationAcceptedSigningRequest {
+    /// Build a signing capability from an accepted mint, swap, or melt entry.
+    pub fn from_journal_entry(
+        public_config: &FederationConfig,
+        entry: &FederationJournalEntry,
+        outputs: &[BlindedMessage],
+    ) -> Result<Self> {
+        if entry.status() == FederationOperationStatus::Rejected {
+            return Err(FederationError::SigningRequiresAcceptedEntry {
+                status: entry.status(),
+            });
+        }
+
+        let derived_operation_id = entry.envelope.operation_id()?;
+        if derived_operation_id != entry.operation_id {
+            return Err(FederationError::SignatureShareOperationMismatch {
+                expected: derived_operation_id,
+                found: entry.operation_id,
+            });
+        }
+
+        let outputs_match = match &entry.envelope.operation {
+            FederationOperation::Mint(operation) => match &operation.request {
+                super::FederationMintRequest::Single(request) => request.outputs == outputs,
+                super::FederationMintRequest::Batch(request) => request.outputs == outputs,
+            },
+            FederationOperation::Swap(operation) => operation.request.outputs() == outputs,
+            FederationOperation::Melt(operation) => {
+                melt_change_outputs_match(operation.request.outputs(), outputs)
+            }
+            operation => {
+                return Err(FederationError::SigningOperationUnsupported {
+                    operation_kind: operation.kind(),
+                })
+            }
+        };
+        if !outputs_match {
+            return Err(FederationError::SigningOutputsMismatch {
+                operation_kind: entry.envelope.operation.kind(),
+            });
+        }
+
+        Ok(Self {
+            operation_id: entry.operation_id,
+            accepted_operation_index: entry.index,
+            consensus_evidence: entry.consensus_evidence,
+            config_digest: public_config.config_digest()?,
+            outputs: outputs.to_vec(),
+        })
+    }
+
+    /// Accepted operation ID bound to these outputs.
+    #[must_use]
+    pub fn operation_id(&self) -> FederationOperationId {
+        self.operation_id
+    }
+
+    /// Accepted journal index bound to these outputs.
+    #[must_use]
+    pub fn accepted_operation_index(&self) -> u64 {
+        self.accepted_operation_index
+    }
+
+    /// Consensus evidence bound to these outputs.
+    #[must_use]
+    pub fn consensus_evidence(&self) -> Option<FederationJournalConsensusEvidence> {
+        self.consensus_evidence
+    }
+
+    /// Effective public-config digest bound to this accepted request.
+    #[must_use]
+    pub fn config_digest(&self) -> FederationConfigDigest {
+        self.config_digest
+    }
+
+    /// Exact blinded outputs authorized for signing.
+    #[must_use]
+    pub fn outputs(&self) -> &[BlindedMessage] {
+        &self.outputs
+    }
+}
+
+fn melt_change_outputs_match(
+    accepted: &Option<Vec<BlindedMessage>>,
+    signing: &[BlindedMessage],
+) -> bool {
+    let Some(accepted) = accepted else {
+        return signing.is_empty();
+    };
+    signing.len() <= accepted.len()
+        && signing.iter().zip(accepted).all(|(signing, accepted)| {
+            signing.keyset_id == accepted.keyset_id
+                && signing.blinded_secret == accepted.blinded_secret
+                && (accepted.amount == Amount::ZERO || signing.amount == accepted.amount)
+        })
 }
 
 /// Durable federation signature-share row for one operation output and member.
@@ -146,8 +258,24 @@ impl FederationSignatureShareRecord {
 }
 
 impl MemberConfigPrivate {
+    /// Sign only outputs authorized by an accepted federation journal entry.
+    pub fn sign_accepted_blinded_messages(
+        &self,
+        public_config: &FederationConfig,
+        request: &FederationAcceptedSigningRequest,
+    ) -> Result<FederationBlindSignatureShareSet> {
+        let config_digest = public_config.config_digest()?;
+        if config_digest != request.config_digest {
+            return Err(FederationError::SigningConfigChanged {
+                expected: request.config_digest,
+                found: config_digest,
+            });
+        }
+        self.sign_blinded_messages(public_config, request.operation_id, &request.outputs)
+    }
+
     /// Sign blinded outputs with this member's threshold BLS secret shares.
-    pub fn sign_blinded_messages(
+    fn sign_blinded_messages(
         &self,
         public_config: &FederationConfig,
         operation_id: FederationOperationId,
@@ -260,7 +388,8 @@ mod tests {
 
     use super::*;
     use crate::federation::{
-        generate_trusted_dealer_configs, FederationId, FederationMintQuoteOperation,
+        generate_trusted_dealer_configs, FederationApplicationState, FederationId,
+        FederationMintOperation, FederationMintQuoteOperation, FederationMintRequest,
         FederationOperation, FederationOperationEnvelope, InMemoryFederationJournal,
         ThresholdParams, TrustedDealerKeysetSpec, TrustedDealerMember,
     };
@@ -317,6 +446,23 @@ mod tests {
                     state: MintQuoteState::Unpaid,
                     expiry: None,
                     pubkey: None,
+                }),
+            }),
+        )
+    }
+
+    fn mint_envelope(
+        federation_id: FederationId,
+        quote: &str,
+        outputs: Vec<BlindedMessage>,
+    ) -> FederationOperationEnvelope {
+        FederationOperationEnvelope::new(
+            federation_id,
+            FederationOperation::Mint(FederationMintOperation {
+                request: FederationMintRequest::Single(crate::MintRequest {
+                    quote: quote.to_string(),
+                    outputs,
+                    signature: None,
                 }),
             }),
         )
@@ -397,6 +543,143 @@ mod tests {
                 .expect("share verification")
         );
         serde_json::to_string(&share_set).expect("share set json");
+    }
+
+    #[test]
+    fn accepted_signing_request_binds_entry_and_outputs() {
+        let bundle = bundle();
+        let keyset = &bundle.public_config.keysets[0];
+        let output = BlindedMessage::new(
+            Amount::from(1),
+            keyset.id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"accepted signing output")),
+        );
+        let entry = InMemoryFederationJournal::new()
+            .append(mint_envelope(
+                bundle.public_config.federation_id,
+                "accepted-signing",
+                vec![output.clone()],
+            ))
+            .expect("append accepted mint")
+            .entry()
+            .clone();
+        let request = FederationAcceptedSigningRequest::from_journal_entry(
+            &bundle.public_config,
+            &entry,
+            std::slice::from_ref(&output),
+        )
+        .expect("accepted signing request");
+        let private = bundle
+            .private_configs
+            .get(&member_id(1))
+            .expect("private config");
+
+        let first = private
+            .sign_accepted_blinded_messages(&bundle.public_config, &request)
+            .expect("accepted signature shares");
+        let replay = private
+            .sign_accepted_blinded_messages(&bundle.public_config, &request)
+            .expect("deterministic replay shares");
+
+        assert_eq!(request.operation_id(), entry.operation_id);
+        assert_eq!(request.accepted_operation_index(), entry.index);
+        assert_eq!(
+            request.config_digest(),
+            bundle.public_config.config_digest().expect("config digest")
+        );
+        assert_eq!(request.outputs(), &[output]);
+        assert_eq!(first, replay);
+
+        let mut changed_config = bundle.public_config.clone();
+        changed_config.keysets[0].active = false;
+        assert!(matches!(
+            private.sign_accepted_blinded_messages(&changed_config, &request),
+            Err(FederationError::SigningConfigChanged { .. })
+        ));
+    }
+
+    #[test]
+    fn accepted_signing_request_rejects_unaccepted_or_mismatched_inputs() {
+        let bundle = bundle();
+        let keyset = &bundle.public_config.keysets[0];
+        let output = BlindedMessage::new(
+            Amount::from(1),
+            keyset.id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"bound signing output")),
+        );
+        let envelope = mint_envelope(
+            bundle.public_config.federation_id,
+            "bound-signing",
+            vec![output.clone()],
+        );
+        let mut rejected_entry = InMemoryFederationJournal::new()
+            .append(envelope.clone())
+            .expect("append mint")
+            .entry()
+            .clone();
+        rejected_entry.application = FederationApplicationState::ConsensusRejected {};
+        assert!(matches!(
+            FederationAcceptedSigningRequest::from_journal_entry(
+                &bundle.public_config,
+                &rejected_entry,
+                std::slice::from_ref(&output)
+            ),
+            Err(FederationError::SigningRequiresAcceptedEntry {
+                status: FederationOperationStatus::Rejected
+            })
+        ));
+
+        let entry = InMemoryFederationJournal::new()
+            .append(envelope)
+            .expect("append accepted mint")
+            .entry()
+            .clone();
+        let different_output = BlindedMessage::new(
+            Amount::from(1),
+            keyset.id,
+            PublicKey::from(BlsG1PublicKey::hash_to_curve(b"different signing output")),
+        );
+        assert!(matches!(
+            FederationAcceptedSigningRequest::from_journal_entry(
+                &bundle.public_config,
+                &entry,
+                &[different_output]
+            ),
+            Err(FederationError::SigningOutputsMismatch { .. })
+        ));
+
+        let mut tampered_entry = entry;
+        tampered_entry.operation_id = FederationOperationId::from_bytes([88; 32]);
+        assert!(matches!(
+            FederationAcceptedSigningRequest::from_journal_entry(
+                &bundle.public_config,
+                &tampered_entry,
+                std::slice::from_ref(&output)
+            ),
+            Err(FederationError::SignatureShareOperationMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn accepted_signing_request_rejects_non_signing_operation() {
+        let bundle = bundle();
+        let entry = InMemoryFederationJournal::new()
+            .append(mint_quote_envelope(
+                bundle.public_config.federation_id,
+                "not-signable",
+            ))
+            .expect("append mint quote")
+            .entry()
+            .clone();
+
+        assert!(matches!(
+            FederationAcceptedSigningRequest::from_journal_entry(
+                &bundle.public_config,
+                &entry,
+                &[]
+            ),
+            Err(FederationError::SigningOperationUnsupported { .. })
+        ));
     }
 
     #[test]

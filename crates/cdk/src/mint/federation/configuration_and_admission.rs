@@ -7,14 +7,15 @@ use cdk_common::bitcoin::hashes::{sha256, Hash};
 use cdk_common::database;
 use cdk_common::error::Error;
 use cdk_common::federation::{
-    FederationAddressAllocationOperation, FederationAddressAllocationScope,
-    FederationAddressKeychain, FederationApplicationState, FederationBarkEvidenceCertificate,
-    FederationBarkOperation, FederationBlindSignatureShareSet, FederationChainObservation,
-    FederationConfig, FederationConfigDigest, FederationError, FederationFrostApplicationId,
-    FederationId, FederationJournalEntry, FederationKeysetRotationOperation,
-    FederationMaterializedStateKey, FederationMeltOperation, FederationMeltQuoteMetadata,
-    FederationMeltQuoteOperation, FederationMeltQuotePaymentObservation, FederationMintOperation,
-    FederationMintQuoteOperation, FederationMintQuotePaymentObservation, FederationMintRequest,
+    FederationAcceptedSigningRequest, FederationAddressAllocationOperation,
+    FederationAddressAllocationScope, FederationAddressKeychain, FederationApplicationState,
+    FederationBarkEvidenceCertificate, FederationBarkOperation, FederationBlindSignatureShareSet,
+    FederationChainObservation, FederationConfig, FederationConfigDigest, FederationError,
+    FederationFrostApplicationId, FederationId, FederationJournalEntry,
+    FederationKeysetRotationOperation, FederationMaterializedStateKey, FederationMeltOperation,
+    FederationMeltQuoteMetadata, FederationMeltQuoteOperation,
+    FederationMeltQuotePaymentObservation, FederationMintOperation, FederationMintQuoteOperation,
+    FederationMintQuotePaymentObservation, FederationMintRequest,
     FederationOnchainMeltPaymentReceipt, FederationOperation, FederationOperationEnvelope,
     FederationOperationId, FederationOperationStatus, FederationPaymentObservation,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
@@ -941,16 +942,19 @@ impl FederationRuntimeConfig {
     /// Sign an accepted mint operation into local threshold BLS signature shares.
     pub fn mint_signature_shares(
         &self,
-        operation_id: FederationOperationId,
+        entry: &FederationJournalEntry,
         input: &MintInput,
     ) -> Result<FederationBlindSignatureShareSet, Error> {
         #[cfg(feature = "prometheus")]
         let started = Instant::now();
-        let result = self.private_config.sign_blinded_messages(
+        let request = FederationAcceptedSigningRequest::from_journal_entry(
             &self.public_config,
-            operation_id,
+            entry,
             input.outputs(),
-        );
+        )?;
+        let result = self
+            .private_config
+            .sign_accepted_blinded_messages(&self.public_config, &request);
         #[cfg(feature = "prometheus")]
         cdk_prometheus::METRICS.record_federation_signing_share_latency(
             &self.member_id().to_string(),
@@ -963,10 +967,10 @@ impl FederationRuntimeConfig {
     /// Convert an accepted mint operation into this member's wallet-facing share response.
     pub fn mint_share_response(
         &self,
-        operation_id: FederationOperationId,
+        entry: &FederationJournalEntry,
         input: &MintInput,
     ) -> Result<MintResponse, Error> {
-        let share_set = self.mint_signature_shares(operation_id, input)?;
+        let share_set = self.mint_signature_shares(entry, input)?;
         Ok(MintResponse {
             signatures: share_set
                 .shares
@@ -1148,16 +1152,19 @@ impl FederationRuntimeConfig {
     /// Sign an accepted swap operation into local threshold BLS signature shares.
     pub fn swap_signature_shares(
         &self,
-        operation_id: FederationOperationId,
+        entry: &FederationJournalEntry,
         request: &SwapRequest,
     ) -> Result<FederationBlindSignatureShareSet, Error> {
         #[cfg(feature = "prometheus")]
         let started = Instant::now();
-        let result = self.private_config.sign_blinded_messages(
+        let signing_request = FederationAcceptedSigningRequest::from_journal_entry(
             &self.public_config,
-            operation_id,
+            entry,
             request.outputs(),
-        );
+        )?;
+        let result = self
+            .private_config
+            .sign_accepted_blinded_messages(&self.public_config, &signing_request);
         #[cfg(feature = "prometheus")]
         cdk_prometheus::METRICS.record_federation_signing_share_latency(
             &self.member_id().to_string(),
@@ -1170,10 +1177,10 @@ impl FederationRuntimeConfig {
     /// Convert an accepted swap operation into this member's wallet-facing share response.
     pub fn swap_share_response(
         &self,
-        operation_id: FederationOperationId,
+        entry: &FederationJournalEntry,
         request: &SwapRequest,
     ) -> Result<SwapResponse, Error> {
-        let share_set = self.swap_signature_shares(operation_id, request)?;
+        let share_set = self.swap_signature_shares(entry, request)?;
         Ok(SwapResponse {
             signatures: share_set
                 .shares

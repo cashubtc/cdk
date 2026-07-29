@@ -572,10 +572,10 @@ async fn federation_aleph_bft_finalized_unit_reports_state_rejected_swap() {
     );
 
     let first_response = config
-        .swap_share_response(first_operation_id, &first_request)
+        .swap_share_response(responses[0].outcome.entry(), &first_request)
         .expect("first expected share response");
     let later_response = config
-        .swap_share_response(later_operation_id, &later_request)
+        .swap_share_response(responses[2].outcome.entry(), &later_request)
         .expect("later expected share response");
     assert_eq!(
         state
@@ -1208,4 +1208,3 @@ fn assert_pending_finalization_error(
         _ => panic!("unexpected error: {err}"),
     }
 }
-

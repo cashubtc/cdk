@@ -644,14 +644,16 @@ fn runtime_config_signs_accepted_mint_operations() {
         )],
         signature: None,
     });
-    let operation_id = runtime_config
+    let entry = accepted_entry_without_journal(
+        0,
+        runtime_config
         .mint_operation(input.clone())
-        .expect("mint operation")
-        .operation_id()
-        .expect("operation id");
+            .expect("mint operation"),
+    );
+    let operation_id = entry.operation_id;
 
     let share_set = runtime_config
-        .mint_signature_shares(operation_id, &input)
+        .mint_signature_shares(&entry, &input)
         .expect("signature shares");
     let share = share_set.shares.first().expect("signature share");
     let public_share = keyset
@@ -670,7 +672,7 @@ fn runtime_config_signs_accepted_mint_operations() {
     );
 
     let response = runtime_config
-        .mint_share_response(operation_id, &input)
+        .mint_share_response(&entry, &input)
         .expect("mint share response");
     let signature = response.signatures.first().expect("signature share");
 
@@ -697,14 +699,16 @@ fn runtime_config_signs_accepted_swap_operations() {
             PublicKey::from(blinded_message),
         )],
     );
-    let operation_id = runtime_config
+    let entry = accepted_entry_without_journal(
+        0,
+        runtime_config
         .swap_operation(swap.clone())
-        .expect("swap operation")
-        .operation_id()
-        .expect("operation id");
+            .expect("swap operation"),
+    );
+    let operation_id = entry.operation_id;
 
     let share_set = runtime_config
-        .swap_signature_shares(operation_id, &swap)
+        .swap_signature_shares(&entry, &swap)
         .expect("signature shares");
     let share = share_set.shares.first().expect("signature share");
     let public_share = keyset
@@ -723,7 +727,7 @@ fn runtime_config_signs_accepted_swap_operations() {
     );
 
     let response = runtime_config
-        .swap_share_response(operation_id, &swap)
+        .swap_share_response(&entry, &swap)
         .expect("swap share response");
     let signature = response.signatures.first().expect("signature share");
 
