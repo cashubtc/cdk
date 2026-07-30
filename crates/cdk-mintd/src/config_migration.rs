@@ -1,6 +1,7 @@
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -10,6 +11,8 @@ use crate::config::{Settings, Signatory};
 const ENV_SECRET_PREFIX: &str = "env:";
 const FILE_SECRET_PREFIX: &str = "file:";
 const DEFAULT_SECRETS_DIRECTORY: &str = "cdk-mintd-secrets";
+const TEMPORARY_FILE_ATTEMPTS: usize = 100;
+static TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELEASED_V017_SIGNATORY_URL_ENV_VAR: &str = "CDK_MINTD_SIGNATORY_URL";
 const RELEASED_V017_SIGNATORY_CERTS_ENV_VAR: &str = "CDK_MINTD_SIGNATORY_CERTS";
 const RELEASED_V017_UNKNOWN_FIELDS: &[&str] = &[
@@ -73,6 +76,15 @@ enum SecretNormalization {
 struct SecretFile {
     path: PathBuf,
     value: String,
+}
+
+#[derive(Debug)]
+struct StagedMigrationFile {
+    kind: &'static str,
+    destination: PathBuf,
+    staged: PathBuf,
+    backup: Option<PathBuf>,
+    published: bool,
 }
 
 #[derive(Debug)]
@@ -364,12 +376,14 @@ pub fn migrate_legacy_configuration(
         .context("generated configuration did not round-trip through the TOML parser")?;
 
     prepare_write_destinations(&output, &secrets, force)?;
-    write_secret_files(&secrets, force)?;
-    if let Err(error) = write_output(&output, &migrated_document, force) {
-        if !force {
+    if force {
+        write_forced_migration(&output, &migrated_document, &secrets)?;
+    } else {
+        write_secret_files(&secrets, force)?;
+        if let Err(error) = write_output(&output, &migrated_document, force) {
             remove_generated_secrets(&secrets);
+            return Err(error);
         }
-        return Err(error);
     }
 
     Ok(MigrationOutcome {
@@ -759,6 +773,9 @@ fn ensure_replaceable(path: &Path, force: bool, kind: &str) -> Result<()> {
         if metadata.file_type().is_symlink() {
             bail!("{kind} {} must not be a symbolic link", path.display());
         }
+        if !metadata.is_file() {
+            bail!("{kind} {} must be a regular file", path.display());
+        }
         if has_multiple_hard_links(&metadata) {
             bail!(
                 "{kind} {} must not have multiple hard links",
@@ -854,6 +871,259 @@ fn create_secret_directory(path: &Path) -> io::Result<()> {
         builder.mode(0o700);
     }
     builder.create(path)
+}
+
+fn write_forced_migration(output: &Path, document: &str, secrets: &MigrationSecrets) -> Result<()> {
+    let mut staged = Vec::with_capacity(secrets.files.len() + 1);
+    for secret in &secrets.files {
+        match stage_migration_file("secret file", &secret.path, &secret.value, true) {
+            Ok(file) => staged.push(file),
+            Err(error) => {
+                remove_staged_files(&staged);
+                return Err(error);
+            }
+        }
+    }
+    match stage_migration_file("migration output", output, document, false) {
+        Ok(file) => staged.push(file),
+        Err(error) => {
+            remove_staged_files(&staged);
+            return Err(error);
+        }
+    }
+
+    commit_staged_files(&mut staged)
+}
+
+fn stage_migration_file(
+    kind: &'static str,
+    destination: &Path,
+    contents: &str,
+    secret: bool,
+) -> Result<StagedMigrationFile> {
+    let (staged, mut file) = create_temporary_sibling(destination, "staged", secret)?;
+    let write_result = (|| -> Result<()> {
+        file.write_all(contents.as_bytes())
+            .with_context(|| format!("could not stage {kind} {}", destination.display()))?;
+        if secret {
+            set_secret_file_permissions(&staged)?;
+        }
+        file.sync_all()
+            .with_context(|| format!("could not sync staged {kind} {}", destination.display()))?;
+        Ok(())
+    })();
+    drop(file);
+
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&staged);
+        return Err(error);
+    }
+
+    Ok(StagedMigrationFile {
+        kind,
+        destination: destination.to_owned(),
+        staged,
+        backup: None,
+        published: false,
+    })
+}
+
+fn create_temporary_sibling(
+    destination: &Path,
+    role: &str,
+    secret: bool,
+) -> Result<(PathBuf, File)> {
+    let parent = destination.parent().ok_or_else(|| {
+        anyhow!(
+            "migration destination {} has no parent directory",
+            destination.display()
+        )
+    })?;
+
+    for _ in 0..TEMPORARY_FILE_ATTEMPTS {
+        let counter = TEMPORARY_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".cdk-mintd-migration-{role}-{}-{counter}",
+            std::process::id()
+        ));
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        if secret {
+            set_secret_creation_mode(&mut options);
+        }
+        match options.open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "could not create temporary file beside {}",
+                        destination.display()
+                    )
+                });
+            }
+        }
+    }
+
+    bail!(
+        "could not allocate a temporary file beside {}",
+        destination.display()
+    )
+}
+
+fn unused_temporary_sibling(destination: &Path, role: &str) -> Result<PathBuf> {
+    let parent = destination.parent().ok_or_else(|| {
+        anyhow!(
+            "migration destination {} has no parent directory",
+            destination.display()
+        )
+    })?;
+
+    for _ in 0..TEMPORARY_FILE_ATTEMPTS {
+        let counter = TEMPORARY_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".cdk-mintd-migration-{role}-{}-{counter}",
+            std::process::id()
+        ));
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(path),
+            Ok(_) => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "could not inspect temporary path beside {}",
+                        destination.display()
+                    )
+                });
+            }
+        }
+    }
+
+    bail!(
+        "could not allocate a temporary path beside {}",
+        destination.display()
+    )
+}
+
+fn commit_staged_files(staged: &mut [StagedMigrationFile]) -> Result<()> {
+    if let Err(error) = backup_existing_files(staged) {
+        let rollback_errors = rollback_staged_files(staged);
+        remove_staged_files(staged);
+        return Err(with_rollback_context(error, rollback_errors));
+    }
+
+    for index in 0..staged.len() {
+        let file = &staged[index];
+        if let Err(error) = fs::rename(&file.staged, &file.destination).with_context(|| {
+            format!(
+                "could not publish {} {}",
+                file.kind,
+                file.destination.display()
+            )
+        }) {
+            let rollback_errors = rollback_staged_files(staged);
+            remove_staged_files(staged);
+            return Err(with_rollback_context(error, rollback_errors));
+        }
+        staged[index].published = true;
+    }
+
+    remove_backup_files(staged)
+}
+
+fn backup_existing_files(staged: &mut [StagedMigrationFile]) -> Result<()> {
+    for file in staged {
+        match fs::symlink_metadata(&file.destination) {
+            Ok(_) => {
+                ensure_replaceable(&file.destination, true, file.kind)?;
+                let backup = unused_temporary_sibling(&file.destination, "backup")?;
+                fs::rename(&file.destination, &backup).with_context(|| {
+                    format!(
+                        "could not back up {} {}",
+                        file.kind,
+                        file.destination.display()
+                    )
+                })?;
+                file.backup = Some(backup);
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "could not inspect {} {} before publishing",
+                        file.kind,
+                        file.destination.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rollback_staged_files(staged: &mut [StagedMigrationFile]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for file in staged.iter_mut().rev() {
+        if file.published {
+            match fs::remove_file(&file.destination) {
+                Ok(()) => file.published = false,
+                Err(error) => {
+                    errors.push(format!(
+                        "could not remove newly published {} {}: {error}",
+                        file.kind,
+                        file.destination.display()
+                    ));
+                    continue;
+                }
+            }
+        }
+        if let Some(backup) = file.backup.take() {
+            if let Err(error) = fs::rename(&backup, &file.destination) {
+                errors.push(format!(
+                    "could not restore {} {} from {}: {error}",
+                    file.kind,
+                    file.destination.display(),
+                    backup.display()
+                ));
+                file.backup = Some(backup);
+            }
+        }
+    }
+    errors
+}
+
+fn with_rollback_context(error: anyhow::Error, rollback_errors: Vec<String>) -> anyhow::Error {
+    if rollback_errors.is_empty() {
+        error
+    } else {
+        anyhow!(
+            "{error:#}; migration rollback also failed: {}",
+            rollback_errors.join("; ")
+        )
+    }
+}
+
+fn remove_staged_files(staged: &[StagedMigrationFile]) {
+    for file in staged {
+        let _ = fs::remove_file(&file.staged);
+    }
+}
+
+fn remove_backup_files(staged: &mut [StagedMigrationFile]) -> Result<()> {
+    for file in staged {
+        if let Some(backup) = file.backup.take() {
+            if let Err(error) = fs::remove_file(&backup) {
+                file.backup = Some(backup.clone());
+                return Err(error).with_context(|| {
+                    format!(
+                        "migration files were published, but the backup {} could not be removed",
+                        backup.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn write_secret_files(secrets: &MigrationSecrets, force: bool) -> Result<()> {
@@ -1330,6 +1600,78 @@ enabled = true
                 0o600
             );
         }
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[cfg(feature = "fakewallet")]
+    #[test]
+    fn forced_migration_replaces_existing_output_and_secrets() {
+        let _env_lock = crate::test_utils::env_lock();
+        let _environment = MintdEnvironment::cleared();
+        let (directory, source, output) = migration_paths("migrate_force_replace");
+        let secrets_dir = directory.join(DEFAULT_SECRETS_DIRECTORY);
+        let secret_path = secrets_dir.join("mint-mnemonic");
+        fs::create_dir(&secrets_dir).expect("create secrets directory");
+        fs::write(&source, legacy_document(TEST_MNEMONIC)).expect("write legacy config");
+        fs::write(&output, "old output").expect("write old output");
+        fs::write(&secret_path, "old mnemonic").expect("write old secret");
+
+        migrate_legacy_configuration(&source, &output, None, None, true)
+            .expect("replace existing migration files");
+
+        let migrated = fs::read_to_string(&output).expect("read migrated output");
+        assert!(migrated.contains(&format!("file:{}", secret_path.display())));
+        assert_eq!(
+            fs::read_to_string(&secret_path).expect("read replaced secret"),
+            TEST_MNEMONIC
+        );
+        for path in fs::read_dir(&directory)
+            .expect("read migration directory")
+            .chain(fs::read_dir(&secrets_dir).expect("read secrets directory"))
+            .map(|entry| entry.expect("directory entry").path())
+        {
+            assert!(
+                !path
+                    .file_name()
+                    .expect("file name")
+                    .to_string_lossy()
+                    .starts_with(".cdk-mintd-migration-"),
+                "temporary migration file remained at {}",
+                path.display()
+            );
+        }
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[test]
+    fn forced_publish_rolls_back_after_partial_rename() {
+        let directory = crate::test_utils::unique_temp_path("migrate_publish_rollback");
+        fs::create_dir(&directory).expect("create migration test directory");
+        let first = directory.join("first");
+        let second = directory.join("second");
+        fs::write(&first, "old first").expect("write first destination");
+        fs::write(&second, "old second").expect("write second destination");
+
+        let mut staged = vec![
+            stage_migration_file("test file", &first, "new first", false)
+                .expect("stage first file"),
+            stage_migration_file("test file", &second, "new second", false)
+                .expect("stage second file"),
+        ];
+        fs::remove_file(&staged[1].staged).expect("remove second staged file");
+
+        let error = commit_staged_files(&mut staged).expect_err("publishing should fail");
+        assert!(error.to_string().contains("could not publish test file"));
+        assert_eq!(
+            fs::read_to_string(&first).expect("read restored first destination"),
+            "old first"
+        );
+        assert_eq!(
+            fs::read_to_string(&second).expect("read restored second destination"),
+            "old second"
+        );
 
         fs::remove_dir_all(directory).expect("remove migration test directory");
     }
