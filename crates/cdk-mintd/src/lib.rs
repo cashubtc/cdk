@@ -1825,16 +1825,6 @@ async fn start_services_with_shutdown(
     )
     .await?;
 
-    if let Some(activation) = activation {
-        if let Some(expected_revision) = activation.expected_revision {
-            if !activation.service.mark_applied(expected_revision).await? {
-                tracing::info!(
-                    "A newer configuration was stored during startup and remains unapplied for the next restart."
-                );
-            }
-        }
-    }
-
     #[cfg(feature = "management-rpc")]
     if let Some((mut mint_rpc, tls_dir)) = rpc_to_start {
         mint_rpc.start(tls_dir).await?;
@@ -2098,6 +2088,18 @@ async fn start_services_with_shutdown(
     let listener = tokio::net::TcpListener::bind(socket_addr).await?;
 
     tracing::info!("listening on {}", listener.local_addr()?);
+
+    // All fallible startup steps have succeeded and the daemon is about to
+    // serve with this configuration, so it can be recorded as applied.
+    if let Some(activation) = activation {
+        if let Some(expected_revision) = activation.expected_revision {
+            if !activation.service.mark_applied(expected_revision).await? {
+                tracing::info!(
+                    "A newer configuration was stored during startup and remains unapplied for the next restart."
+                );
+            }
+        }
+    }
 
     // Create a task to wait for the shutdown signal and broadcast it
     let shutdown_broadcast_task = {
