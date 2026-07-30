@@ -154,10 +154,11 @@ Apply updates one versioned record transactionally, retains the last applied
 document, and sets the replacement to unapplied. A running daemon keeps its
 current in-memory snapshot; the replacement is used on the next restart. If
 another apply wins while startup is consuming a document, the newer document
-remains unapplied for the following restart. `config rollback` immediately
-discards a pending replacement. If the current document was already applied,
-rollback stages the previous applied document and requires another restart.
-Only one previous applied document is retained.
+remains unapplied for the following restart. `config rollback` stages the
+previous applied document and always requires another restart. This remains
+true when rolling back a pending replacement because a failed startup may have
+partially updated canonical database state. Only one previous applied document
+is retained.
 
 `cdk-mintd` is not an RPC client. Immediate field-level mint management
 (`get-info`, `update-motd`, `rotate-next-keyset`, and related commands) is

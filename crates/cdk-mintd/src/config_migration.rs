@@ -456,7 +456,7 @@ fn apply_released_v017_signatory(
 }
 
 fn parse_released_v017_signatory_url(url: &str) -> Result<(String, u16)> {
-    let (scheme, authority) = url.split_once("://").ok_or_else(|| {
+    let (scheme, authority_with_path) = url.split_once("://").ok_or_else(|| {
         anyhow!("released v0.17 signatory URL {url:?} must include an http:// or https:// scheme")
     })?;
     let default_port = match scheme {
@@ -464,6 +464,11 @@ fn parse_released_v017_signatory_url(url: &str) -> Result<(String, u16)> {
         "https" => 443,
         _ => bail!("released v0.17 signatory URL {url:?} uses unsupported scheme {scheme:?}"),
     };
+    // Tonic accepted a root path in the released v0.17 setting, so preserve
+    // compatibility with URLs such as `https://signatory.example/`.
+    let authority = authority_with_path
+        .strip_suffix('/')
+        .unwrap_or(authority_with_path);
     if authority.is_empty()
         || authority.contains(['/', '?', '#', '@'])
         || authority.chars().any(char::is_whitespace)
@@ -1146,7 +1151,6 @@ fn write_secret_files(secrets: &MigrationSecrets, force: bool) -> Result<()> {
             Ok(()) => written.push(secret.path.clone()),
             Err(error) => {
                 if !force {
-                    let _ = fs::remove_file(&secret.path);
                     for path in written {
                         let _ = fs::remove_file(path);
                     }
@@ -1170,9 +1174,20 @@ fn write_secret_file(secret: &SecretFile, force: bool) -> Result<()> {
     let mut file = options
         .open(&secret.path)
         .with_context(|| format!("could not create secret file {}", secret.path.display()))?;
-    file.write_all(secret.value.as_bytes())
-        .with_context(|| format!("could not write secret file {}", secret.path.display()))?;
-    set_secret_file_permissions(&secret.path)
+    let write_result = (|| -> Result<()> {
+        file.write_all(secret.value.as_bytes())
+            .with_context(|| format!("could not write secret file {}", secret.path.display()))?;
+        set_secret_file_permissions(&secret.path)
+    })();
+    drop(file);
+
+    if write_result.is_err() && !force {
+        // The successful create-new open above establishes that this
+        // invocation created the path. Never remove it when opening failed,
+        // because another writer may have won the race after preflight.
+        let _ = fs::remove_file(&secret.path);
+    }
+    write_result
 }
 
 fn remove_generated_secrets(secrets: &MigrationSecrets) {
@@ -1334,6 +1349,20 @@ engine = "sqlite"
     }
 
     #[test]
+    fn released_v017_signatory_url_accepts_root_paths() {
+        assert_eq!(
+            parse_released_v017_signatory_url("http://127.0.0.1:10009/")
+                .expect("parse HTTP URL with root path"),
+            ("127.0.0.1".to_owned(), 10009)
+        );
+        assert_eq!(
+            parse_released_v017_signatory_url("https://signatory.example/")
+                .expect("parse HTTPS URL with root path"),
+            ("signatory.example".to_owned(), 443)
+        );
+    }
+
+    #[test]
     fn migration_rejects_unknown_fields_outside_released_allowlist() {
         let (directory, source, output) = migration_paths("migrate_reject_unknown");
         fs::write(
@@ -1394,7 +1423,7 @@ signatory_url = "http://127.0.0.1:10009"
         fs::write(
             &source,
             released_v017_remote_signatory_document(
-                "https://signatory.example:15061",
+                "https://signatory.example:15061/",
                 Some("/run/cdk/signatory-tls"),
             ),
         )
@@ -1600,6 +1629,30 @@ enabled = true
                 0o600
             );
         }
+
+        fs::remove_dir_all(directory).expect("remove migration test directory");
+    }
+
+    #[test]
+    fn secret_cleanup_preserves_destination_created_by_another_writer() {
+        let directory = crate::test_utils::unique_temp_path("migrate_secret_write_race");
+        fs::create_dir(&directory).expect("create secrets directory");
+        let mut secrets = MigrationSecrets::new(directory.clone(), false);
+        secrets.add("first", "first secret");
+        secrets.add("second", "our second secret");
+        let first = directory.join("first");
+        let second = directory.join("second");
+        fs::write(&second, "other writer").expect("create competing secret");
+
+        let error =
+            write_secret_files(&secrets, false).expect_err("existing second secret must fail");
+
+        assert!(error.to_string().contains("could not create secret file"));
+        assert!(!first.exists());
+        assert_eq!(
+            fs::read_to_string(&second).expect("read competing secret"),
+            "other writer"
+        );
 
         fs::remove_dir_all(directory).expect("remove migration test directory");
     }

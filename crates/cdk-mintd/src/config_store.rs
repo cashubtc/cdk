@@ -219,11 +219,11 @@ impl ConfigRepository {
         Err(ConfigStoreError::ConcurrentModification)
     }
 
-    /// Restores the last applied document.
+    /// Stages the last applied document for activation on the next restart.
     ///
-    /// Returns `true` when the restored document must be activated by a
-    /// restart. A pending document can be discarded immediately because the
-    /// daemon is still running the last applied configuration.
+    /// Returns `true` because every restored document must be activated by a
+    /// restart. Startup may have partially applied a pending document before
+    /// failing, so rollback cannot safely mark the restored document applied.
     pub(crate) async fn rollback(&self) -> Result<bool, ConfigStoreError> {
         for _ in 0..MAX_CAS_ATTEMPTS {
             let (current_bytes, mut current) = self.active_record().await?;
@@ -231,17 +231,14 @@ impl ConfigRepository {
                 .previous_applied_toml
                 .take()
                 .ok_or(ConfigStoreError::NoRollbackConfiguration)?;
-            let restart_required = current.applied;
             current.revision = current
                 .revision
                 .checked_add(1)
                 .ok_or(ConfigStoreError::RevisionOverflow)?;
-            if restart_required {
+            if current.applied {
                 current.previous_applied_toml = Some(current.toml);
-                current.applied = false;
-            } else {
-                current.applied = true;
             }
+            current.applied = false;
             current.toml = previous;
             let replacement = current.encode()?;
             if self
@@ -255,7 +252,7 @@ impl ConfigRepository {
                 )
                 .await?
             {
-                return Ok(restart_required);
+                return Ok(true);
             }
         }
         Err(ConfigStoreError::ConcurrentModification)
@@ -496,7 +493,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rollback_discards_pending_document_and_restores_applied_document() {
+    async fn rollback_of_pending_document_stages_previous_applied_document() {
         let repository = repository().await;
         repository
             .initialize(ConfigEnvelope::new("first".to_owned(), "signer".to_owned()))
@@ -513,14 +510,14 @@ mod tests {
 
         let pending = repository.active().await.expect("read pending document");
         assert_eq!(pending.previous_applied_toml.as_deref(), Some("first"));
-        assert!(!repository
+        assert!(repository
             .rollback()
             .await
-            .expect("discard pending document"));
+            .expect("stage previous applied document"));
 
         let restored = repository.active().await.expect("read restored document");
         assert_eq!(restored.toml, "first");
-        assert!(restored.applied);
+        assert!(!restored.applied);
         assert_eq!(restored.revision, 3);
         assert!(restored.previous_applied_toml.is_none());
     }

@@ -2379,7 +2379,7 @@ pub async fn apply_configuration(
         .await?)
 }
 
-/// Restores the last configuration known to have been applied successfully.
+/// Stages the last configuration known to have been applied successfully.
 pub async fn rollback_configuration(
     work_dir: &Path,
     db_password: Option<String>,

@@ -271,7 +271,7 @@ impl ConfigurationService {
         Ok(self.repository.mark_applied(expected_revision).await?)
     }
 
-    /// Restores the last configuration known to have reached applied state.
+    /// Stages the last configuration known to have reached applied state.
     pub(crate) async fn rollback(&self) -> Result<RollbackOutcome, ConfigurationServiceError> {
         Ok(RollbackOutcome {
             restart_required: self.repository.rollback().await?,
@@ -1024,12 +1024,12 @@ url = "postgresql://operator:plaintext-secret@localhost/cdk"
         assert!(!next_startup.applied);
 
         let rollback = service.rollback().await.expect("rollback pending document");
-        assert!(!rollback.restart_required);
+        assert!(rollback.restart_required);
         assert_eq!(service.document().await.expect("restored document"), first);
-        assert!(!service
+        assert!(service
             .has_pending_configuration()
             .await
-            .expect("restored document remains active"));
+            .expect("restored document requires activation"));
 
         let _ = std::fs::remove_file(secret_path);
     }
