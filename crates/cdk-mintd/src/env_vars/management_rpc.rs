@@ -54,11 +54,7 @@ mod tests {
     use super::*;
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-        ENV_LOCK
-            .lock()
-            .expect("management RPC env test lock should not be poisoned")
+        crate::test_utils::env_lock()
     }
 
     fn clear_env_vars() {

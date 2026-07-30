@@ -427,6 +427,13 @@ mod test {
 
     mint_db_test!(provide_mint_db);
 
+    #[tokio::test]
+    async fn kvstore_compare_and_swap() {
+        let test_id = format!("test_kvstore_compare_and_swap_{}", uuid::Uuid::new_v4());
+        cdk_common::database::mint::test::kvstore_compare_and_swap(provide_mint_db(test_id).await)
+            .await;
+    }
+
     async fn provide_wallet_db(test_id: String) -> WalletPgDatabase {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
             .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility

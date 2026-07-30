@@ -95,6 +95,31 @@ where
 }
 
 #[async_trait]
+impl<RM> cdk_common::database::KVStoreCompareAndSwap for SQLMintDatabase<RM>
+where
+    RM: DatabasePool + 'static,
+{
+    async fn kv_compare_and_swap(
+        &self,
+        primary_namespace: &str,
+        secondary_namespace: &str,
+        key: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+    ) -> Result<bool, Self::Err> {
+        crate::keyvalue::kv_compare_and_swap(
+            &self.pool,
+            primary_namespace,
+            secondary_namespace,
+            key,
+            expected,
+            replacement,
+        )
+        .await
+    }
+}
+
+#[async_trait]
 impl<RM> cdk_common::database::KVStore for SQLMintDatabase<RM>
 where
     RM: DatabasePool + 'static,
