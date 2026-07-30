@@ -891,6 +891,15 @@ impl Mint {
                                     }
                                 }
                             }
+
+                            // The payment event stream ended unexpectedly.
+                            // Back off before re-subscribing so a backend that
+                            // repeatedly ends its stream does not cause a tight
+                            // reconnect loop.
+                            tracing::warn!(
+                                "Payment event stream ended unexpectedly, re-subscribing"
+                            );
+                            tokio::time::sleep(Duration::from_secs(5)).await;
                         }
 
                         Err(e) => {
