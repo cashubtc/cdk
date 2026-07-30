@@ -774,6 +774,35 @@ impl Mint {
         Ok(())
     }
 
+    /// Set mint info and quote TTL atomically.
+    #[instrument(skip_all)]
+    pub async fn set_mint_info_and_quote_ttl(
+        &self,
+        mint_info: MintInfo,
+        quote_ttl: QuoteTTL,
+    ) -> Result<(), Error> {
+        tracing::info!("Updating mint info and quote TTL");
+        let mint_info_bytes = serde_json::to_vec(&mint_info)?;
+        let quote_ttl_bytes = serde_json::to_vec(&quote_ttl)?;
+        let mut tx = self.localstore.begin_transaction().await?;
+        tx.kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_CONFIG_KV_KEY,
+            &mint_info_bytes,
+        )
+        .await?;
+        tx.kv_write(
+            CDK_MINT_PRIMARY_NAMESPACE,
+            CDK_MINT_CONFIG_SECONDARY_NAMESPACE,
+            CDK_MINT_QUOTE_TTL_KV_KEY,
+            &quote_ttl_bytes,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Get quote ttl
     #[instrument(skip_all)]
     pub async fn quote_ttl(&self) -> Result<QuoteTTL, Error> {

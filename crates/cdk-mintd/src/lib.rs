@@ -1723,15 +1723,15 @@ async fn reconcile_canonical_configuration(
                 configured_mint_info.pubkey = stored_mint_info.pubkey;
             }
         }
-        mint.set_mint_info(configured_mint_info).await?;
-        mint.set_quote_ttl(configured_quote_ttl).await?;
+        mint.set_mint_info_and_quote_ttl(configured_mint_info, configured_quote_ttl)
+            .await?;
         return Ok(());
     }
 
     if mint.mint_info().await.is_err() {
         tracing::info!("Mint info not set on mint, setting.");
-        mint.set_mint_info(configured_mint_info).await?;
-        mint.set_quote_ttl(configured_quote_ttl).await?;
+        mint.set_mint_info_and_quote_ttl(configured_mint_info, configured_quote_ttl)
+            .await?;
         return Ok(());
     }
 
