@@ -7,6 +7,41 @@ alias t := test
 default:
   @just --list
 
+# Enter a Nix development shell without copying ignored files from JJ workspaces.
+develop shell="stable":
+  #!/usr/bin/env bash
+  set -euo pipefail
+
+  shell_name={{quote(shell)}}
+  case "$shell_name" in
+    ""|*[!a-zA-Z0-9._-]*)
+      echo "Error: invalid development shell name: $shell_name" >&2
+      exit 2
+      ;;
+  esac
+
+  flake_ref=".#${shell_name}"
+  if command -v jj >/dev/null 2>&1 && jj root >/dev/null 2>&1; then
+    revision=$(jj log -r @ --no-graph -T commit_id)
+
+    if git_dir=$(jj git root 2>/dev/null); then
+      case "$git_dir" in
+        */.git)
+          git_source=${git_dir%/.git}
+          ;;
+        *)
+          git_source=$git_dir
+          ;;
+      esac
+
+      flake_ref="git+file://${git_source}?rev=${revision}#${shell_name}"
+    else
+      echo "Warning: JJ repository is not Git-backed; using the workspace path." >&2
+    fi
+  fi
+
+  exec nix develop "$flake_ref" -c "${SHELL:-bash}"
+
 # Create a new SQL migration file
 new-migration target name:
   #!/usr/bin/env bash

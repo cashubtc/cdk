@@ -208,6 +208,16 @@
           if static_toolchain != null then (crane.mkLib pkgs).overrideToolchain static_toolchain else null;
         craneLibNightly = (crane.mkLib pkgs).overrideToolchain nightly_toolchain;
 
+        # Include only checked-in fuzzing inputs. Using ./fuzz directly would also
+        # copy generated directories such as fuzz/target, corpus, and artifacts.
+        fuzzSrc = lib.fileset.unions [
+          ./fuzz/Cargo.toml
+          ./fuzz/Cargo.lock
+          ./fuzz/fuzz_targets
+          ./fuzz/seeds
+          ./fuzz/src
+        ];
+
         # Source for crane builds - uses lib.fileset for efficient filtering
         # This is much faster than nix-gitignore when large directories (like target/) exist
         # because it uses a whitelist approach rather than scanning everything first
@@ -224,7 +234,7 @@
               ./README.md
               ./.cargo
               ./crates
-              ./fuzz
+              fuzzSrc
               ./bindings
             ]
           );
@@ -245,7 +255,7 @@
               ./README.md
               ./.cargo
               ./crates
-              ./fuzz
+              fuzzSrc
               ./bindings
             ]
           );
