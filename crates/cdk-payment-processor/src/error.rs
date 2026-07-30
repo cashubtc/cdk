@@ -155,12 +155,19 @@ pub(crate) fn payment_error_from_status(status: Status) -> cdk_common::payment::
         Some("custom" | "invalid_backend_input" | "backend_error") => {
             cdk_common::payment::Error::Custom(status.message().to_owned())
         }
-        _ if status.code() == Code::AlreadyExists || status.message().contains("already paid") => {
+        // Servers predating the structured metadata key used
+        // `Code::AlreadyExists` for both already-paid and pending errors, so
+        // the message text must be consulted before the bare status code.
+        // Otherwise a legacy "Payment request pending" status would be
+        // misclassified as `InvoiceAlreadyPaid`.
+        _ if status.message().contains("already paid") => {
             cdk_common::payment::Error::InvoiceAlreadyPaid
         }
-        _ if status.code() == Code::Aborted || status.message().contains("pending") => {
+        _ if status.message().contains("pending") => {
             cdk_common::payment::Error::InvoicePaymentPending
         }
+        _ if status.code() == Code::AlreadyExists => cdk_common::payment::Error::InvoiceAlreadyPaid,
+        _ if status.code() == Code::Aborted => cdk_common::payment::Error::InvoicePaymentPending,
         _ => cdk_common::payment::Error::Custom(status.to_string()),
     }
 }
@@ -199,5 +206,19 @@ mod tests {
 
         let pending = payment_error_from_status(tonic::Status::aborted("Payment pending"));
         assert!(matches!(pending, PaymentError::InvoicePaymentPending));
+    }
+
+    #[test]
+    fn legacy_pending_status_is_not_promoted_to_already_paid() {
+        // Servers predating the structured metadata key used `AlreadyExists`
+        // for both already-paid and pending errors; the message text decides.
+        let pending =
+            payment_error_from_status(tonic::Status::already_exists("Payment request pending"));
+        assert!(matches!(pending, PaymentError::InvoicePaymentPending));
+
+        let already_paid = payment_error_from_status(tonic::Status::already_exists(
+            "Payment request already paid",
+        ));
+        assert!(matches!(already_paid, PaymentError::InvoiceAlreadyPaid));
     }
 }
