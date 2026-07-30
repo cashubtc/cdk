@@ -37,7 +37,7 @@ use cdk_common::database::DynMintDatabase;
 // internal crate modules
 #[cfg(feature = "prometheus")]
 use cdk_common::payment::MetricsMintPayment;
-use cdk_common::payment::MintPayment;
+use cdk_common::payment::{DynMintPayment, MintPayment};
 #[cfg(feature = "postgres")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase, PgConfig};
 #[cfg(feature = "sqlite")]
@@ -884,6 +884,22 @@ fn configure_basic_info(settings: &config::Settings, mint_builder: MintBuilder) 
 
     builder
 }
+
+fn wrap_payment_processor<T>(payment_processor: T) -> DynMintPayment
+where
+    T: MintPayment<Err = cdk_common::payment::Error> + Send + Sync + 'static,
+{
+    #[cfg(feature = "prometheus")]
+    {
+        Arc::new(MetricsMintPayment::new(payment_processor))
+    }
+
+    #[cfg(not(feature = "prometheus"))]
+    {
+        Arc::new(payment_processor)
+    }
+}
+
 /// Configures Lightning Network backend based on the specified backend type
 async fn configure_lightning_backend(
     settings: &config::Settings,
@@ -929,15 +945,14 @@ async fn configure_lightning_backend(
                         _kv_store.clone(),
                     )
                     .await?;
-                #[cfg(feature = "prometheus")]
-                let cln = MetricsMintPayment::new(cln);
+                let cln = wrap_payment_processor(cln);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
                     mint_builder,
                     ln_entry.unit.clone(),
                     mint_melt_limits,
-                    Arc::new(cln),
+                    cln,
                 )
                 .await?;
             }
@@ -949,15 +964,14 @@ async fn configure_lightning_backend(
                 let lnbits = lnbits_settings
                     .setup(settings, ln_entry.unit.clone(), None, work_dir, None)
                     .await?;
-                #[cfg(feature = "prometheus")]
-                let lnbits = MetricsMintPayment::new(lnbits);
+                let lnbits = wrap_payment_processor(lnbits);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
                     mint_builder,
                     ln_entry.unit.clone(),
                     mint_melt_limits,
-                    Arc::new(lnbits),
+                    lnbits,
                 )
                 .await?;
             }
@@ -975,15 +989,14 @@ async fn configure_lightning_backend(
                         _kv_store.clone(),
                     )
                     .await?;
-                #[cfg(feature = "prometheus")]
-                let lnd = MetricsMintPayment::new(lnd);
+                let lnd = wrap_payment_processor(lnd);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
                     mint_builder,
                     ln_entry.unit.clone(),
                     mint_melt_limits,
-                    Arc::new(lnd),
+                    lnd,
                 )
                 .await?;
             }
@@ -1005,15 +1018,14 @@ async fn configure_lightning_backend(
                         _kv_store.clone(),
                     )
                     .await?;
-                #[cfg(feature = "prometheus")]
-                let fake = MetricsMintPayment::new(fake);
+                let fake = wrap_payment_processor(fake);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
                     mint_builder,
                     ln_entry.unit.clone(),
                     mint_melt_limits,
-                    Arc::new(fake),
+                    fake,
                 )
                 .await?;
 
@@ -1036,15 +1048,14 @@ async fn configure_lightning_backend(
                 let processor = grpc_processor
                     .setup(settings, ln_entry.unit.clone(), None, work_dir, None)
                     .await?;
-                #[cfg(feature = "prometheus")]
-                let processor = MetricsMintPayment::new(processor);
+                let processor = wrap_payment_processor(processor);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
                     mint_builder,
                     ln_entry.unit.clone(),
                     mint_melt_limits,
-                    Arc::new(processor),
+                    processor,
                 )
                 .await?;
             }
@@ -1064,13 +1075,14 @@ async fn configure_lightning_backend(
                         None,
                     )
                     .await?;
+                let ldk_node = wrap_payment_processor(ldk_node);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
                     mint_builder,
                     ln_entry.unit.clone(),
                     mint_melt_limits,
-                    Arc::new(ldk_node),
+                    ldk_node,
                 )
                 .await?;
             }
@@ -1156,7 +1168,7 @@ async fn configure_onchain_backend(
                         _kv_store,
                     )
                     .await?;
-                let bdk = Arc::new(bdk);
+                let bdk = wrap_payment_processor(bdk);
 
                 mint_builder = configure_backend_for_unit(
                     settings,
@@ -1195,15 +1207,14 @@ async fn configure_onchain_backend(
                         let fake = fake_wallet
                             .setup(settings, unit.clone(), None, _work_dir, _kv_store.clone())
                             .await?;
-                        #[cfg(feature = "prometheus")]
-                        let fake = MetricsMintPayment::new(fake);
+                        let fake = wrap_payment_processor(fake);
 
                         mint_builder = configure_backend_for_methods(
                             settings,
                             mint_builder,
                             unit,
                             mint_melt_limits,
-                            Arc::new(fake),
+                            fake,
                             vec![PaymentMethod::Known(KnownMethod::Onchain)],
                         )
                         .await?;
@@ -1226,7 +1237,7 @@ async fn configure_backend_for_unit(
     mint_builder: MintBuilder,
     unit: cdk::nuts::CurrencyUnit,
     mint_melt_limits: MintMeltLimits,
-    backend: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync>,
+    backend: DynMintPayment,
 ) -> Result<MintBuilder> {
     let payment_settings = backend.get_settings().await?;
     validate_backend_unit(&unit, &payment_settings.unit)?;
@@ -1269,7 +1280,7 @@ async fn configure_backend_for_methods(
     mut mint_builder: MintBuilder,
     unit: cdk::nuts::CurrencyUnit,
     mint_melt_limits: MintMeltLimits,
-    backend: Arc<dyn MintPayment<Err = cdk_common::payment::Error> + Send + Sync>,
+    backend: DynMintPayment,
     methods: Vec<PaymentMethod>,
 ) -> Result<MintBuilder> {
     // Add all supported payment methods to the mint builder

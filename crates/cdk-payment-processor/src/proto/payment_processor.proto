@@ -56,6 +56,8 @@ message CustomIncomingPaymentOptions {
   // Extra payment-method-specific fields as JSON string
   // These fields are flattened into the JSON representation on the client side
   optional string extra_json = 4;
+  // Name of the configured custom payment method.
+  optional string method = 5;
 }
 message Bolt12IncomingPaymentOptions {
   optional string description = 1;
@@ -182,6 +184,8 @@ message PaymentQuoteRequest {
   optional OnchainOutgoingPaymentOptions onchain_options = 7;
   // Optional amount the wallet would like to pay for custom payment methods.
   optional AmountMessage amount = 8;
+  // Name of the configured custom payment method.
+  optional string custom_method = 9;
 }
 
 enum QuoteState {
@@ -243,6 +247,8 @@ message CustomOutgoingPaymentOptions {
   // The mint's quote_id for this melt. Required. Custom backends should use
   // this as the stable correlation key with the earlier get_payment_quote call.
   string quote_id = 7;
+  // Name of the configured custom payment method.
+  optional string method = 8;
 }
 
 message MakePaymentRequest {
