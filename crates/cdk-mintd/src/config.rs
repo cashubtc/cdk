@@ -171,6 +171,7 @@ pub enum LnBackend {
     #[cfg(feature = "lnd")]
     Lnd,
     #[cfg(feature = "ldk-node")]
+    #[serde(alias = "ldk-node")]
     LdkNode,
     #[cfg(feature = "grpc-processor")]
     GrpcProcessor,
@@ -1338,6 +1339,32 @@ impl Settings {
 mod tests {
 
     use super::*;
+
+    #[cfg(feature = "ldk-node")]
+    #[test]
+    fn ldk_node_backend_accepts_supported_spellings() {
+        for backend in ["ldk-node", "ldknode"] {
+            let document = format!(
+                r#"
+[[ln]]
+ln_backend = "{backend}"
+unit = "sat"
+"#
+            );
+
+            let settings =
+                Settings::try_from_toml(&document).expect("LDK Node backend should deserialize");
+
+            assert_eq!(
+                settings
+                    .ln
+                    .first()
+                    .expect("config should contain one Lightning backend")
+                    .ln_backend,
+                LnBackend::LdkNode
+            );
+        }
+    }
 
     #[test]
     fn toml_parser_rejects_unknown_fields_with_full_paths() {

@@ -130,7 +130,7 @@ connection_timeout_seconds = 10
 #   unit = "usd"
 
 [ln]
-# Required ln backend `cln`, `lnd`, `fakewallet`, 'lnbits', 'ldknode' or 'none' (if onchain is enabled)
+# Required ln backend `cln`, `lnd`, `fakewallet`, `lnbits`, `ldk-node` (`ldknode` legacy alias), or `none` (if onchain is enabled)
 # NOTE: fakewallet is isolated testing mode and cannot be mixed with real payment backends.
 ln_backend = "fakewallet"
 # unit = "sat"          # Optional, defaults to "sat"
