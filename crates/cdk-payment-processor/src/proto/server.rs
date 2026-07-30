@@ -90,7 +90,7 @@ impl Drop for PaymentProcessorServerInner {
     }
 }
 
-/// Clonable handle to a payment processor gRPC server.
+/// Cloneable handle to a payment processor gRPC server.
 ///
 /// Clones share the same listener address, server task, shutdown state, and
 /// backend lifecycle.
