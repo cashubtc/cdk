@@ -110,6 +110,20 @@ pub(super) fn sql_row_to_hashmap_amount(row: Vec<Column>) -> Result<(Id, Amount)
     ))
 }
 
+pub(super) fn sql_row_to_hashmap_count(row: Vec<Column>) -> Result<(Id, u64), Error> {
+    unpack_into!(
+        let (
+            keyset_id, count
+        ) = row
+    );
+
+    let count: u64 = column_as_number!(count);
+    Ok((
+        column_as_string!(keyset_id, Id::from_str, Id::from_bytes),
+        count,
+    ))
+}
+
 #[async_trait]
 impl<RM> database::MintProofsTransaction for SQLTransaction<RM>
 where
@@ -192,7 +206,8 @@ where
     /// the new state after the database update succeeds.
     ///
     /// When the new state is `Spent`, this method also updates the `keyset_amounts`
-    /// table to track the total redeemed amount per keyset for analytics purposes.
+    /// table to increment `total_redeemed` (sats) and `redeemed_count` (operations)
+    /// per keyset for analytics and autorotate volume tracking.
     ///
     /// # Prerequisites
     ///
@@ -214,13 +229,15 @@ where
         if new_state == State::Spent {
             query(
                     r#"
-                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed)
-                    SELECT keyset_id, 0, COALESCE(SUM(amount), 0)
+                    INSERT INTO keyset_amounts (keyset_id, total_issued, total_redeemed, redeemed_count)
+                    SELECT keyset_id, 0, COALESCE(SUM(amount), 0), COUNT(*)
                     FROM proof
                     WHERE y IN (:ys)
                     GROUP BY keyset_id
                     ON CONFLICT (keyset_id)
-                    DO UPDATE SET total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed
+                    DO UPDATE SET
+                        total_redeemed = keyset_amounts.total_redeemed + EXCLUDED.total_redeemed,
+                        redeemed_count = keyset_amounts.redeemed_count + EXCLUDED.redeemed_count
                     "#,
                 )?
                 .bind_vec("ys", ys.iter().map(|y| y.to_bytes().to_vec()).collect())?
@@ -526,7 +543,6 @@ where
         Ok((proofs, states.into_iter().map(Some).collect()))
     }
 
-    /// Get total proofs redeemed by keyset id
     async fn get_total_redeemed(&self) -> Result<HashMap<Id, Amount>, Self::Err> {
         let conn = self
             .pool
@@ -546,6 +562,28 @@ where
         .await?
         .into_iter()
         .map(sql_row_to_hashmap_amount)
+        .collect()
+    }
+
+    async fn get_total_redeemed_count(&self) -> Result<HashMap<Id, u64>, Self::Err> {
+        let conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| Error::Database(Box::new(e)))?;
+        query(
+            r#"
+            SELECT
+                keyset_id,
+                redeemed_count as count
+            FROM
+                keyset_amounts
+        "#,
+        )?
+        .fetch_all(&*conn)
+        .await?
+        .into_iter()
+        .map(sql_row_to_hashmap_count)
         .collect()
     }
 

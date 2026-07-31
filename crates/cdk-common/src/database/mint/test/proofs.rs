@@ -452,6 +452,81 @@ where
     assert!(total >= Amount::from(300));
 }
 
+/// Test that redeemed_count increments once per proof spent, regardless of amount
+pub async fn get_redeemed_count<DB>(db: DB)
+where
+    DB: Database<Error> + KeysDatabase<Err = Error>,
+{
+    use cashu::State;
+
+    let keyset_id = setup_keyset(&db).await;
+    let quote_id = QuoteId::new_uuid();
+
+    let proofs = vec![
+        Proof {
+            amount: Amount::from(100),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        },
+        Proof {
+            amount: Amount::from(200),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        },
+        Proof {
+            amount: Amount::from(300),
+            keyset_id,
+            secret: Secret::generate(),
+            c: SecretKey::generate().public_key(),
+            witness: None,
+            dleq: None,
+            p2pk_e: None,
+        },
+    ];
+    let ys: Vec<_> = proofs.iter().map(|p| p.y().unwrap()).collect();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    tx.add_proofs(
+        proofs,
+        Some(quote_id),
+        &Operation::new_swap(Amount::ZERO, Amount::ZERO, Amount::ZERO),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&[ys[0], ys[1]]).await.unwrap();
+    check_state_transition(acquired.state, State::Pending).unwrap();
+    tx.update_proofs_state(&mut acquired, State::Pending)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut tx = Database::begin_transaction(&db).await.unwrap();
+    let mut acquired = tx.get_proofs(&[ys[0], ys[1]]).await.unwrap();
+    check_state_transition(acquired.state, State::Spent).unwrap();
+    tx.update_proofs_state(&mut acquired, State::Spent)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let counts = db.get_total_redeemed_count().await.unwrap();
+    let count = counts.get(&keyset_id).copied().unwrap_or(0);
+    assert!(
+        count >= 2,
+        "expected at least 2 redeemed proofs, got {count}"
+    );
+}
+
 /// Test get proof ys by quote id
 pub async fn get_proof_ys_by_quote_id<DB>(db: DB)
 where
