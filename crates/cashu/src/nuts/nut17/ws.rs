@@ -69,6 +69,14 @@ pub struct RawNotificationInner<I> {
     pub payload: serde_json::Value,
 }
 
+/// The response to an authenticate request (NUT-22)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "UPPERCASE")]
+pub enum WsAuthenticateResponse {
+    /// Authentication succeeded
+    Ok,
+}
+
 /// Responses from the web socket server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "I: Serialize + DeserializeOwned")]
@@ -78,6 +86,12 @@ pub enum WsResponseResult<I> {
     Subscribe(WsSubscribeResponse<I>),
     /// Unsubscribe
     Unsubscribe(WsUnsubscribeResponse<I>),
+    /// A response to an authenticate request
+    ///
+    /// Declared last so untagged deserialization tries the subscribe and
+    /// unsubscribe variants first: both require a `subId`, so a body without
+    /// one only matches here.
+    Authenticate(WsAuthenticateResponse),
 }
 
 impl<I> From<WsSubscribeResponse<I>> for WsResponseResult<I> {
@@ -92,6 +106,12 @@ impl<I> From<WsUnsubscribeResponse<I>> for WsResponseResult<I> {
     }
 }
 
+impl<I> From<WsAuthenticateResponse> for WsResponseResult<I> {
+    fn from(response: WsAuthenticateResponse) -> Self {
+        WsResponseResult::Authenticate(response)
+    }
+}
+
 /// The request to unsubscribe
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "I: Serialize + DeserializeOwned")]
@@ -99,6 +119,17 @@ pub struct WsUnsubscribeRequest<I> {
     /// Subscription ID
     #[serde(rename = "subId")]
     pub sub_id: I,
+}
+
+/// The request to authenticate a connection (NUT-22)
+///
+/// Carries a blind authentication token (BAT), the serialized `authA...`
+/// string, so browser wallets can authenticate a protected connection in-band
+/// (the WebSocket API cannot set the `Blind-auth` header).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WsAuthenticateRequest {
+    /// The blind authentication token
+    pub token: String,
 }
 
 /// The inner method of the websocket request
@@ -110,6 +141,8 @@ pub enum WsMethodRequest<I> {
     Subscribe(Params<I>),
     /// Unsubscribe method
     Unsubscribe(WsUnsubscribeRequest<I>),
+    /// Authenticate method (NUT-22)
+    Authenticate(WsAuthenticateRequest),
 }
 
 /// Websocket request
@@ -257,5 +290,48 @@ mod tests {
             }
             other => panic!("expected notification, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn authenticate_request_round_trips() {
+        let request: WsRequest<String> = (
+            WsMethodRequest::Authenticate(WsAuthenticateRequest {
+                token: "authAeyJ0ZXN0IjoxfQ".to_string(),
+            }),
+            0,
+        )
+            .into();
+
+        let json = serde_json::to_value(&request).expect("serialize authenticate");
+        assert_eq!(json["method"], "authenticate");
+        assert_eq!(json["params"]["token"], "authAeyJ0ZXN0IjoxfQ");
+        assert_eq!(json["id"], 0);
+
+        let decoded: WsRequest<String> =
+            serde_json::from_value(json).expect("deserialize authenticate");
+        match decoded.method {
+            WsMethodRequest::Authenticate(req) => assert_eq!(req.token, "authAeyJ0ZXN0IjoxfQ"),
+            other => panic!("expected authenticate, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn authenticate_response_is_distinct_from_subscribe() {
+        // An authenticate OK body has no subId, so untagged decoding must not
+        // mistake it for a subscribe/unsubscribe response.
+        let decoded: WsResponseResult<String> =
+            serde_json::from_str(r#"{"status":"OK"}"#).expect("authenticate response");
+        assert!(matches!(decoded, WsResponseResult::Authenticate(_)));
+
+        let decoded: WsResponseResult<String> =
+            serde_json::from_str(r#"{"status":"OK","subId":"sub-1"}"#).expect("subscribe response");
+        assert!(matches!(decoded, WsResponseResult::Subscribe(_)));
+    }
+
+    #[test]
+    fn authenticate_response_serializes_with_status_ok() {
+        let result: WsResponseResult<String> = WsAuthenticateResponse::Ok.into();
+        let json = serde_json::to_value(&result).expect("serialize authenticate response");
+        assert_eq!(json, serde_json::json!({ "status": "OK" }));
     }
 }
