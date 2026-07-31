@@ -59,6 +59,7 @@ use tracing_subscriber::EnvFilter;
 pub mod cli;
 pub mod config;
 pub mod env_vars;
+pub mod migrate;
 pub mod setup;
 
 #[cfg(test)]

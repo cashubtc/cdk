@@ -184,6 +184,11 @@ mint-cli rotate-next-keyset --use-keyset-v2       # Rotate to V2
 mint-cli rotate-next-keyset --use-keyset-v2=false # Rotate to V1
 ```
 
+## Migrating from a Nutshell Mint
+
+See the [Nutshell migration guide](../../docs/nutshell-migration.md) for SQLite
+and PostgreSQL migration, verification, and cutover instructions.
+
 ## Production Examples
 
 ### With LDK Node (Recommended for Testing)

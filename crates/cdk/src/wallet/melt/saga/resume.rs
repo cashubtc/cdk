@@ -119,6 +119,33 @@ impl Wallet {
                         );
                         return Ok(None);
                     }
+                    let reserved_proofs = self.localstore.get_reserved_proofs(saga_id).await?;
+                    let proof_states = self
+                        .check_proofs_spent(
+                            reserved_proofs
+                                .into_iter()
+                                .map(|proof| proof.proof)
+                                .collect(),
+                        )
+                        .await;
+                    match proof_states {
+                        Ok(states) if states.iter().all(|proof| proof.state == State::Unspent) => {}
+                        Ok(_) => {
+                            tracing::warn!(
+                                "Melt saga {} - quote failed but inputs are not all unspent; keeping saga pending",
+                                saga_id
+                            );
+                            return Ok(None);
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                "Melt saga {} - could not verify inputs before compensation: {}; keeping saga pending",
+                                saga_id,
+                                error
+                            );
+                            return Ok(None);
+                        }
+                    }
                     // Payment failed - compensate and return FinalizedMelt with failed state
                     tracing::info!("Melt saga {} - payment failed, compensating", saga_id);
                     self.compensate_melt(saga_id).await?;
@@ -424,7 +451,7 @@ mod tests {
     use std::sync::Arc;
 
     use bip39::Mnemonic;
-    use cdk_common::nuts::{CurrencyUnit, PaymentMethod, State};
+    use cdk_common::nuts::{CheckStateResponse, CurrencyUnit, PaymentMethod, ProofState, State};
     use cdk_common::wallet::{
         MeltOperationData, MeltSagaState, OperationData, Transaction, TransactionDirection,
         WalletSaga, WalletSagaState,
@@ -1868,6 +1895,13 @@ mod tests {
 
         // Mock: quote is Unpaid
         let mock_client = Arc::new(MockMintConnector::new());
+        mock_client.set_check_state_response(Ok(CheckStateResponse {
+            states: vec![ProofState {
+                y: proof_y,
+                state: State::Unspent,
+                witness: None,
+            }],
+        }));
         mock_client.set_melt_quote_status_response(Ok(MeltQuoteBolt11Response {
             quote: quote_id,
             state: MeltQuoteState::Unpaid,

@@ -179,6 +179,19 @@ pub trait QuotesTransaction {
         operation: &Operation,
     ) -> Result<(), Self::Err>;
 
+    /// Add blinded messages while preserving their original persisted order.
+    async fn add_blinded_messages_with_order(
+        &mut self,
+        quote_id: Option<&QuoteId>,
+        blinded_messages: &[BlindedMessage],
+        operation: &Operation,
+        order_indexes: &[u64],
+    ) -> Result<(), Self::Err> {
+        let _ = order_indexes;
+        self.add_blinded_messages(quote_id, blinded_messages, operation)
+            .await
+    }
+
     /// Delete blinded_messages by their blinded secrets
     async fn delete_blinded_messages(
         &mut self,
@@ -467,6 +480,19 @@ pub trait SignaturesTransaction {
         blind_signatures: &[BlindSignature],
         quote_id: Option<QuoteId>,
     ) -> Result<(), Self::Err>;
+
+    /// Add blind signatures while preserving their original persisted order.
+    async fn add_blind_signatures_with_order(
+        &mut self,
+        blinded_messages: &[PublicKey],
+        blind_signatures: &[BlindSignature],
+        quote_id: Option<QuoteId>,
+        order_indexes: &[u64],
+    ) -> Result<(), Self::Err> {
+        let _ = order_indexes;
+        self.add_blind_signatures(blinded_messages, blind_signatures, quote_id)
+            .await
+    }
 
     /// Get [`BlindSignature`]s
     async fn get_blind_signatures(
