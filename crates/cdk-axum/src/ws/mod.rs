@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
+use cdk::error::ErrorCode;
 use cdk::mint::QuoteId;
 use cdk::nuts::nut17::NotificationPayload;
 use cdk::subscription::SubId;
@@ -15,6 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::MintState;
 
+mod authenticate;
 mod error;
 mod subscribe;
 mod unsubscribe;
@@ -22,13 +25,37 @@ mod unsubscribe;
 pub(crate) const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
 pub(crate) const MAX_FILTERS_PER_SUBSCRIPTION: usize = 1000;
 
+/// How long a connection that requires blind auth may stay open without
+/// authenticating before the mint closes it (NUT-22 SHOULD).
+const AUTH_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn blind_auth_required() -> WsError {
+    WsError::ServerError(
+        ErrorCode::BlindAuthRequired.to_code() as i32,
+        "Endpoint requires blind auth".to_string(),
+    )
+}
+
 async fn process(
     context: &mut WsContext,
     body: WsRequest,
 ) -> Result<serde_json::Value, serde_json::Error> {
     let response = match body.method {
-        WsMethodRequest::Subscribe(sub) => subscribe::handle(context, sub).await,
-        WsMethodRequest::Unsubscribe(unsub) => unsubscribe::handle(context, unsub).await,
+        WsMethodRequest::Authenticate(req) => authenticate::handle(context, req).await,
+        WsMethodRequest::Subscribe(sub) => {
+            if context.authenticated {
+                subscribe::handle(context, sub).await
+            } else {
+                Err(blind_auth_required())
+            }
+        }
+        WsMethodRequest::Unsubscribe(unsub) => {
+            if context.authenticated {
+                unsubscribe::handle(context, unsub).await
+            } else {
+                Err(blind_auth_required())
+            }
+        }
     }
     .map_err(WsErrorBody::from);
 
@@ -43,6 +70,10 @@ pub struct WsContext {
     state: MintState,
     subscriptions: HashMap<Arc<SubId>, tokio::task::JoinHandle<()>>,
     publisher: mpsc::Sender<(Arc<SubId>, NotificationPayload<QuoteId>)>,
+    /// Whether the connection may subscribe. Set at upgrade time for open
+    /// endpoints and header-authenticated connections, or by a successful
+    /// in-band `authenticate` command.
+    authenticated: bool,
 }
 
 impl Drop for WsContext {
@@ -59,16 +90,31 @@ impl Drop for WsContext {
 ///
 /// For simplicity sake this function will spawn tasks for each subscription and
 /// keep them in a hashmap, and will have a single subscriber for all of them.
-pub async fn main_websocket(mut socket: WebSocket, state: MintState) {
+pub async fn main_websocket(mut socket: WebSocket, state: MintState, authenticated: bool) {
     let (publisher, mut subscriber) = mpsc::channel(100);
     let mut context = WsContext {
         state,
         subscriptions: HashMap::new(),
         publisher,
+        authenticated,
     };
+
+    let auth_timeout = tokio::time::sleep(AUTH_TIMEOUT);
+    tokio::pin!(auth_timeout);
 
     loop {
         tokio::select! {
+            // Close connections that never authenticate. The guard disables
+            // this branch once the connection is authenticated, so open and
+            // authenticated connections are never closed by it.
+            () = &mut auth_timeout, if !context.authenticated => {
+                tracing::info!("Closing websocket: no authentication within timeout");
+                let _ = socket.send(Message::Close(Some(CloseFrame {
+                    code: axum::extract::ws::close_code::POLICY,
+                    reason: "authentication required".into(),
+                }))).await;
+                break;
+            }
             Some((sub_id, payload)) = subscriber.recv() => {
                 if !context.subscriptions.contains_key(&sub_id) {
                     // It may be possible an incoming message has come from a dropped Subscriptions that has not yet been
@@ -245,6 +291,10 @@ mod tests {
     }
 
     fn make_context(mint: Arc<Mint>) -> WsContext {
+        make_context_with_auth(mint, true)
+    }
+
+    fn make_context_with_auth(mint: Arc<Mint>, authenticated: bool) -> WsContext {
         let state = MintState {
             mint,
             cache: Arc::new(HttpCache::default()),
@@ -254,6 +304,7 @@ mod tests {
             state,
             subscriptions: HashMap::new(),
             publisher,
+            authenticated,
         }
     }
 
@@ -398,5 +449,104 @@ mod tests {
             "subscription filter count must not be capped by mint max_inputs; got {:?}",
             result.as_ref().err()
         );
+    }
+
+    fn subscribe_request(sub_id: &str) -> WsRequest {
+        WsRequest {
+            jsonrpc: "2.0".to_string(),
+            method: WsMethodRequest::Subscribe(make_params(sub_id)),
+            id: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_subscribe_is_rejected_with_31001() {
+        let mint = create_test_mint().await;
+        let mut context = make_context_with_auth(mint, false);
+
+        let response = process(&mut context, subscribe_request("sub-unauth"))
+            .await
+            .expect("process serializes");
+
+        assert_eq!(response["error"]["code"], 31001);
+        assert!(
+            context.subscriptions.is_empty(),
+            "a rejected subscribe must not register a subscription"
+        );
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_unsubscribe_is_rejected_with_31001() {
+        let mint = create_test_mint().await;
+        let mut context = make_context_with_auth(mint, false);
+
+        let request = WsRequest {
+            jsonrpc: "2.0".to_string(),
+            method: WsMethodRequest::Unsubscribe(WsUnsubscribeRequest {
+                sub_id: Arc::new(SubId::from("sub-unauth")),
+            }),
+            id: 2,
+        };
+
+        let response = process(&mut context, request)
+            .await
+            .expect("process serializes");
+
+        assert_eq!(response["error"]["code"], 31001);
+    }
+
+    #[tokio::test]
+    async fn authenticate_with_garbage_token_returns_31002() {
+        let mint = create_test_mint().await;
+        let mut context = make_context_with_auth(mint, false);
+
+        let err = authenticate::handle(
+            &mut context,
+            cdk::ws::WsAuthenticateRequest {
+                token: "not-a-valid-bat".to_string(),
+            },
+        )
+        .await
+        .expect_err("garbage token must fail");
+
+        let body = cdk::ws::WsErrorBody::from(err);
+        assert_eq!(body.code, 31002);
+        assert!(
+            !context.authenticated,
+            "a failed authenticate must not authenticate the connection"
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_subscribe_is_accepted() {
+        let mint = create_test_mint().await;
+        let mut context = make_context_with_auth(mint, true);
+
+        let response = process(&mut context, subscribe_request("sub-authed"))
+            .await
+            .expect("process serializes");
+
+        assert_eq!(response["result"]["status"], "OK");
+    }
+
+    #[tokio::test]
+    async fn authenticate_is_idempotent_when_already_authenticated() {
+        let mint = create_test_mint().await;
+        let mut context = make_context_with_auth(mint, true);
+
+        // Even an invalid token succeeds: an already-authenticated connection
+        // must short-circuit before any parse/verify/burn, so a repeat
+        // authenticate never spends a second BAT.
+        let result = authenticate::handle(
+            &mut context,
+            cdk::ws::WsAuthenticateRequest {
+                token: "not-a-valid-bat".to_string(),
+            },
+        )
+        .await
+        .expect("repeat authenticate on an authenticated connection is a no-op");
+
+        assert!(matches!(result, cdk::ws::WsResponseResult::Authenticate(_)));
+        assert!(context.authenticated);
     }
 }

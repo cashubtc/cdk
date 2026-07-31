@@ -1545,6 +1545,7 @@ version = "0.18.0-rc.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "bip39",
  "bitcoin",
  "bitcoincore-rpc",

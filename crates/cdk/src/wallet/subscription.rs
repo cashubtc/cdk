@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use cdk_common::nut00::KnownMethod;
 use cdk_common::nut17::ws::{
-    RawWsMessageOrResponse, WsMethodRequest, WsRequest, WsUnsubscribeRequest,
+    RawWsMessageOrResponse, WsAuthenticateRequest, WsMethodRequest, WsRequest, WsResponseResult,
+    WsUnsubscribeRequest,
 };
 use cdk_common::nut17::{deserialize_payload_for_kind, Kind, NotificationId};
 use cdk_common::parking_lot::RwLock;
@@ -22,12 +23,13 @@ use cdk_common::pub_sub::remote_consumer::{
 use cdk_common::pub_sub::{Error as PubsubError, Spec, Subscriber};
 use cdk_common::subscription::WalletParams;
 use cdk_common::ws_client::WsError;
-use cdk_common::{CheckStateRequest, Method, PaymentMethod, RoutePath};
+use cdk_common::{AuthRequired, CheckStateRequest, Method, PaymentMethod, RoutePath};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::event::MintEvent;
 use crate::mint_url::MintUrl;
+use crate::wallet::auth::AuthWallet;
 use crate::wallet::MintConnector;
 
 /// Notification Payload
@@ -213,6 +215,23 @@ impl SubscriptionClient {
         serde_json::to_string(&request)
             .inspect_err(|err| {
                 tracing::error!("Could not serialize unsubscribe message: {:?}", err);
+            })
+            .map(|json| (request.id, json))
+            .ok()
+    }
+
+    /// Build a NUT-22 `authenticate` command carrying the serialized BAT.
+    fn get_auth_request(&self, token: String) -> Option<(usize, String)> {
+        let request: WsRequest<String> = (
+            WsMethodRequest::Authenticate(WsAuthenticateRequest { token }),
+            self.req_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        )
+            .into();
+
+        serde_json::to_string(&request)
+            .inspect_err(|err| {
+                tracing::error!("Could not serialize authenticate message: {:?}", err);
             })
             .map(|json| (request.id, json))
             .ok()
@@ -471,6 +490,74 @@ fn new_subscription_id() -> String {
     Uuid::now_v7().to_string()
 }
 
+/// Authenticate the connection with a blind auth token, once, just before the
+/// first subscribe.
+///
+/// A single BAT authenticates the connection for its lifetime, so this fetches
+/// and spends a token only on the first call and only when the endpoint needs
+/// blind auth. Because it runs after a successful connect and only when a
+/// subscribe is about to be sent, a failed connect never burns a BAT.
+async fn ensure_authenticated(
+    client: &SubscriptionClient,
+    sender: &mut cdk_common::ws_client::WsSender,
+    pending_requests: &mut HashMap<usize, PendingRequest>,
+    auth_wallet: Option<&AuthWallet>,
+    endpoint: &cdk_common::ProtectedEndpoint,
+    needs_blind_auth: bool,
+    authenticated: &mut bool,
+) -> Result<(), PubsubError> {
+    if !needs_blind_auth || *authenticated {
+        return Ok(());
+    }
+
+    let wallet = auth_wallet.ok_or_else(|| {
+        PubsubError::InternalStr("blind auth required but no auth wallet".to_string())
+    })?;
+
+    let token = wallet
+        .get_auth_for_request(endpoint)
+        .await
+        .map_err(|err| {
+            PubsubError::InternalStr(format!("failed to get blind auth token: {err:?}"))
+        })?
+        .ok_or_else(|| {
+            PubsubError::InternalStr("blind auth required but no token available".to_string())
+        })?;
+
+    let (request_id, req) = client.get_auth_request(token.to_string()).ok_or_else(|| {
+        PubsubError::InternalStr("failed to build authenticate request".to_string())
+    })?;
+
+    // Only mark the connection authenticated once the command is actually on the
+    // wire. The BAT has already been spent from the wallet store, so a failed
+    // send must surface as an error (reconnect) rather than silently proceeding
+    // as if authenticated.
+    sender.send(req).await.map_err(map_ws_error)?;
+    pending_requests.insert(request_id, PendingRequest::Authenticate);
+    *authenticated = true;
+    Ok(())
+}
+
+/// Send a subscribe request and record its kind for notification decoding.
+async fn send_subscribe(
+    client: &SubscriptionClient,
+    sender: &mut cdk_common::ws_client::WsSender,
+    sub_id_to_kind: &mut HashMap<String, Kind>,
+    pending_requests: &mut HashMap<usize, PendingRequest>,
+    name: String,
+    index: NotificationId<String>,
+) -> Result<(), PubsubError> {
+    let kind = SubscriptionClient::subscription_kind(&index);
+    let Some((request_id, req)) = client.get_sub_request(name.clone(), index) else {
+        return Ok(());
+    };
+
+    sub_id_to_kind.insert(name.clone(), kind);
+    sender.send(req).await.map_err(map_ws_error)?;
+    pending_requests.insert(request_id, PendingRequest::Subscribe { sub_id: name });
+    Ok(())
+}
+
 async fn stream_client(
     client: &SubscriptionClient,
     mut ctrl: mpsc::Receiver<StreamCtrl<MintSubTopics>>,
@@ -491,34 +578,30 @@ async fn stream_client(
         url.set_scheme("ws").expect("Could not set scheme");
     }
 
+    let endpoint = cdk_common::ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
+    let auth_wallet = client.http_client.get_auth_wallet().await;
+
+    // Learn the auth requirement without consuming a token. Only clear auth
+    // travels in a header; blind auth is done in-band, and the BAT is fetched
+    // lazily just before the first subscribe (see `ensure_authenticated`), so a
+    // failed connect never burns a single-use BAT.
+    let auth_required = match auth_wallet.as_ref() {
+        Some(wallet) => wallet.is_protected(&endpoint).await,
+        None => None,
+    };
+
     let mut headers: Vec<(&str, String)> = Vec::new();
-
-    {
-        let auth_wallet = client.http_client.get_auth_wallet().await;
-        let token = match auth_wallet.as_ref() {
-            Some(auth_wallet) => {
-                let endpoint = cdk_common::ProtectedEndpoint::new(Method::Get, RoutePath::Ws);
-                match auth_wallet.get_auth_for_request(&endpoint).await {
-                    Ok(token) => token,
-                    Err(err) => {
-                        tracing::warn!("Failed to get auth token: {:?}", err);
-                        None
-                    }
-                }
+    if matches!(auth_required, Some(AuthRequired::Clear)) {
+        if let Some(wallet) = auth_wallet.as_ref() {
+            match wallet.get_auth_for_request(&endpoint).await {
+                Ok(Some(token)) => headers.push(("Clear-auth", token.to_string())),
+                Ok(None) => {}
+                Err(err) => tracing::warn!("Failed to get clear auth token: {:?}", err),
             }
-            None => None,
-        };
-
-        if let Some(auth_token) = token {
-            let header_key = match &auth_token {
-                cdk_common::AuthToken::ClearAuth(_) => "Clear-auth",
-                cdk_common::AuthToken::BlindAuth(_) => "Blind-auth",
-            };
-
-            let header_value = auth_token.to_string();
-            headers.push((header_key, header_value));
         }
     }
+
+    let needs_blind_auth = matches!(auth_required, Some(AuthRequired::Blind));
 
     let url_str = url.to_string();
     let header_refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -535,17 +618,33 @@ async fn stream_client(
 
     tracing::debug!("Connected to {}", url);
 
-    for (name, index) in topics {
-        let kind = SubscriptionClient::subscription_kind(&index);
-        let (request_id, req) = if let Some(req) = client.get_sub_request(name.clone(), index) {
-            req
-        } else {
-            continue;
-        };
+    // Whether `authenticate` has been sent on this connection. A single BAT
+    // authenticates the connection for its lifetime, so we send it once, lazily,
+    // just before the first subscribe (a connection with no subscriptions never
+    // authenticates and the mint closes it after its auth timeout, which is
+    // fine).
+    let mut authenticated = false;
 
-        sub_id_to_kind.insert(name.clone(), kind);
-        sender.send(req).await.map_err(map_ws_error)?;
-        pending_requests.insert(request_id, PendingRequest::Subscribe { sub_id: name });
+    for (name, index) in topics {
+        ensure_authenticated(
+            client,
+            &mut sender,
+            &mut pending_requests,
+            auth_wallet.as_ref(),
+            &endpoint,
+            needs_blind_auth,
+            &mut authenticated,
+        )
+        .await?;
+        send_subscribe(
+            client,
+            &mut sender,
+            &mut sub_id_to_kind,
+            &mut pending_requests,
+            name,
+            index,
+        )
+        .await?;
     }
 
     loop {
@@ -553,18 +652,25 @@ async fn stream_client(
             Some(msg) = ctrl.recv() => {
                 match msg {
                     StreamCtrl::Subscribe(msg) => {
-                        let kind = SubscriptionClient::subscription_kind(&msg.1);
-                        let (request_id, req) = if let Some(req) = client.get_sub_request(msg.0.clone(), msg.1) {
-                            req
-                        } else {
-                            continue;
-                        };
-                        sub_id_to_kind.insert(msg.0.clone(), kind);
-                        sender.send(req).await.map_err(map_ws_error)?;
-                        pending_requests.insert(
-                            request_id,
-                            PendingRequest::Subscribe { sub_id: msg.0 },
-                        );
+                        ensure_authenticated(
+                            client,
+                            &mut sender,
+                            &mut pending_requests,
+                            auth_wallet.as_ref(),
+                            &endpoint,
+                            needs_blind_auth,
+                            &mut authenticated,
+                        )
+                        .await?;
+                        send_subscribe(
+                            client,
+                            &mut sender,
+                            &mut sub_id_to_kind,
+                            &mut pending_requests,
+                            msg.0,
+                            msg.1,
+                        )
+                        .await?;
                     }
                     StreamCtrl::Unsubscribe(msg) => {
                         sub_id_to_kind.remove(&msg);
@@ -634,27 +740,42 @@ async fn stream_client(
                             continue;
                         };
 
-                        if response.result.sub_id != request.sub_id() {
-                            tracing::warn!(
-                                "Received {} response for subId {}, expected {}",
-                                request.method(),
-                                response.result.sub_id,
-                                request.sub_id()
-                            );
-                            continue;
-                        }
+                        match response.result {
+                            WsResponseResult::Authenticate(_) => {
+                                if !matches!(request, PendingRequest::Authenticate) {
+                                    tracing::warn!(
+                                        "Received authenticate response for a {} request",
+                                        request.method()
+                                    );
+                                    continue;
+                                }
 
-                        tracing::debug!(
-                            "Received {} response from server for subId {} with status {}",
-                            request.method(),
-                            response.result.sub_id,
-                            response.result.status
-                        );
+                                tracing::debug!("Websocket connection authenticated");
+                            }
+                            WsResponseResult::Subscription(result) => {
+                                if Some(result.sub_id.as_str()) != request.sub_id() {
+                                    tracing::warn!(
+                                        "Received {} response for subId {}, expected {:?}",
+                                        request.method(),
+                                        result.sub_id,
+                                        request.sub_id()
+                                    );
+                                    continue;
+                                }
+
+                                tracing::debug!(
+                                    "Received {} response from server for subId {} with status {}",
+                                    request.method(),
+                                    result.sub_id,
+                                    result.status
+                                );
+                            }
+                        }
                     }
                     RawWsMessageOrResponse::ErrorResponse(error) => {
                         match pending_requests.remove(&error.id) {
                             Some(request) => tracing::debug!(
-                                "Received an error from server for {} request and subId {}: {}",
+                                "Received an error from server for {} request and subId {:?}: {}",
                                 request.method(),
                                 request.sub_id(),
                                 error.error.message
@@ -677,6 +798,7 @@ async fn stream_client(
 enum PendingRequest {
     Subscribe { sub_id: String },
     Unsubscribe { sub_id: String },
+    Authenticate,
 }
 
 impl PendingRequest {
@@ -684,12 +806,14 @@ impl PendingRequest {
         match self {
             Self::Subscribe { .. } => "subscribe",
             Self::Unsubscribe { .. } => "unsubscribe",
+            Self::Authenticate => "authenticate",
         }
     }
 
-    fn sub_id(&self) -> &str {
+    fn sub_id(&self) -> Option<&str> {
         match self {
-            Self::Subscribe { sub_id } | Self::Unsubscribe { sub_id } => sub_id,
+            Self::Subscribe { sub_id } | Self::Unsubscribe { sub_id } => Some(sub_id),
+            Self::Authenticate => None,
         }
     }
 }
