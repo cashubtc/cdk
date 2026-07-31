@@ -18,7 +18,7 @@ use cdk_prometheus::MintMetricGuard;
 use cdk_signatory::signatory::{Signatory, SignatoryKeySet, SignatoryKeysets};
 use futures::{Stream, StreamExt};
 use nut21::ProtectedEndpoint;
-use subscription::{MintPubSubBusBuilder, PubSubManager};
+use subscription::PubSubManager;
 use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::{JoinHandle, JoinSet};
 use tracing::instrument;
@@ -47,6 +47,7 @@ pub use cdk_common::mint::{MeltQuote, MintKeySetInfo, MintQuote};
 pub use cdk_common::mint_quote::{MintQuoteRequest, MintQuoteResponse};
 pub use issue::MintInput;
 pub use melt::PendingMelt;
+pub use subscription::MintPubSubBusBuilder;
 pub use verification::Verification;
 
 const CDK_MINT_PRIMARY_NAMESPACE: &str = "cdk_mint";

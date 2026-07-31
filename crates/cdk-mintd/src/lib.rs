@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 // external crates
 use anyhow::{anyhow, bail, Context, Result};
@@ -15,7 +16,7 @@ use axum::extract::DefaultBodyLimit;
 use axum::Router;
 use bip39::Mnemonic;
 use cdk::cdk_database::{self, KVStore, MintDatabase, MintKeysDatabase};
-use cdk::mint::{Mint, MintBuilder, MintMeltLimits};
+use cdk::mint::{Mint, MintBuilder, MintMeltLimits, MintPubSubBusBuilder};
 use cdk::nuts::nut00::KnownMethod;
 #[cfg(any(
     feature = "cln",
@@ -40,6 +41,7 @@ use cdk_common::payment::MetricsMintPayment;
 use cdk_common::payment::MintPayment;
 #[cfg(feature = "postgres")]
 use cdk_postgres::{MintPgAuthDatabase, MintPgDatabase, PgConfig, PostgresBusConnector};
+use cdk_sql_common::mint::bus::{SqlBusConnector, SqlBusOptions};
 
 /// Default `LISTEN`/`NOTIFY` channel for the cross-instance pub/sub bus when the
 /// Postgres config does not set one.
@@ -50,7 +52,7 @@ use cdk_sqlite::mint::MintSqliteAuthDatabase;
 #[cfg(feature = "sqlite")]
 use cdk_sqlite::MintSqliteDatabase;
 use cli::CLIArgs;
-use config::{AuthType, DatabaseEngine, LnBackend};
+use config::{AuthType, DatabaseEngine, LnBackend, PubSubConfig, PubSubTransport};
 use env_vars::ENV_WORK_DIR;
 use setup::LnBackendSetup;
 use tower::ServiceBuilder;
@@ -129,11 +131,13 @@ async fn initial_setup(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    Option<MintPubSubBusBuilder>,
 )> {
     tracing::info!("Initializing database...");
-    let (localstore, keystore, kv) = setup_database(settings, work_dir, db_password).await?;
+    let (localstore, keystore, kv, pubsub_bus) =
+        setup_database(settings, work_dir, db_password).await?;
     tracing::info!("Database initialized successfully");
-    Ok((localstore, keystore, kv))
+    Ok((localstore, keystore, kv, pubsub_bus))
 }
 
 /// Sets up and initializes a tracing subscriber with custom log filtering.
@@ -321,6 +325,12 @@ fn validate_database_config(settings: &config::Settings) -> Result<()> {
         if pg_config.url.is_empty() {
             bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
         }
+    }
+
+    if settings.database.pubsub.transport == PubSubTransport::PostgresListenNotify
+        && settings.database.engine != DatabaseEngine::Postgres
+    {
+        bail!("pubsub transport 'postgres-listen-notify' requires the Postgres database engine; use 'sql' for a portable cross-instance transport");
     }
 
     Ok(())
@@ -646,6 +656,19 @@ pub fn apply_seed_file(settings: &mut config::Settings, seed_file: &Path) -> Res
     Ok(())
 }
 
+/// Build [`SqlBusOptions`] from the mint's pub/sub config, falling back to the
+/// library defaults for any unset field.
+fn sql_bus_options(pubsub: &PubSubConfig) -> SqlBusOptions {
+    let mut options = SqlBusOptions::default();
+    if let Some(ms) = pubsub.poll_interval_ms {
+        options.poll_interval = Duration::from_millis(ms);
+    }
+    if let Some(secs) = pubsub.retention_seconds {
+        options.retention = Duration::from_secs(secs);
+    }
+    options
+}
+
 async fn setup_database(
     settings: &config::Settings,
     _work_dir: &Path,
@@ -654,16 +677,33 @@ async fn setup_database(
     DynMintDatabase,
     Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync>,
     Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync>,
+    Option<MintPubSubBusBuilder>,
 )> {
     tracing::info!("Using database engine: {:?}", settings.database.engine);
+    let pubsub = &settings.database.pubsub;
     match settings.database.engine {
         #[cfg(feature = "sqlite")]
         DatabaseEngine::Sqlite => {
             let db = setup_sqlite_database(_work_dir, _db_password).await?;
+
+            // SQLite spans a single host, so LISTEN/NOTIFY does not apply. Only
+            // the in-memory and SQL polling transports are meaningful here.
+            let bus: Option<MintPubSubBusBuilder> = match pubsub.transport {
+                PubSubTransport::InMemory => None,
+                PubSubTransport::Sql => {
+                    let connector =
+                        SqlBusConnector::connect(db.pool(), sql_bus_options(pubsub)).await?;
+                    Some(Box::new(move |local| connector.build(local)))
+                }
+                PubSubTransport::PostgresListenNotify => {
+                    bail!("pubsub transport 'postgres-listen-notify' requires the Postgres database engine");
+                }
+            };
+
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> = db.clone();
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = db.clone();
             let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> = db;
-            Ok((localstore, keystore, kv))
+            Ok((localstore, keystore, kv, bus))
         }
         #[cfg(feature = "postgres")]
         DatabaseEngine::Postgres => {
@@ -676,30 +716,41 @@ async fn setup_database(
                 bail!("PostgreSQL URL is required. Set it in config file [database.postgres] section or via CDK_MINTD_POSTGRES_URL/CDK_MINTD_DATABASE_URL environment variable");
             }
 
-            #[cfg(feature = "postgres")]
             let db_config = PgConfig::new(
                 pg_config.url.as_str(),
                 pg_config.tls_mode.as_deref(),
                 pg_config.max_connections,
                 pg_config.connection_timeout_seconds,
             );
-            #[cfg(feature = "postgres")]
             let pg_db = Arc::new(MintPgDatabase::new(db_config).await?);
             tracing::info!("PostgreSQL database connection established");
-            #[cfg(feature = "postgres")]
+
+            let bus: Option<MintPubSubBusBuilder> = match pubsub.transport {
+                PubSubTransport::InMemory => None,
+                PubSubTransport::Sql => {
+                    let connector =
+                        SqlBusConnector::connect(pg_db.pool(), sql_bus_options(pubsub)).await?;
+                    Some(Box::new(move |local| connector.build(local)))
+                }
+                PubSubTransport::PostgresListenNotify => {
+                    let bus_config = PgConfig::new(
+                        pg_config.url.as_str(),
+                        pg_config.tls_mode.as_deref(),
+                        pg_config.max_connections,
+                        pg_config.connection_timeout_seconds,
+                    );
+                    let channel = pubsub.channel.as_deref().unwrap_or(DEFAULT_PUBSUB_CHANNEL);
+                    let connector = PostgresBusConnector::connect(bus_config, channel).await?;
+                    Some(Box::new(move |local| connector.build(local)))
+                }
+            };
+
             let localstore: Arc<dyn MintDatabase<cdk_database::Error> + Send + Sync> =
                 pg_db.clone();
-            #[cfg(feature = "postgres")]
             let kv: Arc<dyn KVStore<Err = cdk_database::Error> + Send + Sync> = pg_db.clone();
-            #[cfg(feature = "postgres")]
-            let keystore: Arc<
-                dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync,
-            > = pg_db;
-            #[cfg(feature = "postgres")]
-            return Ok((localstore, keystore, kv));
-
-            #[cfg(not(feature = "postgres"))]
-            bail!("PostgreSQL support not compiled in. Enable the 'postgres' feature to use PostgreSQL database.")
+            let keystore: Arc<dyn MintKeysDatabase<Err = cdk_database::Error> + Send + Sync> =
+                pg_db;
+            Ok((localstore, keystore, kv, bus))
         }
         #[cfg(not(feature = "sqlite"))]
         DatabaseEngine::Sqlite => {
@@ -2058,32 +2109,18 @@ pub async fn run_mintd_with_shutdown(
     runtime: Option<std::sync::Arc<tokio::runtime::Runtime>>,
     routers: Vec<Router>,
 ) -> Result<()> {
-    let (localstore, keystore, kv) = initial_setup(work_dir, settings, db_password.clone()).await?;
+    let (localstore, keystore, kv, pubsub_bus) =
+        initial_setup(work_dir, settings, db_password.clone()).await?;
 
     let mint_builder = MintBuilder::new(localstore);
 
-    // With Postgres, several mint instances can share one database. Install the
-    // LISTEN/NOTIFY bus so NUT-17 notifications reach subscribers on every
-    // instance. Other backends keep the default in-process bus.
-    #[cfg(feature = "postgres")]
-    let mint_builder = if settings.database.engine == DatabaseEngine::Postgres {
-        let pg_config = settings.database.postgres.as_ref().ok_or_else(|| {
-            anyhow!("PostgreSQL configuration is required when using PostgreSQL engine")
-        })?;
-        let bus_config = PgConfig::new(
-            pg_config.url.as_str(),
-            pg_config.tls_mode.as_deref(),
-            pg_config.max_connections,
-            pg_config.connection_timeout_seconds,
-        );
-        let channel = pg_config
-            .pubsub_channel
-            .as_deref()
-            .unwrap_or(DEFAULT_PUBSUB_CHANNEL);
-        let connector = PostgresBusConnector::connect(bus_config, channel).await?;
-        mint_builder.with_pubsub_bus(move |local| connector.build(local))
-    } else {
-        mint_builder
+    // Install the selected cross-instance notification bus. When no transport is
+    // configured (the default) the mint keeps notifications in-process, so a
+    // WebSocket subscriber only receives events from the instance it is
+    // connected to.
+    let mint_builder = match pubsub_bus {
+        Some(build_bus) => mint_builder.with_pubsub_bus(build_bus),
+        None => mint_builder,
     };
 
     // If RPC is enabled and DB contains mint_info already, initialize the builder from DB.

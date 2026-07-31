@@ -963,6 +963,60 @@ impl std::str::FromStr for DatabaseEngine {
 pub struct Database {
     pub engine: DatabaseEngine,
     pub postgres: Option<PostgresConfig>,
+    pub pubsub: PubSubConfig,
+}
+
+/// Cross-instance NUT-17 notification transport.
+///
+/// A single mint instance never needs a transport; these matter only when
+/// several instances share one database behind a load balancer.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum PubSubTransport {
+    /// Keep notifications in-process (the default). Correct for a single
+    /// instance; with several instances a subscriber only sees events from the
+    /// instance it is connected to (others arrive on the next backfill).
+    #[default]
+    InMemory,
+    /// Poll a shared outbox table. Works on any engine (SQLite, Postgres) and
+    /// through connection poolers such as PgBouncer. Latency is bounded by the
+    /// poll interval.
+    Sql,
+    /// Postgres `LISTEN`/`NOTIFY`. Lowest latency, Postgres only, and needs a
+    /// session-pinned connection (not a transaction-pooling proxy).
+    PostgresListenNotify,
+}
+
+impl std::str::FromStr for PubSubTransport {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().replace('_', "-").as_str() {
+            "in-memory" | "memory" | "local" => Ok(PubSubTransport::InMemory),
+            "sql" | "polling" => Ok(PubSubTransport::Sql),
+            "postgres-listen-notify" | "listen-notify" | "notify" => {
+                Ok(PubSubTransport::PostgresListenNotify)
+            }
+            _ => Err(format!("Unknown pubsub transport: {s}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PubSubConfig {
+    /// Which transport distributes notifications across instances.
+    pub transport: PubSubTransport,
+    /// `LISTEN`/`NOTIFY` channel (postgres-listen-notify transport). Instances
+    /// that share notifications must use the same channel. Defaults to a
+    /// built-in name when unset.
+    pub channel: Option<String>,
+    /// Poll interval in milliseconds (sql transport). Defaults to a built-in
+    /// value when unset.
+    pub poll_interval_ms: Option<u64>,
+    /// Age in seconds after which outbox rows are pruned (sql transport).
+    /// Defaults to a built-in value when unset.
+    pub retention_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -998,10 +1052,6 @@ pub struct PostgresConfig {
     pub tls_mode: Option<String>,
     pub max_connections: Option<usize>,
     pub connection_timeout_seconds: Option<u64>,
-    /// `LISTEN`/`NOTIFY` channel for the cross-instance pub/sub bus. Instances
-    /// that should share notifications must use the same channel. When unset a
-    /// built-in default is used.
-    pub pubsub_channel: Option<String>,
 }
 
 impl Default for PostgresConfig {
@@ -1011,7 +1061,6 @@ impl Default for PostgresConfig {
             tls_mode: Some("disable".to_string()),
             max_connections: Some(20),
             connection_timeout_seconds: Some(10),
-            pubsub_channel: None,
         }
     }
 }
@@ -1307,6 +1356,43 @@ mod tests {
         // tests. `std::env` is global, so config.rs and lib.rs tests must
         // serialize on the *same* mutex or they race over env vars.
         crate::test_utils::env_lock()
+    }
+
+    #[test]
+    fn pubsub_transport_parses_names_and_aliases() {
+        use std::str::FromStr;
+
+        assert_eq!(
+            PubSubTransport::from_str("in-memory").unwrap(),
+            PubSubTransport::InMemory
+        );
+        assert_eq!(
+            PubSubTransport::from_str("memory").unwrap(),
+            PubSubTransport::InMemory
+        );
+        assert_eq!(
+            PubSubTransport::from_str("sql").unwrap(),
+            PubSubTransport::Sql
+        );
+        assert_eq!(
+            PubSubTransport::from_str("postgres-listen-notify").unwrap(),
+            PubSubTransport::PostgresListenNotify
+        );
+        // Underscores and case are normalized.
+        assert_eq!(
+            PubSubTransport::from_str("Postgres_Listen_Notify").unwrap(),
+            PubSubTransport::PostgresListenNotify
+        );
+        assert!(PubSubTransport::from_str("carrier-pigeon").is_err());
+    }
+
+    #[test]
+    fn pubsub_transport_defaults_to_in_memory() {
+        assert_eq!(PubSubConfig::default().transport, PubSubTransport::InMemory);
+        assert_eq!(
+            Database::default().pubsub.transport,
+            PubSubTransport::InMemory
+        );
     }
 
     #[cfg(feature = "bdk")]

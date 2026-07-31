@@ -205,7 +205,7 @@ impl Spec for MintPubSubSpec {
 }
 
 /// Builds the distribution bus for the mint's pub/sub from a local-delivery
-/// handle. Passed to [`PubSubManager::new_with_bus`] to send NUT-17
+/// handle. Passed to `PubSubManager::new_with_bus` to send NUT-17
 /// notifications across mint instances instead of keeping them in-process.
 pub type MintPubSubBusBuilder =
     Box<dyn FnOnce(LocalDelivery<MintPubSubSpec>) -> Arc<dyn Bus<MintPubSubSpec>> + Send>;

@@ -403,6 +403,29 @@ mod test {
 
     mint_db_test!(provide_mint_db);
 
+    /// Store factory for the shared cross-instance SQL bus suite. Uses the same
+    /// per-test schema isolation as `provide_mint_db`; the two logical instances
+    /// the suite builds share this one pool (and thus one schema).
+    async fn provide_sql_bus_store(
+        test_id: String,
+    ) -> std::sync::Arc<cdk_sql_common::pool::Pool<PgConnectionPool>> {
+        let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
+            .or_else(|_| std::env::var("PG_DB_URL"))
+            .unwrap_or(
+                "host=localhost user=cdk_user password=cdk_password dbname=cdk_mint port=5432"
+                    .to_owned(),
+            );
+
+        let db_url = format!("{db_url} schema={test_id}");
+
+        MintPgDatabase::new(db_url.as_str())
+            .await
+            .expect("database")
+            .pool()
+    }
+
+    cdk_sql_common::sql_bus_test!(provide_sql_bus_store);
+
     async fn provide_wallet_db(test_id: String) -> WalletPgDatabase {
         let db_url = std::env::var("CDK_MINTD_DATABASE_URL")
             .or_else(|_| std::env::var("PG_DB_URL")) // Fallback for compatibility
