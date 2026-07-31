@@ -19,6 +19,7 @@ use bdk_wallet::keys::{DerivableKey, ExtendedKey};
 use bdk_wallet::rusqlite::Connection;
 use bdk_wallet::template::Bip84;
 use bdk_wallet::{KeychainKind, PersistedWallet, Update, Wallet};
+use cdk_common::amount::MSAT_IN_SAT;
 use cdk_common::common::FeeReserve;
 use cdk_common::database::KVStore;
 use cdk_common::nuts::nut30::MeltQuoteOnchainFeeOption;
@@ -149,6 +150,46 @@ pub struct CdkBdk {
 }
 
 impl CdkBdk {
+    fn ensure_supported_payment_unit(
+        unit: &CurrencyUnit,
+    ) -> Result<(), cdk_common::payment::Error> {
+        match unit {
+            CurrencyUnit::Sat | CurrencyUnit::Msat => Ok(()),
+            _ => Err(cdk_common::payment::Error::UnsupportedUnit),
+        }
+    }
+
+    fn ensure_amount_unit(unit: &CurrencyUnit, amount: &Amount<CurrencyUnit>) -> Result<(), Error> {
+        if amount.unit() != unit {
+            return Err(Error::AmountUnitMismatch {
+                expected: unit.clone(),
+                actual: amount.unit().clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn payment_amount_to_sat(
+        unit: &CurrencyUnit,
+        amount: &Amount<CurrencyUnit>,
+    ) -> Result<u64, Error> {
+        Self::ensure_amount_unit(unit, amount)?;
+
+        if unit == &CurrencyUnit::Msat && amount.value() % MSAT_IN_SAT != 0 {
+            return Err(Error::FractionalSatoshiAmount {
+                amount_msat: amount.value(),
+            });
+        }
+
+        amount.to_sat().map_err(Error::from)
+    }
+
+    fn fee_limit_to_sat(unit: &CurrencyUnit, amount: &Amount<CurrencyUnit>) -> Result<u64, Error> {
+        Self::ensure_amount_unit(unit, amount)?;
+        amount.to_sat().map_err(Error::from)
+    }
+
     pub(crate) fn validate_send_amount_against_dust(
         &self,
         address: &str,
@@ -507,19 +548,18 @@ impl MintPayment for CdkBdk {
 
     async fn get_payment_quote(
         &self,
-        _unit: &CurrencyUnit,
+        unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<PaymentQuoteResponse, Self::Err> {
+        Self::ensure_supported_payment_unit(unit)?;
+
         let onchain_options = match options {
             OutgoingPaymentOptions::Onchain(o) => o,
             _ => return Err(cdk_common::payment::Error::UnsupportedPaymentOption),
         };
 
-        self.validate_send_amount(
-            &onchain_options.address,
-            onchain_options.amount.clone().to_u64(),
-        )?;
-        let amount_sat = onchain_options.amount.clone().to_u64();
+        let amount_sat = Self::payment_amount_to_sat(unit, &onchain_options.amount)?;
+        self.validate_send_amount(&onchain_options.address, amount_sat)?;
 
         // Estimate fee_reserve for each configured tier so the mint presents
         // only the operator-enabled options. The configured order owns the
@@ -529,9 +569,12 @@ impl MintPayment for CdkBdk {
             let fee_estimate = self
                 .estimate_onchain_fee_reserve(&onchain_options.address, amount_sat, *tier)
                 .await?;
+            let fee_reserve = Amount::new(fee_estimate.fee_reserve_sat, CurrencyUnit::Sat)
+                .convert_to(unit)
+                .map_err(Error::AmountConversion)?;
             fee_options.push(MeltQuoteOnchainFeeOption {
                 fee_index: idx as u32,
-                fee_reserve: Amount::from(fee_estimate.fee_reserve_sat),
+                fee_reserve: fee_reserve.into(),
                 estimated_blocks: tier.estimated_blocks(),
             });
         }
@@ -552,7 +595,7 @@ impl MintPayment for CdkBdk {
         Ok(PaymentQuoteResponse {
             request_lookup_id: Some(PaymentIdentifier::QuoteId(onchain_options.quote_id.clone())),
             amount: onchain_options.amount,
-            fee: Amount::new(cheapest.fee_reserve.into(), CurrencyUnit::Sat),
+            fee: Amount::new(cheapest.fee_reserve.into(), unit.clone()),
             state: MeltQuoteState::Unpaid,
             extra_json: None,
             estimated_blocks: Some(cheapest.estimated_blocks),
@@ -562,9 +605,11 @@ impl MintPayment for CdkBdk {
 
     async fn make_payment(
         &self,
-        _unit: &CurrencyUnit,
+        unit: &CurrencyUnit,
         options: OutgoingPaymentOptions,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        Self::ensure_supported_payment_unit(unit)?;
+
         let onchain_options = match options {
             OutgoingPaymentOptions::Onchain(o) => o,
             _ => return Err(cdk_common::payment::Error::UnsupportedPaymentOption),
@@ -574,13 +619,13 @@ impl MintPayment for CdkBdk {
         let amount = onchain_options.amount;
         let quote_id = onchain_options.quote_id;
 
-        self.validate_send_amount(&address, amount.clone().to_u64())?;
+        let amount_sat = Self::payment_amount_to_sat(unit, &amount)?;
+        self.validate_send_amount(&address, amount_sat)?;
 
-        let max_fee = onchain_options
-            .max_fee_amount
-            .unwrap_or(Amount::new(1000, CurrencyUnit::Sat));
-        let amount_sat = amount.clone().to_u64();
-        let max_fee_sat = max_fee.clone().to_u64();
+        let max_fee_sat = match onchain_options.max_fee_amount {
+            Some(max_fee) => Self::fee_limit_to_sat(unit, &max_fee)?,
+            None => 1_000,
+        };
         // Resolve the wallet-selected `fee_index` back to a configured tier.
         // Older callers that omit `fee_index` continue to default to
         // Immediate.
@@ -625,7 +670,7 @@ impl MintPayment for CdkBdk {
             payment_lookup_id: PaymentIdentifier::QuoteId(quote_id),
             payment_proof: None,
             status: MeltQuoteState::Pending,
-            total_spent: Amount::new(0, CurrencyUnit::Sat),
+            total_spent: Amount::new(0, unit.clone()),
         })
     }
 
@@ -1319,6 +1364,135 @@ mod tests {
             fee_index: None,
             metadata: None,
         }))
+    }
+
+    fn onchain_options_for_msat(
+        quote_id: QuoteId,
+        amount_msat: u64,
+        max_fee_msat: u64,
+    ) -> OutgoingPaymentOptions {
+        OutgoingPaymentOptions::Onchain(Box::new(OnchainOutgoingPaymentOptions {
+            address: "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string(),
+            amount: Amount::new(amount_msat, CurrencyUnit::Msat),
+            max_fee_amount: Some(Amount::new(max_fee_msat, CurrencyUnit::Msat)),
+            quote_id,
+            fee_index: None,
+            metadata: None,
+        }))
+    }
+
+    #[tokio::test]
+    async fn test_get_payment_quote_converts_fee_options_to_msat() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let options = onchain_options_for_msat(quote_id, 10_000_000, 10_000_000);
+
+        let quote = backend
+            .get_payment_quote(&CurrencyUnit::Msat, options)
+            .await
+            .expect("msat quote should succeed");
+
+        assert_eq!(quote.amount, Amount::new(10_000_000, CurrencyUnit::Msat));
+        assert_eq!(quote.fee.unit(), &CurrencyUnit::Msat);
+        assert_eq!(quote.fee.value() % MSAT_IN_SAT, 0);
+
+        let fee_options = quote.fee_options.expect("fee options");
+        assert!(fee_options
+            .iter()
+            .all(|option| u64::from(option.fee_reserve) % MSAT_IN_SAT == 0));
+        assert_eq!(
+            quote.fee.value(),
+            fee_options
+                .iter()
+                .map(|option| u64::from(option.fee_reserve))
+                .min()
+                .expect("non-empty fee options")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_converts_msat_amount_and_fee_to_sat() {
+        let (backend, _tmp) = build_test_instance_with_tempdir(5).await;
+        fund_backend_wallet(&backend, 100_000).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let options = onchain_options_for_msat(quote_id.clone(), 10_000_000, 10_000_000);
+
+        let response = backend
+            .make_payment(&CurrencyUnit::Msat, options)
+            .await
+            .expect("msat payment should enqueue a sat-native intent");
+
+        assert_eq!(response.total_spent, Amount::new(0, CurrencyUnit::Msat));
+        let intent = backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent")
+            .expect("send intent should be persisted");
+        assert_eq!(intent.amount_sat, 10_000);
+        assert_eq!(intent.max_fee_amount_sat, 10_000);
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_rejects_fractional_satoshi_amount() {
+        let backend = build_test_instance(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let options = onchain_options_for_msat(quote_id.clone(), 10_000_001, 10_000_000);
+
+        let err = backend
+            .make_payment(&CurrencyUnit::Msat, options)
+            .await
+            .expect_err("fractional-satoshi payment should be rejected");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+        assert!(matches!(
+            inner.downcast_ref::<Error>(),
+            Some(Error::FractionalSatoshiAmount {
+                amount_msat: 10_000_001
+            })
+        ));
+        assert!(backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_make_payment_rejects_mismatched_fee_unit() {
+        let backend = build_test_instance(5).await;
+        let quote_id = QuoteId::UUID(Uuid::new_v4());
+        let mut options = onchain_options_for_msat(quote_id.clone(), 10_000_000, 10_000_000);
+        let OutgoingPaymentOptions::Onchain(onchain) = &mut options else {
+            panic!("expected onchain options");
+        };
+        onchain.max_fee_amount = Some(Amount::new(10_000, CurrencyUnit::Sat));
+
+        let err = backend
+            .make_payment(&CurrencyUnit::Msat, options)
+            .await
+            .expect_err("mismatched fee unit should be rejected");
+
+        let cdk_common::payment::Error::Onchain(inner) = err else {
+            panic!("expected onchain error");
+        };
+        assert!(matches!(
+            inner.downcast_ref::<Error>(),
+            Some(Error::AmountUnitMismatch {
+                expected: CurrencyUnit::Msat,
+                actual: CurrencyUnit::Sat,
+            })
+        ));
+        assert!(backend
+            .storage
+            .get_send_intent_by_quote_id(&quote_id.to_string())
+            .await
+            .expect("lookup send intent")
+            .is_none());
     }
 
     #[tokio::test]

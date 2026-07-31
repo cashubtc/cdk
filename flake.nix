@@ -873,6 +873,7 @@
             protobuf
             nixpkgs-fmt
             typos
+            tokei
 
             cargo-outdated
             cargo-mutants
