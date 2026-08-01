@@ -1694,7 +1694,7 @@ mod tests {
 
     #[test]
     fn test_amount_new_with_custom_unit() {
-        let custom_unit = CurrencyUnit::Custom("BTC".to_string());
+        let custom_unit = CurrencyUnit::Custom("BTC".into());
         let amount = Amount::new(50, custom_unit.clone());
 
         assert_eq!(amount.value(), 50);
@@ -2088,7 +2088,7 @@ mod tests {
         let amount = Amount::new(100, CurrencyUnit::Usd);
         assert_eq!(amount.display_with_unit(), "100 usd");
 
-        let amount = Amount::new(123, CurrencyUnit::Custom("BTC".to_string()));
+        let amount = Amount::new(123, CurrencyUnit::Custom("BTC".into()));
         assert_eq!(amount.display_with_unit(), "123 btc");
     }
 

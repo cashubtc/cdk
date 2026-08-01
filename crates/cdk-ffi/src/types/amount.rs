@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn custom_currency_unit_is_lowercase_across_ffi_boundary() {
-        let ffi = CurrencyUnit::from(CdkCurrencyUnit::Custom("BADCOIN".to_string()));
+        let ffi = CurrencyUnit::from(CdkCurrencyUnit::Custom("BADCOIN".into()));
         assert_eq!(
             ffi,
             CurrencyUnit::Custom {
@@ -202,6 +202,6 @@ mod tests {
         let cdk = CdkCurrencyUnit::from(CurrencyUnit::Custom {
             unit: "BADCOIN".to_string(),
         });
-        assert_eq!(cdk, CdkCurrencyUnit::Custom("badcoin".to_string()));
+        assert_eq!(cdk, CdkCurrencyUnit::Custom("badcoin".into()));
     }
 }

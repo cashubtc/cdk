@@ -178,9 +178,9 @@ impl<'a> Arbitrary<'a> for CurrencyUnitArb {
                 let lowered = cleaned.to_lowercase();
                 let collides = matches!(lowered.as_str(), "sat" | "msat" | "usd" | "eur" | "auth");
                 if lowered.is_empty() || collides {
-                    CurrencyUnit::Custom("fuzz".to_string())
+                    CurrencyUnit::Custom("fuzz".into())
                 } else {
-                    CurrencyUnit::Custom(lowered)
+                    CurrencyUnit::Custom(lowered.into())
                 }
             }
         };

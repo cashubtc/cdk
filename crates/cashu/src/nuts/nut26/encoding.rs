@@ -883,12 +883,12 @@ mod tests {
             CurrencyUnit::Auth
         );
         assert_eq!(
-            TlvUnit::from(CurrencyUnit::Custom("BADCOIN".to_string())),
+            TlvUnit::from(CurrencyUnit::Custom("BADCOIN".into())),
             TlvUnit::Custom("badcoin".to_string())
         );
         assert_eq!(
             CurrencyUnit::from(TlvUnit::Custom("BADCOIN".to_string())),
-            CurrencyUnit::Custom("badcoin".to_string())
+            CurrencyUnit::Custom("badcoin".into())
         );
     }
 
@@ -909,7 +909,7 @@ mod tests {
     fn test_one_byte_nonzero_unit_decodes_as_custom_unit() {
         let decoded = PaymentRequest::from_bech32_bytes(&[0x03, 0x00, 0x01, b'x']).unwrap();
 
-        assert_eq!(decoded.unit, Some(CurrencyUnit::Custom("x".to_string())));
+        assert_eq!(decoded.unit, Some(CurrencyUnit::Custom("x".into())));
     }
 
     #[test]
@@ -2514,7 +2514,7 @@ mod tests {
         let payment_request = PaymentRequest {
             payment_id: Some("custom_unit".to_string()),
             amount: Some(Amount::from(100)),
-            unit: Some(CurrencyUnit::Custom("btc".to_string())),
+            unit: Some(CurrencyUnit::Custom("btc".into())),
             single_use: None,
             mints: vec![MintUrl::from_str("https://mint.example.com").unwrap()],
             mint_preferred: None,
@@ -2534,7 +2534,7 @@ mod tests {
         let decoded =
             PaymentRequest::from_bech32_string(expected_encoded).expect("decoding should work");
 
-        assert_eq!(decoded.unit, Some(CurrencyUnit::Custom("btc".to_string())));
+        assert_eq!(decoded.unit, Some(CurrencyUnit::Custom("btc".into())));
         assert_eq!(decoded.payment_id, Some("custom_unit".to_string()));
     }
 

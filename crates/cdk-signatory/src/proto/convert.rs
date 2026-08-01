@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn custom_currency_unit_is_lowercase_across_proto_boundary() {
-        let proto: CurrencyUnit = cdk_common::CurrencyUnit::Custom("BADCOIN".to_string()).into();
+        let proto: CurrencyUnit = cdk_common::CurrencyUnit::Custom("BADCOIN".into()).into();
 
         assert_eq!(
             proto.currency_unit,
@@ -428,9 +428,6 @@ mod tests {
         .try_into()
         .unwrap();
 
-        assert_eq!(
-            common,
-            cdk_common::CurrencyUnit::Custom("badcoin".to_string())
-        );
+        assert_eq!(common, cdk_common::CurrencyUnit::Custom("badcoin".into()));
     }
 }
