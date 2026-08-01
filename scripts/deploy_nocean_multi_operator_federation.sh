@@ -8,7 +8,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 OPERATOR_HOSTS_CSV="${OPERATOR_HOSTS_CSV:-nocean,nocean,nocean,nocean,nocean}"
 REMOTE_ROOT="${REMOTE_ROOT:-cdk-federation-multi-operator}"
 PUBLIC_BASE_DOMAIN="${PUBLIC_BASE_DOMAIN:-nocean.xyz}"
-FEDERATION_DOMAIN_PREFIX="${FEDERATION_DOMAIN_PREFIX:-cdk}"
+FEDERATION_DOMAIN_PREFIX="${FEDERATION_DOMAIN_PREFIX:-cdk-fed}"
 NETWORK="${NETWORK:-signet}"
 MEMBERS=5
 THRESHOLD="${THRESHOLD:-3}"
@@ -58,8 +58,8 @@ Important overrides:
   REMOTE_ROOT              Safe relative root created on every operator host.
   REQUIRE_UNIQUE_MACHINES  Minimum distinct /etc/machine-id values (default 5).
   STOP_LEGACY_SESSION      Stop cdk-federation before taking its public ports.
-  PUBLIC_BASE_DOMAIN       Preconfigured cdk-{n} and cdk-fed-{n} TLS domain.
-  FEDERATION_DOMAIN_PREFIX TLS hostname prefix for private federation routes.
+  PUBLIC_BASE_DOMAIN       Preconfigured public TLS base domain.
+  FEDERATION_DOMAIN_PREFIX Private federation TLS prefix (default cdk-fed).
   BARK_REPO_ROOT           Sibling checkout needed for Cargo path resolution.
   REPORT_FILE              Local redacted JSON drill report.
 EOF

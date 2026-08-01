@@ -1321,6 +1321,16 @@ neither for the coordinator-loss check, and makes the credential-free HTTPS
 federation hostname prefix explicit. The aborted operator state remains
 isolated on the server; no invitation was transferred in this attempt.
 
+Reusing the public member hostname for private traffic was then rejected by the
+domain invariant requiring distinct public-mint and federation-API URLs; the
+driver did not bypass it. A read-only proxy audit showed that only the five
+public sites existed. Five corresponding `cdk-fed` HTTPS sites were added to
+the existing Nocean Caddy configuration with candidate validation, automatic
+rollback, and bounded certificate provisioning. The first immediate probe
+rolled back cleanly while certificates were pending; the bounded retry
+provisioned and verified all five sites. The deployment driver again defaults
+to those distinct credential-free TLS identities.
+
 ## Verification matrix
 
 At minimum, implementation must cover:
