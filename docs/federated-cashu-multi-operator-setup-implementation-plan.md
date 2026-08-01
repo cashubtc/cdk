@@ -1248,19 +1248,19 @@ Clippy passes with only the already-recorded dependency allowances.
   operator environments. Where multiple members temporarily share a physical
   test host, keep them in independent tmux sessions with separate state and do
   not count that topology alone as proof of separate-machine behavior.
-- [ ] In those tmux sessions, execute the ordinary operator sequence: creator
+- [x] In those tmux sessions, execute the ordinary operator sequence: creator
   setup and invitation export; independent joins; proposal review and
   publication; one approval per operator; concurrent DKG; final-config review;
   and explicit local activation.
-- [ ] Exchange only invitations and protocol messages; prohibit shared private
+- [x] Exchange only invitations and protocol messages; prohibit shared private
   directories and centralized private-config generation.
-- [ ] Complete approval, DKG, explicit activation, wallet smoke, coordinated
+- [x] Complete approval, DKG, explicit activation, wallet smoke, coordinated
   restart, one-member restart/catch-up, and public-config audit.
-- [ ] Exercise coordinator loss after every member has persisted the certified
+- [x] Exercise coordinator loss after every member has persisted the certified
   manifest and confirm DKG/runtime independence.
-- [ ] Exercise failed pre-certification setup and operator-mediated replacement
+- [x] Exercise failed pre-certification setup and operator-mediated replacement
   with a new setup ID.
-- [ ] Perform encrypted backup and restore for one member without transferring
+- [x] Perform encrypted backup and restore for one member without transferring
   another member's secrets.
 
 **Gate:** the Nocean deployment completes from empty member state through mint
@@ -1367,6 +1367,26 @@ helper, environment, invitation, and public-config transfers now use three
 bounded attempts plus SSH keepalives. Protocol actions are deliberately not
 blindly retried by that transport wrapper, preserving their explicit replay and
 acknowledgement semantics.
+
+The committed-source rehearsal at revision `5d4381051` then passed in `239s`,
+including a `19s` concurrent DKG. All five ordinary operator transcripts,
+coordinator removal, explicit activations, strict runtime checks, read-only
+wallet smoke, one-member outage/catch-up, coordinated restart, and local
+encrypted backup/restore passed. The peak sampled DKG RSS was `215,692 KiB`
+aggregate and `43,824 KiB` for one member. Proposal/setup authorization,
+manifest, transcript, final-config, and public-config hashes agreed across all
+five stores; the public config was byte-identical. A separate post-run audit
+found `5/5` named operator sessions, `5/5` live runtime service windows, `5/5`
+healthy public HTTPS routes, and `5/5` strict ready/converged statuses. The
+redacted evidence and bounded failure history are published in
+`docs/federated-cashu-nocean-multi-operator-drill.md`.
+
+This completes every same-host rehearsal item but not the physical deployment
+item or gate. Only one unique Nocean machine is reachable through the supplied
+access. The second checklist item remains open, and the report explicitly
+refuses to classify this run as multi-host. A closing run needs five reachable
+operator SSH environments with the already-supported TLS routing; no setup or
+DKG protocol change is needed.
 
 ## Verification matrix
 
