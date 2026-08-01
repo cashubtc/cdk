@@ -13,6 +13,7 @@
 
 use std::cmp::max;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -384,6 +385,22 @@ pub struct FakeWallet {
     secondary_repayment_queue: SecondaryRepaymentQueue,
     exchange_rate_cache: ExchangeRateCache,
     custom_payment_methods: HashMap<String, String>,
+    shared_incoming_payment_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SharedIncomingPayment {
+    amount: u64,
+    unit: CurrencyUnit,
+    payment_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SharedOutgoingPayment {
+    state: MeltQuoteState,
+    amount: u64,
+    unit: CurrencyUnit,
+    payment_proof: Option<String>,
 }
 
 impl FakeWallet {
@@ -434,6 +451,7 @@ impl FakeWallet {
             secondary_repayment_queue,
             exchange_rate_cache: ExchangeRateCache::new(),
             custom_payment_methods: HashMap::new(),
+            shared_incoming_payment_dir: None,
         }
     }
 
@@ -446,6 +464,19 @@ impl FakeWallet {
             .into_iter()
             .map(|(method, settings)| (method.to_lowercase(), settings))
             .collect();
+        self
+    }
+
+    /// Shares simulated incoming payments with independent fake-wallet processes.
+    ///
+    /// This is intended for multi-process integration tests that need one fake
+    /// payment network. Production payment backends must use their native shared
+    /// settlement network instead.
+    pub fn with_shared_incoming_payment_dir<P>(mut self, directory: P) -> Self
+    where
+        P: Into<PathBuf>,
+    {
+        self.shared_incoming_payment_dir = Some(directory.into());
         self
     }
 
@@ -501,6 +532,103 @@ impl FakeWallet {
         };
 
         convert_currency_amount(amount, &self.unit, unit, &self.exchange_rate_cache).await
+    }
+}
+
+fn shared_payment_path(
+    directory: &Path,
+    kind: &str,
+    payment_identifier: &PaymentIdentifier,
+) -> PathBuf {
+    let digest = sha256::Hash::hash(payment_identifier.to_string().as_bytes());
+    directory.join(format!("{kind}-{digest}.json"))
+}
+
+async fn publish_shared_incoming_payment(
+    directory: &Path,
+    payment_identifier: &PaymentIdentifier,
+    payment: &SharedIncomingPayment,
+) -> Result<(), String> {
+    tokio::fs::create_dir_all(directory)
+        .await
+        .map_err(|err| err.to_string())?;
+    let path = shared_payment_path(directory, "incoming", payment_identifier);
+    let temporary_path = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
+    let encoded = serde_json::to_vec(payment).map_err(|err| err.to_string())?;
+    tokio::fs::write(&temporary_path, encoded)
+        .await
+        .map_err(|err| err.to_string())?;
+    tokio::fs::rename(&temporary_path, &path)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+async fn read_shared_incoming_payment(
+    directory: &Path,
+    payment_identifier: &PaymentIdentifier,
+) -> Option<SharedIncomingPayment> {
+    let path = shared_payment_path(directory, "incoming", payment_identifier);
+    let encoded = match tokio::fs::read(path).await {
+        Ok(encoded) => encoded,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            tracing::warn!("Could not read shared fake incoming payment state: {}", err);
+            return None;
+        }
+    };
+    match serde_json::from_slice(&encoded) {
+        Ok(payment) => Some(payment),
+        Err(err) => {
+            tracing::warn!(
+                "Could not decode shared fake incoming payment state: {}",
+                err
+            );
+            None
+        }
+    }
+}
+
+async fn publish_shared_outgoing_payment(
+    directory: &Path,
+    payment_identifier: &PaymentIdentifier,
+    payment: &SharedOutgoingPayment,
+) -> Result<(), String> {
+    tokio::fs::create_dir_all(directory)
+        .await
+        .map_err(|err| err.to_string())?;
+    let path = shared_payment_path(directory, "outgoing", payment_identifier);
+    let temporary_path = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
+    let encoded = serde_json::to_vec(payment).map_err(|err| err.to_string())?;
+    tokio::fs::write(&temporary_path, encoded)
+        .await
+        .map_err(|err| err.to_string())?;
+    tokio::fs::rename(&temporary_path, &path)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+async fn read_shared_outgoing_payment(
+    directory: &Path,
+    payment_identifier: &PaymentIdentifier,
+) -> Option<SharedOutgoingPayment> {
+    let path = shared_payment_path(directory, "outgoing", payment_identifier);
+    let encoded = match tokio::fs::read(path).await {
+        Ok(encoded) => encoded,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            tracing::warn!("Could not read shared fake outgoing payment state: {}", err);
+            return None;
+        }
+    };
+    match serde_json::from_slice(&encoded) {
+        Ok(payment) => Some(payment),
+        Err(err) => {
+            tracing::warn!(
+                "Could not decode shared fake outgoing payment state: {}",
+                err
+            );
+            None
+        }
     }
 }
 
@@ -778,14 +906,35 @@ impl MintPayment for FakeWallet {
                 )
                 .await?;
 
-                Ok(MakePaymentResponse {
-                    payment_lookup_id: PaymentIdentifier::PaymentHash(
-                        *bolt11.payment_hash().as_ref(),
-                    ),
+                let payment_lookup_id =
+                    PaymentIdentifier::PaymentHash(*bolt11.payment_hash().as_ref());
+                let response = MakePaymentResponse {
+                    payment_lookup_id: payment_lookup_id.clone(),
                     payment_proof: Some("".to_string()),
                     status: payment_status,
                     total_spent: Amount::new(total_spent.value() + 1, unit.clone()),
-                })
+                };
+                if let Some(directory) = self.shared_incoming_payment_dir.as_deref() {
+                    let shared_payment = SharedOutgoingPayment {
+                        state: response.status,
+                        amount: response.total_spent.value(),
+                        unit: response.total_spent.unit().clone(),
+                        payment_proof: response.payment_proof.clone(),
+                    };
+                    if let Err(err) = publish_shared_outgoing_payment(
+                        directory,
+                        &payment_lookup_id,
+                        &shared_payment,
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            "Could not publish shared fake outgoing payment state: {}",
+                            err
+                        );
+                    }
+                }
+                Ok(response)
             }
             OutgoingPaymentOptions::Bolt12(bolt12_options) => {
                 let bolt12 = bolt12_options.offer;
@@ -951,6 +1100,7 @@ impl MintPayment for FakeWallet {
         let duration = time::Duration::from_secs(self.payment_delay);
         let payment_hash_clone = payment_hash.clone();
         let incoming_payment = self.incoming_payments.clone();
+        let shared_incoming_payment_dir = self.shared_incoming_payment_dir.clone();
 
         let is_any_amount = amount.value() == 0;
         let final_amount = if is_any_amount {
@@ -980,6 +1130,27 @@ impl MintPayment for FakeWallet {
                 .entry(payment_hash_clone.clone())
                 .or_insert_with(Vec::new)
                 .push(response.clone());
+            drop(incoming);
+
+            if let Some(directory) = shared_incoming_payment_dir {
+                let shared_payment = SharedIncomingPayment {
+                    amount: response.payment_amount.value(),
+                    unit: response.payment_amount.unit().clone(),
+                    payment_id: response.payment_id.clone(),
+                };
+                if let Err(err) = publish_shared_incoming_payment(
+                    &directory,
+                    &payment_hash_clone,
+                    &shared_payment,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "Could not publish shared fake incoming payment state: {}",
+                        err
+                    );
+                }
+            }
 
             // Send the message after waiting for the specified duration
             if sender.send(response.clone()).await.is_err() {
@@ -1012,13 +1183,27 @@ impl MintPayment for FakeWallet {
         &self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<Vec<WaitPaymentResponse>, Self::Err> {
-        Ok(self
+        let local = self
             .incoming_payments
             .read()
             .await
             .get(request_lookup_id)
             .cloned()
-            .unwrap_or(vec![]))
+            .unwrap_or_default();
+        if !local.is_empty() {
+            return Ok(local);
+        }
+        let Some(directory) = self.shared_incoming_payment_dir.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let Some(shared) = read_shared_incoming_payment(directory, request_lookup_id).await else {
+            return Ok(Vec::new());
+        };
+        Ok(vec![WaitPaymentResponse {
+            payment_identifier: request_lookup_id.clone(),
+            payment_amount: Amount::new(shared.amount, shared.unit),
+            payment_id: shared.payment_id,
+        }])
     }
 
     #[instrument(skip_all)]
@@ -1026,6 +1211,16 @@ impl MintPayment for FakeWallet {
         &self,
         request_lookup_id: &PaymentIdentifier,
     ) -> Result<MakePaymentResponse, Self::Err> {
+        if let Some(directory) = self.shared_incoming_payment_dir.as_deref() {
+            if let Some(shared) = read_shared_outgoing_payment(directory, request_lookup_id).await {
+                return Ok(MakePaymentResponse {
+                    payment_lookup_id: request_lookup_id.clone(),
+                    payment_proof: shared.payment_proof,
+                    status: shared.state,
+                    total_spent: Amount::new(shared.amount, shared.unit),
+                });
+            }
+        }
         // For fake wallet if the state is not explicitly set default to paid
         let states = self.payment_states.lock().await;
         let status = states.get(&request_lookup_id.to_string()).cloned();
@@ -1123,9 +1318,9 @@ fn fake_secret_key(seed: &str) -> SecretKey {
 #[cfg(test)]
 mod tests {
     use cdk_common::payment::{
-        Bolt11IncomingPaymentOptions, Bolt12IncomingPaymentOptions, CustomIncomingPaymentOptions,
-        CustomOutgoingPaymentOptions, IncomingPaymentOptions, MintPayment,
-        OnchainOutgoingPaymentOptions, OutgoingPaymentOptions, PaymentIdentifier,
+        Bolt11IncomingPaymentOptions, Bolt11OutgoingPaymentOptions, Bolt12IncomingPaymentOptions,
+        CustomIncomingPaymentOptions, CustomOutgoingPaymentOptions, IncomingPaymentOptions,
+        MintPayment, OnchainOutgoingPaymentOptions, OutgoingPaymentOptions, PaymentIdentifier,
     };
 
     use super::*;
@@ -1272,6 +1467,70 @@ mod tests {
             response.request_lookup_id,
             PaymentIdentifier::CustomId(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn independent_wallets_share_incoming_payment_state() {
+        let directory = tempfile::tempdir().expect("shared payment tempdir");
+        let creator = test_wallet().with_shared_incoming_payment_dir(directory.path());
+        let observer = test_wallet().with_shared_incoming_payment_dir(directory.path());
+        let quote = creator
+            .create_incoming_payment_request(IncomingPaymentOptions::Bolt11(
+                Bolt11IncomingPaymentOptions {
+                    description: None,
+                    amount: Amount::new(10, CurrencyUnit::Sat),
+                    unix_expiry: None,
+                },
+            ))
+            .await
+            .expect("shared fake invoice");
+
+        for _ in 0..100 {
+            let payments = observer
+                .check_incoming_payment_status(&quote.request_lookup_id)
+                .await
+                .expect("shared fake payment status");
+            if !payments.is_empty() {
+                assert_eq!(
+                    payments[0].payment_amount,
+                    Amount::new(10, CurrencyUnit::Sat)
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        panic!("shared fake payment was not visible to the independent observer");
+    }
+
+    #[tokio::test]
+    async fn independent_wallets_share_outgoing_payment_state() {
+        let directory = tempfile::tempdir().expect("shared payment tempdir");
+        let payer = test_wallet().with_shared_incoming_payment_dir(directory.path());
+        let observer = test_wallet().with_shared_incoming_payment_dir(directory.path());
+        let invoice = create_fake_invoice(1_000, "shared outgoing payment".to_string());
+        let payment_identifier = PaymentIdentifier::PaymentHash(*invoice.payment_hash().as_ref());
+        let paid = payer
+            .make_payment(
+                &CurrencyUnit::Sat,
+                OutgoingPaymentOptions::Bolt11(Box::new(Bolt11OutgoingPaymentOptions {
+                    bolt11: invoice,
+                    max_fee_amount: None,
+                    timeout_secs: None,
+                    melt_options: None,
+                    quote_id: cdk_common::QuoteId::new(),
+                })),
+            )
+            .await
+            .expect("shared fake outgoing payment");
+        let observed = observer
+            .check_outgoing_payment(&payment_identifier)
+            .await
+            .expect("shared fake outgoing payment status");
+
+        assert_eq!(observed.status, MeltQuoteState::Paid);
+        assert_eq!(observed.total_spent, paid.total_spent);
+        assert_eq!(observed.payment_proof, paid.payment_proof);
     }
 
     #[tokio::test(start_paused = true)]

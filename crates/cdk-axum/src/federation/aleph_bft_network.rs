@@ -9,6 +9,7 @@ use aleph_bft::Recipient;
 use cdk::federation::FederationOperationId;
 use cdk::federation::{FederationAlephBftNetworkMessageRequest, MemberConfigPublic, MemberId};
 use cdk_http_client::{HttpError, Transport};
+use futures::future::join_all;
 use futures::stream::{FuturesUnordered, StreamExt};
 use parity_scale_codec::{Decode, Encode};
 use tokio::sync::mpsc;
@@ -383,6 +384,7 @@ where
     config.validate()?;
 
     let mut outcome = CdkAlephBftNetworkPumpTickOutcome::default();
+    let mut deliveries = Vec::with_capacity(config.max_messages_per_tick);
     for _ in 0..config.max_messages_per_tick {
         let Some(outbound) = handle.try_next_outgoing() else {
             outcome.reached_idle = true;
@@ -391,15 +393,21 @@ where
         outcome.messages_drained = outcome.messages_drained.saturating_add(1);
         let delivery = cdk_aleph_bft_network_delivery(keychain, config, outbound)?;
         queue_local_aleph_bft_network_delivery(handle, delivery.local_message)?;
-        let mut message_outcome = deliver_cdk_aleph_bft_network_request(
+        deliveries.push(delivery.retry_delivery);
+    }
+    let delivery_outcomes = join_all(deliveries.iter().map(|delivery| {
+        deliver_cdk_aleph_bft_network_request(
             client,
             config,
-            &delivery.retry_delivery.request,
-            &delivery.retry_delivery.peers,
-            delivery.retry_delivery.peers.len(),
+            &delivery.request,
+            &delivery.peers,
+            delivery.peers.len(),
             None,
         )
-        .await?;
+    }))
+    .await;
+    for message_outcome in delivery_outcomes {
+        let mut message_outcome = message_outcome?;
         outcome.encoded_bytes = outcome
             .encoded_bytes
             .saturating_add(message_outcome.encoded_bytes);
@@ -463,6 +471,7 @@ where
 
     let mut outcome = CdkAlephBftNetworkPumpTickOutcome::default();
     let mut first_outbound = first_outbound;
+    let mut deliveries = Vec::with_capacity(config.max_messages_per_tick);
     for _ in 0..config.max_messages_per_tick {
         let outbound = match first_outbound.take() {
             Some(outbound) => Some(outbound),
@@ -475,15 +484,21 @@ where
         outcome.messages_drained = outcome.messages_drained.saturating_add(1);
         let delivery = cdk_aleph_bft_network_delivery(keychain, config, outbound)?;
         queue_local_aleph_bft_network_delivery(handle, delivery.local_message)?;
-        let mut message_outcome = deliver_cdk_aleph_bft_network_request(
+        deliveries.push(delivery.retry_delivery);
+    }
+    let delivery_outcomes = join_all(deliveries.iter().map(|delivery| {
+        deliver_cdk_aleph_bft_network_request(
             client,
             config,
-            &delivery.retry_delivery.request,
-            &delivery.retry_delivery.peers,
-            keychain.remote_delivery_threshold(delivery.retry_delivery.peers.len()),
+            &delivery.request,
+            &delivery.peers,
+            keychain.remote_delivery_threshold(delivery.peers.len()),
             None,
         )
-        .await?;
+    }))
+    .await;
+    for message_outcome in delivery_outcomes {
+        let mut message_outcome = message_outcome?;
         outcome.encoded_bytes = outcome
             .encoded_bytes
             .saturating_add(message_outcome.encoded_bytes);
@@ -507,12 +522,16 @@ where
     // An idle bridge can spend the remainder of this tick on retry traffic.
     if outcome.messages_drained == 0 {
         let retry_messages_to_drain = retry_queue.pending.len().min(config.max_messages_per_tick);
+        let mut retry_deliveries = Vec::with_capacity(retry_messages_to_drain);
         for _ in 0..retry_messages_to_drain {
             let Some(delivery) = retry_queue.pending.pop_front() else {
                 break;
             };
             outcome.retry_messages_drained = outcome.retry_messages_drained.saturating_add(1);
-            let mut retry_outcome = deliver_cdk_aleph_bft_network_request(
+            retry_deliveries.push(delivery);
+        }
+        let retry_outcomes = join_all(retry_deliveries.iter().map(|delivery| {
+            deliver_cdk_aleph_bft_network_request(
                 client,
                 config,
                 &delivery.request,
@@ -520,7 +539,10 @@ where
                 delivery.peers.len(),
                 Some(CDK_ALEPH_BFT_NETWORK_RETRY_ATTEMPT_BUDGET),
             )
-            .await?;
+        }))
+        .await;
+        for (delivery, retry_outcome) in retry_deliveries.into_iter().zip(retry_outcomes) {
+            let mut retry_outcome = retry_outcome?;
             outcome.encoded_bytes = outcome
                 .encoded_bytes
                 .saturating_add(retry_outcome.encoded_bytes);

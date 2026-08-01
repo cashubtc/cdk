@@ -1118,6 +1118,86 @@ decision, compatibility matrix, and unsupported combinations are in
 browser/WASM Iroh, mobile lifecycle tests, Iroh-over-Tor, and a funded Nocean
 paid-wallet flow are accurately left unclaimed.
 
+### Post-completion all-Iroh lifecycle audit
+
+A final Definition-of-Done audit found that the prior evidence proved the
+all-Iroh requirements across several focused protocol and deployment suites,
+but did not preserve one reproducible uninterrupted process-level run from
+ordinary setup through paid operations and recovery with HTTP disabled. The
+audit closes that evidence gap with
+`scripts/run_iroh_federation_e2e.sh`.
+
+The script builds mintd with
+`federation,federation-test-utils,sqlite,fakewallet,iroh`, creates four
+independent persistent server identities and four separate ephemeral operator
+identities, exports and exchanges current standard Iroh endpoint tickets, and
+uses static direct loopback discovery. Every configured public mint and
+private federation URL is `iroh://...`; the HTTP listeners are disabled and no
+DNS name is used. It then performs the public `setup create`, `join`,
+`propose`, `review`, `approve`, `status`, `serve`, and `activate` workflow.
+All four BLS/FROST DKG services are started before any participant is polled
+for completion, so cryptographic work is concurrent rather than serialized.
+
+The threshold-three-of-four runtime completes a paid mint, swap, melt, and
+restore sequence, forms a trusted checkpoint quorum, repeats the paid sequence
+with one member offline, rejoins and catches up the missing member, and then
+restarts all four members and requires exact operation/digest/checkpoint
+convergence. The clean debug run completed DKG in 309 seconds while all four
+cryptographic participants shared one development host. The generated
+`result.json` reported `passed`; it is a disposable artifact under `target/`
+and is not committed.
+
+That audit exposed and fixed three integration defects instead of weakening
+the gate:
+
+- `federation smoke-operations` still constructed the HTTP default transport
+  in helper paths. It now receives the one runtime-selected
+  `FederationTransport` throughout, so the successful drill cannot silently
+  use HTTP or DNS.
+- Fresh AlephBFT outbound messages were drained in bounded but serial network
+  batches. A node-directed message to an absent Iroh peer could therefore
+  consume one connection timeout before every later message. Bounded batches
+  now dispatch concurrently; quorum completion, retry retention, peer/request
+  admission, and memory bounds remain intact. A slow-message regression test
+  proves four node-directed deliveries complete in one delay window rather
+  than four sequential windows.
+- Independent fake-wallet processes previously had no common simulated
+  payment network. The `federation-test-utils` feature now provides an atomic
+  shared-directory fixture for exact incoming/outgoing payment state.
+  It is absent from production behavior, and production configuration still
+  rejects combining fakewallet with the federated on-chain wallet.
+
+The setup CLI also exposes checkpoint journal/finalized-item intervals so the
+ordinary ceremony can select an observable checkpoint cadence, and `iroh
+ticket` exports a current ticket for the protected persistent identity without
+starting a mint or using deprecated ticket support.
+
+Reproduction:
+
+```console
+scripts/run_iroh_federation_e2e.sh
+```
+
+The command needs permission to bind local UDP sockets. It intentionally uses
+one affordable host to prove process/operator isolation and protocol
+concurrency; it does not claim multi-machine fault-domain independence or a
+funded Nocean payment backend.
+
+The completion-audit regression rerun passed:
+
+- all 221 mintd library tests for the script's exact
+  `federation,federation-test-utils,sqlite,fakewallet,iroh` feature set;
+- 578 Axum federation+Bark+Iroh library tests, with the three manual
+  benchmarks ignored, including real threshold value-operation windows,
+  DKG/FROST restart, checkpoints, catch-up, mixed transport, and the new
+  concurrent network-pump regression;
+- all `cdk-iroh` unit, bridge, and conformance tests and all ten fake-wallet
+  tests;
+- native wallet+Iroh+Tor and FFI checks; and
+- formatting plus strict Clippy for each modified in-repository target. The
+  Bark path dependency emits two existing warnings outside this repository,
+  but the CDK targets pass their strict lint gates.
+
 ## Verification matrix
 
 ### Transport selection

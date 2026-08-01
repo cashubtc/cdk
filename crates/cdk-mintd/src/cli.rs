@@ -346,6 +346,8 @@ pub struct IrohArgs {
 pub enum IrohCommand {
     /// Create or load the protected endpoint key and print its stable public URL.
     Init(IrohInitArgs),
+    /// Export a current standard endpoint ticket for a protected identity.
+    Ticket(IrohTicketArgs),
 }
 
 #[cfg(feature = "iroh")]
@@ -354,6 +356,17 @@ pub struct IrohInitArgs {
     /// Protected endpoint-key path; defaults below the mint work directory.
     #[arg(long)]
     pub secret_key_file: Option<PathBuf>,
+}
+
+#[cfg(feature = "iroh")]
+#[derive(Debug, Clone, Args)]
+pub struct IrohTicketArgs {
+    /// Protected endpoint-key path; defaults below the mint work directory.
+    #[arg(long)]
+    pub secret_key_file: Option<PathBuf>,
+    /// Direct UDP address to include in the exported endpoint ticket.
+    #[arg(long)]
+    pub bind_addr: std::net::SocketAddr,
 }
 
 #[cfg(feature = "federation")]
@@ -468,6 +481,24 @@ pub struct FederationSetupCreateArgs {
     /// Matching member observations required for payment state.
     #[arg(long)]
     pub payment_observation_threshold: Option<u16>,
+    /// Accepted journal operations between scheduled checkpoints.
+    #[arg(
+        long,
+        default_value_t = cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS
+    )]
+    pub checkpoint_interval_journal_operations: u64,
+    /// Finalized consensus items between scheduled checkpoints.
+    #[arg(
+        long,
+        default_value_t = cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS
+    )]
+    pub checkpoint_interval_finalized_items: u64,
+    /// Canonical finalized-history bytes between scheduled checkpoints.
+    #[arg(
+        long,
+        default_value_t = cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES
+    )]
+    pub checkpoint_interval_canonical_bytes: u64,
     /// Invitation validity in seconds.
     #[arg(long, default_value_t = 86_400)]
     pub invitation_lifetime_seconds: u64,
@@ -1965,6 +1996,30 @@ mod iroh_tests {
             IrohCommand::Init(IrohInitArgs {
                 secret_key_file: None
             })
+        ));
+    }
+
+    #[test]
+    fn parses_current_iroh_endpoint_ticket_export() {
+        let args = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "--work-dir",
+            "mint-state",
+            "iroh",
+            "ticket",
+            "--bind-addr",
+            "127.0.0.1:8092",
+        ])
+        .expect("Iroh ticket command parses");
+        let Some(CliCommand::Iroh(iroh)) = args.command else {
+            panic!("expected Iroh command");
+        };
+        assert!(matches!(
+            iroh.command,
+            IrohCommand::Ticket(IrohTicketArgs {
+                secret_key_file: None,
+                bind_addr,
+            }) if bind_addr == "127.0.0.1:8092".parse().expect("test bind address")
         ));
     }
 }

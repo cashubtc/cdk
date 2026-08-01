@@ -1,6 +1,6 @@
 # Federated Cashu multi-operator setup implementation plan
 
-> **Status — Milestone 6 complete, 2026-08-01:** The pure setup domain,
+> **Status — Milestones 0–9 complete, 2026-08-01:** The pure setup domain,
 > durable SQLite/PostgreSQL state, protected local identities and invitations,
 > immutable proposal review, exact-hash approval fence, and bounded setup-only
 > coordinator HTTP service and authenticated client are implemented and
@@ -8,9 +8,11 @@
 > all BLS/FROST artifacts bind its setup authorization, and member drivers run
 > independently and concurrently. Setup status now derives DKG progress from
 > the existing durable records, final config publication is atomic and locally
-> validated, and activation is an explicit idempotent operator action.
-> Milestone 7's removal of the parallel experimental setup paths is next.
-> This document
+> validated, activation is an explicit idempotent operator action, obsolete
+> setup paths are removed, adversarial process coverage passes, and the
+> accepted one-server Nocean deployment drill is complete. The later all-Iroh
+> lifecycle audit also reuses this ordinary CLI workflow without adding a
+> centralized setup path. This document
 > defines the implementation sequence for replacing CDK's file-mediated
 > federation enrollment and roster assembly with an authenticated, restartable
 > multi-operator setup workflow.
@@ -1401,6 +1403,17 @@ completed TLS routing; their setup-only status route correctly remained absent
 after setup activation. Deployment-script syntax, help text, whitespace, and
 credential/PII scans passed after making the accepted single-server topology
 the default while retaining opt-in strict five-machine validation.
+
+A later all-Iroh completion audit added two setup-operability details without
+changing this protocol: `setup create` now exposes checkpoint cadence fields
+that were already part of the reviewed immutable policy, and `iroh ticket`
+exports a current standard endpoint ticket for an independently protected
+identity. The four-member local process drill again used only `create`,
+`join`, `propose`, `review`, `approve`, `status`, `serve`, and `activate`, then
+started all DKG participants together. It completed concurrent BLS/FROST DKG,
+paid runtime operations, a one-member outage/catch-up, and coordinated restart
+with HTTP disabled. This is additional transport/process evidence; the
+one-server Nocean result above remains the deployment evidence for this plan.
 
 ## Verification matrix
 

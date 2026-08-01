@@ -17,6 +17,39 @@ cargo clippy -p cdk-iroh --all-targets --offline -- -D warnings
 cargo fmt -p cdk-iroh -- --check
 ```
 
+The uninterrupted all-Iroh process lifecycle is:
+
+```console
+scripts/run_iroh_federation_e2e.sh
+```
+
+It uses four independently persisted mint identities, four separate operator
+identities, current standard endpoint tickets, static direct discovery, and a
+threshold of three. HTTP listeners are disabled and every public/private
+member URL uses the `iroh` scheme, so no DNS or HTTP fallback is available.
+The ordinary multi-operator CLI flow performs enrollment, unanimous approval,
+concurrent BLS/FROST DKG, and explicit activation. The runtime then proves paid
+mint/swap/melt/restore, a trusted checkpoint quorum, the same paid operations
+with one member offline, missing-member catch-up, and a coordinated four-member
+restart with exact convergence. The clean debug run reported `passed` and a
+309-second DKG duration on one development host.
+
+This process drill found a transport-independent AlephBFT scheduling defect:
+bounded outbound batches were delivered serially, so node-directed traffic to
+an absent Iroh peer caused connection-timeout head-of-line blocking. Batches
+now dispatch their bounded messages concurrently and retain failed peer
+deliveries in the existing bounded retry queue. The focused regression uses
+four deliberately slow node-directed messages and proves the batch completes
+in one delay window. Existing global/per-peer Iroh limits and federation
+inbound/outbound limits are unchanged.
+
+The paid process fixture is explicitly test-only. With
+`federation-test-utils`, independent fake-wallet processes exchange simulated
+payment records atomically through a shared directory while their mint
+databases and identities remain isolated. Production builds retain the
+fakewallet/federated-wallet incompatibility check and gain no filesystem
+payment protocol.
+
 It passes three unit tests, three generic bridge tests, thirteen transport
 conformance tests, and doc tests. The coverage includes:
 
@@ -93,7 +126,7 @@ cargo check -p cdk --target wasm32-unknown-unknown \
   --no-default-features --features wallet --locked
 ```
 
-The broader regression record remains:
+The earlier milestone regression record remains:
 
 - 335 Iroh-enabled wallet library tests;
 - 542 default CDK library tests;
@@ -102,6 +135,14 @@ The broader regression record remains:
   ignored; and
 - the successful all-Iroh and mixed HTTP/Iroh federation suites described in
   the implementation plan.
+
+The final uninterrupted-lifecycle audit then reran the exact expanded feature
+surface and passed 221 mintd library tests, 578 Axum federation+Bark+Iroh
+library tests with three manual benchmarks ignored, all ten fake-wallet tests,
+and the complete `cdk-iroh` unit/bridge/conformance suite. Native
+wallet+Iroh+Tor and FFI checks also pass. Strict Clippy passes for the modified
+in-repository targets; the optional Bark path dependency independently emits
+two existing warnings outside CDK.
 
 ## HTTPS/Iroh semantic comparison
 
@@ -185,8 +226,9 @@ visible release follow-up.
   multi-host drill remains future release evidence when infrastructure is
   available.
 - The Nocean wallet check was read-only because the Signet payment backend was
-  not funded. Paid state transitions are covered by local federation suites,
-  not attributed to that deployment.
+  not funded. Paid state transitions are covered by the uninterrupted local
+  all-Iroh process drill and focused federation suites, not attributed to that
+  deployment.
 - Tor and Iroh compile together, but Tor continues to apply to the ordinary
   HTTP(S) transport. Iroh-over-Tor is not implemented.
 - The local custom relay uses a self-signed test certificate. Nocean exercises

@@ -116,6 +116,29 @@ pub(crate) fn initialize_endpoint_identity(
     Ok(secret_key.public())
 }
 
+pub(crate) async fn export_endpoint_ticket(
+    work_dir: &Path,
+    explicit_key_path: Option<&Path>,
+    bind_addr: std::net::SocketAddr,
+) -> Result<(EndpointId, EndpointTicket)> {
+    let path = explicit_key_path.map(Path::to_path_buf).unwrap_or_else(|| {
+        work_dir
+            .join(DEFAULT_IROH_DIRECTORY)
+            .join(DEFAULT_SECRET_KEY_FILE)
+    });
+    let secret_key = load_or_generate_secret_key(&path, true, explicit_key_path.is_none())?;
+    let node = IrohNode::persistent(
+        IrohConfig::static_only().with_bind_addr(bind_addr),
+        secret_key,
+    )
+    .await
+    .context("failed to bind the Iroh endpoint for ticket export")?;
+    let endpoint_id = node.endpoint_id();
+    let ticket = node.endpoint_ticket();
+    node.close().await;
+    Ok((endpoint_id, ticket))
+}
+
 pub(crate) fn validate_listener_selection(settings: &Settings) -> Result<()> {
     let iroh_enabled = settings.iroh.as_ref().is_some_and(|iroh| iroh.enabled);
     if !settings.info.http_enabled && !iroh_enabled {
@@ -621,6 +644,27 @@ mod tests {
             .expect("enabled endpoint");
         assert_eq!(restarted.node.endpoint_id(), endpoint);
         restarted.node.close().await;
+    }
+
+    #[tokio::test]
+    async fn standalone_ticket_export_reuses_current_persistent_identity() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let bind_addr = "127.0.0.1:0".parse().expect("loopback address");
+
+        let (first_endpoint, first_ticket) =
+            export_endpoint_ticket(directory.path(), None, bind_addr)
+                .await
+                .expect("first ticket export");
+        let parsed = EndpointTicket::from_str(&first_ticket.to_string())
+            .expect("current endpoint ticket round trip");
+        assert_eq!(parsed.endpoint_addr().id, first_endpoint);
+
+        let (second_endpoint, second_ticket) =
+            export_endpoint_ticket(directory.path(), None, bind_addr)
+                .await
+                .expect("second ticket export");
+        assert_eq!(second_endpoint, first_endpoint);
+        assert_eq!(second_ticket.endpoint_addr().id, first_endpoint);
     }
 
     #[tokio::test]

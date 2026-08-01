@@ -418,6 +418,56 @@ async fn aleph_bft_network_pump_quorum_fast_path_does_not_block_fresh_messages_o
 }
 
 #[tokio::test]
+async fn aleph_bft_network_pump_dispatches_slow_message_batch_concurrently() {
+    let (public_config, private_configs) = transport_config_five_with_threshold(
+        ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),
+    );
+    let local_private = private_configs[0].clone();
+    let keychain =
+        CdkAlephBftKeychain::try_new(&public_config, local_private.clone()).expect("keychain");
+    let response = FederationAlephBftNetworkMessageResponse::new(public_config.federation_id, 7);
+    let transport = MockFederationTransport::default()
+        .with_aleph_bft_network_message_response(response)
+        .with_mock_aleph_bft_network_message_delays([
+            Duration::from_millis(250),
+            Duration::from_millis(250),
+            Duration::from_millis(250),
+            Duration::from_millis(250),
+        ]);
+    let client = FederationRestPeerClient::new(transport.clone(), &public_config, local_private)
+        .expect("peer client");
+    let (network, mut handle) = CdkAlephBftNetwork::<u64>::new_pair();
+    let mut retry_queue = CdkAlephBftNetworkRetryQueue::default();
+
+    for payload in 0..4 {
+        network.send(payload, Recipient::Node(NodeIndex(1)));
+    }
+    let outcome = time::timeout(
+        Duration::from_millis(750),
+        run_cdk_aleph_bft_network_pump_tick_with_retry_queue(
+            &mut handle,
+            &keychain,
+            &client,
+            CdkAlephBftNetworkPumpConfig {
+                session_id: 7,
+                max_messages_per_tick: 4,
+                ..CdkAlephBftNetworkPumpConfig::default()
+            },
+            &mut retry_queue,
+        ),
+    )
+    .await
+    .expect("slow outbound messages should run as one concurrent batch")
+    .expect("network pump tick");
+
+    assert_eq!(outcome.messages_drained, 4);
+    assert_eq!(outcome.remote_accepted_members.len(), 4);
+    assert!(outcome.remote_failed_members.is_empty());
+    assert!(retry_queue.is_empty());
+    assert_eq!(transport.aleph_bft_network_message_requests().len(), 4);
+}
+
+#[tokio::test]
 async fn aleph_bft_network_pump_sends_node_recipient_to_one_remote_member() {
     let (public_config, private_configs) = transport_config_five_with_threshold(
         ThresholdParams::with_bft_consensus(5, 3).expect("threshold params"),

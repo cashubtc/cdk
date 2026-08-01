@@ -63,6 +63,12 @@ fn setup_create_builds_bark_policy_into_the_signed_frost_inputs() {
         federation_api_url: "https://federation.example".to_string(),
         coordinator_url: "https://setup.example".to_string(),
         payment_observation_threshold: None,
+        checkpoint_interval_journal_operations:
+            cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS,
+        checkpoint_interval_finalized_items:
+            cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS,
+        checkpoint_interval_canonical_bytes:
+            cdk_common::federation::DEFAULT_CHECKPOINT_INTERVAL_CANONICAL_BYTES,
         invitation_lifetime_seconds: 86_400,
         unit: "sat".to_string(),
         amounts: vec![1, 2, 4],

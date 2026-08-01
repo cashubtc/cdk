@@ -189,10 +189,10 @@ async fn federation_setup_server_transport(
     {
         let (work_dir, settings) = federation_transport_settings(args).await?;
         let runtime = iroh_runtime::initialize(&settings, &work_dir).await?;
-        return Ok(match runtime {
+        Ok(match runtime {
             Some(runtime) => cdk_axum::federation_transport_with_iroh_node(runtime.node),
             None => cdk_axum::default_federation_transport(),
-        });
+        })
     }
     #[cfg(not(feature = "iroh"))]
     {
@@ -263,7 +263,8 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 }
                 #[cfg(all(feature = "fakewallet", feature = "sqlite"))]
                 cli::FederationCommand::SmokeOperations(smoke) => {
-                    federation_smoke::run_smoke_operations_command(smoke).await?;
+                    let transport = federation_operator_transport(args).await?;
+                    federation_smoke::run_smoke_operations_command(smoke, transport).await?;
                 }
                 cli::FederationCommand::Status(status) => {
                     federation_status::run_status_command(args, status).await?;
@@ -296,6 +297,17 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                         init.secret_key_file.as_deref(),
                     )?;
                     println!("iroh://{endpoint_id}");
+                }
+                cli::IrohCommand::Ticket(ticket) => {
+                    let work_dir = get_work_directory(args).await?;
+                    let (endpoint_id, endpoint_ticket) = iroh_runtime::export_endpoint_ticket(
+                        &work_dir,
+                        ticket.secret_key_file.as_deref(),
+                        ticket.bind_addr,
+                    )
+                    .await?;
+                    println!("iroh://{endpoint_id}");
+                    println!("{endpoint_ticket}");
                 }
             },
         }
@@ -2387,14 +2399,34 @@ async fn configure_payment_backends(
                 #[cfg(feature = "prometheus")]
                 let fake = MetricsMintPayment::new(fake);
 
-                mint_builder = configure_backend_for_unit(
-                    settings,
-                    mint_builder,
-                    backend_entry.unit.clone(),
-                    mint_melt_limits,
-                    Arc::new(fake),
-                )
-                .await?;
+                let fake = Arc::new(fake);
+                #[cfg(feature = "federation-test-utils")]
+                let use_lightning_only = settings.onchain.as_ref().is_some_and(|onchain| {
+                    onchain.onchain_backend == config::OnchainBackend::FederatedBdk
+                });
+                #[cfg(not(feature = "federation-test-utils"))]
+                let use_lightning_only = false;
+
+                if use_lightning_only {
+                    mint_builder = configure_backend_for_methods(
+                        settings,
+                        mint_builder,
+                        backend_entry.unit.clone(),
+                        mint_melt_limits,
+                        fake,
+                        vec![PaymentMethod::Known(KnownMethod::Bolt11)],
+                    )
+                    .await?;
+                } else {
+                    mint_builder = configure_backend_for_unit(
+                        settings,
+                        mint_builder,
+                        backend_entry.unit.clone(),
+                        mint_melt_limits,
+                        fake,
+                    )
+                    .await?;
+                }
 
                 configure_fake_wallet_keyset_rotations = true;
             }

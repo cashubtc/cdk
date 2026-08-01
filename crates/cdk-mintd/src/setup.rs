@@ -189,6 +189,16 @@ impl PaymentBackendSetup for config::FakeWallet {
         )
         .with_custom_payment_methods(custom_payment_methods);
 
+        #[cfg(feature = "federation-test-utils")]
+        let fake_wallet = match &self.shared_incoming_payment_dir {
+            Some(directory) => fake_wallet.with_shared_incoming_payment_dir(directory),
+            None => fake_wallet,
+        };
+        #[cfg(not(feature = "federation-test-utils"))]
+        if self.shared_incoming_payment_dir.is_some() {
+            anyhow::bail!("fake_wallet.shared_incoming_payment_dir requires federation-test-utils");
+        }
+
         Ok(fake_wallet)
     }
 }

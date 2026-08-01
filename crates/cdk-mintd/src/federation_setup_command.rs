@@ -83,7 +83,12 @@ pub(crate) async fn run_setup_command(
                 payment_observation_policy: FederationPaymentObservationPolicy::member_quorum(
                     payment_threshold,
                 ),
-                checkpoint_policy: FederationCheckpointPolicy::default(),
+                checkpoint_policy: FederationCheckpointPolicy {
+                    checkpoint_interval_journal_operations: args
+                        .checkpoint_interval_journal_operations,
+                    checkpoint_interval_finalized_items: args.checkpoint_interval_finalized_items,
+                    checkpoint_interval_canonical_bytes: args.checkpoint_interval_canonical_bytes,
+                },
                 keysets: vec![FederationDkgKeysetSpec::new(
                     CurrencyUnit::from_str(&args.unit).context("invalid setup currency unit")?,
                     true,

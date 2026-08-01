@@ -1135,6 +1135,9 @@ pub struct FakeWallet {
     /// Additional keyset rotations to create during mint build
     #[serde(default)]
     pub keyset_rotations: Vec<FakeWalletKeysetRotation>,
+    /// Test-only directory used to emulate one payment network across processes.
+    #[serde(default)]
+    pub shared_incoming_payment_dir: Option<PathBuf>,
 }
 
 #[cfg(feature = "fakewallet")]
@@ -1148,6 +1151,7 @@ impl Default for FakeWallet {
             min_delay_time: 1,
             max_delay_time: 3,
             keyset_rotations: Vec::new(),
+            shared_incoming_payment_dir: None,
         }
     }
 }
@@ -2060,7 +2064,9 @@ impl Settings {
                     .to_string());
             }
             #[cfg(feature = "federation")]
-            OnchainBackend::FederatedBdk if has_fake_wallet_backend => {
+            OnchainBackend::FederatedBdk
+                if has_fake_wallet_backend && !cfg!(feature = "federation-test-utils") =>
+            {
                 return Err("payment_backend = \"fakewallet\" cannot be combined with \
                      onchain_backend = \"federated-bdk\""
                     .to_string());
@@ -2897,6 +2903,30 @@ target_block_time_secs = 300
         settings
             .validate_backend_pairing()
             .expect("fake payment backend without onchain should pass");
+    }
+
+    #[cfg(all(
+        feature = "fakewallet",
+        feature = "federation",
+        feature = "federation-test-utils"
+    ))]
+    #[test]
+    fn test_fakewallet_ln_with_federated_bdk_accepted_for_test_utils() {
+        let settings = Settings {
+            ln: vec![Ln {
+                ln_backend: LnBackend::FakeWallet,
+                ..Default::default()
+            }],
+            onchain: Some(Onchain {
+                onchain_backend: OnchainBackend::FederatedBdk,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        settings
+            .validate_backend_pairing()
+            .expect("test-utils may combine fake Lightning with federated BDK");
     }
 
     #[cfg(feature = "fakewallet")]
