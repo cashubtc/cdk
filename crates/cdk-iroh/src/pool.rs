@@ -108,7 +108,11 @@ impl ConnectionPool {
             return Ok(connection.clone());
         }
 
+        let reconnect = entry.connection.is_some();
         entry.connection = None;
+        if reconnect {
+            self.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
+        }
         self.metrics
             .connection_attempts
             .fetch_add(1, Ordering::Relaxed);
@@ -142,6 +146,17 @@ impl ConnectionPool {
                     return Err(error);
                 }
             };
+        let paths = connection.paths();
+        match paths
+            .iter()
+            .find(|path| path.is_selected())
+            .map(|path| path.is_relay())
+        {
+            Some(true) => &self.metrics.relay_connections,
+            Some(false) => &self.metrics.direct_connections,
+            None => &self.metrics.unknown_path_connections,
+        }
+        .fetch_add(1, Ordering::Relaxed);
         entry.connection = Some(connection.clone());
         Ok(connection)
     }

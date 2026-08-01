@@ -1,8 +1,8 @@
 # Iroh transport for CDK: implementation plan
 
-> **Status — implementation in progress 2026-08-01:** This document is the
+> **Status — implementation complete 2026-08-01:** This document is the
 > implementation and review contract for adding Iroh beside HTTP(S).
-> Milestones 0 through 4 are complete. It does not authorize an
+> Milestones 0 through 5 are complete. It does not authorize an
 > endpoint-by-endpoint reimplementation of the Cashu API. If the generic
 > HTTP/WebSocket-over-Iroh bridge described below proves infeasible, stop and
 > amend this plan before widening the integration surface.
@@ -1036,24 +1036,87 @@ five-machine fault-domain independence. The redacted reproducible record is
 
 ### Milestone 5 — hardening and release evidence
 
-- [ ] Test direct path, relay path, address change, offline discovery, stale
+- [x] Test direct path, relay path, address change, offline discovery, stale
   ticket, relay loss, and direct/relay migration.
-- [ ] Test malformed HTTP, invalid ALPN, unknown endpoint ID, oversized
+- [x] Test malformed HTTP, invalid ALPN, unknown endpoint ID, oversized
   headers/body/response, slow streams, connection churn, admission saturation,
   and shutdown under load.
-- [ ] Test request ambiguity without unsafe POST replay.
-- [ ] Test endpoint key mismatch and key-file loss/corruption fail closed.
-- [ ] Compare status codes, Cashu error bodies, compression, auth, and
+- [x] Test request ambiguity without unsafe POST replay.
+- [x] Test endpoint key mismatch and key-file loss/corruption fail closed.
+- [x] Compare status codes, Cashu error bodies, compression, auth, and
   WebSocket behavior between HTTPS and Iroh.
-- [ ] Measure connection setup, warm-request latency, stream concurrency,
+- [x] Measure connection setup, warm-request latency, stream concurrency,
   memory, file descriptors, and relay bandwidth.
-- [ ] Run standalone, federation, Tor, FFI/native, MSRV, and WASM-without-Iroh
+- [x] Run standalone, federation, Tor, FFI/native, MSRV, and WASM-without-Iroh
   regression builds.
-- [ ] Complete security review of the stream adapter, key storage, discovery,
+- [x] Complete security review of the stream adapter, key storage, discovery,
   URL parsing, resource bounds, and mixed-transport federation assumptions.
 
 **Gate:** Release documentation contains reproducible local, relay, and
-multi-host results and accurately lists unsupported target combinations.
+Nocean operator-isolation results and accurately lists unsupported target
+combinations. Per the later infrastructure constraint, the Nocean test runs
+five independent operators on one server and explicitly does not claim
+multi-host fault-domain evidence.
+
+**Progress:** complete. The hardening suite adds a current-Iroh local relay
+fixture without changing the production feature set. A relay-only ticket
+bootstraps an authenticated request, the same connection migrates to a
+selected direct path after learning the full address, and traffic continues
+after the relay is removed. A persistent endpoint then restarts at a refreshed
+address under the same key; static discovery without a ticket and a stale
+ticket both fail closed before the refreshed standard ticket restores service.
+
+Malformed HTTP, wrong ALPN, unknown endpoint, authority mismatch, oversized
+headers/bodies/responses, partial streams, churn, connection/stream admission,
+and active shutdown are covered across the bridge and conformance suites. The
+ambiguity test lets a non-idempotent POST reach its handler exactly once, then
+closes the endpoint before response headers and observes an error, one handler
+receipt, and one connection attempt. There is no transport retry.
+
+The local relay sample measured 5,144 microseconds for connection setup, 1,705
+microseconds for the first relay-bootstrap request, 657 microseconds for a
+warm request on the migrated direct connection after relay loss, 22,000 relay
+bytes including setup/control traffic, and process file-descriptor snapshots
+of 10/21/15 before/peak/after. These are debug engineering samples, not SLOs.
+The conformance suite proves 24 concurrent short streams on one connection;
+the Nocean run records 295,004 KiB peak RSS across five DKG processes and
+59,544 KiB for one member.
+
+Observability now records the fixed discovery class, direct/relay/unknown
+initial path outcomes, reconnects, aggregate request duration, pool and
+request/status counts, active resources, admission, and timeouts without
+peer/address labels. HTTPS/Iroh connector conformance compares status and
+Cashu errors, auth, bodies, and WebSockets. Iroh deliberately does not request
+HTTP content encoding in bridge version 1, so it receives the same semantic
+body uncompressed while HTTPS may negotiate and decode compression through
+its existing client.
+
+Verification evidence:
+
+- `cargo test -p cdk-iroh --offline -- --test-threads=1` passes three unit,
+  three bridge, thirteen conformance, and doc tests;
+- `cargo clippy -p cdk-iroh --all-targets --offline -- -D warnings` and the
+  focused formatting check pass;
+- native wallet+Iroh+Tor, FFI, and federation+Iroh mintd checks pass, and the
+  feature-disabled wallet tree contains no Iroh package;
+- an official Linux Rust 1.91 environment passes the locked production check
+  and compiles every Iroh test target; and
+- the same exact toolchain with the WASM standard library and Clang passes the
+  feature-disabled `wasm32-unknown-unknown` wallet check.
+
+The official RustSec `cargo-audit` scan found that none of its four reported
+vulnerable packages occurs in the normal `cdk-iroh`, wallet+Iroh, or mintd
+federation+Iroh graphs. Its workspace-wide lockfile scan reports those four
+existing vulnerabilities in optional or inactive non-Iroh graphs (three Nostr
+denial-of-service/signature-cache issues with upgrades available, plus the
+long-standing unfixed RSA timing advisory). They are recorded for workspace
+release follow-up and are not hidden or misattributed to Iroh.
+
+The complete reproducible record, security review, measurements, compression
+decision, compatibility matrix, and unsupported combinations are in
+`docs/iroh-transport-release-evidence.md`. Multi-host failure-domain testing,
+browser/WASM Iroh, mobile lifecycle tests, Iroh-over-Tor, and a funded Nocean
+paid-wallet flow are accurately left unclaimed.
 
 ## Verification matrix
 

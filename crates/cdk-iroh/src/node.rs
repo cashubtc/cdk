@@ -43,12 +43,9 @@ impl IrohNode {
 
     async fn bind(config: IrohConfig, secret_key: Option<SecretKey>) -> Result<Self, Error> {
         validate_config(&config)?;
-        let lookup = MemoryLookup::new();
-        for ticket in &config.static_tickets {
-            lookup.add_endpoint_info(ticket.endpoint_addr().clone());
-        }
+        let lookup = static_lookup(&config);
 
-        let mut builder = match &config.discovery {
+        let builder = match &config.discovery {
             DiscoveryMode::N0 => Endpoint::builder(presets::N0),
             DiscoveryMode::Static => Endpoint::builder(presets::Minimal)
                 .relay_mode(RelayMode::Disabled)
@@ -57,6 +54,15 @@ impl IrohNode {
                 .relay_mode(RelayMode::custom(relay_urls.clone()))
                 .clear_address_lookup(),
         };
+        Self::finish_bind(config, secret_key, lookup, builder).await
+    }
+
+    async fn finish_bind(
+        config: IrohConfig,
+        secret_key: Option<SecretKey>,
+        lookup: MemoryLookup,
+        mut builder: Builder,
+    ) -> Result<Self, Error> {
         builder = builder.address_lookup(lookup.clone());
         builder = builder.alpns(vec![crate::protocol::ALPN.to_vec()]);
         if let Some(bind_addr) = config.bind_addr {
@@ -86,6 +92,21 @@ impl IrohNode {
         })
     }
 
+    #[cfg(test)]
+    async fn persistent_with_test_relay(
+        config: IrohConfig,
+        secret_key: SecretKey,
+        relay_map: iroh::RelayMap,
+    ) -> Result<Self, Error> {
+        validate_config(&config)?;
+        let lookup = static_lookup(&config);
+        let builder = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Custom(relay_map))
+            .clear_address_lookup()
+            .ca_tls_config(iroh::tls::CaTlsConfig::insecure_skip_verify());
+        Self::finish_bind(config, Some(secret_key), lookup, builder).await
+    }
+
     /// Returns the authenticated endpoint ID.
     pub fn endpoint_id(&self) -> EndpointId {
         self.inner.endpoint.id()
@@ -110,7 +131,12 @@ impl IrohNode {
 
     /// Returns a point-in-time bounded-cardinality metrics snapshot.
     pub fn metrics(&self) -> MetricsSnapshot {
-        self.inner.metrics.snapshot()
+        let discovery_mode = match &self.inner.config.discovery {
+            DiscoveryMode::N0 => "n0",
+            DiscoveryMode::Static => "static",
+            DiscoveryMode::Custom { .. } => "custom",
+        };
+        self.inner.metrics.snapshot(discovery_mode)
     }
 
     /// Gracefully closes this endpoint and all of its connections.
@@ -172,6 +198,14 @@ impl IrohNode {
     }
 }
 
+fn static_lookup(config: &IrohConfig) -> MemoryLookup {
+    let lookup = MemoryLookup::new();
+    for ticket in &config.static_tickets {
+        lookup.add_endpoint_info(ticket.endpoint_addr().clone());
+    }
+    lookup
+}
+
 fn apply_bind_addr(builder: Builder, bind_addr: std::net::SocketAddr) -> Result<Builder, Error> {
     builder.bind_addr(bind_addr).map_err(|_| Error::Endpoint)
 }
@@ -210,7 +244,16 @@ impl fmt::Debug for IrohNode {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        net::SocketAddr,
+        time::{Duration, Instant},
+    };
+
+    use axum::{routing::get, Router};
+    use iroh::{EndpointAddr, TransportAddr};
+
     use super::*;
+    use crate::{protocol, IrohClient, IrohServer};
 
     #[test]
     fn config_debug_redacts_addresses_and_tickets() {
@@ -229,5 +272,139 @@ mod tests {
         assert!(!rendered.contains("127.0.0.1"));
         assert!(rendered.contains("relay_count: 1"));
         assert!(rendered.contains("has_explicit_bind: true"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn relay_bootstrap_migrates_direct_and_survives_relay_loss() {
+        let file_descriptors_before = file_descriptor_count();
+        let (relay_map, _relay_url, relay_server) = iroh::test_utils::run_relay_server()
+            .await
+            .expect("test relay starts");
+        let loopback: SocketAddr = "127.0.0.1:0".parse().expect("loopback address");
+        let server_node = IrohNode::persistent_with_test_relay(
+            IrohConfig::static_only().with_bind_addr(loopback),
+            SecretKey::generate(),
+            relay_map.clone(),
+        )
+        .await
+        .expect("server endpoint");
+        server_node.endpoint().online().await;
+        let full_addr = server_node.endpoint_addr();
+        let relay_only_addr = EndpointAddr::from_parts(
+            server_node.endpoint_id(),
+            full_addr
+                .addrs
+                .iter()
+                .filter(|address| matches!(address, TransportAddr::Relay(_)))
+                .cloned(),
+        );
+        assert!(relay_only_addr.addrs.iter().all(TransportAddr::is_relay));
+        assert!(!relay_only_addr.addrs.is_empty());
+
+        let client_node = IrohNode::persistent_with_test_relay(
+            IrohConfig {
+                static_tickets: vec![relay_only_addr.into()],
+                bind_addr: Some(loopback),
+                ..IrohConfig::static_only()
+            },
+            SecretKey::generate(),
+            relay_map,
+        )
+        .await
+        .expect("client endpoint");
+        client_node.endpoint().online().await;
+        let server = IrohServer::start(
+            server_node.clone(),
+            Router::new().route("/relay", get(|| async { "relay-to-direct" })),
+        );
+        let relay_bytes_before = relay_server.metrics().server.bytes_sent.get()
+            + relay_server.metrics().server.bytes_recv.get();
+        let connection_started = Instant::now();
+        let connection = client_node
+            .pool()
+            .connect(
+                client_node.endpoint(),
+                server_node.endpoint_id(),
+                protocol::ALPN,
+            )
+            .await
+            .expect("relay bootstrap connection");
+        let connection_setup = connection_started.elapsed();
+        assert!(connection.paths().iter().any(|path| path.is_relay()));
+        assert_eq!(client_node.metrics().relay_connections, 1);
+
+        let client = IrohClient::new(client_node.clone());
+        let url = url::Url::parse(&format!("iroh://{}/relay", server_node.endpoint_id()))
+            .expect("Iroh URL");
+        let relay_request_started = Instant::now();
+        assert_eq!(
+            client
+                .get_raw(url.clone(), None)
+                .await
+                .expect("relay request")
+                .text()
+                .await
+                .expect("relay response"),
+            "relay-to-direct"
+        );
+        let relay_request = relay_request_started.elapsed();
+        let relay_bytes_after = relay_server.metrics().server.bytes_sent.get()
+            + relay_server.metrics().server.bytes_recv.get();
+        assert!(relay_bytes_after > relay_bytes_before);
+
+        client_node.add_ticket(full_addr.into());
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if connection
+                    .paths()
+                    .iter()
+                    .any(|path| path.is_selected() && !path.is_relay())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("connection migrates to a direct path");
+
+        drop(relay_server);
+        let direct_request_started = Instant::now();
+        assert_eq!(
+            client
+                .get_raw(url, None)
+                .await
+                .expect("direct request after relay loss")
+                .text()
+                .await
+                .expect("direct response"),
+            "relay-to-direct"
+        );
+        let direct_request = direct_request_started.elapsed();
+        let peak_file_descriptors = file_descriptor_count();
+
+        server.shutdown().await.expect("server shutdown");
+        client_node.close().await;
+        let file_descriptors_after = file_descriptor_count();
+        let file_descriptors_before = file_descriptor_text(file_descriptors_before);
+        let peak_file_descriptors = file_descriptor_text(peak_file_descriptors);
+        let file_descriptors_after = file_descriptor_text(file_descriptors_after);
+        eprintln!(
+            "iroh relay evidence: setup_us={} relay_request_us={} direct_request_us={} relay_bytes={} fd_before={file_descriptors_before} fd_peak={peak_file_descriptors} fd_after={file_descriptors_after}",
+            connection_setup.as_micros(),
+            relay_request.as_micros(),
+            direct_request.as_micros(),
+            relay_bytes_after - relay_bytes_before,
+        );
+    }
+
+    fn file_descriptor_count() -> Option<usize> {
+        ["/proc/self/fd", "/dev/fd"]
+            .into_iter()
+            .find_map(|path| std::fs::read_dir(path).ok().map(Iterator::count))
+    }
+
+    fn file_descriptor_text(count: Option<usize>) -> String {
+        count.map_or_else(|| "unavailable".to_owned(), |count| count.to_string())
     }
 }

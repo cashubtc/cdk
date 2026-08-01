@@ -1,6 +1,6 @@
 //! One-stream-per-transaction HTTP and WebSocket client.
 
-use std::sync::atomic::Ordering;
+use std::{sync::atomic::Ordering, time::Instant};
 
 use bytes::{Bytes, BytesMut};
 use cashu::nuts::nut22::AuthToken;
@@ -45,6 +45,7 @@ impl IrohClient {
         body: Bytes,
         max_response_bytes: usize,
     ) -> Result<RawResponse, Error> {
+        let request_started = Instant::now();
         if headers
             .iter()
             .any(|(name, _)| name == header::HOST || name == header::CONTENT_LENGTH)
@@ -133,6 +134,7 @@ impl IrohClient {
             .await?;
         let metrics = self.node.metrics_inner();
         metrics.requests.fetch_add(1, Ordering::Relaxed);
+        metrics.record_request_duration(request_started.elapsed());
         metrics.record_status(status);
         Ok(RawResponse::new(status, response_body))
     }

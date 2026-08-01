@@ -289,6 +289,150 @@ async fn endpoint_identities_and_discovery_modes_are_explicit() -> TestResult {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn static_discovery_fails_offline_and_recovers_after_ticket_refresh() -> TestResult {
+    let secret_key = SecretKey::generate();
+    let first_server_node = IrohNode::persistent(loopback_config(), secret_key.clone()).await?;
+    let endpoint_id = first_server_node.endpoint_id();
+    let first_ticket = first_server_node.endpoint_ticket();
+    let first_server = IrohServer::start(first_server_node.clone(), synthetic_router());
+
+    let client_node = IrohNode::ephemeral(IrohConfig {
+        timeouts: IrohTimeouts {
+            connect: Duration::from_millis(500),
+            ..IrohTimeouts::default()
+        },
+        ..loopback_config()
+    })
+    .await?;
+    let client = IrohClient::new(client_node.clone());
+    let url = iroh_url(endpoint_id, "/future-route")?;
+
+    let undiscoverable = client
+        .get_raw(url.clone(), None)
+        .await
+        .expect_err("static discovery without a ticket must fail closed");
+    assert!(matches!(
+        undiscoverable,
+        Error::Connect { .. } | Error::Timeout { .. }
+    ));
+
+    client_node.add_ticket(first_ticket);
+    assert_eq!(client.get_raw(url.clone(), None).await?.status(), 200);
+    first_server.shutdown().await?;
+
+    client
+        .get_raw(url.clone(), None)
+        .await
+        .expect_err("the closed pooled connection must not be replayed");
+    client
+        .get_raw(url.clone(), None)
+        .await
+        .expect_err("a stale ticket must not silently discover a replacement address");
+
+    let second_server_node = IrohNode::persistent(loopback_config(), secret_key).await?;
+    assert_eq!(second_server_node.endpoint_id(), endpoint_id);
+    let second_server = IrohServer::start(second_server_node.clone(), synthetic_router());
+    client_node.add_ticket(second_server_node.endpoint_ticket());
+
+    assert_eq!(client.get_raw(url, None).await?.status(), 200);
+    second_server.shutdown().await?;
+    client_node.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invalid_alpn_and_oversized_or_malformed_headers_fail_before_routing() -> TestResult {
+    let fixture = Fixture::start().await?;
+    let raw_endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind_addr(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?
+        .bind()
+        .await?;
+
+    raw_endpoint
+        .connect(fixture.server_node.endpoint_addr(), b"not-cashu-http")
+        .await
+        .expect_err("the server must reject an unconfigured ALPN");
+    assert_eq!(fixture.server_node.metrics().requests, 0);
+
+    let connection = raw_endpoint
+        .connect(fixture.server_node.endpoint_addr(), protocol::ALPN)
+        .await?;
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let oversized = format!(
+        "GET /future-route HTTP/1.1\r\nHost: {}\r\nX-Oversized: {}\r\n\r\n",
+        fixture.server_node.endpoint_id(),
+        "x".repeat(protocol::MAX_HEADER_BYTES + 1)
+    );
+    send.write_all(oversized.as_bytes()).await?;
+    send.finish()?;
+    let oversized_result =
+        tokio::time::timeout(Duration::from_secs(5), recv.read_to_end(1_024)).await?;
+    if let Ok(response) = oversized_result {
+        assert!(response.is_empty() || response.starts_with(b"HTTP/1.1 431"));
+    }
+    assert_eq!(fixture.server_node.metrics().requests, 0);
+
+    let (mut send, mut recv) = connection.open_bi().await?;
+    send.write_all(b"this is not HTTP\r\n\r\n").await?;
+    send.finish()?;
+    let malformed_result =
+        tokio::time::timeout(Duration::from_secs(5), recv.read_to_end(1_024)).await?;
+    if let Ok(response) = malformed_result {
+        assert!(response.is_empty() || response.starts_with(b"HTTP/1.1 400"));
+    }
+    assert_eq!(fixture.server_node.metrics().requests, 0);
+
+    connection.close(0_u32.into(), b"test complete");
+    raw_endpoint.close().await;
+    fixture.shutdown().await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ambiguous_post_is_reported_once_and_never_replayed() -> TestResult {
+    async fn receive_then_wait(
+        Extension(received): Extension<Arc<AtomicUsize>>,
+        body: Bytes,
+    ) -> Response {
+        assert_eq!(body, Bytes::from_static(b"non-idempotent-operation"));
+        received.fetch_add(1, Ordering::SeqCst);
+        std::future::pending::<Response>().await
+    }
+
+    let received = Arc::new(AtomicUsize::new(0));
+    let server_node = IrohNode::ephemeral(loopback_config()).await?;
+    let client_node =
+        IrohNode::ephemeral(loopback_config().with_ticket(server_node.endpoint_ticket())).await?;
+    let router = Router::new()
+        .route("/ambiguous", post(receive_then_wait))
+        .layer(Extension(received.clone()));
+    let server = IrohServer::start(server_node.clone(), router);
+    let client = IrohClient::new(client_node.clone());
+    let url = iroh_url(server_node.endpoint_id(), "/ambiguous")?;
+    let request = tokio::spawn(async move {
+        client
+            .request_raw(
+                Method::POST,
+                url,
+                &[],
+                Bytes::from_static(b"non-idempotent-operation"),
+                64,
+            )
+            .await
+    });
+
+    wait_for(|| received.load(Ordering::SeqCst) == 1).await?;
+    server.shutdown().await?;
+    request
+        .await?
+        .expect_err("connection loss after receipt must remain an ambiguous error");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(received.load(Ordering::SeqCst), 1);
+    assert_eq!(client_node.metrics().connection_attempts, 1);
+    client_node.close().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn runtime_node_routes_self_requests_through_companion_endpoint() -> TestResult {
     let node = IrohNode::ephemeral(loopback_config()).await?;
     let server = IrohServer::start(node.clone(), synthetic_router());
@@ -434,9 +578,15 @@ async fn transport_conformance_and_pooling() -> TestResult {
     sender.close().await?;
 
     let metrics = fixture.client_node.metrics();
+    assert_eq!(metrics.discovery_mode, "static");
     assert_eq!(metrics.connection_attempts, 1);
     assert_eq!(metrics.connection_failures, 0);
+    assert_eq!(
+        metrics.direct_connections + metrics.relay_connections + metrics.unknown_path_connections,
+        1
+    );
     assert!(metrics.pool_hits >= 30);
+    assert!(metrics.request_duration_micros > 0);
     assert!(fixture.server_node.metrics().requests >= 32);
 
     fixture.shutdown().await
