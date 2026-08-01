@@ -3,9 +3,15 @@
 
   nixConfig = {
     extra-substituters = [
+      # Self-hosted attic cache (unlimited storage): carries the per-revision
+      # itest-archive and harness binaries that churn the 5 GB cachix quota.
+      "https://cache.cashudevkit.org"
       "https://cashudevkit.cachix.org"
     ];
     extra-trusted-public-keys = [
+      # Attic cache signing key (authoritative source: cashudevkitCachePublicKey
+      # in the tsk-infra flake; verified against the cache on every deploy).
+      "cashudevkit:Ukc9ltM4674fDHWWay+q4vdHDYKF48QIm6A+0z5/FqQ="
       "cashudevkit.cachix.org-1:zFKdvMiTllKWxIFNTjXgisZsOFufmaZXjWJNcmc8r+4="
     ];
   };
@@ -1366,6 +1372,12 @@
             '';
             doCheck = false;
             installPhaseCommand = "";
+            # mkCargoDerivation would otherwise also compress the whole cargo
+            # target dir into $out/target.tar.zst (crane's cargoArtifacts
+            # mechanism). Nothing consumes this package's artifacts and the
+            # extra tarball (~4.7 GB) nearly doubles the store path that
+            # Cachix has to push and every runner has to pull, so skip it.
+            doInstallCargoArtifacts = false;
           }
         );
 
