@@ -1,9 +1,10 @@
 # Federated Cashu multi-operator setup implementation plan
 
-> **Status — Milestone 1 complete, 2026-08-01:** The pure setup domain,
-> canonical artifact validation, certified-manifest derivation, and mandatory
-> public-config authorization binding are implemented and verified. Milestone
-> 2 durable setup storage is next. This document
+> **Status — Milestone 3 complete, 2026-08-01:** The pure setup domain,
+> durable SQLite/PostgreSQL state, protected local identities and invitations,
+> immutable proposal review, and exact-hash approval fence are implemented and
+> verified. Milestone 4's bounded coordinator HTTP service and client are next.
+> This document
 > defines the implementation sequence for replacing CDK's file-mediated
 > federation enrollment and roster assembly with an authenticated, restartable
 > multi-operator setup workflow.
@@ -788,22 +789,91 @@ boundary and concurrent consumption/approval races.
 
 ### Milestone 3 — Local invitation, proposal, and approval commands
 
-- [ ] Implement protected local identity and invitation generation.
-- [ ] Implement atomic replacement of an unconsumed invitation while refusing
+- [x] Implement protected local identity and invitation generation.
+- [x] Implement atomic replacement of an unconsumed invitation while refusing
   replacement after enrollment.
-- [ ] Implement strict invitation parsing and URL/expiry/setup-identity checks.
-- [ ] Implement explicit proposal publication that freezes the complete
+- [x] Implement strict invitation parsing and URL/expiry/setup-identity checks.
+- [x] Implement explicit proposal publication that freezes the complete
   enrollment and shared-policy set.
-- [ ] Implement proposal rendering with one stable human-review format and
+- [x] Implement proposal rendering with one stable human-review format and
   bounded machine-readable output.
-- [ ] Implement exact-hash non-interactive approval and the durable
+- [x] Implement exact-hash non-interactive approval and the durable
   one-proposal-per-setup fence.
-- [ ] Ensure ambiguous command retries reuse identical identity, enrollment,
+- [x] Ensure ambiguous command retries reuse identical identity, enrollment,
   and approval bytes.
 
 **Gate:** two independent work directories can generate, exchange through an
 in-memory fake coordinator, review, and approve one proposal without copying
 private material.
+
+**Completed 2026-08-01:**
+
+- Added the protected local setup application boundary in
+  `crates/cdk-mintd/src/federation_setup_command.rs`. Creator and joining
+  identities are generated inside their own state directories and written
+  before any ambiguous network operation. Local config, secrets, and
+  invitation files are bounded, non-symlink inputs and require private-file
+  permissions on Unix. Debug formatting redacts identity secrets and
+  invitation capabilities.
+- Added the nested production CLI shape
+  `federation setup create|invite|join|propose|review|approve`. Invitation
+  credentials are accepted only through `--invitation-file`, never as a
+  process argument. SQLite-backed creator create/invite/propose/review/approve
+  commands are wired now. Joining-member submission, remote proposal fetch,
+  and remote approval deliberately fail closed at the CLI boundary until the
+  authenticated bounded coordinator client from Milestone 4 is available;
+  their storage-first application operations are implemented behind the
+  `FederationSetupCoordinator` boundary and exercised by the fake coordinator.
+- Implemented the frozen `cashufedsetupA` URL-safe, unpadded Base64 invitation
+  encoding with its six-byte domain-separated checksum. Parsing is bounded and
+  rejects wrong prefixes, padding/alphabet errors, truncation, trailing bytes,
+  bad public keys, corrupt checksums, unsupported versions, invalid URLs, and
+  malformed setup bindings. Receipt-time validation separately enforces the
+  caller's HTTPS/localhost policy and current expiry.
+- Added atomic invitation replacement to the shared setup transaction API and
+  common SQL implementation. Replacement requires a fresh ID, capability,
+  later expiry, and the same available setup/member slot; the transaction
+  refuses replacement if any enrollment already occupies that member slot.
+  Exact replacement replay remains idempotent.
+- Proposal publication now freezes the complete signed enrollment set and
+  shared BLS, FROST, checkpoint, network, payment-observation, and protocol
+  policy. Every operator validates its byte-identical local enrollment and
+  pinned coordinator identity before review. The stable secret-free human
+  review has a locked SHA-256 fixture, and the same model has bounded pretty
+  JSON output for a future backend or web UI.
+- Approval requires the exact displayed proposal hash. The signed approval and
+  local participant transition commit atomically before transmission; a lost
+  acknowledgement therefore retries the same durable bytes. Creator approval
+  follows the same fence and is then inserted into the coordinator's received
+  approval set.
+- The gate test uses three independent operator directories and three separate
+  SQLite databases (stronger than the required two-directory minimum). It
+  replaces an unused invitation, refuses replacement after enrollment,
+  simulates commit-then-lost-acknowledgement failures for enrollment and
+  approval, proves secret/enrollment bytes are unchanged across retries,
+  compares all three review documents, rejects a wrong hash before fencing,
+  collects all three approvals, checks distinct identity keys, and verifies
+  protected file permissions without copying another member's private state.
+- Repaired the DKG-status test fixture to preserve its setup authorization when
+  deriving the final config. This restores the federation-ID binding required
+  by Milestone 1 instead of constructing an unrelated authorization in the
+  test-only final config.
+- Verification passed: the focused `cdk-mintd` setup-command suite (`2
+  passed`), the setup CLI parser test, `cdk-common` with federation (`483
+  passed`, `4 ignored`), `cdk-sql-common` (`12 passed`), `cdk-sqlite` (`176
+  passed`), and the invitation-replacement test against a configured local
+  PostgreSQL database (`1 passed`). The complete `cdk-mintd` federation suite
+  with its required test-only setup feature passed serially (`229 passed`);
+  the first parallel run exposed the existing process-global environment-test
+  race (`3 failed` after one test left an invalid environment value and
+  poisoned its lock), while `--test-threads 1` passed all tests.
+- Strict Clippy passed for `cdk-common`, `cdk-sql-common`, and `cdk-sqlite` with
+  federation targets, and for the `cdk-mintd` library after allowing only its
+  three pre-existing unrelated lints (`field_reassign_with_default`,
+  `too_many_arguments`, and `collapsible_match`). Federation-disabled
+  `cdk-common`, the PostgreSQL-only `cdk-mintd` feature combination, and
+  `cargo check --workspace --all-targets` passed. All changed Rust files passed
+  targeted `rustfmt`; the Milestone 0 workspace-format limitation remains.
 
 ### Milestone 4 — Bounded coordinator service
 

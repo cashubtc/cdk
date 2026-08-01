@@ -330,6 +330,26 @@ impl FederationSetupInvitationRecord {
         self.with_state(FederationSetupInvitationState::Expired)
     }
 
+    /// Validate a fresh capability replacing this still-unconsumed member slot.
+    pub fn validate_replacement(&self, replacement: &Self) -> Result<()> {
+        self.validate()?;
+        replacement.validate()?;
+        if self.state != FederationSetupInvitationState::Available
+            || replacement.state != FederationSetupInvitationState::Available
+            || self.version != replacement.version
+            || self.setup_id != replacement.setup_id
+            || self.member_id != replacement.member_id
+            || self.invitation_id == replacement.invitation_id
+            || self.capability_hash == replacement.capability_hash
+            || replacement.expires_at_unix <= self.expires_at_unix
+        {
+            return Err(invalid(
+                "replacement invitation must be a fresh capability for the same available slot",
+            ));
+        }
+        Ok(())
+    }
+
     fn with_state(&self, state: FederationSetupInvitationState) -> Result<Self> {
         let mut updated = self.clone();
         updated.state = state;

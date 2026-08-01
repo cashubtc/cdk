@@ -404,6 +404,67 @@ where
         .is_some());
 }
 
+/// Prove invitation replacement is atomic, replay-safe, and blocked by enrollment.
+pub async fn federation_setup_invitation_replacement<DB>(db: DB)
+where
+    DB: Database<Error> + Send + Sync + 'static,
+{
+    let fixture = setup_fixture(61, 0);
+    persist_session_and_invitation(&db, &fixture).await;
+    let replacement = invitation_record(61, 1, 1);
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("replacement transaction");
+    tx.replace_federation_setup_invitation(&fixture.invitation, &replacement)
+        .await
+        .expect("replace invitation");
+    tx.replace_federation_setup_invitation(&fixture.invitation, &replacement)
+        .await
+        .expect("exact replacement replay");
+    tx.commit().await.expect("commit replacement");
+    assert_eq!(
+        db.get_federation_setup_invitation(
+            fixture.session.setup_id,
+            fixture.invitation.invitation_id,
+        )
+        .await
+        .expect("replaced invitation"),
+        Some(fixture.invitation.expired().expect("expired original"))
+    );
+    assert_eq!(
+        db.get_federation_setup_invitation(fixture.session.setup_id, replacement.invitation_id)
+            .await
+            .expect("new invitation"),
+        Some(replacement.clone())
+    );
+
+    let enrollment = signed_enrollment_for_invitation(61, 1, 0, replacement.invitation_id);
+    let consumed = replacement.consumed().expect("consumed replacement");
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("consume replacement transaction");
+    tx.consume_federation_setup_invitation(&replacement, &consumed, &enrollment)
+        .await
+        .expect("consume replacement");
+    tx.commit().await.expect("commit replacement consumption");
+
+    let forbidden = invitation_record(61, 1, 2);
+    let mut tx = Database::begin_transaction(&db)
+        .await
+        .expect("forbidden replacement transaction");
+    let error = tx
+        .replace_federation_setup_invitation(&replacement, &forbidden)
+        .await
+        .expect_err("enrolled slot cannot be replaced");
+    assert_setup_conflict(error);
+    tx.rollback().await.expect("rollback forbidden replacement");
+    assert!(db
+        .get_federation_setup_invitation(fixture.session.setup_id, forbidden.invitation_id)
+        .await
+        .expect("forbidden invitation lookup")
+        .is_none());
+}
+
 async fn rollback_invitation_consumption<DB>(db: &DB, fixture: SetupFixture)
 where
     DB: Database<Error> + Send + Sync + 'static,
@@ -857,9 +918,23 @@ fn setup_fixture(setup_byte: u8, variant: u8) -> SetupFixture {
 }
 
 fn signed_enrollment(setup_byte: u8, member: u16, nonce_variant: u8) -> FederationSetupEnrollment {
+    signed_enrollment_for_invitation(
+        setup_byte,
+        member,
+        nonce_variant,
+        invitation_id(setup_byte, member),
+    )
+}
+
+fn signed_enrollment_for_invitation(
+    setup_byte: u8,
+    member: u16,
+    nonce_variant: u8,
+    invitation_id: FederationSetupInvitationId,
+) -> FederationSetupEnrollment {
     FederationSetupEnrollment::sign_no_aux_rand_for_test_vector(
         FederationSetupId::from_bytes([setup_byte; 32]),
-        invitation_id(setup_byte, member),
+        invitation_id,
         member_id(member),
         mint_url(&format!("https://mint-{member}-{setup_byte}.example")),
         mint_url(&format!("https://peer-{member}-{setup_byte}.example")),
@@ -872,6 +947,29 @@ fn signed_enrollment(setup_byte: u8, member: u16, nonce_variant: u8) -> Federati
         URL_POLICY,
     )
     .expect("signed enrollment")
+}
+
+fn invitation_record(setup_byte: u8, member: u16, variant: u8) -> FederationSetupInvitationRecord {
+    let invitation = FederationSetupInvitation::new(
+        FederationSetupId::from_bytes([setup_byte; 32]),
+        FederationSetupInvitationId::from_bytes(
+            [setup_byte
+                .wrapping_add(u8::try_from(member).expect("small member"))
+                .wrapping_add(variant); 32],
+        ),
+        member_id(member),
+        mint_url(&format!("https://coordinator-{setup_byte}.example")),
+        FederationSetupCoordinatorPublicKey::new(secret_key(60_000).public_key())
+            .expect("coordinator identity"),
+        NOW_UNIX + FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS + u64::from(variant),
+        FederationSetupInvitationCapability::from_bytes([0xab_u8.wrapping_add(variant); 32])
+            .expect("invitation capability"),
+        NOW_UNIX,
+        URL_POLICY,
+    )
+    .expect("replacement invitation");
+    FederationSetupInvitationRecord::from_invitation(&invitation, NOW_UNIX)
+        .expect("replacement invitation record")
 }
 
 fn invitation_id(setup_byte: u8, member: u16) -> FederationSetupInvitationId {

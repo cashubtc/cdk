@@ -5,6 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
+use bitcoin::base64::Engine as _;
+use bitcoin::hashes::{sha256, Hash};
 use cdk_common::federation::{
     FederationCheckpointPolicy, FederationConfig, FederationDkgKeysetSpec, FederationError,
     FederationPaymentObservationPolicy, FederationSetupApproval, FederationSetupAuthorizationHash,
@@ -13,8 +15,10 @@ use cdk_common::federation::{
     FederationSetupInvitation, FederationSetupInvitationCapability, FederationSetupInvitationId,
     FederationSetupInvitationRecord, FederationSetupLocalRole, FederationSetupManifest,
     FederationSetupManifestHash, FederationSetupProposal, FederationSetupProposalBody,
-    FederationSetupProtocolVersions, FederationSetupSession, FederationSetupUrlPolicy, MemberId,
-    ThresholdParams, FEDERATION_MAX_SETUP_URL_BYTES, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+    FederationSetupProposalReview, FederationSetupProtocolVersions, FederationSetupSession,
+    FederationSetupUrlPolicy, MemberId, ThresholdParams, FEDERATION_MAX_SETUP_INVITATION_BYTES,
+    FEDERATION_MAX_SETUP_URL_BYTES, FEDERATION_SETUP_INVITATION_PREFIX,
+    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::SecretKey;
@@ -277,6 +281,66 @@ fn invitation_validation_is_expiry_aware_and_diagnostics_are_redacted() {
 }
 
 #[test]
+fn invitation_code_round_trips_and_rejects_malformed_or_tampered_input() {
+    let invitation = FederationSetupInvitation::new(
+        setup_id(),
+        invitation_id(2),
+        member_id(2),
+        mint_url("https://coordinator.example/setup"),
+        coordinator_identity(),
+        NOW_UNIX + FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+        invitation_capability(),
+        NOW_UNIX,
+        URL_POLICY,
+    )
+    .expect("valid invitation");
+    let code = invitation.to_string();
+    let decoded = FederationSetupInvitation::from_str(&code).expect("invitation parses");
+
+    assert_eq!(decoded, invitation);
+    assert_eq!(decoded.to_string(), code);
+    decoded
+        .validate(NOW_UNIX, URL_POLICY)
+        .expect("parsed invitation validates at receipt time");
+
+    let wrong_prefix = code.replacen(FEDERATION_SETUP_INVITATION_PREFIX, "cashufedsetupB", 1);
+    assert_invalid_setup(
+        FederationSetupInvitation::from_str(&wrong_prefix)
+            .expect_err("unknown invitation prefix must fail"),
+        "prefix",
+    );
+
+    let payload = code
+        .strip_prefix(FEDERATION_SETUP_INVITATION_PREFIX)
+        .expect("fixture prefix");
+    let mut bytes = bitcoin::base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .expect("fixture payload decodes");
+    let final_byte = bytes.last_mut().expect("checksum byte");
+    *final_byte ^= 1;
+    let tampered = format!(
+        "{}{}",
+        FEDERATION_SETUP_INVITATION_PREFIX,
+        bitcoin::base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    );
+    assert_invalid_setup(
+        FederationSetupInvitation::from_str(&tampered).expect_err("tampered invitation must fail"),
+        "checksum",
+    );
+
+    assert!(FederationSetupInvitation::from_str(
+        &"x".repeat(FEDERATION_MAX_SETUP_INVITATION_BYTES + 1)
+    )
+    .is_err());
+    assert!(decoded
+        .validate(
+            NOW_UNIX + FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+            URL_POLICY,
+        )
+        .is_err());
+}
+
+#[test]
 fn durable_setup_timestamps_fit_both_sql_backends() {
     let session = FederationSetupSession::new(
         setup_id(),
@@ -310,6 +374,31 @@ fn durable_setup_timestamps_fit_both_sql_backends() {
             .validate()
             .expect_err("oversized invitation timestamp must fail"),
         "portable setup persistence range",
+    );
+}
+
+#[test]
+fn proposal_review_is_stable_bounded_and_secret_free() {
+    let fixture = fixture();
+    let review = FederationSetupProposalReview::from_proposal(&fixture.proposal, URL_POLICY)
+        .expect("proposal review");
+    let human = review.to_string();
+    let json = review.to_pretty_json().expect("review JSON");
+    let decoded: FederationSetupProposalReview =
+        serde_json::from_str(&json).expect("review JSON round trip");
+
+    assert_eq!(decoded, review);
+    assert!(human.contains(&format!(
+        "proposal_hash: {}",
+        fixture.proposal.proposal_hash
+    )));
+    assert!(human.contains("thresholds: members=3 signatures=2 consensus=3"));
+    assert!(human.contains("member=1 mint=https://mint-1.example"));
+    assert!(!human.contains(&fixture.proposal.coordinator_signature.to_string()));
+    assert!(!json.contains(&fixture.proposal.coordinator_signature.to_string()));
+    assert_eq!(
+        sha256::Hash::hash(human.as_bytes()).to_string(),
+        "4e2ab10f68efbfffd5b285bc9671f84ec78bc9bb4c9749d6950363e9406a83a9"
     );
 }
 

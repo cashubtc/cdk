@@ -4,6 +4,7 @@ use core::fmt;
 use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
 
+use bitcoin::base64::Engine as _;
 use bitcoin::hashes::sha256::Hash as Sha256Hash;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::schnorr::Signature;
@@ -21,12 +22,14 @@ use crate::mint_url::MintUrl;
 use crate::nuts::nut01::{PublicKey, SecretKey};
 
 mod persistence;
+mod review;
 
 pub use self::persistence::{
     FederationSetupActivation, FederationSetupCoordinatorPhase, FederationSetupInvitationRecord,
     FederationSetupInvitationState, FederationSetupLocalRole, FederationSetupParticipantPhase,
     FederationSetupSession,
 };
+pub use self::review::{FederationSetupMemberReview, FederationSetupProposalReview};
 
 /// Multi-operator setup protocol version implemented by this build.
 pub const FEDERATION_SETUP_PROTOCOL_VERSION: u16 = 1;
@@ -65,6 +68,7 @@ pub const FEDERATION_SETUP_FROST_DKG_PROTOCOL_VERSION: u16 = 2;
 pub const FEDERATION_SETUP_FROST_CIPHERSUITE_VERSION: u16 = 1;
 
 const INVITATION_CAPABILITY_DOMAIN: &[u8] = b"cdk/federation/setup/invitation-capability/v1";
+const INVITATION_CHECKSUM_DOMAIN: &[u8] = b"cdk/federation/setup/invitation-checksum/v1";
 const ENROLLMENT_SIGNATURE_DOMAIN: &[u8] = b"cdk/federation/setup/enrollment-signature/v1";
 const PROPOSAL_DOMAIN: &[u8] = b"cdk/federation/setup/proposal/v1";
 const PROPOSAL_PUBLICATION_DOMAIN: &[u8] = b"cdk/federation/setup/proposal-publication/v1";
@@ -389,7 +393,8 @@ impl<'de> Deserialize<'de> for FederationSetupSignature {
 }
 
 /// URL validation policy selected by the local setup runtime.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FederationSetupUrlPolicy {
     /// Require credential-free HTTPS URLs.
     #[default]
@@ -582,6 +587,118 @@ impl FederationSetupInvitation {
     pub fn capability_hash(&self) -> FederationSetupInvitationCapabilityHash {
         self.capability
             .capability_hash(self.setup_id, self.invitation_id, self.member_id)
+    }
+
+    /// Encode this credential as a checksummed URL-safe invitation string.
+    pub fn to_invitation_code(&self) -> Result<String> {
+        let validation_time = self.expires_at_unix.saturating_sub(1);
+        let url_policy = match self.coordinator_url.to_string().starts_with("http://") {
+            true => FederationSetupUrlPolicy::AllowInsecureLocalhost,
+            false => FederationSetupUrlPolicy::RequireHttps,
+        };
+        self.validate(validation_time, url_policy)?;
+        let public = self.canonical_public_bytes()?;
+        let capability = self.capability.expose_secret();
+        let checksum = invitation_checksum(&public, capability)?;
+        let mut payload = Vec::with_capacity(public.len() + capability.len() + checksum.len());
+        payload.extend_from_slice(&public);
+        payload.extend_from_slice(&capability);
+        payload.extend_from_slice(&checksum);
+        let encoded = bitcoin::base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
+        let invitation = format!("{FEDERATION_SETUP_INVITATION_PREFIX}{encoded}");
+        ensure_size(
+            "invitation",
+            invitation.len(),
+            FEDERATION_MAX_SETUP_INVITATION_BYTES,
+        )?;
+        Ok(invitation)
+    }
+}
+
+impl fmt::Display for FederationSetupInvitation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.to_invitation_code().map_err(|_| fmt::Error)?)
+    }
+}
+
+impl FromStr for FederationSetupInvitation {
+    type Err = FederationError;
+
+    fn from_str(value: &str) -> Result<Self> {
+        ensure_size(
+            "invitation",
+            value.len(),
+            FEDERATION_MAX_SETUP_INVITATION_BYTES,
+        )?;
+        let payload = value
+            .strip_prefix(FEDERATION_SETUP_INVITATION_PREFIX)
+            .ok_or_else(|| invalid("unsupported setup invitation prefix"))?;
+        let decoded = bitcoin::base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .map_err(|error| {
+                invalid(format!("setup invitation is not URL-safe base64: {error}"))
+            })?;
+        ensure_size(
+            "invitation",
+            decoded.len(),
+            FEDERATION_MAX_SETUP_INVITATION_BYTES,
+        )?;
+        let mut remaining = decoded.as_slice();
+        let version = u16::from_be_bytes(take_setup_bytes(&mut remaining, "version")?);
+        validate_setup_version("invitation", version)?;
+        let setup_id = FederationSetupId::from_bytes(take_setup_bytes(&mut remaining, "setup ID")?);
+        let invitation_id = FederationSetupInvitationId::from_bytes(take_setup_bytes(
+            &mut remaining,
+            "invitation ID",
+        )?);
+        let member_id = MemberId::new(u16::from_be_bytes(take_setup_bytes(
+            &mut remaining,
+            "member ID",
+        )?))?;
+        let coordinator_url = String::from_utf8(take_length_prefixed(&mut remaining, "URL")?)
+            .map_err(|_| invalid("setup invitation URL is not UTF-8"))?;
+        let coordinator_url = MintUrl::from_str(&coordinator_url)
+            .map_err(|error| invalid(format!("invalid setup invitation URL: {error}")))?;
+        let coordinator_identity = FederationSetupCoordinatorPublicKey::new(
+            PublicKey::from_slice(&take_setup_bytes::<33>(
+                &mut remaining,
+                "coordinator identity",
+            )?)
+            .map_err(|error| invalid(format!("invalid coordinator identity: {error}")))?,
+        )?;
+        let expires_at_unix = u64::from_be_bytes(take_setup_bytes(&mut remaining, "expiry")?);
+        let capability_bytes = take_setup_bytes(&mut remaining, "capability")?;
+        let capability = FederationSetupInvitationCapability::from_bytes(capability_bytes)?;
+        let checksum = take_setup_bytes::<6>(&mut remaining, "checksum")?;
+        if !remaining.is_empty() {
+            return Err(invalid("setup invitation contains trailing bytes"));
+        }
+        let public_length = decoded.len() - FEDERATION_SETUP_INVITATION_CAPABILITY_BYTES - 6;
+        let expected_checksum = invitation_checksum(&decoded[..public_length], capability_bytes)?;
+        if checksum != expected_checksum {
+            return Err(invalid("setup invitation checksum mismatch"));
+        }
+        let invitation = Self {
+            version,
+            setup_id,
+            invitation_id,
+            member_id,
+            coordinator_url,
+            coordinator_identity,
+            expires_at_unix,
+            capability,
+        };
+        let validation_time = invitation.expires_at_unix.saturating_sub(1);
+        let url_policy = match invitation
+            .coordinator_url
+            .to_string()
+            .starts_with("http://")
+        {
+            true => FederationSetupUrlPolicy::AllowInsecureLocalhost,
+            false => FederationSetupUrlPolicy::RequireHttps,
+        };
+        invitation.validate(validation_time, url_policy)?;
+        Ok(invitation)
     }
 }
 
@@ -1760,6 +1877,35 @@ fn invalid(reason: impl Into<String>) -> FederationError {
     FederationError::InvalidSetup {
         reason: reason.into(),
     }
+}
+
+fn invitation_checksum(public: &[u8], capability: [u8; 32]) -> Result<[u8; 6]> {
+    let public = length_prefixed(public)?;
+    let hash = hash_transcript(INVITATION_CHECKSUM_DOMAIN, &[&public, &capability]);
+    hash[..6]
+        .try_into()
+        .map_err(|_| invalid("setup invitation checksum length is invalid"))
+}
+
+fn take_setup_bytes<const N: usize>(input: &mut &[u8], field: &'static str) -> Result<[u8; N]> {
+    if input.len() < N {
+        return Err(invalid(format!("setup invitation {field} is truncated")));
+    }
+    let (value, remaining) = input.split_at(N);
+    *input = remaining;
+    value
+        .try_into()
+        .map_err(|_| invalid(format!("setup invitation {field} has an invalid length")))
+}
+
+fn take_length_prefixed(input: &mut &[u8], field: &'static str) -> Result<Vec<u8>> {
+    let length = u32::from_be_bytes(take_setup_bytes(input, field)?) as usize;
+    if length > input.len() {
+        return Err(invalid(format!("setup invitation {field} is truncated")));
+    }
+    let (value, remaining) = input.split_at(length);
+    *input = remaining;
+    Ok(value.to_vec())
 }
 
 fn append_string(output: &mut Vec<u8>, value: &str) -> Result<()> {

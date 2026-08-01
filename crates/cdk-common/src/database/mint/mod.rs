@@ -1127,6 +1127,13 @@ pub trait FederationSetupTransaction {
         updated: &FederationSetupInvitationRecord,
     ) -> Result<(), Self::Err>;
 
+    /// Atomically expire one unconsumed invitation and persist its replacement.
+    async fn replace_federation_setup_invitation(
+        &mut self,
+        expected: &FederationSetupInvitationRecord,
+        replacement: &FederationSetupInvitationRecord,
+    ) -> Result<(), Self::Err>;
+
     /// Persist one signed enrollment exactly once per setup member and invitation.
     async fn add_federation_setup_enrollment(
         &mut self,
@@ -1192,6 +1199,36 @@ pub trait FederationSetupTransaction {
             .await
     }
 
+    /// Atomically persist the local signed enrollment and advance to enrolled.
+    async fn record_federation_setup_enrollment(
+        &mut self,
+        expected: &FederationSetupSession,
+        updated: &FederationSetupSession,
+        enrollment: &FederationSetupEnrollment,
+    ) -> Result<(), Self::Err> {
+        expected
+            .validate_transition_to(updated)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        enrollment
+            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        if expected.participant_phase != FederationSetupParticipantPhase::IdentityCreated
+            || updated.participant_phase != FederationSetupParticipantPhase::Enrolled
+            || expected.setup_id != enrollment.setup_id
+            || expected.local_role.member_id() != enrollment.member_id
+        {
+            return Err(Self::Err::from(Error::Federation(
+                crate::federation::FederationError::InvalidSetup {
+                    reason: "setup enrollment does not match the local enrollment transition"
+                        .to_string(),
+                },
+            )));
+        }
+        self.add_federation_setup_enrollment(enrollment).await?;
+        self.transition_federation_setup_session(expected, updated)
+            .await
+    }
+
     /// Atomically persist an immutable proposal and advance coordinator state.
     async fn publish_federation_setup_proposal(
         &mut self,
@@ -1216,6 +1253,38 @@ pub trait FederationSetupTransaction {
                 crate::federation::FederationError::InvalidSetup {
                     reason: "setup proposal does not match the coordinator publication transition"
                         .to_string(),
+                },
+            )));
+        }
+        self.add_federation_setup_proposal(proposal).await?;
+        self.transition_federation_setup_session(expected, updated)
+            .await
+    }
+
+    /// Atomically persist the exact proposal reviewed by this local member.
+    async fn review_federation_setup_proposal(
+        &mut self,
+        expected: &FederationSetupSession,
+        updated: &FederationSetupSession,
+        proposal: &FederationSetupProposal,
+    ) -> Result<(), Self::Err> {
+        expected
+            .validate_transition_to(updated)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        proposal
+            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        if expected.participant_phase != FederationSetupParticipantPhase::Enrolled
+            || updated.participant_phase != FederationSetupParticipantPhase::ProposalReviewed
+            || expected.setup_id != proposal.body.setup_id
+            || !proposal
+                .body
+                .enrollments
+                .contains_key(&expected.local_role.member_id())
+        {
+            return Err(Self::Err::from(Error::Federation(
+                crate::federation::FederationError::InvalidSetup {
+                    reason: "setup proposal does not match the local review transition".to_string(),
                 },
             )));
         }

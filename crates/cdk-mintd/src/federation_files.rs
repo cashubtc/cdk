@@ -1,9 +1,11 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{bail, Context, Result};
+
+const MAX_PROTECTED_FEDERATION_FILE_BYTES: u64 = 1024 * 1024;
 
 #[cfg(unix)]
 static PRIVATE_FILE_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -39,6 +41,9 @@ pub(crate) fn write_text_file(path: &Path, contents: &str, force: bool) -> Resul
 }
 
 pub(crate) fn write_private_text_file(path: &Path, contents: &str, force: bool) -> Result<()> {
+    if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_PROTECTED_FEDERATION_FILE_BYTES {
+        bail!("protected federation output exceeds the federation file size limit");
+    }
     if path.exists() && !force {
         bail!(
             "{} already exists; pass --force to overwrite generated federation material",
@@ -77,6 +82,60 @@ pub(crate) fn write_private_text_file(path: &Path, contents: &str, force: bool) 
     }
 
     write_private_file_contents(path, contents, !force)
+}
+
+pub(crate) fn read_private_json_file<T>(path: &Path, label: &str) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let mut file = open_protected_file(path, label)?;
+    let mut contents = Vec::new();
+    Read::by_ref(&mut file)
+        .take(MAX_PROTECTED_FEDERATION_FILE_BYTES + 1)
+        .read_to_end(&mut contents)
+        .with_context(|| format!("failed to read protected {label}"))?;
+    if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_PROTECTED_FEDERATION_FILE_BYTES {
+        bail!("protected {label} exceeds the federation file size limit");
+    }
+    serde_json::from_slice(&contents).with_context(|| format!("failed to parse protected {label}"))
+}
+
+pub(crate) fn read_private_text_file(path: &Path, label: &str) -> Result<String> {
+    let mut file = open_protected_file(path, label)?;
+    let mut contents = String::new();
+    Read::by_ref(&mut file)
+        .take(MAX_PROTECTED_FEDERATION_FILE_BYTES + 1)
+        .read_to_string(&mut contents)
+        .with_context(|| format!("failed to read protected {label}"))?;
+    if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_PROTECTED_FEDERATION_FILE_BYTES {
+        bail!("protected {label} exceeds the federation file size limit");
+    }
+    Ok(contents)
+}
+
+fn open_protected_file(path: &Path, label: &str) -> Result<std::fs::File> {
+    let symlink_metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect protected {label}"))?;
+    if symlink_metadata.file_type().is_symlink() || !symlink_metadata.file_type().is_file() {
+        bail!("protected {label} must be a regular non-symlink file");
+    }
+    let file =
+        std::fs::File::open(path).with_context(|| format!("failed to open protected {label}"))?;
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("failed to inspect opened protected {label}"))?;
+    if metadata.len() > MAX_PROTECTED_FEDERATION_FILE_BYTES {
+        bail!("protected {label} exceeds the federation file size limit");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if metadata.permissions().mode() & 0o077 != 0 {
+            bail!("protected {label} permissions allow group or other access");
+        }
+    }
+    Ok(file)
 }
 
 fn write_private_file_contents(path: &Path, contents: &str, create_new: bool) -> Result<()> {

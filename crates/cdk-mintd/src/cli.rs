@@ -356,6 +356,8 @@ pub enum FederationCommand {
     DkgStatus(FederationDkgStatusArgs),
     /// Inspect federation config material without printing member secrets.
     Inspect(FederationInspectArgs),
+    /// Create or join a restartable multi-operator federation setup.
+    Setup(FederationSetupArgs),
     /// Generate a fake BOLT11 invoice for local fakewallet smokes.
     #[cfg(feature = "fakewallet")]
     FakeInvoice(FederationFakeInvoiceArgs),
@@ -381,6 +383,181 @@ pub enum FederationCommand {
     /// Retry exactly one accepted Bark action.
     #[cfg(feature = "federation-bark")]
     BarkRetry(FederationBarkRetryArgs),
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Args)]
+pub struct FederationSetupArgs {
+    #[command(subcommand)]
+    pub command: FederationSetupCommand,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Subcommand)]
+pub enum FederationSetupCommand {
+    /// Create a setup and protected invitations for every joining member.
+    Create(FederationSetupCreateArgs),
+    /// Issue or explicitly replace one protected invitation.
+    Invite(FederationSetupInviteArgs),
+    /// Join a setup using a protected invitation file.
+    Join(FederationSetupJoinArgs),
+    /// Freeze the complete enrollment and policy set into one proposal.
+    Propose(FederationSetupConfigArgs),
+    /// Review the exact proposal that this member may approve.
+    Review(FederationSetupReviewArgs),
+    /// Approve exactly one previously reviewed proposal hash.
+    Approve(FederationSetupApproveArgs),
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationSetupCreateArgs {
+    /// Protected local setup config path.
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Directory for protected local identity and invitation files.
+    #[arg(long)]
+    pub state_dir: PathBuf,
+    /// SQLite database path for restartable setup state.
+    #[arg(long)]
+    pub database: PathBuf,
+    /// Number of fixed federation members.
+    #[arg(long)]
+    pub members: u16,
+    /// BLS signature threshold.
+    #[arg(long)]
+    pub threshold: u16,
+    /// Bitcoin network committed by the setup proposal.
+    #[arg(long, value_enum)]
+    pub network: FederationSetupNetworkArg,
+    /// Creator's wallet-facing Cashu URL.
+    #[arg(long)]
+    pub public_mint_url: String,
+    /// Creator's private federation API URL.
+    #[arg(long)]
+    pub federation_api_url: String,
+    /// Setup-only coordinator URL embedded in invitations.
+    #[arg(long)]
+    pub coordinator_url: String,
+    /// Matching member observations required for payment state.
+    #[arg(long)]
+    pub payment_observation_threshold: Option<u16>,
+    /// Invitation validity in seconds.
+    #[arg(long, default_value_t = 86_400)]
+    pub invitation_lifetime_seconds: u64,
+    /// Currency unit for the first BLS keyset.
+    #[arg(long, default_value = "sat")]
+    pub unit: String,
+    /// Comma-separated denominations for the first BLS keyset.
+    #[arg(long, value_delimiter = ',', default_value = "1,2,4,8,16,32,64,128")]
+    pub amounts: Vec<u64>,
+    /// Input fee in parts per thousand for the first BLS keyset.
+    #[arg(long, default_value_t = 0)]
+    pub input_fee_ppk: u64,
+    /// Optional final expiry timestamp for the first BLS keyset.
+    #[arg(long)]
+    pub final_expiry: Option<u64>,
+    /// Initial reusable FROST root epoch.
+    #[arg(long, default_value_t = 1)]
+    pub frost_root_key_epoch: u64,
+    /// Initial CDK on-chain application-key epoch.
+    #[arg(long, default_value_t = 1)]
+    pub frost_application_key_epoch: u64,
+    /// Required confirmations for federated on-chain transactions.
+    #[arg(long, default_value_t = 1)]
+    pub frost_minimum_confirmations: u32,
+    /// Consensus transaction fee-policy version.
+    #[arg(long, default_value_t = 1)]
+    pub frost_fee_policy_version: u16,
+    /// Permit plain HTTP only when every configured URL is localhost.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub allow_insecure_localhost: bool,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationSetupInviteArgs {
+    /// Protected local setup config path.
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Member slot receiving the invitation.
+    #[arg(long)]
+    pub member: u16,
+    /// Protected destination for the invitation credential.
+    #[arg(long)]
+    pub output: PathBuf,
+    /// Expire an existing unconsumed invitation for this slot.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub replace: bool,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationSetupJoinArgs {
+    /// Protected invitation credential file received from the creator.
+    #[arg(long)]
+    pub invitation_file: PathBuf,
+    /// Protected local setup config path.
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Directory for this operator's protected local identity.
+    #[arg(long)]
+    pub state_dir: PathBuf,
+    /// SQLite database path for restartable setup state.
+    #[arg(long)]
+    pub database: PathBuf,
+    /// This member's wallet-facing Cashu URL.
+    #[arg(long)]
+    pub public_mint_url: String,
+    /// This member's private federation API URL.
+    #[arg(long)]
+    pub federation_api_url: String,
+    /// Permit plain HTTP only when every configured URL is localhost.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub allow_insecure_localhost: bool,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationSetupConfigArgs {
+    /// Protected local setup config path.
+    #[arg(long)]
+    pub config: PathBuf,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationSetupReviewArgs {
+    /// Protected local setup config path.
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Print the bounded stable machine-readable review document.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub json: bool,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Args)]
+pub struct FederationSetupApproveArgs {
+    /// Protected local setup config path.
+    #[arg(long)]
+    pub config: PathBuf,
+    /// Exact proposal hash displayed by `setup review`.
+    #[arg(long)]
+    pub proposal_hash: String,
+}
+
+#[cfg(feature = "federation")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FederationSetupNetworkArg {
+    /// Bitcoin mainnet.
+    Bitcoin,
+    /// Bitcoin testnet.
+    Testnet,
+    /// Bitcoin signet.
+    Signet,
+    /// Bitcoin regtest.
+    Regtest,
 }
 
 #[cfg(feature = "federation")]
@@ -897,6 +1074,109 @@ pub struct FederationBarkRetryArgs {
 #[cfg(all(test, feature = "federation"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_multi_operator_setup_commands_without_invitation_in_argv() {
+        let create = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "setup",
+            "create",
+            "--config",
+            "operator/setup.json",
+            "--state-dir",
+            "operator",
+            "--database",
+            "operator/mint.sqlite",
+            "--members",
+            "5",
+            "--threshold",
+            "3",
+            "--network",
+            "bitcoin",
+            "--public-mint-url",
+            "https://mint.example",
+            "--federation-api-url",
+            "https://peer.example",
+            "--coordinator-url",
+            "https://setup.example",
+        ])
+        .expect("setup create command parses");
+        let Some(CliCommand::Federation(create)) = create.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            create.command,
+            FederationCommand::Setup(FederationSetupArgs {
+                command: FederationSetupCommand::Create(FederationSetupCreateArgs {
+                    members: 5,
+                    threshold: 3,
+                    ..
+                })
+            })
+        ));
+
+        let join = CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "setup",
+            "join",
+            "--invitation-file",
+            "operator/member.invite",
+            "--config",
+            "operator/setup.json",
+            "--state-dir",
+            "operator",
+            "--database",
+            "operator/mint.sqlite",
+            "--public-mint-url",
+            "https://mint.example",
+            "--federation-api-url",
+            "https://peer.example",
+        ])
+        .expect("setup join command parses");
+        let Some(CliCommand::Federation(join)) = join.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            join.command,
+            FederationCommand::Setup(FederationSetupArgs {
+                command: FederationSetupCommand::Join(_)
+            })
+        ));
+
+        assert!(CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "setup",
+            "join",
+            "cashufedsetupAsecret-must-not-be-an-argument",
+        ])
+        .is_err());
+
+        for command in ["propose", "review"] {
+            CLIArgs::try_parse_from([
+                "cdk-mintd",
+                "federation",
+                "setup",
+                command,
+                "--config",
+                "operator/setup.json",
+            ])
+            .expect("setup config command parses");
+        }
+        CLIArgs::try_parse_from([
+            "cdk-mintd",
+            "federation",
+            "setup",
+            "approve",
+            "--config",
+            "operator/setup.json",
+            "--proposal-hash",
+            &"11".repeat(32),
+        ])
+        .expect("setup approval command parses");
+    }
 
     #[test]
     fn parses_production_dkg_setup_commands() {

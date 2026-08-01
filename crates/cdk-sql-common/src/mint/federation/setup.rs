@@ -270,6 +270,49 @@ where
         Ok(())
     }
 
+    async fn replace_federation_setup_invitation(
+        &mut self,
+        expected: &FederationSetupInvitationRecord,
+        replacement: &FederationSetupInvitationRecord,
+    ) -> Result<(), Self::Err> {
+        expected.validate_replacement(replacement)?;
+        let expired = expected.expired()?;
+        let rows_affected = query(
+            r#"
+            UPDATE federation_setup_invitations
+            SET invitation_state = :invitation_state,
+                payload_json = :expired_payload_json
+            WHERE setup_id = :setup_id
+              AND invitation_id = :invitation_id
+              AND (payload_json = :expected_payload_json OR payload_json = :expired_payload_json)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM federation_setup_enrollments
+                  WHERE setup_id = :setup_id AND member_id = :member_id
+              )
+            "#,
+        )?
+        .bind("setup_id", expected.setup_id.to_string())
+        .bind("invitation_id", expected.invitation_id.to_string())
+        .bind("member_id", i64::from(expected.member_id.get()))
+        .bind(
+            "invitation_state",
+            invitation_state_to_str(FederationSetupInvitationState::Expired),
+        )
+        .bind("expected_payload_json", setup_json(expected)?)
+        .bind("expired_payload_json", setup_json(&expired)?)
+        .execute(&self.inner)
+        .await?;
+        if rows_affected == 0 {
+            return Err(setup_conflict(
+                "invitation replacement",
+                expected.setup_id,
+                expected.member_id.to_string(),
+            ));
+        }
+        self.add_federation_setup_invitation(replacement).await
+    }
+
     async fn add_federation_setup_enrollment(
         &mut self,
         enrollment: &FederationSetupEnrollment,

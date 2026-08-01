@@ -108,6 +108,8 @@ mod federation_inspect;
 mod federation_payment_observations;
 #[cfg(all(feature = "federation", any(test, feature = "federation-test-utils")))]
 mod federation_setup;
+#[cfg(feature = "federation")]
+mod federation_setup_command;
 #[cfg(all(feature = "federation", feature = "fakewallet", feature = "sqlite"))]
 mod federation_smoke;
 #[cfg(feature = "federation")]
@@ -179,6 +181,9 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 }
                 cli::FederationCommand::Inspect(inspect) => {
                     federation_inspect::run_inspect_command(args, inspect)?;
+                }
+                cli::FederationCommand::Setup(setup) => {
+                    federation_setup_command::run_setup_command(setup).await?;
                 }
                 #[cfg(feature = "fakewallet")]
                 cli::FederationCommand::FakeInvoice(fake_invoice) => {

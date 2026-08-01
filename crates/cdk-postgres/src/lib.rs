@@ -592,6 +592,18 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_setup_invitation_replacement() {
+        cdk_common::database::mint::test::federation_setup_invitation_replacement(
+            provide_mint_db(unique_federation_test_id(
+                "federation_setup_invitation_replacement",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_persistence() {
         cdk_common::database::mint::test::federation_journal_persistence(
             provide_mint_db(unique_federation_test_id("federation_journal_persistence")).await,
