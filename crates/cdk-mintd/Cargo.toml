@@ -27,6 +27,7 @@ sqlcipher = ["sqlite", "cdk-sqlite/sqlcipher"]
 redis = ["cdk-axum/redis"]
 prometheus = ["cdk/prometheus", "dep:cdk-prometheus", "cdk-sqlite?/prometheus", "cdk-axum/prometheus"]
 info-page = ["cdk-axum/info-page"]
+iroh = ["cdk/iroh", "cdk-axum/iroh", "dep:cdk-iroh"]
 federation = ["bdk", "cdk/federation", "cdk/wallet", "cdk-common/federation", "cdk-axum/federation", "cdk-sqlite?/federation", "cdk-sqlite?/wallet", "cdk-postgres?/federation"]
 # Federated Bark is deliberately separate so ordinary federation builds do not
 # resolve or compile the Bark dependency graph.
@@ -42,6 +43,7 @@ cdk = { workspace = true, features = [
     "mint",
 ] }
 cdk-http-client = { workspace = true, features = ["bitreq"] }
+cdk-iroh = { workspace = true, optional = true }
 cdk-sqlite = { workspace = true, features = [
     "mint"
 ], optional = true  }
@@ -72,6 +74,7 @@ thiserror.workspace = true
 toml = { workspace = true, features = ["parse"] }
 bip39.workspace = true
 url.workspace = true
+zeroize.workspace = true
 tower-http = { workspace = true, features = ["compression-full", "decompression-full"] }
 tower.workspace = true
 home.workspace = true

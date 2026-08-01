@@ -1790,6 +1790,7 @@ dependencies = [
  "cdk-fake-wallet",
  "cdk-frost",
  "cdk-http-client",
+ "cdk-iroh",
  "cdk-ldk-node",
  "cdk-lnd",
  "cdk-mint-rpc",
@@ -1817,6 +1818,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "url",
+ "zeroize",
 ]
 
 [[package]]

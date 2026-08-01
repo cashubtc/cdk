@@ -4,12 +4,14 @@ use std::{
     collections::HashMap,
     error::Error as StdError,
     fmt, io,
+    panic::AssertUnwindSafe,
     pin::Pin,
     sync::{atomic::Ordering, Arc, Mutex as StdMutex},
     task::{Context, Poll},
 };
 
 use axum::body::Body;
+use futures::FutureExt;
 use http_body_util::Limited;
 use hyper::{body::Incoming, header, Request, Response, StatusCode};
 use hyper_util::{rt::TokioIo, service::TowerToHyperService};
@@ -37,6 +39,7 @@ pub struct IrohConnectionInfo {
 pub struct IrohServer {
     node: IrohNode,
     cancellation: CancellationToken,
+    finished: CancellationToken,
     task: JoinHandle<Result<(), Error>>,
 }
 
@@ -55,10 +58,22 @@ impl IrohServer {
         B::Error: Into<BoxError>,
     {
         let cancellation = CancellationToken::new();
-        let task = tokio::spawn(accept_loop(node.clone(), service, cancellation.clone()));
+        let finished = CancellationToken::new();
+        let task_finished = finished.clone();
+        let task_node = node.clone();
+        let task_cancellation = cancellation.clone();
+        let task = tokio::spawn(async move {
+            let result = AssertUnwindSafe(accept_loop(task_node, service, task_cancellation))
+                .catch_unwind()
+                .await
+                .unwrap_or(Err(Error::Server));
+            task_finished.cancel();
+            result
+        });
         Self {
             node,
             cancellation,
+            finished,
             task,
         }
     }
@@ -66,6 +81,11 @@ impl IrohServer {
     /// Returns the server's endpoint ID.
     pub fn endpoint_id(&self) -> EndpointId {
         self.node.endpoint_id()
+    }
+
+    /// Resolves when the supervised accept loop exits for any reason.
+    pub async fn finished(&self) {
+        self.finished.cancelled().await;
     }
 
     /// Requests graceful drain, closes the endpoint, and waits for all supervised tasks.

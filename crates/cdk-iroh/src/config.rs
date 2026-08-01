@@ -34,6 +34,13 @@ impl fmt::Debug for DiscoveryMode {
     }
 }
 
+impl DiscoveryMode {
+    /// Uses only operator-provided relay servers and explicit endpoint tickets.
+    pub fn custom(relay_urls: Vec<RelayUrl>) -> Self {
+        Self::Custom { relay_urls }
+    }
+}
+
 /// Timeouts applied at Iroh transport boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IrohTimeouts {

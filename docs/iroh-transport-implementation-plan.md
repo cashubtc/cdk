@@ -1,8 +1,8 @@
 # Iroh transport for CDK: implementation plan
 
 > **Status — implementation in progress 2026-08-01:** This document is the
-> implementation and review contract for adding Iroh beside HTTP(S). Milestone
-> 0 is complete. It does not authorize an
+> implementation and review contract for adding Iroh beside HTTP(S).
+> Milestones 0 through 3 are complete. It does not authorize an
 > endpoint-by-endpoint reimplementation of the Cashu API. If the generic
 > HTTP/WebSocket-over-Iroh bridge described below proves infeasible, stop and
 > amend this plan before widening the integration surface.
@@ -851,18 +851,78 @@ Verification evidence:
 
 ### Milestone 3 — mint listener and operator configuration
 
-- [ ] Add protected persistent endpoint-key management.
-- [ ] Add discovery, relay, ticket, bind, limit, and timeout configuration.
-- [ ] Hand the final layered router to `IrohServer`.
-- [ ] Supervise HTTP and Iroh listeners together with graceful shutdown.
-- [ ] Support HTTP-only, Iroh-only, and dual-listener mintd startup.
-- [ ] Validate configured Iroh URLs against the derived endpoint ID.
-- [ ] Document endpoint ticket export/import and N0 versus self-hosted
+- [x] Add protected persistent endpoint-key management.
+- [x] Add discovery, relay, ticket, bind, limit, and timeout configuration.
+- [x] Hand the final layered router to `IrohServer`.
+- [x] Supervise HTTP and Iroh listeners together with graceful shutdown.
+- [x] Support HTTP-only, Iroh-only, and dual-listener mintd startup.
+- [x] Validate configured Iroh URLs against the derived endpoint ID.
+- [x] Document endpoint ticket export/import and N0 versus self-hosted
   discovery.
 
 **Gate:** The same mint state is reachable over HTTPS and Iroh, custom routes
 and middleware behave identically, and Iroh-only startup uses no certificate or
 DNS name.
+
+**Progress:** complete in the Milestone 3 commit. The native `cdk-mintd/iroh`
+feature now propagates through `cdk-axum` and `cdk`, while feature-disabled
+mintd retains its original dependency graph and HTTP listener behavior. Mintd
+creates one persistent Iroh endpoint before database, mint, or federation
+workers start. The default 32-byte endpoint secret is created with protected
+directory/file permissions and create-new semantics; reload rejects weak
+permissions, corruption, and symlinks. `cdk-mintd iroh init` lets an operator
+create or inspect the stable endpoint identity before placing the resulting
+`iroh://<endpoint-id>` in configuration. Startup rejects a mismatched URL and
+atomically exports the current standard Iroh endpoint ticket without logging
+the key, ticket, relay addresses, or configured paths.
+
+The optional `[iroh]` section and matching environment variables expose N0,
+static, or custom-relay discovery, imported current
+`iroh_tickets::endpoint::EndpointTicket` strings, a UDP bind address, all
+bridge timeouts, and every connection/stream/header/body limit. Zero timeouts,
+invalid tickets/relays, an empty custom-relay set, and configurations with no
+public listener fail closed. Iroh-only mode requires an Iroh public URL and
+does not parse or bind the TCP listener. The ordinary HTTP listener remains
+enabled by default.
+
+The final router is cloned only after `/v1`, auth, federation routes, body
+limits, compression, tracing, and caller-supplied routers have all been
+assembled. A small listener supervisor starts HTTP, Iroh, or both, observes an
+unexpected listener exit, broadcasts shutdown to auxiliary services, drains
+both listeners, and joins their tasks before mint/RPC teardown. The live gate
+test reaches a custom layered route in all three modes and observes one shared
+atomic state advance from the HTTP request to the Iroh request in dual mode.
+The repository's HTTP listener remains plain TCP behind any existing HTTPS
+terminator, so the unchanged HTTPS/TLS behavior stays owned outside this
+listener refactor.
+
+Verification evidence:
+
+- `cargo test -p cdk-iroh --offline` passes 2 unit, 3 bridge, and 9 transport
+  conformance tests plus doc tests;
+- `cargo test -p cdk --no-default-features --features wallet,iroh --lib
+  --offline` passes all 335 Iroh-enabled wallet tests;
+- `cargo test -p cdk-mintd --lib --offline -- --test-threads=1` passes all 55
+  feature-disabled mintd tests;
+- `cargo test -p cdk-mintd --features iroh --lib --offline --
+  --test-threads=1` passes all 63 tests, including protected key restart,
+  current ticket export, CLI parsing, URL mismatch, and the three live
+  listener modes;
+- `cargo test -p cdk --lib --offline` passes all 542 default CDK tests;
+- `cargo test -p cdk-mintd --features federation --lib --offline --
+  --test-threads=1` passes all 212 pre-Iroh federation tests, including the
+  independent multi-operator HTTP setup/certification path;
+- `cargo check -p cdk-mintd --features federation,iroh --offline` passes,
+  proving the next mixed-transport integration feature set compiles before
+  Milestone 4 changes it;
+- `cargo clippy -p cdk-iroh -p cdk-mintd -p cdk-axum --features
+  cdk-mintd/iroh,cdk-axum/iroh --lib --offline -- -D warnings -A
+  clippy::manual_is_multiple_of` passes. The narrow allowance remains for the
+  unrelated pre-existing `cdk-sql-common` warning on the newer host Clippy;
+  and
+- the exact current dependency pins remain `iroh = 1.0.3` and
+  `iroh-tickets = 1.0.0`, under the already-verified Rust 1.91 MSRV gate from
+  Milestones 0 and 2.
 
 ### Milestone 4 — heterogeneous federation and DKG
 

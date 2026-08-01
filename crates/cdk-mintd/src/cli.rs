@@ -58,9 +58,13 @@ pub struct CLIArgs {
 pub enum Commands {
     #[cfg(feature = "federation")]
     /// Generate or inspect federation setup material.
+    #[cfg(feature = "federation")]
     Federation(FederationArgs),
     /// Manage the database-backed mintd configuration.
     Config(ConfigArgs),
+    /// Initialize or inspect the mint Iroh endpoint identity.
+    #[cfg(feature = "iroh")]
+    Iroh(IrohArgs),
 }
 
 /// Arguments for database-backed configuration management.
@@ -328,6 +332,28 @@ mod tests {
         let args = CLIArgs::try_parse_from(["cdk-mintd"]).expect("daemon arguments should parse");
         assert!(args.command.is_none());
     }
+}
+
+#[cfg(feature = "iroh")]
+#[derive(Debug, Args)]
+pub struct IrohArgs {
+    #[command(subcommand)]
+    pub command: IrohCommand,
+}
+
+#[cfg(feature = "iroh")]
+#[derive(Debug, Subcommand)]
+pub enum IrohCommand {
+    /// Create or load the protected endpoint key and print its stable public URL.
+    Init(IrohInitArgs),
+}
+
+#[cfg(feature = "iroh")]
+#[derive(Debug, Clone, Args)]
+pub struct IrohInitArgs {
+    /// Protected endpoint-key path; defaults below the mint work directory.
+    #[arg(long)]
+    pub secret_key_file: Option<PathBuf>,
 }
 
 #[cfg(feature = "federation")]
@@ -1917,6 +1943,27 @@ mod tests {
             FederationCommand::BarkRetry(FederationBarkRetryArgs {
                 acknowledge_bark_side_effects: true,
                 ..
+            })
+        ));
+    }
+}
+
+#[cfg(all(test, feature = "iroh"))]
+mod iroh_tests {
+    use super::*;
+
+    #[test]
+    fn parses_iroh_identity_initialization_without_secret_material_in_argv() {
+        let args =
+            CLIArgs::try_parse_from(["cdk-mintd", "--work-dir", "mint-state", "iroh", "init"])
+                .expect("Iroh init command parses");
+        let Some(CliCommand::Iroh(iroh)) = args.command else {
+            panic!("expected Iroh command");
+        };
+        assert!(matches!(
+            iroh.command,
+            IrohCommand::Init(IrohInitArgs {
+                secret_key_file: None
             })
         ));
     }

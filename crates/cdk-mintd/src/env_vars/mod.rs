@@ -24,6 +24,8 @@ mod fake_wallet;
 mod federation;
 #[cfg(feature = "grpc-processor")]
 mod grpc_processor;
+#[cfg(feature = "iroh")]
+mod iroh;
 #[cfg(feature = "ldk-node")]
 mod ldk_node;
 #[cfg(feature = "lnd")]
@@ -99,6 +101,10 @@ impl Settings {
         self.signatory = Some(self.signatory.clone().unwrap_or_default().from_env());
 
         self.mint_info = self.mint_info.clone().from_env();
+        #[cfg(feature = "iroh")]
+        if self.iroh.is_some() || iroh::iroh_env_configured() {
+            self.iroh = Some(self.iroh.clone().unwrap_or_default().apply_env()?);
+        }
         // CDK_MINTD_PAYMENT_BACKEND_* env vars only apply when there is exactly
         // one configured payment backend entry. Multi-backend setups must
         // choose units and backends in the config file so env overrides do not

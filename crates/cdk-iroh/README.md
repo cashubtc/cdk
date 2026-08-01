@@ -51,9 +51,10 @@ server.close().await;
 ```
 
 Production servers should pass a securely loaded `SecretKey` to
-`IrohNode::persistent`. Persistent key-file ownership and `cdk-mintd`
-configuration are intentionally added in the listener milestone; this crate
-does not read secret files itself.
+`IrohNode::persistent`. `cdk-mintd` owns protected persistent key files,
+operator configuration, endpoint-ticket export, URL validation, and listener
+supervision; this transport-only crate deliberately does not read operator
+files itself.
 
 The crate pins stable Iroh 1.0.3 and `iroh-tickets` 1.0.0. This requires CDK's
 Rust 1.91 MSRV policy change; see `docs/dependency-decision.md` for the rejected

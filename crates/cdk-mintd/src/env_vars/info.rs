@@ -15,6 +15,12 @@ impl Info {
             self.url = url;
         }
 
+        if let Ok(http_enabled) = env::var(ENV_HTTP_ENABLED) {
+            if let Ok(http_enabled) = http_enabled.parse() {
+                self.http_enabled = http_enabled;
+            }
+        }
+
         if let Ok(host) = env::var(ENV_LISTEN_HOST) {
             self.listen_host = host;
         }
