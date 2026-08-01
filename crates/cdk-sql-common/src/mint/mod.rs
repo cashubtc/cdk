@@ -257,14 +257,14 @@ mod migration_tests {
             historical_migration_digest("postgres"),
             (
                 30,
-                "451014e9fd14ed2d0eff78896d2b89afecb856b0eacb28bb45c412f1c42b9e42".to_string(),
+                "e6b33aa8a6cae15af577300bb3eb854e076908852d3b4dfa802451dd3d40f78d".to_string(),
             )
         );
         assert_eq!(
             historical_migration_digest("sqlite"),
             (
                 53,
-                "bd5b556a409d37639f1315c475d9cd5467355da899f9ef73ba0ada89ff9a7f0d".to_string(),
+                "f6da2daca2401210bb40ae967db5b4c14cef5df1985272d9d61bd3302259131b".to_string(),
             )
         );
     }

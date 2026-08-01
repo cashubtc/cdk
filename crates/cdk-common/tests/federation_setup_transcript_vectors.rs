@@ -389,7 +389,7 @@ fn build_production_vector(expected: &ExpectedVector) -> ExpectedVector {
         consensus_threshold: expected.consensus_threshold,
         proposal_canonical_bytes,
         coordinator_public_key: coordinator_identity.to_string(),
-        invitation_capability_hash: hex(invitation_capability_hash),
+        invitation_capability_hash: hex(invitation_capability_hash.to_bytes()),
         invitation_checksum: hex(&invitation_checksum[..6]),
         first_enrollment_signature,
         proposal_hash: manifest.proposal.proposal_hash.to_string(),

@@ -11,10 +11,10 @@ use cdk_common::federation::{
     FederationSetupBitcoinNetwork, FederationSetupCoordinatorPublicKey, FederationSetupEnrollment,
     FederationSetupFrostApplication, FederationSetupFrostPolicy, FederationSetupId,
     FederationSetupInvitation, FederationSetupInvitationCapability, FederationSetupInvitationId,
-    FederationSetupManifest, FederationSetupManifestHash, FederationSetupProposal,
-    FederationSetupProposalBody, FederationSetupProtocolVersions, FederationSetupUrlPolicy,
-    MemberId, ThresholdParams, FEDERATION_MAX_SETUP_URL_BYTES,
-    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+    FederationSetupInvitationRecord, FederationSetupLocalRole, FederationSetupManifest,
+    FederationSetupManifestHash, FederationSetupProposal, FederationSetupProposalBody,
+    FederationSetupProtocolVersions, FederationSetupSession, FederationSetupUrlPolicy, MemberId,
+    ThresholdParams, FEDERATION_MAX_SETUP_URL_BYTES, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
 };
 use cdk_common::mint_url::MintUrl;
 use cdk_common::nuts::nut01::SecretKey;
@@ -274,6 +274,43 @@ fn invitation_validation_is_expiry_aware_and_diagnostics_are_redacted() {
             URL_POLICY,
         )
         .is_err());
+}
+
+#[test]
+fn durable_setup_timestamps_fit_both_sql_backends() {
+    let session = FederationSetupSession::new(
+        setup_id(),
+        FederationSetupLocalRole::Member {
+            member_id: member_id(1),
+        },
+        u64::MAX,
+    );
+    assert_invalid_setup(
+        session.expect_err("oversized session timestamp must fail"),
+        "portable setup persistence range",
+    );
+
+    let invitation = FederationSetupInvitation::new(
+        setup_id(),
+        invitation_id(1),
+        member_id(1),
+        mint_url("https://coordinator.example"),
+        coordinator_identity(),
+        NOW_UNIX + FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+        invitation_capability(),
+        NOW_UNIX,
+        URL_POLICY,
+    )
+    .expect("valid invitation");
+    let mut record = FederationSetupInvitationRecord::from_invitation(&invitation, NOW_UNIX)
+        .expect("valid durable invitation record");
+    record.expires_at_unix = u64::MAX;
+    assert_invalid_setup(
+        record
+            .validate()
+            .expect_err("oversized invitation timestamp must fail"),
+        "portable setup persistence range",
+    );
 }
 
 #[test]

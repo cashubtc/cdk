@@ -559,6 +559,39 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_setup_persistence() {
+        cdk_common::database::mint::test::federation_setup_persistence(
+            provide_mint_db(unique_federation_test_id("federation_setup_persistence")).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_setup_transaction_rollbacks() {
+        cdk_common::database::mint::test::federation_setup_transaction_rollbacks(
+            provide_mint_db(unique_federation_test_id(
+                "federation_setup_transaction_rollbacks",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_setup_concurrent_races() {
+        cdk_common::database::mint::test::federation_setup_concurrent_races(
+            provide_mint_db(unique_federation_test_id(
+                "federation_setup_concurrent_races",
+            ))
+            .await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_persistence() {
         cdk_common::database::mint::test::federation_journal_persistence(
             provide_mint_db(unique_federation_test_id("federation_journal_persistence")).await,
@@ -897,6 +930,14 @@ mod test {
             "federation_dkg_ceremonies",
             "federation_frost_dkg_records",
             "federation_frost_wallet_config",
+            "federation_setup_sessions",
+            "federation_setup_invitations",
+            "federation_setup_enrollments",
+            "federation_setup_proposals",
+            "federation_setup_approval_fences",
+            "federation_setup_approvals",
+            "federation_setup_manifests",
+            "federation_setup_activations",
             "federation_bark_actions",
             "federation_bark_vtxos",
             "federation_bark_derivation_allocations",
@@ -951,6 +992,7 @@ mod test {
             "idx_federation_dkg_activations_member",
             "idx_federation_frost_dkg_records_kind",
             "idx_federation_frost_wallet_config_kind",
+            "idx_federation_setup_invitations_member",
             "idx_federation_bark_actions_phase",
             "idx_federation_bark_vtxos_state",
             "idx_federation_bark_vtxos_reservation",
@@ -1060,6 +1102,7 @@ mod test {
                 "20260713000000_allow_federation_payment_observation_revisions.sql".to_owned(),
                 "20260714000000_chunk_federation_aleph_bft_backups.sql".to_owned(),
                 "20260719000000_create_federation_bark_projection.sql".to_owned(),
+                "20260729000000_index_federation_payment_observation_quotes.sql".to_owned(),
             ]
         );
 

@@ -32,6 +32,8 @@ pub use mint::{DynMintAuthDatabase, MintAuthDatabase, MintAuthTransaction};
 pub use mint::{
     FederationJournalDatabase as MintFederationJournalDatabase,
     FederationJournalTransaction as MintFederationJournalTransaction,
+    FederationSetupDatabase as MintFederationSetupDatabase,
+    FederationSetupTransaction as MintFederationSetupTransaction,
 };
 #[cfg(feature = "wallet")]
 pub use wallet::Database as WalletDatabase;

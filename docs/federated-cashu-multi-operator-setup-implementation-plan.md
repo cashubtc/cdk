@@ -722,18 +722,69 @@ derived-config equality.
 
 ### Milestone 2 — Durable setup storage
 
-- [ ] Add setup persistence and compare-and-set lifecycle APIs to the shared
+- [x] Add setup persistence and compare-and-set lifecycle APIs to the shared
   mint database boundary.
-- [ ] Implement direct final-schema SQLite and PostgreSQL tables and row
+- [x] Implement direct final-schema SQLite and PostgreSQL tables and row
   conversion.
-- [ ] Add exact-replay idempotence and structured conflicts for every record.
-- [ ] Persist the local approval fence before any transmission can occur.
-- [ ] Store only capability hashes and prove plaintext invitation credentials
+- [x] Add exact-replay idempotence and structured conflicts for every record.
+- [x] Persist the local approval fence before any transmission can occur.
+- [x] Store only capability hashes and prove plaintext invitation credentials
   never enter public payloads or diagnostics.
 
 **Tests:** run the complete backend-generic setup persistence suite against
 SQLite and PostgreSQL, including transaction rollback at every multi-write
 boundary and concurrent consumption/approval races.
+
+**Completed 2026-08-01:**
+
+- Added secret-free durable invitation and activation records plus explicit
+  coordinator/participant lifecycle state in
+  `crates/cdk-common/src/federation/setup/persistence.rs`. Every persisted
+  timestamp fits the common signed-64-bit SQL range, lifecycle transitions are
+  forward-only compare-and-set operations, and one transition cannot advance
+  both local lifecycles.
+- Added `FederationSetupTransaction` and `FederationSetupDatabase` to the shared
+  mint database boundary. Causal helpers atomically consume an invitation with
+  its enrollment, publish only from the enrollment-complete coordinator phase,
+  verify an exact signed proposal before persisting the local approval fence,
+  store a certified manifest with its lifecycle transition, and persist an
+  activation reference with the final local transition. Multi-write helpers
+  deliberately write the immutable artifact/fence before their compare-and-set
+  so a failed second write rolls the complete transaction back and the public
+  command has one durable boundary to call before transmitting an approval.
+- Added eight direct final-schema setup tables to the still-undeployed initial
+  federation schema for both SQLite and PostgreSQL. The SQL implementation
+  stores typed lookup/conflict coordinates and bounded JSON records, accepts
+  byte-identical replay, reports `SetupPersistenceConflict` for every divergent
+  record coordinate, and exposes deterministic ordered reads. Migration digest
+  fixtures and fresh-schema table/index assertions were updated to lock the
+  intended final schema; no compatibility migration or legacy setup format was
+  introduced.
+- Added the backend-generic persistence, rollback, and concurrency suite in
+  `crates/cdk-common/src/database/mint/test/federation_setup.rs`. It covers all
+  record classes, exact replay, divergent conflicts, reads, the complete local
+  lifecycle, rollback at invitation/proposal/approval/manifest/activation
+  boundaries, and simultaneous conflicting invitation consumption and approval
+  fencing. It also proves the stored invitation JSON and `Debug` output contain
+  only the capability hash, never the plaintext capability.
+- Verified the complete setup suite against SQLite and a configured local
+  PostgreSQL test database (`3 passed` on each backend), fresh final-schema
+  migrations on both backends (`1 passed` each),
+  `cargo test -p cdk-common --features federation` (`481 passed`, `4 ignored`),
+  `cargo test -p cdk-sql-common --features federation` (`12 passed`), and
+  `cargo test -p cdk-sqlite --features federation` (`175 passed`). Strict
+  Clippy passed for `cdk-common`, `cdk-sql-common`, `cdk-sqlite`, and
+  `cdk-postgres` with federation tests enabled; the federation-disabled
+  `cdk-common` check and `cargo check --workspace --all-targets` also passed.
+  All changed Rust sources passed targeted `rustfmt`; the Milestone 0 note
+  about the unusable workspace-wide format check remains applicable.
+- Local identity generation with protected private-file persistence,
+  invitation replacement, public CLI commands, and the guarantee that those
+  commands call the durable fence before network transmission remain
+  Milestone 3 work. Production HTTPS policy remains at the command/service
+  boundary in Milestones 3 and 4; storage accepts insecure localhost records
+  solely so the specified local integration tests can use the same persistence
+  implementation.
 
 ### Milestone 3 — Local invitation, proposal, and approval commands
 

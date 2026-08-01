@@ -266,3 +266,108 @@ CREATE TABLE federation_frost_wallet_config (
 
 CREATE INDEX idx_federation_frost_wallet_config_kind
 ON federation_frost_wallet_config (record_kind, root_key_epoch, application_id, application_key_epoch);
+
+
+CREATE TABLE federation_setup_sessions (
+    setup_id TEXT PRIMARY KEY NOT NULL,
+    local_role TEXT NOT NULL CHECK (
+        local_role IN ('coordinator', 'member')
+    ),
+    local_member_id BIGINT NOT NULL,
+    coordinator_phase TEXT CHECK (
+        coordinator_phase IS NULL OR coordinator_phase IN (
+            'collecting_enrollments',
+            'proposal_published',
+            'certified',
+            'closed',
+            'aborted'
+        )
+    ),
+    participant_phase TEXT NOT NULL CHECK (
+        participant_phase IN (
+            'identity_created',
+            'enrolled',
+            'proposal_reviewed',
+            'approved',
+            'certified',
+            'dkg_running',
+            'ready_to_activate',
+            'activated',
+            'aborted'
+        )
+    ),
+    created_at_unix BIGINT NOT NULL,
+    updated_at_unix BIGINT NOT NULL,
+    payload_json TEXT NOT NULL,
+    CHECK (
+        (local_role = 'coordinator' AND coordinator_phase IS NOT NULL)
+        OR (local_role = 'member' AND coordinator_phase IS NULL)
+    )
+);
+
+CREATE TABLE federation_setup_invitations (
+    setup_id TEXT NOT NULL,
+    invitation_id TEXT NOT NULL,
+    member_id BIGINT NOT NULL,
+    expires_at_unix BIGINT NOT NULL,
+    capability_hash TEXT NOT NULL,
+    invitation_state TEXT NOT NULL CHECK (
+        invitation_state IN ('available', 'consumed', 'expired')
+    ),
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (setup_id, invitation_id),
+    UNIQUE (setup_id, capability_hash)
+);
+
+CREATE INDEX idx_federation_setup_invitations_member
+ON federation_setup_invitations (setup_id, member_id, invitation_id);
+
+CREATE TABLE federation_setup_enrollments (
+    setup_id TEXT NOT NULL,
+    member_id BIGINT NOT NULL,
+    invitation_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (setup_id, member_id),
+    UNIQUE (setup_id, invitation_id)
+);
+
+CREATE TABLE federation_setup_proposals (
+    setup_id TEXT PRIMARY KEY NOT NULL,
+    proposal_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE federation_setup_approval_fences (
+    setup_id TEXT NOT NULL,
+    member_id BIGINT NOT NULL,
+    proposal_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (setup_id, member_id)
+);
+
+CREATE TABLE federation_setup_approvals (
+    setup_id TEXT NOT NULL,
+    member_id BIGINT NOT NULL,
+    proposal_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (setup_id, member_id)
+);
+
+CREATE TABLE federation_setup_manifests (
+    setup_id TEXT PRIMARY KEY NOT NULL,
+    proposal_hash TEXT NOT NULL,
+    manifest_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE TABLE federation_setup_activations (
+    setup_id TEXT NOT NULL,
+    member_id BIGINT NOT NULL,
+    manifest_hash TEXT NOT NULL,
+    setup_authorization TEXT NOT NULL,
+    federation_id TEXT NOT NULL,
+    final_config_digest TEXT NOT NULL,
+    activated_at_unix BIGINT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (setup_id, member_id)
+);

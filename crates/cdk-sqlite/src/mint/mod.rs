@@ -461,6 +461,33 @@ mod test {
 
     #[cfg(feature = "federation")]
     #[tokio::test]
+    async fn federation_setup_persistence() {
+        cdk_common::database::mint::test::federation_setup_persistence(
+            provide_db("federation_setup_persistence".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_setup_transaction_rollbacks() {
+        cdk_common::database::mint::test::federation_setup_transaction_rollbacks(
+            provide_db("federation_setup_transaction_rollbacks".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
+    async fn federation_setup_concurrent_races() {
+        cdk_common::database::mint::test::federation_setup_concurrent_races(
+            provide_db("federation_setup_concurrent_races".to_string()).await,
+        )
+        .await;
+    }
+
+    #[cfg(feature = "federation")]
+    #[tokio::test]
     async fn federation_journal_persistence() {
         cdk_common::database::mint::test::federation_journal_persistence(
             provide_db("federation_journal_persistence".to_string()).await,
@@ -991,6 +1018,14 @@ mod test {
             "federation_dkg_ceremonies",
             "federation_frost_dkg_records",
             "federation_frost_wallet_config",
+            "federation_setup_sessions",
+            "federation_setup_invitations",
+            "federation_setup_enrollments",
+            "federation_setup_proposals",
+            "federation_setup_approval_fences",
+            "federation_setup_approvals",
+            "federation_setup_manifests",
+            "federation_setup_activations",
             "federation_bark_actions",
             "federation_bark_vtxos",
             "federation_bark_derivation_allocations",

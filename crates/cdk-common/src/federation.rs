@@ -216,13 +216,17 @@ pub use self::recovery::{
     FederationWalletRecoveryStatus,
 };
 pub use self::setup::{
-    FederationSetupApproval, FederationSetupAuthorizationHash, FederationSetupBitcoinNetwork,
+    FederationSetupActivation, FederationSetupApproval, FederationSetupAuthorizationHash,
+    FederationSetupBitcoinNetwork, FederationSetupCoordinatorPhase,
     FederationSetupCoordinatorPublicKey, FederationSetupEnrollment,
     FederationSetupFrostApplication, FederationSetupFrostPolicy, FederationSetupId,
-    FederationSetupInvitation, FederationSetupInvitationCapability, FederationSetupInvitationId,
-    FederationSetupManifest, FederationSetupManifestHash, FederationSetupProposal,
-    FederationSetupProposalBody, FederationSetupProposalHash, FederationSetupProtocolVersions,
-    FederationSetupSignature, FederationSetupUrlPolicy, FEDERATION_MAX_SETUP_ARTIFACT_BYTES,
+    FederationSetupInvitation, FederationSetupInvitationCapability,
+    FederationSetupInvitationCapabilityHash, FederationSetupInvitationId,
+    FederationSetupInvitationRecord, FederationSetupInvitationState, FederationSetupLocalRole,
+    FederationSetupManifest, FederationSetupManifestHash, FederationSetupParticipantPhase,
+    FederationSetupProposal, FederationSetupProposalBody, FederationSetupProposalHash,
+    FederationSetupProtocolVersions, FederationSetupSession, FederationSetupSignature,
+    FederationSetupUrlPolicy, FEDERATION_MAX_SETUP_ARTIFACT_BYTES,
     FEDERATION_MAX_SETUP_ENROLLMENT_BYTES, FEDERATION_MAX_SETUP_INVITATION_BYTES,
     FEDERATION_MAX_SETUP_KEYSETS, FEDERATION_MAX_SETUP_STATUS_BYTES,
     FEDERATION_MAX_SETUP_URL_BYTES, FEDERATION_SETUP_BLS_DKG_PROTOCOL_VERSION,
@@ -1720,6 +1724,18 @@ pub enum FederationError {
         expected: String,
         /// Hash carried by the manifest.
         found: String,
+    },
+    /// Durable setup state conflicted with an immutable record or CAS expectation.
+    #[error(
+        "Federation setup persistence conflict for {artifact} in setup {setup_id}: {coordinate}"
+    )]
+    SetupPersistenceConflict {
+        /// Stable artifact class.
+        artifact: &'static str,
+        /// Setup attempt containing the conflict.
+        setup_id: FederationSetupId,
+        /// Bounded public coordinate identifying the conflicting record.
+        coordinate: String,
     },
     /// A federation invite code could not be parsed.
     #[error("Invalid federation invite: {reason}")]

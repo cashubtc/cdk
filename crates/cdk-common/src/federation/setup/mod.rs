@@ -20,6 +20,14 @@ use super::{
 use crate::mint_url::MintUrl;
 use crate::nuts::nut01::{PublicKey, SecretKey};
 
+mod persistence;
+
+pub use self::persistence::{
+    FederationSetupActivation, FederationSetupCoordinatorPhase, FederationSetupInvitationRecord,
+    FederationSetupInvitationState, FederationSetupLocalRole, FederationSetupParticipantPhase,
+    FederationSetupSession,
+};
+
 /// Multi-operator setup protocol version implemented by this build.
 pub const FEDERATION_SETUP_PROTOCOL_VERSION: u16 = 1;
 /// Prefix for operator setup invitations, distinct from wallet invites.
@@ -146,6 +154,11 @@ setup_hash_type!(
     "setup invitation id"
 );
 setup_hash_type!(
+    /// Context-bound hash of a one-use setup invitation capability.
+    FederationSetupInvitationCapabilityHash,
+    "setup invitation capability hash"
+);
+setup_hash_type!(
     /// Canonical hash of one immutable setup proposal body.
     FederationSetupProposalHash,
     "setup proposal hash"
@@ -193,8 +206,8 @@ impl FederationSetupInvitationCapability {
         setup_id: FederationSetupId,
         invitation_id: FederationSetupInvitationId,
         member_id: MemberId,
-    ) -> [u8; 32] {
-        hash_transcript(
+    ) -> FederationSetupInvitationCapabilityHash {
+        FederationSetupInvitationCapabilityHash::from_bytes(hash_transcript(
             INVITATION_CAPABILITY_DOMAIN,
             &[
                 &setup_id.to_bytes(),
@@ -202,7 +215,7 @@ impl FederationSetupInvitationCapability {
                 &member_id.get().to_be_bytes(),
                 &self.0,
             ],
-        )
+        ))
     }
 }
 
@@ -566,7 +579,7 @@ impl FederationSetupInvitation {
 
     /// Return the coordinator-stored capability hash without exposing the capability.
     #[must_use]
-    pub fn capability_hash(&self) -> [u8; 32] {
+    pub fn capability_hash(&self) -> FederationSetupInvitationCapabilityHash {
         self.capability
             .capability_hash(self.setup_id, self.invitation_id, self.member_id)
     }

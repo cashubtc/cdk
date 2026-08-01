@@ -26,6 +26,10 @@ use crate::federation::{
     FederationId, FederationJournalEntry, FederationJournalTip,
     FederationMaterializedStateKeyRecord, FederationOperationConflictKey, FederationOperationId,
     FederationPaymentObservationContext, FederationPaymentObservationRecord,
+    FederationSetupActivation, FederationSetupApproval, FederationSetupCoordinatorPhase,
+    FederationSetupEnrollment, FederationSetupId, FederationSetupInvitationId,
+    FederationSetupInvitationRecord, FederationSetupManifest, FederationSetupParticipantPhase,
+    FederationSetupProposal, FederationSetupSession, FederationSetupUrlPolicy,
     FederationSignatureShareRecord, MemberId, VerifiedFederationCheckpointQuorum,
 };
 use crate::mint::{
@@ -1092,6 +1096,230 @@ pub trait FederationFrostWalletTransaction {
 
 #[cfg(feature = "federation")]
 #[async_trait]
+/// Multi-operator federation setup transaction trait.
+pub trait FederationSetupTransaction {
+    /// Federation setup database error.
+    type Err: Into<Error> + From<Error>;
+
+    /// Persist one local setup session exactly once, accepting exact replay.
+    async fn add_federation_setup_session(
+        &mut self,
+        session: &FederationSetupSession,
+    ) -> Result<(), Self::Err>;
+
+    /// Compare and set one legal local setup-session transition.
+    async fn transition_federation_setup_session(
+        &mut self,
+        expected: &FederationSetupSession,
+        updated: &FederationSetupSession,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist secret-free invitation metadata exactly once.
+    async fn add_federation_setup_invitation(
+        &mut self,
+        invitation: &FederationSetupInvitationRecord,
+    ) -> Result<(), Self::Err>;
+
+    /// Compare and set one invitation state transition.
+    async fn transition_federation_setup_invitation(
+        &mut self,
+        expected: &FederationSetupInvitationRecord,
+        updated: &FederationSetupInvitationRecord,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one signed enrollment exactly once per setup member and invitation.
+    async fn add_federation_setup_enrollment(
+        &mut self,
+        enrollment: &FederationSetupEnrollment,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist the one immutable coordinator-signed proposal.
+    async fn add_federation_setup_proposal(
+        &mut self,
+        proposal: &FederationSetupProposal,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist the participant-local one-proposal approval fence.
+    async fn add_federation_setup_approval_fence(
+        &mut self,
+        approval: &FederationSetupApproval,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one approval received by the coordinator.
+    async fn add_federation_setup_approval(
+        &mut self,
+        approval: &FederationSetupApproval,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist the one complete certified manifest.
+    async fn add_federation_setup_manifest(
+        &mut self,
+        manifest: &FederationSetupManifest,
+    ) -> Result<(), Self::Err>;
+
+    /// Persist one member's final config activation reference.
+    async fn add_federation_setup_activation(
+        &mut self,
+        activation: &FederationSetupActivation,
+    ) -> Result<(), Self::Err>;
+
+    /// Atomically insert an enrollment and consume its invitation.
+    async fn consume_federation_setup_invitation(
+        &mut self,
+        expected: &FederationSetupInvitationRecord,
+        consumed: &FederationSetupInvitationRecord,
+        enrollment: &FederationSetupEnrollment,
+    ) -> Result<(), Self::Err> {
+        expected
+            .validate_transition_to(consumed)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        enrollment
+            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        if expected.setup_id != enrollment.setup_id
+            || expected.invitation_id != enrollment.invitation_id
+            || expected.member_id != enrollment.member_id
+            || consumed.state != crate::federation::FederationSetupInvitationState::Consumed
+        {
+            return Err(Self::Err::from(Error::Federation(
+                crate::federation::FederationError::InvalidSetup {
+                    reason: "setup enrollment does not match consumed invitation".to_string(),
+                },
+            )));
+        }
+        self.add_federation_setup_enrollment(enrollment).await?;
+        self.transition_federation_setup_invitation(expected, consumed)
+            .await
+    }
+
+    /// Atomically persist an immutable proposal and advance coordinator state.
+    async fn publish_federation_setup_proposal(
+        &mut self,
+        expected: &FederationSetupSession,
+        updated: &FederationSetupSession,
+        proposal: &FederationSetupProposal,
+    ) -> Result<(), Self::Err> {
+        expected
+            .validate_transition_to(updated)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        proposal
+            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        if expected.setup_id != proposal.body.setup_id
+            || expected.coordinator_phase
+                != Some(FederationSetupCoordinatorPhase::CollectingEnrollments)
+            || updated.coordinator_phase != Some(FederationSetupCoordinatorPhase::ProposalPublished)
+            || expected.participant_phase != FederationSetupParticipantPhase::Enrolled
+            || updated.participant_phase != FederationSetupParticipantPhase::Enrolled
+        {
+            return Err(Self::Err::from(Error::Federation(
+                crate::federation::FederationError::InvalidSetup {
+                    reason: "setup proposal does not match the coordinator publication transition"
+                        .to_string(),
+                },
+            )));
+        }
+        self.add_federation_setup_proposal(proposal).await?;
+        self.transition_federation_setup_session(expected, updated)
+            .await
+    }
+
+    /// Atomically persist the local approval fence before advancing to approved.
+    async fn fence_federation_setup_approval(
+        &mut self,
+        expected: &FederationSetupSession,
+        updated: &FederationSetupSession,
+        proposal: &FederationSetupProposal,
+        approval: &FederationSetupApproval,
+    ) -> Result<(), Self::Err> {
+        expected
+            .validate_transition_to(updated)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        proposal
+            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        approval
+            .validate(proposal)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        if updated.participant_phase != FederationSetupParticipantPhase::Approved
+            || expected.setup_id != proposal.body.setup_id
+            || expected.local_role.member_id() != approval.member_id
+        {
+            return Err(Self::Err::from(Error::Federation(
+                crate::federation::FederationError::InvalidSetup {
+                    reason: "setup approval fence does not match local session".to_string(),
+                },
+            )));
+        }
+        self.add_federation_setup_approval_fence(approval).await?;
+        self.transition_federation_setup_session(expected, updated)
+            .await
+    }
+
+    /// Atomically persist a certified manifest and advance one local lifecycle.
+    async fn store_federation_setup_manifest(
+        &mut self,
+        expected: &FederationSetupSession,
+        updated: &FederationSetupSession,
+        manifest: &FederationSetupManifest,
+    ) -> Result<(), Self::Err> {
+        expected
+            .validate_transition_to(updated)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        manifest
+            .validate(FederationSetupUrlPolicy::AllowInsecureLocalhost)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        let coordinator_certified = expected.coordinator_phase
+            == Some(FederationSetupCoordinatorPhase::ProposalPublished)
+            && updated.coordinator_phase == Some(FederationSetupCoordinatorPhase::Certified);
+        let participant_certified = expected.participant_phase
+            == FederationSetupParticipantPhase::Approved
+            && updated.participant_phase == FederationSetupParticipantPhase::Certified;
+        if expected.setup_id != manifest.proposal.body.setup_id
+            || (!coordinator_certified && !participant_certified)
+        {
+            return Err(Self::Err::from(Error::Federation(
+                crate::federation::FederationError::InvalidSetup {
+                    reason: "setup manifest does not match a certification transition".to_string(),
+                },
+            )));
+        }
+        self.add_federation_setup_manifest(manifest).await?;
+        self.transition_federation_setup_session(expected, updated)
+            .await
+    }
+
+    /// Atomically persist the final config reference and activate this member.
+    async fn activate_federation_setup(
+        &mut self,
+        expected: &FederationSetupSession,
+        updated: &FederationSetupSession,
+        activation: &FederationSetupActivation,
+    ) -> Result<(), Self::Err> {
+        expected
+            .validate_transition_to(updated)
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        activation
+            .validate()
+            .map_err(|error| Self::Err::from(Error::Federation(error)))?;
+        if updated.participant_phase != FederationSetupParticipantPhase::Activated
+            || expected.setup_id != activation.setup_id
+            || expected.local_role.member_id() != activation.member_id
+        {
+            return Err(Self::Err::from(Error::Federation(
+                crate::federation::FederationError::InvalidSetup {
+                    reason: "setup activation does not match local session".to_string(),
+                },
+            )));
+        }
+        self.add_federation_setup_activation(activation).await?;
+        self.transition_federation_setup_session(expected, updated)
+            .await
+    }
+}
+
+#[cfg(feature = "federation")]
+#[async_trait]
 /// Federation journal database trait
 pub trait FederationJournalDatabase {
     /// Federation journal database error
@@ -1427,6 +1655,70 @@ pub trait FederationFrostWalletDatabase {
     ) -> Result<Vec<FederationFrostApplicationConfig>, Self::Err>;
 }
 
+#[cfg(feature = "federation")]
+#[async_trait]
+/// Multi-operator federation setup read database trait.
+pub trait FederationSetupDatabase {
+    /// Federation setup database error.
+    type Err: Into<Error> + From<Error>;
+
+    /// Load one local setup session.
+    async fn get_federation_setup_session(
+        &self,
+        setup_id: FederationSetupId,
+    ) -> Result<Option<FederationSetupSession>, Self::Err>;
+
+    /// Load all invitation records for one setup in member/identifier order.
+    async fn get_federation_setup_invitations(
+        &self,
+        setup_id: FederationSetupId,
+    ) -> Result<Vec<FederationSetupInvitationRecord>, Self::Err>;
+
+    /// Load one invitation record by public identifier.
+    async fn get_federation_setup_invitation(
+        &self,
+        setup_id: FederationSetupId,
+        invitation_id: FederationSetupInvitationId,
+    ) -> Result<Option<FederationSetupInvitationRecord>, Self::Err>;
+
+    /// Load all signed enrollments for one setup in member order.
+    async fn get_federation_setup_enrollments(
+        &self,
+        setup_id: FederationSetupId,
+    ) -> Result<Vec<FederationSetupEnrollment>, Self::Err>;
+
+    /// Load the immutable proposal, when published.
+    async fn get_federation_setup_proposal(
+        &self,
+        setup_id: FederationSetupId,
+    ) -> Result<Option<FederationSetupProposal>, Self::Err>;
+
+    /// Load this member's durable one-proposal approval fence.
+    async fn get_federation_setup_approval_fence(
+        &self,
+        setup_id: FederationSetupId,
+        member_id: MemberId,
+    ) -> Result<Option<FederationSetupApproval>, Self::Err>;
+
+    /// Load coordinator-received approvals in member order.
+    async fn get_federation_setup_approvals(
+        &self,
+        setup_id: FederationSetupId,
+    ) -> Result<Vec<FederationSetupApproval>, Self::Err>;
+
+    /// Load the complete certified manifest, when available.
+    async fn get_federation_setup_manifest(
+        &self,
+        setup_id: FederationSetupId,
+    ) -> Result<Option<FederationSetupManifest>, Self::Err>;
+
+    /// Load local member activation references in member order.
+    async fn get_federation_setup_activations(
+        &self,
+        setup_id: FederationSetupId,
+    ) -> Result<Vec<FederationSetupActivation>, Self::Err>;
+}
+
 #[cfg(not(feature = "federation"))]
 /// Base database writer
 ///
@@ -1467,6 +1759,7 @@ pub trait Transaction<Error>:
     + FederationApplicationTransaction<Err = Error>
     + FederationDkgTransaction<Err = Error>
     + FederationFrostWalletTransaction<Err = Error>
+    + FederationSetupTransaction<Err = Error>
 {
 }
 
@@ -1499,6 +1792,7 @@ pub trait Database<Error>:
     + FederationApplicationDatabase<Err = Error>
     + FederationDkgDatabase<Err = Error>
     + FederationFrostWalletDatabase<Err = Error>
+    + FederationSetupDatabase<Err = Error>
 {
     /// Begins a transaction
     async fn begin_transaction(&self) -> Result<Box<dyn Transaction<Error> + Send + Sync>, Error>;

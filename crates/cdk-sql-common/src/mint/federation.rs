@@ -48,13 +48,15 @@ mod bark_projection;
 mod dkg;
 mod frost_wallet;
 mod journal;
+mod setup;
 
 use async_trait::async_trait;
 use cdk_common::database::mint::{
     FederationAlephBftBackupMetadata, FederationApplicationDatabase,
     FederationApplicationTransaction, FederationDkgDatabase, FederationDkgTransaction,
     FederationFrostWalletDatabase, FederationFrostWalletTransaction, FederationJournalDatabase,
-    FederationJournalTransaction, FederationMintQuoteState,
+    FederationJournalTransaction, FederationMintQuoteState, FederationSetupDatabase,
+    FederationSetupTransaction,
 };
 use cdk_common::database::Error;
 use cdk_common::federation::{
@@ -79,7 +81,11 @@ use cdk_common::federation::{
     FederationMaterializedStateKeyRecord, FederationOperation, FederationOperationConflictKey,
     FederationOperationEnvelope, FederationOperationId, FederationOperationStatus,
     FederationPaymentObservation, FederationPaymentObservationContext,
-    FederationPaymentObservationRecord, FederationSignatureShareRecord, MemberId,
+    FederationPaymentObservationRecord, FederationSetupActivation, FederationSetupApproval,
+    FederationSetupCoordinatorPhase, FederationSetupEnrollment, FederationSetupId,
+    FederationSetupInvitationId, FederationSetupInvitationRecord, FederationSetupInvitationState,
+    FederationSetupLocalRole, FederationSetupManifest, FederationSetupParticipantPhase,
+    FederationSetupProposal, FederationSetupSession, FederationSignatureShareRecord, MemberId,
     VerifiedFederationCheckpointQuorum,
 };
 use cdk_common::quote_id::QuoteId;

@@ -16,6 +16,8 @@ use crate::mint::MintKeySetInfo;
 
 #[cfg(feature = "federation")]
 mod federation;
+#[cfg(feature = "federation")]
+mod federation_setup;
 mod keys;
 mod mint;
 mod proofs;
@@ -24,6 +26,8 @@ mod signatures;
 
 #[cfg(feature = "federation")]
 pub use self::federation::*;
+#[cfg(feature = "federation")]
+pub use self::federation_setup::*;
 pub use self::keys::*;
 pub use self::mint::*;
 pub use self::proofs::*;
