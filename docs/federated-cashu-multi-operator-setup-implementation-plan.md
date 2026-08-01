@@ -1163,21 +1163,80 @@ only for the recorded pre-existing findings in dependency crates.
 
 ### Milestone 8 — Adversarial local process matrix
 
-- [ ] Add 3-, 5-, 11-, and maximum-member process runs using the same CLI and
+- [x] Add 3-, 5-, 11-, and maximum-member process runs using the same CLI and
   HTTP workflow intended for separate machines.
-- [ ] Exercise reordered, duplicated, delayed, dropped, and ambiguously
+- [x] Exercise reordered, duplicated, delayed, dropped, and ambiguously
   acknowledged bootstrap messages.
-- [ ] Exercise a malicious coordinator presenting different proposals, a
+- [x] Exercise a malicious coordinator presenting different proposals, a
   member attempting two approvals, member loss before/after certification,
   setup-service restart, DKG restart, and bounded resource saturation.
-- [ ] Record setup wall time, per-process CPU/RSS, request counts/failures,
+- [x] Record setup wall time, per-process CPU/RSS, request counts/failures,
   retry counts, status latency, and DKG phase timing without secret material.
-- [ ] Confirm standalone CDK and wallet behavior remain unchanged.
+- [x] Confirm standalone CDK and wallet behavior remain unchanged.
 
 **Gate:** every successful run produces one proposal hash, setup authorization,
 DKG transcript hash, final config digest, and public config across all members;
 every adversarial run either recovers idempotently or aborts with a bounded
 actionable error.
+
+**Progress:** complete. `scripts/run_federation_setup_matrix.sh` now drives
+release-mode 3-, 5-, 11-, and 64-member profiles through the ordinary
+invitation CLI and independent SQLite/state directories. The underlying
+`scripts/run_test_federation_dkg.sh` supports reverse and delayed enrollment,
+exact join/proposal/approval replay, a missing pre-certification member and
+invitation replacement, coordinator restart, concurrent review pressure, a
+held certified member, and one-member DKG restart. It records a redacted JSON
+summary plus compact phase samples, including bootstrap/DKG/activation/total
+wall time, request/failure/retry counts, maximum status latency, and per-process
+CPU/RSS. Signal cleanup now includes transient status, saturation, and
+activation children.
+
+The process profiles completed at `3/2`, `5/3`, `11/8`, and the protocol
+maximum `64/43`. Every completed profile produced one proposal hash and setup
+authorization, one manifest and DKG transcript hash, one final config digest,
+and byte-identical public config files across all operator stores. The
+three-member adversarial release run completed in `5s` total with `10` status
+requests and about `95 MB` peak aggregate DKG RSS. Earlier diagnostic runs
+completed the five-member profile in `22s` and the eleven-member restart/stress
+profile in `119s`. These timings are machine- and build-dependent, so they are
+evidence for this run rather than service-level objectives.
+
+The 64-member ceiling run exposed and then recovered from the intended hard
+conditions rather than hiding them. A colocated debug run saturated `128`
+processes at about `6.7 GiB` RSS and was stopped in favor of an optimized
+binary. The optimized run reached full activation after durable coordinated
+and one-member process restarts without changing its setup or ceremony ID or
+moving private material. Its stress summary records `6,609s` from concurrent
+DKG start through final validation, `1,218s` maximum observer latency, about
+`4.9 GB` sampled DKG RSS, and about `107 MB` maximum sampled member RSS. Much of
+that duration and `7,744` status requests came from the first runner version
+starting 64 cryptographic status validators on every poll. Pausing those
+observers while leaving all 64 DKG services concurrent allowed activation
+confirmations to converge immediately. The committed runner therefore polls
+one readiness sentinel during DKG and performs one all-member validation sweep
+only after readiness, while the maximum profile supplies a generous but still
+bounded `28,800`-tick/`7,200s` driver invocation. Setup `serve` exposes those
+bounded tick, delay, and wall-time controls explicitly. Per-peer delivery
+remains bounded for transport/DoS safety, but there is no member-order or
+process serialization in the DKG protocol.
+
+Deterministic HTTP/domain tests cover the cases that cannot safely be forged
+through the ordinary operator CLI: coordinator equivocation, alternate approval
+attempts, deliberately lost enrollment/approval acknowledgements, exact replay,
+deadline ownership, saturation, storage failure, redirect refusal, invitation
+expiry, and inactive-admission cleanup. All six setup HTTP tests pass with
+loopback access, and the independent-operator command test passes with
+same-clock-second invitation replacement. Federation-disabled
+`cdk-mintd` (`sqlite,fakewallet`), wallet-only `cdk`, and `cdk-cli` checks pass.
+The wallet-only *unit-test* target remains blocked by a pre-existing unrelated
+`MockTransport` implementation missing `resolve_dns_txt`; the wallet-only
+library and CLI compile checks are the isolation evidence for this milestone.
+Likewise, `cdk-axum --features federation` test compilation has a pre-existing
+unguarded reference to Bark-only test helpers, so the setup HTTP suite was run
+and passed with all features. The complete production `federation,sqlite`
+`cdk-mintd` suite passes `160/160`, all-feature test targets compile, targeted
+formatting and shell syntax checks pass, and strict all-feature `cdk-mintd`
+Clippy passes with only the already-recorded dependency allowances.
 
 ### Milestone 9 — Real multi-host deployment drill
 

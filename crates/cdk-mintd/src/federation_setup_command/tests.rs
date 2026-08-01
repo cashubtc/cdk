@@ -261,10 +261,10 @@ async fn independent_operators_review_and_approve_without_copying_private_materi
         member_three_id,
         true,
         &replacement_path,
-        NOW_UNIX + 1,
+        NOW_UNIX,
     )
     .await
-    .expect("replace unconsumed invitation");
+    .expect("replace unconsumed invitation in the same clock second");
 
     let coordinator = FakeCoordinator::new(Arc::clone(&creator_db));
     let member_two_config = member_two_dir.join("setup.json");

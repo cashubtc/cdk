@@ -565,6 +565,15 @@ pub struct FederationSetupServeArgs {
     /// Socket address for the isolated setup-only HTTP service.
     #[arg(long)]
     pub listen: std::net::SocketAddr,
+    /// Maximum durable plan-and-deliver ticks for a certified DKG invocation.
+    #[arg(long, default_value_t = 1_200)]
+    pub dkg_max_ticks: usize,
+    /// Delay between incomplete certified DKG ticks in milliseconds.
+    #[arg(long, default_value_t = 250)]
+    pub dkg_retry_delay_ms: u64,
+    /// Overall certified DKG driver budget in seconds.
+    #[arg(long, default_value_t = 600)]
+    pub dkg_ceremony_timeout_seconds: u64,
 }
 
 #[cfg(feature = "federation")]
@@ -1117,7 +1126,7 @@ mod tests {
             ])
             .expect("setup config command parses");
         }
-        CLIArgs::try_parse_from([
+        let serve = CLIArgs::try_parse_from([
             "cdk-mintd",
             "federation",
             "setup",
@@ -1126,8 +1135,28 @@ mod tests {
             "operator/setup.json",
             "--listen",
             "127.0.0.1:18080",
+            "--dkg-max-ticks",
+            "2400",
+            "--dkg-retry-delay-ms",
+            "500",
+            "--dkg-ceremony-timeout-seconds",
+            "1200",
         ])
         .expect("setup-only serve command parses");
+        let Some(CliCommand::Federation(serve)) = serve.command else {
+            panic!("expected federation command");
+        };
+        assert!(matches!(
+            serve.command,
+            FederationCommand::Setup(FederationSetupArgs {
+                command: FederationSetupCommand::Serve(FederationSetupServeArgs {
+                    dkg_max_ticks: 2400,
+                    dkg_retry_delay_ms: 500,
+                    dkg_ceremony_timeout_seconds: 1200,
+                    ..
+                })
+            })
+        ));
         CLIArgs::try_parse_from([
             "cdk-mintd",
             "federation",

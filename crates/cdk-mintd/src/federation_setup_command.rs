@@ -213,7 +213,19 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
             println!("approved_proposal_hash: {}", approval.proposal_hash);
         }
         cli::FederationSetupCommand::Serve(args) => {
-            serve_setup_coordinator(&args.config, args.listen).await?;
+            if args.dkg_max_ticks == 0
+                || args.dkg_retry_delay_ms == 0
+                || args.dkg_ceremony_timeout_seconds == 0
+            {
+                bail!("setup DKG tick, retry-delay, and ceremony-timeout bounds must be positive");
+            }
+            let driver = cdk_axum::FederationDkgDriverRunConfig {
+                max_ticks: args.dkg_max_ticks,
+                retry_delay: std::time::Duration::from_millis(args.dkg_retry_delay_ms),
+                ceremony_timeout: std::time::Duration::from_secs(args.dkg_ceremony_timeout_seconds),
+                ..cdk_axum::FederationDkgDriverRunConfig::default()
+            };
+            serve_setup_coordinator(&args.config, args.listen, driver).await?;
         }
         cli::FederationSetupCommand::Status(args) => {
             let status = setup_status(&args.config).await?;
@@ -320,11 +332,15 @@ impl FederationSetupCoordinator for HttpSetupCoordinator {
 }
 
 #[cfg(feature = "sqlite")]
-async fn serve_setup_coordinator(config_path: &Path, listen: std::net::SocketAddr) -> Result<()> {
+async fn serve_setup_coordinator(
+    config_path: &Path,
+    listen: std::net::SocketAddr,
+    driver: cdk_axum::FederationDkgDriverRunConfig,
+) -> Result<()> {
     let now_unix = current_unix_time()?;
     let (config, secrets) = load_local_state(config_path, now_unix)?;
     if config.manifest_path().exists() {
-        return serve_certified_dkg(config_path, listen).await;
+        return serve_certified_dkg(config_path, listen, driver).await;
     }
     let draft = config
         .coordinator
@@ -371,7 +387,11 @@ async fn serve_setup_coordinator(config_path: &Path, listen: std::net::SocketAdd
 }
 
 #[cfg(feature = "sqlite")]
-async fn serve_certified_dkg(config_path: &Path, listen: std::net::SocketAddr) -> Result<()> {
+async fn serve_certified_dkg(
+    config_path: &Path,
+    listen: std::net::SocketAddr,
+    driver: cdk_axum::FederationDkgDriverRunConfig,
+) -> Result<()> {
     let handoff = load_certified_dkg_handoff(config_path)?;
     let database = Arc::new(
         cdk_sqlite::MintSqliteDatabase::new(read_local_config(config_path)?.database_path)
@@ -379,11 +399,6 @@ async fn serve_certified_dkg(config_path: &Path, listen: std::net::SocketAddr) -
             .context("failed to open certified DKG database")?,
     );
     let mint = build_certified_dkg_mint(database.clone(), &handoff).await?;
-    let driver = cdk_axum::FederationDkgDriverRunConfig {
-        max_ticks: 1_200,
-        retry_delay: std::time::Duration::from_millis(250),
-        ..cdk_axum::FederationDkgDriverRunConfig::default()
-    };
     let auto_start = cdk_axum::FederationDkgAutoStartConfig::from_manifest(
         &handoff.manifest,
         handoff.url_policy,
@@ -2160,6 +2175,7 @@ where
                 draft,
                 secrets.coordinator_identity()?,
                 now_unix,
+                active.map(|invitation| invitation.expires_at_unix),
             )?;
             write_private_text_file(output_path, &format!("{invitation}\n"), false)
                 .context("failed to write protected setup invitation")?;
@@ -2471,8 +2487,14 @@ fn load_or_create_invitation(
                 .context("protected setup invitation is invalid")?
         }
         false => {
-            let invitation =
-                new_invitation(setup_id, member_id, draft, coordinator_identity, now_unix)?;
+            let invitation = new_invitation(
+                setup_id,
+                member_id,
+                draft,
+                coordinator_identity,
+                now_unix,
+                None,
+            )?;
             write_private_text_file(path, &format!("{invitation}\n"), false)
                 .context("failed to persist protected setup invitation")?;
             invitation
@@ -2500,10 +2522,19 @@ fn new_invitation(
     draft: &FederationSetupCoordinatorDraft,
     coordinator_identity: FederationSetupCoordinatorPublicKey,
     now_unix: u64,
+    replaced_expiry: Option<u64>,
 ) -> Result<FederationSetupInvitation> {
-    let expires_at_unix = now_unix
+    let requested_expiry = now_unix
         .checked_add(draft.invitation_lifetime_secs)
         .ok_or_else(|| anyhow!("setup invitation expiry overflow"))?;
+    let expires_at_unix = match replaced_expiry {
+        Some(replaced_expiry) => requested_expiry.max(
+            replaced_expiry
+                .checked_add(1)
+                .ok_or_else(|| anyhow!("replacement invitation expiry overflow"))?,
+        ),
+        None => requested_expiry,
+    };
     FederationSetupInvitation::new(
         setup_id,
         random_invitation_id(),
