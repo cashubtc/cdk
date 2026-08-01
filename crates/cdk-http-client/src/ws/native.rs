@@ -1,6 +1,7 @@
 //! Native WebSocket implementation using tokio-tungstenite
 
 use futures::{SinkExt, StreamExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
@@ -125,6 +126,23 @@ pub async fn connect(
         .map_err(WsError::from_tungstenite)?;
 
     Ok(from_websocket_stream(ws_stream))
+}
+
+/// Complete a WebSocket client handshake over a caller-provided byte stream.
+///
+/// This keeps WebSocket framing in the HTTP client crate while allowing a
+/// transport such as Iroh to own connection establishment and routing.
+pub async fn connect_stream<S, R>(request: R, stream: S) -> Result<(WsSender, WsReceiver), WsError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    R: IntoClientRequest + Unpin,
+{
+    let (ws_stream, _) = tokio_tungstenite::client_async(request, stream)
+        .await
+        .map_err(|e| WsError::Connection(e.to_string()))?;
+
+    Ok(from_websocket_stream(ws_stream))
+
 }
 
 /// Connect to a WebSocket endpoint through an Arti Tor client.

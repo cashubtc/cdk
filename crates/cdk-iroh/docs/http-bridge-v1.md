@@ -6,6 +6,8 @@ HTTP/1.1 and WebSocket traffic over Iroh bidirectional QUIC streams.
 - ALPN: the exact bytes `cashu-cdk-http/1`.
 - One authenticated Iroh QUIC connection may carry many concurrent streams.
 - One bidirectional stream carries one HTTP/1.1 connection and one transaction.
+  The client never sends a second request, and the server closes every
+  non-upgraded response.
 - A successful WebSocket upgrade owns that stream until the WebSocket closes.
 - Requests use origin-form path/query targets and a `Host` authority equal to
   the dialed Iroh identity. The server returns 421 for another authority.
@@ -20,9 +22,10 @@ HTTP/1.1 and WebSocket traffic over Iroh bidirectional QUIC streams.
   produces 400, oversized headers produce 431, authority mismatch produces
   421, and router status/body responses pass through unchanged. A response
   exceeding the caller's bound maps to the existing bounded-response error.
-- Hop-by-hop headers are rejected except for the standard WebSocket upgrade
-  flow. Authentication headers and payload bodies are never logged by the
-  bridge.
+- Inbound hop-by-hop headers are rejected except for the standard WebSocket
+  upgrade flow. Non-upgrade responses discard application hop-by-hop headers
+  and set `Connection: close`. Authentication headers and payload bodies are
+  never logged by the bridge.
 
 The spike test intentionally serves a route known only to its Axum router. The
 bridge has no Cashu route table and performs no JSON translation.

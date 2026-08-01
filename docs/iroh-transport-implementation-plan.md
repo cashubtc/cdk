@@ -680,27 +680,103 @@ Nocean deployment is claimed for this local feasibility milestone.
 
 ### Milestone 1 — standalone `cdk-iroh` crate
 
-- [ ] Add endpoint construction for ephemeral client and persistent server
+- [x] Add endpoint construction for ephemeral client and persistent server
   identities.
-- [ ] Add N0, custom, and static-ticket discovery configuration.
-- [ ] Add connection pooling keyed by endpoint ID and ALPN.
-- [ ] Add one-stream-per-transaction HTTP client and bounded response reads.
-- [ ] Add WebSocket-over-stream support.
-- [ ] Add generic Axum/Tower server support with request extensions.
-- [ ] Add admission, timeouts, shutdown, redacted errors, tracing, and metrics.
-- [ ] Implement `IrohTransport<Async>` with explicit scheme dispatch.
-- [ ] Add a transport conformance suite covering raw, JSON, form, auth,
+- [x] Add N0, custom, and static-ticket discovery configuration.
+- [x] Add connection pooling keyed by endpoint ID and ALPN.
+- [x] Add one-stream-per-transaction HTTP client and bounded response reads.
+- [x] Add WebSocket-over-stream support.
+- [x] Add generic Axum/Tower server support with request extensions.
+- [x] Add admission, timeouts, shutdown, redacted errors, tracing, and metrics.
+- [x] Implement `IrohTransport<Async>` with explicit scheme dispatch.
+- [x] Add a transport conformance suite covering raw, JSON, form, auth,
   bounded, error, and streaming behavior.
 
 **Gate:** `cdk-iroh` passes its complete tests against a synthetic router and
 an in-process Iroh network without depending on `cdk`, `cdk-axum`, or mint
 business logic.
 
+**Progress:** complete in the Milestone 1 commit. `IrohNode` now binds either a
+generated ephemeral identity or an operator-provided persistent `SecretKey`.
+Its discovery policy is explicit: current N0 discovery/default relays,
+operator-provided current `RelayUrl` values, or direct/static discovery seeded
+with canonical `iroh_tickets::endpoint::EndpointTicket` values. Configuration
+and node `Debug` output reports only modes, counts, and shortened endpoint
+fingerprints; it does not render relay URLs, tickets, bind addresses, request
+bodies, or credentials.
+
+The clone-shared connection pool is keyed by authenticated endpoint ID plus
+the frozen ALPN. Only concurrent duplicate dials for the same key share a
+short per-key critical section; different peers and all opened streams remain
+concurrent. Its configured upper bound rejects new peer keys when all pooled
+connections are live and reclaims terminal entries before admitting new ones.
+Every HTTP transaction and WebSocket opens its own bidirectional stream and
+ambiguous requests are never replayed. HTTP response bodies are read
+frame-by-frame with both progress deadlines and allocation bounds;
+declared or observed oversize responses fail through CDK's existing bounded
+response error. JSON, form, raw status/body, Cashu authentication headers, and
+WebSocket framing preserve the existing `Transport` behavior.
+
+`IrohServer` accepts the final cloneable Axum/Tower service generically. It
+converts and limits the incoming body, injects the TLS-authenticated remote
+endpoint as `IrohConnectionInfo`, binds the HTTP authority to the local
+endpoint ID, rejects non-WebSocket hop-by-hop headers, and closes every
+ordinary response after one transaction. Global/per-peer connection and
+global/per-connection stream semaphores reject excess work without queueing or
+serializing admitted streams. Accept, connection, and stream tasks are
+supervised and drained on bounded shutdown. Transport counters have no
+peer/request labels, tracing uses only short endpoint fingerprints, and
+upstream errors are mapped to bounded redacted variants.
+
+`IrohTransport<Async>` lazily creates a default ephemeral endpoint or accepts
+a runtime-owned node. It dispatches only `iroh` to Iroh, delegates `http` and
+`https` byte-for-byte to the existing transport, delegates `ws`/`wss` for
+WebSockets, and rejects every other scheme. An Iroh failure never falls back
+to HTTPS. The native caller-provided-stream WebSocket constructor originally
+listed in Milestone 2 landed as the minimal shared prerequisite for this
+milestone's WebSocket gate; it contains no Iroh routing or endpoint knowledge.
+
+The user-requested upstream recheck found that the current stable packages are
+still exact `iroh = 1.0.3` and `iroh-tickets = 1.0.0`, both requiring Rust
+1.91. CDK therefore keeps the explicit MSRV increase and current standalone
+ticket type rather than adding a deprecated pre-1.0 compatibility layer.
+
+Verification evidence:
+
+- `cargo test -p cdk-iroh --offline` with loopback socket permission passes
+  one unit test, three bridge/golden/cancellation tests, nine standalone
+  conformance tests, and doc tests. Coverage includes ephemeral/persistent
+  identity, all discovery policies, canonical tickets, raw/JSON/form/auth,
+  status errors, fragmented bounded reads, pre-dial request limits, endpoint
+  authority binding, generic future routes, authenticated request extensions,
+  protected framing headers, redacted unknown endpoint errors, WebSockets, 24
+  concurrent requests over one pooled connection, outbound pool reclamation,
+  global/per-peer connection saturation, stream saturation with an upgraded
+  WebSocket holding its admission lease, recovery after every saturation,
+  graceful zero-activity shutdown, exact HTTP delegation, and no fallback;
+- `cargo test -p cdk-http-client --offline` with loopback permission passes 21
+  unit tests, 32 integration tests, and one doc test after adding the generic
+  native WebSocket stream wrapper;
+- `cargo clippy -p cdk-iroh -p cdk-http-client --all-targets --offline --
+  -D warnings` passes, and targeted formatting passes with only the
+  repository's stable-rustfmt warnings for nightly-only options;
+- `cargo check --workspace --all-targets --offline --quiet` passes, confirming
+  the MSRV/dependency policy change did not break another workspace target;
+- an official Linux Rust 1.91 container passes `cargo check -p cdk-iroh -p
+  cdk-http-client --locked --quiet`, testing the declared MSRV instead of the
+  newer host compiler; and
+- the normal dependency tree contains neither `cdk` nor `cdk-axum`; the
+  synthetic router and in-process Iroh network are the only server fixtures.
+
+Mobile cross-compilation, mint/wallet integration, and Nocean relay testing are
+not claimed by this standalone milestone. They remain assigned to Milestones
+2, 3, and 5 rather than being inferred from local transport conformance.
+
 ### Milestone 2 — transparent wallet integration
 
 - [ ] Add feature propagation and the hybrid default wallet transport alias.
 - [ ] Preserve `iroh` in the NUT-17 URL scheme switch.
-- [ ] Add the generic native WebSocket stream constructor to
+- [x] Add the generic native WebSocket stream constructor to
   `cdk-http-client`.
 - [ ] Prove one wallet instance can use an HTTPS mint and an Iroh mint in the
   same process.

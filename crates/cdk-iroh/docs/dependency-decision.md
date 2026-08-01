@@ -2,6 +2,12 @@
 
 Decision date: 2026-08-01.
 
+Revalidated against the upstream `latest` package metadata on 2026-08-01:
+Iroh 1.0.3 and `iroh-tickets` 1.0.0 remain the current stable releases, and
+both declare Rust 1.91. The implementation uses the current standalone
+`iroh_tickets::endpoint::EndpointTicket`; it has no dependency on the removed
+pre-1.0 in-core ticket feature.
+
 ## Decision
 
 CDK raises its declared MSRV from Rust 1.85.0 to 1.91.0 and pins `iroh` to

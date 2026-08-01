@@ -11,21 +11,31 @@ license.workspace = true
 readme = "README.md"
 
 [dependencies]
-iroh.workspace = true
-iroh-tickets.workspace = true
-tokio = { workspace = true, features = ["io-util"] }
-
-[dev-dependencies]
+async-trait.workspace = true
 axum.workspace = true
 bytes = "1"
+cashu.workspace = true
+cdk-http-client = { workspace = true, features = ["bitreq"] }
 futures.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync", "time"] }
+iroh.workspace = true
+iroh-tickets.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_urlencoded = "0.7"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "rt-multi-thread"] }
 tokio-tungstenite = { workspace = true, features = ["handshake"] }
 tokio-util = { workspace = true, features = ["rt"] }
 tower.workspace = true
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync", "time"] }
 
 [lints]
 workspace = true
