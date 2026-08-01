@@ -571,12 +571,22 @@ pub struct Transaction {
     /// Saga ID if this transaction was part of a saga
     #[serde(default)]
     pub saga_id: Option<Uuid>,
+    /// Transaction status
+    #[serde(default)]
+    pub status: TransactionStatus,
 }
 
 impl Transaction {
-    /// Transaction ID
+    /// Transaction ID.
+    ///
+    /// Saga-managed transactions are identified by their saga ID so that
+    /// separate wallet operations involving the same proofs do not collide.
+    /// Legacy transactions without a saga ID retain their proof-derived ID.
     pub fn id(&self) -> TransactionId {
-        TransactionId::new(self.ys.clone())
+        match self.saga_id {
+            Some(saga_id) => TransactionId::from_saga_id(saga_id),
+            None => TransactionId::new(self.ys.clone()),
+        }
     }
 
     /// Check if transaction matches conditions
@@ -629,6 +639,42 @@ pub enum TransactionDirection {
     Outgoing,
 }
 
+/// Wallet transaction status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionStatus {
+    /// The transaction is still in progress.
+    Pending,
+    /// The transaction completed successfully.
+    #[default]
+    Completed,
+    /// The transaction failed or was revoked.
+    Failed,
+}
+
+impl fmt::Display for TransactionStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Completed => write!(f, "completed"),
+            Self::Failed => write!(f, "failed"),
+        }
+    }
+}
+
+impl FromStr for TransactionStatus {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            _ => Err(Error::InvalidTransactionStatus),
+        }
+    }
+}
+
 impl std::fmt::Display for TransactionDirection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -656,7 +702,9 @@ impl FromStr for TransactionDirection {
 pub struct TransactionId([u8; 32]);
 
 impl TransactionId {
-    /// Create new [`TransactionId`]
+    /// Create a legacy proof-derived [`TransactionId`].
+    ///
+    /// Saga-managed transactions use [`Self::from_saga_id`] instead.
     pub fn new(ys: Vec<PublicKey>) -> Self {
         let mut ys = ys;
         ys.sort();
@@ -668,13 +716,28 @@ impl TransactionId {
         Self(hash.to_byte_array())
     }
 
-    /// From proofs
+    /// Create a legacy proof-derived [`TransactionId`] from proofs.
+    ///
+    /// Saga-managed transactions use [`Self::from_saga_id`] instead.
     pub fn from_proofs(proofs: Proofs) -> Result<Self, nut00::Error> {
         let ys = proofs
             .iter()
             .map(|proof| proof.y())
             .collect::<Result<Vec<PublicKey>, nut00::Error>>()?;
         Ok(Self::new(ys))
+    }
+
+    /// Create a [`TransactionId`] from a wallet saga ID.
+    ///
+    /// The UUID's canonical 32-character representation preserves the existing
+    /// 32-byte transaction ID storage format and is portable across backends.
+    pub fn from_saga_id(saga_id: Uuid) -> Self {
+        let mut bytes = [0_u8; 32];
+        let encoded = saga_id.simple().to_string();
+        for (destination, source) in bytes.iter_mut().zip(encoded.bytes()) {
+            *destination = source;
+        }
+        Self(bytes)
     }
 
     /// From bytes
@@ -1256,6 +1319,45 @@ mod tests {
     }
 
     #[test]
+    fn transaction_id_from_saga_id_uses_canonical_uuid_bytes() {
+        let saga_id =
+            Uuid::parse_str("019fa338-b72f-7f21-9bb2-a504cdd5927b").expect("valid saga ID");
+        let transaction_id = TransactionId::from_saga_id(saga_id);
+
+        assert_eq!(
+            transaction_id.as_bytes(),
+            b"019fa338b72f7f219bb2a504cdd5927b"
+        );
+    }
+
+    #[test]
+    fn saga_managed_transactions_with_the_same_ys_have_distinct_ids() {
+        let ys = vec![SecretKey::generate().public_key()];
+        let transaction = Transaction {
+            mint_url: MintUrl::from_str("https://mint.example.com").expect("valid mint URL"),
+            direction: TransactionDirection::Outgoing,
+            amount: Amount::from(10),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys,
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: Some(Uuid::new_v4()),
+            status: TransactionStatus::Pending,
+        };
+        let mut received = transaction.clone();
+        received.direction = TransactionDirection::Incoming;
+        received.saga_id = Some(Uuid::new_v4());
+
+        assert_ne!(transaction.id(), received.id());
+    }
+
+    #[test]
     fn test_matches_conditions() {
         let keyset_id = Id::from_str("00deadbeef123456").unwrap();
         let proof = Proof::new(
@@ -1404,5 +1506,55 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn transaction_status_round_trips_and_rejects_unknown_values() {
+        for status in [
+            TransactionStatus::Pending,
+            TransactionStatus::Completed,
+            TransactionStatus::Failed,
+        ] {
+            assert_eq!(
+                TransactionStatus::from_str(&status.to_string()).expect("valid status"),
+                status
+            );
+        }
+
+        assert!(matches!(
+            TransactionStatus::from_str("unknown"),
+            Err(Error::InvalidTransactionStatus)
+        ));
+    }
+
+    #[test]
+    fn transaction_without_status_defaults_to_completed() {
+        let transaction = Transaction {
+            mint_url: MintUrl::from_str("https://mint.example.com").expect("valid mint URL"),
+            direction: TransactionDirection::Incoming,
+            amount: Amount::from(10),
+            fee: Amount::ZERO,
+            unit: CurrencyUnit::Sat,
+            ys: vec![SecretKey::generate().public_key()],
+            timestamp: 42,
+            memo: None,
+            metadata: HashMap::new(),
+            quote_id: None,
+            payment_request: None,
+            payment_proof: None,
+            payment_method: None,
+            saga_id: None,
+            status: TransactionStatus::Pending,
+        };
+        let mut value = serde_json::to_value(transaction).expect("serialize transaction");
+        value
+            .as_object_mut()
+            .expect("transaction serializes as an object")
+            .remove("status");
+
+        let decoded: Transaction =
+            serde_json::from_value(value).expect("deserialize legacy transaction");
+
+        assert_eq!(decoded.status, TransactionStatus::Completed);
     }
 }

@@ -25,7 +25,7 @@ use tracing::instrument;
 use crate::error::Error;
 use crate::migrations::migrate_00_to_01;
 use crate::wallet::migrations::{
-    migrate_01_to_02, migrate_02_to_03, migrate_03_to_04, migrate_04_to_05,
+    migrate_01_to_02, migrate_02_to_03, migrate_03_to_04, migrate_04_to_05, migrate_05_to_06,
 };
 
 mod migrations;
@@ -59,7 +59,7 @@ const KEYSET_U32_MAPPING: TableDefinition<u32, &str> = TableDefinition::new("key
 // <(primary_namespace, secondary_namespace, key), value>
 const KV_STORE_TABLE: TableDefinition<(&str, &str, &str), &[u8]> = TableDefinition::new("kv_store");
 
-const DATABASE_VERSION: u32 = 5;
+const DATABASE_VERSION: u32 = 6;
 
 /// Wallet Redb Database
 #[derive(Debug, Clone)]
@@ -125,6 +125,10 @@ impl WalletRedbDatabase {
 
                             if current_file_version == 4 {
                                 current_file_version = migrate_04_to_05(Arc::clone(&db))?;
+                            }
+
+                            if current_file_version == 5 {
+                                current_file_version = migrate_05_to_06(Arc::clone(&db))?;
                             }
 
                             if current_file_version != DATABASE_VERSION {

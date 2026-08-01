@@ -13,7 +13,7 @@ use tracing::instrument;
 
 use crate::error::Error;
 use crate::nuts::SecretKey;
-use crate::wallet::types::{MintQuote, TransactionDirection};
+use crate::wallet::types::{MintQuote, TransactionDirection, TransactionStatus};
 use crate::wallet::Wallet;
 
 /// KV store namespace for npubcash-related data
@@ -339,7 +339,10 @@ impl Wallet {
             .list_transactions(Some(TransactionDirection::Incoming))
             .await?
             .iter()
-            .any(|tx| tx.quote_id.as_ref() == Some(&mint_quote.id));
+            .any(|tx| {
+                tx.quote_id.as_ref() == Some(&mint_quote.id)
+                    && tx.status != TransactionStatus::Failed
+            });
 
         if exists {
             return Ok(None);

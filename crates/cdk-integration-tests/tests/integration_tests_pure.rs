@@ -31,7 +31,7 @@ use cdk::mint::Mint;
 use cdk::nuts::nut00::ProofsMethods;
 use cdk::subscription::Params;
 use cdk::types::QuoteTTL;
-use cdk::wallet::types::{TransactionDirection, TransactionId};
+use cdk::wallet::types::{TransactionDirection, TransactionId, TransactionStatus};
 use cdk::wallet::{MintConnector, P2PKLockedProofSendMode, ReceiveOptions, SendMemo, SendOptions};
 use cdk::{Amount, StreamExt};
 use cdk_common::mint::OperationKind;
@@ -101,6 +101,7 @@ async fn test_swap_to_send() {
                 .expect("Failed to get ys")
         )
     );
+    let send_transaction_id = TransactionId::from_saga_id(prepared_send.operation_id());
     let token = prepared_send
         .confirm(Some(SendMemo::for_token("test_swapt_to_send")))
         .await
@@ -132,11 +133,8 @@ async fn test_swap_to_send() {
         )
     );
 
-    let transaction_id =
-        TransactionId::from_proofs(token_proofs.clone()).expect("Failed to get tx id");
-
     let transaction = wallet_alice
-        .get_transaction(transaction_id)
+        .get_transaction(send_transaction_id)
         .await
         .expect("Failed to get transaction")
         .expect("Transaction not found");
@@ -146,6 +144,7 @@ async fn test_swap_to_send() {
     assert_eq!(Amount::from(0), transaction.fee);
     assert_eq!(CurrencyUnit::Sat, transaction.unit);
     assert_eq!(token_proofs.ys().unwrap(), transaction.ys);
+    assert_eq!(TransactionStatus::Pending, transaction.status);
 
     // Alice sends cashu, Carol receives
     let wallet_carol = create_test_wallet_for_mint(mint_bob.clone())
@@ -171,10 +170,15 @@ async fn test_swap_to_send() {
     );
 
     let transaction = wallet_carol
-        .get_transaction(transaction_id)
+        .list_transactions(Some(TransactionDirection::Incoming))
         .await
-        .expect("Failed to get transaction")
+        .expect("Failed to list transactions")
+        .into_iter()
+        .find(|transaction| {
+            transaction.ys == token_proofs.ys().expect("Failed to get transaction ys")
+        })
         .expect("Transaction not found");
+    assert_ne!(send_transaction_id, transaction.id());
     assert_eq!(wallet_carol.mint_url, transaction.mint_url);
     assert_eq!(TransactionDirection::Incoming, transaction.direction);
     assert_eq!(Amount::from(40), transaction.amount);
@@ -182,6 +186,65 @@ async fn test_swap_to_send() {
     assert_eq!(CurrencyUnit::Sat, transaction.unit);
     assert_eq!(token_proofs.ys().unwrap(), transaction.ys);
     assert_eq!(token.memo().clone(), transaction.memo);
+    assert_eq!(TransactionStatus::Completed, transaction.status);
+}
+
+/// Sending and receiving the same token in one wallet must create two history entries.
+#[tokio::test]
+async fn test_send_to_same_wallet_preserves_transaction_history() {
+    setup_tracing();
+    let mint = create_and_start_test_mint()
+        .await
+        .expect("Failed to create test mint");
+    let wallet = create_test_wallet_for_mint(mint)
+        .await
+        .expect("Failed to create test wallet");
+
+    fund_wallet(wallet.clone(), 64, None)
+        .await
+        .expect("Failed to fund wallet");
+
+    let prepared_send = wallet
+        .prepare_send(Amount::from(40), SendOptions::default())
+        .await
+        .expect("Failed to prepare send");
+    let outgoing_id = TransactionId::from_saga_id(prepared_send.operation_id());
+    let token = prepared_send
+        .confirm(Some(SendMemo::for_token("self-send")))
+        .await
+        .expect("Failed to send token");
+    let keysets_info = to_keyset_infos(&wallet.keysets(Default::default()).await.unwrap());
+    let token_proofs = token.proofs(&keysets_info).unwrap();
+    let token_ys = token_proofs.ys().expect("Failed to get token ys");
+
+    wallet
+        .receive_proofs(
+            token_proofs,
+            ReceiveOptions::default(),
+            token.memo().clone(),
+            Some(token.to_string()),
+        )
+        .await
+        .expect("Failed to receive token");
+
+    let outgoing = wallet
+        .get_transaction(outgoing_id)
+        .await
+        .expect("Failed to get outgoing transaction")
+        .expect("Outgoing transaction not found");
+    assert_eq!(outgoing.direction, TransactionDirection::Outgoing);
+    assert_eq!(outgoing.status, TransactionStatus::Pending);
+    assert_eq!(outgoing.ys, token_ys);
+
+    let incoming = wallet
+        .list_transactions(Some(TransactionDirection::Incoming))
+        .await
+        .expect("Failed to list incoming transactions")
+        .into_iter()
+        .find(|transaction| transaction.ys == token_ys)
+        .expect("Incoming transaction not found");
+    assert_eq!(incoming.status, TransactionStatus::Completed);
+    assert_ne!(incoming.id(), outgoing_id);
 }
 
 /// Tests the NUT-06 functionality (mint discovery):
@@ -233,6 +296,7 @@ async fn test_mint_nut06() {
     assert_eq!(Amount::from(64), transaction.amount);
     assert_eq!(Amount::from(0), transaction.fee);
     assert_eq!(CurrencyUnit::Sat, transaction.unit);
+    assert_eq!(TransactionStatus::Completed, transaction.status);
 
     let initial_mint_url = wallet_alice.mint_url.clone();
     let mint_info_before = wallet_alice
