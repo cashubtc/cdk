@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "vectors": [
+    {
+      "name": "2-of-3",
+      "member_count": 3,
+      "signature_threshold": 2,
+      "consensus_threshold": 3,
+      "proposal_canonical_bytes": 1035,
+      "coordinator_public_key": "03a1fcaacd11a21e18c166bcc400a2d857e9904398e047edd6bb5c0344ca09ae55",
+      "invitation_capability_hash": "741e1fe8d1a6a120ebec1416e46c5feb2dc104ef6461eddc14e5a868a7ae8a2a",
+      "invitation_checksum": "6d87c50453d9",
+      "first_enrollment_signature": "5510412bae5f3f892afa278e64b0b4e09afef78f255d985e4b4070715397e768f5f94113f9cd479827a17d36885b6b664ae46b905946da6f76c80737aae212fb",
+      "proposal_hash": "9c875e5d415155c27557e614e20745f1a7608c14a8f599b42e6138d537636f3e",
+      "setup_authorization_hash": "9c875e5d415155c27557e614e20745f1a7608c14a8f599b42e6138d537636f3e",
+      "ceremony_id": "3dca94f6717362d35bcd0bc9d0a8ff3560c92640eb0de20634c691ce97dbbb51",
+      "coordinator_proposal_signature": "5a04c79cffcb9e24c9dcf472b336c8051cc1f183b140351e6bba71658bb7d03f57929a695061fa80afd4f385a001ab7360e97e7133bfa7b6f760018a44327ca3",
+      "first_approval_signature": "002db9ebf7b37edd733e179f2bd06b604284bb2ab1ce394eb556257df2ecf0f70e37f09d88f3fb7c16e31fc55d5f17e84736890d2b9146797f4b36df61c2c5ff",
+      "manifest_certification_hash": "39b0ecdd124765b6039a136ca1d32c55eb929d2f7c800d95ffc5da17178a17f2",
+      "coordinator_manifest_signature": "9faabe49dfdadcb6f99897fb3af0208d271b7e7da04a5d2905327877e3b655fe2fae4790d3e457aa626eb74c585d416d9a5505bbd7915ffdf48c1f2c638e5c1e"
+    },
+    {
+      "name": "3-of-5",
+      "member_count": 5,
+      "signature_threshold": 3,
+      "consensus_threshold": 4,
+      "proposal_canonical_bytes": 1597,
+      "coordinator_public_key": "03a1fcaacd11a21e18c166bcc400a2d857e9904398e047edd6bb5c0344ca09ae55",
+      "invitation_capability_hash": "d6f0573801ca67b3eb8e879896baa3f8cc3ec754f46a303947c514471f42d6fd",
+      "invitation_checksum": "c01aa838cccb",
+      "first_enrollment_signature": "87cd5b1ee72a88376bfb0f4cf9a56bb28f97c0125994b85d2fa62136b10ca75ed96f6a53b230b4c10a1cb5f8a67cc423da3a38e5469b1882b6e0079af56b3641",
+      "proposal_hash": "e12f704c1ab451b15a95eab8e666728f0ada971ed77970b33b706e8b51efc209",
+      "setup_authorization_hash": "e12f704c1ab451b15a95eab8e666728f0ada971ed77970b33b706e8b51efc209",
+      "ceremony_id": "6583c27c2052b619fee2972742dd960a821b1e3cc0b1362b11219d2e38d239d9",
+      "coordinator_proposal_signature": "eafc3e1da08a5e9ea00288164a7cc0e0b37a8e0125090ea7b088ebab452c9e054586f09368872bc1bf84723d4fde491dbccba7154ac3b694c7f3ab4aeff63eec",
+      "first_approval_signature": "601f791bb884c948ea3901179b5c886272df2cb1ab48c0864f018fb41a57ec1f6ac2d3cbade473609067a2ebf343aa8685b58d6fabf9d949446bef7c044b65c8",
+      "manifest_certification_hash": "cc442812508064f19404e50260e8e4d9e72d595e76eb731f449a1ec808a5da81",
+      "coordinator_manifest_signature": "4aa4360373ba12ca8c516ee2bed60ea5f188a758ac60d34bffc4447b22feff06710aeec83292aa6a02221acc3cbdfe317d1987f2d69d4ac70332853258fc6f76"
+    },
+    {
+      "name": "22-of-64",
+      "member_count": 64,
+      "signature_threshold": 22,
+      "consensus_threshold": 43,
+      "proposal_canonical_bytes": 18542,
+      "coordinator_public_key": "03a1fcaacd11a21e18c166bcc400a2d857e9904398e047edd6bb5c0344ca09ae55",
+      "invitation_capability_hash": "199a6ad468294bb3be7eca2eee48e64ba33e2167ab06c315268945e27b495504",
+      "invitation_checksum": "19d54719c71e",
+      "first_enrollment_signature": "c37481650df12ab5910691727e6131d92c604d261231e2ff5cfa13e7220b5c6aa2a5a5f41bfd7554c74a366092d6ca6b0cd54533dc89ec522ba6bc7b9465a2fc",
+      "proposal_hash": "be80364a01c9d55260a8f2dea76a23acc276460fb32093d9993c0ba66ed6f531",
+      "setup_authorization_hash": "be80364a01c9d55260a8f2dea76a23acc276460fb32093d9993c0ba66ed6f531",
+      "ceremony_id": "0bf4f16eab76e5ecee359f0d46ed0c38a656ead92f50a4c842790de5ec4c493f",
+      "coordinator_proposal_signature": "b2f2ef1fd9cbeae7667a6592e72f31195d002c461f939f80bf124ebb29549b2209aafd9713a1c9a5e680234690919aac9939b72b002838869719a0f365b4793d",
+      "first_approval_signature": "b39e57f1ee0de9004a5f1b80fa1d4088f0031b7eb9738d72a92e9798648c7ddb66c4f14cf55c6ebb09195bb99db01e0d2a8dc29c94c5d1b739066df117f95ec7",
+      "manifest_certification_hash": "725ab9c3d044250d7c7fbf66850f651ee78f01ce0f5da2ea501306c383554bfc",
+      "coordinator_manifest_signature": "812365d675b47395453c1f9d5044a5a99f34aa943b6a49e1c5be18a822c78164f1307f56d6c81ac0b5c4fcfb36db05ba7ef11ae3f951b6418113895dda087a91"
+    }
+  ]
+}

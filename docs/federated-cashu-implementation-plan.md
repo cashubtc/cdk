@@ -34,6 +34,10 @@ Every safety-critical operation must be ordered, durably journaled, replayable, 
 ## Current implementation state
 
 - Federation setup uses a real dealer-free DKG ceremony with enrollment, roster agreement, identity binding, restartable rounds, transcript signatures, activation, and identical final public configuration export.
+  Enrollment and roster assembly are currently file-mediated and assume an
+  authenticated out-of-band operator ceremony. The planned signed,
+  multi-operator setup workflow is specified in
+  [`federated-cashu-multi-operator-setup-implementation-plan.md`](federated-cashu-multi-operator-setup-implementation-plan.md).
 - Members run AlephBFT over authenticated private REST. Operations are durably
   journaled and deterministically applied. Sparse scheduled/recovery checkpoint
   quorums authenticate recovery frontiers; normal restart validates only the
@@ -83,6 +87,9 @@ blocked by:
   deterministic mint-and-melt regtest, SQLite/PostgreSQL parity, opt-in paid
   Signet coverage, and independent cryptographic/state review;
 - multi-host deployment, upgrade, backup/restore, rotation, and incident drills;
+- signed multi-operator enrollment, unanimous roster/policy approval, and
+  setup-manifest distribution that remove centralized private-material
+  generation and manual configuration exchange from the production setup UX;
   and
 - sustained high-load CPU and p99 measurement plus asymmetric latency, loss,
   bandwidth, real TLS, multi-process, and real payment-backend performance
