@@ -26,6 +26,7 @@ DKG_CEREMONY_TIMEOUT_SECONDS="${DKG_CEREMONY_TIMEOUT_SECONDS:-1800}"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
 CARGO_REGISTRY_VOLUME="${CARGO_REGISTRY_VOLUME:-cdk-nocean-cargo-registry}"
 BUILD_TARGET_DIR="$REPO_ROOT/target/linux-x86_64"
+BARK_REPO_ROOT="${BARK_REPO_ROOT:-$REPO_ROOT/../bark-cdk}"
 REPORT_FILE="${REPORT_FILE:-$REPO_ROOT/target/nocean-multi-operator-drill.json}"
 OPERATOR_SCRIPT="$SCRIPT_DIR/nocean_federation_operator.sh"
 WALLET_SCRIPT="$SCRIPT_DIR/nocean_federation_wallet_smoke.sh"
@@ -57,6 +58,7 @@ Important overrides:
   REQUIRE_UNIQUE_MACHINES  Minimum distinct /etc/machine-id values (default 5).
   STOP_LEGACY_SESSION      Stop cdk-federation before taking its public ports.
   PUBLIC_BASE_DOMAIN       Preconfigured cdk-{n} and cdk-fed-{n} TLS domain.
+  BARK_REPO_ROOT           Sibling checkout needed for Cargo path resolution.
   REPORT_FILE              Local redacted JSON drill report.
 EOF
 }
@@ -282,6 +284,7 @@ build_linux_binaries() {
         --platform "$DOCKER_PLATFORM" \
         --env "RUSTUP_TOOLCHAIN=$rust_version" \
         --mount "type=bind,src=$REPO_ROOT,dst=/work" \
+        --mount "type=bind,src=$BARK_REPO_ROOT,dst=/bark-cdk,readonly" \
         --mount "type=volume,src=$CARGO_REGISTRY_VOLUME,dst=/usr/local/cargo/registry" \
         --workdir /work \
         "$rust_image" \
@@ -568,6 +571,9 @@ done
 for file in "$OPERATOR_SCRIPT" "$WALLET_SCRIPT"; do
     [[ -f "$file" ]] || die "required deployment helper is missing"
 done
+[[ -f "$BARK_REPO_ROOT/bark/Cargo.toml" ]] \
+    || die "BARK_REPO_ROOT must point to the Bark checkout required by Cargo"
+BARK_REPO_ROOT="$(cd -- "$BARK_REPO_ROOT" && pwd)"
 for setting in "$THRESHOLD" "$PORT_START" "$PROMETHEUS_PORT_START" \
     "$REQUIRE_UNIQUE_MACHINES" "$STATUS_TIMEOUT_SECS" "$STATUS_POLL_SECS" \
     "$ACTION_TIMEOUT_SECS" "$DKG_MAX_TICKS" "$DKG_RETRY_DELAY_MS" \

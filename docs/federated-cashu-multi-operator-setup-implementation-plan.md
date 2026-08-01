@@ -1296,7 +1296,11 @@ rehearsal on that machine, but the generated report must call it a single-host
 rehearsal and cannot close the multi-host checkbox or gate. Shell syntax,
 executable-mode, help-surface, whitespace, and credential/PII scans pass for
 all three new scripts. The live isolated-session drill and a real five-machine
-run remain outstanding.
+run remain outstanding. The first rehearsal invocation stopped during the
+local container build, before upload or remote mutation, because Cargo resolves
+the optional Bark workspace path even in the fakewallet feature set. The new
+driver now validates and mounts that sibling checkout read-only, matching the
+established Nocean build path.
 
 ## Verification matrix
 
