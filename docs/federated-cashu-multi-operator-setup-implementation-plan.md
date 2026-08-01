@@ -1240,7 +1240,7 @@ Clippy passes with only the already-recorded dependency allowances.
 
 ### Milestone 9 — Real multi-host deployment drill
 
-- [ ] Add or update a Nocean deployment script, using
+- [x] Add or update a Nocean deployment script, using
   `scripts/deploy_nocean_federation.sh` as the build, transfer, and health-check
   reference, that drives only the new invitation-based setup CLI.
 - [ ] Deploy at least five members on the Nocean servers with real HTTPS
@@ -1271,6 +1271,32 @@ remaining limits. The report must distinguish a multi-machine run from any
 single-machine isolated-session rehearsal. This closes only the multi-host
 setup gate; it does not waive the parent plan's independent security,
 payment-backend, or real-funds gates.
+
+**Progress:** in progress. The deployment tooling is implemented as
+`scripts/deploy_nocean_multi_operator_federation.sh` with two deliberately
+operator-local helpers. It accepts exactly five SSH operator environments,
+checksum-verifies the Linux binaries, creates a protected directory and named
+tmux session per operator, and runs the ordinary create, invitation-file join,
+propose, review, approve, status, concurrent serve, and explicit activate
+commands. Only protected invitations cross the deployment driver; each helper
+creates its own setup identity, SQLite state, runtime seed, private config, and
+encrypted backup locally. The driver also encodes the failed pre-certification
+replacement, coordinator-loss, wallet, one-member catch-up, coordinated
+restart, public-config comparison, resource sampling, and redacted-report
+checks required by this milestone.
+
+The topology preflight hashes (but neither logs nor records) the remote machine
+identity and defaults to requiring five unique machines before any build,
+upload, session stop, or remote write. On 2026-08-01 the configured Nocean
+access exposed five public TLS names but only one reachable SSH machine, with
+no SSH fan-out or container-cluster worker topology. The strict preflight
+therefore aborted as designed with `1 < 5` before mutating the deployment.
+Setting `REQUIRE_UNIQUE_MACHINES=1` permits the requested five-session isolated
+rehearsal on that machine, but the generated report must call it a single-host
+rehearsal and cannot close the multi-host checkbox or gate. Shell syntax,
+executable-mode, help-surface, whitespace, and credential/PII scans pass for
+all three new scripts. The live isolated-session drill and a real five-machine
+run remain outstanding.
 
 ## Verification matrix
 
