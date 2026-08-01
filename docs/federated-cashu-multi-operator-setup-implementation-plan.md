@@ -1361,6 +1361,13 @@ documented empty representation while still rejecting any nonzero content; no
 quote, payment, token, or wallet secret was created or printed by the failed
 assertion.
 
+The next invocation stopped before session initialization when an SCP stream
+was dropped during binary upload; active ceremony state remained empty. Binary,
+helper, environment, invitation, and public-config transfers now use three
+bounded attempts plus SSH keepalives. Protocol actions are deliberately not
+blindly retried by that transport wrapper, preserving their explicit replay and
+acknowledgement semantics.
+
 ## Verification matrix
 
 At minimum, implementation must cover:

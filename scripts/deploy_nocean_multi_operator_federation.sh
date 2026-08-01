@@ -33,7 +33,13 @@ BARK_REPO_ROOT="${BARK_REPO_ROOT:-$REPO_ROOT/../bark-cdk}"
 REPORT_FILE="${REPORT_FILE:-$REPO_ROOT/target/nocean-multi-operator-drill.json}"
 OPERATOR_SCRIPT="$SCRIPT_DIR/nocean_federation_operator.sh"
 WALLET_SCRIPT="$SCRIPT_DIR/nocean_federation_wallet_smoke.sh"
-SSH_OPTIONS=(-o BatchMode=yes -o ConnectTimeout=15)
+SSH_OPTIONS=(
+    -o BatchMode=yes
+    -o ConnectTimeout=30
+    -o ConnectionAttempts=3
+    -o ServerAliveInterval=15
+    -o ServerAliveCountMax=4
+)
 HOSTS=()
 STAGING_DIR=""
 MAX_DKG_TOTAL_RSS_KB=0
@@ -78,6 +84,19 @@ require_command() {
 
 require_positive() {
     [[ "$2" =~ ^[1-9][0-9]*$ ]] || die "$1 must be a positive integer"
+}
+
+scp_retry() {
+    local attempt
+    for attempt in 1 2 3; do
+        if scp -q "${SSH_OPTIONS[@]}" "$@"; then
+            return 0
+        fi
+        if ((attempt < 3)); then
+            sleep "$attempt"
+        fi
+    done
+    die "SCP transfer failed after three bounded attempts"
 }
 
 sha256_file() {
@@ -237,12 +256,12 @@ transfer_invitation() {
     source_path="$(operator_dir 1)/ceremonies/$label/setup-state/invitations/member-$member.invite"
     destination_dir="$(operator_dir "$member")/ceremonies/$label"
     local_invitation="$STAGING_DIR/$label-member-$member.invite"
-    scp -q "${SSH_OPTIONS[@]}" "$source_host:$source_path" "$local_invitation"
+    scp_retry "$source_host:$source_path" "$local_invitation"
     chmod 600 "$local_invitation"
     local command
     printf -v command 'mkdir -p %q && chmod 700 %q' "$destination_dir" "$destination_dir"
     ssh "${SSH_OPTIONS[@]}" "$destination_host" "$command"
-    scp -q "${SSH_OPTIONS[@]}" "$local_invitation" \
+    scp_retry "$local_invitation" \
         "$destination_host:$destination_dir/incoming.invite.upload"
     printf -v command 'chmod 600 %q && mv %q %q' \
         "$destination_dir/incoming.invite.upload" \
@@ -329,7 +348,7 @@ install_operators() {
             'test -x %q && test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q' \
             "$dir/bin/cdk-mintd" "$dir/bin/cdk-mintd" "$mintd_hash"
         if ! ssh "${SSH_OPTIONS[@]}" "$host" "$command"; then
-            scp -q "${SSH_OPTIONS[@]}" "$mintd" "$host:$dir/bin/cdk-mintd.upload"
+            scp_retry "$mintd" "$host:$dir/bin/cdk-mintd.upload"
             printf -v command \
                 'test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q && chmod 755 %q && mv %q %q' \
                 "$dir/bin/cdk-mintd.upload" "$mintd_hash" \
@@ -340,18 +359,18 @@ install_operators() {
             'test -x %q && test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q' \
             "$dir/bin/cdk-cli" "$dir/bin/cdk-cli" "$cli_hash"
         if ! ssh "${SSH_OPTIONS[@]}" "$host" "$command"; then
-            scp -q "${SSH_OPTIONS[@]}" "$cli" "$host:$dir/bin/cdk-cli.upload"
+            scp_retry "$cli" "$host:$dir/bin/cdk-cli.upload"
             printf -v command \
                 'test "$(sha256sum %q | awk '\''{print $1}'\'')" = %q && chmod 755 %q && mv %q %q' \
                 "$dir/bin/cdk-cli.upload" "$cli_hash" \
                 "$dir/bin/cdk-cli.upload" "$dir/bin/cdk-cli.upload" "$dir/bin/cdk-cli"
             ssh "${SSH_OPTIONS[@]}" "$host" "$command"
         fi
-        scp -q "${SSH_OPTIONS[@]}" "$OPERATOR_SCRIPT" \
+        scp_retry "$OPERATOR_SCRIPT" \
             "$host:$dir/scripts/nocean_federation_operator.sh.upload"
-        scp -q "${SSH_OPTIONS[@]}" "$WALLET_SCRIPT" \
+        scp_retry "$WALLET_SCRIPT" \
             "$host:$dir/scripts/nocean_federation_wallet_smoke.sh.upload"
-        scp -q "${SSH_OPTIONS[@]}" "$env_file" "$host:$dir/operator.env.upload"
+        scp_retry "$env_file" "$host:$dir/operator.env.upload"
         printf -v command \
             'set -eu; cd %q; chmod 755 scripts/*.upload; chmod 600 operator.env.upload; mv scripts/nocean_federation_operator.sh.upload scripts/nocean_federation_operator.sh; mv scripts/nocean_federation_wallet_smoke.sh.upload scripts/nocean_federation_wallet_smoke.sh; mv operator.env.upload operator.env' \
             "$dir"
@@ -469,7 +488,7 @@ verify_public_config() {
             || die "activated public config differs across members"
     done
     local public_copy="$STAGING_DIR/federation-public.json"
-    scp -q "${SSH_OPTIONS[@]}" \
+    scp_retry \
         "$(member_host 1):$(operator_dir 1)/ceremonies/active/setup-state/activated/federation-public.json" \
         "$public_copy"
     setup_authorization="$(jq -r '.setup_authorization' "$public_copy")"
