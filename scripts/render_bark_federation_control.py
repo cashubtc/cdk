@@ -60,8 +60,8 @@ BARK_POLICY_CONFIG="$PWD/config/bark-policy.json"
         f'"${{ALEPH_BFT_NETWORK_PUMP_MAX_MESSAGES_PER_TICK:-{args.aleph_bft_network_pump_max_messages_per_tick}}}"',
     )
     replace_once(
-        "for command in tmux curl jq awk find ps seq; do",
-        "for command in tmux curl jq awk find ps seq openssl; do",
+        "for command in tmux curl jq awk find ps seq sed cmp; do",
+        "for command in tmux curl jq awk find ps seq sed cmp openssl; do",
     )
     replace_once(
         "    local wallet_config development_policy_config\n",
@@ -158,13 +158,12 @@ EOF
 ''',
     )
     replace_once(
-        '''            --frost-cdk-application-key-epoch "$APPLICATION_KEY_EPOCH"
+        '''        --frost-application-key-epoch "$APPLICATION_KEY_EPOCH" \\
 ''',
-        '''            --frost-cdk-application-key-epoch "$APPLICATION_KEY_EPOCH"
-            --frost-bark-network "$NETWORK"
-            --frost-bark-ark-server-public-key "$BARK_ARK_SERVER_PUBLIC_KEY"
-            --frost-bark-application-key-epoch "$BARK_APPLICATION_KEY_EPOCH"
-            --frost-bark-policy-config "$BARK_POLICY_CONFIG"
+        '''        --frost-application-key-epoch "$APPLICATION_KEY_EPOCH" \\
+        --frost-bark-ark-server-public-key "$BARK_ARK_SERVER_PUBLIC_KEY" \\
+        --frost-bark-application-key-epoch "$BARK_APPLICATION_KEY_EPOCH" \\
+        --frost-bark-policy-config "$BARK_POLICY_CONFIG" \\
 ''',
     )
     text = text.replace(

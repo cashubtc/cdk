@@ -727,7 +727,7 @@ if [[ -n "$LOCAL_FEDERATION_DIR" ]]; then
     cp "$LOCAL_FEDERATION_DIR/federation-public.json" "$PUBLIC_CONFIG"
 else
     scp \
-        "$SSH_HOST:$REMOTE_DIR/member-1/dkg-final/federation-public.json" \
+        "$SSH_HOST:$REMOTE_DIR/member-1/setup-state/activated/federation-public.json" \
         "$PUBLIC_CONFIG"
 fi
 chmod 600 "$PUBLIC_CONFIG"
@@ -810,7 +810,7 @@ query_observed_status() {
         return
     fi
     ssh "$SSH_HOST" \
-        "cd ~/$REMOTE_DIR && timeout 30 bin/cdk-mintd federation status --public-config member-1/dkg-final/federation-public.json --private-config member-1/dkg-final/federation-private.json"
+        "cd ~/$REMOTE_DIR && timeout 30 bin/cdk-mintd federation status --public-config member-1/setup-state/activated/federation-public.json --private-config member-1/setup-state/activated/federation-private.json"
 }
 
 query_converged_status() {
@@ -830,7 +830,7 @@ query_converged_status() {
         return
     fi
     ssh "$SSH_HOST" \
-        "cd ~/$REMOTE_DIR && timeout 30 bin/cdk-mintd federation status --public-config member-1/dkg-final/federation-public.json --private-config member-1/dkg-final/federation-private.json --require-ready --require-converged --max-operation-lag 0 --require-no-digest-alerts --require-no-payment-observation-alerts --require-no-invalid-operation-alerts"
+        "cd ~/$REMOTE_DIR && timeout 30 bin/cdk-mintd federation status --public-config member-1/setup-state/activated/federation-public.json --private-config member-1/setup-state/activated/federation-private.json --require-ready --require-converged --max-operation-lag 0 --require-no-digest-alerts --require-no-payment-observation-alerts --require-no-invalid-operation-alerts"
 }
 
 wait_for_local_materialized_digest_convergence() {

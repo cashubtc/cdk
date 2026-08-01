@@ -3,61 +3,19 @@ set -euo pipefail
 
 CDK_MINTD_BIN="${CDK_MINTD_BIN:-cdk-mintd}"
 PUBLIC_CONFIG=@@PUBLIC_CONFIG_PATH@@
-FINAL_PUBLIC_CONFIG="$PUBLIC_CONFIG"
-DKG_SETUP_PUBLIC_CONFIG=@@DKG_SETUP_PUBLIC_CONFIG_PATH@@
 POSTGRES_SCHEMA_RESET_URL=@@POSTGRES_SCHEMA_RESET_URL@@
 RESET_POSTGRES_SCHEMAS="${RESET_POSTGRES_SCHEMAS:-0}"
 MEMBERS=(@@MEMBERS@@)
 PRIMARY_MEMBER="${PRIMARY_MEMBER:-@@PRIMARY_MEMBER@@}"
-RESTART_MEMBER="${RESTART_MEMBER:-@@RESTART_MEMBER@@}"
-CRASH_WINDOW_MEMBER="${CRASH_WINDOW_MEMBER:-$RESTART_MEMBER}"
-LONG_PARTITION_MEMBER="${LONG_PARTITION_MEMBER:-$RESTART_MEMBER}"
-EXERCISE_CRASH_WINDOW="${EXERCISE_CRASH_WINDOW:-1}"
+UNIT=@@UNIT@@
 STATUS_RETRIES="${STATUS_RETRIES:-60}"
 STATUS_SLEEP_SECONDS="${STATUS_SLEEP_SECONDS:-1}"
-CHECK_PROMETHEUS_METRICS="${CHECK_PROMETHEUS_METRICS:-1}"
-PROBE_DKG_SETUP_ROUTES="${PROBE_DKG_SETUP_ROUTES:-0}"
-DKG_ROUTE_PROBE_ONLY="${DKG_ROUTE_PROBE_ONLY:-0}"
-USE_DKG_SETUP_CONFIGS=0
-FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="${FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS:-}"
-if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
-  PROBE_DKG_SETUP_ROUTES=1
-fi
 SMOKE_QUOTE_RETRIES="${SMOKE_QUOTE_RETRIES:-300}"
 SMOKE_QUOTE_SLEEP_MS="${SMOKE_QUOTE_SLEEP_MS:-100}"
 SMOKE_OPERATION_TIMEOUT_SECONDS="${SMOKE_OPERATION_TIMEOUT_SECONDS:-300}"
-STANDARD_SEED_OFFSET="${STANDARD_SEED_OFFSET:-}"
-STANDARD_OPERATION_BATCHES="${STANDARD_OPERATION_BATCHES:-2}"
-POST_CRASH_SEED_OFFSET="${POST_CRASH_SEED_OFFSET:-}"
-POST_CRASH_OPERATION_BATCHES="${POST_CRASH_OPERATION_BATCHES:-1}"
-LONG_PARTITION_SEED_OFFSET="${LONG_PARTITION_SEED_OFFSET:-}"
-LONG_PARTITION_OPERATION_BATCHES="${LONG_PARTITION_OPERATION_BATCHES:-4}"
-ALEPH_BFT_AUTO_ROTATION_MAX_ROUND="${ALEPH_BFT_AUTO_ROTATION_MAX_ROUND:-}"
-ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION="${ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION:-1}"
-ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES="${ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES:-1}"
-PENDING_WALLET_DB="${PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/pending-melt-wallet.sqlite}"
-FAILED_PENDING_WALLET_DB="${FAILED_PENDING_WALLET_DB:-$(dirname "$PUBLIC_CONFIG")/failed-pending-melt-wallet.sqlite}"
 PIDS=()
 
-if [[ -z "$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS" ]]; then
-  FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="$SMOKE_OPERATION_TIMEOUT_SECONDS"
-fi
-if [[ -z "$STANDARD_SEED_OFFSET" ]]; then
-  if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
-    STANDARD_SEED_OFFSET="$ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES"
-  else
-    STANDARD_SEED_OFFSET=0
-  fi
-fi
-
 member_config() {
-  if [[ "$USE_DKG_SETUP_CONFIGS" == "1" ]]; then
-    case "$1" in
-# @@DKG_SETUP_CONFIG_CASES@@
-      *) return 1 ;;
-    esac
-    return 0
-  fi
   case "$1" in
 # @@CONFIG_CASES@@
     *) return 1 ;;
@@ -65,13 +23,6 @@ member_config() {
 }
 
 member_work_dir() {
-  if [[ "$USE_DKG_SETUP_CONFIGS" == "1" ]]; then
-    case "$1" in
-# @@DKG_SETUP_WORK_DIR_CASES@@
-      *) return 1 ;;
-    esac
-    return 0
-  fi
   case "$1" in
 # @@WORK_DIR_CASES@@
     *) return 1 ;;
@@ -79,22 +30,8 @@ member_work_dir() {
 }
 
 member_private_config() {
-  if [[ "$USE_DKG_SETUP_CONFIGS" == "1" ]]; then
-    case "$1" in
-# @@DKG_SETUP_PRIVATE_CONFIG_CASES@@
-      *) return 1 ;;
-    esac
-    return 0
-  fi
   case "$1" in
 # @@PRIVATE_CONFIG_CASES@@
-    *) return 1 ;;
-  esac
-}
-
-member_dkg_setup_request_dir() {
-  case "$1" in
-# @@DKG_SETUP_REQUEST_DIR_CASES@@
     *) return 1 ;;
   esac
 }
@@ -106,72 +43,11 @@ member_mint_url() {
   esac
 }
 
-member_federation_url() {
-  case "$1" in
-# @@FEDERATION_URL_CASES@@
-    *) return 1 ;;
-  esac
-}
-
 member_prometheus_url() {
   case "$1" in
 # @@PROMETHEUS_URL_CASES@@
     *) return 1 ;;
   esac
-}
-
-start_member() {
-  local member="$1"
-  local config
-  local work_dir
-  local mintd_env=()
-  local mintd_env_count=0
-  config="$(member_config "$member")"
-  work_dir="$(member_work_dir "$member")"
-  mkdir -p "$work_dir"
-  if [[ "$CHECK_PROMETHEUS_METRICS" != "1" ]]; then
-    mintd_env+=(CDK_MINTD_PROMETHEUS_ENABLED=false)
-    mintd_env_count=$((mintd_env_count + 1))
-  fi
-  if [[ "$USE_DKG_SETUP_CONFIGS" == "1" ]]; then
-    mintd_env+=(CDK_FEDERATION_DISABLE_PEER_SYNC=1)
-    mintd_env_count=$((mintd_env_count + 1))
-  fi
-  if [[ -n "$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS" ]]; then
-    mintd_env+=(CDK_MINTD_FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS="$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS")
-    mintd_env_count=$((mintd_env_count + 1))
-  fi
-  if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
-    mintd_env+=(CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_MAX_ROUND="$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND")
-    mintd_env_count=$((mintd_env_count + 1))
-    mintd_env+=(CDK_MINTD_FEDERATION_ALEPH_BFT_LIVE_SESSION_ROTATION_LIMIT="$ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION")
-    mintd_env_count=$((mintd_env_count + 1))
-  fi
-  if (( mintd_env_count == 0 )); then
-    "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
-  else
-    env "${mintd_env[@]}" "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" > "$work_dir/mintd.log" 2>&1 &
-  fi
-  PIDS[$member]=$!
-  printf 'started member %s with pid %s\n' "$member" "${PIDS[$member]}"
-}
-
-stop_member() {
-  local member="$1"
-  local pid="${PIDS[$member]:-}"
-  if [[ -z "$pid" ]]; then
-    return 0
-  fi
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-  unset 'PIDS[$member]'
-  printf 'stopped member %s\n' "$member"
-}
-
-cleanup() {
-  for member in "${MEMBERS[@]}"; do
-    stop_member "$member"
-  done
 }
 
 postgres_member_schema() {
@@ -181,31 +57,38 @@ postgres_member_schema() {
   esac
 }
 
-reset_postgres_schemas() {
-  if [[ -z "$POSTGRES_SCHEMA_RESET_URL" ]]; then
-    return 0
+stop_member() {
+  local member="$1"
+  local pid="${PIDS[$member]:-}"
+  if [[ -n "$pid" ]]; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    unset 'PIDS[$member]'
   fi
-  if [[ "$RESET_POSTGRES_SCHEMAS" != "1" ]]; then
-    printf 'generated PostgreSQL member schemas are configured; set RESET_POSTGRES_SCHEMAS=1 to reset them before smoke\n' >&2
-    return 1
-  fi
-  if ! command -v psql >/dev/null 2>&1; then
-    printf 'psql is required to reset PostgreSQL member schemas before smoke\n' >&2
-    return 1
-  fi
-  local member
-  for member in "${MEMBERS[@]}"; do
-    local schema
-    schema="$(postgres_member_schema "$member")"
-    psql "$POSTGRES_SCHEMA_RESET_URL" -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS \"$schema\" CASCADE; CREATE SCHEMA \"$schema\";" >/dev/null
-  done
 }
 
-reset_member_work_dirs() {
-  rm -f "$PENDING_WALLET_DB" "$PENDING_WALLET_DB-shm" "$PENDING_WALLET_DB-wal"
-  rm -f "$FAILED_PENDING_WALLET_DB" "$FAILED_PENDING_WALLET_DB-shm" "$FAILED_PENDING_WALLET_DB-wal"
-  reset_postgres_schemas
+cleanup() {
   local member
+  for member in "${MEMBERS[@]}"; do
+    stop_member "$member"
+  done
+}
+trap cleanup EXIT
+
+reset_state() {
+  local member
+  if [[ -n "$POSTGRES_SCHEMA_RESET_URL" ]]; then
+    if [[ "$RESET_POSTGRES_SCHEMAS" != "1" ]]; then
+      printf 'set RESET_POSTGRES_SCHEMAS=1 to reset generated PostgreSQL test schemas\n' >&2
+      return 1
+    fi
+    command -v psql >/dev/null
+    for member in "${MEMBERS[@]}"; do
+      local schema
+      schema="$(postgres_member_schema "$member")"
+      psql "$POSTGRES_SCHEMA_RESET_URL" -v ON_ERROR_STOP=1 -c "DROP SCHEMA IF EXISTS \"$schema\" CASCADE; CREATE SCHEMA \"$schema\";" >/dev/null
+    done
+  fi
   for member in "${MEMBERS[@]}"; do
     local work_dir
     work_dir="$(member_work_dir "$member")"
@@ -214,664 +97,44 @@ reset_member_work_dirs() {
   done
 }
 
-wait_for_status() {
-  local member="$1"
-  local work_dir
-  work_dir="$(member_work_dir "$member")"
-  for _ in $(seq 1 "$STATUS_RETRIES"); do
-    if member_status_line "$member" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep "$STATUS_SLEEP_SECONDS"
-  done
-  printf 'member %s did not answer signed federation status\n' "$member" >&2
-  tail -n 80 "$work_dir/mintd.log" >&2 || true
-  return 1
-}
-
-member_status_line() {
-  local member="$1"
-  local private_config
-  private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready | awk '/^member / { print; exit }'
-}
-
-member_dkg_status() {
-  local member="$1"
-  local private_config
-  local config
-  local work_dir
-  private_config="$(member_private_config "$member")"
-  config="$(member_config "$member")"
-  work_dir="$(member_work_dir "$member")"
-  "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready | awk '/^finalized_ready=true/ { print; exit }'
-}
-
-member_dkg_setup_records_line() {
-  local member="$1"
-  local private_config
-  local config
-  local work_dir
-  private_config="$(member_private_config "$member")"
-  config="$(member_config "$member")"
-  work_dir="$(member_work_dir "$member")"
-  "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database | awk '/^setup_records / { print; exit }'
-}
-
-member_dkg_completion_records_line() {
-  local member="$1"
-  local private_config
-  local config
-  local work_dir
-  private_config="$(member_private_config "$member")"
-  config="$(member_config "$member")"
-  work_dir="$(member_work_dir "$member")"
-  "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database | awk '/^setup_transcript=/ { print; exit }'
-}
-
-print_dkg_record_runbook() {
-  local member="$1"
-  local private_config
-  local config
-  local work_dir
-  private_config="$(member_private_config "$member")"
-  config="$(member_config "$member")"
-  work_dir="$(member_work_dir "$member")"
-  cat >&2 <<RUNBOOK
-DKG record recovery for member $member:
-  Database-backed readiness:
-    "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$config" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --from-database --require-ready
-  In-progress setup diagnostics:
-    The database-backed command prints setup_records with collected commitment, reveal, and secret-share member sets before finalization is ready.
-  File-based readiness after exchanging completion records:
-    "$CDK_MINTD_BIN" federation dkg-status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --keyset-share <keyset-share.json> --transcript-signature <transcript-signature.json> --require-ready
-  Combine --from-database with repeated --keyset-share and --transcript-signature flags while migrating records between members.
-RUNBOOK
-}
-
-wait_for_dkg_status() {
-  local member="$1"
-  local work_dir
-  work_dir="$(member_work_dir "$member")"
-  for _ in $(seq 1 "$STATUS_RETRIES"); do
-    if member_dkg_status "$member" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep "$STATUS_SLEEP_SECONDS"
-  done
-  printf 'member %s did not report usable federation DKG/config material\n' "$member" >&2
-  member_dkg_status "$member" >&2 || true
-  print_dkg_record_runbook "$member"
-  tail -n 80 "$work_dir/mintd.log" >&2 || true
-  return 1
-}
-
-member_checkpoint_status_line() {
-  local member="$1"
-  local private_config
-  private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation status --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --require-ready --require-checkpoint-quorum --require-no-digest-alerts --require-no-invalid-operation-alerts | awk '/^member / { print; exit }'
-}
-
-member_payment_report_lines() {
-  local member="$1"
-  local private_config
-  private_config="$(member_private_config "$member")"
-  "$CDK_MINTD_BIN" federation payment-observations --public-config "$PUBLIC_CONFIG" --private-config "$private_config" --member "$member" --context mint-quote | awk '/^  payment_report / { print }'
-}
-
-compare_digests() {
-  local signer="${MEMBERS[0]}"
-  local private_config
-  private_config="$(member_private_config "$signer")"
-  "$CDK_MINTD_BIN" federation compare-digests --public-config "$PUBLIC_CONFIG" --private-config "$private_config"
-}
-
-wait_for_prometheus_metrics() {
-  if [[ "$CHECK_PROMETHEUS_METRICS" != "1" ]]; then
-    return 0
-  fi
-  if ! command -v curl >/dev/null 2>&1; then
-    printf 'curl is required when CHECK_PROMETHEUS_METRICS=1\n' >&2
-    return 1
-  fi
+start_members() {
   local member
   for member in "${MEMBERS[@]}"; do
-    local metrics_url
-    metrics_url="$(member_prometheus_url "$member")"
-    local metrics=""
-    for _ in $(seq 1 "$STATUS_RETRIES"); do
-      if metrics="$(curl -fsS "$metrics_url" 2>/dev/null)" && prometheus_metrics_are_ready "$metrics"; then
-        break
-      fi
-      sleep "$STATUS_SLEEP_SECONDS"
-    done
-    if ! prometheus_metrics_are_ready "$metrics"; then
-      printf 'member %s did not expose federation Prometheus metrics at %s\n' "$member" "$metrics_url" >&2
-      return 1
-    fi
+    local work_dir
+    work_dir="$(member_work_dir "$member")"
+    "$CDK_MINTD_BIN" --work-dir "$work_dir" --config "$(member_config "$member")" >"$work_dir/mintd.log" 2>&1 &
+    PIDS[$member]=$!
   done
 }
 
-prometheus_metrics_are_ready() {
-  local metrics="$1"
-  local metric
-  for metric in \
-    cdk_federation_consensus_operation_count \
-    cdk_federation_pending_mempool_items \
-    cdk_federation_sync_ready \
-    cdk_federation_sync_state \
-    cdk_federation_checkpoint_lag_operations \
-    cdk_federation_payment_observation_reports; do
-    if ! grep -q "^$metric" <<<"$metrics"; then
-      return 1
-    fi
-  done
-  local federation_metrics
-  federation_metrics="$(grep '^cdk_federation_' <<<"$metrics" || true)"
-  if grep -Eq '(quote|invoice|proof|secret|path)=' <<<"$federation_metrics"; then
-    printf 'federation Prometheus metrics include a sensitive label\n' >&2
-    return 1
-  fi
-  return 0
-}
-
-status_field() {
-  local line="$1"
-  local key="$2"
-  local field
-  for field in $line; do
-    case "$field" in
-      "$key"=*)
-        printf '%s\n' "${field#*=}"
-        return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
-aleph_bft_status_field() {
-  local line="$1"
-  local key="$2"
-  local field
-  for field in $line; do
-    case "$field" in
-      "$key":*)
-        printf '%s\n' "${field#*:}"
-        return 0
-        ;;
-    esac
-  done
-  return 1
-}
-
-run_smoke_operations() {
-  local has_private_config=0
-  local timeout_args=(--operation-timeout-seconds "$SMOKE_OPERATION_TIMEOUT_SECONDS")
-  local arg
-  for arg in "$@"; do
-    if [[ "$arg" == "--private-config" ]]; then
-      has_private_config=1
-      break
-    fi
-  done
-  if [[ "$has_private_config" == "0" ]]; then
-    local signer="${MEMBERS[0]}"
-    "$CDK_MINTD_BIN" federation smoke-operations \
-      --public-config "$PUBLIC_CONFIG" \
-      --private-config "$(member_private_config "$signer")" \
-      --quote-retries "$SMOKE_QUOTE_RETRIES" \
-      --quote-sleep-ms "$SMOKE_QUOTE_SLEEP_MS" \
-      "${timeout_args[@]}" \
-      "$@"
-    return
-  fi
-  "$CDK_MINTD_BIN" federation smoke-operations \
-    --public-config "$PUBLIC_CONFIG" \
-    --quote-retries "$SMOKE_QUOTE_RETRIES" \
-    --quote-sleep-ms "$SMOKE_QUOTE_SLEEP_MS" \
-    "${timeout_args[@]}" \
-    "$@"
-}
-
-post_dkg_setup_request() {
-  local endpoint="$1"
-  local request_file="$2"
-  for _ in $(seq 1 "$STATUS_RETRIES"); do
-    if curl -fsS -H 'content-type: application/json' --data-binary "@$request_file" "$endpoint" >/dev/null; then
+wait_for_member() {
+  local member="$1"
+  local attempt
+  for ((attempt = 1; attempt <= STATUS_RETRIES; attempt++)); do
+    if curl --fail --silent --show-error "$(member_mint_url "$member")/v1/info" >/dev/null; then
       return 0
     fi
     sleep "$STATUS_SLEEP_SECONDS"
   done
-  printf 'could not post DKG setup route-probe request %s to %s\n' "$request_file" "$endpoint" >&2
+  printf 'member %s did not become ready\n' "$member" >&2
   return 1
 }
 
-probe_dkg_setup_routes() {
-  if [[ "$PROBE_DKG_SETUP_ROUTES" != "1" ]]; then
-    return 0
-  fi
-  if ! command -v curl >/dev/null 2>&1; then
-    printf 'curl is required when PROBE_DKG_SETUP_ROUTES=1\n' >&2
-    return 1
-  fi
-  local receiver
-  for receiver in "${MEMBERS[@]}"; do
-    local receiver_url
-    local request_dir
-    receiver_url="$(member_federation_url "$receiver")"
-    request_dir="$(member_dkg_setup_request_dir "$receiver")"
-    local sender
-    for sender in "${MEMBERS[@]}"; do
-      post_dkg_setup_request "$receiver_url/federation/v1/dkg/commitments" "$request_dir/from-$sender-commitment.json"
-    done
-    for sender in "${MEMBERS[@]}"; do
-      post_dkg_setup_request "$receiver_url/federation/v1/dkg/reveals" "$request_dir/from-$sender-reveal.json"
-    done
-    for sender in "${MEMBERS[@]}"; do
-      post_dkg_setup_request "$receiver_url/federation/v1/dkg/secret-shares" "$request_dir/from-$sender-secret-share.json"
-    done
-    for sender in "${MEMBERS[@]}"; do
-      post_dkg_setup_request "$receiver_url/federation/v1/dkg/transcript-signatures" "$request_dir/from-$sender-transcript-signature.json"
-    done
-  done
-}
-
-wait_for_converged() {
-  for _ in $(seq 1 "$STATUS_RETRIES"); do
-    local baseline_operations=""
-    local baseline_order_digest=""
-    local baseline_materialized_state_digest=""
-    local converged=1
-    local member
-    for member in "${MEMBERS[@]}"; do
-      local line
-      local operations
-      local order_digest
-      local materialized_state_digest
-      if ! line="$(member_status_line "$member" 2>/dev/null)"; then
-        converged=0
-        break
-      fi
-      if ! operations="$(status_field "$line" operations)"; then
-        converged=0
-        break
-      fi
-      if ! order_digest="$(status_field "$line" order_digest)"; then
-        converged=0
-        break
-      fi
-      if ! materialized_state_digest="$(status_field "$line" materialized_state_digest)"; then
-        converged=0
-        break
-      fi
-      if [[ -z "$baseline_operations" ]]; then
-        baseline_operations="$operations"
-        baseline_order_digest="$order_digest"
-        baseline_materialized_state_digest="$materialized_state_digest"
-        continue
-      fi
-      if [[ "$operations" != "$baseline_operations" || "$order_digest" != "$baseline_order_digest" || "$materialized_state_digest" != "$baseline_materialized_state_digest" ]]; then
-        converged=0
-        break
-      fi
-    done
-    if [[ "$converged" == "1" ]]; then
-      if [[ "$baseline_operations" == "0" ]] || compare_digests >/dev/null 2>&1; then
-        return 0
-      fi
-    fi
-    sleep "$STATUS_SLEEP_SECONDS"
-  done
-  printf 'federation did not converge\n' >&2
-  for member in "${MEMBERS[@]}"; do
-    member_status_line "$member" >&2 || true
-  done
-  compare_digests >&2 || true
-  return 1
-}
-
-wait_for_aleph_bft_session_at_least() {
-  local member="$1"
-  local target_session="$2"
-  local work_dir
-  work_dir="$(member_work_dir "$member")"
-  for _ in $(seq 1 "$STATUS_RETRIES"); do
-    local line
-    local session
-    if line="$(member_status_line "$member" 2>/dev/null)" && session="$(aleph_bft_status_field "$line" session)"; then
-      if (( session >= target_session )); then
-        return 0
-      fi
-    fi
-    sleep "$STATUS_SLEEP_SECONDS"
-  done
-  printf 'member %s did not advance to AlephBFT session %s\n' "$member" "$target_session" >&2
-  member_status_line "$member" >&2 || true
-  tail -n 80 "$work_dir/mintd.log" >&2 || true
-  return 1
-}
-
-wait_for_configured_aleph_bft_auto_rotation() {
-  if [[ -z "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
-    return 0
-  fi
-  local member
-  for member in "${MEMBERS[@]}"; do
-    wait_for_aleph_bft_session_at_least "$member" "$ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION"
-  done
-  wait_for_converged
-}
-
-run_configured_aleph_bft_auto_rotation_warmup() {
-  if [[ -z "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
-    return 0
-  fi
-  run_smoke_operations \
-    --scenario standard \
-    --seed-offset 0 \
-    --operation-batches "$ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES"
-  wait_for_configured_aleph_bft_auto_rotation
-}
-
-wait_for_dkg_setup_records() {
-  if [[ "$PROBE_DKG_SETUP_ROUTES" != "1" ]]; then
-    return 0
-  fi
-  local expected="${#MEMBERS[@]}"
-  local expected_keyset_shares="1"
-  local member
-  for member in "${MEMBERS[@]}"; do
-    local ready=0
-    for _ in $(seq 1 "$STATUS_RETRIES"); do
-      local line
-      local completion_line
-      if line="$(member_dkg_setup_records_line "$member" 2>/dev/null)" && completion_line="$(member_dkg_completion_records_line "$member" 2>/dev/null)"; then
-        local commitments
-        local reveals
-        local secret_shares
-        local keyset_shares
-        local transcript_signatures
-        commitments="$(status_field "$line" commitments || true)"
-        reveals="$(status_field "$line" reveals || true)"
-        secret_shares="$(status_field "$line" secret_share_contributions || true)"
-        keyset_shares="$(status_field "$completion_line" keyset_share_records || true)"
-        transcript_signatures="$(status_field "$completion_line" transcript_signature_records || true)"
-        if [[ "$commitments" == "$expected" && "$reveals" == "$expected" && "$secret_shares" == "$expected" && "$keyset_shares" == "$expected_keyset_shares" && "$transcript_signatures" == "$expected" ]]; then
-          ready=1
-          break
-        fi
-      fi
-      sleep "$STATUS_SLEEP_SECONDS"
-    done
-    if [[ "$ready" == "1" ]]; then
-      continue
-    fi
-    printf 'member %s did not persist DKG setup route-probe records\n' "$member" >&2
-    member_dkg_setup_records_line "$member" >&2 || true
-    member_dkg_completion_records_line "$member" >&2 || true
-    return 1
-  done
-  return 0
-}
-
-wait_for_runtime_keysets() {
-  local member="$1"
-  local work_dir
-  local mint_url
-  work_dir="$(member_work_dir "$member")"
-  mint_url="$(member_mint_url "$member")"
-  for _ in $(seq 1 "$STATUS_RETRIES"); do
-    if curl -fsS "$mint_url/v1/keysets" 2>/dev/null | grep -q '"id"'; then
-      return 0
-    fi
-    sleep "$STATUS_SLEEP_SECONDS"
-  done
-  printf 'member %s did not expose activated DKG keysets after restart\n' "$member" >&2
-  curl -fsS "$mint_url/v1/keysets" >&2 || true
-  tail -n 80 "$work_dir/mintd.log" >&2 || true
-  return 1
-}
-
-wait_for_checkpoint_quorum() {
-  local member="$1"
-  local work_dir
-  work_dir="$(member_work_dir "$member")"
-  for _ in $(seq 1 "$STATUS_RETRIES"); do
-    if member_checkpoint_status_line "$member" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep "$STATUS_SLEEP_SECONDS"
-  done
-  printf 'member %s did not report a trusted checkpoint quorum\n' "$member" >&2
-  member_checkpoint_status_line "$member" >&2 || true
-  tail -n 80 "$work_dir/mintd.log" >&2 || true
-  return 1
-}
-
-validate_smoke_members() {
-  member_config "$PRIMARY_MEMBER" >/dev/null || {
-    printf 'unknown PRIMARY_MEMBER %s\n' "$PRIMARY_MEMBER" >&2
-    return 1
-  }
-  member_config "$RESTART_MEMBER" >/dev/null || {
-    printf 'unknown RESTART_MEMBER %s\n' "$RESTART_MEMBER" >&2
-    return 1
-  }
-  if [[ "$PRIMARY_MEMBER" == "$RESTART_MEMBER" ]]; then
-    printf 'RESTART_MEMBER must differ from PRIMARY_MEMBER for offline operation smoke\n' >&2
-    return 1
-  fi
-  member_config "$CRASH_WINDOW_MEMBER" >/dev/null || {
-    printf 'unknown CRASH_WINDOW_MEMBER %s\n' "$CRASH_WINDOW_MEMBER" >&2
-    return 1
-  }
-  member_config "$LONG_PARTITION_MEMBER" >/dev/null || {
-    printf 'unknown LONG_PARTITION_MEMBER %s\n' "$LONG_PARTITION_MEMBER" >&2
-    return 1
-  }
-  if [[ "$PRIMARY_MEMBER" == "$LONG_PARTITION_MEMBER" ]]; then
-    printf 'LONG_PARTITION_MEMBER must differ from PRIMARY_MEMBER for long-partition operation smoke\n' >&2
-    return 1
-  fi
-}
-
-require_positive_integer() {
-  local name="$1"
-  local value="$2"
-  if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
-    printf '%s must be a positive integer\n' "$name" >&2
-    return 1
-  fi
-}
-
-require_nonnegative_integer() {
-  local name="$1"
-  local value="$2"
-  if ! [[ "$value" =~ ^(0|[1-9][0-9]*)$ ]]; then
-    printf '%s must be a non-negative integer\n' "$name" >&2
-    return 1
-  fi
-}
-
-validate_smoke_settings() {
-  require_positive_integer STATUS_RETRIES "$STATUS_RETRIES" || return 1
-  require_positive_integer STATUS_SLEEP_SECONDS "$STATUS_SLEEP_SECONDS" || return 1
-  require_positive_integer SMOKE_QUOTE_RETRIES "$SMOKE_QUOTE_RETRIES" || return 1
-  require_positive_integer SMOKE_QUOTE_SLEEP_MS "$SMOKE_QUOTE_SLEEP_MS" || return 1
-  require_positive_integer SMOKE_OPERATION_TIMEOUT_SECONDS "$SMOKE_OPERATION_TIMEOUT_SECONDS" || return 1
-  require_nonnegative_integer STANDARD_SEED_OFFSET "$STANDARD_SEED_OFFSET" || return 1
-  require_positive_integer STANDARD_OPERATION_BATCHES "$STANDARD_OPERATION_BATCHES" || return 1
-  require_positive_integer POST_CRASH_OPERATION_BATCHES "$POST_CRASH_OPERATION_BATCHES" || return 1
-  require_positive_integer LONG_PARTITION_OPERATION_BATCHES "$LONG_PARTITION_OPERATION_BATCHES" || return 1
-  if (( STANDARD_SEED_OFFSET > 255 )); then
-    printf 'STANDARD_SEED_OFFSET must be 255 or lower\n' >&2
-    return 1
-  fi
-  if (( STANDARD_SEED_OFFSET + STANDARD_OPERATION_BATCHES > 256 )); then
-    printf 'STANDARD_SEED_OFFSET plus STANDARD_OPERATION_BATCHES must be 256 or lower\n' >&2
-    return 1
-  fi
-  if [[ -z "$POST_CRASH_SEED_OFFSET" ]]; then
-    POST_CRASH_SEED_OFFSET=$((STANDARD_SEED_OFFSET + STANDARD_OPERATION_BATCHES))
-  fi
-  require_nonnegative_integer POST_CRASH_SEED_OFFSET "$POST_CRASH_SEED_OFFSET" || return 1
-  if (( POST_CRASH_SEED_OFFSET < STANDARD_SEED_OFFSET + STANDARD_OPERATION_BATCHES )); then
-    printf 'POST_CRASH_SEED_OFFSET must be after the standard smoke seed range\n' >&2
-    return 1
-  fi
-  if (( POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES > 256 )); then
-    printf 'POST_CRASH_SEED_OFFSET plus POST_CRASH_OPERATION_BATCHES must be 256 or lower\n' >&2
-    return 1
-  fi
-  if [[ -z "$LONG_PARTITION_SEED_OFFSET" ]]; then
-    LONG_PARTITION_SEED_OFFSET=$((POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES))
-  fi
-  require_nonnegative_integer LONG_PARTITION_SEED_OFFSET "$LONG_PARTITION_SEED_OFFSET" || return 1
-  if (( LONG_PARTITION_SEED_OFFSET < STANDARD_SEED_OFFSET + STANDARD_OPERATION_BATCHES )); then
-    printf 'LONG_PARTITION_SEED_OFFSET must be after the standard smoke seed range\n' >&2
-    return 1
-  fi
-  if [[ "$EXERCISE_CRASH_WINDOW" == "1" ]]; then
-    if (( LONG_PARTITION_SEED_OFFSET < POST_CRASH_SEED_OFFSET + POST_CRASH_OPERATION_BATCHES && LONG_PARTITION_SEED_OFFSET + LONG_PARTITION_OPERATION_BATCHES > POST_CRASH_SEED_OFFSET )); then
-      printf 'LONG_PARTITION_SEED_OFFSET plus LONG_PARTITION_OPERATION_BATCHES must not overlap the post-crash seed range\n' >&2
-      return 1
-    fi
-  fi
-  if (( LONG_PARTITION_SEED_OFFSET + LONG_PARTITION_OPERATION_BATCHES > 256 )); then
-    printf 'LONG_PARTITION_SEED_OFFSET plus LONG_PARTITION_OPERATION_BATCHES must be 256 or lower\n' >&2
-    return 1
-  fi
-  if [[ -n "$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS" ]]; then
-    require_positive_integer FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS "$FEDERATION_OPERATION_SUBMISSION_TIMEOUT_SECS" || return 1
-  fi
-  if [[ -n "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" ]]; then
-    require_positive_integer ALEPH_BFT_AUTO_ROTATION_MAX_ROUND "$ALEPH_BFT_AUTO_ROTATION_MAX_ROUND" || return 1
-    require_positive_integer ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION "$ALEPH_BFT_AUTO_ROTATION_TARGET_SESSION" || return 1
-    require_positive_integer ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES "$ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES" || return 1
-    if (( ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES > 255 )); then
-      printf 'ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES must be 255 or lower\n' >&2
-      return 1
-    fi
-    if (( STANDARD_SEED_OFFSET < ALEPH_BFT_AUTO_ROTATION_WARMUP_OPERATION_BATCHES )); then
-      printf 'STANDARD_SEED_OFFSET must be after the AlephBFT auto-rotation warm-up seed range\n' >&2
-      return 1
-    fi
-    if (( ALEPH_BFT_AUTO_ROTATION_MAX_ROUND > 65535 )); then
-      printf 'ALEPH_BFT_AUTO_ROTATION_MAX_ROUND must be 65535 or lower\n' >&2
-      return 1
-    fi
-  fi
-}
-
-trap cleanup EXIT INT TERM
-
-validate_smoke_members
-validate_smoke_settings
-if [[ "$PROBE_DKG_SETUP_ROUTES" == "1" ]]; then
-  USE_DKG_SETUP_CONFIGS=1
-  PUBLIC_CONFIG="$DKG_SETUP_PUBLIC_CONFIG"
-fi
-reset_member_work_dirs
+reset_state
+start_members
 
 for member in "${MEMBERS[@]}"; do
-  start_member "$member"
+  wait_for_member "$member" &
 done
+wait
 
-probe_dkg_setup_routes
-wait_for_dkg_setup_records
-if [[ "$PROBE_DKG_SETUP_ROUTES" == "1" ]]; then
-  for member in "${MEMBERS[@]}"; do
-    wait_for_dkg_status "$member"
-  done
-  for member in "${MEMBERS[@]}"; do
-    stop_member "$member"
-  done
-  for member in "${MEMBERS[@]}"; do
-    start_member "$member"
-  done
-  for member in "${MEMBERS[@]}"; do
-    wait_for_runtime_keysets "$member"
-  done
-  if [[ "$DKG_ROUTE_PROBE_ONLY" == "1" ]]; then
-    printf 'dkg setup route probe passed\n'
-    exit 0
-  fi
-  for member in "${MEMBERS[@]}"; do
-    stop_member "$member"
-  done
-  USE_DKG_SETUP_CONFIGS=0
-  PUBLIC_CONFIG="$FINAL_PUBLIC_CONFIG"
-  reset_member_work_dirs
-  for member in "${MEMBERS[@]}"; do
-    start_member "$member"
-  done
-fi
+"$CDK_MINTD_BIN" federation smoke-operations \
+  --public-config "$PUBLIC_CONFIG" \
+  --private-config "$(member_private_config "$PRIMARY_MEMBER")" \
+  --unit "$UNIT" \
+  --quote-retries "$SMOKE_QUOTE_RETRIES" \
+  --quote-sleep-ms "$SMOKE_QUOTE_SLEEP_MS" \
+  --operation-timeout-seconds "$SMOKE_OPERATION_TIMEOUT_SECONDS" \
+  --scenario standard
 
-for member in "${MEMBERS[@]}"; do
-  wait_for_status "$member"
-  wait_for_dkg_status "$member"
-done
-
-wait_for_converged
-wait_for_prometheus_metrics
-run_configured_aleph_bft_auto_rotation_warmup
-run_smoke_operations \
-  --scenario standard \
-  --seed-offset "$STANDARD_SEED_OFFSET" \
-  --operation-batches "$STANDARD_OPERATION_BATCHES"
-if [[ "$EXERCISE_CRASH_WINDOW" == "1" ]]; then
-  stop_member "$CRASH_WINDOW_MEMBER"
-  start_member "$CRASH_WINDOW_MEMBER"
-  wait_for_status "$CRASH_WINDOW_MEMBER"
-  wait_for_converged
-  wait_for_checkpoint_quorum "$CRASH_WINDOW_MEMBER"
-  run_smoke_operations \
-    --scenario standard \
-    --seed-offset "$POST_CRASH_SEED_OFFSET" \
-    --operation-batches "$POST_CRASH_OPERATION_BATCHES"
-  wait_for_converged
-else
-  wait_for_converged
-fi
-
-stop_member "$LONG_PARTITION_MEMBER"
-run_smoke_operations \
-  --scenario offline-member-operations \
-  --seed-offset "$LONG_PARTITION_SEED_OFFSET" \
-  --operation-batches "$LONG_PARTITION_OPERATION_BATCHES"
-start_member "$LONG_PARTITION_MEMBER"
-wait_for_status "$LONG_PARTITION_MEMBER"
-wait_for_converged
-wait_for_checkpoint_quorum "$LONG_PARTITION_MEMBER"
-
-run_smoke_operations --scenario pending-melt-start --wallet-db "$PENDING_WALLET_DB"
-wait_for_converged
-
-stop_member "$RESTART_MEMBER"
-run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario pending-melt-finish --wallet-db "$PENDING_WALLET_DB"
-start_member "$RESTART_MEMBER"
-wait_for_status "$RESTART_MEMBER"
-wait_for_converged
-wait_for_checkpoint_quorum "$RESTART_MEMBER"
-
-run_smoke_operations --scenario pending-melt-fail-start --wallet-db "$FAILED_PENDING_WALLET_DB"
-wait_for_converged
-
-stop_member "$RESTART_MEMBER"
-run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario pending-melt-fail-finish --wallet-db "$FAILED_PENDING_WALLET_DB"
-start_member "$RESTART_MEMBER"
-wait_for_status "$RESTART_MEMBER"
-wait_for_converged
-wait_for_checkpoint_quorum "$RESTART_MEMBER"
-
-stop_member "$RESTART_MEMBER"
-run_smoke_operations --private-config "$(member_private_config "$PRIMARY_MEMBER")" --scenario offline-member-keyset-rotation
-start_member "$RESTART_MEMBER"
-wait_for_status "$RESTART_MEMBER"
-wait_for_converged
-wait_for_checkpoint_quorum "$RESTART_MEMBER"
-wait_for_prometheus_metrics
-
-printf 'local federation smoke test passed\n'
+printf 'trusted-dealer local federation smoke passed\n'

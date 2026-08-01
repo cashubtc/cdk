@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-#[cfg(feature = "federation")]
+#[cfg(all(feature = "federation", any(test, feature = "federation-test-utils")))]
 use cdk_common::federation::{
     DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS, DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS,
 };
@@ -346,12 +346,6 @@ pub enum FederationCommand {
     BackupManifest(FederationBackupManifestArgs),
     /// Compare signed order and exact current state across quiesced federation members.
     CompareDigests(FederationCompareDigestsArgs),
-    /// Generate one member's independent DKG identity enrollment.
-    DkgMember(FederationDkgMemberArgs),
-    /// Assemble a setup-only federation roster from public member enrollments.
-    DkgRoster(FederationDkgRosterArgs),
-    /// Bind one member's private identity to an assembled DKG roster.
-    DkgBind(FederationDkgBindArgs),
     /// Inspect collected DKG completion records without printing secret shares.
     DkgStatus(FederationDkgStatusArgs),
     /// Inspect federation config material without printing member secrets.
@@ -475,6 +469,15 @@ pub struct FederationSetupCreateArgs {
     /// Consensus transaction fee-policy version.
     #[arg(long, default_value_t = 1)]
     pub frost_fee_policy_version: u16,
+    /// Compressed public key of the accepted Ark server for an optional Bark application.
+    #[arg(long, requires_all = ["frost_bark_application_key_epoch", "frost_bark_policy_config"])]
+    pub frost_bark_ark_server_public_key: Option<String>,
+    /// Initial Bark application-key epoch derived from the reusable FROST root.
+    #[arg(long, requires_all = ["frost_bark_ark_server_public_key", "frost_bark_policy_config"])]
+    pub frost_bark_application_key_epoch: Option<u64>,
+    /// JSON file containing the exact accepted Bark fee, CLTV, and recovery policy.
+    #[arg(long, requires_all = ["frost_bark_ark_server_public_key", "frost_bark_application_key_epoch"])]
+    pub frost_bark_policy_config: Option<PathBuf>,
     /// Permit plain HTTP only when every configured URL is localhost.
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub allow_insecure_localhost: bool,
@@ -625,90 +628,6 @@ pub struct FederationCheckpointAuditArgs {
     /// Member ID whose local database should be audited.
     #[arg(long)]
     pub member: u16,
-}
-
-#[cfg(feature = "federation")]
-#[derive(Debug, Clone, Args)]
-pub struct FederationDkgMemberArgs {
-    /// Stable non-zero member ID.
-    #[arg(long)]
-    pub member_id: u16,
-    /// Public Cashu mint URL exposed to wallets.
-    #[arg(long)]
-    pub public_mint_url: String,
-    /// Private federation REST URL exposed to peers.
-    #[arg(long)]
-    pub federation_api_url: String,
-    /// Destination for the public member enrollment JSON.
-    #[arg(long)]
-    pub public_output: PathBuf,
-    /// Destination for the private unbound identity JSON.
-    #[arg(long)]
-    pub private_output: PathBuf,
-    /// Overwrite existing output files.
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub force: bool,
-}
-
-#[cfg(feature = "federation")]
-#[derive(Debug, Clone, Args)]
-pub struct FederationDkgRosterArgs {
-    /// Public member enrollment JSON. Repeat once for every member.
-    #[arg(long = "member", required = true)]
-    pub members: Vec<PathBuf>,
-    /// BLS signature threshold.
-    #[arg(long)]
-    pub threshold: u16,
-    /// Matching payment observations required; defaults to the BFT consensus threshold.
-    #[arg(long)]
-    pub payment_observation_threshold: Option<u16>,
-    /// Currency unit for the first DKG keyset.
-    #[arg(long, default_value = "sat")]
-    pub unit: String,
-    /// Comma-separated denominations for the first DKG keyset.
-    #[arg(long, value_delimiter = ',', default_value = "1,2,4,8,16,32,64,128")]
-    pub amounts: Vec<u64>,
-    /// Input fee in parts per thousand for the first DKG keyset.
-    #[arg(long, default_value_t = 0)]
-    pub input_fee_ppk: u64,
-    /// Optional final expiry timestamp for the first DKG keyset.
-    #[arg(long)]
-    pub final_expiry: Option<u64>,
-    /// Accepted-operation interval between scheduled checkpoint candidates.
-    #[arg(
-        long,
-        default_value_t = DEFAULT_CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS
-    )]
-    pub checkpoint_interval_journal_operations: u64,
-    /// Finalized-item interval between scheduled checkpoint candidates.
-    #[arg(long, default_value_t = DEFAULT_CHECKPOINT_INTERVAL_FINALIZED_ITEMS)]
-    pub checkpoint_interval_finalized_items: u64,
-    /// Destination for the shared setup-only public federation config.
-    #[arg(long)]
-    pub public_output: PathBuf,
-    /// Destination for the shared `[federation.dkg]` TOML snippet.
-    #[arg(long)]
-    pub ceremony_config_output: PathBuf,
-    /// Overwrite existing output files.
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub force: bool,
-}
-
-#[cfg(feature = "federation")]
-#[derive(Debug, Clone, Args)]
-pub struct FederationDkgBindArgs {
-    /// Shared setup-only public federation config JSON.
-    #[arg(long)]
-    pub public_config: PathBuf,
-    /// Private unbound identity JSON generated by `dkg-member`.
-    #[arg(long)]
-    pub private_identity: PathBuf,
-    /// Destination for the roster-bound private setup config.
-    #[arg(long)]
-    pub output: PathBuf,
-    /// Overwrite an existing output file.
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub force: bool,
 }
 
 #[cfg(feature = "federation")]
@@ -927,9 +846,6 @@ pub struct FederationTrustedDealerArgs {
     /// PostgreSQL base URL used when --database-engine postgres. Generates one schema per member.
     #[arg(long)]
     pub postgres_base_url: Option<String>,
-    /// Generate signed setup-route probe request fixtures for DKG route testing.
-    #[arg(long, action = clap::ArgAction::SetTrue)]
-    pub dkg_setup_route_probes: bool,
     /// Also generate local fakewallet member TOMLs and a smoke script for development/regtest.
     #[cfg(feature = "fakewallet")]
     #[arg(long, action = clap::ArgAction::SetTrue)]
@@ -1245,89 +1161,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_production_dkg_setup_commands() {
-        let member = CLIArgs::try_parse_from([
-            "cdk-mintd",
-            "federation",
-            "dkg-member",
-            "--member-id",
-            "2",
-            "--public-mint-url",
-            "https://mint2.example.com",
-            "--federation-api-url",
-            "https://fed2.example.com",
-            "--public-output",
-            "member-2-public.json",
-            "--private-output",
-            "member-2-private.json",
-        ])
-        .expect("dkg-member command parses");
-        let Some(Commands::Federation(member)) = member.command else {
-            panic!("expected federation command");
-        };
-        assert!(matches!(
-            member.command,
-            FederationCommand::DkgMember(FederationDkgMemberArgs { member_id: 2, .. })
-        ));
-
-        let roster = CLIArgs::try_parse_from([
-            "cdk-mintd",
-            "federation",
-            "dkg-roster",
-            "--member",
-            "member-1-public.json",
-            "--member",
-            "member-2-public.json",
-            "--threshold",
-            "2",
-            "--public-output",
-            "dkg-setup-public.json",
-            "--ceremony-config-output",
-            "dkg-ceremony.toml",
-        ])
-        .expect("dkg-roster command parses");
-        let Some(Commands::Federation(roster)) = roster.command else {
-            panic!("expected federation command");
-        };
-        let FederationCommand::DkgRoster(roster) = roster.command else {
-            panic!("expected dkg-roster command");
-        };
-        assert_eq!(roster.members.len(), 2);
-        assert_eq!(roster.threshold, 2);
-
-        assert!(CLIArgs::try_parse_from([
-            "cdk-mintd",
-            "federation",
-            "dkg-roster",
-            "--member",
-            "member-1-public.json",
-            "--threshold",
-            "1",
-            "--payment-trust-model",
-            "shared-backend-read-only",
-            "--public-output",
-            "dkg-setup-public.json",
-            "--ceremony-config-output",
-            "dkg-ceremony.toml",
-        ])
-        .is_err());
-
-        let bind = CLIArgs::try_parse_from([
-            "cdk-mintd",
-            "federation",
-            "dkg-bind",
-            "--public-config",
-            "dkg-setup-public.json",
-            "--private-identity",
-            "member-2-private.json",
-            "--output",
-            "member-2-bound.json",
-        ])
-        .expect("dkg-bind command parses");
-        let Some(Commands::Federation(bind)) = bind.command else {
-            panic!("expected federation command");
-        };
-        assert!(matches!(bind.command, FederationCommand::DkgBind(_)));
+    fn production_cli_rejects_removed_file_mediated_dkg_setup_commands() {
+        for command in ["dkg-member", "dkg-roster", "dkg-bind"] {
+            let error = CLIArgs::try_parse_from(["cdk-mintd", "federation", command])
+                .expect_err("removed DKG setup command must not parse");
+            assert!(error.to_string().contains("unrecognized subcommand"));
+        }
     }
 
     #[cfg(not(feature = "federation-test-utils"))]
@@ -1519,7 +1358,6 @@ mod tests {
         );
         assert_eq!(trusted_dealer.postgres_url_template, None);
         assert_eq!(trusted_dealer.postgres_base_url, None);
-        assert!(!trusted_dealer.dkg_setup_route_probes);
         assert_eq!(
             trusted_dealer.deterministic_test_seed.as_deref(),
             Some("fixture-seed")

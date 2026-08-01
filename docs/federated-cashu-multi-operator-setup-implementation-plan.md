@@ -1108,19 +1108,58 @@ so the setup parser is verified with the normal `federation` feature profile.
 
 ### Milestone 7 — Remove parallel experimental setup paths
 
-- [ ] Move reusable identity/config construction into shared internal helpers.
-- [ ] Remove the standalone production `dkg-member`, `dkg-roster`, and
+- [x] Move reusable identity/config construction into shared internal helpers.
+- [x] Remove the standalone production `dkg-member`, `dkg-roster`, and
   `dkg-bind` workflow and raw ceremony/keyset auto-start configuration.
-- [ ] Update local generators, Nocean tooling, examples, fixtures, and docs to
+- [x] Update local generators, Nocean tooling, examples, fixtures, and docs to
   consume a signed setup manifest.
-- [ ] Regenerate experimental federation databases/configs rather than adding
+- [x] Regenerate experimental federation databases/configs rather than adding
   compatibility code.
-- [ ] Verify feature combinations without federation and without individual
+- [x] Verify feature combinations without federation and without individual
   payment backends.
 
 **Gate:** repository search finds no production DKG entry point that can start
 without certified setup authorization; test-only trusted-dealer generation is
 feature-gated and produces the current strict config shape.
+
+**Implemented:** the file-mediated production commands and their implementation
+module are deleted. `FederationDkg` now accepts only bounded driver tuning and
+rejects every retired ceremony, keyset, replacement, and URL-policy field via a
+strict schema; a certified local setup manifest is the only production source
+of shared DKG inputs. The reusable setup FROST-policy constructor commits both
+CDK and optional Bark application policy before approval, so deployment tooling
+does not mutate a finalized config after DKG.
+
+The feature-gated trusted-dealer utility now emits only final strict public and
+private configs plus an optional final-config runtime smoke. Its setup-only
+configs, route probes, live-DKG config suffix, duplicate DKG smoke, and FROST
+templates were removed rather than supported through compatibility reads. The
+two general startup tests that intentionally consume trusted-dealer material
+are now correctly scoped to `federation-test-utils`; the production guard test
+continues to reject that setup method.
+
+Local and Nocean control tooling now executes `setup create`, protected
+invitation joins, proposal review, exact approval, per-member manifest
+persistence, concurrent `setup serve` DKG processes, and explicit local
+activation. The Nocean Bark renderer inserts its application policy into the
+signed proposal. Runtime, benchmark, and health-check paths consume each
+operator's activated directory. Historical route-probe/live-DKG Just recipes
+were removed and replaced by one `fed-regtest-setup` recipe using the ordinary
+CLI workflow.
+
+**Evidence:** the new local script completed a three-operator run from empty,
+separate state directories and SQLite databases through certification,
+simultaneous DKG services, `3/3` finalized readiness, explicit activation, and
+byte-identical public configs. The production `federation,sqlite` serial suite
+passes `160` tests, including the ordinary HTTP workflow and the strict removed-
+field test. The final-only trusted-dealer groups pass `3 + 4` tests and the
+signed Bark-policy construction test passes. Checks pass for a federation-
+disabled `sqlite,fakewallet` mint, setup-only `federation,sqlite`, and
+`federation,postgres` without SQLite or a Lightning backend. The Nocean/local
+scripts and rendered Bark control pass syntax checks, `just --list` parses, the
+all-feature test targets compile, targeted formatting and `git diff --check`
+pass, and strict all-feature `cdk-mintd` Clippy passes with explicit allowances
+only for the recorded pre-existing findings in dependency crates.
 
 ### Milestone 8 — Adversarial local process matrix
 

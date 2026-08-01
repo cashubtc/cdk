@@ -177,6 +177,7 @@ docker run --rm \
             --no-default-features \
             --features federation
         "$CARGO_TARGET_DIR/release/cdk-mintd" --version
+        "$CARGO_TARGET_DIR/release/cdk-mintd" federation setup create --help >/dev/null
         "$CARGO_TARGET_DIR/release/cdk-mintd" federation wallet-status --help >/dev/null
         "$CARGO_TARGET_DIR/release/cdk-cli" --version
         "$CARGO_TARGET_DIR/release/cdk-cli" federation add --help >/dev/null
@@ -291,8 +292,8 @@ public_routes_are_healthy() {
 }
 
 private_state_is_healthy() {
-    local public_config="member-1/dkg-final/federation-public.json"
-    local private_config="member-1/dkg-final/federation-private.json"
+    local public_config="member-1/setup-state/activated/federation-public.json"
+    local private_config="member-1/setup-state/activated/federation-private.json"
     [[ -f "$public_config" && -f "$private_config" ]] || return 1
     if [[ "$PAYMENT_MODE" == "fakewallet" ]]; then
         jq -e '.frost_wallet == null' "$public_config" >/dev/null || return 1

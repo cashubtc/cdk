@@ -847,7 +847,7 @@
           </article>
           <article class="item">
             <h3>DKG timing</h3>
-            <p>The DKG core has an explicit keyset specification, versioned private participant state, unique ceremony ID, identity-signed public transcript, resumable phase planner, bounded authenticated REST executor, durable local shares, final config assembly, startup activation, and rotation. Production setup uses dkg-member, dkg-roster, and dkg-bind so no coordinator handles every identity secret. HTTPS is required for remote peers; loopback HTTP is explicit. The final release 20-of-14/eight-denomination run completed in 89 seconds with zero private-REST timeouts, identical exports, restart activation, and passing mint/swap/check-state/melt/restore.</p>
+            <p>The DKG core has an explicit keyset specification, versioned private participant state, unique ceremony ID, identity-signed public transcript, resumable phase planner, bounded authenticated REST executor, durable local shares, final config assembly, explicit activation, and rotation. Production setup now uses protected invitations, independently generated member identities, exact proposal review, unanimous signed certification, and a manifest-derived concurrent DKG; the retired file-mediated roster commands cannot start production DKG. HTTPS is required for remote peers; loopback HTTP is explicit. Historical production-size DKG evidence remains recorded while the invitation workflow is exercised through the current process and multi-host gates.</p>
           </article>
         </div>
       </section>

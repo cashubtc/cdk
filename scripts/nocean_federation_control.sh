@@ -24,9 +24,7 @@ STATUS_POLL_SECS="${STATUS_POLL_SECS:-2}"
 SESSION="${SESSION:-cdk-federation}"
 
 MINTD="$PWD/bin/cdk-mintd"
-SETUP_PUBLIC="$PWD/config/dkg-setup-public.json"
-CEREMONY_CONFIG="$PWD/config/dkg-ceremony.toml"
-FINAL_PUBLIC="$PWD/member-1/dkg-final/federation-public.json"
+FINAL_PUBLIC="$PWD/member-1/setup-state/activated/federation-public.json"
 
 die() {
     echo "error: $*" >&2
@@ -42,12 +40,21 @@ member_url() {
     printf 'https://cdk-%s.%s' "$member" "$PUBLIC_BASE_DOMAIN"
 }
 
+federation_url() {
+    local member="$1"
+    if [[ "$PUBLIC_URL_MODE" == "loopback" ]]; then
+        printf 'http://localhost:%s' "$((PORT_START + member - 1))"
+        return
+    fi
+    printf 'https://cdk-fed-%s.%s' "$member" "$PUBLIC_BASE_DOMAIN"
+}
+
 member_dir() {
     printf '%s/member-%s' "$PWD" "$1"
 }
 
 setup_config() {
-    printf '%s/setup-config.toml' "$(member_dir "$1")"
+    printf '%s/setup.json' "$(member_dir "$1")"
 }
 
 runtime_config() {
@@ -113,12 +120,16 @@ update_runtime_aleph_bft_settings() {
     mv "$temporary" "$config"
 }
 
-private_setup_config() {
-    printf '%s/dkg-setup-private.json' "$(member_dir "$1")"
+private_final_config() {
+    printf '%s/setup-state/activated/federation-private.json' "$(member_dir "$1")"
 }
 
-private_final_config() {
-    printf '%s/dkg-final/federation-private.json' "$(member_dir "$1")"
+setup_state_dir() {
+    printf '%s/setup-state' "$(member_dir "$1")"
+}
+
+setup_database() {
+    printf '%s/setup.sqlite' "$(member_dir "$1")"
 }
 
 work_dir() {
@@ -127,7 +138,7 @@ work_dir() {
 
 require_commands() {
     local command
-    for command in tmux curl jq awk find ps seq; do
+    for command in tmux curl jq awk find ps seq sed cmp; do
         command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
     done
     [[ -x "$MINTD" ]] || die "missing executable $MINTD"
@@ -188,61 +199,6 @@ generate_member() {
     fi
     mkdir -p "$dir/work"
 
-    "$MINTD" federation dkg-member \
-        --member-id "$member" \
-        --public-mint-url "$url" \
-        --federation-api-url "$url" \
-        --public-output "$dir/enrollment.json" \
-        --private-output "$dir/identity-private.json" \
-        --force
-
-    cat > "$(setup_config "$member")" <<EOF
-[info]
-url = "$url"
-listen_host = "127.0.0.1"
-listen_port = $port
-seed = "nocean-federation-member-$member"
-enable_info_page = true
-
-[info.http_cache]
-backend = "memory"
-ttl = 60
-tti = 60
-
-[mint_info]
-name = "Nocean CDK federation member $member"
-description = "Mutinynet federated Cashu mint member $member"
-
-[prometheus]
-enabled = true
-address = "127.0.0.1"
-port = $prometheus_port
-
-[database]
-engine = "sqlite"
-
-[ln]
-ln_backend = "fakewallet"
-unit = "sat"
-min_mint = 1
-max_mint = 50000000
-min_melt = 1
-max_melt = 50000000
-
-[fake_wallet]
-supported_units = ["sat"]
-fee_percent = 0.0
-reserve_fee_min = 1
-min_delay_time = 0
-max_delay_time = 0
-
-[federation]
-enabled = true
-$development_policy_config
-public_config_path = "$SETUP_PUBLIC"
-private_config_path = "$(private_setup_config "$member")"
-EOF
-
     cat > "$(runtime_config "$member")" <<EOF
 [info]
 url = "$url"
@@ -293,7 +249,7 @@ max_delay_time = 0
 [federation]
 enabled = true
 $development_policy_config
-public_config_path = "$(member_dir "$member")/dkg-final/federation-public.json"
+public_config_path = "$(setup_state_dir "$member")/activated/federation-public.json"
 private_config_path = "$(private_final_config "$member")"
 
 [federation.peer_sync]
@@ -316,57 +272,97 @@ initialize() {
         generate_member "$member"
     done
 
-    local -a roster_args=()
-    for member in $(seq 1 "$MEMBERS"); do
-        roster_args+=(--member "$(member_dir "$member")/enrollment.json")
-    done
-    "$MINTD" federation dkg-roster \
-        "${roster_args[@]}" \
+    local -a insecure_args=()
+    if [[ "$PUBLIC_URL_MODE" == "loopback" ]]; then
+        insecure_args+=(--allow-insecure-localhost)
+    fi
+    "$MINTD" federation setup create \
+        --config "$(setup_config 1)" \
+        --state-dir "$(setup_state_dir 1)" \
+        --database "$(setup_database 1)" \
+        --members "$MEMBERS" \
         --threshold "$THRESHOLD" \
-        --unit sat \
-        --amounts 1,2,4,8,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536 \
-        --checkpoint-interval-journal-operations \
-            "$CHECKPOINT_INTERVAL_JOURNAL_OPERATIONS" \
-        --checkpoint-interval-finalized-items \
-            "$CHECKPOINT_INTERVAL_FINALIZED_ITEMS" \
-        --public-output "$SETUP_PUBLIC" \
-        --ceremony-config-output "$CEREMONY_CONFIG" \
-        --force
+        --network "$NETWORK" \
+        --public-mint-url "$(member_url 1)" \
+        --federation-api-url "$(federation_url 1)" \
+        --coordinator-url "$(federation_url 1)" \
+        --frost-minimum-confirmations "$MINIMUM_CONFIRMATIONS" \
+        --frost-fee-policy-version "$FEE_POLICY_VERSION" \
+        --frost-application-key-epoch "$APPLICATION_KEY_EPOCH" \
+        "${insecure_args[@]}" \
+        >"$(member_dir 1)/create.log"
 
-    if [[ "$PAYMENT_MODE" == "fakewallet" ]]; then
-        local policy_config="$SETUP_PUBLIC.tmp"
-        jq '
-            .payment_observation_policy.mint_quotes =
-                {"type":"development_single_observation"}
-            | .payment_observation_policy.melt_quotes =
-                {"type":"development_single_observation"}
-        ' "$SETUP_PUBLIC" >"$policy_config"
-        mv "$policy_config" "$SETUP_PUBLIC"
+    "$MINTD" federation setup serve \
+        --config "$(setup_config 1)" \
+        --listen "127.0.0.1:$PORT_START" \
+        >"$(member_dir 1)/coordinator.log" 2>&1 &
+    local coordinator_pid=$!
+    local coordinator_ready=0
+    for _ in $(seq 1 120); do
+        if ! kill -0 "$coordinator_pid" 2>/dev/null; then
+            die "setup coordinator exited before enrollment"
+        fi
+        local code
+        code="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --max-time 2 "$(federation_url 1)/federation/setup/v1/status" || true)"
+        if [[ "$code" != "000" ]]; then
+            coordinator_ready=1
+            break
+        fi
+        sleep 0.25
+    done
+    if [[ "$coordinator_ready" != "1" ]]; then
+        kill "$coordinator_pid" 2>/dev/null || true
+        die "setup coordinator did not become reachable"
     fi
 
-    for member in $(seq 1 "$MEMBERS"); do
-        "$MINTD" federation dkg-bind \
-            --public-config "$SETUP_PUBLIC" \
-            --private-identity "$(member_dir "$member")/identity-private.json" \
-            --output "$(private_setup_config "$member")" \
-            --force
-        cat "$CEREMONY_CONFIG" >> "$(setup_config "$member")"
-        chmod 600 \
-            "$(setup_config "$member")" \
-            "$(runtime_config "$member")" \
-            "$(member_dir "$member")/identity-private.json" \
-            "$(private_setup_config "$member")"
+    for member in $(seq 2 "$MEMBERS"); do
+        "$MINTD" federation setup join \
+            --invitation-file "$(setup_state_dir 1)/invitations/member-$member.invite" \
+            --config "$(setup_config "$member")" \
+            --state-dir "$(setup_state_dir "$member")" \
+            --database "$(setup_database "$member")" \
+            --public-mint-url "$(member_url "$member")" \
+            --federation-api-url "$(federation_url "$member")" \
+            "${insecure_args[@]}" \
+            >"$(member_dir "$member")/join.log"
     done
+
+    local proposal_output proposal_hash
+    proposal_output="$(member_dir 1)/propose.log"
+    "$MINTD" federation setup propose \
+        --config "$(setup_config 1)" >"$proposal_output"
+    proposal_hash="$(sed -n 's/^proposal_hash: //p' "$proposal_output")"
+    [[ -n "$proposal_hash" ]] || die "setup proposal hash is missing"
+    for member in $(seq 1 "$MEMBERS"); do
+        "$MINTD" federation setup review \
+            --config "$(setup_config "$member")" \
+            --json >"$(member_dir "$member")/review.json"
+        [[ "$(jq -r '.proposal_hash' "$(member_dir "$member")/review.json")" == "$proposal_hash" ]] \
+            || die "member $member reviewed a different proposal"
+        "$MINTD" federation setup approve \
+            --config "$(setup_config "$member")" \
+            --proposal-hash "$proposal_hash" \
+            >"$(member_dir "$member")/approve.log"
+    done
+    for member in $(seq 1 "$MEMBERS"); do
+        "$MINTD" federation setup status \
+            --config "$(setup_config "$member")" \
+            --json >"$(member_dir "$member")/certified-status.json"
+        [[ "$(jq -r '.participant_phase' "$(member_dir "$member")/certified-status.json")" == "certified" ]] \
+            || die "member $member did not persist the certified manifest"
+        chmod 600 "$(setup_config "$member")" "$(runtime_config "$member")"
+    done
+    kill "$coordinator_pid"
+    wait "$coordinator_pid" 2>/dev/null || true
 }
 
 run_setup_member() {
     local member="$1"
-    exec env \
-        CDK_FEDERATION_DISABLE_PEER_SYNC=1 \
-        RUST_LOG="${RUST_LOG:-info}" \
-        "$MINTD" \
-            --work-dir "$(work_dir "$member")" \
-            --config "$(setup_config "$member")"
+    exec env RUST_LOG="${RUST_LOG:-info}" \
+        "$MINTD" federation setup serve \
+            --config "$(setup_config "$member")" \
+            --listen "127.0.0.1:$((PORT_START + member - 1))"
 }
 
 run_runtime_member() {
@@ -383,42 +379,15 @@ run_runtime_member() {
 
 dkg_member_ready() {
     local member="$1"
-    "$MINTD" \
-        --work-dir "$(work_dir "$member")" \
+    "$MINTD" federation setup status \
         --config "$(setup_config "$member")" \
-        federation dkg-status \
-        --public-config "$SETUP_PUBLIC" \
-        --private-config "$(private_setup_config "$member")" \
-        --from-database \
-        --progress-only 2>/dev/null \
-        | grep -q "keyset_shares=1 .*transcript_signatures=$MEMBERS .*activations=$MEMBERS frost_root_public_configs=1"
+        --json 2>/dev/null \
+        | jq -e '.dkg.finalized_ready == true' >/dev/null
 }
 
 export_member() {
     local member="$1"
-    local final_dir
-    final_dir="$(member_dir "$member")/dkg-final"
-    mkdir -p "$final_dir"
-    local -a frost_args=()
-    if [[ "$PAYMENT_MODE" == "federated-bdk" ]]; then
-        frost_args=(
-            --frost-cdk-network "$NETWORK"
-            --frost-cdk-minimum-confirmations "$MINIMUM_CONFIRMATIONS"
-            --frost-cdk-fee-policy-version "$FEE_POLICY_VERSION"
-            --frost-cdk-application-key-epoch "$APPLICATION_KEY_EPOCH"
-        )
-    fi
-    "$MINTD" \
-        --work-dir "$(work_dir "$member")" \
-        --config "$(setup_config "$member")" \
-        federation dkg-status \
-        --public-config "$SETUP_PUBLIC" \
-        --private-config "$(private_setup_config "$member")" \
-        --from-database \
-        --require-ready \
-        --final-config-dir "$final_dir" \
-        "${frost_args[@]}" \
-        --force
+    "$MINTD" federation setup activate --config "$(setup_config "$member")"
 }
 
 member_pane() {
@@ -539,22 +508,7 @@ orchestrate() {
         dkg_member_ready "$member" || die "DKG did not complete before the timeout"
     done
 
-    echo "Exporting finalized BLS and FROST member configs..."
-    for member in $(seq 1 "$MEMBERS"); do
-        mkdir -p "$(member_dir "$member")/dkg-final"
-        export_member "$member" > "$(member_dir "$member")/dkg-final/export.log" 2>&1
-        cmp -s "$FINAL_PUBLIC" "$(member_dir "$member")/dkg-final/federation-public.json" \
-            || die "member $member exported a different public config"
-    done
-    if [[ "$PAYMENT_MODE" == "federated-bdk" ]]; then
-        jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null \
-            || die "final public config does not contain an active FROST wallet"
-    else
-        jq -e '.frost_wallet == null' "$FINAL_PUBLIC" >/dev/null \
-            || die "fakewallet public config unexpectedly contains an active FROST wallet"
-    fi
-
-    echo "Stopping setup runtimes before activating finalized member configs..."
+    echo "Stopping concurrent DKG services before explicit local activation..."
     for member in $(seq 1 "$MEMBERS"); do
         pane="$(member_pane "$member")"
         [[ -n "$pane" ]] || die "could not find tmux pane for member $member"
@@ -566,6 +520,18 @@ orchestrate() {
         [[ "$(tmux display-message -p -t "$pane" '#{pane_dead}')" == "1" ]] \
             || die "setup runtime for member $member did not stop cleanly"
     done
+
+    echo "Activating finalized BLS and FROST member configs..."
+    for member in $(seq 1 "$MEMBERS"); do
+        export_member "$member" \
+            >"$(member_dir "$member")/activation.env" \
+            2>"$(member_dir "$member")/activation-guidance.log"
+        cmp -s "$FINAL_PUBLIC" \
+            "$(setup_state_dir "$member")/activated/federation-public.json" \
+            || die "member $member activated a different public config"
+    done
+    jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null \
+        || die "final public config does not contain an active FROST wallet"
 
     echo "Starting finalized $PAYMENT_MODE runtimes..."
     for member in $(seq 1 "$MEMBERS"); do
@@ -607,13 +573,8 @@ start_fresh() {
 
 start_runtime() {
     [[ -f "$FINAL_PUBLIC" ]] || die "finalized public config is missing; run fresh first"
-    if [[ "$PAYMENT_MODE" == "federated-bdk" ]]; then
-        jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null \
-            || die "finalized public config does not contain a FROST wallet"
-    else
-        jq -e '.frost_wallet == null' "$FINAL_PUBLIC" >/dev/null \
-            || die "fakewallet public config unexpectedly contains a FROST wallet"
-    fi
+    jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null \
+        || die "finalized public config does not contain a FROST wallet"
     local member
     for member in $(seq 1 "$MEMBERS"); do
         update_runtime_aleph_bft_settings "$member"
@@ -656,15 +617,14 @@ restart_runtime() {
 
 status() {
     [[ -f "$FINAL_PUBLIC" ]] || return 1
+    jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null || return 1
     if [[ "$PAYMENT_MODE" == "federated-bdk" ]]; then
-        jq -e '.frost_wallet != null' "$FINAL_PUBLIC" >/dev/null || return 1
         "$MINTD" federation wallet-status \
             --public-config "$FINAL_PUBLIC" \
             --private-config "$(private_final_config 1)" \
             --require-ready >/dev/null
         return
     fi
-    jq -e '.frost_wallet == null' "$FINAL_PUBLIC" >/dev/null || return 1
     "$MINTD" federation status \
         --public-config "$FINAL_PUBLIC" \
         --private-config "$(private_final_config 1)" \

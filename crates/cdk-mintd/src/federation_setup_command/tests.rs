@@ -8,15 +8,15 @@ use async_trait::async_trait;
 use cdk_common::database::mint::{Database, FederationDkgDatabase, FederationFrostWalletDatabase};
 use cdk_common::database::MintFederationSetupDatabase;
 use cdk_common::federation::{
-    FederationCheckpointPolicy, FederationDkgKeysetSpec, FederationPaymentObservationPolicy,
-    FederationSetupApproval, FederationSetupBitcoinNetwork, FederationSetupEnrollment,
-    FederationSetupFrostApplication, FederationSetupFrostPolicy, FederationSetupInvitation,
-    FederationSetupInvitationState, FederationSetupParticipantPhase, FederationSetupProposal,
-    FederationSetupUrlPolicy, MemberId, ThresholdParams,
-    FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
+    FederationBarkPolicyConfig, FederationBarkReceiveAntiDosPolicy, FederationCheckpointPolicy,
+    FederationDkgKeysetSpec, FederationPaymentObservationPolicy, FederationSetupApproval,
+    FederationSetupBitcoinNetwork, FederationSetupEnrollment, FederationSetupFrostApplication,
+    FederationSetupFrostPolicy, FederationSetupInvitation, FederationSetupInvitationState,
+    FederationSetupParticipantPhase, FederationSetupProposal, FederationSetupUrlPolicy, MemberId,
+    ThresholdParams, FEDERATION_SETUP_MIN_INVITATION_LIFETIME_SECS,
 };
 use cdk_common::mint_url::MintUrl;
-use cdk_common::{Amount, CurrencyUnit};
+use cdk_common::{Amount, CurrencyUnit, SecretKey};
 use cdk_sqlite::MintSqliteDatabase;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
@@ -25,6 +25,67 @@ use super::*;
 
 const NOW_UNIX: u64 = 1_900_000_000;
 const URL_POLICY: FederationSetupUrlPolicy = FederationSetupUrlPolicy::AllowInsecureLocalhost;
+
+#[test]
+fn setup_create_builds_bark_policy_into_the_signed_frost_inputs() {
+    let temp_dir = TempDir::new().expect("temporary Bark setup policy directory");
+    let policy_path = temp_dir.path().join("bark-policy.json");
+    let policy = FederationBarkPolicyConfig::new(
+        0,
+        0,
+        20,
+        5_000,
+        18,
+        18,
+        72,
+        18,
+        30,
+        FederationBarkReceiveAntiDosPolicy::NoProof,
+    )
+    .expect("valid Bark policy");
+    std::fs::write(
+        &policy_path,
+        serde_json::to_vec(&policy).expect("serialize Bark policy"),
+    )
+    .expect("write Bark policy");
+    let ark_server_public_key = SecretKey::from_slice(&[42; 32])
+        .expect("Ark server secret")
+        .public_key()
+        .to_string();
+    let args = cli::FederationSetupCreateArgs {
+        config: temp_dir.path().join("setup.json"),
+        state_dir: temp_dir.path().join("state"),
+        database: temp_dir.path().join("setup.sqlite"),
+        members: 3,
+        threshold: 2,
+        network: cli::FederationSetupNetworkArg::Signet,
+        public_mint_url: "https://mint.example".to_string(),
+        federation_api_url: "https://federation.example".to_string(),
+        coordinator_url: "https://setup.example".to_string(),
+        payment_observation_threshold: None,
+        invitation_lifetime_seconds: 86_400,
+        unit: "sat".to_string(),
+        amounts: vec![1, 2, 4],
+        input_fee_ppk: 0,
+        final_expiry: None,
+        frost_root_key_epoch: 1,
+        frost_application_key_epoch: 1,
+        frost_minimum_confirmations: 1,
+        frost_fee_policy_version: 1,
+        frost_bark_ark_server_public_key: Some(ark_server_public_key),
+        frost_bark_application_key_epoch: Some(1),
+        frost_bark_policy_config: Some(policy_path),
+        allow_insecure_localhost: false,
+    };
+
+    let frost = setup_frost_policy(&args, FederationSetupBitcoinNetwork::Signet)
+        .expect("setup FROST policy");
+    assert_eq!(frost.applications.len(), 2);
+    assert!(matches!(
+        frost.applications[1],
+        FederationSetupFrostApplication::Bark { .. }
+    ));
+}
 
 struct FakeCoordinator {
     db: Arc<MintSqliteDatabase>,

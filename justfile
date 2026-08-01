@@ -772,15 +772,11 @@ regtest db="sqlite" host="127.0.0.1":
   bash ./misc/interactive_regtest_mprocs.sh {{db}} "{{host}}"
 
 # Generate local fake-wallet federation configs for process smoke testing
-fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885" dkg_setup_route_probes="0" checkpoint_interval_journal_operations="20" checkpoint_interval_finalized_items="100":
+fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port_start="21885" checkpoint_interval_journal_operations="20" checkpoint_interval_finalized_items="100":
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
-  fi
-  dkg_probe_arg=""
-  if [[ "{{dkg_setup_route_probes}}" == "1" ]]; then
-    dkg_probe_arg="--dkg-setup-route-probes"
   fi
   cargo build -p cdk-mintd --features federation-test-utils,sqlite,prometheus
   target/debug/cdk-mintd federation test-trusted-dealer \
@@ -791,8 +787,7 @@ fed-regtest-generate dir="target/cdk-fed-regtest" members="5" threshold="3" port
     --threshold "{{threshold}}" \
     --port-start "{{port_start}}" \
     --checkpoint-interval-journal-operations "{{checkpoint_interval_journal_operations}}" \
-    --checkpoint-interval-finalized-items "{{checkpoint_interval_finalized_items}}" \
-    ${dkg_probe_arg:+$dkg_probe_arg}
+    --checkpoint-interval-finalized-items "{{checkpoint_interval_finalized_items}}"
 
 # Run fast federation regtest and smoke unit checks without starting member processes
 fed-regtest-check:
@@ -1448,115 +1443,19 @@ fed-regtest-aleph-rotation dir="target/cdk-fed-regtest-aleph-rotation" members="
     CDK_MINTD_BIN=target/debug/cdk-mintd \
     bash "{{dir}}/smoke-local-federation.sh"
 
-# Run the generated setup-only DKG route-probe and restart activation smoke
-fed-regtest-dkg-setup dir="target/cdk-fed-regtest-dkg" members="5" threshold="3" port_start="23885":
+# Run the ordinary invitation, approval, concurrent DKG, and activation workflow.
+fed-regtest-setup dir="target/cdk-fed-regtest-setup" members="5" threshold="3" port_start="25985":
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
   fi
-  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "1"
-  DKG_ROUTE_PROBE_ONLY=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
-
-# Run generated DKG route probes and then continue through the full local federation smoke
-fed-regtest-dkg-full dir="target/cdk-fed-regtest-dkg-full" members="5" threshold="3" port_start="23985":
-  #!/usr/bin/env bash
-  set -euo pipefail
-  if [ ! -f Cargo.toml ]; then
-    cd {{invocation_directory()}}
-  fi
-  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "1"
-  PROBE_DKG_SETUP_ROUTES=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
-
-# Run a dealer-free live DKG ceremony, interruption/resume, activation restart, and wallet smoke
-fed-regtest-live-dkg dir="target/cdk-fed-regtest-live-dkg" members="5" threshold="3" port_start="25985":
-  #!/usr/bin/env bash
-  set -euo pipefail
-  if [ ! -f Cargo.toml ]; then
-    cd {{invocation_directory()}}
-  fi
-  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
+  cargo build -p cdk-mintd --no-default-features --features federation,sqlite
+  FED_DIR="{{dir}}" MEMBERS="{{members}}" THRESHOLD="{{threshold}}" \
+    MEMBER_PORT_START="{{port_start}}" \
+    COORDINATOR_PORT="$(({{port_start}} - 1))" \
     CDK_MINTD_BIN=target/debug/cdk-mintd \
-    bash "{{dir}}/smoke-live-dkg-federation.sh"
-
-# Run the real dealer-free dual DKG and federated Taproot BDK wallet against Bitcoin Core regtest
-fed-regtest-frost-bdk dir="target/cdk-fed-regtest-frost-bdk" members="5" threshold="3" port_start="26985" fault_profile="happy" bitcoin_image="bitcoin/bitcoin:28.1":
-  #!/usr/bin/env bash
-  set -euo pipefail
-  if [ ! -f Cargo.toml ]; then
-    cd {{invocation_directory()}}
-  fi
-  cargo_profile="${FROST_BDK_CARGO_PROFILE:-dev}"
-  cargo_profile_args=()
-  case "$cargo_profile" in
-    dev)
-      cargo_profile_args+=(--profile dev)
-      cargo_target_dir="target/debug"
-      ;;
-    release)
-      cargo_profile_args+=(--release)
-      cargo_target_dir="target/release"
-      ;;
-    *)
-      printf 'FROST_BDK_CARGO_PROFILE must be dev or release\n' >&2
-      exit 1
-      ;;
-  esac
-  container="cdk-frost-bdk-regtest"
-  started_container=0
-  cleanup_core() {
-    if [[ "$started_container" == "1" ]]; then
-      docker stop "$container" >/dev/null 2>&1 || true
-    fi
-  }
-  trap cleanup_core EXIT INT TERM
-  if ! docker inspect "$container" >/dev/null 2>&1; then
-    docker run --detach --rm --name "$container" \
-      --publish 127.0.0.1:18443:18443 \
-      "{{bitcoin_image}}" \
-      -regtest=1 -server=1 -txindex=1 -fallbackfee=0.0002 \
-      -rpcbind=0.0.0.0 -rpcallowip=0.0.0.0/0 -rpcuser=cdk -rpcpassword=cdk \
-      >/dev/null
-    started_container=1
-  fi
-  cargo_features=federation
-  if [[ "${FROST_BDK_CAPTURE_RUNTIME_METRICS:-0}" == "1" ]]; then
-    cargo_features="${cargo_features},prometheus"
-  fi
-  cargo build -p cdk-mintd -p cdk-cli --features "$cargo_features" "${cargo_profile_args[@]}"
-  just fed-regtest-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}"
-  FROST_BDK_REGTEST=1 \
-    FROST_BDK_FAULT_PROFILE="{{fault_profile}}" \
-    FROST_BDK_RUNTIME_BUILD_PROFILE="$cargo_profile" \
-    BITCOIN_DOCKER_CONTAINER="$container" \
-    CDK_MINTD_BIN="$cargo_target_dir/cdk-mintd" \
-    CDK_CLI_BIN="$cargo_target_dir/cdk-cli" \
-    bash "{{dir}}/smoke-live-dkg-federation.sh"
-
-# Slow production-size FROST BDK smoke profiles; run explicitly, never in routine unit tests
-fed-regtest-frost-bdk-8-of-11 dir="target/cdk-fed-regtest-frost-bdk-8-of-11" port_start="28985":
-  FROST_BDK_CARGO_PROFILE=release STATUS_RETRIES=600 SMOKE_OPERATION_TIMEOUT_SECONDS=600 FROST_BDK_WAIT_RETRIES=900 FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS=300 just fed-regtest-frost-bdk "{{dir}}" 11 8 "{{port_start}}" happy
-
-fed-regtest-frost-bdk-14-of-20 dir="target/cdk-fed-regtest-frost-bdk-14-of-20" port_start="30985":
-  FROST_BDK_CARGO_PROFILE=release STATUS_RETRIES=1200 SMOKE_OPERATION_TIMEOUT_SECONDS=1200 FROST_BDK_WAIT_RETRIES=1800 FROST_BDK_MEMBER_REQUEST_TIMEOUT_SECONDS=600 just fed-regtest-frost-bdk "{{dir}}" 20 14 "{{port_start}}" happy
-
-# Leave a fresh 3-of-5 federation idle across two signing leases, then deposit and melt
-fed-regtest-frost-bdk-long-idle dir="target/cdk-fed-regtest-frost-bdk-long-idle" port_start="33985" idle_seconds="65":
-  FROST_BDK_LONG_IDLE_SECONDS="{{idle_seconds}}" FROST_BDK_CAPTURE_RUNTIME_METRICS=1 just fed-regtest-frost-bdk "{{dir}}" 5 3 "{{port_start}}" happy
-
-# Bounded process-level fault profiles using fresh state for every run
-fed-regtest-frost-bdk-fault-matrix dir="target/cdk-fed-regtest-frost-bdk-faults" port_start="32985":
-  #!/usr/bin/env bash
-  set -euo pipefail
-  if [ ! -f Cargo.toml ]; then
-    cd {{invocation_directory()}}
-  fi
-  profiles=(happy offline-one process-kill below-threshold-heal)
-  offset=0
-  for profile in "${profiles[@]}"; do
-    just fed-regtest-frost-bdk "{{dir}}-$profile" 5 3 "$(({{port_start}} + offset))" "$profile"
-    offset=$((offset + 100))
-  done
+    bash scripts/run_test_federation_dkg.sh
 
 # Run the bounded, in-memory dealer-free DKG phase benchmark
 dkg-perf profile="5-of-3" denominations="one" iterations="3" build="release" phases="all" timeout_secs="300" full_ceremony="0":
@@ -1586,15 +1485,11 @@ dkg-perf profile="5-of-3" denominations="one" iterations="3" build="release" pha
   cargo "${cargo_args[@]}" -- "${benchmark_args[@]}"
 
 # Generate local fake-wallet federation configs backed by PostgreSQL member schemas
-fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint" dkg_setup_route_probes="0":
+fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
   #!/usr/bin/env bash
   set -euo pipefail
   if [ ! -f Cargo.toml ]; then
     cd {{invocation_directory()}}
-  fi
-  dkg_probe_arg=""
-  if [[ "{{dkg_setup_route_probes}}" == "1" ]]; then
-    dkg_probe_arg="--dkg-setup-route-probes"
   fi
   cargo build -p cdk-mintd --features federation-test-utils,sqlite,postgres,prometheus
   target/debug/cdk-mintd federation test-trusted-dealer \
@@ -1605,8 +1500,7 @@ fed-regtest-postgres-generate dir="target/cdk-fed-regtest-postgres" members="5" 
     --threshold "{{threshold}}" \
     --port-start "{{port_start}}" \
     --database-engine postgres \
-    --postgres-base-url "{{postgres_base_url}}" \
-    ${dkg_probe_arg:+$dkg_probe_arg}
+    --postgres-base-url "{{postgres_base_url}}"
 
 # Check that the PostgreSQL service for Postgres-backed federation smoke is reachable
 fed-regtest-postgres-preflight postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
@@ -1646,41 +1540,6 @@ fed-regtest-postgres-long-partition dir="target/cdk-fed-regtest-postgres-long-pa
   just fed-regtest-postgres-preflight "{{postgres_base_url}}"
   just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
   RESET_POSTGRES_SCHEMAS=1 LONG_PARTITION_OPERATION_BATCHES="{{offline_batches}}" CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
-
-# Run the generated setup-only DKG route-probe smoke with PostgreSQL member schemas
-fed-regtest-postgres-dkg-setup dir="target/cdk-fed-regtest-postgres-dkg" members="5" threshold="3" port_start="24885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
-  #!/usr/bin/env bash
-  set -euo pipefail
-  if [ ! -f Cargo.toml ]; then
-    cd {{invocation_directory()}}
-  fi
-  just fed-regtest-postgres-preflight "{{postgres_base_url}}"
-  just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}" "1"
-  RESET_POSTGRES_SCHEMAS=1 DKG_ROUTE_PROBE_ONLY=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
-
-# Run PostgreSQL-backed DKG route probes and then continue through the full federation smoke
-fed-regtest-postgres-dkg-full dir="target/cdk-fed-regtest-postgres-dkg-full" members="5" threshold="3" port_start="24985" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
-  #!/usr/bin/env bash
-  set -euo pipefail
-  if [ ! -f Cargo.toml ]; then
-    cd {{invocation_directory()}}
-  fi
-  just fed-regtest-postgres-preflight "{{postgres_base_url}}"
-  just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}" "1"
-  RESET_POSTGRES_SCHEMAS=1 PROBE_DKG_SETUP_ROUTES=1 CDK_MINTD_BIN=target/debug/cdk-mintd bash "{{dir}}/smoke-local-federation.sh"
-
-# Run the dealer-free live DKG ceremony and wallet smoke with PostgreSQL member schemas
-fed-regtest-postgres-live-dkg dir="target/cdk-fed-regtest-postgres-live-dkg" members="5" threshold="3" port_start="26985" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":
-  #!/usr/bin/env bash
-  set -euo pipefail
-  if [ ! -f Cargo.toml ]; then
-    cd {{invocation_directory()}}
-  fi
-  just fed-regtest-postgres-preflight "{{postgres_base_url}}"
-  just fed-regtest-postgres-generate "{{dir}}" "{{members}}" "{{threshold}}" "{{port_start}}" "{{postgres_base_url}}"
-  RESET_POSTGRES_SCHEMAS=1 \
-    CDK_MINTD_BIN=target/debug/cdk-mintd \
-    bash "{{dir}}/smoke-live-dkg-federation.sh"
 
 # Start generated PostgreSQL-backed fake-wallet federation members and leave them running
 fed-regtest-postgres-start dir="target/cdk-fed-regtest-postgres" members="5" threshold="3" port_start="22885" postgres_base_url="postgresql://cdk:cdk@127.0.0.1:5432/cdk_mint":

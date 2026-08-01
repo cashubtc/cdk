@@ -35,6 +35,8 @@ use cdk_common::federation::{
     FederationDkgFinalizedMemberConfig, FederationSetupActivation,
 };
 use cdk_common::mint_url::MintUrl;
+#[cfg(feature = "sqlite")]
+use cdk_common::PublicKey;
 use cdk_common::SecretKey;
 #[cfg(feature = "sqlite")]
 use cdk_common::{Amount, CurrencyUnit};
@@ -91,17 +93,7 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
                         .collect::<BTreeSet<_>>(),
                 )
                 .context("invalid setup keyset")?],
-                frost: FederationSetupFrostPolicy::new(
-                    args.frost_root_key_epoch,
-                    vec![FederationSetupFrostApplication::CdkOnchain {
-                        application_key_epoch: args.frost_application_key_epoch,
-                        confirmation_policy_version: 1,
-                        minimum_confirmations: args.frost_minimum_confirmations,
-                        fee_policy_version: args.frost_fee_policy_version,
-                    }],
-                    network,
-                )
-                .context("invalid setup FROST policy")?,
+                frost: setup_frost_policy(args, network)?,
                 invitation_lifetime_secs: args.invitation_lifetime_seconds,
                 url_policy: setup_url_policy(args.allow_insecure_localhost),
             };
@@ -239,6 +231,47 @@ pub(crate) async fn run_setup_command(args: &cli::FederationSetupArgs) -> Result
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "sqlite")]
+fn setup_frost_policy(
+    args: &cli::FederationSetupCreateArgs,
+    network: FederationSetupBitcoinNetwork,
+) -> Result<FederationSetupFrostPolicy> {
+    let mut applications = vec![FederationSetupFrostApplication::CdkOnchain {
+        application_key_epoch: args.frost_application_key_epoch,
+        confirmation_policy_version: 1,
+        minimum_confirmations: args.frost_minimum_confirmations,
+        fee_policy_version: args.frost_fee_policy_version,
+    }];
+    let bark = match (
+        args.frost_bark_ark_server_public_key.as_deref(),
+        args.frost_bark_application_key_epoch,
+        args.frost_bark_policy_config.as_deref(),
+    ) {
+        (None, None, None) => None,
+        (Some(ark_server_public_key), Some(application_key_epoch), Some(policy_path)) => {
+            Some((ark_server_public_key, application_key_epoch, policy_path))
+        }
+        _ => bail!(
+            "setup Bark policy requires --frost-bark-ark-server-public-key, \
+             --frost-bark-application-key-epoch, and --frost-bark-policy-config together"
+        ),
+    };
+    if let Some((ark_server_public_key, application_key_epoch, policy_path)) = bark {
+        let ark_server_public_key = PublicKey::from_str(ark_server_public_key)
+            .context("invalid compressed Ark server public key")?;
+        let policy =
+            crate::read_federation_json(policy_path, "federation setup Bark public policy config")?;
+        applications.push(FederationSetupFrostApplication::Bark {
+            application_key_epoch,
+            network,
+            ark_server_public_key: Box::new(ark_server_public_key),
+            policy,
+        });
+    }
+    FederationSetupFrostPolicy::new(args.frost_root_key_epoch, applications, network)
+        .context("invalid setup FROST policy")
 }
 
 #[cfg(not(feature = "sqlite"))]

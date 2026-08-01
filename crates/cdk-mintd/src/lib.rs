@@ -97,8 +97,6 @@ mod federation_checkpoint_audit;
 #[cfg(feature = "federation")]
 mod federation_digest_compare;
 #[cfg(feature = "federation")]
-mod federation_dkg_setup;
-#[cfg(feature = "federation")]
 mod federation_dkg_status;
 #[cfg(feature = "federation")]
 mod federation_files;
@@ -166,15 +164,6 @@ pub async fn run_cli_command(args: &CLIArgs) -> Result<bool> {
                 }
                 cli::FederationCommand::CompareDigests(compare) => {
                     federation_digest_compare::run_compare_digests_command(args, compare).await?;
-                }
-                cli::FederationCommand::DkgMember(member) => {
-                    federation_dkg_setup::run_dkg_member_command(member)?;
-                }
-                cli::FederationCommand::DkgRoster(roster) => {
-                    federation_dkg_setup::run_dkg_roster_command(roster)?;
-                }
-                cli::FederationCommand::DkgBind(bind) => {
-                    federation_dkg_setup::run_dkg_bind_command(bind)?;
                 }
                 cli::FederationCommand::DkgStatus(status) => {
                     federation_dkg_status::run_dkg_status_command(args, status).await?;
@@ -1966,14 +1955,6 @@ fn federation_dkg_auto_start_config(
     }
     if !federation.enabled {
         bail!("federation.dkg.enabled requires federation.enabled=true");
-    }
-    if federation.dkg.ceremony_id.is_some()
-        || federation.dkg.replaces_ceremony_id.is_some()
-        || !federation.dkg.amounts.is_empty()
-    {
-        bail!(
-            "raw federation.dkg ceremony, replacement, and keyset fields are forbidden; the certified setup manifest is authoritative"
-        );
     }
     if federation.dkg.max_ticks == 0 {
         bail!("federation.dkg.max_ticks must be greater than zero");
@@ -4724,7 +4705,11 @@ engine = "sqlite"
         let _ = fs::remove_file(&seed_file);
     }
 
-    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[cfg(all(
+        feature = "federation",
+        feature = "sqlite",
+        feature = "federation-test-utils"
+    ))]
     #[tokio::test]
     async fn configure_federation_loads_aleph_bft_runtime_config() {
         use cdk::mint::{FederationMode, MintBuilder};
@@ -5171,65 +5156,30 @@ engine = "sqlite"
 
     #[cfg(feature = "federation")]
     #[test]
-    fn federation_dkg_auto_start_rejects_raw_shared_inputs() {
-        let ceremony_id = "11".repeat(32);
-        let settings = config::Settings {
-            federation: Some(config::Federation {
-                enabled: true,
-                dkg: config::FederationDkg {
-                    enabled: true,
-                    ceremony_id: Some(ceremony_id.clone()),
-                    replaces_ceremony_id: None,
-                    unit: "sat".to_string(),
-                    active: true,
-                    input_fee_ppk: 7,
-                    expiry: Some(1_900_000_000),
-                    amounts: vec![1, 2, 4],
-                    max_ticks: 17,
-                    retry_delay_ms: 23,
-                    ceremony_timeout_secs: 31,
-                    member_request_burst: 11,
-                    member_request_refill_ms: 29,
-                    allow_insecure_localhost: true,
-                },
-                ..config::Federation::default()
-            }),
-            ..Default::default()
-        };
-
-        let error = federation_dkg_auto_start_config(&settings)
-            .expect_err("raw ceremony and keyset inputs must not start production DKG");
-        assert!(error.to_string().contains("certified setup manifest"));
-    }
-
-    #[cfg(all(feature = "federation", feature = "sqlite"))]
-    #[tokio::test]
-    async fn federation_dkg_replacement_requires_a_new_certified_manifest() {
-        let settings = config::Settings {
-            federation: Some(config::Federation {
-                enabled: true,
-                setup_config_path: Some(PathBuf::from("unused-setup-config.json")),
-                dkg: config::FederationDkg {
-                    enabled: true,
-                    ceremony_id: Some("31".repeat(32)),
-                    replaces_ceremony_id: Some("30".repeat(32)),
-                    amounts: vec![1],
-                    ..config::FederationDkg::default()
-                },
-                ..config::Federation::default()
-            }),
-            ..config::Settings::default()
-        };
-        let localstore: DynMintDatabase = Arc::new(
-            cdk_sqlite::mint::memory::empty()
-                .await
-                .expect("mint database"),
-        );
-
-        let error = reconcile_federation_dkg_ceremony(&settings, &localstore)
-            .await
-            .expect_err("raw replacement inputs must not start production DKG");
-        assert!(error.to_string().contains("certified setup manifest"));
+    fn federation_dkg_config_schema_rejects_removed_raw_setup_fields() {
+        for field in [
+            "ceremony_id",
+            "replaces_ceremony_id",
+            "unit",
+            "active",
+            "input_fee_ppk",
+            "expiry",
+            "amounts",
+            "allow_insecure_localhost",
+        ] {
+            let mut dkg = serde_json::Map::from_iter([(
+                "enabled".to_string(),
+                serde_json::Value::Bool(true),
+            )]);
+            dkg.insert(
+                field.to_string(),
+                serde_json::Value::String("removed".to_string()),
+            );
+            let error =
+                serde_json::from_value::<config::FederationDkg>(serde_json::Value::Object(dkg))
+                    .expect_err("removed raw DKG setup field must not deserialize");
+            assert!(error.to_string().contains("unknown field"));
+        }
     }
 
     #[cfg(feature = "federation")]
@@ -5400,7 +5350,11 @@ engine = "sqlite"
         let _ = fs::remove_file(private_config_path);
     }
 
-    #[cfg(all(feature = "federation", feature = "sqlite"))]
+    #[cfg(all(
+        feature = "federation",
+        feature = "sqlite",
+        feature = "federation-test-utils"
+    ))]
     #[tokio::test]
     async fn configure_federation_requires_override_for_development_payment_policy() {
         use cdk::mint::{FederationMode, MintBuilder};
