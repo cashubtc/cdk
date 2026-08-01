@@ -10,6 +10,8 @@ REMOTE_ROOT="${REMOTE_ROOT:-cdk-federation-multi-operator}"
 PUBLIC_BASE_DOMAIN="${PUBLIC_BASE_DOMAIN:-nocean.xyz}"
 FEDERATION_DOMAIN_PREFIX="${FEDERATION_DOMAIN_PREFIX:-cdk-fed}"
 NETWORK="${NETWORK:-signet}"
+ESPLORA_URL="${ESPLORA_URL:-https://esplora.signet.2nd.dev/}"
+CHAIN_SOURCE_ID="${CHAIN_SOURCE_ID:-2nddev-signet-esplora}"
 MEMBERS=5
 THRESHOLD="${THRESHOLD:-3}"
 PORT_START="${PORT_START:-21885}"
@@ -259,6 +261,8 @@ write_operator_env() {
         printf 'MEMBERS=%q\n' "$MEMBERS"
         printf 'THRESHOLD=%q\n' "$THRESHOLD"
         printf 'NETWORK=%q\n' "$NETWORK"
+        printf 'ESPLORA_URL=%q\n' "$ESPLORA_URL"
+        printf 'CHAIN_SOURCE_ID=%q\n' "$CHAIN_SOURCE_ID"
         printf 'PUBLIC_MINT_URL=%q\n' "$(public_mint_url "$member")"
         printf 'FEDERATION_API_URL=%q\n' "$(federation_api_url "$member")"
         printf 'COORDINATOR_URL=%q\n' "$(federation_api_url 1)"
@@ -297,7 +301,7 @@ build_linux_binaries() {
             export CARGO_TARGET_DIR=/work/target/linux-x86_64
             cargo build --locked --release -p cdk-mintd \
                 --no-default-features \
-                --features fakewallet,sqlite,info-page,federation,prometheus
+                --features sqlite,info-page,federation,prometheus
             cargo build --locked --release -p cdk-cli \
                 --no-default-features --features federation
             "$CARGO_TARGET_DIR/release/cdk-mintd" federation setup create --help >/dev/null
@@ -572,7 +576,12 @@ write_report() {
                 coordinated_restart: true,
                 encrypted_operator_local_backup_restore: true
             },
-            wallet_smoke: {mint: true, send_receive: true, spent_replay_rejected: true, melt: true},
+            wallet_smoke: {
+                federation_import: true,
+                threshold_mint_info: true,
+                empty_balance: true,
+                paid_operation: false
+            },
             timing_seconds: {dkg: $dkg_seconds, total: $total_seconds},
             resources: {
                 max_dkg_total_rss_kb: $max_dkg_total_rss_kb,

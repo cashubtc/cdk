@@ -1331,6 +1331,27 @@ rolled back cleanly while certificates were pending; the bounded retry
 provisioned and verified all five sites. The deployment driver again defaults
 to those distinct credential-free TLS identities.
 
+With distinct TLS in place, the rehearsal completed the intentionally failed
+four-of-five enrollment, created a different active setup ID, enrolled all
+five operators, certified one unanimously reviewed proposal, removed the
+coordinator, ran all five DKG services concurrently, produced matching final
+evidence, and explicitly activated byte-identical public configs. Runtime then
+failed closed for two configuration reasons before any wallet action: active
+setup had written activation evidence to a ceremony-only SQLite file rather
+than the normal mint work database, and the runtime declared fakewallet even
+though the certified setup always contains the FROST on-chain application.
+Operator-local diagnostic copies proved both checks without transferring any
+member state, but the attempt was stopped instead of weakening them.
+
+The permanent handoff now gives the active setup ceremony the normal
+`work/cdk-mintd.sqlite` path from the beginning, so setup, activation, and mint
+runtime share one local durable database. The runtime uses the certified
+federated-BDK Signet application with no Lightning backend; the deterministic
+wallet smoke therefore reports only federation import, threshold mint-info,
+and empty balance, and explicitly records that it did not perform a paid
+operation. Paid Signet/Bark issuance remains part of the parent plan's separate
+payment-backend gate rather than being misreported as setup evidence.
+
 ## Verification matrix
 
 At minimum, implementation must cover:

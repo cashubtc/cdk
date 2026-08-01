@@ -27,6 +27,8 @@ source "$ENV_FILE"
 : "${LISTEN_PORT:?LISTEN_PORT is required}"
 : "${PROMETHEUS_PORT:?PROMETHEUS_PORT is required}"
 : "${TMUX_SESSION:?TMUX_SESSION is required}"
+: "${ESPLORA_URL:?ESPLORA_URL is required}"
+: "${CHAIN_SOURCE_ID:?CHAIN_SOURCE_ID is required}"
 
 MINTD="$OPERATOR_ROOT/bin/cdk-mintd"
 RUNTIME_CONFIG="$OPERATOR_ROOT/runtime-config.toml"
@@ -68,6 +70,10 @@ validate_environment() {
         || die "FEDERATION_API_URL must be a credential-free HTTPS URL"
     [[ "$COORDINATOR_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
         || die "COORDINATOR_URL must be a credential-free HTTPS URL"
+    [[ "$ESPLORA_URL" =~ ^https://[A-Za-z0-9._:/-]+$ ]] \
+        || die "ESPLORA_URL must be a credential-free HTTPS URL"
+    [[ "$CHAIN_SOURCE_ID" =~ ^[A-Za-z0-9._-]+$ ]] \
+        || die "CHAIN_SOURCE_ID contains unsupported characters"
     [[ "$LISTEN_ADDR" == "127.0.0.1:$LISTEN_PORT" ]] \
         || die "LISTEN_ADDR must use the configured loopback port"
     [[ "$TMUX_SESSION" =~ ^[A-Za-z0-9._-]+$ ]] \
@@ -93,6 +99,10 @@ setup_state_dir() {
 }
 
 setup_database() {
+    if [[ "$1" == "active" ]]; then
+        printf '%s/cdk-mintd.sqlite' "$WORK_DIR"
+        return
+    fi
     printf '%s/setup.sqlite' "$(ceremony_dir "$1")"
 }
 
@@ -143,7 +153,7 @@ port = $PROMETHEUS_PORT
 engine = "sqlite"
 
 [ln]
-ln_backend = "fakewallet"
+ln_backend = "none"
 unit = "sat"
 min_mint = 1
 max_mint = 50000000
@@ -151,7 +161,7 @@ min_melt = 1
 max_melt = 50000000
 
 [onchain]
-onchain_backend = "fakewallet"
+onchain_backend = "federated-bdk"
 min_mint = 1
 max_mint = 50000000
 min_melt = 1
@@ -166,7 +176,6 @@ max_delay_time = 0
 
 [federation]
 enabled = true
-allow_development_payment_observation_policy = true
 public_config_path = "$(activated_public_config)"
 private_config_path = "$(activated_private_config)"
 
@@ -175,7 +184,18 @@ aleph_bft_active_unit_interval_ms = 200
 aleph_bft_network_pump_max_messages_per_tick = 1
 
 [federation.onchain_wallet]
-enabled = false
+enabled = true
+network = "$NETWORK"
+minimum_confirmations = 1
+fee_policy_version = 1
+chain_source_type = "esplora"
+chain_source_scope = "shared"
+chain_source_id = "$CHAIN_SOURCE_ID"
+esplora_url = "$ESPLORA_URL"
+esplora_parallel_requests = 1
+request_timeout_secs = 30
+esplora_max_retries = 3
+sync_interval_secs = 15
 EOF
     chmod 600 "$RUNTIME_CONFIG"
 }
@@ -305,6 +325,8 @@ action_backup_restore() {
         || die "restored private config differs"
     cmp -s "$RUNTIME_CONFIG" "$restore_dir/runtime-config.toml" \
         || die "restored runtime config differs"
+    cmp -s "$WORK_DIR/cdk-mintd.sqlite" "$restore_dir/work/cdk-mintd.sqlite" \
+        || die "restored runtime database differs"
     jq -n \
         --arg cipher "aes-256-cbc-pbkdf2" \
         --argjson member "$MEMBER_ID" \

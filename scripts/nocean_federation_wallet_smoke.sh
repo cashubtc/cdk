@@ -52,46 +52,19 @@ initial_smoke() {
         --quote-status-member-timeout-secs 60 \
         >"$WALLET_DIR/federation-add.log"
     wallet_cli mint-info "$MINT_URL" >"$WALLET_DIR/mint-info.log"
-    wallet_cli --unit sat mint "$MINT_URL" 20 --wait-duration 90 \
-        >"$WALLET_DIR/mint.log"
-    wallet_cli --unit sat check-state --mint-url "$MINT_URL" \
-        >"$WALLET_DIR/check-local.log"
-    grep -Eq 'Local proof states: total=[0-9]+ .*unspent=[1-9][0-9]*' \
-        "$WALLET_DIR/check-local.log" \
-        || die "minted proofs were not reported as unspent"
-
-    wallet_cli --unit sat send --mint-url "$MINT_URL" --amount 7 \
-        >"$WALLET_DIR/send.secret"
-    tail -n 1 "$WALLET_DIR/send.secret" >"$WALLET_DIR/token.secret"
-    chmod 600 "$WALLET_DIR/send.secret" "$WALLET_DIR/token.secret"
-    wallet_cli --unit sat receive "$(<"$WALLET_DIR/token.secret")" \
-        >"$WALLET_DIR/receive.log"
-    if wallet_cli --unit sat receive "$(<"$WALLET_DIR/token.secret")" \
-        >"$WALLET_DIR/receive-spent.log" 2>&1; then
-        die "receiving an already-spent token unexpectedly succeeded"
-    fi
-    grep -Fqi 'already spent' "$WALLET_DIR/receive-spent.log" \
-        || die "spent-token rejection was not actionable"
-
-    "$MINTD" federation fake-invoice --amount-msat 10000 \
-        >"$WALLET_DIR/fake-invoice.secret"
-    chmod 600 "$WALLET_DIR/fake-invoice.secret"
-    wallet_cli --unit sat melt \
-        --mint-url "$MINT_URL" \
-        --method bolt11 \
-        --invoice "$(<"$WALLET_DIR/fake-invoice.secret")" \
-        >"$WALLET_DIR/melt.log"
     wallet_cli --unit sat balance >"$WALLET_DIR/balance.log"
+    grep -Eq '(^|[^0-9])0([^0-9]|$)' "$WALLET_DIR/balance.log" \
+        || die "new federation wallet did not report an empty balance"
     jq -n \
-        '{result: "passed", mint: true, send_receive: true, spent_replay_rejected: true, melt: true}' \
+        '{result: "passed", federation_import: true, threshold_mint_info: true, empty_balance: true, paid_operation: false}' \
         >"$WALLET_DIR/smoke-report.json"
 }
 
 offline_operation() {
     [[ -d "$WALLET_DIR" ]] || die "initial wallet smoke has not run"
-    wallet_cli --unit sat mint "$MINT_URL" 2 --wait-duration 90 \
-        >"$WALLET_DIR/offline-member-mint.log"
-    jq -n '{result: "passed", threshold_operation_with_one_member_offline: true}' \
+    wallet_cli mint-info "$MINT_URL" >"$WALLET_DIR/offline-member-mint-info.log"
+    wallet_cli --unit sat balance >"$WALLET_DIR/offline-member-balance.log"
+    jq -n '{result: "passed", threshold_read_with_one_member_offline: true}' \
         >"$WALLET_DIR/offline-operation-report.json"
 }
 
