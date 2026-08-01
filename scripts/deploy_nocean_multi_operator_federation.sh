@@ -8,6 +8,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 OPERATOR_HOSTS_CSV="${OPERATOR_HOSTS_CSV:-nocean,nocean,nocean,nocean,nocean}"
 REMOTE_ROOT="${REMOTE_ROOT:-cdk-federation-multi-operator}"
 PUBLIC_BASE_DOMAIN="${PUBLIC_BASE_DOMAIN:-nocean.xyz}"
+FEDERATION_DOMAIN_PREFIX="${FEDERATION_DOMAIN_PREFIX:-cdk}"
 NETWORK="${NETWORK:-signet}"
 MEMBERS=5
 THRESHOLD="${THRESHOLD:-3}"
@@ -58,6 +59,7 @@ Important overrides:
   REQUIRE_UNIQUE_MACHINES  Minimum distinct /etc/machine-id values (default 5).
   STOP_LEGACY_SESSION      Stop cdk-federation before taking its public ports.
   PUBLIC_BASE_DOMAIN       Preconfigured cdk-{n} and cdk-fed-{n} TLS domain.
+  FEDERATION_DOMAIN_PREFIX TLS hostname prefix for private federation routes.
   BARK_REPO_ROOT           Sibling checkout needed for Cargo path resolution.
   REPORT_FILE              Local redacted JSON drill report.
 EOF
@@ -97,7 +99,7 @@ public_mint_url() {
 }
 
 federation_api_url() {
-    printf 'https://cdk-fed-%s.%s' "$1" "$PUBLIC_BASE_DOMAIN"
+    printf 'https://%s-%s.%s' "$FEDERATION_DOMAIN_PREFIX" "$1" "$PUBLIC_BASE_DOMAIN"
 }
 
 append_shell_word() {
@@ -193,10 +195,10 @@ wait_for_https() {
     deadline=$((SECONDS + STATUS_TIMEOUT_SECS))
     while ((SECONDS < deadline)); do
         code="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$url" || true)"
-        if [[ "$expectation" == "ready" && "$code" == "200" ]]; then
+        if [[ "$expectation" == "ready" && ("$code" == "200" || "$code" == "401") ]]; then
             return 0
         fi
-        if [[ "$expectation" == "down" && "$code" != "200" ]]; then
+        if [[ "$expectation" == "down" && "$code" != "200" && "$code" != "401" ]]; then
             return 0
         fi
         sleep "$STATUS_POLL_SECS"
@@ -615,6 +617,8 @@ done
 [[ "/$REMOTE_ROOT/" != *"/../"* ]] || die "REMOTE_ROOT must not contain '..'"
 [[ "$PUBLIC_BASE_DOMAIN" =~ ^[A-Za-z0-9.-]+$ ]] \
     || die "PUBLIC_BASE_DOMAIN contains unsupported characters"
+[[ "$FEDERATION_DOMAIN_PREFIX" =~ ^[A-Za-z0-9-]+$ ]] \
+    || die "FEDERATION_DOMAIN_PREFIX contains unsupported characters"
 [[ "$SESSION_PREFIX" =~ ^[A-Za-z0-9._-]+$ ]] || die "SESSION_PREFIX is invalid"
 [[ "$WALLET_SESSION" =~ ^[A-Za-z0-9._-]+$ ]] || die "WALLET_SESSION is invalid"
 [[ "$NETWORK" == "signet" ]] || die "the Nocean HTTPS drill currently requires NETWORK=signet"

@@ -1310,6 +1310,17 @@ before applying tmux policy, and reruns reuse only checksum-matching binaries
 while refusing to overwrite any operator root that already contains ceremony
 state.
 
+The subsequent rehearsal reached the first creator-local setup service. That
+service was healthy on loopback, but the driver was waiting for `200` from an
+authenticated status route that correctly returns `401` without invitation
+credentials. The dedicated federation TLS hostname was also not provisioned in
+the currently reachable Nocean proxy, while the established member hostname
+served a valid certificate and routed the same private path. The driver now
+treats only `200`/`401` as proof that the setup listener is present, requires
+neither for the coordinator-loss check, and makes the credential-free HTTPS
+federation hostname prefix explicit. The aborted operator state remains
+isolated on the server; no invitation was transferred in this attempt.
+
 ## Verification matrix
 
 At minimum, implementation must cover:
