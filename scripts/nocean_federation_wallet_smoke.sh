@@ -53,8 +53,10 @@ initial_smoke() {
         >"$WALLET_DIR/federation-add.log"
     wallet_cli mint-info "$MINT_URL" >"$WALLET_DIR/mint-info.log"
     wallet_cli --unit sat balance >"$WALLET_DIR/balance.log"
-    grep -Eq '(^|[^0-9])0([^0-9]|$)' "$WALLET_DIR/balance.log" \
-        || die "new federation wallet did not report an empty balance"
+    if [[ -s "$WALLET_DIR/balance.log" ]] \
+        && ! grep -Eq '(^|[^0-9])0([^0-9]|$)' "$WALLET_DIR/balance.log"; then
+        die "new federation wallet did not report an empty balance"
+    fi
     jq -n \
         '{result: "passed", federation_import: true, threshold_mint_info: true, empty_balance: true, paid_operation: false}' \
         >"$WALLET_DIR/smoke-report.json"

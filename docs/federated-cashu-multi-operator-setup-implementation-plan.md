@@ -1352,6 +1352,15 @@ and empty balance, and explicitly records that it did not perform a paid
 operation. Paid Signet/Bark issuance remains part of the parent plan's separate
 payment-backend gate rather than being misreported as setup evidence.
 
+The next fresh run verified that correction through certified DKG, activation,
+five public HTTPS health checks, and strict ready/converged runtime status on
+every member. Its read-only wallet smoke imported the federation and completed
+threshold mint-info, then failed only because an empty wallet renders balance
+as no output rather than the numeral `0`. The assertion now accepts either
+documented empty representation while still rejecting any nonzero content; no
+quote, payment, token, or wallet secret was created or printed by the failed
+assertion.
+
 ## Verification matrix
 
 At minimum, implementation must cover:
